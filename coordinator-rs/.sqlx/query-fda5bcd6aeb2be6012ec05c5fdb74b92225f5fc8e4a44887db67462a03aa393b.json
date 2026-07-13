@@ -1,0 +1,105 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    resolved AS MATERIALIZED (\n                        SELECT\n                            aliases.alias_id AS public_model,\n                            aliases.desired_build AS concrete_model\n                        FROM public.model_aliases AS aliases\n                        WHERE aliases.alias_id = $3\n                          AND aliases.active\n                          AND aliases.desired_build <> ''\n                        UNION ALL\n                        SELECT registry.id, registry.id\n                        FROM public.model_registry AS registry\n                        WHERE registry.id = $3\n                          AND NOT EXISTS (\n                              SELECT 1\n                              FROM public.model_aliases\n                              WHERE alias_id = $3 AND active\n                          )\n                    ),\n                    price AS MATERIALIZED (\n                        SELECT\n                            candidates.input_price,\n                            candidates.output_price,\n                            candidates.pricing_version\n                        FROM (\n                            SELECT\n                                prices.input_price,\n                                prices.output_price,\n                                prices.revision AS pricing_version,\n                                0 AS priority\n                            FROM public.model_prices AS prices\n                            JOIN resolved\n                              ON resolved.concrete_model = prices.model\n                            WHERE prices.account_id = 'platform'\n                              AND prices.input_price > 0\n                              AND prices.output_price > 0\n                            UNION ALL\n                            SELECT $4::BIGINT, $5::BIGINT, 1::BIGINT, 1\n                        ) AS candidates\n                        ORDER BY candidates.priority\n                        LIMIT 1\n                    )\n                    SELECT\n                        resolved.public_model,\n                        resolved.concrete_model,\n                        versions.version AS model_version,\n                        price.pricing_version,\n                        registry.max_context_length::BIGINT\n                            AS maximum_context_tokens,\n                        registry.max_output_length::BIGINT\n                            AS maximum_output_tokens,\n                        price.input_price,\n                        price.output_price,\n                        registry.capabilities,\n                        registry.runtime_parameters\n                    FROM authority\n                    CROSS JOIN resolved\n                    JOIN public.model_registry AS registry\n                      ON registry.id = resolved.concrete_model\n                    JOIN public.model_active_versions AS active\n                      ON active.model_id = registry.id\n                    JOIN public.model_versions AS versions\n                      ON versions.id = active.model_version_id\n                    CROSS JOIN price\n                    WHERE registry.status IN ('active', 'beta')\n                      AND versions.status = 'ready'\n                      AND versions.id > 0\n                      AND registry.max_context_length > 0\n                      AND registry.max_output_length > 0\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "public_model",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "concrete_model",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "model_version",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "model_versions",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "pricing_version",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "maximum_context_tokens",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "maximum_output_tokens",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "input_price",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "output_price",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "capabilities",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "model_registry",
+            "name": "capabilities"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "runtime_parameters",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "model_registry",
+            "name": "runtime_parameters"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      false
+    ]
+  },
+  "hash": "fda5bcd6aeb2be6012ec05c5fdb74b92225f5fc8e4a44887db67462a03aa393b"
+}

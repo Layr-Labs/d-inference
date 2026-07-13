@@ -7,10 +7,10 @@
 -- the coordinator from ever binding :8080 — a production outage. Production has
 -- zero duplicate job_ids, so it was also doing no useful work.
 --
--- It now lives here as a MANUAL job. The coordinator never dedupes at boot; it
--- only verifies the duplicate count and, if zero, builds the partial unique index
--- CONCURRENTLY (see ensureProviderEarningsJobIndex in postgres.go). Run this ONLY
--- if startup reports duplicate job_id groups blocking idx_provider_earnings_job.
+-- It now lives here as a MANUAL job. The coordinator never dedupes at boot.
+-- Versioned migration 000002 verifies the duplicate count and, if zero, builds
+-- the partial unique index CONCURRENTLY. Run this ONLY if the migration command
+-- reports duplicate job_id groups blocking idx_provider_earnings_job.
 --
 -- Run it OUT OF BAND (psql against the DB, off the serving startup path), ideally
 -- in a maintenance window, NOT during a coordinator deploy.

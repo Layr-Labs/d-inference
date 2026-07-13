@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    account AS MATERIALIZED (\n                        SELECT balances.*\n                        FROM public.balances AS balances\n                        WHERE balances.account_id = $3\n                          AND balances.balance_micro_usd >= $4\n                          AND balances.withdrawable_micro_usd >= $4\n                          AND balances.withdrawable_micro_usd\n                              <= balances.balance_micro_usd\n                        FOR UPDATE\n                    ),\n                    gate AS MATERIALIZED (\n                        SELECT account.*\n                        FROM authority\n                        CROSS JOIN account\n                        WHERE jsonb_typeof($13::JSONB) = 'object'\n                    ),\n                    withdrawal_insert AS (\n                        INSERT INTO public.stripe_withdrawals (\n                            id,\n                            account_id,\n                            stripe_account_id,\n                            amount_micro_usd,\n                            fee_micro_usd,\n                            net_micro_usd,\n                            method,\n                            status,\n                            idempotency_key,\n                            provenance\n                        )\n                        SELECT\n                            $5,\n                            gate.account_id,\n                            $6,\n                            $4,\n                            $7,\n                            $8,\n                            $9,\n                            'pending',\n                            $16,\n                            $13\n                        FROM gate\n                        ON CONFLICT DO NOTHING\n                        RETURNING id, account_id\n                    ),\n                    operation_insert AS (\n                        INSERT INTO rust_coord.financial_operations (\n                            operation_id,\n                            operation_key,\n                            operation_digest,\n                            kind,\n                            status,\n                            account_id,\n                            amount_total_micro_usd,\n                            amount_withdrawable_micro_usd,\n                            result,\n                            owner_epoch,\n                            version,\n                            completed_at\n                        )\n                        SELECT\n                            $10,\n                            $11,\n                            $12,\n                            'withdrawal_intent',\n                            'applied',\n                            withdrawal_insert.account_id,\n                            $4,\n                            $4,\n                            jsonb_build_object(\n                                'withdrawal_id', $5,\n                                'status', 'pending',\n                                'refunded', FALSE,\n                                'manual_review', FALSE\n                            ),\n                            $2,\n                            2,\n                            NOW()\n                        FROM withdrawal_insert\n                        RETURNING operation_id\n                    ),\n                    balance_update AS (\n                        UPDATE public.balances AS balances\n                        SET\n                            balance_micro_usd = balances.balance_micro_usd - $4,\n                            withdrawable_micro_usd =\n                                balances.withdrawable_micro_usd - $4,\n                            updated_at = NOW()\n                        FROM withdrawal_insert, operation_insert\n                        WHERE balances.account_id = withdrawal_insert.account_id\n                        RETURNING balances.balance_micro_usd\n                    ),\n                    ledger_insert AS (\n                        INSERT INTO public.ledger_entries (\n                            account_id,\n                            entry_type,\n                            amount_micro_usd,\n                            balance_after,\n                            reference\n                        )\n                        SELECT\n                            withdrawal_insert.account_id,\n                            'stripe_payout',\n                            -$4::BIGINT,\n                            balance_update.balance_micro_usd,\n                            'stripe_withdraw:' || $5\n                        FROM withdrawal_insert, balance_update\n                        RETURNING id\n                    ),\n                    outbox_insert AS (\n                        INSERT INTO rust_coord.outbox (\n                            outbox_id,\n                            operation_key,\n                            payload_digest,\n                            kind,\n                            status,\n                            financial_operation_id,\n                            payload,\n                            owner_epoch\n                        )\n                        SELECT\n                            $14,\n                            'withdrawal-call:' || $5,\n                            $15,\n                            'external_call',\n                            'pending',\n                            operation_insert.operation_id,\n                            $13,\n                            $2\n                        FROM operation_insert, ledger_insert\n                        RETURNING outbox_id\n                    )\n                    SELECT\n                        $5::TEXT AS withdrawal_id,\n                        'pending'::TEXT AS status,\n                        FALSE AS refunded,\n                        FALSE AS manual_review\n                    FROM operation_insert\n                    CROSS JOIN outbox_insert\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "withdrawal_id",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "refunded",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "manual_review",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Jsonb",
+        "Uuid",
+        "Bytea",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "0ee6e6ccb099debc6bacd3b94f3e6b16206633f8a5f76785bb1e16b5b83ae627"
+}

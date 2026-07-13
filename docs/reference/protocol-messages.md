@@ -11,6 +11,30 @@ The provider WebSocket is mounted at `GET /ws/provider`. All messages are JSON w
 
 Unknown provider→coordinator types are rejected by [`ProviderMessage.UnmarshalJSON`](../../coordinator/protocol/messages.go).
 
+## Rust pilot protocol v2 attempt reconciliation
+
+The pre-production Rust pilot negotiates a separate v2 control surface defined
+in [`coordinator-rs/crates/protocol/src/v2/control.rs`](../../coordinator-rs/crates/protocol/src/v2/control.rs)
+and mirrored by
+[`provider-swift/Sources/ProviderCore/Protocol/V2Control.swift`](../../provider-swift/Sources/ProviderCore/Protocol/V2Control.swift).
+The `attempt_reconciliation` capability gates both messages below.
+
+| Direction | Type | Fields | Contract |
+|---|---|---|---|
+| Coordinator → provider | `query_attempt` | Complete flattened `AttemptIdentity` | Queries one exact historical provider/process/session/request/reservation/attempt/lease identity. |
+| Provider → coordinator | `attempt_status` | Complete flattened `AttemptIdentity`, `state`, optional `terminal_digest` | `state` is `unknown`, `prepared`, `started`, or `terminal`. `terminal_digest` is required only for `terminal`. |
+
+The provider derives status from its durable start, terminal, and abort
+journals before consulting a current prepared binding
+([`V2PreparedAttemptCoordinator.attemptStatus`](../../provider-swift/Sources/ProviderCore/Inference/V2PreparedAttemptCoordinator.swift)).
+Only a currently reserved lease may report `prepared`. Recovery may resend
+`start` with that historical identity after a socket reconnect only when the
+stable provider and process generation are unchanged; a restarted process may
+replay terminal knowledge but cannot receive that Start resend. The matching
+historical `start_ack` is accepted into the Rust durable recovery path
+([`provider/reader.rs`](../../coordinator-rs/crates/server/src/provider/reader.rs),
+[`pilot/provider.rs`](../../coordinator-rs/crates/server/src/pilot/provider.rs)).
+
 ## Provider → Coordinator messages
 
 ### `register`
@@ -281,7 +305,8 @@ Go: [`ModelInfo`](../../coordinator/protocol/messages.go); Swift: `ModelInfo`.
 | `is_vision` | bool | Only emitted when `true`; pre-0.6.0 providers omit |
 | `template_render_ok` | bool / null | `false` excludes provider from tool requests; `null` omitted |
 
-Swift's `ModelInfo` additionally carries `estimated_memory_gb` and `parameters` for local use; they are not sent to the coordinator.
+Swift's `ModelInfo` also emits `estimated_memory_gb` and may emit `parameters`.
+The Go v1 decoder intentionally ignores those additive fields.
 
 ### `BackendCapacity`
 

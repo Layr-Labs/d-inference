@@ -6,9 +6,6 @@ target/
 
 .next/
 
-# Rust
-Cargo.lock
-
 # Go
 coordinator/bin/
 
@@ -88,6 +85,9 @@ coordinator/internal/e2e/testdata/decrypt/target/
 coordinator/coordinator
 coordinator/eigeninference-coordinator-linux
 docs/RUNBOOK.md
+
+# Generated load-test binaries, state, logs, and reports
+/artifacts/pilot-load/
 
 # also match a .build symlink (not just the dir)
 .build

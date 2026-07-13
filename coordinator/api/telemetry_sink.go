@@ -45,6 +45,9 @@ type telemetrySink struct {
 	done    chan struct{}
 	logger  *slog.Logger
 	dropped atomic.Int64
+	workers atomic.Int64
+	active  atomic.Int64
+	closed  atomic.Bool
 	// closeOnce makes close idempotent: done is closed exactly once even when
 	// close is reached from more than one shutdown path.
 	closeOnce sync.Once
@@ -66,6 +69,7 @@ func newTelemetrySink(logger *slog.Logger, capacity, workers int) *telemetrySink
 		logger: logger,
 	}
 	for i := 0; i < workers; i++ {
+		t.workers.Add(1)
 		go t.worker()
 	}
 	return t
@@ -75,10 +79,20 @@ func newTelemetrySink(logger *slog.Logger, capacity, workers int) *telemetrySink
 // long-lived goroutine — it runs each task inline (inside a panic-safe wrapper)
 // and never spawns a goroutine per task.
 func (t *telemetrySink) worker() {
+	defer t.workers.Add(-1)
 	for {
 		select {
+		case <-t.done:
+			return
+		default:
+		}
+		select {
 		case fn := <-t.ch:
-			t.run(fn)
+			t.active.Add(1)
+			func() {
+				defer t.active.Add(-1)
+				t.run(fn)
+			}()
 		case <-t.done:
 			return
 		}
@@ -103,6 +117,9 @@ func (t *telemetrySink) submit(fn func()) bool {
 	if t == nil || fn == nil {
 		return false
 	}
+	if t.closed.Load() {
+		return false
+	}
 	select {
 	case t.ch <- fn:
 		return true
@@ -123,8 +140,26 @@ func (t *telemetrySink) close() {
 		return
 	}
 	t.closeOnce.Do(func() {
+		t.closed.Store(true)
 		close(t.done)
 	})
+}
+
+func (t *telemetrySink) workerCount() int64 {
+	if t == nil {
+		return 0
+	}
+	return t.workers.Load()
+}
+
+func (t *telemetrySink) outstandingCount() int {
+	if t == nil {
+		return 0
+	}
+	if t.closed.Load() {
+		return int(t.active.Load())
+	}
+	return len(t.ch) + int(t.active.Load())
 }
 
 // maybeLogDrop emits a throttled warning so operators notice sustained drops

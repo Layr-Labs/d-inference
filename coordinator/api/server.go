@@ -49,6 +49,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/eigeninference/d-inference/coordinator/telemetry"
+	"nhooyr.io/websocket"
 )
 
 // apiKeyCacheEntry stores the authenticated key record for a single raw API
@@ -194,8 +195,22 @@ type Server struct {
 	// Deliberately named to avoid collision with the provider-side drain concepts
 	// (protocol.ProviderDrainingForUpdate, registry.drainQueuedRequestsForModels):
 	// this is purely the coordinator's own HTTP-ingress drain. See drain.go.
-	httpInflight        atomic.Int64
-	coordinatorDraining atomic.Bool
+	httpInflight         atomic.Int64
+	mutationInflight     atomic.Int64
+	coordinatorDraining  atomic.Bool
+	processShuttingDown  atomic.Bool
+	providerSessionMu    sync.Mutex
+	providerSessions     sync.WaitGroup
+	providerSessionCount atomic.Int64
+	providerClosing      bool
+	providerConnections  map[*websocket.Conn]struct{}
+	backgroundMu         sync.Mutex
+	backgroundClosing    bool
+	backgroundTasks      sync.WaitGroup
+	backgroundTaskCount  atomic.Int64
+	handoffContext       context.Context
+	handoffCancel        context.CancelFunc
+	handoffOnce          sync.Once
 
 	// knownBinaryHashes is the set of accepted provider binary SHA-256 hashes.
 	// When binaryHashPolicyConfigured is true, providers whose binary hash is
@@ -282,6 +297,10 @@ type Server struct {
 	// mid-stream, so a late provider terminal can settle them (or the reservation
 	// is refunded on grace expiry). See settlement.go.
 	settlements *settlementHolder
+	// completions bounds terminal accounting and settlement concurrency. Its
+	// queue is lossless: provider readers backpressure rather than dropping
+	// financial work or spawning unbounded goroutines.
+	completions *completionWorkerPool
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
@@ -384,10 +403,6 @@ type Server struct {
 	// OpenRouter that fans out many end-users behind one key. When nil,
 	// service accounts bypass rate limiting entirely.
 	serviceRateLimiter *ratelimit.Limiter
-
-	// serviceReservations avoids hot-row pre-router ledger debits for trusted
-	// service accounts when enabled. Normal consumers still use ledger debits.
-	serviceReservations *serviceReservationManager
 
 	// consumerTokenLimiter / serviceTokenLimiter enforce per-account input
 	// (ITPM) and output (OTPM) token-per-minute limits on inference endpoints,
@@ -679,6 +694,7 @@ func setRequestRateLimitHeaders(w http.ResponseWriter, st ratelimit.Stat) {
 func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger *slog.Logger) *Server {
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
+	handoffContext, handoffCancel := context.WithCancel(context.Background())
 
 	s := &Server{
 		registry:             reg,
@@ -695,9 +711,12 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
+		completions:          newCompletionWorkerPool(logger, defaultCompletionCapacity, defaultCompletionWorkers),
 		zombieCanceller:      newZombieStreamCanceller(),
-		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		providerConnections:  make(map[*websocket.Conn]struct{}),
+		handoffContext:       handoffContext,
+		handoffCancel:        handoffCancel,
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -742,12 +761,139 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 	saferun.Go(s.logger, name, fn)
 }
 
-// Close releases background resources owned by the Server. Currently it stops
-// the routing-telemetry sink's worker pool. It is idempotent and never blocks on
-// in-flight telemetry writes, so it is safe to defer from main's shutdown path.
+// Close drains correctness-critical completion work before stopping the
+// best-effort routing-telemetry sink. It is idempotent.
+func (s *Server) BeginShutdown() {
+	s.processShuttingDown.Store(true)
+	s.providerSessionMu.Lock()
+	s.providerClosing = true
+	s.providerSessionMu.Unlock()
+	s.SetDraining(true)
+	s.CancelHandoffTasks()
+}
+
+// BeginHandoff establishes the irreversible deployment-handoff fence. New
+// mutations, providers, and background mutators are rejected before existing
+// provider sessions are closed. Completion and settlement workers deliberately
+// remain available so work admitted before the fence can reach a durable
+// terminal state.
+func (s *Server) BeginHandoff() {
+	if s == nil {
+		return
+	}
+	s.handoffOnce.Do(func() {
+		s.BeginShutdown()
+		s.FenceProviderSessions()
+	})
+}
+
+func (s *Server) StopCompletionProcessing() {
+	if s.completions != nil {
+		s.completions.stop()
+	}
+}
+
+func (s *Server) WaitForCompletionProcessing(ctx context.Context) bool {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.completions.outstandingCount() == 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return s.completions.outstandingCount() == 0
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) FenceProviderSessions() {
+	s.providerSessionMu.Lock()
+	s.providerClosing = true
+	connections := make([]*websocket.Conn, 0, len(s.providerConnections))
+	for connection := range s.providerConnections {
+		connections = append(connections, connection)
+	}
+	s.providerSessionMu.Unlock()
+	for _, connection := range connections {
+		_ = connection.CloseNow()
+	}
+	for _, providerID := range s.registry.ProviderIDs() {
+		s.registry.Disconnect(providerID)
+	}
+}
+
+func (s *Server) WaitForProviderSessions(ctx context.Context) bool {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if s.providerSessionCount.Load() == 0 {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return s.providerSessionCount.Load() == 0
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) FlushSettlementHolds() {
+	if s.settlements != nil {
+		s.settlements.close()
+	}
+}
+
+func (s *Server) FlushSettlementHoldsWithContext(ctx context.Context) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.FlushSettlementHolds()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
 func (s *Server) Close() {
+	s.BeginShutdown()
+	s.CancelHandoffTasks()
+	s.FenceProviderSessions()
+	providerCtx, providerCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	s.WaitForProviderSessions(providerCtx)
+	providerCancel()
+	completionCtx, completionCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	s.WaitForCompletionProcessing(completionCtx)
+	completionCancel()
+	s.StopCompletionProcessing()
+	waitForClose(5*time.Second, s.FlushSettlementHolds)
+	if s.completions != nil {
+		waitForClose(5*time.Second, s.completions.close)
+	}
 	if s.routeTelemetry != nil {
-		s.routeTelemetry.close()
+		waitForClose(5*time.Second, s.routeTelemetry.close)
+	}
+	s.stopBackgroundTasks()
+}
+
+func waitForClose(deadline time.Duration, closeFn func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() { _ = recover() }()
+		closeFn()
+	}()
+	timer := time.NewTimer(deadline)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
 	}
 }
 
@@ -1648,6 +1794,7 @@ func (s *Server) routes() {
 
 	// Health check — no auth required.
 	s.mux.HandleFunc("GET /health", s.handleHealth)
+	s.registerPilotCounterRoutes()
 
 	// Readiness probe — no auth required. Reports graceful-drain state so load
 	// balancers and the deploy script treat a draining coordinator as not-ready
@@ -1883,6 +2030,7 @@ func (s *Server) routes() {
 	// (admin key OR Privy admin). Registered before the /v1/ catch-all. Note:
 	// /readyz stays unauthenticated. See drain.go (DAR-327 Phase 1).
 	s.mux.HandleFunc("POST /v1/admin/drain", s.requireAuth(s.handleAdminDrain))
+	s.mux.HandleFunc("GET /v1/admin/quiescence", s.handleAdminQuiescence)
 
 	// Routing telemetry (admin-gated; metadata only — no prompt/response content).
 	// Browse as JSON or stream a CSV/NDJSON download for offline analysis.
@@ -1911,6 +2059,15 @@ func (s *Server) registerDefaultGauges() {
 			return 1
 		}
 		return 0
+	})
+	s.metrics.RegisterGauge("completion_queue_depth", func() float64 {
+		return float64(s.completions.depth())
+	})
+	s.metrics.RegisterGauge("completion_queue_capacity", func() float64 {
+		return float64(s.completions.capacity())
+	})
+	s.metrics.RegisterGauge("completion_workers_active", func() float64 {
+		return float64(s.completions.activeCount())
 	})
 }
 
@@ -2041,7 +2198,9 @@ func (s *Server) handleUnimplementedEndpoint(w http.ResponseWriter, r *http.Requ
 //
 // Recover must sit outside logging so a panic during logging doesn't leak.
 func (s *Server) Handler() http.Handler {
-	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(s.bodyLimitMiddleware(s.mux))))
+	return s.corsMiddleware(s.recoverMiddleware(s.loggingMiddleware(
+		s.shutdownMutationGate(s.bodyLimitMiddleware(s.mux)),
+	)))
 }
 
 // bodyLimitMiddleware caps every request body at maxRequestBodyBytes so an
@@ -2533,6 +2692,7 @@ func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 				"method:" + r.Method,
 				"path:" + pathLabel,
 				"status_code:" + statusStr,
+				"binary:go",
 			}
 			s.dd.Incr("http.requests", tags)
 			s.dd.Histogram("http.latency_ms", float64(dur.Milliseconds()), tags)

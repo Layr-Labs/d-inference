@@ -1,6 +1,8 @@
 package payments
 
 import (
+	"math"
+	"math/bits"
 	"strconv"
 	"strings"
 )
@@ -63,17 +65,23 @@ func OutputPricePerMillion(_ string) int64 {
 // job. Both input (prompt) and output (completion) tokens are billed.
 // A minimum charge of $0.0001 (100 micro-USD) applies to every request.
 func CalculateCost(model string, promptTokens, completionTokens int) int64 {
-	inputRate := InputPricePerMillion(model)
-	outputRate := OutputPricePerMillion(model)
+	return calculateCost(model, promptTokens, completionTokens, 0, 0, false, true)
+}
 
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
-
-	if cost < minimumChargeMicroUSD {
-		cost = minimumChargeMicroUSD
+func boundedTokenCost(tokens int, rate int64) int64 {
+	if tokens <= 0 || rate <= 0 {
+		return 0
 	}
-	return cost
+	high, low := bits.Mul64(uint64(tokens), uint64(rate))
+	const divisor = uint64(1_000_000)
+	if high >= divisor {
+		return math.MaxInt64
+	}
+	quotient, _ := bits.Div64(high, low, divisor)
+	if quotient > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(quotient)
 }
 
 // CalculateCostWithOverrides is like CalculateCost but uses custom per-account
@@ -102,9 +110,14 @@ func calculateCost(model string, promptTokens, completionTokens int, customInput
 		outputRate = OutputPricePerMillion(model)
 	}
 
-	inputCost := int64(promptTokens) * inputRate / 1_000_000
-	outputCost := int64(completionTokens) * outputRate / 1_000_000
-	cost := inputCost + outputCost
+	inputCost := boundedTokenCost(promptTokens, inputRate)
+	outputCost := boundedTokenCost(completionTokens, outputRate)
+	cost := inputCost
+	if outputCost > math.MaxInt64-cost {
+		cost = math.MaxInt64
+	} else {
+		cost += outputCost
+	}
 
 	if applyMinimum {
 		if cost < minimumChargeMicroUSD {
@@ -153,13 +166,25 @@ func ProviderPayout(totalCost int64) int64 {
 // PlatformFeeWithPercent returns Darkbloom's routing fee using a per-account
 // override when provided (nil = global default). A 0% override yields no fee.
 func PlatformFeeWithPercent(totalCost int64, feePercent *int64) int64 {
-	return totalCost * resolveFeePercent(feePercent) / 100
+	return PercentOf(totalCost, resolveFeePercent(feePercent))
 }
 
 // ProviderPayoutWithPercent returns the amount the provider receives after the
 // (possibly overridden) platform fee.
 func ProviderPayoutWithPercent(totalCost int64, feePercent *int64) int64 {
 	return totalCost - PlatformFeeWithPercent(totalCost, feePercent)
+}
+
+// PercentOf computes a bounded integer percentage without overflowing the
+// intermediate multiplication.
+func PercentOf(total, percent int64) int64 {
+	if total <= 0 || percent <= 0 {
+		return 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return (total/100)*percent + (total%100)*percent/100
 }
 
 // FormatPerTokenUSD converts a price expressed in micro-USD per 1,000,000

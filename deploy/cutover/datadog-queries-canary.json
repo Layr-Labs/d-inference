@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "queries": [
+    {
+      "name": "availability_5xx_ratio",
+      "query": "sum:d_inference.rust.http.requests{service:d-inference-coordinator,env:canary,status_class:5xx}.as_count().rollup(sum,900) / sum:d_inference.rust.http.requests{service:d-inference-coordinator,env:canary}.as_count().rollup(sum,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "sum",
+      "rollup_occurrences": 2,
+      "reducer": "max"
+    },
+    {
+      "name": "ownership_healthy",
+      "query": "min:d_inference.rust.ownership.healthy{service:d-inference-coordinator,env:canary}.rollup(min,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "min",
+      "reducer": "min"
+    },
+    {
+      "name": "migration_checksum_valid",
+      "query": "min:d_inference.rust.schema.checksum_valid{service:d-inference-coordinator,env:canary}.rollup(min,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "min",
+      "reducer": "min"
+    },
+    {
+      "name": "external_unknown",
+      "query": "sum:d_inference.rust.billing.external_unknown{service:d-inference-coordinator,env:canary}.as_count().rollup(sum,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "sum",
+      "reducer": "max"
+    },
+    {
+      "name": "review_pending",
+      "query": "max:d_inference.rust.jobs.state{service:d-inference-coordinator,env:canary,kind:inference_jobs,state:review_pending}.rollup(max,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "max",
+      "reducer": "max"
+    },
+    {
+      "name": "pending_outbox",
+      "query": "max:d_inference.rust.outbox.state{service:d-inference-coordinator,env:canary,state IN (pending,processing)}.rollup(max,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "max",
+      "reducer": "max"
+    },
+    {
+      "name": "pending_fees",
+      "query": "max:d_inference.rust.fee.state{service:d-inference-coordinator,env:canary,state IN (pending,processing,failed,running)}.rollup(max,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "max",
+      "reducer": "max"
+    },
+    {
+      "name": "request_count",
+      "query": "sum:d_inference.rust.http.requests{service:d-inference-coordinator,env:canary}.as_count().rollup(sum,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "sum",
+      "reducer": "sum"
+    },
+    {
+      "name": "latency_p95_ms",
+      "query": "p95:d_inference.rust.http.stage.duration_ms{service:d-inference-coordinator,env:canary,stage:total}.rollup(max,900)",
+      "window_seconds": 900,
+      "bucket_seconds": 900,
+      "rollup_aggregator": "max",
+      "reducer": "max"
+    }
+  ]
+}

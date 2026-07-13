@@ -14,6 +14,16 @@ public enum ProviderMessage: Sendable, Equatable {
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
+    case prepared(V2Prepared)
+    case startAck(V2StartAck)
+    case attemptStatus(V2AttemptStatus)
+    case abortAck(V2AbortAck)
+    case cancelAck(V2CancelAck)
+    case providerTerminal(V2ProviderTerminal)
+    case structuredError(V2StructuredError)
+    case modelReady(V2ModelReady)
+    case modelGone(V2ModelGone)
+    case replayFenceAck(V2ReplayFenceAck)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -31,6 +41,8 @@ public enum ProviderMessage: Sendable, Equatable {
         public var runtimeHash: String?
         public var templateHashes: [String: String]
         public var privacyCapabilities: PrivacyCapabilities?
+        public var protocolCapabilities: ProtocolCapabilities?
+        public var providerProcessGeneration: ProviderProcessGenerationID?
         /// When true, this machine serves only its owner's self-route requests,
         /// never the public fleet. Mirrors RegisterMessage.PrivateOnly (Go).
         public var privateOnly: Bool
@@ -56,6 +68,8 @@ public enum ProviderMessage: Sendable, Equatable {
             runtimeHash: String? = nil,
             templateHashes: [String: String] = [:],
             privacyCapabilities: PrivacyCapabilities? = nil,
+            protocolCapabilities: ProtocolCapabilities? = nil,
+            providerProcessGeneration: ProviderProcessGenerationID? = nil,
             privateOnly: Bool = false,
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil
@@ -75,6 +89,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.runtimeHash = runtimeHash
             self.templateHashes = templateHashes
             self.privacyCapabilities = privacyCapabilities
+            self.protocolCapabilities = protocolCapabilities
+            self.providerProcessGeneration = providerProcessGeneration
             self.privateOnly = privateOnly
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
@@ -88,6 +104,11 @@ public enum ProviderMessage: Sendable, Equatable {
         public var stats: ProviderStats
         public var systemMetrics: SystemMetrics
         public var backendCapacity: BackendCapacity?
+        /// Monotonic process-local revision for the complete warmModels
+        /// snapshot. Model lifecycle events emitted for one transition carry
+        /// this exact revision. Nil for protocol-v1 sessions so their heartbeat
+        /// wire shape remains unchanged.
+        public var modelStateRevision: UInt64?
         /// APNs code-identity attestation (W5 Fix 2). Carries the device token (and
         /// its APNs environment) in the heartbeat so a coordinator can re-arm a
         /// code-identity challenge WITHOUT a reconnect when the token arrived after
@@ -105,6 +126,7 @@ public enum ProviderMessage: Sendable, Equatable {
             stats: ProviderStats,
             systemMetrics: SystemMetrics,
             backendCapacity: BackendCapacity? = nil,
+            modelStateRevision: UInt64? = nil,
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil
         ) {
@@ -114,6 +136,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.stats = stats
             self.systemMetrics = systemMetrics
             self.backendCapacity = backendCapacity
+            self.modelStateRevision = modelStateRevision
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
         }
@@ -142,7 +165,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public var seSignature: String?
         public var responseHash: String?
 
-        public init(requestId: String, usage: UsageInfo, seSignature: String? = nil, responseHash: String? = nil) {
+        public init(
+            requestId: String, usage: UsageInfo, seSignature: String? = nil, responseHash: String? = nil
+        ) {
             self.requestId = requestId
             self.usage = usage
             self.seSignature = seSignature
@@ -318,6 +343,19 @@ extension ProviderMessage: Codable {
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
+        case prepared
+        case startAck = "start_ack"
+        case started
+        case attemptStatus = "attempt_status"
+        case abortAck = "abort_ack"
+        case aborted
+        case cancelAck = "cancel_ack"
+        case cancelled
+        case providerTerminal = "provider_terminal"
+        case structuredError = "structured_error"
+        case modelReady = "model_ready"
+        case modelGone = "model_gone"
+        case replayFenceAck = "replay_fence_ack"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -335,6 +373,8 @@ extension ProviderMessage: Codable {
         case runtimeHash = "runtime_hash"
         case templateHashes = "template_hashes"
         case privacyCapabilities = "privacy_capabilities"
+        case protocolCapabilities = "protocol_capabilities"
+        case providerProcessGeneration = "provider_process_generation"
         case privateOnly = "private_only"
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
@@ -345,6 +385,7 @@ extension ProviderMessage: Codable {
         case stats
         case systemMetrics = "system_metrics"
         case backendCapacity = "backend_capacity"
+        case modelStateRevision = "model_state_revision"
         // Common
         case requestId = "request_id"
         // InferenceResponseChunk
@@ -399,6 +440,9 @@ extension ProviderMessage: Codable {
                 try container.encode(r.templateHashes, forKey: .templateHashes)
             }
             try container.encodeIfPresent(r.privacyCapabilities, forKey: .privacyCapabilities)
+            try container.encodeIfPresent(r.protocolCapabilities, forKey: .protocolCapabilities)
+            try container.encodeIfPresent(
+                r.providerProcessGeneration, forKey: .providerProcessGeneration)
             if r.privateOnly {
                 try container.encode(true, forKey: .privateOnly)
             }
@@ -415,6 +459,10 @@ extension ProviderMessage: Codable {
             try container.encode(h.stats, forKey: .stats)
             try container.encode(h.systemMetrics, forKey: .systemMetrics)
             try container.encodeIfPresent(h.backendCapacity, forKey: .backendCapacity)
+            try container.encodeIfPresent(
+                h.modelStateRevision,
+                forKey: .modelStateRevision
+            )
             // omitempty parity with Go: nil token/env emit nothing (steady state).
             try container.encodeIfPresent(h.apnsDeviceToken, forKey: .apnsDeviceToken)
             try container.encodeIfPresent(h.apnsEnvironment, forKey: .apnsEnvironment)
@@ -493,6 +541,27 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.modelsUpdate, forKey: .type)
             // Reuse the ModelInfo encoding shared with `register`'s models[].
             try container.encode(u.models, forKey: .models)
+
+        case .prepared(let message):
+            try V2ProviderControlMessage.prepared(message).encode(to: encoder)
+        case .startAck(let message):
+            try V2ProviderControlMessage.startAck(message).encode(to: encoder)
+        case .attemptStatus(let message):
+            try V2ProviderControlMessage.attemptStatus(message).encode(to: encoder)
+        case .abortAck(let message):
+            try V2ProviderControlMessage.abortAck(message).encode(to: encoder)
+        case .cancelAck(let message):
+            try V2ProviderControlMessage.cancelAck(message).encode(to: encoder)
+        case .providerTerminal(let message):
+            try V2ProviderControlMessage.terminal(message).encode(to: encoder)
+        case .structuredError(let message):
+            try V2ProviderControlMessage.structuredError(message).encode(to: encoder)
+        case .modelReady(let message):
+            try V2ProviderControlMessage.modelReady(message).encode(to: encoder)
+        case .modelGone(let message):
+            try V2ProviderControlMessage.modelGone(message).encode(to: encoder)
+        case .replayFenceAck(let message):
+            try V2ProviderControlMessage.replayFenceAck(message).encode(to: encoder)
         }
     }
 
@@ -502,13 +571,15 @@ extension ProviderMessage: Codable {
 
         switch type {
         case .register:
-            self = .register(Register(
+            self = .register(
+                Register(
                 hardware: try container.decode(HardwareInfo.self, forKey: .hardware),
                 models: try container.decode([ModelInfo].self, forKey: .models),
                 backend: try container.decode(String.self, forKey: .backend),
                 version: try container.decodeIfPresent(String.self, forKey: .version),
                 publicKey: try container.decodeIfPresent(String.self, forKey: .publicKey),
-                encryptedResponseChunks: try container.decodeIfPresent(Bool.self, forKey: .encryptedResponseChunks) ?? false,
+                    encryptedResponseChunks: try container.decodeIfPresent(
+                        Bool.self, forKey: .encryptedResponseChunks) ?? false,
                 walletAddress: try container.decodeIfPresent(String.self, forKey: .walletAddress),
                 attestation: try container.decodeIfPresent(RawJSON.self, forKey: .attestation),
                 prefillTps: try container.decodeIfPresent(Double.self, forKey: .prefillTps),
@@ -516,39 +587,53 @@ extension ProviderMessage: Codable {
                 authToken: try container.decodeIfPresent(String.self, forKey: .authToken),
                 pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
-                templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
-                privacyCapabilities: try container.decodeIfPresent(PrivacyCapabilities.self, forKey: .privacyCapabilities),
+                    templateHashes: try container.decodeIfPresent(
+                        [String: String].self, forKey: .templateHashes) ?? [:],
+                    privacyCapabilities: try container.decodeIfPresent(
+                        PrivacyCapabilities.self, forKey: .privacyCapabilities),
+                    protocolCapabilities: try container.decodeIfPresent(
+                        ProtocolCapabilities.self, forKey: .protocolCapabilities),
+                    providerProcessGeneration: try container.decodeIfPresent(
+                        ProviderProcessGenerationID.self, forKey: .providerProcessGeneration),
                 privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false,
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
                 apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment)
             ))
 
         case .heartbeat:
-            self = .heartbeat(Heartbeat(
+            self = .heartbeat(
+                Heartbeat(
                 status: try container.decode(ProviderStatus.self, forKey: .status),
                 activeModel: try container.decodeIfPresent(String.self, forKey: .activeModel),
                 warmModels: try container.decodeIfPresent([String].self, forKey: .warmModels) ?? [],
                 stats: try container.decode(ProviderStats.self, forKey: .stats),
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
-                backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity),
+                    backendCapacity: try container.decodeIfPresent(
+                        BackendCapacity.self, forKey: .backendCapacity),
+                    modelStateRevision: try container.decodeIfPresent(
+                        UInt64.self, forKey: .modelStateRevision),
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
                 apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment)
             ))
 
         case .inferenceAccepted:
-            self = .inferenceAccepted(InferenceAccepted(
+            self = .inferenceAccepted(
+                InferenceAccepted(
                 requestId: try container.decode(String.self, forKey: .requestId)
             ))
 
         case .inferenceResponseChunk:
-            self = .inferenceResponseChunk(InferenceResponseChunk(
+            self = .inferenceResponseChunk(
+                InferenceResponseChunk(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 data: try container.decodeIfPresent(String.self, forKey: .data) ?? "",
-                encryptedData: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedData)
+                    encryptedData: try container.decodeIfPresent(
+                        EncryptedPayload.self, forKey: .encryptedData)
             ))
 
         case .inferenceComplete:
-            self = .inferenceComplete(InferenceComplete(
+            self = .inferenceComplete(
+                InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
@@ -556,7 +641,8 @@ extension ProviderMessage: Codable {
             ))
 
         case .inferenceError:
-            self = .inferenceError(InferenceError(
+            self = .inferenceError(
+                InferenceError(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 error: try container.decode(String.self, forKey: .error),
                 statusCode: try container.decode(UInt16.self, forKey: .statusCode),
@@ -564,7 +650,8 @@ extension ProviderMessage: Codable {
             ))
 
         case .attestationResponse:
-            self = .attestationResponse(AttestationResponse(
+            self = .attestationResponse(
+                AttestationResponse(
                 nonce: try container.decode(String.self, forKey: .nonce),
                 signature: try container.decode(String.self, forKey: .signature),
                 statusSignature: try container.decodeIfPresent(String.self, forKey: .statusSignature),
@@ -576,12 +663,15 @@ extension ProviderMessage: Codable {
                 activeModelHash: try container.decodeIfPresent(String.self, forKey: .activeModelHash),
                 pythonHash: try container.decodeIfPresent(String.self, forKey: .pythonHash),
                 runtimeHash: try container.decodeIfPresent(String.self, forKey: .runtimeHash),
-                templateHashes: try container.decodeIfPresent([String: String].self, forKey: .templateHashes) ?? [:],
-                modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes) ?? [:]
+                    templateHashes: try container.decodeIfPresent(
+                        [String: String].self, forKey: .templateHashes) ?? [:],
+                    modelHashes: try container.decodeIfPresent([String: String].self, forKey: .modelHashes)
+                        ?? [:]
             ))
 
         case .codeAttestationResponse:
-            self = .codeAttestationResponse(CodeAttestationResponse(
+            self = .codeAttestationResponse(
+                CodeAttestationResponse(
                 nonce: try container.decode(String.self, forKey: .nonce),
                 signature: try container.decode(String.self, forKey: .signature)
             ))
@@ -595,7 +685,8 @@ extension ProviderMessage: Codable {
                     debugDescription: "unknown load_model_status value: \(raw)"
                 )
             }
-            self = .loadModelStatus(LoadModelStatus(
+            self = .loadModelStatus(
+                LoadModelStatus(
                 modelId: try container.decode(String.self, forKey: .modelId),
                 status: status,
                 error: try container.decodeIfPresent(String.self, forKey: .error)
@@ -610,7 +701,8 @@ extension ProviderMessage: Codable {
                     debugDescription: "unknown prefetch_model_status value: \(raw)"
                 )
             }
-            self = .prefetchModelStatus(PrefetchModelStatus(
+            self = .prefetchModelStatus(
+                PrefetchModelStatus(
                 modelId: try container.decode(String.self, forKey: .modelId),
                 status: status,
                 bytesDone: try container.decodeIfPresent(Int64.self, forKey: .bytesDone) ?? 0,
@@ -619,9 +711,30 @@ extension ProviderMessage: Codable {
             ))
 
         case .modelsUpdate:
-            self = .modelsUpdate(ModelsUpdate(
+            self = .modelsUpdate(
+                ModelsUpdate(
                 models: try container.decode([ModelInfo].self, forKey: .models)
             ))
+        case .prepared:
+            self = .prepared(try V2Prepared(from: decoder))
+        case .startAck, .started:
+            self = .startAck(try V2StartAck(from: decoder))
+        case .attemptStatus:
+            self = .attemptStatus(try V2AttemptStatus(from: decoder))
+        case .abortAck, .aborted:
+            self = .abortAck(try V2AbortAck(from: decoder))
+        case .cancelAck, .cancelled:
+            self = .cancelAck(try V2CancelAck(from: decoder))
+        case .providerTerminal:
+            self = .providerTerminal(try V2ProviderTerminal(from: decoder))
+        case .structuredError:
+            self = .structuredError(try V2StructuredError(from: decoder))
+        case .modelReady:
+            self = .modelReady(try V2ModelReady(from: decoder))
+        case .modelGone:
+            self = .modelGone(try V2ModelGone(from: decoder))
+        case .replayFenceAck:
+            self = .replayFenceAck(try V2ReplayFenceAck(from: decoder))
         }
     }
 }
@@ -637,13 +750,22 @@ public enum CoordinatorMessage: Sendable, Equatable {
     case prefetchModel(PrefetchModel)
     case desiredModels(DesiredModels)
     case trustStatus(TrustStatus)
+    case registerAck(V2RegisterAcknowledgement)
+    case prepare(V2Prepare)
+    case start(V2Start)
+    case queryAttempt(V2QueryAttempt)
+    case abort(V2Abort)
+    case v2Cancel(V2Cancel)
+    case terminalAck(V2TerminalAck)
+    case coordinatorReplayFence(CoordinatorReplayFenceProof)
 
     public struct InferenceRequest: Sendable, Equatable {
         public var requestId: String
         public var body: JSONValue
         public var encryptedBody: EncryptedPayload?
 
-        public init(requestId: String, body: JSONValue = .null, encryptedBody: EncryptedPayload? = nil) {
+        public init(requestId: String, body: JSONValue = .null, encryptedBody: EncryptedPayload? = nil)
+        {
             self.requestId = requestId
             self.body = body
             self.encryptedBody = encryptedBody
@@ -751,6 +873,13 @@ extension CoordinatorMessage: Codable {
         case prefetchModel = "prefetch_model"
         case desiredModels = "desired_models"
         case trustStatus = "trust_status"
+        case registerAck = "register_ack"
+        case prepare
+        case start
+        case queryAttempt = "query_attempt"
+        case abort
+        case terminalAck = "terminal_ack"
+        case coordinatorReplayFence = "coordinator_replay_fence"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -765,6 +894,12 @@ extension CoordinatorMessage: Codable {
         case trustLevel = "trust_level"
         case status, reason
         case models
+        case protocolCapabilities = "protocol_capabilities"
+        case providerId = "provider_id"
+        case providerProcessGeneration = "provider_process_generation"
+        case sessionEpoch = "session_epoch"
+        case coordinatorReplayFencePublicKey =
+            "coordinator_replay_fence_public_key"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -816,6 +951,36 @@ extension CoordinatorMessage: Codable {
             if !t.reason.isEmpty {
                 try container.encode(t.reason, forKey: .reason)
             }
+
+        case .registerAck(let acknowledgement):
+            try container.encode(TypeValue.registerAck, forKey: .type)
+            try container.encode(acknowledgement.providerID, forKey: .providerId)
+            try container.encode(
+                acknowledgement.providerProcessGeneration,
+                forKey: .providerProcessGeneration
+            )
+            try container.encode(acknowledgement.sessionEpoch, forKey: .sessionEpoch)
+            try container.encodeIfPresent(
+                acknowledgement.protocolCapabilities, forKey: .protocolCapabilities)
+            try container.encodeIfPresent(
+                acknowledgement.coordinatorReplayFencePublicKey,
+                forKey: .coordinatorReplayFencePublicKey
+            )
+        case .prepare(let message):
+            try V2CoordinatorControlMessage.prepare(message).encode(to: encoder)
+        case .start(let message):
+            try V2CoordinatorControlMessage.start(message).encode(to: encoder)
+        case .queryAttempt(let message):
+            try V2CoordinatorControlMessage.queryAttempt(message).encode(to: encoder)
+        case .abort(let message):
+            try V2CoordinatorControlMessage.abort(message).encode(to: encoder)
+        case .v2Cancel(let message):
+            try V2CoordinatorControlMessage.cancel(message).encode(to: encoder)
+        case .terminalAck(let message):
+            try V2CoordinatorControlMessage.terminalAck(message).encode(to: encoder)
+        case .coordinatorReplayFence(let proof):
+            try V2CoordinatorControlMessage.coordinatorReplayFence(proof).encode(
+                to: encoder)
         }
     }
 
@@ -825,51 +990,92 @@ extension CoordinatorMessage: Codable {
 
         switch type {
         case .inferenceRequest:
-            self = .inferenceRequest(InferenceRequest(
+            self = .inferenceRequest(
+                InferenceRequest(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 body: try container.decodeIfPresent(JSONValue.self, forKey: .body) ?? .null,
-                encryptedBody: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedBody)
+                    encryptedBody: try container.decodeIfPresent(
+                        EncryptedPayload.self, forKey: .encryptedBody)
             ))
 
         case .cancel:
-            self = .cancel(Cancel(
+            // `cancel` is shared by v1 and v2. The plain Codable path is always
+            // v1 so additive fields cannot silently upgrade a legacy command.
+            // A negotiated client explicitly decodes V2Cancel before entering
+            // this initializer (ProviderProtocolCodec).
+            self = .cancel(
+                Cancel(
                 requestId: try container.decode(String.self, forKey: .requestId)
             ))
 
         case .attestationChallenge:
-            self = .attestationChallenge(AttestationChallenge(
+            self = .attestationChallenge(
+                AttestationChallenge(
                 nonce: try container.decode(String.self, forKey: .nonce),
                 timestamp: try container.decode(String.self, forKey: .timestamp)
             ))
 
         case .runtimeStatus:
-            self = .runtimeStatus(RuntimeStatus(
+            self = .runtimeStatus(
+                RuntimeStatus(
                 verified: try container.decode(Bool.self, forKey: .verified),
-                mismatches: try container.decodeIfPresent([RuntimeMismatch].self, forKey: .mismatches) ?? []
+                    mismatches: try container.decodeIfPresent([RuntimeMismatch].self, forKey: .mismatches)
+                        ?? []
             ))
 
         case .loadModel:
-            self = .loadModel(LoadModel(
+            self = .loadModel(
+                LoadModel(
                 modelId: try container.decode(String.self, forKey: .modelId)
             ))
 
         case .prefetchModel:
-            self = .prefetchModel(PrefetchModel(
+            self = .prefetchModel(
+                PrefetchModel(
                 modelId: try container.decode(String.self, forKey: .modelId),
                 priority: try container.decodeIfPresent(Int.self, forKey: .priority) ?? 0
             ))
 
         case .desiredModels:
-            self = .desiredModels(DesiredModels(
+            self = .desiredModels(
+                DesiredModels(
                 models: try container.decodeIfPresent([DesiredModelEntry].self, forKey: .models) ?? []
             ))
 
         case .trustStatus:
-            self = .trustStatus(TrustStatus(
+            self = .trustStatus(
+                TrustStatus(
                 trustLevel: try container.decode(String.self, forKey: .trustLevel),
                 status: try container.decode(String.self, forKey: .status),
                 reason: try container.decodeIfPresent(String.self, forKey: .reason) ?? ""
             ))
+        case .registerAck:
+            self = .registerAck(
+                V2RegisterAcknowledgement(
+                    providerID: try container.decode(ProviderID.self, forKey: .providerId),
+                    providerProcessGeneration: try container.decode(
+                        ProviderProcessGenerationID.self,
+                        forKey: .providerProcessGeneration
+                    ),
+                    sessionEpoch: try container.decode(UInt64.self, forKey: .sessionEpoch),
+                    protocolCapabilities: try container.decodeIfPresent(
+                        ProtocolCapabilities.self, forKey: .protocolCapabilities),
+                    coordinatorReplayFencePublicKey: try container.decodeIfPresent(
+                        String.self, forKey: .coordinatorReplayFencePublicKey)
+                ))
+        case .prepare:
+            self = .prepare(try V2Prepare(from: decoder))
+        case .start:
+            self = .start(try V2Start(from: decoder))
+        case .queryAttempt:
+            self = .queryAttempt(try V2QueryAttempt(from: decoder))
+        case .abort:
+            self = .abort(try V2Abort(from: decoder))
+        case .terminalAck:
+            self = .terminalAck(try V2TerminalAck(from: decoder))
+        case .coordinatorReplayFence:
+            self = .coordinatorReplayFence(
+                try CoordinatorReplayFenceProof(from: decoder))
         }
     }
 }

@@ -1,8 +1,33 @@
 package payments
 
 import (
+	"math"
 	"testing"
 )
+
+func TestCalculateCostSaturatesInsteadOfOverflowing(t *testing.T) {
+	if got, want := CalculateCostWithOverrides(
+		"model", 2, 0, math.MaxInt64, 0, true,
+	), int64(18_446_744_073_709); got != want {
+		t.Fatalf("wide intermediate cost = %d, want %d", got, want)
+	}
+	got := CalculateCostWithOverrides(
+		"model", math.MaxInt, math.MaxInt,
+		math.MaxInt64, math.MaxInt64, true,
+	)
+	if got != math.MaxInt64 {
+		t.Fatalf("overflowing cost = %d, want MaxInt64", got)
+	}
+	if got := CalculateCostWithOverrides("model", -1, -1, math.MaxInt64, math.MaxInt64, true); got < 0 {
+		t.Fatalf("negative usage produced negative cost %d", got)
+	}
+	feePercent := int64(50)
+	fee := PlatformFeeWithPercent(math.MaxInt64, &feePercent)
+	payout := ProviderPayoutWithPercent(math.MaxInt64, &feePercent)
+	if fee < 0 || payout < 0 || fee+payout != math.MaxInt64 {
+		t.Fatalf("overflowing split = fee:%d payout:%d", fee, payout)
+	}
+}
 
 func TestFallbackPricesForAnyModel(t *testing.T) {
 	// Without DB-configured prices, all models get the fallback defaults.

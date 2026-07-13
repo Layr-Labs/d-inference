@@ -1535,7 +1535,7 @@ threats:
       Changes to IdleTimeoutPolicy.swift or the inference loop that could defer
       or skip idle detection should be reviewed.
 
-  - id: T-041
+  - id: T-049
     trust_boundary: TB-007
     stride: Information_Disclosure
     title: Cross-tenant prefix-cache sharing + TTFT timing oracle (v0.7.5 ships the encrypted SSD offload tier — HMAC-keyed at-rest artifacts, default-on for CBv2-supported models with per-donation gating)
@@ -2423,3 +2423,109 @@ threats:
     detection_hint: >
       Every new chip/model or macOS release needs GPU-load correlation and full
       engage/release/restore hardware validation before support is claimed.
+
+  - id: T-050
+    trust_boundary: TB-006
+    stride: Tampering
+    title: Forged or bypassed Rust cutover evidence authorizes an unsafe handoff
+    description: >
+      An operator, compromised evidence collector, or attacker with an evidence
+      artifact could edit timestamps, omit a failed source, reuse an approval,
+      point collection at another Datadog site, replace a pinned query, claim an
+      unmeasured traffic percentage, substitute a mutable image, or use a
+      write-capable production database credential. That can make stale or
+      inconclusive pilot, canary, durable-state, provider-coverage, or rollback
+      results appear ready and induce an unsafe human cutover.
+    adversaries: [ADV-003]
+    affected_assets: [A-009, A-010, A-011]
+    affected_files:
+      - scripts/cutover-readiness.py
+      - scripts/cutover_readiness/integrity.py
+      - scripts/cutover_readiness/gates.py
+      - scripts/cutover_readiness/evaluators.py
+      - scripts/cutover_readiness/clients.py
+      - scripts/cutover_readiness/rds.py
+      - deploy/cutover/gates.json
+      - .github/workflows/cutover-readiness.yml
+    mitigations:
+      - description: >
+          Every report has a versioned schema, canonical SHA-256,
+          generated/expiry timestamps, and exact source hashes. Test jobs emit
+          unsigned hashes; admission requires either a configured-key signature
+          or both a pinned-workflow Sigstore signature and GitHub artifact
+          attestation. Assessments, human approvals, and authorizations remain
+          separately signed.
+        status: implemented
+      - description: >
+          Gates reject missing, stage-stale, future-dated, checksum-invalid,
+          unsigned, failed, inconclusive, duplicate, or unexpected evidence and
+          require every predecessor authorization recursively against the exact
+          current policy hash. Full-cutover expires in 15 minutes and deploy
+          verifies it again immediately before migration/drain. Historical bake
+          predecessors are validated at the fixed child observation-window start,
+          when they were valid.
+        status: implemented
+      - description: >
+          A signed canonical environment manifest hashes both origins/listeners,
+          production and canary database/system identifiers, read-only DSN and
+          writer-endpoint fingerprints, coordinator ownership/App IDs, Datadog
+          sites/organization IDs, and distinct immutable image digests. Route,
+          live, Datadog, RDS, load, fault, and rollback evidence must carry the
+          same environment_id; collectors independently confirm their identities.
+        status: implemented
+      - description: >
+          Route evidence computes ratios from signed request counts. Shadow
+          replay is constrained to an offline listener with no database or money
+          mutations; dedicated canary evidence requires listener and database
+          identities distinct from production plus synthetic isolated money.
+        status: implemented
+      - description: >
+          Human approval uses a distinct trusted offline/hardware key, exact
+          assessment digest, and interactive typed confirmation; approval
+          preparation and finalization refuse CI, agents, and non-TTY sessions.
+          Full-cutover approval binds the commit and distinct immutable
+          candidate/fallback image digests.
+        status: implemented
+      - description: >
+          Live HTTP and Datadog clients issue GET only, reject redirects, require
+          an explicit supported Datadog site, authenticate organization identity,
+          enforce exact 900-second rollups/bucket timestamps, use
+          repository-pinned query files, and permit endpoint overrides only for
+          loopback fixtures. The RDS client uses fixed /usr/bin/psql and SQL,
+          rejects serving-process credentials, and proves its exact read-only
+          role, writer/cluster identity, replica, and privilege state.
+        status: implemented
+      - description: >
+          The rollback workflow verifies a signed target, pulls its exact
+          distinct immutable images, emits unsigned hashed evidence, and uses
+          --pull never. A separate protected no-checkout signer verifies job
+          success and hashes, creates GitHub attestations, and keyless-signs the
+          report. It starts and drains Go, starts Rust, injects failure, verifies
+          single ownership and additive-schema rollback safety, exercises
+          provider-v1 and historical-terminal-ACK recovery, then proves Go
+          serves again.
+        status: implemented
+      - description: >
+          deploy-prod.sh verifies the self-contained signed full-cutover artifact
+          against fixed configured public keys before migration or drain. Runtime
+          health image digest is corroborated against Docker inspect metadata.
+          CI evidence binds protected branch/workflow ref/workflow SHA,
+          run/repository/commit, tool/report schemas, and relevant images. Only
+          the reviewer-protected cutover-evidence-signer Environment has OIDC
+          attestation permissions; test jobs have no signing secret and id-token
+          is disabled.
+        status: implemented
+      - description: >
+          Retirement SQL verifies enabled trigger state, exact migration-pinned
+          pg_get_triggerdef/function hashes, function/table ownership, and
+          complete table coverage including coordinator ownership history.
+          Disabled, no-op, rewired, missing, or owner-changed audit objects fail
+          closed.
+        status: implemented
+    open_findings: []
+    severity: critical
+    detection_hint: >
+      Any new cutover path that can deploy, mutate traffic or production state,
+      accept an implicit Datadog site, consume unsigned production evidence,
+      ignore report expiry/checksum, use runtime database credentials, or
+      authorize without a separately signed human approval reopens this threat.

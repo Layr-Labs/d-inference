@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://darkbloom.dev/schemas/cutover-evidence-v2.json",
+  "title": "Darkbloom coordinator cutover evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "generated_at",
+    "valid_until",
+    "environment",
+    "verdict",
+    "payload",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "report_type": {
+      "enum": [
+        "fault",
+        "load",
+        "differential",
+        "route_trace",
+        "rollback_drill",
+        "live_snapshot",
+        "bake_observation",
+        "retirement_inventory",
+        "gate_assessment",
+        "human_approval",
+        "gate_authorization",
+        "environment_manifest"
+      ]
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "valid_until": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "environment": {
+      "enum": [
+        "isolated",
+        "canary",
+        "development",
+        "production"
+      ]
+    },
+    "verdict": {
+      "enum": [
+        "pass",
+        "fail",
+        "inconclusive"
+      ]
+    },
+    "payload": {
+      "type": "object"
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "canonical_sha256"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "canonical_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "signature": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "algorithm",
+            "key_id",
+            "value"
+          ],
+          "properties": {
+            "algorithm": {
+              "const": "openssl-dgst-sha256"
+            },
+            "key_id": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    }
+  }
+}
+

@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/eigeninference/d-inference/coordinator/payments"
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
@@ -77,6 +80,74 @@ func TestWithdrawableBalance_DebitAllEarnings(t *testing.T) {
 	_ = st.Debit("acct-1", 25_000_000, store.LedgerCharge, "req-2")
 	if w := st.GetWithdrawableBalance("acct-1"); w != 0 {
 		t.Errorf("withdrawable = %d, want 0", w)
+	}
+}
+
+func TestReservationRefundRestoresExactWithdrawableProvenance(t *testing.T) {
+	srv, st := testBillingServer(t)
+	const accountID = "acct-reservation-refund"
+	if err := st.Credit(accountID, 20_000, store.LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreditWithdrawable(accountID, 30_000, store.LedgerPayout, "earning"); err != nil {
+		t.Fatal(err)
+	}
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(accountID, 25_000, "reservation-refund")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := &registry.PendingRequest{
+		RequestID: "attempt-refund", ReservationID: "reservation-refund",
+		Model: "model", ConsumerKey: accountID,
+		ReservedMicroUSD: 25_000, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: 25_000, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+	}
+	if !srv.refundReservedBalance(pr, "failed") {
+		t.Fatal("refund did not finalize")
+	}
+	if balance, withdrawable := st.GetBalanceWithWithdrawable(accountID); balance != 50_000 || withdrawable != 30_000 {
+		t.Fatalf("refunded balance = %d/%d, want 50000/30000", balance, withdrawable)
+	}
+}
+
+func TestReservationSettlementRestoresUnusedWithdrawableProvenance(t *testing.T) {
+	srv, st := testBillingServer(t)
+	const (
+		accountID = "acct-reservation-settle"
+		model     = "reservation-settle-model"
+	)
+	if err := st.Credit(accountID, 300, store.LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreditWithdrawable(accountID, 700, store.LedgerPayout, "earning"); err != nil {
+		t.Fatal(err)
+	}
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(accountID, 500, "reservation-settle")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("reservation-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	pr := &registry.PendingRequest{
+		RequestID: "reservation-attempt", ReservationID: "reservation-settle",
+		Model: model, ConsumerKey: accountID,
+		ReservedMicroUSD: 500, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: 500, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000}
+	actual := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
+	if actual != 250 {
+		t.Fatalf("test pricing changed: actual=%d, want 250", actual)
+	}
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage,
+	})
+	if balance, withdrawable := st.GetBalanceWithWithdrawable(accountID); balance != 750 || withdrawable != 700 {
+		t.Fatalf("settled balance = %d/%d, want 750/700", balance, withdrawable)
 	}
 }
 

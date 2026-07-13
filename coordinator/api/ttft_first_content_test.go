@@ -35,13 +35,12 @@ func TestFastCompletionStampsActualTTFT(t *testing.T) {
 	// chunk the dispatch goroutine has NOT yet stamped (FirstContentAt zero) —
 	// exactly the fast-completion race the fix closes.
 	pr := &registry.PendingRequest{
-		RequestID:        "fast-ttft-req",
-		Model:            model,
-		ConsumerKey:      testConsumerID,
-		ReservedMicroUSD: 10_000_000,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:   "fast-ttft-req",
+		Model:       model,
+		ConsumerKey: testConsumerID,
+		ChunkCh:     make(chan string, 1),
+		CompleteCh:  make(chan protocol.UsageInfo, 1),
+		ErrorCh:     make(chan protocol.InferenceErrorMessage, 1),
 		Timing: &registry.RequestTiming{
 			ReceivedAt:   time.Now().Add(-60 * time.Millisecond),
 			DispatchedAt: time.Now().Add(-50 * time.Millisecond),
@@ -115,15 +114,14 @@ func TestAbandonedAttemptDoesNotStampCommittedTTFT(t *testing.T) {
 	}
 	// The abandoned attempt (attempt 0) — never committed (no MarkContentCommitted).
 	abandoned := &registry.PendingRequest{
-		RequestID:        "abandoned-attempt",
-		Attempt:          0,
-		Model:            model,
-		ConsumerKey:      testConsumerID,
-		ReservedMicroUSD: 10_000_000,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
-		Timing:           shared,
+		RequestID:   "abandoned-attempt",
+		Attempt:     0,
+		Model:       model,
+		ConsumerKey: testConsumerID,
+		ChunkCh:     make(chan string, 1),
+		CompleteCh:  make(chan protocol.UsageInfo, 1),
+		ErrorCh:     make(chan protocol.InferenceErrorMessage, 1),
+		Timing:      shared,
 	}
 	provider.AddPending(abandoned)
 	if err := st.RecordInferenceRoute(&store.InferenceRouteRecord{

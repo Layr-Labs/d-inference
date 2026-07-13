@@ -1,0 +1,20 @@
+[Unit]
+Description=Darkbloom offline durable recovery owner
+Documentation=file:///usr/share/doc/d-inference/offline-recovery.md
+After=docker.service network-online.target cloud-sql-proxy.service
+Requires=docker.service
+Wants=network-online.target
+ConditionPathExists=/etc/d-inference/enable-offline-recovery
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartPreventExitStatus=75
+RestartSec=5
+TimeoutStartSec=10min
+TimeoutStopSec=60
+SyslogIdentifier=d-inference-recovery
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/local/bin/d-inference-recovery-run.sh
+ExecStop=-/usr/bin/docker stop -t 45 d-inference-recovery

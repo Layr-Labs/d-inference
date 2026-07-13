@@ -1,0 +1,160 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    checkpoint_claim AS (\n                        INSERT INTO rust_coord.fee_projection_checkpoints (\n                            projection_name,\n                            status,\n                            owner_epoch,\n                            version,\n                            worker_owner,\n                            lease_until\n                        )\n                        SELECT\n                            $3,\n                            'running',\n                            $2,\n                            1,\n                            $4,\n                            NOW() + ($6::BIGINT * INTERVAL '1 millisecond')\n                        FROM authority\n                        ON CONFLICT (projection_name) DO UPDATE SET\n                            status = 'running',\n                            owner_epoch = $2,\n                            version =\n                                fee_projection_checkpoints.version + 1,\n                            worker_owner = $4,\n                            lease_until =\n                                NOW() + ($6::BIGINT * INTERVAL '1 millisecond'),\n                            updated_at = NOW()\n                        WHERE fee_projection_checkpoints.status <> 'running'\n                           OR fee_projection_checkpoints.lease_until <= NOW()\n                        RETURNING\n                            projection_name,\n                            last_allocation_sequence,\n                            version,\n                            (\n                                EXTRACT(EPOCH FROM lease_until) * 1000\n                            )::BIGINT AS lease_until_epoch_millis\n                    ),\n                    candidates AS MATERIALIZED (\n                        SELECT allocations.allocation_id\n                        FROM rust_coord.fee_allocations AS allocations\n                        CROSS JOIN checkpoint_claim\n                        WHERE allocations.allocation_sequence\n                              > checkpoint_claim.last_allocation_sequence\n                          AND allocations.status IN (\n                              'pending',\n                              'processing',\n                              'failed'\n                          )\n                          AND (\n                              allocations.worker_owner IS NULL\n                              OR allocations.lease_until <= NOW()\n                          )\n                        ORDER BY\n                            allocations.allocation_sequence,\n                            allocations.allocation_id\n                        FOR UPDATE OF allocations SKIP LOCKED\n                        LIMIT $5\n                    ),\n                    allocation_claim AS (\n                        UPDATE rust_coord.fee_allocations AS allocations\n                        SET\n                            status = 'processing',\n                            owner_epoch = $2,\n                            worker_owner = $4,\n                            lease_until =\n                                NOW() + ($6::BIGINT * INTERVAL '1 millisecond'),\n                            version = allocations.version + 1,\n                            updated_at = NOW()\n                        FROM candidates, checkpoint_claim\n                        WHERE allocations.allocation_id =\n                              candidates.allocation_id\n                        RETURNING\n                            allocations.allocation_id,\n                            allocations.allocation_sequence,\n                            allocations.operation_key,\n                            allocations.job_id,\n                            allocations.kind,\n                            allocations.source_account_id,\n                            allocations.beneficiary_account_id,\n                            allocations.amount_micro_usd,\n                            allocations.version\n                    )\n                    SELECT\n                        checkpoint_claim.projection_name,\n                        checkpoint_claim.version AS checkpoint_version,\n                        checkpoint_claim.lease_until_epoch_millis,\n                        allocation_claim.allocation_id,\n                        allocation_claim.allocation_sequence,\n                        allocation_claim.operation_key,\n                        allocation_claim.job_id,\n                        allocation_claim.kind,\n                        allocation_claim.source_account_id,\n                        allocation_claim.beneficiary_account_id,\n                        allocation_claim.amount_micro_usd,\n                        allocation_claim.version AS allocation_version\n                    FROM checkpoint_claim\n                    LEFT JOIN allocation_claim ON TRUE\n                    ORDER BY allocation_claim.allocation_sequence,\n                             allocation_claim.allocation_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "projection_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fee_projection_checkpoints",
+            "name": "projection_name"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "checkpoint_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fee_projection_checkpoints",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "lease_until_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "allocation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "allocation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "allocation_sequence",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "allocation_sequence"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "operation_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "operation_key"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "source_account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "source_account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "beneficiary_account_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "beneficiary_account_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "amount_micro_usd",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "amount_micro_usd"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "allocation_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fee_allocations",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "4209f2c6c5563d36c7c574959a9780590bc625ff2650a2038cf315ca6cbb23af"
+}

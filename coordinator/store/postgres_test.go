@@ -352,10 +352,14 @@ func newPostgresWithMaxConns(t *testing.T, maxConns int32) *PostgresStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	if _, err := ApplyPostgresMigrations(ctx, dbURL, MigrationOptions{}); err != nil {
+		t.Fatalf("ApplyPostgresMigrations: %v", err)
+	}
 	cfg, err := pgxpool.ParseConfig(dbURL)
 	if err != nil {
 		t.Fatalf("ParseConfig: %v", err)
 	}
+	pinDefaultPostgresSchema(cfg.ConnConfig.RuntimeParams)
 	cfg.MaxConns = maxConns
 	cfg.MinConns = 0
 
@@ -364,9 +368,9 @@ func newPostgresWithMaxConns(t *testing.T, maxConns int32) *PostgresStore {
 		t.Fatalf("NewWithConfig: %v", err)
 	}
 	s := &PostgresStore{pool: pool}
-	if err := s.migrate(ctx); err != nil {
+	if err := checkSchemaCompatibility(ctx, pool); err != nil {
 		pool.Close()
-		t.Fatalf("migrate: %v", err)
+		t.Fatalf("check schema compatibility: %v", err)
 	}
 	for _, table := range []string{"providers"} {
 		if _, err := s.pool.Exec(ctx, "TRUNCATE "+table+" CASCADE"); err != nil {
@@ -533,11 +537,9 @@ func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
 		t.Fatalf("set orphan wallet price: %v", err)
 	}
 
-	// Re-run migrations (simulated restart). With the marker cleared, the
-	// guarded cleanup executes exactly once.
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	// Re-adopt the legacy schema with the marker cleared. The guarded cleanup
+	// executes exactly once while version 1 is recorded.
+	reapplyLegacyBaselineForTest(t, s)
 
 	if in, out, ok := s.GetModelPrice("platform", "gpt-oss-20b"); !ok || in != 50_000 || out != 200_000 {
 		t.Errorf("platform price = (%d, %d, %v), want (50000, 200000, true) — platform pricing must never be wiped", in, out, ok)
@@ -561,9 +563,9 @@ func TestPostgresWalletPriceCleanupPreservesPlatform(t *testing.T) {
 }
 
 // TestPostgresWalletPriceCleanupRunsOnce verifies the destructive cleanup is
-// gated behind its schema_migrations marker and does NOT run on every boot. Once
-// the marker is set, a subsequent migrate() leaves even orphan wallet-keyed rows
-// untouched — stopping the destructive DELETE from running repeatedly.
+// gated behind its schema_migrations marker and does NOT run on every migration
+// invocation. Once marked, even a legacy-baseline replay leaves later orphan
+// wallet-keyed rows untouched.
 func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
@@ -583,12 +585,26 @@ func TestPostgresWalletPriceCleanupRunsOnce(t *testing.T) {
 		t.Fatalf("set orphan wallet price: %v", err)
 	}
 
-	if err := s.migrate(ctx); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	reapplyLegacyBaselineForTest(t, s)
 
 	if _, _, ok := s.GetModelPrice("So1anaWa11etAddre55NotAUser", "gemma-4-26b"); !ok {
 		t.Error("orphan row should survive when the cleanup marker is already set (run-once)")
+	}
+}
+
+func reapplyLegacyBaselineForTest(t *testing.T, s *PostgresStore) {
+	t.Helper()
+	ctx := context.Background()
+	catalog, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("load legacy baseline migration: %v", err)
+	}
+	statements, err := splitSQLStatements(catalog[0].SQL)
+	if err != nil {
+		t.Fatalf("split legacy baseline migration: %v", err)
+	}
+	if err := executeMigrationStatements(ctx, s.pool, catalog[0], statements); err != nil {
+		t.Fatalf("reapply legacy baseline statements: %v", err)
 	}
 }
 
@@ -669,6 +685,165 @@ func TestPostgresDeleteProvidersBySerial_WrongOwner(t *testing.T) {
 	}
 	if rec, _ := s.GetProviderBySerial(ctx, "SER"); rec == nil {
 		t.Fatal("record deleted by non-owner")
+	}
+}
+
+func TestPostgresProviderTokenRevokeAndOwnerDeleteAreLatestSchemaAtomic(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	const (
+		revokeRaw    = "provider-token-direct-revoke"
+		deleteRaw    = "provider-token-owner-delete"
+		legacyRawOne = "provider-token-legacy-owner-one"
+		legacyRawTwo = "provider-token-legacy-owner-two"
+		providerID   = "10000000-0000-0000-0000-000000000006"
+		accountID    = "acct-delete-provider"
+		serial       = "SERIAL-DELETE-PROVIDER"
+		sePublicKey  = "se-delete-provider"
+		providerHash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	old := time.Now().Add(-time.Hour)
+	if err := s.CreateProviderToken(&ProviderToken{
+		TokenHash: hashKey(revokeRaw),
+		AccountID: accountID,
+		Active:    true,
+		UpdatedAt: old,
+	}); err != nil {
+		t.Fatalf("CreateProviderToken(revoke): %v", err)
+	}
+	if err := s.RevokeProviderToken(revokeRaw); err != nil {
+		t.Fatalf("RevokeProviderToken: %v", err)
+	}
+	var directActive bool
+	var directRevokedAt *time.Time
+	var directUpdatedAt time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT active, revoked_at, updated_at
+		 FROM provider_tokens WHERE token_hash = $1`,
+		hashKey(revokeRaw),
+	).Scan(&directActive, &directRevokedAt, &directUpdatedAt); err != nil {
+		t.Fatalf("read directly revoked token: %v", err)
+	}
+	if directActive || directRevokedAt == nil || !directUpdatedAt.After(old) {
+		t.Fatalf(
+			"direct revoke state = active:%v revoked:%v updated:%s",
+			directActive, directRevokedAt, directUpdatedAt,
+		)
+	}
+
+	deleteHash := hashKey(deleteRaw)
+	if err := s.CreateProviderToken(&ProviderToken{
+		TokenHash:  deleteHash,
+		AccountID:  accountID,
+		ProviderID: providerID,
+		Active:     true,
+	}); err != nil {
+		t.Fatalf("CreateProviderToken(delete): %v", err)
+	}
+	for _, legacyRaw := range []string{legacyRawOne, legacyRawTwo} {
+		if err := s.CreateProviderToken(&ProviderToken{
+			TokenHash: hashKey(legacyRaw),
+			AccountID: accountID,
+			Active:    true,
+		}); err != nil {
+			t.Fatalf("CreateProviderToken(%q): %v", legacyRaw, err)
+		}
+		if _, err := s.GetProviderToken(legacyRaw); err != nil {
+			t.Fatalf("legacy token %q did not authenticate before delete: %v", legacyRaw, err)
+		}
+	}
+	if err := s.UpsertProvider(ctx, ProviderRecord{
+		ID:           providerID,
+		Hardware:     json.RawMessage(`{}`),
+		Models:       json.RawMessage(`[]`),
+		Backend:      "mlx",
+		SerialNumber: serial,
+		SEPublicKey:  sePublicKey,
+		AccountID:    accountID,
+		TokenHash:    deleteHash,
+		RegisteredAt: time.Now(),
+		LastSeen:     time.Now(),
+	}); err != nil {
+		t.Fatalf("UpsertProvider: %v", err)
+	}
+	now := time.Now()
+	if err := s.UpsertProviderTrustReuse(ctx, ProviderTrustReuse{
+		SEPubKey:       sePublicKey,
+		ProviderID:     providerID,
+		Serial:         serial,
+		TrustLevel:     "hardware",
+		BinaryHash:     providerHash,
+		SIPEnabled:     true,
+		SecureBootFull: true,
+		MDAUDID:        "UDID-DELETE-PROVIDER",
+		Enrolled:       true,
+		SecurityInfoAt: &now,
+		VerifiedAt:     now,
+	}); err != nil {
+		t.Fatalf("UpsertProviderTrustReuse: %v", err)
+	}
+
+	rows, err := s.DeleteProvidersBySerial(ctx, accountID, serial)
+	if err != nil {
+		t.Fatalf("DeleteProvidersBySerial: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("rows_removed = %d, want 1", rows)
+	}
+	var deletedActive bool
+	var deletedRevokedAt *time.Time
+	if err := s.pool.QueryRow(ctx,
+		`SELECT active, revoked_at
+		 FROM provider_tokens WHERE token_hash = $1`,
+		deleteHash,
+	).Scan(&deletedActive, &deletedRevokedAt); err != nil {
+		t.Fatalf("read owner-deleted token: %v", err)
+	}
+	if deletedActive || deletedRevokedAt == nil {
+		t.Fatalf("owner-deleted token = active:%v revoked:%v", deletedActive, deletedRevokedAt)
+	}
+	if _, err := s.GetProviderToken(deleteRaw); err == nil {
+		t.Fatal("owner-deleted provider token reauthenticated")
+	}
+	for _, legacyRaw := range []string{legacyRawOne, legacyRawTwo} {
+		if _, err := s.GetProviderToken(legacyRaw); err == nil {
+			t.Fatalf("legacy-unlinked provider token %q reauthenticated after owner delete", legacyRaw)
+		}
+	}
+	var activeLegacy, revokedLegacy int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT
+		    COUNT(*) FILTER (WHERE active),
+		    COUNT(*) FILTER (
+		        WHERE NOT active AND revoked_at IS NOT NULL
+		          AND updated_at >= revoked_at
+		    )
+		 FROM provider_tokens
+		 WHERE token_hash = ANY($1)`,
+		[]string{hashKey(legacyRawOne), hashKey(legacyRawTwo)},
+	).Scan(&activeLegacy, &revokedLegacy); err != nil {
+		t.Fatalf("read legacy token revocation state: %v", err)
+	}
+	if activeLegacy != 0 || revokedLegacy != 2 {
+		t.Fatalf("legacy token state = active:%d revoked:%d, want 0/2", activeLegacy, revokedLegacy)
+	}
+	var providerCount, reuseCount, hardFenceCount int
+	if err := s.pool.QueryRow(ctx,
+		`SELECT
+		    (SELECT COUNT(*) FROM providers WHERE id = $1),
+		    (SELECT COUNT(*) FROM provider_trust_reuse WHERE provider_id = $1),
+		    (SELECT COUNT(*) FROM rust_coord.provider_hard_untrust_epochs
+		     WHERE provider_id = $1::UUID)`,
+		providerID,
+	).Scan(&providerCount, &reuseCount, &hardFenceCount); err != nil {
+		t.Fatalf("read owner-delete state: %v", err)
+	}
+	if providerCount != 0 || reuseCount != 0 || hardFenceCount != 1 {
+		t.Fatalf(
+			"owner-delete state = providers:%d reuse:%d hard-fence:%d",
+			providerCount, reuseCount, hardFenceCount,
+		)
 	}
 }
 

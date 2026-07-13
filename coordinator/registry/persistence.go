@@ -290,6 +290,7 @@ func (r *Registry) persistProviderNow(p *Provider) {
 			LastChallengeVerified:      lastChallenge,
 			FailedChallenges:           p.FailedChallenges,
 			AccountID:                  p.AccountID,
+			TokenHash:                  p.TokenHash,
 			LifetimeRequestsServed:     p.Stats.RequestsServed,
 			LifetimeTokensGenerated:    p.Stats.TokensGenerated,
 			LastSessionRequestsServed:  p.lastSessionStats.RequestsServed,

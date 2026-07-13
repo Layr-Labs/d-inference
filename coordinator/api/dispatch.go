@@ -2,10 +2,11 @@ package api
 
 // Per-request dispatch state machine for the consumer inference path.
 //
-// This file holds the speculative TTFT-aware dispatch loop that handleChatCompletions
-// drives: it picks a provider (or queues), waits for the first CONTENT chunk with a
-// speculative backup race, fails over invisibly on provider error/timeout up to
-// maxDispatchAttempts, and commits exactly once. It is a PURELY STRUCTURAL extraction
+// This file holds the TTFT-aware dispatch loop that handleChatCompletions
+// drives: it picks a provider (or queues), waits for the first CONTENT chunk,
+// fails over invisibly on provider error/timeout up to maxDispatchAttempts, and
+// commits exactly once. Free requests may retain the legacy speculative race;
+// paid and service-reserved requests are always sequential. It is a structural extraction
 // of what previously lived inline in consumer.go — every select arm, timer Stop/Reset,
 // channel-close+ErrorCh grace window, heldChunks cap, liveness extension, speculative
 // race (backup dispatch / cancel-loser / skipBackup), refund-exactly-once, breaker
@@ -42,7 +43,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 )
@@ -85,28 +85,34 @@ type dispatchState struct {
 	s *Server
 
 	// ---- immutable inputs (set once) ----
-	w                      http.ResponseWriter
-	r                      *http.Request
-	model                  string
-	publicModel            string
-	rawBody                []byte
-	consumerKey            string
-	consumerLocation       *store.ProviderLocation
-	reservedMicroUSD       int64
-	serviceReservation     bool
-	estimatedPromptTokens  int
-	requestedMaxTokens     int
-	tokenAdmission         registry.TokenAdmission
-	requiresVision         bool
-	hasTools               bool
-	isResponsesAPI         bool
-	stream                 bool
-	policy                 selfRoutePolicy
-	allowedProviderSerials []string
-	cacheAffinityKey       string
-	timing                 *registry.RequestTiming
-	deadline               time.Duration
-	speculativeAt          time.Duration
+	w                            http.ResponseWriter
+	r                            *http.Request
+	model                        string
+	publicModel                  string
+	rawBody                      []byte
+	consumerKey                  string
+	consumerLocation             *store.ProviderLocation
+	reservedMicroUSD             int64
+	reservedWithdrawableMicroUSD int64
+	reservationID                string
+	serviceReservation           bool
+	estimatedPromptTokens        int
+	requestedMaxTokens           int
+	tokenAdmission               registry.TokenAdmission
+	requiresVision               bool
+	hasTools                     bool
+	isResponsesAPI               bool
+	stream                       bool
+	policy                       selfRoutePolicy
+	allowedProviderSerials       []string
+	cacheAffinityKey             string
+	timing                       *registry.RequestTiming
+	deadline                     time.Duration
+	speculativeAt                time.Duration
+	// allowSpeculation is true only for requests that cannot move money. The
+	// runtime guard also checks the concrete reservation fields, so an
+	// incorrectly constructed paid request still cannot launch a second start.
+	allowSpeculation bool
 	// modelMaxContext is the model's context window (0 = unknown), used by
 	// shouldStopFailover/classifyRejection to tell a fleet-wide context overflow
 	// apart from a memory-pressured provider's shrunk KV budget when a "batch token
@@ -175,6 +181,10 @@ type dispatchState struct {
 // the most recently failed provider's binary version.
 func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{HasTools: d.hasTools, AvoidVersion: d.lastFailedVersion}
+}
+
+func (d *dispatchState) speculationAllowed() bool {
+	return d.allowSpeculation && d.reservedMicroUSD <= 0 && !d.serviceReservation
 }
 
 // envTTFTTerminalReject is the kill switch for the terminal TTFT-rejection fix.
@@ -664,6 +674,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	routeAttempt := attempt
 	d.provider, d.pr, decision, dispatchErr, dispatchErrCode = s.dispatchOneProvider(
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
+		d.reservedWithdrawableMicroUSD, d.reservationID,
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
 		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cacheAffinityKey, d.excludeProviders,
@@ -752,37 +763,40 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// No idle provider — try queueing.
 		d.requestID = uuid.New().String()
 		queuePR := &registry.PendingRequest{
-			RequestID:              d.requestID,
-			Attempt:                d.attempt,
-			Model:                  d.model,
-			PublicModel:            d.publicModel,
-			ConsumerKey:            d.consumerKey,
-			KeyID:                  keyIDFromContext(r.Context()),
-			KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-			ConsumerLocation:       d.consumerLocation,
-			IsResponsesAPI:         d.isResponsesAPI,
-			EstimatedPromptTokens:  d.estimatedPromptTokens,
-			RequiresVision:         d.requiresVision,
-			Traits:                 d.traits(),
-			RequestedMaxTokens:     d.requestedMaxTokens,
-			TokenAdmission:         d.tokenAdmission,
-			ReservedMicroUSD:       d.reservedMicroUSD,
-			BaseReservedMicroUSD:   d.reservedMicroUSD,
-			ServiceReservation:     d.serviceReservation,
-			AllowedProviderSerials: d.allowedProviderSerials,
-			CacheAffinityKey:       d.cacheAffinityKey,
-			SelfRouteOnly:          d.policy.enabled,
-			PreferOwner:            d.policy.prefer,
-			OwnerAccountID:         d.policy.ownerAccountID,
-			FreeSelfRoute:          d.policy.enabled,
-			MaxTTFTMs:              queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
-			MinDecodeTPS:           d.s.minDecodeTPS,
-			AcceptedCh:             make(chan struct{}, 1),
-			ChunkCh:                make(chan string, chunkBufferSize),
-			CompleteCh:             make(chan protocol.UsageInfo, 1),
-			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-			Timing:                 d.timing,
+			RequestID:                        d.requestID,
+			Attempt:                          d.attempt,
+			Model:                            d.model,
+			PublicModel:                      d.publicModel,
+			ConsumerKey:                      d.consumerKey,
+			KeyID:                            keyIDFromContext(r.Context()),
+			KeyLimitMicroUSD:                 keyLimitMicroFromContext(r.Context()),
+			KeyLimitReset:                    keyLimitResetFromContext(r.Context()),
+			ConsumerLocation:                 d.consumerLocation,
+			IsResponsesAPI:                   d.isResponsesAPI,
+			EstimatedPromptTokens:            d.estimatedPromptTokens,
+			RequiresVision:                   d.requiresVision,
+			Traits:                           d.traits(),
+			RequestedMaxTokens:               d.requestedMaxTokens,
+			TokenAdmission:                   d.tokenAdmission,
+			ReservedMicroUSD:                 d.reservedMicroUSD,
+			ReservedWithdrawableMicroUSD:     d.reservedWithdrawableMicroUSD,
+			ReservationID:                    d.reservationID,
+			BaseReservedMicroUSD:             d.reservedMicroUSD,
+			BaseReservedWithdrawableMicroUSD: d.reservedWithdrawableMicroUSD,
+			ServiceReservation:               d.serviceReservation,
+			AllowedProviderSerials:           d.allowedProviderSerials,
+			CacheAffinityKey:                 d.cacheAffinityKey,
+			SelfRouteOnly:                    d.policy.enabled,
+			PreferOwner:                      d.policy.prefer,
+			OwnerAccountID:                   d.policy.ownerAccountID,
+			FreeSelfRoute:                    d.policy.enabled,
+			MaxTTFTMs:                        queueMaxTTFTMs(d.policy, d.deadline, d.s.ttftHardReject),
+			MinDecodeTPS:                     d.s.minDecodeTPS,
+			AcceptedCh:                       make(chan struct{}, 1),
+			ChunkCh:                          make(chan string, chunkBufferSize),
+			CompleteCh:                       make(chan protocol.UsageInfo, 1),
+			ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
+			Timing:                           d.timing,
 		}
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  d.requestID,
@@ -1208,6 +1222,13 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 
 		case <-speculativeTimer.C:
 			deadlineTimer.Stop()
+			if !d.speculationAllowed() {
+				s.ddIncr("inference.speculative_suppressed", []string{
+					"model:" + d.model,
+					"mode:" + reservationMetricMode(d.serviceReservation),
+				})
+				return d.waitNoBackup()
+			}
 			return d.runSpeculative()
 
 		case <-deadlineTimer.C:
@@ -1260,6 +1281,9 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 // alone (no backup available) or race primary vs backup. Returns the same outcome
 // set as waitFirstChunk.
 func (d *dispatchState) runSpeculative() dispatchOutcome {
+	if !d.speculationAllowed() {
+		return d.waitNoBackup()
+	}
 	s := d.s
 	r := d.r
 	provider := d.provider
@@ -1300,6 +1324,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 
 		backupProvider, backupPR, _, backupErr, backupErrCode = s.dispatchOneProvider(
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
+			d.reservedWithdrawableMicroUSD, d.reservationID,
 			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
 			d.allowedProviderSerials, d.isResponsesAPI, d.policy,
@@ -2493,7 +2518,7 @@ func (d *dispatchState) writeCommittedResponse() {
 			// it here. Post-commit only, so it can never finalize a reservation
 			// the dispatch loop still needs for a retry attempt.
 			refundPr := pr
-			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+			s.submitFinancialFinalizer(func() {
 				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
 			})
 		}

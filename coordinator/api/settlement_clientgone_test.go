@@ -76,18 +76,22 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 	// Reserve MORE than the final cost so the settlement-refund branch is also
 	// exercised: the consumer must end up debited exactly expectedCost.
 	reserved := expectedCost * 3
-	if err := ledger.Charge(consumerID, reserved, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, reserved, "client-gone-after-commit",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "client-gone-after-commit",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: reserved,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "client-gone-after-commit",
+		ReservationID:                    "client-gone-after-commit",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 reserved,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             reserved,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 
 	// Pre-create the route row so the (best-effort, async) outcome update lands.
@@ -173,7 +177,7 @@ func TestHandleCompleteClientGoneAfterCommitSettlesAndPays(t *testing.T) {
 // increments FailedJobs, so routing (which scores on Reputation.Score()) does not
 // deroute a provider for consumer-side disconnects.
 func TestHandleCompleteClientGoneAfterCommitNotAProviderFailure(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+	srv, st, _ := billingTestServer(t)
 	srv.settleGrace = 5 * time.Second
 
 	model := "client-gone-no-fault-model"
@@ -184,15 +188,19 @@ func TestHandleCompleteClientGoneAfterCommitNotAProviderFailure(t *testing.T) {
 	consumerID := testConsumerID
 	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 200}
 	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
-	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, cost, "client-gone-no-fault",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "client-gone-no-fault",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: cost,
+		RequestID:                        "client-gone-no-fault",
+		ReservationID:                    "client-gone-no-fault",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 cost,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             cost,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
 	}
 	parkConsumerGone(srv, provider, pr)
 
@@ -238,16 +246,19 @@ func TestHandleCompleteAfterGraceExpiryIsNoOp(t *testing.T) {
 	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
 	const reserved int64 = 2_000_000
-	if err := ledger.Charge(consumerID, reserved, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, reserved, "late-terminal",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:            "late-terminal",
-		Model:                model,
-		ConsumerKey:          consumerID,
-		BaseReservedMicroUSD: reserved,
-		ReservedMicroUSD:     reserved,
+		RequestID:                        "late-terminal",
+		ReservationID:                    "late-terminal",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		BaseReservedMicroUSD:             reserved,
+		ReservedMicroUSD:                 reserved,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
 	}
 	parkConsumerGone(srv, provider, pr)
 
@@ -344,24 +355,28 @@ func TestPartialSuccessMetricNamesAndTags(t *testing.T) {
 // (or making it unconditional) fails the test. Negative case runs first so its
 // "no partial_success" assertion cannot be contaminated by the positive case.
 func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+	srv, st, _ := billingTestServer(t)
 	srv.settleGrace = 5 * time.Second
 
 	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 500}
 	consumerID := testConsumerID
 
 	newPR := func(reqID, model string, cost int64) *registry.PendingRequest {
-		if err := ledger.Charge(consumerID, cost, "reserve:"+reqID); err != nil {
-			t.Fatalf("reserve balance: %v", err)
-		}
+		reservedWithdrawable := reserveSettlementTestBalance(
+			t, st, consumerID, cost, reqID,
+		)
 		return &registry.PendingRequest{
-			RequestID:        reqID,
-			Model:            model,
-			ConsumerKey:      consumerID,
-			ReservedMicroUSD: cost,
-			ChunkCh:          make(chan string, 1),
-			CompleteCh:       make(chan protocol.UsageInfo, 1),
-			ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+			RequestID:                        reqID,
+			ReservationID:                    reqID,
+			Model:                            model,
+			ConsumerKey:                      consumerID,
+			ReservedMicroUSD:                 cost,
+			ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+			BaseReservedMicroUSD:             cost,
+			BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+			ChunkCh:                          make(chan string, 1),
+			CompleteCh:                       make(chan protocol.UsageInfo, 1),
+			ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 		}
 	}
 
@@ -433,7 +448,7 @@ func TestHandleCompleteEmitsPartialSuccessMetric(t *testing.T) {
 // only reflected provider-completed disconnects (handleComplete) and undercounted
 // the provider-error case.
 func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+	srv, st, _ := billingTestServer(t)
 	srv.settleGrace = 5 * time.Second
 
 	collector := newUDPCollector(t)
@@ -448,15 +463,19 @@ func TestHandleInferenceErrorEmitsAfterCommitClientGone(t *testing.T) {
 	})
 	consumerID := testConsumerID
 	const reserved int64 = 1_000_000
-	if err := ledger.Charge(consumerID, reserved, "reserve:after-commit-error"); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, reserved, "after-commit-error",
+	)
 	pr := &registry.PendingRequest{
-		RequestID:             "after-commit-error",
-		Model:                 model,
-		ConsumerKey:           consumerID,
-		ReservedMicroUSD:      reserved,
-		EstimatedPromptTokens: 5000, // 4-8k bucket
+		RequestID:                        "after-commit-error",
+		ReservationID:                    "after-commit-error",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 reserved,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             reserved,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		EstimatedPromptTokens:            5000, // 4-8k bucket
 	}
 	parkConsumerGone(srv, provider, pr)
 

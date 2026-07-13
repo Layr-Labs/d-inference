@@ -12,9 +12,16 @@ func NewMemoryStore() store.Store {
 }
 
 func NewPostgresStore(ctx context.Context, databaseURL string) (store.Store, error) {
+	if _, err := store.ApplyPostgresMigrations(ctx, databaseURL, store.MigrationOptions{}); err != nil {
+		return nil, fmt.Errorf("migrate postgres: %w", err)
+	}
 	pg, err := store.NewPostgres(ctx, store.Config{DatabaseURL: databaseURL})
 	if err != nil {
 		return nil, fmt.Errorf("connect to postgres: %w", err)
+	}
+	if err := pg.ActivateCoordinatorOwnership(ctx, false); err != nil {
+		pg.Close()
+		return nil, fmt.Errorf("validate coordinator ownership: %w", err)
 	}
 	return pg, nil
 }

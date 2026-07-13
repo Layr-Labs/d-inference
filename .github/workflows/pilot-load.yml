@@ -1,0 +1,418 @@
+name: Coordinator Pilot Load
+
+on:
+  pull_request:
+    paths:
+      - "coordinator/**"
+      - "coordinator-rs/**"
+      - "e2e/pilot/**"
+      - "scripts/pilot-load.py"
+      - "scripts/pilot_load/**"
+      - "scripts/cutover-readiness.py"
+      - "scripts/cutover_readiness/**"
+      - "scripts/tests/test_pilot_load.py"
+      - ".github/workflows/pilot-load.yml"
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Pilot component profile
+        type: choice
+        options:
+          - quick
+          - scheduled
+        default: quick
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pilot-load-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  quick:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'workflow_dispatch' && inputs.profile == 'quick')
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 35
+    services:
+      postgres:
+        image: postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
+        env:
+          POSTGRES_USER: pilot_user
+          POSTGRES_PASSWORD: pilot_local_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pilot_user -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PILOT_GO_DATABASE_URL: postgresql://pilot_user:pilot_local_only@127.0.0.1:5432/pilot_objective9_go?sslmode=disable
+      PILOT_RUST_DATABASE_URL: postgresql://pilot_user:pilot_local_only@127.0.0.1:5432/pilot_objective9_rust?sslmode=disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Create and migrate isolated pilot databases
+        run: |
+          PGPASSWORD=pilot_local_only psql -h 127.0.0.1 -U pilot_user -d postgres \
+            --set ON_ERROR_STOP=1 \
+            --command 'CREATE DATABASE pilot_objective9_go'
+          PGPASSWORD=pilot_local_only psql -h 127.0.0.1 -U pilot_user -d postgres \
+            --set ON_ERROR_STOP=1 \
+            --command 'CREATE DATABASE pilot_objective9_rust'
+          go run ./coordinator/cmd/migrate -database-url "$PILOT_GO_DATABASE_URL"
+          go run ./coordinator/cmd/migrate -database-url "$PILOT_RUST_DATABASE_URL"
+      - name: Build pilot-only coordinators and peers
+        run: |
+          mkdir -p artifacts/pilot-load/bin
+          go build -tags=pilotload \
+            -o artifacts/pilot-load/bin/go-coordinator \
+            ./coordinator/cmd/coordinator
+          cargo build --locked --manifest-path coordinator-rs/Cargo.toml \
+            --release -p darkbloom-coordinator-server --features pilot-load \
+            --bin darkbloom-coordinator-server --bin darkbloom-pilot-peer
+      - name: Run quick paired differential profile
+        run: |
+          python3 scripts/pilot-load.py run \
+            --profile quick \
+            --go-command artifacts/pilot-load/bin/go-coordinator \
+            --rust-command coordinator-rs/target/release/darkbloom-coordinator-server \
+            --go-peer-command coordinator-rs/target/release/darkbloom-pilot-peer \
+            --rust-peer-command coordinator-rs/target/release/darkbloom-pilot-peer \
+            --go-peer-control http://127.0.0.1:19080/control \
+            --rust-peer-control http://127.0.0.1:19081/control \
+            --go-counter-url http://127.0.0.1:18080/_pilot/counters \
+            --rust-counter-url http://127.0.0.1:18081/_pilot/counters \
+            --go-database-url "$PILOT_GO_DATABASE_URL" \
+            --rust-database-url "$PILOT_RUST_DATABASE_URL" \
+            --go-database-pool-max 80 \
+            --rust-database-pool-max 16
+          python3 scripts/pilot-load.py component \
+            --profile quick \
+            --duration-seconds 1
+      - name: Upload pilot reports and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pilot-load-quick
+          path: |
+            artifacts/pilot-load/quick/
+            artifacts/pilot-load/component-quick/
+          if-no-files-found: error
+
+  scheduled:
+    if: >-
+      (github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.profile == 'scheduled')) &&
+      github.repository == 'Layr-Labs/d-inference' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+      id-token: none
+      attestations: none
+    outputs:
+      mode: ${{ steps.baseline.outputs.mode }}
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 100
+    services:
+      postgres:
+        image: postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
+        env:
+          POSTGRES_USER: pilot_user
+          POSTGRES_PASSWORD: pilot_local_only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pilot_user -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PILOT_GO_DATABASE_URL: postgresql://pilot_user:pilot_local_only@127.0.0.1:5432/pilot_objective9_go?sslmode=disable
+      PILOT_RUST_DATABASE_URL: postgresql://pilot_user:pilot_local_only@127.0.0.1:5432/pilot_objective9_rust?sslmode=disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Select reviewed baseline or capture-only mode
+        id: baseline
+        run: |
+          if test -f e2e/pilot/baselines/scheduled.json; then
+            echo "mode=measured" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=capture" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Create and migrate isolated pilot databases
+        run: |
+          PGPASSWORD=pilot_local_only psql -h 127.0.0.1 -U pilot_user -d postgres \
+            --set ON_ERROR_STOP=1 \
+            --command 'CREATE DATABASE pilot_objective9_go'
+          PGPASSWORD=pilot_local_only psql -h 127.0.0.1 -U pilot_user -d postgres \
+            --set ON_ERROR_STOP=1 \
+            --command 'CREATE DATABASE pilot_objective9_rust'
+          go run ./coordinator/cmd/migrate -database-url "$PILOT_GO_DATABASE_URL"
+          go run ./coordinator/cmd/migrate -database-url "$PILOT_RUST_DATABASE_URL"
+      - name: Build pilot-only coordinators and peers
+        run: |
+          mkdir -p artifacts/pilot-load/bin
+          go build -tags=pilotload \
+            -o artifacts/pilot-load/bin/go-coordinator \
+            ./coordinator/cmd/coordinator
+          cargo build --locked --manifest-path coordinator-rs/Cargo.toml \
+            --release -p darkbloom-coordinator-server --features pilot-load \
+            --bin darkbloom-coordinator-server --bin darkbloom-pilot-peer
+      - name: Run thirty-minute paired differential soak
+        env:
+          PILOT_BASELINE_MODE: ${{ steps.baseline.outputs.mode }}
+        run: |
+          baseline_args=()
+          component_args=()
+          if test "$PILOT_BASELINE_MODE" = capture; then
+            baseline_args+=(--capture-baseline)
+            component_args+=(--non-authorizing)
+          fi
+          python3 scripts/pilot-load.py run \
+            --profile scheduled \
+            "${baseline_args[@]}" \
+            --go-command artifacts/pilot-load/bin/go-coordinator \
+            --rust-command coordinator-rs/target/release/darkbloom-coordinator-server \
+            --go-peer-command coordinator-rs/target/release/darkbloom-pilot-peer \
+            --rust-peer-command coordinator-rs/target/release/darkbloom-pilot-peer \
+            --go-peer-control http://127.0.0.1:19080/control \
+            --rust-peer-control http://127.0.0.1:19081/control \
+            --go-counter-url http://127.0.0.1:18080/_pilot/counters \
+            --rust-counter-url http://127.0.0.1:18081/_pilot/counters \
+            --go-database-url "$PILOT_GO_DATABASE_URL" \
+            --rust-database-url "$PILOT_RUST_DATABASE_URL" \
+            --go-database-pool-max 80 \
+            --rust-database-pool-max 16
+          python3 scripts/pilot-load.py component \
+            --profile scheduled \
+            "${component_args[@]}"
+      - name: Write unsigned non-authorizing baseline candidate
+        if: steps.baseline.outputs.mode == 'capture'
+        run: |
+          python3 scripts/pilot-load.py baseline \
+            --candidate \
+            --profile scheduled \
+            --report artifacts/pilot-load/scheduled/report.json \
+            --output artifacts/pilot-load/scheduled/candidate-baseline.json \
+            --fixture artifacts/pilot-load/scheduled/candidate-fixtures/scheduled-measurement.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          report = json.loads(
+              Path("artifacts/pilot-load/scheduled/report.json").read_text()
+          )
+          candidate = json.loads(
+              Path("artifacts/pilot-load/scheduled/candidate-baseline.json").read_text()
+          )
+          evidence = json.loads(
+              Path("artifacts/pilot-load/scheduled/evidence.json").read_text()
+          )
+          component_evidence = json.loads(
+              Path("artifacts/pilot-load/component-scheduled/evidence.json").read_text()
+          )
+          component_report = json.loads(
+              Path("artifacts/pilot-load/component-scheduled/report.json").read_text()
+          )
+          assert report["verdict"] == "baseline_review_required"
+          assert candidate["review"]["status"] == "candidate"
+          assert component_report["verdict"] == "baseline_review_required"
+          assert evidence["authorization"]["eligible"] is False
+          assert evidence["signature"]["required_in_ci"] is False
+          assert component_evidence["authorization"]["eligible"] is False
+          assert component_evidence["signature"]["required_in_ci"] is False
+          assert not list(Path("artifacts/pilot-load/scheduled").glob("*.sigstore.json"))
+          assert not list(Path("artifacts/pilot-load/component-scheduled").glob("*.sigstore.json"))
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
+              summary.write("Scheduled soak: `baseline_review_required` (unsigned candidate uploaded).\n")
+          PY
+      - name: Verify protected workflow and signed environment target
+        if: steps.baseline.outputs.mode == 'measured'
+        env:
+          CUTOVER_ENVIRONMENT_MANIFEST_JSON: ${{ vars.CUTOVER_ENVIRONMENT_MANIFEST_JSON }}
+          CUTOVER_EVIDENCE_PUBLIC_KEY_PEM: ${{ vars.CUTOVER_EVIDENCE_PUBLIC_KEY_PEM }}
+        run: |
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_REF" = \
+            "$GITHUB_REPOSITORY/.github/workflows/pilot-load.yml@$GITHUB_REF"
+          test -n "$CUTOVER_ENVIRONMENT_MANIFEST_JSON"
+          test -n "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM"
+          umask 077
+          printf '%s\n' "$CUTOVER_ENVIRONMENT_MANIFEST_JSON" \
+            > /tmp/cutover-environment.json
+          printf '%s\n' "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM" \
+            > /tmp/cutover-evidence.pub.pem
+          python3 scripts/cutover-readiness.py verify-environment-manifest \
+            --manifest /tmp/cutover-environment.json \
+            --trusted-key /tmp/cutover-evidence.pub.pem
+      - name: Import unsigned hashed cutover evidence
+        if: steps.baseline.outputs.mode == 'measured'
+        env:
+          CUTOVER_EVIDENCE_PUBLIC_KEY_PEM: ${{ vars.CUTOVER_EVIDENCE_PUBLIC_KEY_PEM }}
+        run: |
+          test -n "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM"
+          umask 077
+          printf '%s\n' "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM" > /tmp/cutover-evidence.pub.pem
+          python3 scripts/cutover-readiness.py import-pilot \
+            --source artifacts/pilot-load/scheduled/report.json \
+            --environment-manifest /tmp/cutover-environment.json \
+            --trusted-environment-key /tmp/cutover-evidence.pub.pem \
+            --output artifacts/pilot-load/scheduled/differential.json
+          python3 scripts/cutover-readiness.py import-pilot \
+            --source artifacts/pilot-load/component-scheduled/report.json \
+            --environment-manifest /tmp/cutover-environment.json \
+            --trusted-environment-key /tmp/cutover-evidence.pub.pem \
+            --output artifacts/pilot-load/component-scheduled/load.json
+          for report in \
+            artifacts/pilot-load/scheduled/differential.json \
+            artifacts/pilot-load/component-scheduled/load.json; do
+            python3 scripts/cutover-readiness.py verify-unsigned-hash \
+              --report "$report" \
+              --expected-type "$(jq -er .report_type "$report")"
+          done
+          (
+            cd artifacts/pilot-load
+            sha256sum \
+              scheduled/differential.json \
+              component-scheduled/load.json \
+              > CUTOVER_SHA256SUMS
+          )
+      - name: Upload pilot reports and logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pilot-load-scheduled
+          path: |
+            artifacts/pilot-load/scheduled/
+            artifacts/pilot-load/component-scheduled/
+            artifacts/pilot-load/CUTOVER_SHA256SUMS
+          if-no-files-found: error
+
+  sign-evidence:
+    name: Protected Keyless Pilot Evidence Signer
+    needs: scheduled
+    if: >-
+      always() &&
+      needs.scheduled.result == 'success' &&
+      needs.scheduled.outputs.mode == 'measured' &&
+      github.repository == 'Layr-Labs/d-inference' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: cutover-evidence-signer
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Verify protected immutable signer context
+        run: |
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_REF" = \
+            "$GITHUB_REPOSITORY/.github/workflows/pilot-load.yml@$GITHUB_REF"
+      - name: Download successful test-job artifact without repository checkout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: pilot-load-scheduled
+          path: /tmp/pilot-evidence
+      - name: Verify artifact hashes and unsigned canonical envelopes
+        run: |
+          (
+            cd /tmp/pilot-evidence
+            sha256sum --check CUTOVER_SHA256SUMS
+          )
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          reports = (
+              Path("/tmp/pilot-evidence/scheduled/differential.json"),
+              Path("/tmp/pilot-evidence/component-scheduled/load.json"),
+          )
+          for report_path in reports:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              integrity = report.get("integrity")
+              if not isinstance(integrity, dict) or "signature" in integrity:
+                  raise SystemExit(f"{report_path} is not an unsigned hashed report")
+              payload = {key: value for key, value in report.items() if key != "integrity"}
+              encoded = json.dumps(
+                  payload,
+                  ensure_ascii=False,
+                  allow_nan=False,
+                  separators=(",", ":"),
+                  sort_keys=True,
+              ).encode()
+              if hashlib.sha256(encoded).hexdigest() != integrity.get("canonical_sha256"):
+                  raise SystemExit(f"{report_path} canonical hash mismatch")
+          PY
+      - name: Create GitHub artifact attestations after hash verification
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            /tmp/pilot-evidence/scheduled/differential.json
+            /tmp/pilot-evidence/component-scheduled/load.json
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Keyless-sign and verify attested evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/pilot-load.yml@${GITHUB_REF}"
+          for report in \
+            /tmp/pilot-evidence/scheduled/differential.json \
+            /tmp/pilot-evidence/component-scheduled/load.json; do
+            cosign sign-blob --yes \
+              --bundle "${report}.sigstore.json" \
+              "$report"
+            gh attestation download "$report" \
+              --repo "$GITHUB_REPOSITORY" \
+              > "${report}.github-attestation.jsonl"
+            cosign verify-blob \
+              --bundle "${report}.sigstore.json" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-github-workflow-sha "$GITHUB_SHA" \
+              --certificate-github-workflow-ref "$GITHUB_REF" \
+              --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+              "$report"
+            gh attestation verify "$report" \
+              --bundle "${report}.github-attestation.jsonl" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow .github/workflows/pilot-load.yml
+          done
+      - name: Upload authenticated pilot evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pilot-keyless-evidence
+          path: |
+            /tmp/pilot-evidence/scheduled/differential.json
+            /tmp/pilot-evidence/scheduled/differential.json.sigstore.json
+            /tmp/pilot-evidence/scheduled/differential.json.github-attestation.jsonl
+            /tmp/pilot-evidence/component-scheduled/load.json
+            /tmp/pilot-evidence/component-scheduled/load.json.sigstore.json
+            /tmp/pilot-evidence/component-scheduled/load.json.github-attestation.jsonl
+          if-no-files-found: error

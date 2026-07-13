@@ -102,3 +102,54 @@ func TestAccountLinkedFaultStateSurvivesReconnect(t *testing.T) {
 		return reg.ProviderBreakerOpen(sess2)
 	})
 }
+
+func TestProviderLinkMigratesUnlinkedPublicKeyEarnings(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	defer srv.Close()
+
+	const (
+		accountID = "linked-earnings-account"
+		rawToken  = "eigeninference-pt-linked-earnings"
+		earned    = int64(75_000)
+	)
+	publicKey := testPublicKeyB64()
+	if err := st.CreditWithdrawable(publicKey, earned, store.LedgerPayout, "unlinked-job"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateProviderToken(&store.ProviderToken{
+		TokenHash: sha256Hash(rawToken), AccountID: accountID, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	connection, _, err := websocket.Dial(
+		ctx,
+		"ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/provider",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	registration, _ := json.Marshal(protocol.RegisterMessage{
+		Type:     protocol.TypeRegister,
+		Hardware: protocol.Hardware{ChipName: "Apple M3 Max", MemoryGB: 64},
+		Models:   []protocol.ModelInfo{{ID: "model", ModelType: "chat", Quantization: "4bit"}},
+		Backend:  "mlx-swift", PublicKey: publicKey, AuthToken: rawToken,
+		EncryptedResponseChunks: true,
+	})
+	if err := connection.Write(ctx, websocket.MessageText, registration); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 5*time.Second, "unlinked earnings migrated", func() bool {
+		return st.GetBalance(publicKey) == 0 &&
+			st.GetBalance(accountID) == earned &&
+			st.GetWithdrawableBalance(accountID) == earned
+	})
+}

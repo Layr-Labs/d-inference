@@ -1,11 +1,13 @@
 import Foundation
 import Testing
+
 @testable import ProviderCore
 
 @Test func registerEncodingUsesSnakeCaseAndPreservesRawAttestation() throws {
     let rawAttestation = #"{"signature":"sig","attestation":{"z":1,"a":[true,false],"path":"a/b"}}"#
     let rawData = Data(rawAttestation.utf8)
-    let message = ProviderMessage.register(ProviderMessage.Register(
+    let message = ProviderMessage.register(
+        ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
         backend: "mlx_swift_lm",
@@ -41,7 +43,8 @@ import Testing
 
 @Test func registerEncodesPrivateOnlyOnlyWhenTrue() throws {
     // Default (false): the flag is omitted, mirroring the Go `omitempty` tag.
-    let off = ProviderMessage.register(ProviderMessage.Register(
+    let off = ProviderMessage.register(
+        ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
         backend: "mlx_swift_lm"
@@ -50,7 +53,8 @@ import Testing
     #expect(offObject["private_only"] == nil)
 
     // Explicit true: encoded as snake_case and round-trips back to true.
-    let on = ProviderMessage.register(ProviderMessage.Register(
+    let on = ProviderMessage.register(
+        ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
         backend: "mlx_swift_lm",
@@ -69,7 +73,8 @@ import Testing
 
 @Test func registerEncodesAPNsFieldsOnlyWhenPresent() throws {
     // Omitted when nil (mirrors Go `omitempty`).
-    let off = ProviderMessage.register(ProviderMessage.Register(
+    let off = ProviderMessage.register(
+        ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
         backend: "mlx_swift_lm"
@@ -79,7 +84,8 @@ import Testing
     #expect(offObject["apns_environment"] == nil)
 
     // Present: snake_case keys, round-trips back to the same values.
-    let on = ProviderMessage.register(ProviderMessage.Register(
+    let on = ProviderMessage.register(
+        ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
         backend: "mlx_swift_lm",
@@ -105,7 +111,8 @@ import Testing
     // This is the ATTESTED registration (production-common): every Register field
     // must survive this path too, or it silently drops on the wire.
     let raw = #"{"signature":"sig","blob":{"a":1,"b":[true,false]}}"#
-    let message = ProviderMessage.register(ProviderMessage.Register(
+    let message = ProviderMessage.register(
+        ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
         backend: "mlx_swift_lm",
@@ -152,20 +159,23 @@ import Testing
 
 @Test func providerMessagesRoundTripThroughCodableEnvelope() throws {
     let messages: [ProviderMessage] = [
-        .register(ProviderMessage.Register(
+        .register(
+            ProviderMessage.Register(
             hardware: sampleHardware(),
             models: [sampleModel()],
             backend: "mlx_swift_lm",
             encryptedResponseChunks: true
         )),
-        .heartbeat(ProviderMessage.Heartbeat(
+        .heartbeat(
+            ProviderMessage.Heartbeat(
             status: .serving,
             activeModel: "mlx-community/Qwen2.5-7B-4bit",
             warmModels: ["mlx-community/Qwen2.5-7B-4bit"],
             stats: ProviderStats(requestsServed: 4, tokensGenerated: 4096),
             systemMetrics: SystemMetrics(memoryPressure: 0.2, cpuUsage: 0.3, thermalState: .nominal),
             backendCapacity: BackendCapacity(
-                slots: [BackendSlotCapacity(
+                    slots: [
+                        BackendSlotCapacity(
                     model: "mlx-community/Qwen2.5-7B-4bit",
                     state: "running",
                     numRunning: 1,
@@ -173,7 +183,8 @@ import Testing
                     activeTokens: 512,
                     maxTokensPotential: 2048,
                     maxConcurrency: 4
-                )],
+                        )
+                    ],
                 gpuMemoryActiveGb: 8.5,
                 gpuMemoryPeakGb: 9.0,
                 gpuMemoryCacheGb: 1.25,
@@ -181,26 +192,31 @@ import Testing
             )
         )),
         .inferenceAccepted(ProviderMessage.InferenceAccepted(requestId: "req-accepted")),
-        .inferenceResponseChunk(ProviderMessage.InferenceResponseChunk(
+        .inferenceResponseChunk(
+            ProviderMessage.InferenceResponseChunk(
             requestId: "req-chunk",
             data: "data: {\"choices\":[]}\n\n"
         )),
-        .inferenceResponseChunk(ProviderMessage.InferenceResponseChunk(
+        .inferenceResponseChunk(
+            ProviderMessage.InferenceResponseChunk(
             requestId: "req-encrypted",
             encryptedData: EncryptedPayload(ephemeralPublicKey: "ZXBoZW1lcmFs", ciphertext: "Y2lwaGVy")
         )),
-        .inferenceComplete(ProviderMessage.InferenceComplete(
+        .inferenceComplete(
+            ProviderMessage.InferenceComplete(
             requestId: "req-complete",
             usage: UsageInfo(promptTokens: 12, completionTokens: 34),
             seSignature: "c2ln",
             responseHash: "aGFzaA=="
         )),
-        .inferenceError(ProviderMessage.InferenceError(
+        .inferenceError(
+            ProviderMessage.InferenceError(
             requestId: "req-error",
             error: "model not loaded",
             statusCode: 503
         )),
-        .attestationResponse(ProviderMessage.AttestationResponse(
+        .attestationResponse(
+            ProviderMessage.AttestationResponse(
             nonce: "bm9uY2U=",
             signature: "c2ln",
             statusSignature: "c3RhdHVz",
@@ -226,7 +242,8 @@ import Testing
 @Test func inferenceErrorEncodesErrorReasonOnlyWhenPresent() throws {
     // DAR-341: the normalized `error_reason` rides the inference-error message.
     // Present → snake_case key on the wire + round-trips back to the value.
-    let withReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+    let withReason = ProviderMessage.inferenceError(
+        ProviderMessage.InferenceError(
         requestId: "req-error",
         error: "(Jinja.TemplateException error 1.)",
         statusCode: 500,
@@ -243,7 +260,8 @@ import Testing
 
     // Absent (nil) → the key is OMITTED on the wire (mirrors Go `omitempty`) and
     // round-trips back to nil.
-    let withoutReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+    let withoutReason = ProviderMessage.inferenceError(
+        ProviderMessage.InferenceError(
         requestId: "req-error",
         error: "model not loaded",
         statusCode: 503
@@ -269,15 +287,18 @@ import Testing
 
     // Provider → coordinator status replies (covers all three lifecycle states)
     let replies: [ProviderMessage] = [
-        .loadModelStatus(ProviderMessage.LoadModelStatus(
+        .loadModelStatus(
+            ProviderMessage.LoadModelStatus(
             modelId: "mlx-community/Qwen3-0.6B-8bit",
             status: .started
         )),
-        .loadModelStatus(ProviderMessage.LoadModelStatus(
+        .loadModelStatus(
+            ProviderMessage.LoadModelStatus(
             modelId: "mlx-community/Qwen3-0.6B-8bit",
             status: .succeeded
         )),
-        .loadModelStatus(ProviderMessage.LoadModelStatus(
+        .loadModelStatus(
+            ProviderMessage.LoadModelStatus(
             modelId: "mlx-community/Qwen3-0.6B-8bit",
             status: .failed,
             error: "model not in local cache"
@@ -295,7 +316,8 @@ import Testing
     }
 
     // Failed status must surface the error string on the wire.
-    let failed: ProviderMessage = .loadModelStatus(ProviderMessage.LoadModelStatus(
+    let failed: ProviderMessage = .loadModelStatus(
+        ProviderMessage.LoadModelStatus(
         modelId: "model-x",
         status: .failed,
         error: "GPU OOM"
@@ -308,7 +330,8 @@ import Testing
 
 @Test func prefetchModelMessagesRoundTripWithCoordinator() throws {
     // Coordinator → provider prefetch request (decode a Go-emitted wire form).
-    let goPrefetchRequest = #"{"type":"prefetch_model","model_id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","priority":5}"#
+    let goPrefetchRequest =
+        #"{"type":"prefetch_model","model_id":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","priority":5}"#
     let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goPrefetchRequest)
     guard case .prefetchModel(let pf) = decoded else {
         throw TestFailure.unexpectedMessage
@@ -318,7 +341,10 @@ import Testing
 
     // priority is omitempty on the Go side: a request without it decodes to 0.
     let noPriority = #"{"type":"prefetch_model","model_id":"m"}"#
-    guard case .prefetchModel(let pf0) = try ProviderProtocolCodec.decodeCoordinatorMessage(from: noPriority) else {
+    guard
+        case .prefetchModel(let pf0) = try ProviderProtocolCodec.decodeCoordinatorMessage(
+            from: noPriority)
+    else {
         throw TestFailure.unexpectedMessage
     }
     #expect(pf0.priority == 0)
@@ -333,10 +359,12 @@ import Testing
     let model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
     let replies: [ProviderMessage] = [
         .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(modelId: model, status: .started)),
-        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+        .prefetchModelStatus(
+            ProviderMessage.PrefetchModelStatus(
             modelId: model, status: .downloading, bytesDone: 1_048_576, bytesTotal: 15_600_000_000)),
         .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(modelId: model, status: .verified)),
-        .prefetchModelStatus(ProviderMessage.PrefetchModelStatus(
+        .prefetchModelStatus(
+            ProviderMessage.PrefetchModelStatus(
             modelId: model, status: .failed, error: "hash mismatch")),
     ]
     for reply in replies {
@@ -362,7 +390,8 @@ import Testing
     // Coordinator → provider declarative desired-state (decode a Go-emitted wire
     // form). model_name / desired_build / previous_build are snake_case; the
     // first entry carries a previous build (mid-rollout), the second does not.
-    let goDesired = #"{"type":"desired_models","models":[{"model_name":"gemma-4-26b","desired_build":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","previous_build":"mlx-community/gemma-4-26B-A4B-it-fp8"},{"model_name":"qwen-0.6b","desired_build":"mlx-community/Qwen3-0.6B-8bit"}]}"#
+    let goDesired =
+        #"{"type":"desired_models","models":[{"model_name":"gemma-4-26b","desired_build":"mlx-community/gemma-4-26B-A4B-it-qat-4bit","previous_build":"mlx-community/gemma-4-26B-A4B-it-fp8"},{"model_name":"qwen-0.6b","desired_build":"mlx-community/Qwen3-0.6B-8bit"}]}"#
     let decoded = try ProviderProtocolCodec.decodeCoordinatorMessage(from: goDesired)
     guard case .desiredModels(let desired) = decoded else {
         throw TestFailure.unexpectedMessage
@@ -393,7 +422,8 @@ import Testing
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: encoded) == decoded)
 
     // An empty/absent models array decodes to an empty list (no crash).
-    let empty = try ProviderProtocolCodec.decodeCoordinatorMessage(from: #"{"type":"desired_models"}"#)
+    let empty = try ProviderProtocolCodec.decodeCoordinatorMessage(
+        from: #"{"type":"desired_models"}"#)
     guard case .desiredModels(let emptyDesired) = empty else {
         throw TestFailure.unexpectedMessage
     }
@@ -414,7 +444,8 @@ import Testing
     #expect(obj["model_name"] as? String == "gemma-4-26b")
     #expect(obj["desired_build"] as? String == "build-desired")
     #expect(obj["previous_build"] as? String == "build-previous")
-    #expect(try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: data) == withPrevious)
+    #expect(
+        try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: data) == withPrevious)
 
     // No previous_build → the key is omitted (Swift synthesized optional encode).
     let noPrevious = CoordinatorMessage.DesiredModelEntry(
@@ -425,7 +456,9 @@ import Testing
     let noPrevObj = try #require(try JSONSerialization.jsonObject(with: noPrevData) as? [String: Any])
     #expect(noPrevObj["previous_build"] == nil)
     #expect(noPrevObj.keys.contains("previous_build") == false)
-    #expect(try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: noPrevData) == noPrevious)
+    #expect(
+        try JSONDecoder().decode(CoordinatorMessage.DesiredModelEntry.self, from: noPrevData)
+            == noPrevious)
 }
 
 @Test func modelsUpdateRoundTripsAndReusesModelInfoEncoding() throws {
@@ -462,8 +495,10 @@ import Testing
     #expect(decoded == message)
 
     // Decodes a Go-emitted wire form too (forward compat with the coordinator).
-    let goWire = #"{"type":"models_update","models":[{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"weight_hash":"deadbeef"}]}"#
-    guard case .modelsUpdate(let u) = try ProviderProtocolCodec.decodeProviderMessage(from: goWire) else {
+    let goWire =
+        #"{"type":"models_update","models":[{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"weight_hash":"deadbeef"}]}"#
+    guard case .modelsUpdate(let u) = try ProviderProtocolCodec.decodeProviderMessage(from: goWire)
+    else {
         throw TestFailure.unexpectedMessage
     }
     #expect(u.models.count == 1)
@@ -481,7 +516,8 @@ import Testing
 
     // true → encoded as true, round-trips.
     var info = ModelInfo(id: "org/m", sizeBytes: 1024, estimatedMemoryGb: 1.5, templateRenderOK: true)
-    var obj = try #require(try JSONSerialization.jsonObject(with: encoder.encode(info)) as? [String: Any])
+    var obj = try #require(
+        try JSONSerialization.jsonObject(with: encoder.encode(info)) as? [String: Any])
     #expect(obj["template_render_ok"] as? Bool == true)
     #expect(try JSONDecoder().decode(ModelInfo.self, from: encoder.encode(info)) == info)
 
@@ -501,13 +537,15 @@ import Testing
     #expect(decoded == info)
 
     // Decodes a Go-emitted wire form carrying the field (protocol symmetry).
-    let goWire = #"{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"template_render_ok":false}"#
+    let goWire =
+        #"{"id":"org/m","size_bytes":1024,"estimated_memory_gb":1.5,"template_render_ok":false}"#
     let fromGo = try JSONDecoder().decode(ModelInfo.self, from: Data(goWire.utf8))
     #expect(fromGo.templateRenderOK == false)
 }
 
 @Test func coordinatorMessagesDecodeAndEncodeWithSnakeCaseKeys() throws {
-    let encryptedRequest = #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
+    let encryptedRequest =
+        #"{"type":"inference_request","request_id":"go-enc-req-1","body":null,"encrypted_body":{"ephemeral_public_key":"ZXBoZW1lcmFs","ciphertext":"Y2lwaGVy"}}"#
     let request = try ProviderProtocolCodec.decodeCoordinatorMessage(from: encryptedRequest)
     guard case .inferenceRequest(let inferenceRequest) = request else {
         throw TestFailure.unexpectedMessage
@@ -516,7 +554,8 @@ import Testing
     #expect(inferenceRequest.body.isNull)
     #expect(inferenceRequest.encryptedBody?.ephemeralPublicKey == "ZXBoZW1lcmFs")
 
-    let status = CoordinatorMessage.runtimeStatus(CoordinatorMessage.RuntimeStatus(
+    let status = CoordinatorMessage.runtimeStatus(
+        CoordinatorMessage.RuntimeStatus(
         verified: false,
         mismatches: [RuntimeMismatch(component: "runtime", expected: "good", got: "bad")]
     ))
@@ -529,12 +568,14 @@ import Testing
 }
 
 @Test func emptyOptionalCollectionsAreOmitted() throws {
-    let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+    let heartbeat = ProviderMessage.heartbeat(
+        ProviderMessage.Heartbeat(
         status: .idle,
         stats: ProviderStats(),
         systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal)
     ))
-    let heartbeatJSON = String(
+    let heartbeatJSON =
+        String(
         data: try ProviderProtocolCodec.encodeProviderMessage(heartbeat),
         encoding: .utf8
     ) ?? ""
@@ -542,9 +583,12 @@ import Testing
     #expect(!heartbeatJSON.contains("active_model"))
     #expect(!heartbeatJSON.contains("warm_models"))
     #expect(!heartbeatJSON.contains("backend_capacity"))
+    #expect(!heartbeatJSON.contains("model_state_revision"))
 
-    let runtimeStatus = CoordinatorMessage.runtimeStatus(CoordinatorMessage.RuntimeStatus(verified: true))
-    let runtimeJSON = String(
+    let runtimeStatus = CoordinatorMessage.runtimeStatus(
+        CoordinatorMessage.RuntimeStatus(verified: true))
+    let runtimeJSON =
+        String(
         data: try ProviderProtocolCodec.encodeCoordinatorMessage(runtimeStatus),
         encoding: .utf8
     ) ?? ""
@@ -630,14 +674,16 @@ import Testing
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyPresentAndNonzero() throws {
-    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":1,"active_tokens":3000,"max_tokens_potential":8000,"max_concurrency":4}"#
+    let raw =
+        #"{"model":"test","state":"running","num_running":2,"num_waiting":1,"active_tokens":3000,"max_tokens_potential":8000,"max_concurrency":4}"#
     let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
 
     #expect(decoded.maxConcurrency == 4)
 }
 
 @Test func backendSlotCapacityDecodesOldPayloadWithoutAdaptiveFields() throws {
-    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}"#
+    let raw =
+        #"{"model":"test","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}"#
     let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
 
     #expect(decoded.model == "test")
@@ -662,7 +708,8 @@ import Testing
 }
 
 @Test func backendSlotCapacityDecodesMaxConcurrencyZero() throws {
-    let raw = #"{"model":"test","state":"running","num_running":2,"num_waiting":1,"active_tokens":3000,"max_tokens_potential":8000,"max_concurrency":0}"#
+    let raw =
+        #"{"model":"test","state":"running","num_running":2,"num_waiting":1,"active_tokens":3000,"max_tokens_potential":8000,"max_concurrency":0}"#
     let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(raw.utf8))
 
     #expect(decoded.maxConcurrency == 0)
@@ -764,7 +811,8 @@ import Testing
     // Challenge-response wire shape: no hypervisor_active key, ever -- the
     // canonical status bytes (StatusCanonical) omit it too, so the coordinator
     // and provider sign/verify the same bytes.
-    let message = ProviderMessage.attestationResponse(ProviderMessage.AttestationResponse(
+    let message = ProviderMessage.attestationResponse(
+        ProviderMessage.AttestationResponse(
         nonce: "bm9uY2U=",
         signature: "c2ln",
         statusSignature: "c3RhdHVz",
@@ -789,13 +837,15 @@ import Testing
 }
 
 @Test func heartbeatBackendCapacityEncodesSnakeCaseFields() throws {
-    let heartbeat = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+    let heartbeat = ProviderMessage.heartbeat(
+        ProviderMessage.Heartbeat(
         status: .serving,
         activeModel: "mlx-community/Qwen2.5-7B-4bit",
         stats: ProviderStats(requestsServed: 1, tokensGenerated: 2),
         systemMetrics: SystemMetrics(memoryPressure: 0.1, cpuUsage: 0.2, thermalState: .nominal),
         backendCapacity: BackendCapacity(
-            slots: [BackendSlotCapacity(
+                slots: [
+                    BackendSlotCapacity(
                 model: "mlx-community/Qwen2.5-7B-4bit",
                 state: "running",
                 numRunning: 1,
@@ -810,7 +860,8 @@ import Testing
                 queuedTokenBudget: 7000,
                 kvBytesPerToken: 262144,
                 modelLoadTimeMs: 8200
-            )],
+                    )
+                ],
             gpuMemoryActiveGb: 5.5,
             gpuMemoryPeakGb: 6.5,
             gpuMemoryCacheGb: 1.5,
@@ -843,7 +894,8 @@ import Testing
 
 @Test func heartbeatAPNsTokenRoundTripsAndOmitsWhenAbsent() throws {
     // W5 Fix 2: with a token, the snake_case fields are present and round-trip.
-    let withToken = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+    let withToken = ProviderMessage.heartbeat(
+        ProviderMessage.Heartbeat(
         status: .idle,
         stats: ProviderStats(),
         systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
@@ -858,12 +910,14 @@ import Testing
 
     // Without a token (steady state / legacy): both fields omitted — omitempty
     // parity with the Go HeartbeatMessage, or the symmetry tests drift.
-    let noToken = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+    let noToken = ProviderMessage.heartbeat(
+        ProviderMessage.Heartbeat(
         status: .idle,
         stats: ProviderStats(),
         systemMetrics: SystemMetrics(memoryPressure: 0, cpuUsage: 0, thermalState: .nominal)
     ))
-    let noTokenJSON = String(
+    let noTokenJSON =
+        String(
         data: try ProviderProtocolCodec.encodeProviderMessage(noToken),
         encoding: .utf8
     ) ?? ""

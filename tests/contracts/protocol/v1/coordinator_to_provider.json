@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "direction": "coordinator_to_provider",
+  "encoding": "json_text",
+  "cases": [
+    {
+      "name": "inference_request_plain",
+      "message_type": "inference_request",
+      "wire": "{\"type\":\"inference_request\",\"request_id\":\"request-a\",\"body\":{\"model\":\"model-a\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"stream\":true,\"max_tokens\":256,\"temperature\":0.25,\"endpoint\":\"/v1/chat/completions\"}}",
+      "exact_bytes": false
+    },
+    {
+      "name": "inference_request_encrypted",
+      "message_type": "inference_request",
+      "wire": "{\"type\":\"inference_request\",\"request_id\":\"request-a\",\"body\":{\"model\":\"\",\"messages\":null,\"stream\":false},\"encrypted_body\":{\"ephemeral_public_key\":\"sender-key\",\"ciphertext\":\"nonce-and-box\"}}",
+      "exact_bytes": false,
+      "notes": "The zero-value Go body is present for v1 compatibility; Swift also accepts body:null."
+    },
+    {
+      "name": "cancel",
+      "message_type": "cancel",
+      "wire": "{\"type\":\"cancel\",\"request_id\":\"request-a\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "attestation_challenge",
+      "message_type": "attestation_challenge",
+      "wire": "{\"type\":\"attestation_challenge\",\"nonce\":\"nonce\",\"timestamp\":\"2026-07-10T00:00:00Z\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "runtime_status_verified",
+      "message_type": "runtime_status",
+      "wire": "{\"type\":\"runtime_status\",\"verified\":true}",
+      "exact_bytes": false,
+      "notes": "Empty mismatches are omitted."
+    },
+    {
+      "name": "runtime_status_mismatch",
+      "message_type": "runtime_status",
+      "wire": "{\"type\":\"runtime_status\",\"verified\":false,\"mismatches\":[{\"component\":\"runtime\",\"expected\":\"good\",\"got\":\"bad\"}]}",
+      "exact_bytes": false
+    },
+    {
+      "name": "load_model",
+      "message_type": "load_model",
+      "wire": "{\"type\":\"load_model\",\"model_id\":\"model-a\"}",
+      "exact_bytes": false
+    },
+    {
+      "name": "prefetch_model_default_priority",
+      "message_type": "prefetch_model",
+      "wire": "{\"type\":\"prefetch_model\",\"model_id\":\"model-a\"}",
+      "exact_bytes": false,
+      "notes": "Zero priority is omitted."
+    },
+    {
+      "name": "prefetch_model_priority",
+      "message_type": "prefetch_model",
+      "wire": "{\"type\":\"prefetch_model\",\"model_id\":\"model-a\",\"priority\":5}",
+      "exact_bytes": false
+    },
+    {
+      "name": "desired_models",
+      "message_type": "desired_models",
+      "wire": "{\"type\":\"desired_models\",\"models\":[{\"model_name\":\"public-a\",\"desired_build\":\"model-a\",\"previous_build\":\"model-old\"}]}",
+      "exact_bytes": false
+    },
+    {
+      "name": "trust_status",
+      "message_type": "trust_status",
+      "wire": "{\"type\":\"trust_status\",\"trust_level\":\"hardware\",\"status\":\"online\",\"reason\":\"verified\"}",
+      "exact_bytes": false
+    }
+  ]
+}

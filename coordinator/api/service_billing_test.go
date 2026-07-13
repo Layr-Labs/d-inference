@@ -52,18 +52,22 @@ func TestServiceAccountBilledAtPlatformPriceNoMinimum(t *testing.T) {
 
 	initial := ledger.Balance(consumerID)
 	const reserve int64 = 1_000_000
-	if err := ledger.Charge(consumerID, reserve, "reserve:"+consumerID); err != nil {
-		t.Fatal(err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, reserve, "svc-billing",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "svc-billing",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: reserve,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "svc-billing",
+		ReservationID:                    "svc-billing",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 reserve,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             reserve,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 	provider.AddPending(pr)
 

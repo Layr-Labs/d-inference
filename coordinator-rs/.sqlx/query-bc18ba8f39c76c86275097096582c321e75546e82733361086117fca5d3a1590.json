@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pg_backend_pid() AS \"backend_pid!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "backend_pid!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "bc18ba8f39c76c86275097096582c321e75546e82733361086117fca5d3a1590"
+}

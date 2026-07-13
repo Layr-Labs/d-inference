@@ -11,11 +11,11 @@
 /// `pushAttestationChallenge` / `pushInferenceRequest` / `pushCancel`, and
 /// drain captured messages via `snapshot()`.
 ///
-/// The mock does not pretend to be cryptographically meaningful: it generates
-/// no Secure Enclave material and does not validate signatures. It only
-/// exists to round-trip the wire format and the libsodium NaCl box, which are
-/// real (the encryption helpers run inside `NodeKeyPair`).
+/// Provider signatures are not validated, but replay-fence proofs use a real
+/// software P-256 key so protocol-v2 integration tests exercise the same
+/// register-ACK key binding and signature verification as production.
 
+import CryptoKit
 import Foundation
 import HTTPTypes
 import Hummingbird
@@ -23,9 +23,15 @@ import HummingbirdCore
 import HummingbirdWebSocket
 import Logging
 import NIOCore
+
 @testable import ProviderCore
 
 // MARK: - Public types
+
+public enum CapturedV2WireEvent: Sendable, Equatable {
+    case startAck(AttemptIdentity)
+    case binary(AttemptIdentity)
+}
 
 /// Captured wire messages received from the provider. Cumulative for the
 /// lifetime of the mock; tests inspect a snapshot after each interaction.
@@ -41,6 +47,16 @@ public struct CapturedMessages: Sendable {
     public var loadModelStatuses: [ProviderMessage.LoadModelStatus] = []
     public var prefetchModelStatuses: [ProviderMessage.PrefetchModelStatus] = []
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
+    public var prepared: [V2Prepared] = []
+    public var startAcks: [V2StartAck] = []
+    public var abortAcks: [V2AbortAck] = []
+    public var cancelAcks: [V2CancelAck] = []
+    public var providerTerminals: [V2ProviderTerminal] = []
+    public var structuredErrors: [V2StructuredError] = []
+    public var modelReadyEvents: [V2ModelReady] = []
+    public var modelGoneEvents: [V2ModelGone] = []
+    public var binaryFrames: [Data] = []
+    public var v2WireEvents: [CapturedV2WireEvent] = []
     public var telemetryBatches: [TelemetryBatch] = []
 
     public init() {}
@@ -169,10 +185,16 @@ public final class MockCoordinator: @unchecked Sendable {
 
     private let lock = NSLock()
     private var captured = CapturedMessages()
-    private var activeOutbound: WebSocketOutboundWriter?
+    private var activeOutbound:
+        (
+            id: UUID,
+            writer: WebSocketOutboundWriter
+        )?
+    private let replayFenceSigningKey = P256.Signing.PrivateKey()
     private var bound: BoundServer?
 
-    private let (eventStream, eventContinuation): (
+    private let (eventStream, eventContinuation):
+        (
         AsyncStream<MockEvent>, AsyncStream<MockEvent>.Continuation
     ) = {
         let (s, c) = AsyncStream<MockEvent>.makeStream(bufferingPolicy: .unbounded)
@@ -289,7 +311,9 @@ public final class MockCoordinator: @unchecked Sendable {
             self.bound = nil
             // Close the WS politely; ignore failures.
             if let outbound {
-                Task { try? await outbound.close(.goingAway, reason: nil) }
+                Task {
+                    try? await outbound.writer.close(.goingAway, reason: nil)
+                }
             }
             return bound
         }
@@ -351,7 +375,8 @@ public final class MockCoordinator: @unchecked Sendable {
             recipientPublicKey: providerPubKeyData,
             plaintext: chatRequestJSON
         )
-        let msg = CoordinatorMessage.inferenceRequest(.init(
+        let msg = CoordinatorMessage.inferenceRequest(
+            .init(
             requestId: requestId,
             body: .null,
             encryptedBody: payload
@@ -362,6 +387,131 @@ public final class MockCoordinator: @unchecked Sendable {
     public func pushCancel(requestId: String) async throws {
         let msg = CoordinatorMessage.cancel(.init(requestId: requestId))
         try await sendCoordinatorMessage(msg)
+    }
+
+    public func pushRegisterAcknowledgement(
+        providerID: ProviderID,
+        providerProcessGeneration: ProviderProcessGenerationID,
+        sessionEpoch: UInt64,
+        protocolCapabilities: ProtocolCapabilities? = nil,
+        coordinatorReplayFencePublicKey: String? = nil
+    ) async throws {
+        let replayKey =
+            protocolCapabilities?.coordinatorReplayFences == true
+            ? (coordinatorReplayFencePublicKey
+                ?? replayFenceSigningKey.publicKey.rawRepresentation.base64EncodedString())
+            : nil
+        try await sendCoordinatorMessage(
+            .registerAck(
+                V2RegisterAcknowledgement(
+                    providerID: providerID,
+                    providerProcessGeneration: providerProcessGeneration,
+                    sessionEpoch: sessionEpoch,
+                    protocolCapabilities: protocolCapabilities,
+                    coordinatorReplayFencePublicKey: replayKey
+                )))
+    }
+
+    /// Encrypt and send a protocol-v2 prepare. The returned consumer keypair
+    /// opens response binary frames, so tests exercise the real NaCl/V2 frame
+    /// crypto rather than substituting plaintext fixtures.
+    @discardableResult
+    public func pushV2Prepare(
+        identity: AttemptIdentity,
+        model: String,
+        providerPublicKeyBase64: String,
+        chatRequestJSON: Data
+    ) async throws -> NodeKeyPair {
+        guard let providerKey = Data(base64Encoded: providerPublicKeyBase64),
+            providerKey.count == 32
+        else {
+            throw MockCoordinatorError.invalidProviderPublicKey
+        }
+        let consumer = NodeKeyPair.generate()
+        let encryptedBody = try consumer.encryptPayload(
+            recipientPublicKey: providerKey,
+            plaintext: chatRequestJSON
+        )
+        try await sendCoordinatorMessage(
+            .prepare(
+                V2Prepare(
+                    identity: identity,
+                    model: model,
+                    requestDigest: try V2Prepare.digest(of: encryptedBody),
+                    encryptedBody: encryptedBody
+                )))
+        return consumer
+    }
+
+    public func pushV2Start(identity: AttemptIdentity) async throws {
+        try await sendCoordinatorMessage(.start(V2Start(identity: identity)))
+    }
+
+    public func pushV2Abort(
+        identity: AttemptIdentity,
+        reason: String? = nil
+    ) async throws {
+        try await sendCoordinatorMessage(
+            .abort(
+                V2Abort(
+                    identity: identity, reason: reason)))
+    }
+
+    public func pushV2Cancel(
+        identity: AttemptIdentity,
+        reason: String? = nil
+    ) async throws {
+        try await sendCoordinatorMessage(
+            .v2Cancel(
+                V2Cancel(
+                    identity: identity, reason: reason)))
+    }
+
+    public func pushV2TerminalAck(
+        identity: AttemptIdentity,
+        terminalDigest: ProtocolV2Digest,
+        disposition: V2TerminalDisposition
+    ) async throws {
+        try await sendCoordinatorMessage(
+            .terminalAck(
+                V2TerminalAck(
+                    identity: identity,
+                    terminalDigest: terminalDigest,
+                    disposition: disposition
+                )))
+    }
+
+    public func pushV2CoordinatorReplayFence(
+        providerID: ProviderID,
+        providerProcessGeneration: ProviderProcessGenerationID,
+        throughSessionEpoch: UInt64,
+        coordinatorRevision: UInt64,
+        validSignature: Bool = true
+    ) async throws {
+        let proofID = UUID().uuidString.lowercased()
+        let digest = try CoordinatorReplayFenceProof.signingDigest(
+            proofID: proofID,
+            providerID: providerID.description,
+            providerProcessGeneration: providerProcessGeneration.description,
+            throughSessionEpoch: throughSessionEpoch,
+            coordinatorRevision: coordinatorRevision
+        )
+        let signingKey =
+            validSignature
+            ? replayFenceSigningKey
+            : P256.Signing.PrivateKey()
+        let proof = try CoordinatorReplayFenceProof(
+            proofID: proofID,
+            providerID: providerID.description,
+            providerProcessGeneration: providerProcessGeneration.description,
+            throughSessionEpoch: throughSessionEpoch,
+            coordinatorRevision: coordinatorRevision,
+            proofDigest: digest,
+            coordinatorSignature: try signingKey.signature(
+                for: digest.bytes
+            ).derRepresentation
+        )
+        try await sendCoordinatorMessage(.coordinatorReplayFence(proof))
     }
 
     public func pushLoadModel(modelId: String) async throws {
@@ -375,7 +525,7 @@ public final class MockCoordinator: @unchecked Sendable {
         let outbound: WebSocketOutboundWriter? = lock.withLock {
             let o = self.activeOutbound
             self.activeOutbound = nil
-            return o
+            return o?.writer
         }
         if let outbound {
             try? await outbound.close(.goingAway, reason: "mock dropping")
@@ -385,7 +535,9 @@ public final class MockCoordinator: @unchecked Sendable {
     // MARK: Internals
 
     private func sendCoordinatorMessage(_ msg: CoordinatorMessage) async throws {
-        let outbound: WebSocketOutboundWriter? = lock.withLock { activeOutbound }
+        let outbound: WebSocketOutboundWriter? = lock.withLock {
+            activeOutbound?.writer
+        }
         guard let outbound else { throw MockCoordinatorError.noActiveWebSocket }
         let json = try ProviderProtocolCodec.encodeCoordinatorMessageString(msg)
         try await outbound.write(.text(json))
@@ -399,11 +551,14 @@ public final class MockCoordinator: @unchecked Sendable {
         // ----- WebSocket: /ws/provider -----
         router.ws("/ws/provider") { [weak self] inbound, outbound, _ in
             guard let self else { return }
-            self.lock.withLock { self.activeOutbound = outbound }
+            let connectionID = UUID()
+            self.lock.withLock {
+                self.activeOutbound = (connectionID, outbound)
+            }
             self.eventContinuation.yield(.wsConnected)
             defer {
                 self.lock.withLock {
-                    if self.activeOutbound != nil {
+                    if self.activeOutbound?.id == connectionID {
                         self.activeOutbound = nil
                     }
                 }
@@ -417,9 +572,17 @@ public final class MockCoordinator: @unchecked Sendable {
                     case .text(let text):
                         self.handleProviderMessage(text)
                     case .binary(let buffer):
-                        if let text = buffer.getString(at: buffer.readerIndex,
-                                                      length: buffer.readableBytes) {
-                            self.handleProviderMessage(text)
+                        let wire = Data(
+                            buffer.getBytes(
+                                at: buffer.readerIndex,
+                                length: buffer.readableBytes
+                            ) ?? [])
+                        let identity = try? V2BinaryFrame.decode(wire).header.attemptIdentity
+                        self.lock.withLock {
+                            self.captured.binaryFrames.append(wire)
+                            if let identity {
+                                self.captured.v2WireEvents.append(.binary(identity))
+                            }
                         }
                     }
                 }
@@ -599,6 +762,16 @@ public final class MockCoordinator: @unchecked Sendable {
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
+            case .prepared(let p): captured.prepared.append(p)
+            case .startAck(let a):
+                captured.startAcks.append(a)
+                captured.v2WireEvents.append(.startAck(a.identity))
+            case .abortAck(let a): captured.abortAcks.append(a)
+            case .cancelAck(let a): captured.cancelAcks.append(a)
+            case .providerTerminal(let t): captured.providerTerminals.append(t)
+            case .structuredError(let e): captured.structuredErrors.append(e)
+            case .modelReady(let e): captured.modelReadyEvents.append(e)
+            case .modelGone(let e): captured.modelGoneEvents.append(e)
             }
         }
         eventContinuation.yield(.providerMessage(parsed))
@@ -726,8 +899,8 @@ extension URL {
 
 // MARK: - NSLock convenience
 
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
+extension NSLock {
+    fileprivate func withLock<T>(_ body: () -> T) -> T {
         self.lock()
         defer { self.unlock() }
         return body()

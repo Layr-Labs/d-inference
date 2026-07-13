@@ -1,0 +1,185 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    candidates AS MATERIALIZED (\n                        SELECT jobs.job_id\n                        FROM rust_coord.inference_jobs AS jobs\n                        WHERE jobs.state IN (\n                            'reserved',\n                            'preparing',\n                            'prepared',\n                            'start_authorized',\n                            'running'\n                        )\n                          AND (\n                              jobs.worker_owner IS NULL\n                              OR jobs.lease_until <= NOW()\n                          )\n                        ORDER BY jobs.updated_at, jobs.job_id\n                        FOR UPDATE SKIP LOCKED\n                        LIMIT $4\n                    ),\n                    claimed AS (\n                        UPDATE rust_coord.inference_jobs AS jobs\n                        SET\n                            owner_epoch = $2,\n                            worker_owner = $3,\n                            lease_until = CASE\n                                WHEN jobs.state = 'running'\n                                     AND jobs.request_deadline > NOW()\n                                THEN GREATEST(\n                                    NOW()\n                                        + ($5::BIGINT * INTERVAL '1 millisecond'),\n                                    LEAST(\n                                        jobs.request_deadline,\n                                        NOW()\n                                            + (300000::BIGINT\n                                                * INTERVAL '1 millisecond')\n                                    )\n                                )\n                                ELSE NOW()\n                                    + ($5::BIGINT * INTERVAL '1 millisecond')\n                            END,\n                            version = jobs.version + 1,\n                            updated_at = NOW()\n                        FROM candidates, authority\n                        WHERE jobs.job_id = candidates.job_id\n                        RETURNING\n                            jobs.job_id,\n                            jobs.request_id,\n                            jobs.reservation_id,\n                            jobs.version,\n                            jobs.state,\n                            jobs.lease_until AS claimed_lease_until,\n                            (\n                                EXTRACT(EPOCH FROM jobs.start_deadline) * 1000\n                            )::BIGINT AS start_deadline_epoch_millis,\n                            (\n                                EXTRACT(EPOCH FROM jobs.request_deadline) * 1000\n                            )::BIGINT AS request_deadline_epoch_millis,\n                            (\n                                EXTRACT(EPOCH FROM jobs.lease_until) * 1000\n                            )::BIGINT AS lease_until_epoch_millis\n                    ),\n                    attempt_claim AS (\n                        UPDATE rust_coord.inference_attempts AS attempts\n                        SET\n                            owner_epoch = $2,\n                            worker_owner = $3,\n                            lease_until = claimed.claimed_lease_until,\n                            version = attempts.version + 1,\n                            updated_at = NOW()\n                        FROM claimed\n                        WHERE attempts.job_id = claimed.job_id\n                          AND attempts.state IN (\n                              'not_sent',\n                              'queued',\n                              'on_wire',\n                              'sent_unknown',\n                              'started'\n                          )\n                        RETURNING\n                            attempts.job_id,\n                            attempts.attempt_id,\n                            attempts.provider_id,\n                            attempts.provider_process_generation_id,\n                            attempts.session_epoch,\n                            attempts.lease_id,\n                            attempts.state AS attempt_state,\n                            attempts.version AS attempt_version\n                    )\n                    SELECT\n                        claimed.job_id,\n                        claimed.request_id,\n                        claimed.reservation_id,\n                        claimed.version,\n                        claimed.state,\n                        claimed.start_deadline_epoch_millis,\n                        claimed.request_deadline_epoch_millis,\n                        claimed.lease_until_epoch_millis,\n                        attempt_claim.attempt_id,\n                        attempt_claim.provider_id,\n                        attempt_claim.provider_process_generation_id,\n                        attempt_claim.session_epoch,\n                        attempt_claim.lease_id,\n                        attempt_claim.attempt_state,\n                        attempt_claim.attempt_version\n                    FROM claimed\n                    LEFT JOIN attempt_claim USING (job_id)\n                    ORDER BY claimed.job_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_jobs",
+            "name": "job_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "request_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_jobs",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "reservation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_jobs",
+            "name": "reservation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inference_jobs",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inference_jobs",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "start_deadline_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "request_deadline_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "lease_until_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "attempt_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "attempt_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "provider_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "provider_id"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "provider_process_generation_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "provider_process_generation_id"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "session_epoch",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "session_epoch"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "lease_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "lease_id"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "attempt_state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "attempt_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "inference_attempts",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      null,
+      null,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "fc4445b6f604cc53f9557bc9e5f8881b98e0f32a47db090f456b52303c82b076"
+}

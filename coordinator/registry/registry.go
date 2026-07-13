@@ -177,6 +177,12 @@ type PendingRequest struct {
 	// The post-inference charge adjusts for the difference between the
 	// actual cost and this reservation, preventing billing race conditions.
 	ReservedMicroUSD int64
+	// ReservationID is the stable financial operation identity shared by every
+	// sequential attempt for this logical request.
+	ReservationID string
+	// ReservedWithdrawableMicroUSD records exactly how much of the hold came
+	// from withdrawable earnings so release can restore provenance.
+	ReservedWithdrawableMicroUSD int64
 	// BaseReservedMicroUSD is the shared base reservation (platform price)
 	// charged once per request. ReservedMicroUSD may exceed it after a
 	// provider-specific top-up; the difference (the per-attempt "extra") must
@@ -184,11 +190,15 @@ type PendingRequest struct {
 	// timeout). The base itself is refunded once globally or settled by the
 	// winning attempt.
 	BaseReservedMicroUSD int64
+	// BaseReservedWithdrawableMicroUSD is the provenance component of the
+	// shared base reservation. Attempt-specific top-ups are tracked above it.
+	BaseReservedWithdrawableMicroUSD int64
 	// ServiceReservation marks a trusted service account request whose pre-router
 	// admission used an in-memory hold instead of a synchronous ledger debit.
 	ServiceReservation    bool
 	reservationMu         sync.Mutex
 	reservationFinalized  bool
+	terminalClaimed       atomic.Bool
 	routeOutcomeMu        sync.Mutex
 	routeOutcomeFinalized bool
 
@@ -368,6 +378,18 @@ func (pr *PendingRequest) IsReservationFinalized() bool {
 	return pr.reservationFinalized
 }
 
+// MarkTerminalClaimed fences consumer/disconnect cleanup once a provider
+// terminal has been received and removed from the pending map.
+func (pr *PendingRequest) MarkTerminalClaimed() {
+	if pr != nil {
+		pr.terminalClaimed.Store(true)
+	}
+}
+
+func (pr *PendingRequest) TerminalClaimed() bool {
+	return pr != nil && pr.terminalClaimed.Load()
+}
+
 // FinalizeReservation runs settle while holding the reservation finalization
 // lock and marks the reservation finalized only if settle succeeds. It returns
 // false when another terminal path already finalized the reservation.
@@ -461,6 +483,9 @@ type Provider struct {
 
 	// Account linkage (set when provider authenticates via device auth token)
 	AccountID string // internal account ID (from device auth flow)
+	// TokenHash links the ephemeral Go session row to its device credential.
+	// It is persisted only for atomic owner-initiated machine revocation.
+	TokenHash string
 
 	// PrivateOnly excludes this machine from the public fleet entirely: it
 	// serves only its owner's self-route requests. Reported at registration.
@@ -629,6 +654,29 @@ func (p *Provider) RemovePending(requestID string) *PendingRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.removePendingLocked(requestID)
+}
+
+// ClaimPendingTerminal marks and removes a pending request under one provider
+// lock so cleanup cannot observe a terminal-owned request as refundable.
+func (p *Provider) ClaimPendingTerminal(requestID string) *PendingRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr := p.pendingReqs[requestID]
+	if pr != nil {
+		pr.MarkTerminalClaimed()
+		delete(p.pendingReqs, requestID)
+	}
+	return pr
+}
+
+func (p *Provider) FencePendingTerminal(requestID string) *PendingRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pr := p.pendingReqs[requestID]
+	if pr != nil {
+		pr.MarkTerminalClaimed()
+	}
+	return pr
 }
 
 // removePendingLocked removes and returns a pending request. Caller must hold p.mu.
@@ -1202,8 +1250,9 @@ func (p *Provider) pendingLoadForModelLocked(model string) int {
 
 // Registry holds all connected providers and provides routing.
 type Registry struct {
-	mu        sync.RWMutex
-	providers map[string]*Provider
+	mu              sync.RWMutex
+	providers       map[string]*Provider
+	backgroundTasks atomic.Int64
 
 	queue *RequestQueue
 
@@ -2655,10 +2704,9 @@ func (r *Registry) DisconnectDuplicatesBySerial(keepID string, serial string) {
 
 // RemoveProviderBySerial reports whether any currently-connected provider
 // matches the identity (serial OR session id) and, if force is set, evicts them
-// from the in-memory map. The DELETE endpoint calls it first with force=false
-// to detect an online box (→409), then after the persisted record is purged it
-// may call with force=true to drop a lingering in-memory entry so an evict-race
-// can't re-persist. Returns true if a matching provider was connected.
+// from the in-memory map. The DELETE endpoint uses force=true before and after
+// the durable credential/trust deletion to fence the live transport and close
+// an evict race. Returns true if a matching provider was connected.
 func (r *Registry) RemoveProviderBySerial(serialOrID string, force bool) (online bool) {
 	if serialOrID == "" {
 		return false
@@ -3601,7 +3649,11 @@ func (r *Registry) Disconnect(id string) {
 	// Disconnect runs serially in the eviction loop and Close would block ~5s
 	// waiting for a handshake the stale peer won't send. No-op if already closed;
 	// outside r.mu so it can't stall the registry.
-	p.closeWriterNow()
+	writerCtx, writerCancel := context.WithTimeout(context.Background(), time.Second)
+	if !p.closeWriterAndWait(writerCtx) {
+		r.logger.Warn("provider writer did not stop before deadline", "provider_id", id)
+	}
+	writerCancel()
 
 	// Close this connection's session row (async; durable uptime history).
 	// Covers both graceful disconnects and evictStale (which calls Disconnect).
@@ -4433,9 +4485,13 @@ func (r *Registry) ProviderCountByMDMFailure() map[string]int {
 // don't lock individual providers — counts may be off-by-one under
 // heavy churn — that's acceptable for gauges.
 type FleetSnapshot struct {
-	Connected  int
-	Idle       int
-	QueueDepth int
+	Connected          int
+	Idle               int
+	Pending            int
+	QueueDepth         int
+	WriterDataDepth    int
+	WriterControlDepth int
+	WritersActive      int
 }
 
 // Snapshot returns aggregate counts for /metrics gauges. Cheap enough
@@ -4448,12 +4504,25 @@ func (r *Registry) Snapshot() FleetSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	idle := 0
+	pending := 0
+	writerDataDepth := 0
+	writerControlDepth := 0
+	writersActive := 0
 	for _, p := range r.providers {
 		p.mu.Lock()
 		isIdle := p.Status == StatusOnline && len(p.pendingReqs) == 0
+		pending += len(p.pendingReqs)
+		writer := p.writer
 		p.mu.Unlock()
 		if isIdle {
 			idle++
+		}
+		if writer != nil {
+			writerDataDepth += len(writer.queue)
+			writerControlDepth += len(writer.control)
+			if writer.writeDeadline.Load() != 0 {
+				writersActive++
+			}
 		}
 	}
 	q := 0
@@ -4461,9 +4530,13 @@ func (r *Registry) Snapshot() FleetSnapshot {
 		q = r.queue.TotalSize()
 	}
 	return FleetSnapshot{
-		Connected:  len(r.providers),
-		Idle:       idle,
-		QueueDepth: q,
+		Connected:          len(r.providers),
+		Idle:               idle,
+		Pending:            pending,
+		QueueDepth:         q,
+		WriterDataDepth:    writerDataDepth,
+		WriterControlDepth: writerControlDepth,
+		WritersActive:      writersActive,
 	}
 }
 
@@ -4793,18 +4866,33 @@ func (r *Registry) ProviderIDs() []string {
 // that haven't sent a heartbeat within the given timeout. It stops when
 // the context is cancelled.
 func (r *Registry) StartEvictionLoop(ctx context.Context, timeout time.Duration) {
-	ticker := time.NewTicker(timeout / 3)
 	saferun.Go(r.logger, "registry.evictionLoop", func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				r.evictStale(timeout)
-			}
-		}
+		r.RunEvictionLoop(ctx, timeout)
 	})
+}
+
+// RunEvictionLoop runs stale-provider eviction synchronously until ctx is
+// cancelled, allowing the serving process to join it before ownership handoff.
+func (r *Registry) RunEvictionLoop(ctx context.Context, timeout time.Duration) {
+	ticker := time.NewTicker(timeout / 3)
+	r.backgroundTasks.Add(1)
+	defer r.backgroundTasks.Add(-1)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.evictStale(timeout)
+		}
+	}
+}
+
+func (r *Registry) BackgroundTaskCount() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.backgroundTasks.Load()
 }
 
 func (r *Registry) evictStale(timeout time.Duration) {

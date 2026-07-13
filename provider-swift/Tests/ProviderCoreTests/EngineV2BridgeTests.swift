@@ -421,7 +421,8 @@ struct EngineV2TranslationTests {
 
     @Test("bridge resolves the stop set once at construction and stamps every request")
     func bridgeStampsStopTokens() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
         ]))
         let bridge = makeBridge(
@@ -440,24 +441,29 @@ struct EngineV2TranslationTests {
 
     @Test("bridge stamps the tenant cache scope as CBv2Request.cacheSalt")
     func bridgeStampsCacheSalt() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 0))
         ]))
         let bridge = makeBridge(engine: engine)
         // Coordinator path shape: scope decoded out-of-band, passed explicitly.
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2], request: makeRequest(), requestId: "req-salt-1",
             cacheScope: "tenant-scope"))
         // Internal-shape path: scope derived from the request's own
         // prompt_cache_key via `ChatCompletionRequest.cacheScope`.
-        _ = await record(await bridge.submit(
+        _ = await record(
+            await bridge.submit(
             request: makeRequest(promptCacheKey: "consumer-key"),
             requestId: "req-salt-2"))
         // `user` is the fallback identity when prompt_cache_key is absent.
-        _ = await record(await bridge.submit(
+        _ = await record(
+            await bridge.submit(
             request: makeRequest(user: "user-77"), requestId: "req-salt-3"))
         // No tenant identity at all → nil (engine cache-level salt fallback).
-        _ = await record(await bridge.submit(
+        _ = await record(
+            await bridge.submit(
             request: makeRequest(), requestId: "req-salt-4"))
         #expect(engine.submitted.count == 4)
         #expect(engine.submitted[0].cacheSalt == "tenant-scope")
@@ -474,7 +480,8 @@ struct EngineV2EventFramingTests {
 
     @Test("happy path: chunks then a single usage info, then finish")
     func happyPath() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
             .delta(text: " world", tokens: [11], logprobs: nil),
             // Empty-text delta (BPE intermediate): counted, never yielded.
@@ -500,7 +507,8 @@ struct EngineV2EventFramingTests {
 
     @Test("length finish frames usage like stop but preserves finish_reason 'length'")
     func lengthFramesLikeStop() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "x", tokens: [10], logprobs: nil),
             // Terminal under-reports the prompt (4 < the 5 tokens the bridge
             // tokenized) — the bridge-known count wins (legacy max() rule).
@@ -514,10 +522,12 @@ struct EngineV2EventFramingTests {
     /// Regression: the v2 bridge used to flatten `.length` into the same
     /// `.info` shape as `.stop`, so clients saw finish_reason "stop" on a
     /// max_tokens truncation. The reason now rides on GenerationEvent.info.
-    @Test("finish reason threads through: .length => 'length', .stop => 'stop', cancel partial => nil")
+    @Test(
+        "finish reason threads through: .length => 'length', .stop => 'stop', cancel partial => nil")
     func finishReasonThreadsThroughInfoEvent() async {
         func terminalReason(_ finish: CBv2FinishReason) async -> String?? {
-            let engine = ScriptedCBv2Engine(script: .stream([
+            let engine = ScriptedCBv2Engine(
+                script: .stream([
                 .delta(text: "x", tokens: [10], logprobs: nil),
                 .finished(reason: finish, usage: CBv2Usage(promptTokens: 4, completionTokens: 1)),
             ]))
@@ -539,7 +549,8 @@ struct EngineV2EventFramingTests {
 
     @Test("terminal usage can only raise observed counts (billing-zero defense)")
     func usageMaxDefense() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "a", tokens: [10], logprobs: nil),
             .delta(text: "b", tokens: [11, 12], logprobs: nil),
             // Terminal under-reports (0 completion) — must not zero billing.
@@ -552,13 +563,15 @@ struct EngineV2EventFramingTests {
 
     @Test("cancel that did work: usage info BEFORE the cancel error (legacy abort framing)")
     func cancelledWithWork() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "Hi", tokens: [10], logprobs: nil),
             .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
         ]))
         let bridge = makeBridge(engine: engine)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
-        #expect(events == [
+        #expect(
+            events == [
             .chunk("Hi"),
             .info(prompt: 5, completion: 1),
             .error("request cancelled"),
@@ -567,24 +580,93 @@ struct EngineV2EventFramingTests {
 
     @Test("cancel before any decode: prompt-only usage info, then cancel error")
     func cancelledWithoutWork() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
-            .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 0, completionTokens: 0)),
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
+                .finished(reason: .cancelled, usage: CBv2Usage(promptTokens: 0, completionTokens: 0))
         ]))
         let bridge = makeBridge(engine: engine)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
         // The bridge tokenized a 5-token prompt, so even a did-nothing
         // cancel reports prompt usage before the error — exactly the legacy
         // abort framing (`recordFinish` max()es the bridge-known prompt).
-        #expect(events == [
+        #expect(
+            events == [
             .info(prompt: 5, completion: 0),
             .error("request cancelled"),
         ])
     }
 
+    @Test("prepared cancel ledger retains generated tokens before the error")
+    func preparedCancellationUsageLedger() async throws {
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
+                // Three generated tokens produced no visible text and cannot
+                // contribute to delivered/billable completion.
+                .delta(text: "", tokens: [10, 11, 12], logprobs: nil),
+                // Exercise the max-defense: terminal usage under-reports what
+                // the pump already observed before emitting the cancel error.
+                .finished(
+                    reason: .cancelled,
+                    usage: CBv2Usage(promptTokens: 5, completionTokens: 0)
+                ),
+            ]),
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 0,
+                waitingRequests: 0,
+                kvBytesInUse: 0,
+                kvBytesCapacity: 4_096,
+                activeTokens: 0
+            )
+        )
+        let bridge = makeBridge(engine: engine, kvBytesPerToken: 1)
+        let identity = AttemptIdentity(
+            providerID: ProtocolV2UUID(bytes: Data(repeating: 0x11, count: 16))!,
+            providerProcessGeneration: ProtocolV2UUID(
+                bytes: Data(repeating: 0x22, count: 16))!,
+            sessionEpoch: 1,
+            requestID: ProtocolV2UUID(bytes: Data(repeating: 0x33, count: 16))!,
+            attemptID: ProtocolV2UUID(bytes: Data(repeating: 0x44, count: 16))!,
+            reservationID: ProtocolV2UUID(bytes: Data(repeating: 0x55, count: 16))!,
+            leaseID: ProtocolV2UUID(bytes: Data(repeating: 0x66, count: 16))!
+        )
+        let request = makeRequest(maxTokens: 4)
+        let inference = try PreparedInference(
+            identity: identity,
+            requestDigest: "digest",
+            modelID: request.model,
+            promptTokens: [1, 2, 3, 4, 5],
+            request: request,
+            facts: PreparedInferenceFacts(
+                decryptionComplete: true,
+                renderingComplete: true,
+                tokenizationComplete: true,
+                promptTokens: 5,
+                maxOutputTokens: 4
+            )
+        )
+        _ = try await bridge.prepareInference(
+            inference,
+            expiresAt: Date().addingTimeInterval(30)
+        )
+        let execution = try await bridge.startPreparedInference(identity: identity)
+        let (events, _) = await record(execution.events)
+        let usage = await execution.settledUsage()
+
+        #expect(
+            events == [
+                .info(prompt: 5, completion: 3),
+                .error("request cancelled"),
+            ])
+        #expect(usage.promptTokens == 5)
+        #expect(usage.finalGeneratedTokens == 3)
+        #expect(!events.contains { if case .chunk = $0 { true } else { false } })
+    }
+
     @Test("engine error: error only — no info (legacy failure framing)")
     func engineError() async {
         let telemetry = TelemetrySink()
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "x", tokens: [10], logprobs: nil),
             .finished(
                 reason: .error("metal command buffer failed"),
@@ -604,13 +686,15 @@ struct EngineV2EventFramingTests {
 
     @Test("stream closed without terminal → teardown sentinel error")
     func teardownSentinel() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "partial", tokens: [10], logprobs: nil)
             // no .finished — engine torn down mid-request
         ]))
         let bridge = makeBridge(engine: engine)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
-        #expect(events == [
+        #expect(
+            events == [
             .chunk("partial"),
             .error("request stream closed by engine teardown"),
         ])
@@ -641,7 +725,8 @@ struct EngineV2LogprobsPassthroughTests {
 
     @Test("delta logprobs publish to the channel in OpenAI entry shape, in order")
     func logprobsFlowToChannel() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(
                 text: "He", tokens: [10],
                 logprobs: [
@@ -657,13 +742,15 @@ struct EngineV2LogprobsPassthroughTests {
         ]))
         let bridge = makeBridge(engine: engine)
         let channel = EngineV2LogprobsChannel()
-        let (events, _) = await record(await bridge.submit(
+        let (events, _) = await record(
+            await bridge.submit(
             request: makeRequest(logprobs: true, topLogprobs: 2),
             requestId: "req-lp",
             logprobsChannel: channel
         ))
         // The GenerationEvent stream is untouched — logprobs ride out-of-band.
-        #expect(events == [
+        #expect(
+            events == [
             .chunk("He"), .chunk("llo"), .info(prompt: 5, completion: 2),
         ])
         // Sampling translation asked the engine to capture logprobs.
@@ -685,14 +772,16 @@ struct EngineV2LogprobsPassthroughTests {
 
     @Test("nil/empty delta logprobs leave the channel empty")
     func noLogprobsNoEntries() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "x", tokens: [10], logprobs: nil),
             .delta(text: "y", tokens: [11], logprobs: []),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
         ]))
         let bridge = makeBridge(engine: engine)
         let channel = EngineV2LogprobsChannel()
-        _ = await record(await bridge.submit(
+        _ = await record(
+            await bridge.submit(
             request: makeRequest(), requestId: "req-nolp", logprobsChannel: channel
         ))
         #expect(channel.drain().isEmpty)
@@ -700,7 +789,8 @@ struct EngineV2LogprobsPassthroughTests {
 
     @Test("no channel wired → logprob-bearing deltas stream normally (dropped)")
     func logprobsWithoutChannelAreDropped() async {
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(
                 text: "x", tokens: [10],
                 logprobs: [CBv2TokenLogprob(token: 10, logprob: -0.5)]),
@@ -730,7 +820,8 @@ struct EngineV2ErrorMappingTests {
             Issue.record("expected a single .error event, got \(events)")
             return
         }
-        #expect(message == "token_budget_exhausted: request requires 5120 tokens but only 1024 available")
+        #expect(
+            message == "token_budget_exhausted: request requires 5120 tokens but only 1024 available")
         // The exact classification the legacy engine's rejections get:
         // retryable capacity (→ 503 with backoff upstream).
         let classified = MultiModelBatchSchedulerEngineError.fromSchedulerMessage(message)
@@ -738,7 +829,8 @@ struct EngineV2ErrorMappingTests {
         #expect(ProviderLoop.mapInferenceErrorToStatus(classified) == 503)
     }
 
-    @Test("engine queue-full sentinel maps to the legacy queue-full class (429), not token-budget (503)")
+    @Test(
+        "engine queue-full sentinel maps to the legacy queue-full class (429), not token-budget (503)")
     func queueFullSentinelMapsToQueueFull() async {
         // `EngineV2.submit` throws `capacityExhausted(needed: 1, available: 0)`
         // when its waiting queue is full (`gauges.beginSubmit(maxWaiting:)`) or
@@ -774,7 +866,8 @@ struct EngineV2ErrorMappingTests {
         let byteReject = EngineV2Translation.admissionErrorMessage(
             for: CBv2KVError.capacityExhausted(needed: 2, available: 0))
         #expect(!byteReject.contains("queue full"))
-        #expect(MultiModelBatchSchedulerEngineError.fromSchedulerMessage(byteReject)
+        #expect(
+            MultiModelBatchSchedulerEngineError.fromSchedulerMessage(byteReject)
             == .tokenBudgetExhausted(byteReject))
         // needed == 1 with real headroom is not the sentinel either.
         let withHeadroom = EngineV2Translation.admissionErrorMessage(
@@ -888,7 +981,9 @@ struct EngineV2CancellationTests {
 @Suite("EngineV2 capacity: CBv2CapacitySnapshot → BackendSlotCapacity")
 struct EngineV2CapacityTests {
 
-    @Test("budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth")
+    @Test(
+        "budget fields follow the legacy committed/worst-case contract; activeTokens stays engine truth"
+    )
     func snapshotMapping() async {
         let engine = ScriptedCBv2Engine(
             script: .manual,
@@ -965,7 +1060,8 @@ struct EngineV2CapacityTests {
                 kvBytesCapacity: 40_000_000, activeTokens: 0
             ))
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000)
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 100),
             requestId: "req-cap-done"))
         let slot = await bridge.backendSlotCapacity()
@@ -1110,7 +1206,8 @@ struct EngineV2CapacityTests {
             fleetKV: EngineV2Runtime.FleetKVContext(
                 totalResidentWeightBytes: UInt64(weights) + laterWeights,
                 physicalBytes: physical))
-        #expect(grown.slots.first?.activeTokenBudgetMax
+        #expect(
+            grown.slots.first?.activeTokenBudgetMax
             == Int64((grant - Int(laterWeights)) / rate))
 
         // No fleet context (legacy callers): raw construction figures.
@@ -1157,11 +1254,14 @@ struct EngineV2FailLoudFactoryTests {
     @Test("refusal reasons classify construction errors")
     func refusalReasonClassification() {
         struct SomeError: Error {}
-        #expect(EngineV2RefusalReason.classify(
+        #expect(
+            EngineV2RefusalReason.classify(
             EngineV2ProductionError.noKVHeadroom) == .noKVHeadroom)
-        #expect(EngineV2RefusalReason.classify(
+        #expect(
+            EngineV2RefusalReason.classify(
             EngineV2ProductionError.unsupportedModel("Qwen3Model")) == .unsupportedModel)
-        #expect(EngineV2RefusalReason.classify(
+        #expect(
+            EngineV2RefusalReason.classify(
             EngineV2VLMTextExtractionError.parityMismatch("x")) == .vlmExtractionFailed)
         #expect(EngineV2RefusalReason.classify(SomeError()) == .engineInitFailed)
     }
@@ -1298,7 +1398,8 @@ struct EngineV2FailLoudFactoryTests {
         #expect(absent.engineV2MaxConcurrentByModel.isEmpty)
         let configured = try decoder.decode(
             BackendSettings.self,
-            from: Data(#"""
+            from: Data(
+                #"""
                 {"engine_v2_max_concurrent": 6,
                  "engine_v2_max_concurrent_by_model": {"gemma-4-26b-qat-4bit": 2}}
                 """#.utf8)
@@ -1322,7 +1423,8 @@ struct EngineV2FailLoudFactoryTests {
             """
         let config = ConfigManager.parse(toml)
         #expect(config.backend.engineV2MaxConcurrent == 6)
-        #expect(config.backend.engineV2MaxConcurrentByModel == [
+        #expect(
+            config.backend.engineV2MaxConcurrentByModel == [
             "gemma-4-26b-qat-4bit": 2, "gpt-oss-20b": 8,
         ])
         // Defaults when the keys are absent.
@@ -1403,7 +1505,8 @@ struct EngineV2SharedBudgetTests {
         #expect(!unknown.warnKVQuantUnsupported)
     }
 
-    @Test("an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish")
+    @Test(
+        "an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish")
     func recordsAndReleasesReservation() async {
         // Manual script so the request stays in-flight until we drive the terminal.
         let engine = ScriptedCBv2Engine(script: .manual)
@@ -1437,12 +1540,14 @@ struct EngineV2SharedBudgetTests {
     @Test("teardown without a terminal still releases the reservation")
     func teardownReleasesReservation() async {
         // A stream that yields no terminal, then closes (engine torn down).
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .delta(text: "partial", tokens: [10], logprobs: nil)
         ]))
         let budget = TestBudgets.ample()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5],
             request: makeRequest(maxTokens: 16),
             requestId: "req-acct-2"))
@@ -1476,14 +1581,18 @@ struct EngineV2SharedBudgetTests {
         let engine = ScriptedCBv2Engine(script: .manual)
         let budget = TestBudgets.exhausted()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
-        let (events, _) = await record(await bridge.submitTokenized(
+        let (events, _) = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5],
             request: makeRequest(maxTokens: 16),
             requestId: "req-gate-1"))
         // Single canonical capacity error (5 prompt + 16 max = 21 tokens).
-        #expect(events == [.error(
+        #expect(
+            events == [
+                .error(
             "token_budget_exhausted: request requires 21 tokens "
-                + "but the shared KV budget has no headroom")])
+                        + "but the shared KV budget has no headroom")
+            ])
         // The gate fired BEFORE submission: the engine never saw the request,
         // and no bookkeeping leaked.
         #expect(engine.submitted.isEmpty)
@@ -1498,7 +1607,9 @@ struct EngineV2SharedBudgetTests {
         }
     }
 
-    @Test("shared-budget gate: another request's live reservation blocks a worst case that no longer fits")
+    @Test(
+        "shared-budget gate: another request's live reservation blocks a worst case that no longer fits"
+    )
     func sharedBudgetGateSeesOtherLiveReservations() async {
         // A pool with exactly 200_000 bytes of live headroom: 3 GiB box at
         // capFraction 1.0 ⇒ effective cap = 3 GiB − 2 GiB OS floor = 1 GiB;
@@ -1525,7 +1636,8 @@ struct EngineV2SharedBudgetTests {
             promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
             requestId: "req-gate-b")
         #expect(engine.submitted.count == 2)
-        let (events, _) = await record(await bridge.submitTokenized(
+        let (events, _) = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5], request: makeRequest(maxTokens: 16),
             requestId: "req-gate-c"))
         #expect(engine.submitted.count == 2)  // third never reached the engine
@@ -1542,12 +1654,14 @@ struct EngineV2SharedBudgetTests {
         // Even on an EXHAUSTED pool, a request that can allocate no KV must
         // not be capacity-rejected by the gate — the engine's own degenerate
         // path finishes it immediately (immediate .length terminal).
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .finished(reason: .length, usage: CBv2Usage(promptTokens: 3, completionTokens: 0))
         ]))
         let budget = TestBudgets.exhausted()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
-        let (events, _) = await record(await bridge.submitTokenized(
+        let (events, _) = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 0),
             requestId: "req-degenerate"))
         // Reached the engine (no gate rejection), reserved nothing.
@@ -1563,14 +1677,18 @@ struct EngineV2SharedBudgetTests {
                 CBv2KVError.capacityExhausted(needed: 5120, available: 1024)))
         let budget = TestBudgets.ample()
         let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
-        let (events, _) = await record(await bridge.submitTokenized(
+        let (events, _) = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5],
             request: makeRequest(maxTokens: 16),
             requestId: "req-gate-2"))
         // The engine's own rejection surfaced (its private ledger stays
         // authoritative for its slot)…
-        #expect(events == [.error(
-            "token_budget_exhausted: request requires 5120 tokens but only 1024 available")])
+        #expect(
+            events == [
+                .error(
+                    "token_budget_exhausted: request requires 5120 tokens but only 1024 available")
+            ])
         // …and the shared reservation taken by the gate was rolled back, so
         // a rejected request can never pin shared headroom.
         #expect(await budget.outstandingReservedBytes() == 0)
@@ -1650,14 +1768,17 @@ struct EngineV2HardeningTests {
     func nextRawIdWraps() async {
         // A stream engine so each submit runs to a terminal and self-clears,
         // letting the same provider id be reused across submits.
-        let engine = ScriptedCBv2Engine(script: .stream([
+        let engine = ScriptedCBv2Engine(
+            script: .stream([
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 1, completionTokens: 0))
         ]))
         let bridge = makeBridge(engine: engine)
         // Two sequential submits mint two distinct engine ids (raw 1, 2).
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1], request: makeRequest(), requestId: "r1"))
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1], request: makeRequest(), requestId: "r2"))
         #expect(engine.submitted.count == 2)
         #expect(engine.submitted[0].id == CBv2RequestID(1))
@@ -1685,7 +1806,8 @@ private final class StochasticScriptedEngine: CBv2Engine, @unchecked Sendable {
             let token = Int(key % 50_000)
             continuation.yield(.delta(text: "t\(token) ", tokens: [token], logprobs: nil))
         }
-        continuation.yield(.finished(
+        continuation.yield(
+            .finished(
             reason: .stop,
             usage: CBv2Usage(promptTokens: request.promptTokens.count, completionTokens: 4)))
         continuation.finish()
@@ -1728,16 +1850,19 @@ struct EngineV2SeededSamplingTests {
         let bridge = makeBridge(engine: engine)
         let prompt = [11, 22, 33]
 
-        let (first, _) = await record(await bridge.submitTokenized(
+        let (first, _) = await record(
+            await bridge.submitTokenized(
             promptTokens: prompt, request: makeRequest(maxTokens: 8, seed: 42),
             requestId: "req-seed-1"))
         // Interleave an UNRELATED request so the monotonic counter moves —
         // the regression this fix targets: seeded output must not depend on
         // prior traffic.
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [9, 9, 9], request: makeRequest(maxTokens: 8),
             requestId: "req-noise"))
-        let (second, _) = await record(await bridge.submitTokenized(
+        let (second, _) = await record(
+            await bridge.submitTokenized(
             promptTokens: prompt, request: makeRequest(maxTokens: 8, seed: 42),
             requestId: "req-seed-2"))
 
@@ -1754,13 +1879,16 @@ struct EngineV2SeededSamplingTests {
     func seededOutputDiverges() async {
         let engine = StochasticScriptedEngine()
         let bridge = makeBridge(engine: engine)
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8, seed: 42),
             requestId: "req-a"))
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8, seed: 43),
             requestId: "req-b"))
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 4], request: makeRequest(maxTokens: 8, seed: 42),
             requestId: "req-c"))
         let ids = engine.submitted.map(\.id.raw)
@@ -1771,10 +1899,12 @@ struct EngineV2SeededSamplingTests {
     func unseededStaysMonotonic() async {
         let engine = StochasticScriptedEngine()
         let bridge = makeBridge(engine: engine)
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8),
             requestId: "req-u1"))
-        _ = await record(await bridge.submitTokenized(
+        _ = await record(
+            await bridge.submitTokenized(
             promptTokens: [1, 2, 3], request: makeRequest(maxTokens: 8),
             requestId: "req-u2"))
         #expect(engine.submitted[0].id == CBv2RequestID(1))

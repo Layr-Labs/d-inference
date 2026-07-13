@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/registry"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 // settlementHolder: claim before expiry wins and the expiry callback never runs.
@@ -124,5 +125,77 @@ func TestHoldForSettlementNilHolderRefunds(t *testing.T) {
 	srv.holdForSettlement(pr)
 	if got := ledger.Balance(acct); got != base+reserved {
 		t.Fatalf("balance = %d, want %d (nil holder must refund immediately)", got, base+reserved)
+	}
+}
+
+func TestServerCloseDrainsParkedSettlementRefunds(t *testing.T) {
+	srv, st := testServer(t)
+	const (
+		accountID     = "parked-close-account"
+		reservationID = "parked-close-reservation"
+		reserved      = int64(50_000)
+	)
+	if err := st.Credit(accountID, reserved, store.LedgerStripeDeposit, "deposit"); err != nil {
+		t.Fatal(err)
+	}
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		accountID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := &registry.PendingRequest{
+		RequestID: "parked-close-attempt", ReservationID: reservationID,
+		Model: "model", ConsumerKey: accountID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+	}
+	srv.settleGrace = time.Hour
+	srv.holdForSettlement(pr)
+	srv.Close()
+	if balance := st.GetBalance(accountID); balance != reserved {
+		t.Fatalf("close left parked reservation held: balance=%d", balance)
+	}
+	if claimed := srv.claimSettlement(pr.RequestID); claimed != nil {
+		t.Fatalf("closed holder retained parked settlement %+v", claimed)
+	}
+}
+
+func TestSettlementHolderCloseCountsCallbacksUntilTheyFinish(t *testing.T) {
+	holder := newSettlementHolder()
+	started := make(chan struct{})
+	release := make(chan struct{})
+	holder.hold(
+		&registry.PendingRequest{RequestID: "close-counted"},
+		time.Hour,
+		func(*registry.PendingRequest) {
+			close(started)
+			<-release
+		},
+	)
+	closed := make(chan struct{})
+	go func() {
+		holder.close()
+		close(closed)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("close callback did not start")
+	}
+	held, active := holder.snapshot()
+	if held != 0 || active != 1 {
+		t.Fatalf("holder snapshot during close = held:%d active:%d", held, active)
+	}
+	select {
+	case <-closed:
+		t.Fatal("holder close returned before callback")
+	default:
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("holder close did not finish")
 	}
 }

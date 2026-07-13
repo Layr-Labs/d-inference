@@ -187,6 +187,10 @@ type TelemetryStore interface {
 
 // LedgerStore is the double-entry balance ledger (all amounts in micro-USD).
 type LedgerStore interface {
+	// OwnershipLost closes when this store's single-active PostgreSQL lock
+	// connection fails. Nil means ownership fencing is disabled.
+	OwnershipLost() <-chan struct{}
+
 	// GetBalance returns the current balance in micro-USD for an account.
 	GetBalance(accountID string) int64
 
@@ -195,6 +199,36 @@ type LedgerStore interface {
 
 	// Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 	Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error
+
+	// ReserveInferenceBalance atomically debits a request hold and returns the
+	// amount sourced from withdrawable funds. Stable operation-key replay is a
+	// no-op with applied=false.
+	ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (reservedWithdrawable int64, applied bool, err error)
+
+	// ReleaseInferenceReservation restores exact total/withdrawable provenance.
+	// Stable operation-key replay is a no-op with applied=false.
+	ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (applied bool, err error)
+
+	// SettleInference atomically finalizes the reservation, refunds exact
+	// provenance, credits beneficiaries, and records canonical usage/earning
+	// projections. Stable reservation replay returns applied=false.
+	SettleInference(settlement *InferenceSettlement) (InferenceSettlementDisposition, error)
+
+	// RecordInferenceSettlementReview durably retains a terminal whose immutable
+	// financial command was rejected as permanently invalid.
+	RecordInferenceSettlementReview(settlement *InferenceSettlement, reason string) (InferenceSettlementDisposition, error)
+
+	// RecordInferenceCompletionIntent durably journals a received provider
+	// terminal before process-local pending state is released.
+	RecordInferenceCompletionIntent(intent *InferenceCompletionIntent) error
+
+	// RecoverStaleInferenceReservations releases old durable holds that have no
+	// settlement, review, or prior release disposition.
+	RecoverStaleInferenceReservations(before time.Time) (released int, err error)
+
+	// CheckRollbackSafe refuses Go authority while additive Rust state contains
+	// unresolved jobs, financial operations, or external intents.
+	CheckRollbackSafe(context.Context) error
 
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
@@ -263,6 +297,15 @@ type BillingStore interface {
 	// CreateBillingSession stores a new billing session (Stripe).
 	CreateBillingSession(session *BillingSession) error
 
+	// SetBillingSessionExternalID binds a locally-created order to the Stripe
+	// Checkout Session returned by the external API.
+	SetBillingSessionExternalID(sessionID, externalID string) error
+
+	// ApplyStripeDeposit atomically validates a signed Stripe event against its
+	// local order, credits the balance, records the ledger/event rows, and marks
+	// the order complete. Exact replay returns Applied=false.
+	ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error)
+
 	// GetBillingSession retrieves a billing session by ID.
 	GetBillingSession(sessionID string) (*BillingSession, error)
 
@@ -330,6 +373,11 @@ type BillingStore interface {
 	// was applied.
 	MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error)
 
+	// RefundStripeWithdrawalOnReversal serializes a full transfer reversal
+	// against payout-paid transitions. manualReview means the bank payout
+	// already completed and no ledger refund was applied.
+	RefundStripeWithdrawalOnReversal(id string) (refunded, manualReview bool, err error)
+
 	// ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a
 	// withdrawal whose own payout failed: status back to "transferred",
 	// payout ID detached, failure reason recorded, FeeRefunded OR-ed in —
@@ -337,6 +385,14 @@ type BillingStore interface {
 	// (a concurrent transfer.reversed wins; its refund must never be
 	// overwritten back to sweep-eligible). Returns whether it was applied.
 	ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error)
+
+	// ReopenStripeWithdrawalAfterSweepFailure atomically reopens only a paid,
+	// non-refunded row still attributed to the failed sweep.
+	ReopenStripeWithdrawalAfterSweepFailure(id, sweepPayoutID, failureReason string) (bool, error)
+
+	// RecordStripeSweepFailure persists a payout-failure tombstone before rows
+	// are reopened, preventing a concurrent paid event from re-claiming them.
+	RecordStripeSweepFailure(sweepPayoutID, failureReason string) error
 
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen

@@ -11,12 +11,14 @@ import (
 const (
 	envDatabaseURL      = env.EnvPrefix + "_DATABASE_URL"
 	envAllowMemoryStore = env.EnvPrefix + "_ALLOW_MEMORY_STORE"
+	envOwnershipEnabled = env.EnvPrefix + "_COORDINATOR_OWNERSHIP_ENABLED"
 )
 
 // Config holds store backend selection and connection parameters.
 type Config struct {
 	DatabaseURL      string
 	AllowMemoryStore bool
+	OwnershipEnabled bool
 	AdminKey         string // bootstrap admin API key
 }
 
@@ -35,6 +37,7 @@ func ReadConfig() Config {
 	return Config{
 		DatabaseURL:      os.Getenv(envDatabaseURL),
 		AllowMemoryStore: os.Getenv(envAllowMemoryStore) == "true",
+		OwnershipEnabled: os.Getenv(envOwnershipEnabled) == "true",
 		AdminKey:         os.Getenv(env.EnvPrefix + "_ADMIN_KEY"),
 	}
 }

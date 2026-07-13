@@ -299,6 +299,7 @@ Running a node also makes your **own** inference free.
 | Path | Language | Role |
 |------|----------|------|
 | `coordinator/` | Go | Control plane: OpenAI/Anthropic API, routing, attestation, billing, model registry |
+| `coordinator-rs/` | Rust | Pre-production coordinator replacement: protocol, pure core reducers, Axum/SQLx server |
 | `provider-swift/` | Swift | `darkbloom` provider CLI for Apple Silicon (in-process MLX inference) |
 | `console-ui/` | Next.js 16 / React 19 | Web dashboard: chat, billing, models, provider verification |
 | `landing/` | Static HTML | Marketing landing page |
@@ -314,6 +315,9 @@ The coordinator and provider share WebSocket message types that must stay in syn
 # Coordinator (Go)
 cd coordinator && go test ./...
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator   # container build
+
+# Coordinator replacement (Rust; not a production target yet)
+make coordinator-rs
 
 # Provider (Swift) — depends on libs/mlx-swift and libs/mlx-swift-lm submodules
 cd provider-swift && swift test

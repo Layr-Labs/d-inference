@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    expected AS MATERIALIZED (\n                        SELECT allocation_id, version\n                        FROM UNNEST($6::UUID[], $7::BIGINT[])\n                             AS rows(allocation_id, version)\n                    ),\n                    checkpoint AS MATERIALIZED (\n                        SELECT checkpoints.projection_name\n                        FROM rust_coord.fee_projection_checkpoints\n                             AS checkpoints\n                        CROSS JOIN authority\n                        WHERE checkpoints.projection_name = $3\n                          AND checkpoints.owner_epoch = $2\n                          AND checkpoints.worker_owner = $4\n                          AND checkpoints.version = $5\n                          AND checkpoints.status = 'running'\n                          AND checkpoints.lease_until > NOW()\n                        FOR UPDATE OF checkpoints\n                    ),\n                    locked_allocations AS MATERIALIZED (\n                        SELECT allocations.allocation_id\n                        FROM rust_coord.fee_allocations AS allocations\n                        JOIN expected\n                          ON expected.allocation_id =\n                             allocations.allocation_id\n                         AND expected.version = allocations.version\n                        CROSS JOIN checkpoint\n                        WHERE allocations.owner_epoch = $2\n                          AND allocations.worker_owner = $4\n                          AND allocations.status = 'processing'\n                          AND allocations.lease_until > NOW()\n                        ORDER BY allocations.allocation_id\n                        FOR UPDATE OF allocations\n                    ),\n                    exact AS MATERIALIZED (\n                        SELECT 1\n                        FROM checkpoint\n                        WHERE\n                            (SELECT COUNT(*) FROM locked_allocations)\n                            = CARDINALITY($6::UUID[])\n                    ),\n                    allocations_update AS (\n                        UPDATE rust_coord.fee_allocations AS allocations\n                        SET\n                            status = 'projected',\n                            worker_owner = NULL,\n                            lease_until = NULL,\n                            version = allocations.version + 1,\n                            updated_at = NOW(),\n                            projected_at = NOW()\n                        FROM locked_allocations, exact\n                        WHERE allocations.allocation_id =\n                              locked_allocations.allocation_id\n                        RETURNING allocations.allocation_id\n                    )\n                    UPDATE rust_coord.fee_projection_checkpoints AS checkpoints\n                    SET\n                        last_allocation_sequence = CASE\n                            WHEN $8::BIGINT > 0\n                            THEN $8\n                            ELSE checkpoints.last_allocation_sequence\n                        END,\n                        last_allocation_id = CASE\n                            WHEN $8::BIGINT > 0\n                            THEN $9\n                            ELSE checkpoints.last_allocation_id\n                        END,\n                        status = 'idle',\n                        worker_owner = NULL,\n                        lease_until = NULL,\n                        version = checkpoints.version + 1,\n                        updated_at = NOW()\n                    FROM exact\n                    WHERE checkpoints.projection_name = $3\n                      AND checkpoints.owner_epoch = $2\n                      AND checkpoints.worker_owner = $4\n                      AND checkpoints.version = $5\n                      AND checkpoints.status = 'running'\n                      AND checkpoints.lease_until > NOW()\n                    RETURNING checkpoints.version\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "fee_projection_checkpoints",
+            "name": "version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Int8",
+        "UuidArray",
+        "Int8Array",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "da04a353380582ab752d9c5d4c50f727f706d67e2e637a01a1dcdd3a30c211ac"
+}

@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    )\n                    SELECT\n                        EXISTS (\n                            SELECT 1\n                            FROM rust_coord.inference_jobs\n                            WHERE job_id = $3\n                              AND owner_epoch = $2\n                              AND version = $4\n                              AND state = $5\n                        ) AS \"current!\",\n                        (\n                            $8::UUID IS NOT NULL\n                            OR NOT EXISTS (\n                                SELECT 1\n                                FROM rust_coord.provider_hard_untrust_epochs\n                                    AS untrusted\n                                WHERE untrusted.provider_id = $6\n                                  AND untrusted.hard_untrust_epoch >= $7\n                            )\n                        ) AS \"provider_trusted!\"\n                    FROM authority\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "provider_trusted!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Uuid",
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "9d7b67b093305b9897b5fd8259b0121c1bf02ff2470bad0ebf2697da532e91b5"
+}

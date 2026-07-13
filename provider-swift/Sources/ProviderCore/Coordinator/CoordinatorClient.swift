@@ -23,22 +23,38 @@ public actor CoordinatorClient {
     /// provider (then reconnects with backoff). Size this comfortably above the
     /// coordinator's 16 MiB sealed-body cap after base64 expansion (×4/3 ≈ 21.3 MiB).
     static let maxInboundMessageBytes = 32 * 1024 * 1024
+    static let outboundBufferCapacity = 256
+    static let v2CommandBufferCapacity = 64
+    static let v2BinaryBufferCapacity = 16
+    static let v2SessionEventBufferCapacity = 32
 
     internal let config: CoordinatorClientConfig
     internal let stats: AtomicProviderStats
     internal let state: ProviderState
 
-    internal let logger = CoordinatorWSLogger(subsystem: "dev.darkbloom.provider", category: "coordinator")
+    internal let logger = CoordinatorWSLogger(
+        subsystem: "dev.darkbloom.provider", category: "coordinator")
 
     /// Tracks whether the box currently has a usable network path, so reconnect
     /// logs/telemetry can attribute flap to local connectivity vs the coordinator.
     internal let reachability = ReachabilityMonitor()
 
+    internal let eventStream: AsyncStream<CoordinatorEvent>
     internal var eventContinuation: AsyncStream<CoordinatorEvent>.Continuation?
     /// Holds the current connection's outbound continuation. The outbound stream
     /// is recreated per connection (see OutboundRouter / connectAndRun); reusing
     /// one AsyncStream across reconnects silently kills outbound delivery.
     internal let outboundRouter = OutboundRouter()
+    internal var v2Negotiation: V2NegotiationState
+    internal let v2SessionEventStream: AsyncStream<V2SessionEvent>
+    internal let v2SessionEventContinuation: AsyncStream<V2SessionEvent>.Continuation
+    internal let v2CommandStream: AsyncStream<V2InboundCommand>
+    internal let v2CommandContinuation: AsyncStream<V2InboundCommand>.Continuation
+    internal let v2BinaryStream: AsyncStream<V2InboundBinaryFrame>
+    internal let v2BinaryContinuation: AsyncStream<V2InboundBinaryFrame>.Continuation
+    internal var reconnectBackoff = ExponentialBackoff(base: 1.0, max: 30.0)
+    internal var runLoopTask: Task<Void, Never>?
+    internal private(set) var runLoopLaunchCount = 0
 
     /// Inference-chunk fast path. `chunkBatcher` owns the dedicated serial queue
     /// + coalescing; `chunkSender` is the nonisolated, Sendable handle the
@@ -111,11 +127,38 @@ public actor CoordinatorClient {
         state: ProviderState,
         liveAPNsToken: (@Sendable () -> String?)? = nil
     ) {
+        let (eventStream, eventContinuation) =
+            AsyncStream<CoordinatorEvent>.makeStream(bufferingPolicy: .bufferingOldest(64))
+        // Newest buffering lets a fresh-session delivery displace stale
+        // closed-session residue after an overflow-triggered reconnect. The
+        // yield result is checked in the inbound path; dropping a value from
+        // the current session fails that session closed.
+        let (v2Stream, v2Continuation) =
+            AsyncStream<V2InboundCommand>.makeStream(
+                bufferingPolicy: .bufferingNewest(Self.v2CommandBufferCapacity))
+        let (v2SessionEventStream, v2SessionEventContinuation) =
+            AsyncStream<V2SessionEvent>.makeStream(
+                bufferingPolicy: .bufferingOldest(Self.v2SessionEventBufferCapacity))
+        let (v2BinaryStream, v2BinaryContinuation) =
+            AsyncStream<V2InboundBinaryFrame>.makeStream(
+                bufferingPolicy: .bufferingNewest(Self.v2BinaryBufferCapacity))
         self.config = config
         self.stats = stats
         self.state = state
+        self.eventStream = eventStream
+        self.eventContinuation = eventContinuation
         self.advertisedModelStore = AdvertisedModelStore(config.models)
         self.liveAPNsToken = liveAPNsToken ?? { APNsBridge.shared.currentDeviceToken() }
+        self.v2Negotiation = V2NegotiationState(
+            localCapabilities: nil,
+            processGeneration: ProviderProcessIdentity.generation
+        )
+        self.v2SessionEventStream = v2SessionEventStream
+        self.v2SessionEventContinuation = v2SessionEventContinuation
+        self.v2CommandStream = v2Stream
+        self.v2CommandContinuation = v2Continuation
+        self.v2BinaryStream = v2BinaryStream
+        self.v2BinaryContinuation = v2BinaryContinuation
 
         // Inference-chunk fast path. The encode closure is the same pure static
         // codec the control path uses; on the (effectively impossible) encode
@@ -127,7 +170,9 @@ public actor CoordinatorClient {
             subsystem: "dev.darkbloom.provider", category: "coordinator.chunks")
         let batcher = ChunkBatcher()
         self.chunkBatcher = batcher
-        self.chunkSender = ChunkSender(batcher: batcher, encode: { message in
+        self.chunkSender = ChunkSender(
+            batcher: batcher,
+            encode: { message in
             do {
                 return try CoordinatorClientCodec.encodeOutboundMessage(message)
             } catch {
@@ -162,7 +207,9 @@ public actor CoordinatorClient {
     public func advertiseModel(_ model: ModelInfo) -> Bool {
         let isNew = advertisedModelStore.add(model)
         if isNew {
-            logger.info("advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration")
+            logger.info(
+                "advertiseModel(\(model.id)): added to advertised set (\(self.advertisedModelStore.models.count) total); coordinator picks it up on next registration"
+            )
         }
         return isNew
     }
@@ -173,7 +220,9 @@ public actor CoordinatorClient {
     public func unadvertiseModel(_ modelID: String) -> Bool {
         let removed = advertisedModelStore.remove(id: modelID)
         if removed {
-            logger.info("unadvertiseModel(\(modelID)): dropped from advertised set (\(self.advertisedModelStore.models.count) total)")
+            logger.info(
+                "unadvertiseModel(\(modelID)): dropped from advertised set (\(self.advertisedModelStore.models.count) total)"
+            )
         }
         return removed
     }
@@ -186,31 +235,129 @@ public actor CoordinatorClient {
 
     /// Start the connection loop. Returns an AsyncStream of events for the caller
     /// to consume, and provides a way to send outbound messages.
-    public func start() -> (events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void) {
-        let (eventStream, eventCont) = AsyncStream<CoordinatorEvent>.makeStream()
-        self.eventContinuation = eventCont
-
+    public func start() -> (
+        events: AsyncStream<CoordinatorEvent>, send: @Sendable (OutboundMessage) -> Void
+    ) {
         // The outbound stream is created per-connection inside connectAndRun and
         // registered with the router; the stable send closure always routes
         // through the router to the live session.
-        let router = self.outboundRouter
-        let sendFn: @Sendable (OutboundMessage) -> Void = { msg in
-            router.yield(msg)
-        }
+        let sendFn = outboundSender()
 
-        Task { [weak self] in
+        if runLoopTask == nil && !shutdownRequested {
+            runLoopLaunchCount += 1
+            runLoopTask = Task { [weak self] in
             guard let self else { return }
             await self.runLoop()
+        }
         }
 
         return (eventStream, sendFn)
     }
 
+    /// Returns the stable outbound closure without launching the connection
+    /// loop. ProviderLoop uses this to construct the complete protocol-v2
+    /// handler task before enabling advertisement and sending registration.
+    public func outboundSender() -> @Sendable (OutboundMessage) -> Void {
+        let router = outboundRouter
+        return { message in
+            router.yield(message)
+        }
+    }
+
+    /// Enables protocol-v2 negotiation only after the caller has installed its
+    /// runtime task. Installation is intentionally impossible once connection
+    /// startup can race registration.
+    @discardableResult
+    public func installProtocolV2RuntimeHandler() -> Bool {
+        guard runLoopTask == nil,
+            v2Negotiation.acknowledgedProviderID == nil,
+            v2Negotiation.session == nil
+        else {
+            return false
+        }
+        v2Negotiation = V2NegotiationState(
+            localCapabilities: .current,
+            processGeneration: v2Negotiation.processGeneration
+        )
+        return true
+    }
+
     public func shutdown() {
         shutdownFlag.request()
+        runLoopTask?.cancel()
+        resetV2NegotiationForReconnect()
         closeCurrentConnection()
         eventContinuation?.finish()
         outboundRouter.finish()
+        v2SessionEventContinuation.finish()
+        v2CommandContinuation.finish()
+        v2BinaryContinuation.finish()
+    }
+
+    @discardableResult
+    internal func publishV2SessionEvent(_ event: V2SessionEvent) -> Bool {
+        switch v2SessionEventContinuation.yield(event) {
+        case .enqueued:
+            return true
+        case .dropped, .terminated:
+            logger.error("Protocol-v2 lifecycle lane overflowed; shutting down fail-closed")
+            terminateAfterV2LifecycleOverflow()
+            return false
+        @unknown default:
+            terminateAfterV2LifecycleOverflow()
+            return false
+        }
+    }
+
+    private func terminateAfterV2LifecycleOverflow() {
+        shutdownFlag.request()
+        runLoopTask?.cancel()
+        closeCurrentConnection()
+        eventContinuation?.finish()
+        outboundRouter.finish()
+        v2SessionEventContinuation.finish()
+        v2CommandContinuation.finish()
+        v2BinaryContinuation.finish()
+    }
+
+    /// Protocol-only v2 command stream. The inference handler intentionally
+    /// remains separate until its prepared-lease lifecycle is wired.
+    public func protocolV2Commands() -> V2SessionValidatedStream<V2InboundCommand> {
+        V2SessionValidatedStream(stream: v2CommandStream) { [weak self] delivery in
+            guard let self else { return false }
+            return await self.isCurrentV2Delivery(delivery)
+        }
+    }
+
+    /// Negotiated-session lifecycle. Consumers initialize durable provider-ID
+    /// state on `.negotiated` and cancel session-fenced active controls on
+    /// `.ended`.
+    public func protocolV2Sessions() -> AsyncStream<V2SessionEvent> {
+        v2SessionEventStream
+    }
+
+    /// Structurally validated, session-fenced binary wire frames. Consumers must
+    /// call `V2FrameCrypto.open` before using any payload or outer metadata.
+    public func protocolV2BinaryFrames() -> V2SessionValidatedStream<V2InboundBinaryFrame> {
+        V2SessionValidatedStream(stream: v2BinaryStream) { [weak self] delivery in
+            guard let self else { return false }
+            return await self.isCurrentV2Delivery(delivery)
+        }
+    }
+
+    public func protocolV2Session() -> V2NegotiatedSession? {
+        v2Negotiation.session
+    }
+
+    public func processGeneration() -> ProviderProcessGenerationID {
+        v2Negotiation.processGeneration
+    }
+
+    /// Stable identity is unavailable until an authenticated register ACK has
+    /// been accepted. Current Go coordinators send no ACK and therefore remain
+    /// v1 with no journal identity exposed.
+    public func acknowledgedProviderID() -> ProviderID? {
+        v2Negotiation.acknowledgedProviderID
     }
 
     /// Send a WebSocket close frame (going-away) on the current connection and
@@ -287,7 +434,6 @@ enum SecurityChecks {
         SIPStatusChecker().isFullyEnabled()
     }
 }
-
 
 // MARK: - Logger (os.Logger on macOS, stderr fallback)
 //

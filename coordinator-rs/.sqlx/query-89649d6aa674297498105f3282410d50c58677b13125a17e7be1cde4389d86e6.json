@@ -1,0 +1,123 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    candidates AS MATERIALIZED (\n                        SELECT outbox.outbox_id\n                        FROM rust_coord.outbox\n                        WHERE outbox.status IN ('pending', 'processing')\n                          AND outbox.attempts < outbox.max_attempts\n                          AND outbox.next_attempt_at <= NOW()\n                          AND (\n                              outbox.worker_owner IS NULL\n                              OR outbox.lease_until <= NOW()\n                          )\n                        ORDER BY outbox.next_attempt_at, outbox.outbox_id\n                        FOR UPDATE SKIP LOCKED\n                        LIMIT $4\n                    ),\n                    claimed AS (\n                        UPDATE rust_coord.outbox\n                        SET\n                            status = 'processing',\n                            owner_epoch = $2,\n                            worker_owner = $3,\n                            lease_until =\n                                NOW() + ($5::BIGINT * INTERVAL '1 millisecond'),\n                            attempts = outbox.attempts + 1,\n                            version = outbox.version + 1,\n                            updated_at = NOW()\n                        FROM candidates, authority\n                        WHERE outbox.outbox_id = candidates.outbox_id\n                        RETURNING\n                            outbox.outbox_id,\n                            outbox.operation_key,\n                            outbox.kind,\n                            outbox.payload_digest,\n                            outbox.payload,\n                            outbox.attempts,\n                            outbox.max_attempts,\n                            outbox.version,\n                            (\n                                EXTRACT(EPOCH FROM outbox.lease_until) * 1000\n                            )::BIGINT AS lease_until_epoch_millis\n                    )\n                    SELECT *\n                    FROM claimed\n                    ORDER BY outbox_id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "outbox_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "outbox_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "operation_key",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "operation_key"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "payload_digest",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "payload_digest"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "payload",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "payload"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "max_attempts",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "max_attempts"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "outbox",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "lease_until_epoch_millis",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "89649d6aa674297498105f3282410d50c58677b13125a17e7be1cde4389d86e6"
+}

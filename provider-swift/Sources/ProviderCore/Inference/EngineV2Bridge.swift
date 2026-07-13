@@ -29,6 +29,7 @@
 import Foundation
 import MLXLMCommon
 import ProviderCoreFoundation
+
 #if canImport(os)
 import os
 #endif
@@ -79,6 +80,9 @@ public actor EngineV2Bridge {
     /// the shared-budget reservation below are
     /// sized to the caches actually built — see `EngineV2KVSizing`.
     let kvBytesPerToken: Int
+    /// Exact immutable AdmissionV2 construction inputs, including any
+    /// external compiled-decode padding reserve.
+    let preparedAdmission: EngineV2PreparedAdmission
     /// Process-wide KV reservation ledger shared by every EngineV2 slot.
     /// When set (production), each v2 submission must RESERVE its worst-case
     /// KV footprint here BEFORE it is handed to the engine — the reservation
@@ -126,7 +130,47 @@ public actor EngineV2Bridge {
         var firstTokenAt: ContinuousClock.Instant?
     }
 
+    struct PreparedRequestState {
+        enum Phase: Equatable {
+            case reserved
+            case starting
+        }
+
+        let inference: PreparedInference
+        var request: CBv2Request
+        let expiresAt: Date
+        let reservedKVBytes: UInt64
+        let reservedMediaBytes: UInt64
+        let holdsSharedReservation: Bool
+        var phase: Phase = .reserved
+        var cancelOnStart = false
+    }
+
+    struct StartedPreparedRequestState {
+        let identity: AttemptIdentity
+        let requestID: String
+        let engineID: CBv2RequestID
+        let holdsSharedReservation: Bool
+        let resourceRelease: PreparedInferenceResourceRelease
+        let completion: PreparedInferenceCompletion
+    }
+
     var active: [String: ActiveRequestState] = [:]
+    /// Admitted, non-emitting leases that have not received start
+    /// authorization. They consume the same capacity envelope as active work
+    /// but have not been submitted to the engine.
+    var preparedRequests: [LeaseID: PreparedRequestState] = [:]
+    /// Started prepared lease → provider request id. Retained until terminal
+    /// so a delayed abort can be promoted to cancellation.
+    var startedPreparedRequests: [LeaseID: StartedPreparedRequestState] = [:]
+    /// Capacity re-slices are held while an acknowledged prepared lease has
+    /// not yet submitted. Applying a lower ceiling before submit could make
+    /// start reject work prepare already promised.
+    var deferredKVBytesCapacity: Int?
+    /// A terminal timeout means engine quiescence is no longer knowable.
+    /// Local reservations are released, but this bridge fails closed and
+    /// refuses further admissions until its owner rebuilds the slot.
+    var preparedTerminalWedge = false
     /// Provider request-id → engine request-id, for `cancel`.
     var idMap: [String: CBv2RequestID] = [:]
     /// Monotonic engine-id counter for UNSEEDED requests. Lives in the low
@@ -209,6 +253,7 @@ public actor EngineV2Bridge {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
+        preparedAdmission: EngineV2PreparedAdmission? = nil,
         kvBudget: GlobalKVCacheBudget? = nil,
         prefixCacheBudgetBytes: Int = 0,
         ssdPrefixCache: SSDPrefixCache? = nil,
@@ -228,6 +273,10 @@ public actor EngineV2Bridge {
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.kvBytesPerToken = kvBytesPerToken
+        self.preparedAdmission =
+            preparedAdmission
+            ?? (engine as? any EngineV2PreparedAdmissionProviding)?.preparedAdmission
+            ?? EngineV2PreparedAdmission(flatKVBytesPerToken: kvBytesPerToken)
         self.kvBudget = kvBudget
         self.prefixCacheBudgetBytes = max(0, prefixCacheBudgetBytes)
         self.ssdPrefixCache = ssdPrefixCache
@@ -325,13 +374,31 @@ public actor EngineV2Bridge {
         let id = Self.normalizedRequestId(requestId)
         let (stream, continuation) = AsyncStream<GenerationEvent>.makeStream()
 
+        guard !preparedTerminalWedge else {
+            continuation.yield(
+                .error(
+                    "token_budget_exhausted: engine terminal state is not quiescent"))
+            continuation.finish()
+            return stream
+        }
+
         // Duplicate request-id guard (legacy: the planner's
         // `duplicateRequestID` rejection). Without it a second submit under
         // the same id would overwrite the first request's bookkeeping and
         // the two pumps would corrupt each other's teardown. Same canonical
         // message → `.requestRejected` (a deterministic client fault).
-        guard active[id] == nil else {
+        guard !requestIDIsClaimed(id) else {
             continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
+            continuation.finish()
+            return stream
+        }
+        // A prepared lease owns one of the bridge's decode slots. Direct
+        // submissions may use the remaining slots but cannot steal the last
+        // slot after the prepare acknowledgement has promised it.
+        if !preparedRequests.isEmpty,
+            active.count + preparedRequests.count >= maxConcurrentRequests
+        {
+            continuation.yield(.error("token_budget_exhausted: request queue full"))
             continuation.finish()
             return stream
         }
@@ -354,9 +421,17 @@ public actor EngineV2Bridge {
                 requestID: id, promptTokens: promptTokens, cacheScope: cacheScope)
             // `stage` suspended this actor — re-check the duplicate guard
             // (same discipline as the shared-budget gate below).
-            guard active[id] == nil else {
+            guard !requestIDIsClaimed(id) else {
                 if ssdStaged { ssd.completeStaging(requestID: id) }
                 continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
+                continuation.finish()
+                return stream
+            }
+            if !preparedRequests.isEmpty,
+                active.count + preparedRequests.count >= maxConcurrentRequests
+            {
+                if ssdStaged { ssd.completeStaging(requestID: id) }
+                continuation.yield(.error("token_budget_exhausted: request queue full"))
                 continuation.finish()
                 return stream
             }
@@ -377,6 +452,27 @@ public actor EngineV2Bridge {
             cacheScope: cacheScope,
             multimodal: multimodal
         )
+
+        // A prepared lease promises local slot KV, not only process-wide
+        // unified memory. While such a promise is live, direct submissions
+        // must fit beside every active and prepared worst-case footprint;
+        // otherwise EngineV2's normal optimistic admission could accept this
+        // request and later preempt the work whose prepare was acknowledged.
+        if !preparedRequests.isEmpty {
+            do {
+                let needed = try preparedKVBytes(
+                    promptTokens: promptTokens.count,
+                    maxOutputTokens: cbv2Request.maxTokens)
+                try checkPreparedLocalCapacity(addingKVBytes: needed)
+            } catch {
+                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+                continuation.yield(
+                    .error(
+                        "token_budget_exhausted: prepared lease reserved slot KV capacity"))
+                continuation.finish()
+                return stream
+            }
+        }
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
         // footprint (prompt + maxTokens at the fp16 rate — the caches v2
@@ -409,14 +505,30 @@ public actor EngineV2Bridge {
         // collapse the gate to zero. Admission for paged requests is the
         // engine's own ledger (`AdmissionV2`) + the pool's atomic
         // worst-case page charge, with the capacity-requeue backstop.
-        if kvBackendKind == .contiguous, let kvBudget, kvBytesPerToken > 0,
+        if kvBackendKind == .contiguous, let kvBudget,
             cbv2Request.maxTokens > 0
         {
-            sharedKVReserved = await kvBudget.reserve(
-                requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
+            guard
+                let worstCaseBytes = preparedAdmission.estimatedBytes(
+                    forTokens: worstCaseTokens)
+            else {
+                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+                continuation.yield(
+                    .error(
+                        "token_budget_exhausted: request KV size overflow"))
+                continuation.finish()
+                return stream
+            }
+            if worstCaseBytes == 0 {
+                sharedKVReserved = true
+            } else {
+                sharedKVReserved = await kvBudget.reserveBytes(
+                    requestID: id, bytes: worstCaseBytes)
+            }
             guard sharedKVReserved else {
                 if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
-                continuation.yield(.error(
+                continuation.yield(
+                    .error(
                     "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
                         + "but the shared KV budget has no headroom"))
                 continuation.finish()
@@ -429,12 +541,37 @@ public actor EngineV2Bridge {
             // back its reservation — never overwrite live bookkeeping. (A
             // gate-taking duplicate can't get here: its own `reserve` fails
             // on this id's existing entry.)
-            guard active[id] == nil else {
+            guard !requestIDIsClaimed(id) else {
                 await kvBudget.release(requestID: id)
                 if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
                 continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
                 continuation.finish()
                 return stream
+            }
+            if !preparedRequests.isEmpty,
+                active.count + preparedRequests.count >= maxConcurrentRequests
+            {
+                await kvBudget.release(requestID: id)
+                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+                continuation.yield(.error("token_budget_exhausted: request queue full"))
+                continuation.finish()
+                return stream
+            }
+            if !preparedRequests.isEmpty {
+                do {
+                    let needed = try preparedKVBytes(
+                        promptTokens: promptTokens.count,
+                        maxOutputTokens: cbv2Request.maxTokens)
+                    try checkPreparedLocalCapacity(addingKVBytes: needed)
+                } catch {
+                    await kvBudget.release(requestID: id)
+                    if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+                    continuation.yield(
+                        .error(
+                            "token_budget_exhausted: prepared lease reserved slot KV capacity"))
+                    continuation.finish()
+                    return stream
+                }
             }
         }
 
@@ -552,12 +689,24 @@ public actor EngineV2Bridge {
     /// Reclaiming or adding physical bytes requires an unload/rebuild.
     public func updateKVBytesCapacity(_ bytes: Int) {
         let requested = max(0, bytes - prefixCacheBudgetBytes)
+        let engineBytes: Int
         if kvBackendKind == .paged {
             let physical = max(0, engine.capacity().kvBytesBackendCapacity)
-            engine.updateKVBytesCapacity(min(requested, physical))
+            engineBytes = min(requested, physical)
         } else {
-            engine.updateKVBytesCapacity(requested)
+            engineBytes = requested
         }
+        guard preparedRequests.isEmpty else {
+            deferredKVBytesCapacity = engineBytes
+            return
+        }
+        engine.updateKVBytesCapacity(engineBytes)
+    }
+
+    func applyDeferredKVBytesCapacityIfPossible() {
+        guard preparedRequests.isEmpty, let deferredKVBytesCapacity else { return }
+        self.deferredKVBytesCapacity = nil
+        engine.updateKVBytesCapacity(deferredKVBytesCapacity)
     }
 
     /// Record the slot's cold-start load time for heartbeat reporting
@@ -595,6 +744,15 @@ public actor EngineV2Bridge {
     public func shutdown() async {
         prefixCacheStatsTask?.cancel()
         prefixCacheStatsTask = nil
+        let unstarted = preparedRequests
+        preparedRequests.removeAll()
+        startedPreparedRequests.removeAll()
+        for state in unstarted.values {
+            if state.holdsSharedReservation {
+                await kvBudget?.release(requestID: state.inference.requestID)
+            }
+            await state.inference.resourceRelease.fire()
+        }
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }
@@ -607,13 +765,16 @@ public actor EngineV2Bridge {
 
     // MARK: - Event pump (CBv2Event → GenerationEvent)
 
-    private func runPump(
+    func runPump(
         id: String,
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         logprobsChannel: EngineV2LogprobsChannel? = nil,
-        usageSignal: EngineV2RequestUsageSignal? = nil
+        usageSignal: EngineV2RequestUsageSignal? = nil,
+        preparedResourceRelease: PreparedInferenceResourceRelease? = nil,
+        preparedCompletion: PreparedInferenceCompletion? = nil,
+        preparedUsageLedger: PreparedInferenceUsageLedger? = nil
     ) {
         let bridge = self
         let task = Task {
@@ -621,7 +782,10 @@ public actor EngineV2Bridge {
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
                 logprobsChannel: logprobsChannel,
-                usageSignal: usageSignal
+                usageSignal: usageSignal,
+                preparedResourceRelease: preparedResourceRelease,
+                preparedCompletion: preparedCompletion,
+                preparedUsageLedger: preparedUsageLedger
             )
             await bridge.clearPumpTask(id: id)
         }
@@ -640,7 +804,10 @@ public actor EngineV2Bridge {
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
         logprobsChannel: EngineV2LogprobsChannel? = nil,
-        usageSignal: EngineV2RequestUsageSignal? = nil
+        usageSignal: EngineV2RequestUsageSignal? = nil,
+        preparedResourceRelease: PreparedInferenceResourceRelease? = nil,
+        preparedCompletion: PreparedInferenceCompletion? = nil,
+        preparedUsageLedger: PreparedInferenceUsageLedger? = nil
     ) async {
         // NOTE: the shared-budget KV reservation is taken in `submitTokenized`
         // (the pre-engine admission gate), NOT here — the pump only RELEASES
@@ -660,7 +827,10 @@ public actor EngineV2Bridge {
                     sawFirstToken = true
                     recordFirstToken(id: id)
                 }
-                recordProgress(id: id, newTokens: tokens.count)
+                let generatedTokens = recordProgress(
+                    id: id, newTokens: tokens.count)
+                await preparedUsageLedger?.record(
+                    finalGeneratedTokens: generatedTokens)
                 // Logprobs passthrough: convert to the OpenAI streaming
                 // entry shape and publish to the per-request channel BEFORE
                 // yielding the chunk, so by the time the SSE frame carrying
@@ -690,9 +860,11 @@ public actor EngineV2Bridge {
                 // events are yielded, so it is set by the time any
                 // downstream consumer sees the usage frame.
                 usageSignal?.record(prefixCacheHitTokens: usage.prefixCacheHitTokens)
-                finishAndEmit(
+                await finishAndEmit(
                     id: id, reason: reason, usage: usage,
-                    sawFirstToken: sawFirstToken, continuation: continuation
+                    sawFirstToken: sawFirstToken,
+                    continuation: continuation,
+                    preparedUsageLedger: preparedUsageLedger
                 )
                 // Release the shared-budget KV reservation on the terminal
                 // (only when this request took one; release is idempotent).
@@ -703,6 +875,8 @@ public actor EngineV2Bridge {
                 // endAdoption already balanced the ticket at adoption
                 // time); covers the lookup-missed corner. Idempotent.
                 ssdPrefixCache?.completeStaging(requestID: id)
+                await preparedResourceRelease?.fire()
+                await preparedCompletion?.finish()
                 continuation.finish()
                 return
             }
@@ -720,6 +894,8 @@ public actor EngineV2Bridge {
                 await kvBudget?.release(requestID: id)
             }
             ssdPrefixCache?.completeStaging(requestID: id)
+            await preparedResourceRelease?.fire()
+            await preparedCompletion?.finish()
             continuation.finish()
         }
     }
@@ -730,15 +906,20 @@ public actor EngineV2Bridge {
         reason: CBv2FinishReason,
         usage: CBv2Usage,
         sawFirstToken: Bool,
-        continuation: AsyncStream<GenerationEvent>.Continuation
-    ) {
+        continuation: AsyncStream<GenerationEvent>.Continuation,
+        preparedUsageLedger: PreparedInferenceUsageLedger?
+    ) async {
         switch reason {
         case .stop, .length:
             let final = recordFinish(id: id, usage: usage, success: true)
+            await preparedUsageLedger?.record(
+                promptTokens: final.prompt,
+                finalGeneratedTokens: final.completion)
             // Preserve the v2 engine's truncation signal: `.length` must
             // reach the client as finish_reason "length", not be flattened
             // to "stop" (max_tokens truncation was invisible on v2).
-            continuation.yield(.info(
+            continuation.yield(
+                .info(
                 promptTokens: final.prompt,
                 completionTokens: final.completion,
                 tokensPerSecond: final.tps,
@@ -746,11 +927,15 @@ public actor EngineV2Bridge {
             ))
         case .cancelled:
             let final = recordFinish(id: id, usage: usage, success: false)
+            await preparedUsageLedger?.record(
+                promptTokens: final.prompt,
+                finalGeneratedTokens: final.completion)
             // A cancel that did real work emits its usage BEFORE the error
             // so a listener can still bill delivered tokens (legacy abort
             // framing).
             if final.prompt > 0 || final.completion > 0 {
-                continuation.yield(.info(
+                continuation.yield(
+                    .info(
                     promptTokens: final.prompt,
                     completionTokens: final.completion,
                     tokensPerSecond: final.tps,
@@ -759,7 +944,10 @@ public actor EngineV2Bridge {
             }
             continuation.yield(.error("request cancelled"))
         case .error(let message):
-            _ = recordFinish(id: id, usage: usage, success: false)
+            let final = recordFinish(id: id, usage: usage, success: false)
+            await preparedUsageLedger?.record(
+                promptTokens: final.prompt,
+                finalGeneratedTokens: final.completion)
             emitInferenceErrorTelemetry(requestId: id)
             if message.hasPrefix(CBv2KVError.capacityExhaustedFinishPrefix) {
                 // Engine-side TERMINAL capacity exhaustion (the paged pool
@@ -792,10 +980,12 @@ public actor EngineV2Bridge {
         }
     }
 
-    private func recordProgress(id: String, newTokens: Int) {
-        guard newTokens > 0, var state = active[id] else { return }
+    private func recordProgress(id: String, newTokens: Int) -> Int {
+        guard var state = active[id] else { return max(0, newTokens) }
+        guard newTokens > 0 else { return max(0, state.completionTokens) }
         state.completionTokens += newTokens
         active[id] = state
+        return max(0, state.completionTokens)
     }
 
     /// Finish bookkeeping with the legacy billing-zero defense: the
@@ -808,6 +998,7 @@ public actor EngineV2Bridge {
         success: Bool
     ) -> (prompt: Int, completion: Int, tps: Double) {
         idMap.removeValue(forKey: id)
+        startedPreparedRequests = startedPreparedRequests.filter { $0.value.requestID != id }
         let now = ContinuousClock.Instant.now
         guard var state = active.removeValue(forKey: id) else {
             return (max(0, usage.promptTokens), max(0, usage.completionTokens), 0)
@@ -895,6 +1086,7 @@ public actor EngineV2Bridge {
     private func dropRequest(id: String) {
         active.removeValue(forKey: id)
         idMap.removeValue(forKey: id)
+        startedPreparedRequests = startedPreparedRequests.filter { $0.value.requestID != id }
     }
 
     /// Same EWMA (α = 0.3) as the legacy scheduler's decode-TPS heartbeat
@@ -914,7 +1106,7 @@ public actor EngineV2Bridge {
     /// allowlisted operational fields only — the request's media/prompt
     /// content never rides telemetry; `multimodal` is a bare boolean tag
     /// and `media_kind` is one of image/video/mixed.
-    private func emitVisionSubmitTelemetry(requestId: String, mediaKind: EngineV2MediaKind?) {
+    func emitVisionSubmitTelemetry(requestId: String, mediaKind: EngineV2MediaKind?) {
         var event = TelemetryEvent(
             source: .provider,
             severity: .info,
@@ -1021,7 +1213,7 @@ public actor EngineV2Bridge {
     /// MUST be called in the same synchronous (no-await) stretch as
     /// `engine.submit` + the `idMap` registration, so the liveness check
     /// cannot race a concurrent identical submission across a suspension.
-    private func mintEngineRequestId(seed: UInt64?, promptTokens: [Int]) -> CBv2RequestID {
+    func mintEngineRequestId(seed: UInt64?, promptTokens: [Int]) -> CBv2RequestID {
         if let seed {
             let stable = CBv2RequestID(
                 Self.stableSeededRawId(seed: seed, promptTokens: promptTokens))
@@ -1051,6 +1243,10 @@ public actor EngineV2Bridge {
     static func isValidRequestId(_ id: String) -> Bool {
         guard !id.isEmpty, id.count <= maxRequestIdLength else { return false }
         return !id.unicodeScalars.contains { $0.value < 0x20 || $0.value == 0x7f }
+    }
+
+    func requestIDIsClaimed(_ id: String) -> Bool {
+        active[id] != nil || preparedRequests.values.contains { $0.inference.requestID == id }
     }
 
     // MARK: - Test seams (internal; reachable via @testable only)

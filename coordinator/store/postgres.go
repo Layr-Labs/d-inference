@@ -11,7 +11,7 @@ package store
 // or not at all. The Debit operation uses a conditional UPDATE that only
 // succeeds if the balance is sufficient, preventing negative balances.
 //
-// Schema migrations run automatically on startup via the migrate() method.
+// Schema migrations are applied out of process by coordinator-migrate.
 
 import (
 	"context"
@@ -21,9 +21,12 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -33,7 +36,20 @@ var _ Store = (*PostgresStore)(nil)
 
 // PostgresStore is a PostgreSQL-backed implementation of Store.
 type PostgresStore struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	poolFence *poolOwnershipFence
+	// ownershipConn holds the process-wide coordinator advisory lock for the
+	// lifetime of this store. Losing/closing the connection releases authority.
+	ownershipConn        *pgxpool.Conn
+	ownershipEnabled     bool
+	ownershipEpochActive bool
+	ownershipHealthy     atomic.Bool
+	ownershipLost        chan struct{}
+	ownershipStop        chan struct{}
+	ownershipDone        chan struct{}
+	ownershipLostOnce    sync.Once
+	ownershipID          string
+	ownershipEpoch       int64
 
 	// In-memory cache for model prices. Keyed by "accountID:model".
 	// Eliminates a DB round trip on every inference request for
@@ -47,13 +63,23 @@ type cachedPrice struct {
 	at            time.Time
 }
 
-// NewPostgres creates a new PostgresStore connected to the given database URL.
-// It runs schema migrations on startup.
+// NewPostgres connects to PostgreSQL and verifies that its already-migrated
+// schema is compatible with this binary. It never applies DDL or DML.
 func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 	cfg, err := pgxpool.ParseConfig(scfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("store: parse postgres config: %w", err)
 	}
+	// The Rust coordinator owns a schema named rust_coord. PostgreSQL's
+	// default "$user", public search path would switch Go stores whose role is
+	// also named rust_coord into that schema after migration 3. Pin serving to
+	// public unless an isolated test/deployment explicitly supplies a path.
+	pinDefaultPostgresSchema(cfg.ConnConfig.RuntimeParams)
+	cfg.ConnConfig.RuntimeParams["application_name"] =
+		"darkbloom-go-coordinator:" + uuid.NewString()
+	poolFence := &poolOwnershipFence{}
+	cfg.BeforeAcquire = poolFence.beforeAcquire
+	cfg.AfterRelease = poolFence.afterRelease
 
 	// Pool was previously capped at 20, causing connection starvation under
 	// load. The stats endpoint holds connections for up to 10s (full-table
@@ -82,1003 +108,136 @@ func NewPostgres(ctx context.Context, scfg Config) (*PostgresStore, error) {
 
 	s := &PostgresStore{
 		pool:       pool,
+		poolFence:  poolFence,
 		priceCache: make(map[string]cachedPrice),
 	}
-	if err := s.migrate(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("store: run migrations: %w", err)
+	poolFence.mu.Lock()
+	poolFence.onLost = func() {
+		s.ownershipHealthy.Store(false)
+		s.ownershipLostOnce.Do(func() {
+			if s.ownershipLost != nil {
+				close(s.ownershipLost)
+			}
+		})
 	}
-
+	poolFence.mu.Unlock()
+	if err := checkSchemaCompatibility(ctx, pool); err != nil {
+		pool.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+func pinDefaultPostgresSchema(runtimeParams map[string]string) {
+	if _, explicit := runtimeParams["search_path"]; !explicit {
+		runtimeParams["search_path"] = "public"
+	}
 }
 
 // Close shuts down the connection pool.
 func (s *PostgresStore) Close() {
-	s.pool.Close()
-}
-
-// migrate runs the schema creation statements.
-func (s *PostgresStore) migrate(ctx context.Context) error {
-	migrations := []string{
-		// schema_migrations records one-time data migrations that must run at most
-		// once rather than on every boot. Idempotent DDL (CREATE/ALTER ... IF [NOT]
-		// EXISTS) does not need this; it exists to gate destructive one-shot DML
-		// cleanups (see the model_prices cleanup below) behind a marker id.
-		`CREATE TABLE IF NOT EXISTS schema_migrations (
-			id TEXT PRIMARY KEY,
-			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-
-		`CREATE TABLE IF NOT EXISTS providers (
-			id TEXT PRIMARY KEY,
-			hardware JSONB NOT NULL,
-			models JSONB NOT NULL,
-			backend TEXT NOT NULL,
-			location JSONB,
-			registered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			trust_level TEXT NOT NULL DEFAULT 'none',
-			attested BOOLEAN NOT NULL DEFAULT FALSE,
-			attestation_result JSONB,
-			se_public_key TEXT NOT NULL DEFAULT '',
-			public_key TEXT NOT NULL DEFAULT '',
-			serial_number TEXT NOT NULL DEFAULT '',
-			mda_verified BOOLEAN NOT NULL DEFAULT FALSE,
-			mda_cert_chain JSONB,
-			version TEXT NOT NULL DEFAULT '',
-			runtime_verified BOOLEAN NOT NULL DEFAULT FALSE,
-			python_hash TEXT NOT NULL DEFAULT '',
-			runtime_hash TEXT NOT NULL DEFAULT '',
-			last_challenge_verified TIMESTAMPTZ,
-			failed_challenges INT NOT NULL DEFAULT 0,
-			account_id TEXT NOT NULL DEFAULT '',
-			lifetime_requests_served BIGINT NOT NULL DEFAULT 0,
-			lifetime_tokens_generated BIGINT NOT NULL DEFAULT 0,
-			last_session_requests_served BIGINT NOT NULL DEFAULT 0,
-			last_session_tokens_generated BIGINT NOT NULL DEFAULT 0,
-			lifetime_stats JSONB NOT NULL DEFAULT '{}'::jsonb,
-			last_session_stats JSONB NOT NULL DEFAULT '{}'::jsonb
-		)`,
-		// Migrate existing providers table: add new columns if upgrading from previous schema
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS location JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS trust_level TEXT NOT NULL DEFAULT 'none'; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attested BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS attestation_result JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS se_public_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS public_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS serial_number TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS mda_cert_chain JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS runtime_verified BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS python_hash TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS runtime_hash TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_challenge_verified TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS failed_challenges INT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS lifetime_requests_served BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS lifetime_tokens_generated BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_requests_served BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_tokens_generated BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS lifetime_stats JSONB NOT NULL DEFAULT '{}'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE providers ADD COLUMN IF NOT EXISTS last_session_stats JSONB NOT NULL DEFAULT '{}'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
-		`CREATE INDEX IF NOT EXISTS idx_providers_serial ON providers(serial_number) WHERE serial_number != ''`,
-		`CREATE INDEX IF NOT EXISTS idx_providers_account ON providers(account_id, last_seen DESC) WHERE account_id != ''`,
-
-		// Migrate usage table: add request_id and cost columns
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS cost_micro_usd BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS request_location JSONB; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-
-		// Provider reputation — persistent reputation tracking
-		`CREATE TABLE IF NOT EXISTS provider_reputation (
-			provider_id TEXT PRIMARY KEY REFERENCES providers(id),
-			total_jobs INT NOT NULL DEFAULT 0,
-			successful_jobs INT NOT NULL DEFAULT 0,
-			failed_jobs INT NOT NULL DEFAULT 0,
-			total_uptime_seconds BIGINT NOT NULL DEFAULT 0,
-			avg_response_time_ms BIGINT NOT NULL DEFAULT 0,
-			challenges_passed INT NOT NULL DEFAULT 0,
-			challenges_failed INT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE TABLE IF NOT EXISTS api_keys (
-			key_hash TEXT PRIMARY KEY,
-			raw_prefix TEXT NOT NULL,
-			owner_account_id TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			active BOOLEAN NOT NULL DEFAULT TRUE
-		)`,
-		`DO $$ BEGIN
-			ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS owner_account_id TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		// Multi-key support: per-key id, name, limits, expiry, last-used.
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS limit_micro_usd BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS limit_reset TEXT NOT NULL DEFAULT 'none'; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS rpm_limit BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS itpm_limit BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS otpm_limit BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_models TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS self_route_only BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
-		// Backfill stable IDs for legacy rows (deterministic from the hash so
-		// it is stable across restarts and idempotent).
-		`UPDATE api_keys SET id = 'key_' || substr(md5(key_hash), 1, 24) WHERE id IS NULL OR id = ''`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_id ON api_keys(id) WHERE id <> ''`,
-		`CREATE INDEX IF NOT EXISTS idx_api_keys_owner ON api_keys(owner_account_id) WHERE owner_account_id <> ''`,
-		`CREATE TABLE IF NOT EXISTS usage (
-			id BIGSERIAL PRIMARY KEY,
-			provider_id TEXT NOT NULL,
-			consumer_key_hash TEXT NOT NULL,
-				key_id TEXT NOT NULL DEFAULT '',
-				model TEXT NOT NULL,
-				public_model TEXT NOT NULL DEFAULT '',
-				prompt_tokens INTEGER NOT NULL,
-				completion_tokens INTEGER NOT NULL,
-				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			request_id TEXT NOT NULL DEFAULT '',
-			cost_micro_usd BIGINT NOT NULL DEFAULT 0,
-			request_location JSONB
-		)`,
-		// Per-key usage attribution — ALTER for DBs upgrading from a usage
-		// table created before key_id existed. Must run AFTER CREATE TABLE usage.
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS key_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE usage ADD COLUMN IF NOT EXISTS public_model TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		// Indexes for usage queries (stats, billing, per-consumer history).
-		`CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_consumer ON usage(consumer_key_hash, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_provider ON usage(provider_id, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_usage_key ON usage(key_id, created_at DESC) WHERE key_id <> ''`,
-
-		`CREATE TABLE IF NOT EXISTS payments (
-			id BIGSERIAL PRIMARY KEY,
-			tx_hash TEXT UNIQUE,
-			consumer_address TEXT NOT NULL,
-			provider_address TEXT NOT NULL,
-			amount_usd TEXT NOT NULL,
-			model TEXT NOT NULL,
-			prompt_tokens INTEGER NOT NULL,
-			completion_tokens INTEGER NOT NULL,
-			memo TEXT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE TABLE IF NOT EXISTS balances (
-			account_id TEXT PRIMARY KEY,
-			balance_micro_usd BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE TABLE IF NOT EXISTS ledger_entries (
-			id BIGSERIAL PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			entry_type TEXT NOT NULL,
-			amount_micro_usd BIGINT NOT NULL,
-			balance_after BIGINT NOT NULL,
-			reference TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id, created_at DESC)`,
-		// Partial index for the public leaderboard/network-totals reward scans,
-		// which filter ledger_entries by reward entry_type across all accounts.
-		// Without it, each cache miss seq-scans the whole (multi-million-row)
-		// ledger to find the handful of reward rows. Predicate is derived from
-		// RewardLedgerTypes so it matches the query's IN-list exactly.
-		`CREATE INDEX IF NOT EXISTS idx_ledger_reward ON ledger_entries(account_id, created_at DESC) WHERE entry_type IN (` + rewardLedgerTypesSQLList() + `)`,
-
-		// Referral system tables
-		`CREATE TABLE IF NOT EXISTS referrers (
-			account_id TEXT PRIMARY KEY,
-			code TEXT UNIQUE NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_referrers_code ON referrers(code)`,
-
-		`CREATE TABLE IF NOT EXISTS referrals (
-			referred_account TEXT PRIMARY KEY,
-			referrer_code TEXT NOT NULL REFERENCES referrers(code),
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_referrals_code ON referrals(referrer_code)`,
-
-		// Billing sessions table
-		`CREATE TABLE IF NOT EXISTS billing_sessions (
-			id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			payment_method TEXT NOT NULL,
-			amount_micro_usd BIGINT NOT NULL,
-			external_id TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'pending',
-			referral_code TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			completed_at TIMESTAMPTZ
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_account ON billing_sessions(account_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_billing_sessions_external ON billing_sessions(external_id)`,
-		`DO $$ BEGIN
-			ALTER TABLE billing_sessions DROP COLUMN IF EXISTS chain;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-
-		// Custom pricing — per-account model price overrides
-		`CREATE TABLE IF NOT EXISTS model_prices (
-			account_id TEXT NOT NULL,
-			model TEXT NOT NULL,
-			input_price BIGINT NOT NULL,
-			output_price BIGINT NOT NULL,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (account_id, model)
-		)`,
-
-		// Clean up wallet-keyed custom prices: with the removal of wallet-based
-		// payouts, model_prices rows keyed by Solana wallet addresses are
-		// unreachable. Providers must re-enter custom prices under their Stripe
-		// Connect account ID.
-		//
-		// This is a one-time, destructive cleanup, so it is gated on a
-		// schema_migrations marker and runs at most once instead of on every boot.
-		// Two further guards:
-		//   - Exclude the synthetic "platform" account. Platform-default per-model
-		//     pricing (set via PUT /v1/admin/pricing and at model registration) is
-		//     stored under account_id='platform', which is NEVER a row in users.
-		//     Without this guard the cleanup would wipe all platform pricing,
-		//     silently reverting billing to the fallback defaults.
-		//   - The marker is written only after a successful DELETE within the same
-		//     block, so a run that errors (e.g. users not yet created on a brand-new
-		//     DB) rolls back and is retried on the next boot.
-		`DO $$ BEGIN
-			IF NOT EXISTS (SELECT 1 FROM schema_migrations WHERE id = 'cleanup_wallet_model_prices_v1') THEN
-				DELETE FROM model_prices
-				WHERE account_id NOT IN (SELECT account_id FROM users)
-				  AND account_id <> 'platform';
-				INSERT INTO schema_migrations (id) VALUES ('cleanup_wallet_model_prices_v1');
-			END IF;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-
-		// Users — Privy identity → internal account mapping
-		`CREATE TABLE IF NOT EXISTS users (
-			account_id TEXT PRIMARY KEY,
-			privy_user_id TEXT UNIQUE NOT NULL,
-			email TEXT NOT NULL DEFAULT '',
-			role TEXT NOT NULL DEFAULT '',
-			platform_fee_percent BIGINT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`DO $$ BEGIN
-			ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_address;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE users DROP COLUMN IF EXISTS solana_wallet_id;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_privy ON users(privy_user_id)`,
-
-		// The legacy admin-managed supported_models catalog was replaced by the
-		// manifest-backed model_registry below. Drop the stale duplicate table if
-		// it is still present from an older deployment.
-		`DROP TABLE IF EXISTS supported_models`,
-
-		`CREATE TABLE IF NOT EXISTS model_registry (
-			id TEXT PRIMARY KEY,
-			display_name TEXT NOT NULL,
-			family TEXT NOT NULL DEFAULT '',
-			architecture TEXT NOT NULL DEFAULT '',
-			quantization TEXT NOT NULL DEFAULT '',
-			max_context_length INTEGER NOT NULL DEFAULT 0,
-			max_output_length INTEGER NOT NULL DEFAULT 0,
-			min_ram_gb INTEGER NOT NULL DEFAULT 0,
-			capabilities TEXT[] NOT NULL DEFAULT '{}',
-			status TEXT NOT NULL DEFAULT 'beta',
-			description TEXT NOT NULL DEFAULT '',
-			runtime_parameters JSONB NOT NULL DEFAULT '{}',
-			metadata JSONB NOT NULL DEFAULT '{}',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_model_registry_status ON model_registry(status)`,
-		`CREATE TABLE IF NOT EXISTS model_versions (
-			id BIGSERIAL PRIMARY KEY,
-			model_id TEXT NOT NULL REFERENCES model_registry(id) ON DELETE CASCADE,
-			version TEXT NOT NULL,
-			r2_prefix TEXT NOT NULL,
-			aggregate_sha256 TEXT NOT NULL,
-			total_size_bytes BIGINT NOT NULL,
-			file_count INTEGER NOT NULL,
-			status TEXT NOT NULL DEFAULT 'ready',
-			uploaded_by TEXT NOT NULL DEFAULT '',
-			uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			promoted_at TIMESTAMPTZ,
-			metadata JSONB NOT NULL DEFAULT '{}',
-			UNIQUE(model_id, version)
-		)`,
-		`DO $$ BEGIN
-			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_context_length INTEGER NOT NULL DEFAULT 0;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS max_output_length INTEGER NOT NULL DEFAULT 0;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE model_registry ADD COLUMN IF NOT EXISTS runtime_parameters JSONB NOT NULL DEFAULT '{}';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`CREATE INDEX IF NOT EXISTS idx_model_versions_model ON model_versions(model_id)`,
-		`CREATE TABLE IF NOT EXISTS model_version_files (
-			id BIGSERIAL PRIMARY KEY,
-			model_version_id BIGINT NOT NULL REFERENCES model_versions(id) ON DELETE CASCADE,
-			path TEXT NOT NULL,
-			size_bytes BIGINT NOT NULL,
-			sha256 TEXT NOT NULL,
-			role TEXT NOT NULL,
-			UNIQUE(model_version_id, path)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_model_version_files_version ON model_version_files(model_version_id)`,
-		`CREATE TABLE IF NOT EXISTS model_active_versions (
-			model_id TEXT PRIMARY KEY REFERENCES model_registry(id) ON DELETE CASCADE,
-			model_version_id BIGINT NOT NULL REFERENCES model_versions(id) ON DELETE RESTRICT,
-			activated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE TABLE IF NOT EXISTS publishing_api_keys (
-			id TEXT PRIMARY KEY,
-			name TEXT NOT NULL,
-			key_hash TEXT NOT NULL,
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_used_at TIMESTAMPTZ
-		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_publishing_api_keys_hash ON publishing_api_keys(key_hash)`,
-
-		// Model aliases (public-facing names → a desired concrete build). An alias
-		// resolves to a single desired_build (the build providers converge to) with
-		// an optional previous_build that stays acceptable during a rollout. Lets us
-		// swap the underlying quant (fp8 → qat-4bit) behind a stable consumer-facing
-		// model name. The legacy `builds` JSONB column is kept (nullable, default
-		// '[]') only so an older coordinator binary doesn't choke on the table; it
-		// is no longer read or written — drop it in a follow-up release.
-		`CREATE TABLE IF NOT EXISTS model_aliases (
-			alias_id TEXT PRIMARY KEY,
-			display_name TEXT NOT NULL DEFAULT '',
-			builds JSONB NOT NULL DEFAULT '[]'::jsonb,
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		// Declarative desired/previous build pointers (additive migration).
-		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS desired_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS previous_build TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		// Alias lineage: former desired/previous builds rotated out by later
-		// upserts, so a provider returning from a long offline period is still
-		// recognized as part of the alias's fleet.
-		`DO $$ BEGIN ALTER TABLE model_aliases ADD COLUMN IF NOT EXISTS retired_builds JSONB NOT NULL DEFAULT '[]'::jsonb; EXCEPTION WHEN others THEN NULL; END $$`,
-		// Backfill desired_build from the old `builds` JSON: pick the highest-weight
-		// active build of each alias that hasn't been migrated yet. DISTINCT ON keeps
-		// exactly one (highest-weight) build per alias so the UPDATE...FROM join is
-		// deterministic. One-shot; safe to re-run because it only touches rows still
-		// on the empty default.
-		`DO $$ BEGIN
-			UPDATE model_aliases a
-			SET desired_build = sub.build_id
-			FROM (
-				SELECT DISTINCT ON (alias_id) alias_id, (b->>'build_id') AS build_id
-				FROM model_aliases, jsonb_array_elements(builds) AS b
-				WHERE COALESCE((b->>'active')::boolean, true)
-				  AND COALESCE((b->>'weight')::int, 0) > 0
-				ORDER BY alias_id, COALESCE((b->>'weight')::int, 0) DESC
-			) sub
-			WHERE a.alias_id = sub.alias_id AND a.desired_build = '';
-		EXCEPTION WHEN others THEN NULL; END $$`,
-		// The weighted-ramp migration controller is gone; drop its table.
-		`DROP TABLE IF EXISTS model_migrations`,
-
-		// Releases (provider binary versioning)
-		`CREATE TABLE IF NOT EXISTS releases (
-			version TEXT NOT NULL,
-			platform TEXT NOT NULL,
-			backend TEXT NOT NULL DEFAULT '',
-			binary_hash TEXT NOT NULL DEFAULT '',
-			bundle_hash TEXT NOT NULL DEFAULT '',
-			metallib_hash TEXT NOT NULL DEFAULT '',
-			python_hash TEXT NOT NULL DEFAULT '',
-			runtime_hash TEXT NOT NULL DEFAULT '',
-			template_hashes TEXT NOT NULL DEFAULT '',
-			grpc_binary_hash TEXT NOT NULL DEFAULT '',
-			url TEXT NOT NULL DEFAULT '',
-			changelog TEXT NOT NULL DEFAULT '',
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (version, platform)
-		)`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS backend TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS metallib_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS changelog TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS python_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS runtime_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS template_hashes TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		`DO $$ BEGIN
-			ALTER TABLE releases ADD COLUMN IF NOT EXISTS grpc_binary_hash TEXT NOT NULL DEFAULT '';
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-		// Drop deprecated image_bridge_hash column. Image generation is no longer
-		// a first-class capability; the hash is meaningless. The DROP is wrapped
-		// in a DO block so it's safe to re-run on databases that already lack it.
-		`DO $$ BEGIN
-			ALTER TABLE releases DROP COLUMN IF EXISTS image_bridge_hash;
-		EXCEPTION WHEN others THEN NULL;
-		END $$`,
-
-		// Device authorization (RFC 8628-style)
-		`CREATE TABLE IF NOT EXISTS device_codes (
-			device_code TEXT PRIMARY KEY,
-			user_code TEXT UNIQUE NOT NULL,
-			account_id TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'pending',
-			expires_at TIMESTAMPTZ NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_device_codes_user ON device_codes(user_code)`,
-
-		// Provider tokens — long-lived auth linking provider machines to accounts
-		`CREATE TABLE IF NOT EXISTS provider_tokens (
-			token_hash TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			label TEXT NOT NULL DEFAULT '',
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_tokens_account ON provider_tokens(account_id)`,
-
-		// Invite codes
-		`CREATE TABLE IF NOT EXISTS invite_codes (
-			code TEXT PRIMARY KEY,
-			amount_micro_usd BIGINT NOT NULL,
-			max_uses INTEGER NOT NULL DEFAULT 1,
-			used_count INTEGER NOT NULL DEFAULT 0,
-			active BOOLEAN NOT NULL DEFAULT TRUE,
-			expires_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE TABLE IF NOT EXISTS invite_redemptions (
-			code TEXT NOT NULL REFERENCES invite_codes(code),
-			account_id TEXT NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (code, account_id)
-		)`,
-
-		// Provider earnings — per-node tracking
-		`CREATE TABLE IF NOT EXISTS provider_earnings (
-			id BIGSERIAL PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			provider_id TEXT NOT NULL,
-			provider_key TEXT NOT NULL DEFAULT '',
-			job_id TEXT NOT NULL,
-			model TEXT NOT NULL,
-			amount_micro_usd BIGINT NOT NULL,
-			prompt_tokens INTEGER NOT NULL DEFAULT 0,
-			completion_tokens INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_account ON provider_earnings(account_id, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_earnings_provider ON provider_earnings(provider_key, created_at DESC)`,
-
-		// Materialized earnings summaries — atomically maintained by CreditProviderAccount.
-		// Eliminates full-table SUM scans on /v1/provider/account-earnings.
-		`CREATE TABLE IF NOT EXISTS earnings_summary (
-			key TEXT NOT NULL,
-			key_type TEXT NOT NULL,
-			total_count BIGINT NOT NULL DEFAULT 0,
-			total_micro_usd BIGINT NOT NULL DEFAULT 0,
-			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
-			total_completion_tokens BIGINT NOT NULL DEFAULT 0,
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			PRIMARY KEY (key, key_type)
-		)`,
-
-		// Backfill earnings_summary from existing provider_earnings rows.
-		// The INSERT ... ON CONFLICT DO NOTHING ensures this only runs once per key.
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT account_id, 'account', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE account_id != ''
-		 GROUP BY account_id
-		 ON CONFLICT (key, key_type) DO NOTHING`,
-
-		`INSERT INTO earnings_summary (key, key_type, total_count, total_micro_usd, total_prompt_tokens, total_completion_tokens, updated_at)
-		 SELECT provider_key, 'provider', COUNT(*), COALESCE(SUM(amount_micro_usd), 0),
-		        COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0), NOW()
-		 FROM provider_earnings
-		 WHERE provider_key != ''
-		 GROUP BY provider_key
-		 ON CONFLICT (key, key_type) DO NOTHING`,
-
-		// Provider payouts — wallet-based payout history for unlinked providers
-		`CREATE TABLE IF NOT EXISTS provider_payouts (
-			id BIGSERIAL PRIMARY KEY,
-			provider_address TEXT NOT NULL,
-			amount_micro_usd BIGINT NOT NULL,
-			model TEXT NOT NULL DEFAULT '',
-			job_id TEXT NOT NULL DEFAULT '',
-			settled BOOLEAN NOT NULL DEFAULT FALSE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_address ON provider_payouts(provider_address, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_payouts_settled ON provider_payouts(settled, created_at DESC)`,
-
-		// Stripe Connect — bank/card payouts
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_status TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_account_country TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_type TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_last4 TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_account ON users(stripe_account_id) WHERE stripe_account_id != ''`,
-
-		// Account role + per-account platform fee override (service accounts, e.g. OpenRouter).
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS platform_fee_percent BIGINT; EXCEPTION WHEN others THEN NULL; END $$`,
-
-		`CREATE TABLE IF NOT EXISTS stripe_withdrawals (
-			id TEXT PRIMARY KEY,
-			account_id TEXT NOT NULL,
-			stripe_account_id TEXT NOT NULL,
-			transfer_id TEXT NOT NULL DEFAULT '',
-			payout_id TEXT NOT NULL DEFAULT '',
-			amount_micro_usd BIGINT NOT NULL,
-			fee_micro_usd BIGINT NOT NULL DEFAULT 0,
-			net_micro_usd BIGINT NOT NULL,
-			method TEXT NOT NULL,
-			status TEXT NOT NULL,
-			failure_reason TEXT NOT NULL DEFAULT '',
-			refunded BOOLEAN NOT NULL DEFAULT FALSE,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_account ON stripe_withdrawals(account_id, created_at DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_transfer ON stripe_withdrawals(transfer_id) WHERE transfer_id != ''`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_stripe_withdrawals_payout ON stripe_withdrawals(payout_id) WHERE payout_id != ''`,
-		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_status ON stripe_withdrawals(status, created_at)`,
-		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_stripe_account ON stripe_withdrawals(stripe_account_id, status)`,
-		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS fee_refunded BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
-		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS sweep_payout_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_sweep_payout ON stripe_withdrawals(sweep_payout_id) WHERE sweep_payout_id != ''`,
-
-		// Telemetry events table + indices removed.
-		// Datadog is the sole durable sink for telemetry — the Postgres table
-		// was the single largest source of DB write pressure under provider load
-		// (60 providers × batch/10s × 50 rows × 5 indexes = ~30-40% of the
-		// connection pool). No read endpoints consumed this table.',
-
-		// Withdrawable balance — tracks the withdrawable subset of balance_micro_usd.
-		`ALTER TABLE balances ADD COLUMN IF NOT EXISTS withdrawable_micro_usd BIGINT NOT NULL DEFAULT 0`,
-
-		// Backfill withdrawable from ledger history: sum earnings minus
-		// successful withdrawals. Idempotent — only updates rows where
-		// withdrawable is still 0 (first deploy) so it won't overwrite
-		// live values on restart.
-		`UPDATE balances b SET withdrawable_micro_usd = GREATEST(0, COALESCE((
-			SELECT SUM(amount_micro_usd) FROM ledger_entries
-			WHERE account_id = b.account_id
-			  AND entry_type IN ('payout', 'referral_reward', 'admin_reward', 'stripe_payout')
-		), 0)) WHERE b.withdrawable_micro_usd = 0`,
-
-		// Materialized usage totals — eliminates full-table scan of usage
-		// on every stats cache miss.  Single counter row incremented
-		// atomically by RecordUsage / RecordUsageWithCostAndLocation.
-		`CREATE TABLE IF NOT EXISTS usage_totals (
-			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-			total_requests BIGINT NOT NULL DEFAULT 0,
-			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
-			total_completion_tokens BIGINT NOT NULL DEFAULT 0
-		)`,
-		// Backfill from existing usage rows.  ON CONFLICT DO NOTHING makes
-		// this idempotent — only runs on first deploy.
-		`INSERT INTO usage_totals (id, total_requests, total_prompt_tokens, total_completion_tokens)
-		 SELECT 1, COUNT(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(completion_tokens), 0)
-		 FROM usage
-		 ON CONFLICT (id) DO NOTHING`,
-
-		// Partial index for UsageLocationBuckets — only rows with a
-		// non-null request_location are ever queried.
-		`CREATE INDEX IF NOT EXISTS idx_usage_request_location_notnull ON usage(created_at DESC) WHERE request_location IS NOT NULL`,
-
-		// Provider log reports — providers upload 24h unified logs for debugging.
-		`CREATE TABLE IF NOT EXISTS provider_log_reports (
-			id BIGSERIAL PRIMARY KEY,
-			serial_number TEXT NOT NULL,
-			provider_id TEXT NOT NULL DEFAULT '',
-			account_id TEXT NOT NULL DEFAULT '',
-			log_data BYTEA NOT NULL,
-			log_size_bytes BIGINT NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_log_reports_serial ON provider_log_reports(serial_number, created_at DESC)`,
-
-		// Provider sessions — durable connect→disconnect history for uptime/downtime.
-		// One row per websocket connection; disconnected_at IS NULL while open.
-		// session_id is UNIQUE so the async open/close paths are order-independent
-		// (open = INSERT ON CONFLICT DO NOTHING; close = upsert) — a fast
-		// connect→disconnect where close races ahead of open cannot leave a
-		// permanently-open row.
-		`CREATE TABLE IF NOT EXISTS provider_sessions (
-			id BIGSERIAL PRIMARY KEY,
-			session_id TEXT NOT NULL UNIQUE,
-			serial_number TEXT NOT NULL DEFAULT '',
-			account_id TEXT NOT NULL DEFAULT '',
-			connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			disconnected_at TIMESTAMPTZ,
-			disconnect_reason TEXT NOT NULL DEFAULT ''
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_serial ON provider_sessions(serial_number, connected_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_connected ON provider_sessions(connected_at DESC)`,
-		// Partial index over still-open sessions — speeds the online-now count and
-		// the startup reconcile. (session_id lookups use the UNIQUE index.)
-		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_open ON provider_sessions(connected_at) WHERE disconnected_at IS NULL`,
-
-		// Inference routing telemetry — per-request scheduler decisions and outcomes.
-		// Contains no prompt or response content.
-		`CREATE TABLE IF NOT EXISTS inference_routes (
-			id BIGSERIAL PRIMARY KEY,
-			request_id TEXT NOT NULL,
-			attempt INTEGER NOT NULL DEFAULT 0,
-			provider_id TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL,
-			public_model TEXT NOT NULL DEFAULT '',
-			consumer_key_hash TEXT NOT NULL DEFAULT '',
-			key_id TEXT NOT NULL DEFAULT '',
-			outcome TEXT NOT NULL DEFAULT '',
-			cost_ms DOUBLE PRECISION,
-			state_ms DOUBLE PRECISION,
-			queue_ms DOUBLE PRECISION,
-			pending_ms DOUBLE PRECISION,
-			backlog_ms DOUBLE PRECISION,
-			this_req_ms DOUBLE PRECISION,
-			health_ms DOUBLE PRECISION,
-			ttft_ms DOUBLE PRECISION,
-			best_ttft_ms DOUBLE PRECISION,
-			effective_queue INTEGER,
-			candidate_count INTEGER,
-			capacity_rejections INTEGER,
-			model_too_large_rejections INTEGER,
-			vision_rejections INTEGER,
-			ttft_rejections INTEGER,
-			effective_tps DOUBLE PRECISION,
-			static_tps DOUBLE PRECISION,
-			provider_status TEXT,
-			provider_trust_level TEXT,
-			provider_version TEXT,
-			hardware_chip TEXT,
-			hardware_chip_family TEXT,
-			hardware_tier TEXT,
-			memory_gb INTEGER,
-			gpu_cores INTEGER,
-			cpu_cores INTEGER,
-			system_memory_pressure DOUBLE PRECISION,
-			system_cpu_usage DOUBLE PRECISION,
-			system_thermal_state TEXT,
-			gpu_memory_active_gb DOUBLE PRECISION,
-			gpu_memory_peak_gb DOUBLE PRECISION,
-			gpu_memory_cache_gb DOUBLE PRECISION,
-			slot_state TEXT,
-			backend_running INTEGER,
-			backend_waiting INTEGER,
-			active_token_budget_used BIGINT,
-			active_token_budget_max BIGINT,
-			queued_token_budget BIGINT,
-			estimated_prompt_tokens INTEGER,
-			requested_max_tokens INTEGER,
-			requires_vision BOOLEAN NOT NULL DEFAULT FALSE,
-			has_tools BOOLEAN NOT NULL DEFAULT FALSE,
-			self_route_only BOOLEAN NOT NULL DEFAULT FALSE,
-			prefer_owner BOOLEAN NOT NULL DEFAULT FALSE,
-			cache_affinity_key TEXT NOT NULL DEFAULT '',
-			final_status TEXT NOT NULL DEFAULT '',
-			error_code INTEGER,
-			error_class TEXT,
-			prompt_tokens INTEGER,
-			completion_tokens INTEGER,
-			reasoning_tokens INTEGER,
-			cost_micro_usd BIGINT,
-			actual_ttft_ms DOUBLE PRECISION,
-			dispatch_to_first_chunk_ms DOUBLE PRECISION,
-			total_duration_ms DOUBLE PRECISION,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			provider_region TEXT,
-			consumer_region TEXT,
-			parse_ms DOUBLE PRECISION,
-			reserve_ms DOUBLE PRECISION,
-			route_ms DOUBLE PRECISION,
-			encrypt_ms DOUBLE PRECISION,
-			queue_wait_ms DOUBLE PRECISION,
-			dispatch_ms DOUBLE PRECISION,
-			actual_decode_tps DOUBLE PRECISION,
-			admitted_but_failed BOOL,
-			used_backup BOOL,
-			backup_won BOOL,
-			error_reason TEXT,
-			UNIQUE(request_id, attempt)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_inference_routes_created ON inference_routes(created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_inference_routes_provider ON inference_routes(provider_id, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_inference_routes_model ON inference_routes(model, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_inference_routes_request ON inference_routes(request_id)`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1
-				FROM pg_index i
-				JOIN pg_class t ON t.oid = i.indrelid
-				WHERE t.oid = 'inference_routes'::regclass
-				  AND i.indisunique
-				  AND ARRAY(
-					SELECT a.attname::text
-					FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord)
-					JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum
-					ORDER BY k.ord
-				  ) = ARRAY['request_id', 'attempt']
-			) THEN
-				CREATE UNIQUE INDEX idx_inference_routes_request_attempt_unique ON inference_routes(request_id, attempt);
-			END IF;
-		END $$`,
-		// Phase 1 additions to inference_routes: coarse geo, coordinator-side
-		// latency decomposition, measured decode TPS, and admission/backup-race
-		// outcome flags. Added idempotently so a dev DB that already created the
-		// Phase 0 table picks them up. New columns are appended AFTER updated_at
-		// in the CREATE TABLE above so fresh and ALTER'd DBs share one column
-		// order (InferenceRouteRecordsSince scans `SELECT *` positionally).
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS provider_region TEXT`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS consumer_region TEXT`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS parse_ms DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS reserve_ms DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS route_ms DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS encrypt_ms DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS queue_wait_ms DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS dispatch_ms DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS actual_decode_tps DOUBLE PRECISION`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS admitted_but_failed BOOL`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS used_backup BOOL`,
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS backup_won BOOL`,
-		// DAR-341: normalized provider/coordinator error reason. Nullable and
-		// appended so fresh DBs match upgraded DB column order for SELECT * scans.
-		`ALTER TABLE inference_routes ADD COLUMN IF NOT EXISTS error_reason TEXT`,
-
-		// Rejected inbound inference requests (4xx/5xx) at any pipeline stage,
-		// with the request shape and a counterfactual servability snapshot
-		// ("could the fleet have served it?"). Contains no prompt or response
-		// content.
-		`CREATE TABLE IF NOT EXISTS request_rejections (
-			id BIGSERIAL PRIMARY KEY,
-			request_id TEXT,
-			endpoint TEXT,
-			stage TEXT,
-			reason_code TEXT,
-			http_status INT,
-			consumer_key_hash TEXT,
-			key_id TEXT,
-			client_class TEXT,
-			requested_model TEXT,
-			resolved_model TEXT,
-			stream BOOL,
-			n INT,
-			estimated_prompt_tokens INT,
-			requested_max_tokens INT,
-			requires_vision BOOL,
-			has_image BOOL,
-			has_audio BOOL,
-			has_tools BOOL,
-			tool_count INT,
-			response_format TEXT,
-			self_route_only BOOL,
-			prefer_owner BOOL,
-			params JSONB,
-			request_body_bytes INT,
-			retry_after_ms INT,
-			could_have_served BOOL,
-			candidate_count INT,
-			capacity_rejections INT,
-			model_too_large_rejections INT,
-			vision_rejections INT,
-			warm_provider_existed BOOL,
-			best_ttft_ms DOUBLE PRECISION,
-			shortfall_micro_usd BIGINT,
-			limit_kind TEXT,
-			over_by BIGINT,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_request_rejections_created ON request_rejections(created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_request_rejections_reason ON request_rejections(reason_code, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_request_rejections_model ON request_rejections(resolved_model, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_request_rejections_status ON request_rejections(http_status, created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_request_rejections_servable ON request_rejections(could_have_served, created_at DESC) WHERE could_have_served = true`,
-
-		// APNs code-identity attestation reuse cache (W5 Fix 2). Persists the
-		// in-memory reuse cache so a blue-green deploy / restart does not wipe it
-		// and provoke a fleet-wide push storm against Apple's ~3/hour/device push
-		// budget. One row per device (keyed by Secure Enclave public key). The
-		// row records that the device completed a FULL code-identity round-trip at
-		// attested_at on binary version; the freshness + version gate is applied on
-		// READ (in the coordinator), so a stale/wrong-version row never extends
-		// trust — it only lets the coordinator skip a redundant push.
-		`CREATE TABLE IF NOT EXISTS code_attestations (
-			se_pubkey TEXT PRIMARY KEY,
-			version TEXT NOT NULL DEFAULT '',
-			attested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			apns_token TEXT NOT NULL DEFAULT ''
-		)`,
-		// Token-binding column for reuse (Codex #7): additive for DBs whose
-		// code_attestations table predates it (the CREATE above is a no-op there).
-		`ALTER TABLE code_attestations ADD COLUMN IF NOT EXISTS apns_token TEXT NOT NULL DEFAULT ''`,
-
-		// Provider trust-reuse cache (DAR-326 Phase 0). Mirrors code_attestations.
-		// Persists the in-memory trust-reuse cache so a blue-green deploy / restart
-		// does not wipe it and provoke a fleet-wide live MDM SecurityInfo + APNs
-		// re-verification herd. One row per device (keyed by Secure Enclave public
-		// key). The row records that the device completed a FULL live MDM
-		// verification at verified_at (proven serial, binary hash, SIP, Secure
-		// Boot). The identity + binary + fresh-posture + freshness gate is applied
-		// on READ (in the coordinator, behind a live SE challenge), so a
-		// stale/wrong-binary/expired row never extends trust — it only lets the
-		// coordinator skip a redundant live MDM round-trip.
-		//
-		// SECURITY-SENSITIVE (Threat-Model #5): a row here grants a hardware
-		// fast-skip, so write access must be guarded like the payment ledger — only
-		// the coordinator writes it, and only after a verified live MDM pass.
-		// SeedTrustReuseCache TRUSTS this table's contents on restart; that trust is
-		// bounded by the always-run live SE challenge on read (re-proving posture +
-		// binary + identity) plus future-date rejection, so a tampered/stale row
-		// still falls through to a full live MDM verification rather than silently
-		// granting hardware.
-		`CREATE TABLE IF NOT EXISTS provider_trust_reuse (
-			se_pubkey TEXT PRIMARY KEY,
-			serial TEXT NOT NULL DEFAULT '',
-			trust_level TEXT NOT NULL DEFAULT '',
-			binary_hash TEXT NOT NULL DEFAULT '',
-			sip_enabled BOOL NOT NULL DEFAULT FALSE,
-			secure_boot_full BOOL NOT NULL DEFAULT FALSE,
-			mda_udid TEXT NOT NULL DEFAULT '',
-			verified_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)`,
-
-		// Base-rewards per-job settlement idempotency relies on a partial UNIQUE
-		// index on provider_earnings(job_id). DAR-349: that index is built AFTER
-		// this migration loop, CONCURRENTLY and at most once, by
-		// ensureProviderEarningsJobIndex — NEVER with a boot-time dedupe DELETE.
-		// The old `DELETE ... GROUP BY job_id` here full-scanned and locked this
-		// hot table (~900k rows / ~443MB) for ~15m on deploy, blocking the
-		// coordinator from binding :8080 and causing a production outage, while
-		// doing no useful work (prod duplicate count is 0). Offline dedupe, if it
-		// is ever needed, lives in coordinator/store/migrations/dedupe_provider_earnings.sql.
-
-		// Base-rewards: unify sessions↔earnings identity (design §8).
-		`DO $$ BEGIN ALTER TABLE provider_sessions ADD COLUMN IF NOT EXISTS provider_key TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
-		`CREATE INDEX IF NOT EXISTS idx_provider_sessions_key ON provider_sessions(provider_key, connected_at) WHERE provider_key <> ''`,
-
-		// Base-rewards: idempotent epoch settlement, one row per (provider_key, epoch_id).
-		`CREATE TABLE IF NOT EXISTS provider_floor_draws (
-			id BIGSERIAL PRIMARY KEY,
-			provider_key TEXT NOT NULL,
-			account_id TEXT NOT NULL DEFAULT '',
-			epoch_id TEXT NOT NULL,
-			amount_micro_usd BIGINT NOT NULL,
-			floor_micro_usd BIGINT NOT NULL DEFAULT 0,
-			earned_micro_usd BIGINT NOT NULL DEFAULT 0,
-			uptime_frac DOUBLE PRECISION NOT NULL DEFAULT 0,
-			memory_gb INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-			UNIQUE (provider_key, epoch_id)
-		)`,
-		`CREATE INDEX IF NOT EXISTS idx_floor_draws_epoch ON provider_floor_draws(epoch_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_floor_draws_account ON provider_floor_draws(account_id, epoch_id)`,
-	}
-
-	for _, m := range migrations {
-		if _, err := s.pool.Exec(ctx, m); err != nil {
-			return fmt.Errorf("migration failed: %w", err)
+	if s.ownershipConn != nil {
+		if s.poolFence != nil {
+			s.poolFence.markLost()
 		}
+		close(s.ownershipStop)
+		<-s.ownershipDone
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if s.ownershipEpochActive {
+			_, _ = s.ownershipConn.Exec(
+				ctx,
+				`UPDATE coordinator_ownership SET owner_id = ''
+			 WHERE singleton = TRUE AND epoch = $1 AND owner_id = $2`,
+				s.ownershipEpoch, s.ownershipID,
+			)
+		}
+		_, _ = s.ownershipConn.Exec(
+			ctx,
+			`SELECT pg_advisory_unlock(hashtextextended('darkbloom-coordinator-owner', 0))`,
+		)
+		cancel()
+		s.ownershipConn.Release()
+		s.ownershipConn = nil
 	}
-
-	// DAR-349: build the provider_earnings(job_id) partial unique index outside
-	// the loop — CONCURRENTLY, duplicate-checked, and at most once — so coordinator
-	// startup never runs a long, lock-holding data migration on this hot table.
-	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
-		return err
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.pool.Close()
+	}()
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
 	}
-	return nil
 }
 
-// ensureProviderEarningsJobIndex creates the partial UNIQUE index that backs the
-// `ON CONFLICT (job_id) WHERE job_id <> ” DO NOTHING` idempotency used by
-// RecordProviderEarning and CreditProviderAccount.
-//
-// DAR-349: this MUST stay cheap and non-blocking on the serving startup path.
-//   - Fast path: if a valid index already exists, return immediately (every boot
-//     after the first does no work here).
-//   - It NEVER deletes rows. If existing data would violate uniqueness it fails
-//     loudly with an actionable message rather than running a destructive,
-//     table-locking cleanup at boot (the original outage).
-//   - The build is CONCURRENTLY so a blue-green old coordinator still writing to
-//     provider_earnings is never lock-blocked, and uses the simple query protocol
-//     because CREATE INDEX CONCURRENTLY cannot run inside the extended protocol's
-//     implicit transaction.
-func (s *PostgresStore) ensureProviderEarningsJobIndex(ctx context.Context) error {
-	const idxName = "idx_provider_earnings_job"
-
-	// Already present AND valid? No-op fast path for every boot after the first.
-	var valid bool
-	if err := s.pool.QueryRow(ctx, `
-		SELECT COALESCE((
-			SELECT i.indisvalid
-			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
-			WHERE c.relname = $1
-		), false)`, idxName).Scan(&valid); err != nil {
-		return fmt.Errorf("store: check %s: %w", idxName, err)
-	}
-	if valid {
+func (s *PostgresStore) OwnershipLost() <-chan struct{} {
+	if !s.ownershipEnabled {
 		return nil
 	}
+	return s.ownershipLost
+}
 
-	// A leftover *invalid* index from a previously interrupted CONCURRENTLY build
-	// would make CREATE ... IF NOT EXISTS a silent no-op, so drop it first.
-	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS `+idxName); err != nil {
-		return fmt.Errorf("store: drop invalid %s: %w", idxName, err)
-	}
-
-	// Verify the data can support a UNIQUE index. We do NOT dedupe at boot.
-	var dupGroups int64
-	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM (
-			SELECT 1 FROM provider_earnings
-			WHERE job_id <> '' GROUP BY job_id HAVING count(*) > 1
-		) d`).Scan(&dupGroups); err != nil {
-		return fmt.Errorf("store: count duplicate provider_earnings job_ids: %w", err)
-	}
-	if dupGroups > 0 {
-		return fmt.Errorf("store: %d duplicate provider_earnings.job_id group(s) block unique index %s; "+
-			"run the offline dedupe (coordinator/store/migrations/dedupe_provider_earnings.sql) before deploying "+
-			"— boot does NOT auto-dedupe (DAR-349)", dupGroups, idxName)
-	}
-
-	// Build CONCURRENTLY on a dedicated connection via the simple query protocol.
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("store: acquire conn for %s: %w", idxName, err)
-	}
-	defer conn.Release()
-	mrr := conn.Conn().PgConn().Exec(ctx,
-		`CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_provider_earnings_job ON provider_earnings(job_id) WHERE job_id <> ''`)
-	if _, err := mrr.ReadAll(); err != nil {
-		return fmt.Errorf("store: create %s concurrently: %w", idxName, err)
+func (s *PostgresStore) ensureOwnership() error {
+	if s.ownershipEnabled && !s.ownershipHealthy.Load() {
+		return ErrOwnershipLost
 	}
 	return nil
+}
+
+func (s *PostgresStore) verifyOwnershipTx(ctx context.Context, tx pgx.Tx) error {
+	if !s.ownershipEnabled {
+		return nil
+	}
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
+	if !s.ownershipEpochActive {
+		return nil
+	}
+	var valid bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM coordinator_ownership
+			WHERE singleton = TRUE AND epoch = $1 AND owner_id = $2
+			FOR SHARE
+		)`,
+		s.ownershipEpoch, s.ownershipID,
+	).Scan(&valid); err != nil {
+		return fmt.Errorf("store: verify coordinator ownership: %w", err)
+	}
+	if !valid {
+		s.ownershipHealthy.Store(false)
+		s.ownershipLostOnce.Do(func() { close(s.ownershipLost) })
+		return ErrOwnershipLost
+	}
+	return nil
+}
+
+func (s *PostgresStore) monitorOwnership() {
+	defer close(s.ownershipDone)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ownershipStop:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			var one int
+			err := s.ownershipConn.QueryRow(ctx, `SELECT 1`).Scan(&one)
+			cancel()
+			if err != nil || one != 1 {
+				s.ownershipHealthy.Store(false)
+				if s.poolFence != nil {
+					s.poolFence.markLost()
+				}
+				s.ownershipLostOnce.Do(func() { close(s.ownershipLost) })
+				return
+			}
+		}
+	}
 }
 
 // hashKey returns the SHA-256 hex digest of the given API key.
@@ -1367,7 +526,6 @@ func (s *PostgresStore) GetAPIKeyByID(accountID, id string) (*APIKey, error) {
 func (s *PostgresStore) UpdateAPIKey(accountID, id string, mutable APIKey) (*APIKey, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE api_keys SET
 			name = $1, active = $2, limit_micro_usd = $3, limit_reset = $4,
@@ -2601,6 +1759,9 @@ func creditWithdrawableTx(ctx context.Context, tx pgx.Tx, accountID string, amou
 
 // Credit adds micro-USD to an account and records a ledger entry (atomic).
 func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2609,12 +1770,18 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := creditTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit credit: %v: %w", err, ErrCommitOutcomeUnknown)
+	}
+	return nil
 }
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
@@ -2650,6 +1817,9 @@ func (s *PostgresStore) GetBalanceWithWithdrawable(accountID string) (int64, int
 // CreditWithdrawable adds micro-USD to both the total balance and the
 // withdrawable balance, and records a ledger entry.
 func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2658,6 +1828,9 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := creditWithdrawableTx(ctx, tx, accountID, amountMicroUSD, entryType, reference, time.Time{}); err != nil {
 		return err
@@ -2671,6 +1844,9 @@ func (s *PostgresStore) CreditWithdrawable(accountID string, amountMicroUSD int6
 // the reference serializes concurrent deliveries of the same webhook so the
 // existence check can't race its own insert.
 func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2679,6 +1855,9 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 		return false, fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, string(entryType)+":"+reference); err != nil {
 		return false, fmt.Errorf("store: advisory lock: %w", err)
@@ -2705,15 +1884,21 @@ func (s *PostgresStore) CreditWithdrawableOnce(accountID string, amountMicroUSD 
 
 // Debit subtracts micro-USD from an account. Returns error if insufficient funds.
 func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	// Single-statement CTE: debit balance, cap withdrawable, insert ledger
-	// entry -- all in one round trip. The old implementation used 5 sequential
-	// round trips (BEGIN + 2 UPDATEs + INSERT + COMMIT) which paid full
-	// network latency to Postgres on each hop (~200ms × 5 = 1s+).
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin debit: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		WITH debit AS (
 			UPDATE balances
 			SET balance_micro_usd = balance_micro_usd - $2,
@@ -2735,13 +1920,16 @@ func (s *PostgresStore) Debit(accountID string, amountMicroUSD int64, entryType 
 		}
 		return fmt.Errorf("debit: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // MigrateAccountBalance moves the full balance (and withdrawable subset) from
 // one account ID to another in a single transaction. No-op (false) when the
 // source has no balance row or a zero balance.
 func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if from == "" || to == "" || from == to {
 		return false, nil
 	}
@@ -2753,6 +1941,9 @@ func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
 		return false, fmt.Errorf("store: begin migrate tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
 
 	var bal, wdr int64
 	err = tx.QueryRow(ctx,
@@ -2815,6 +2006,9 @@ func (s *PostgresStore) MigrateAccountBalance(from, to string) (bool, error) {
 // is insufficient. This ensures withdrawal debits are symmetric with
 // CreditWithdrawable refunds — both touch the same columns.
 func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2823,6 +2017,9 @@ func (s *PostgresStore) DebitWithdrawable(accountID string, amountMicroUSD int64
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	var balanceAfter int64
 	err = tx.QueryRow(ctx,
@@ -3020,16 +2217,239 @@ func (s *PostgresStore) CreateBillingSession(session *BillingSession) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	currency := strings.ToLower(session.Currency)
+	if currency == "" {
+		currency = "usd"
+	}
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO billing_sessions (id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		`INSERT INTO billing_sessions (id, account_id, payment_method, currency, amount_micro_usd, external_id, processed_event_id, status, referral_code)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		session.ID, session.AccountID, session.PaymentMethod,
-		session.AmountMicroUSD, session.ExternalID, session.Status, session.ReferralCode,
+		currency, session.AmountMicroUSD, session.ExternalID, session.ProcessedEventID,
+		session.Status, session.ReferralCode,
 	)
 	if err != nil {
 		return fmt.Errorf("store: create billing session: %w", err)
 	}
 	return nil
+}
+
+func (s *PostgresStore) SetBillingSessionExternalID(sessionID, externalID string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
+	if externalID == "" {
+		return errors.New("external billing session ID is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE billing_sessions
+		 SET external_id = $2
+		 WHERE id = $1 AND status = 'pending' AND (external_id = '' OR external_id = $2)`,
+		sessionID, externalID,
+	)
+	if err != nil {
+		return fmt.Errorf("store: bind billing session external ID: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("store: billing session %q not pending or already bound", sessionID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return nil, err
+	}
+	if eventID == "" || checkoutSessionID == "" {
+		return nil, ErrStripeDepositMismatch
+	}
+	currency = strings.ToLower(currency)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin Stripe deposit: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return nil, err
+	}
+
+	tag, err := tx.Exec(ctx,
+		`INSERT INTO stripe_deposit_events
+		   (event_id, checkout_session_id, billing_session_id, amount_micro_usd, currency, status)
+		 VALUES ($1, $2, $3, $4, $5, 'received')
+		 ON CONFLICT DO NOTHING`,
+		eventID, checkoutSessionID, billingSessionID, amountMicroUSD, currency,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: insert Stripe deposit event: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var existing StripeDepositEvent
+		err := tx.QueryRow(ctx,
+			`SELECT event_id, checkout_session_id, billing_session_id, amount_micro_usd, currency, status, reason
+			 FROM stripe_deposit_events
+			 WHERE event_id = $1 OR checkout_session_id = $2
+			 ORDER BY (event_id = $1) DESC
+			 LIMIT 1
+			 FOR UPDATE`,
+			eventID, checkoutSessionID,
+		).Scan(&existing.EventID, &existing.CheckoutSessionID, &existing.BillingSessionID,
+			&existing.AmountMicroUSD, &existing.Currency, &existing.Status, &existing.Reason)
+		if err != nil {
+			return nil, fmt.Errorf("store: read Stripe deposit replay: %w", err)
+		}
+		if existing.CheckoutSessionID != checkoutSessionID || existing.BillingSessionID != billingSessionID ||
+			existing.AmountMicroUSD != amountMicroUSD || existing.Currency != currency {
+			return nil, ErrStripeDepositConflict
+		}
+		if existing.Status != "applied" && existing.Status != "replayed" {
+			if err := tx.Commit(ctx); err != nil {
+				return nil, fmt.Errorf("store: commit Stripe rejected replay: %w", err)
+			}
+			return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, existing.Reason)
+		}
+		session, err := billingSessionTx(ctx, tx, billingSessionID, false)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: commit Stripe deposit replay: %w", err)
+		}
+		return &StripeDepositResult{Session: *session, Applied: false}, nil
+	}
+
+	session, err := billingSessionTx(ctx, tx, billingSessionID, true)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return s.rejectStripeDeposit(ctx, tx, eventID, "unknown_billing_session")
+	}
+	if err != nil {
+		return nil, err
+	}
+	var checkoutConflict bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM billing_sessions
+			WHERE external_id = $1 AND id <> $2
+		)`,
+		checkoutSessionID, billingSessionID,
+	).Scan(&checkoutConflict); err != nil {
+		return nil, fmt.Errorf("store: check Checkout Session binding: %w", err)
+	}
+	reason := ""
+	switch {
+	case session.PaymentMethod != "stripe":
+		reason = "payment_method_mismatch"
+	case session.Currency != "usd" || currency != session.Currency:
+		reason = "currency_mismatch"
+	case amountMicroUSD <= 0 || session.AmountMicroUSD != amountMicroUSD:
+		reason = "amount_mismatch"
+	case session.ExternalID != "" && session.ExternalID != checkoutSessionID:
+		reason = "checkout_session_mismatch"
+	case checkoutConflict:
+		reason = "checkout_session_conflict"
+	case session.Status != "pending" && session.Status != "completed":
+		reason = "billing_session_not_pending"
+	case session.Status == "completed" && session.ExternalID != checkoutSessionID:
+		reason = "completed_session_mismatch"
+	}
+	if reason != "" {
+		return s.rejectStripeDeposit(ctx, tx, eventID, reason)
+	}
+	if session.Status == "completed" {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stripe_deposit_events
+			 SET status = 'replayed', account_id = $2, updated_at = NOW()
+			 WHERE event_id = $1`,
+			eventID, session.AccountID,
+		); err != nil {
+			return nil, fmt.Errorf("store: mark Stripe event replayed: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("store: commit Stripe completed replay: %w", err)
+		}
+		return &StripeDepositResult{Session: *session, Applied: false}, nil
+	}
+
+	if session.ReferralCode != "" {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO referrals (referred_account, referrer_code)
+			 SELECT $1, code FROM referrers
+			 WHERE code = $2 AND account_id <> $1
+			 ON CONFLICT (referred_account) DO NOTHING`,
+			session.AccountID, session.ReferralCode,
+		); err != nil {
+			return nil, fmt.Errorf("store: apply deposit referral: %w", err)
+		}
+	}
+	tag, err = tx.Exec(ctx,
+		`UPDATE billing_sessions
+		 SET external_id = $2, processed_event_id = $3, status = 'completed', completed_at = NOW()
+		 WHERE id = $1 AND status = 'pending' AND (external_id = '' OR external_id = $2)`,
+		billingSessionID, checkoutSessionID, eventID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: complete Stripe billing session: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return s.rejectStripeDeposit(ctx, tx, eventID, "billing_session_changed")
+	}
+	if err := creditTx(ctx, tx, session.AccountID, amountMicroUSD, LedgerStripeDeposit, "stripe:"+checkoutSessionID, time.Time{}); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_deposit_events
+		 SET status = 'applied', account_id = $2, updated_at = NOW()
+		 WHERE event_id = $1`,
+		eventID, session.AccountID,
+	); err != nil {
+		return nil, fmt.Errorf("store: finalize Stripe deposit event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit Stripe deposit: %w", err)
+	}
+	now := time.Now()
+	session.ExternalID = checkoutSessionID
+	session.ProcessedEventID = eventID
+	session.Status = "completed"
+	session.CompletedAt = &now
+	return &StripeDepositResult{Session: *session, Applied: true}, nil
+}
+
+func billingSessionTx(ctx context.Context, tx pgx.Tx, sessionID string, lock bool) (*BillingSession, error) {
+	query := `SELECT id, account_id, payment_method, currency, amount_micro_usd, external_id,
+	                processed_event_id, status, referral_code, created_at, completed_at
+	          FROM billing_sessions WHERE id = $1`
+	if lock {
+		query += " FOR UPDATE"
+	}
+	var session BillingSession
+	if err := tx.QueryRow(ctx, query, sessionID).Scan(
+		&session.ID, &session.AccountID, &session.PaymentMethod, &session.Currency,
+		&session.AmountMicroUSD, &session.ExternalID, &session.ProcessedEventID,
+		&session.Status, &session.ReferralCode, &session.CreatedAt, &session.CompletedAt,
+	); err != nil {
+		return nil, err
+	}
+	return &session, nil
+}
+
+func (s *PostgresStore) rejectStripeDeposit(ctx context.Context, tx pgx.Tx, eventID, reason string) (*StripeDepositResult, error) {
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_deposit_events
+		 SET status = 'rejected', reason = $2, updated_at = NOW()
+		 WHERE event_id = $1`,
+		eventID, reason,
+	); err != nil {
+		return nil, fmt.Errorf("store: reject Stripe deposit event: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit rejected Stripe deposit: %w", err)
+	}
+	return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, reason)
 }
 
 // GetBillingSession retrieves a billing session by ID.
@@ -3039,10 +2459,10 @@ func (s *PostgresStore) GetBillingSession(sessionID string) (*BillingSession, er
 
 	var bs BillingSession
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, account_id, payment_method, amount_micro_usd, external_id, status, referral_code, created_at, completed_at
+		`SELECT id, account_id, payment_method, currency, amount_micro_usd, external_id, processed_event_id, status, referral_code, created_at, completed_at
 		 FROM billing_sessions WHERE id = $1`, sessionID,
-	).Scan(&bs.ID, &bs.AccountID, &bs.PaymentMethod,
-		&bs.AmountMicroUSD, &bs.ExternalID, &bs.Status, &bs.ReferralCode,
+	).Scan(&bs.ID, &bs.AccountID, &bs.PaymentMethod, &bs.Currency,
+		&bs.AmountMicroUSD, &bs.ExternalID, &bs.ProcessedEventID, &bs.Status, &bs.ReferralCode,
 		&bs.CreatedAt, &bs.CompletedAt)
 	if err != nil {
 		return nil, fmt.Errorf("store: billing session not found: %w", err)
@@ -3183,10 +2603,20 @@ func (s *PostgresStore) DeleteModelPrice(accountID, model string) error {
 
 // CreateUser creates a new user record linked to a Privy identity.
 func (s *PostgresStore) CreateUser(user *User) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin create user: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx,
 		`INSERT INTO users (account_id, privy_user_id, email, role, platform_fee_percent)
 		 VALUES ($1, $2, $3, $4, $5)`,
 		user.AccountID, user.PrivyUserID, user.Email, user.Role, user.PlatformFeePercent,
@@ -3194,7 +2624,7 @@ func (s *PostgresStore) CreateUser(user *User) error {
 	if err != nil {
 		return fmt.Errorf("store: create user: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_percent,
@@ -3351,7 +2781,14 @@ func (s *PostgresStore) GetUserByEmail(email string) (*User, error) {
 
 // --- Stripe Withdrawals ---
 
+func goWithdrawalIdempotencyKey(id string) string {
+	return "go-withdrawal:" + id
+}
+
 func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
 	}
@@ -3370,11 +2807,12 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at, idempotency_key)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
 		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+		goWithdrawalIdempotencyKey(w.ID),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
@@ -3388,6 +2826,9 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 // withdrawal row. Returns ErrInsufficientBalance when the guarded debit
 // matches no row.
 func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, entryType LedgerEntryType, reference string) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
 	}
@@ -3410,6 +2851,9 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	// Same guarded dual-column debit as DebitWithdrawable: both the total
 	// and withdrawable balances must cover the amount.
@@ -3444,16 +2888,20 @@ func (s *PostgresStore) CreateStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, status,
-		  failure_reason, refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at, idempotency_key)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Status,
 		w.FailureReason, w.Refunded, w.FeeRefunded, w.CreatedAt, w.UpdatedAt,
+		goWithdrawalIdempotencyKey(w.ID),
 	); err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
 	}
 
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit stripe withdrawal debit: %v: %w", err, ErrCommitOutcomeUnknown)
+	}
+	return nil
 }
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
@@ -3513,12 +2961,23 @@ func (s *PostgresStore) GetStripeWithdrawalByTransferID(transferID string) (*Str
 }
 
 func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin stripe withdrawal update: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals SET
 			transfer_id = $2, payout_id = $3, sweep_payout_id = $4, status = $5,
 			failure_reason = $6, refunded = $7, fee_refunded = $8, updated_at = NOW()
@@ -3530,6 +2989,9 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	}
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit stripe withdrawal update: %w", err)
 	}
 	w.UpdatedAt = time.Now()
 	return nil
@@ -3568,13 +3030,46 @@ func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]St
 // MarkStripeWithdrawalPaid atomically flips a non-terminal, non-refunded
 // withdrawal to "paid" with an in-database guard (see interface doc).
 func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayoutID string) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if id == "" {
 		return false, errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin mark stripe withdrawal paid: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
+	if sweepPayoutID != "" {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1))`,
+			"stripe-sweep:"+sweepPayoutID,
+		); err != nil {
+			return false, fmt.Errorf("store: lock stripe sweep payout: %w", err)
+		}
+		var failed bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (
+				SELECT 1 FROM stripe_sweep_failures WHERE payout_id = $1
+			)`,
+			sweepPayoutID,
+		).Scan(&failed); err != nil {
+			return false, fmt.Errorf("store: check stripe sweep failure: %w", err)
+		}
+		if failed {
+			if err := tx.Commit(ctx); err != nil {
+				return false, fmt.Errorf("store: commit rejected paid sweep: %w", err)
+			}
+			return false, nil
+		}
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'paid',
 		     sweep_payout_id = CASE WHEN $3 <> '' THEN $3 ELSE sweep_payout_id END,
@@ -3588,19 +3083,198 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayo
 	if err != nil {
 		return false, fmt.Errorf("store: mark stripe withdrawal paid: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	applied := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit mark stripe withdrawal paid: %w", err)
+	}
+	return applied, nil
+}
+
+func (s *PostgresStore) RecordStripeSweepFailure(
+	sweepPayoutID, failureReason string,
+) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
+	if sweepPayoutID == "" {
+		return errors.New("sweep payout ID is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin stripe sweep failure: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		"stripe-sweep:"+sweepPayoutID,
+	); err != nil {
+		return fmt.Errorf("store: lock failed stripe sweep: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO stripe_sweep_failures (payout_id, failure_reason)
+		 VALUES ($1, $2)
+		 ON CONFLICT (payout_id) DO UPDATE SET failure_reason = EXCLUDED.failure_reason`,
+		sweepPayoutID, failureReason,
+	); err != nil {
+		return fmt.Errorf("store: record stripe sweep failure: %w", err)
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, false, err
+	}
+	if id == "" {
+		return false, false, errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, false, fmt.Errorf("store: begin transfer reversal refund: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, false, err
+	}
+	withdrawal, err := scanStripeWithdrawal(tx.QueryRow(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+`
+		 FROM stripe_withdrawals WHERE id = $1 FOR UPDATE`,
+		id,
+	))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+		}
+		return false, false, fmt.Errorf("store: lock reversed withdrawal: %w", err)
+	}
+	if withdrawal.Status == "paid" || withdrawal.Status == "review_pending" {
+		if withdrawal.Status == "paid" {
+			if _, err := tx.Exec(ctx,
+				`UPDATE stripe_withdrawals
+				 SET status = 'review_pending',
+				     failure_reason = 'transfer_reversed_after_paid',
+				     updated_at = NOW()
+				 WHERE id = $1`,
+				id,
+			); err != nil {
+				return false, false, fmt.Errorf("store: persist paid reversal review: %w", err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, false, fmt.Errorf("store: commit paid reversal review: %w", err)
+		}
+		return false, true, nil
+	}
+	if withdrawal.Refunded {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stripe_withdrawals
+			 SET status = 'failed', failure_reason = 'transfer_reversed', updated_at = NOW()
+			 WHERE id = $1`,
+			id,
+		); err != nil {
+			return false, false, fmt.Errorf("store: terminalize refunded reversal: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, false, fmt.Errorf("store: commit refunded reversal: %w", err)
+		}
+		return false, false, nil
+	}
+	net := withdrawal.AmountMicroUSD - withdrawal.FeeMicroUSD
+	if net > 0 {
+		if _, err := creditWithdrawableReferenceTx(
+			ctx, tx, withdrawal.AccountID, net, "stripe_withdraw:"+withdrawal.ID,
+		); err != nil {
+			return false, false, err
+		}
+	}
+	feeRefunded := withdrawal.FeeRefunded
+	if withdrawal.FeeMicroUSD > 0 && !feeRefunded {
+		_, err := creditWithdrawableReferenceTx(
+			ctx, tx, withdrawal.AccountID, withdrawal.FeeMicroUSD,
+			"stripe_withdraw_fee:"+withdrawal.ID,
+		)
+		if err != nil {
+			return false, false, err
+		}
+		feeRefunded = true
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET refunded = TRUE, fee_refunded = (fee_refunded OR $2),
+		     status = 'failed', failure_reason = 'transfer_reversed', updated_at = NOW()
+		 WHERE id = $1`,
+		id, feeRefunded,
+	); err != nil {
+		return false, false, fmt.Errorf("store: finalize reversed withdrawal: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, false, fmt.Errorf("store: commit reversed withdrawal: %w", err)
+	}
+	return true, false, nil
+}
+
+func creditWithdrawableReferenceTx(
+	ctx context.Context,
+	tx pgx.Tx,
+	accountID string,
+	amount int64,
+	reference string,
+) (bool, error) {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		string(LedgerRefund)+":"+reference,
+	); err != nil {
+		return false, fmt.Errorf("store: lock reversal refund reference: %w", err)
+	}
+	var exists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM ledger_entries
+			WHERE account_id = $1 AND entry_type = $2 AND reference = $3
+		)`,
+		accountID, string(LedgerRefund), reference,
+	).Scan(&exists); err != nil {
+		return false, fmt.Errorf("store: check reversal refund reference: %w", err)
+	}
+	if exists {
+		return false, nil
+	}
+	if err := creditWithdrawableTx(
+		ctx, tx, accountID, amount, LedgerRefund, reference, time.Time{},
+	); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
 // withdrawal for sweep retry with an in-database guard (see interface doc).
 func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
 	if id == "" {
 		return false, errors.New("stripe withdrawal id is required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin reopen stripe withdrawal: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'transferred',
 		     payout_id = '',
@@ -3609,13 +3283,56 @@ func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReas
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
-		   AND status <> 'failed'`,
+		   AND status NOT IN ('failed', 'review_pending')`,
 		id, failureReason, feeRefunded,
 	)
 	if err != nil {
 		return false, fmt.Errorf("store: reopen stripe withdrawal: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	applied := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit reopen stripe withdrawal: %w", err)
+	}
+	return applied, nil
+}
+
+func (s *PostgresStore) ReopenStripeWithdrawalAfterSweepFailure(
+	id, sweepPayoutID, failureReason string,
+) (bool, error) {
+	if err := s.ensureOwnership(); err != nil {
+		return false, err
+	}
+	if id == "" || sweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout IDs are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin reopen sweep withdrawal: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET status = 'transferred', sweep_payout_id = '',
+		     failure_reason = $3, updated_at = NOW()
+		 WHERE id = $1
+		   AND sweep_payout_id = $2
+		   AND status = 'paid'
+		   AND refunded = FALSE`,
+		id, sweepPayoutID, failureReason,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: reopen sweep withdrawal: %w", err)
+	}
+	applied := tag.RowsAffected() > 0
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit reopen sweep withdrawal: %w", err)
+	}
+	return applied, nil
 }
 
 // ListStripeWithdrawalsBySweepPayoutID returns the rows stamped by the given
@@ -3891,9 +3608,17 @@ func (s *PostgresStore) CreateProviderToken(pt *ProviderToken) error {
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_tokens (token_hash, account_id, label, active)
-		 VALUES ($1, $2, $3, $4)`,
-		pt.TokenHash, pt.AccountID, pt.Label, pt.Active,
+		`INSERT INTO provider_tokens (
+		    token_hash, account_id, provider_id, label, active,
+		    revoked_at, created_at, updated_at
+		 )
+		 VALUES (
+		    $1, $2, $3, $4, $5,
+		    CASE WHEN $5 THEN NULL ELSE COALESCE($6, NOW()) END,
+		    COALESCE($7, NOW()), COALESCE($8, NOW())
+		 )`,
+		pt.TokenHash, pt.AccountID, pt.ProviderID, pt.Label, pt.Active,
+		pt.RevokedAt, nullableCreatedAt(pt.CreatedAt), nullableCreatedAt(pt.UpdatedAt),
 	)
 	if err != nil {
 		return fmt.Errorf("store: create provider token: %w", err)
@@ -3908,9 +3633,13 @@ func (s *PostgresStore) GetProviderToken(token string) (*ProviderToken, error) {
 	h := hashKey(token)
 	var pt ProviderToken
 	err := s.pool.QueryRow(ctx,
-		`SELECT token_hash, account_id, label, active, created_at
+		`SELECT token_hash, account_id, provider_id, label, active,
+		        revoked_at, created_at, updated_at
 		 FROM provider_tokens WHERE token_hash = $1 AND active = TRUE`, h,
-	).Scan(&pt.TokenHash, &pt.AccountID, &pt.Label, &pt.Active, &pt.CreatedAt)
+	).Scan(
+		&pt.TokenHash, &pt.AccountID, &pt.ProviderID, &pt.Label, &pt.Active,
+		&pt.RevokedAt, &pt.CreatedAt, &pt.UpdatedAt,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider token not found: %w", err)
 	}
@@ -3923,7 +3652,10 @@ func (s *PostgresStore) RevokeProviderToken(token string) error {
 
 	h := hashKey(token)
 	tag, err := s.pool.Exec(ctx,
-		`UPDATE provider_tokens SET active = FALSE WHERE token_hash = $1`, h,
+		`UPDATE provider_tokens
+		 SET active = FALSE, revoked_at = NOW(), updated_at = NOW()
+		 WHERE token_hash = $1`,
+		h,
 	)
 	if err != nil {
 		return fmt.Errorf("store: revoke provider token: %w", err)
@@ -4251,10 +3983,20 @@ func (s *PostgresStore) ListProviderPayouts() ([]ProviderPayout, error) {
 
 // SettleProviderPayout marks a provider payout as settled.
 func (s *PostgresStore) SettleProviderPayout(id int64) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	tag, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin settle provider payout: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx,
 		`UPDATE provider_payouts
 		 SET settled = TRUE
 		 WHERE id = $1 AND settled = FALSE`,
@@ -4266,8 +4008,7 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("provider payout %d not found or already settled", id)
 	}
-
-	return nil
+	return tx.Commit(ctx)
 }
 
 // CreditProviderAccount atomically credits a linked provider account and records
@@ -4277,6 +4018,9 @@ func (s *PostgresStore) SettleProviderPayout(id int64) error {
 // all in one round trip. The old implementation used 6 sequential round trips
 // (BEGIN + upsert + SELECT balance + INSERT ledger + INSERT earning + COMMIT).
 func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if earning == nil {
 		return errors.New("provider earning is required")
 	}
@@ -4286,6 +4030,14 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin provider account credit: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	// The earning CTE is the idempotency gate: ON CONFLICT (job_id) DO NOTHING
 	// means a retried settlement (same job_id) inserts nothing and RETURNS no
@@ -4293,7 +4045,7 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	// — no balance bump, no ledger row, no summary bump. The outer COALESCE keeps
 	// the query returning exactly one row even on a duplicate.
 	var balanceAfter int64
-	err := s.pool.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		WITH earning AS (
 			INSERT INTO provider_earnings (
 				account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at
@@ -4347,12 +4099,15 @@ func (s *PostgresStore) CreditProviderAccount(earning *ProviderEarning) error {
 	if err != nil {
 		return fmt.Errorf("store: credit provider account: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // CreditProviderWallet atomically credits an unlinked provider wallet and
 // records the corresponding payout history row.
 func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
+	if err := s.ensureOwnership(); err != nil {
+		return err
+	}
 	if payout == nil {
 		return errors.New("provider payout is required")
 	}
@@ -4368,6 +4123,9 @@ func (s *PostgresStore) CreditProviderWallet(payout *ProviderPayout) error {
 		return fmt.Errorf("store: begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return err
+	}
 
 	if err := creditWithdrawableTx(ctx, tx, payout.ProviderAddress, payout.AmountMicroUSD, LedgerPayout, payout.JobID, payout.Timestamp); err != nil {
 		return err
@@ -4435,8 +4193,8 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
-		) VALUES (
+			registered_at, last_seen, public_key, token_hash
+		) SELECT
 			$1, $2, $3, $4, $5, $6, $7,
 			$8, $9, $10,
 			$11, $12,
@@ -4444,7 +4202,10 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			$17, $18, $19,
 			$20, $21, $22, $23,
 			$24, $25,
-			$26, $27, $28
+			$26, $27, $28, $29
+		WHERE $29 = '' OR EXISTS (
+			SELECT 1 FROM provider_tokens
+			WHERE token_hash = $29 AND account_id = $19 AND active
 		)
 		ON CONFLICT (id) DO UPDATE SET
 			hardware = $2, models = $3, backend = $4, location = $5,
@@ -4456,7 +4217,11 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			lifetime_requests_served = $20, lifetime_tokens_generated = $21,
 			last_session_requests_served = $22, last_session_tokens_generated = $23,
 			lifetime_stats = $24, last_session_stats = $25,
-			last_seen = $27, public_key = $28`,
+			last_seen = $27, public_key = $28, token_hash = $29
+		WHERE $29 = '' OR EXISTS (
+			SELECT 1 FROM provider_tokens
+			WHERE token_hash = $29 AND account_id = $19 AND active
+		)`,
 		p.ID, p.Hardware, p.Models, p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
@@ -4467,7 +4232,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 		p.LifetimeRequestsServed, p.LifetimeTokensGenerated,
 		p.LastSessionRequestsServed, p.LastSessionTokensGenerated,
 		providerStatsJSON(p.LifetimeStats), providerStatsJSON(p.LastSessionStats),
-		p.RegisteredAt, p.LastSeen, p.PublicKey,
+		p.RegisteredAt, p.LastSeen, p.PublicKey, p.TokenHash,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert provider: %w", err)
@@ -4490,7 +4255,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers WHERE id = $1`, id,
 	).Scan(
 		&p.ID, &p.Hardware, &p.Models, &p.Backend,
@@ -4503,7 +4268,7 @@ func (s *PostgresStore) GetProviderRecord(ctx context.Context, id string) (*Prov
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider not found: %w", err)
@@ -4527,7 +4292,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers WHERE serial_number = $1 AND serial_number != ''
 		 ORDER BY last_seen DESC LIMIT 1`, serial,
 	).Scan(
@@ -4541,7 +4306,7 @@ func (s *PostgresStore) GetProviderBySerial(ctx context.Context, serial string) 
 		&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 		&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 		&p.LifetimeStats, &p.LastSessionStats,
-		&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+		&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: provider with serial not found: %w", err)
@@ -4587,7 +4352,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers ORDER BY last_seen DESC`,
 	)
 	if err != nil {
@@ -4610,7 +4375,7 @@ func (s *PostgresStore) ListProviderRecords(ctx context.Context) ([]ProviderReco
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 		); err != nil {
 			continue
 		}
@@ -4649,7 +4414,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			lifetime_requests_served, lifetime_tokens_generated,
 			last_session_requests_served, last_session_tokens_generated,
 			lifetime_stats, last_session_stats,
-			registered_at, last_seen, public_key
+			registered_at, last_seen, public_key, token_hash
 		 FROM providers
 		 WHERE account_id = $1
 		 ORDER BY COALESCE(NULLIF(serial_number, ''),
@@ -4678,7 +4443,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			&p.LifetimeRequestsServed, &p.LifetimeTokensGenerated,
 			&p.LastSessionRequestsServed, &p.LastSessionTokensGenerated,
 			&p.LifetimeStats, &p.LastSessionStats,
-			&p.RegisteredAt, &p.LastSeen, &p.PublicKey,
+			&p.RegisteredAt, &p.LastSeen, &p.PublicKey, &p.TokenHash,
 		); err != nil {
 			continue
 		}
@@ -4701,27 +4466,60 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 		return 0, fmt.Errorf("store: delete providers begin: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if err := s.verifyOwnershipTx(ctx, tx); err != nil {
+		return 0, err
+	}
 
 	// Resolve all provider rows for this owner matching the stable identity
 	// (serial OR session id). Postgres keeps one row per session UUID, so a
 	// serial can map to many ids — delete them all.
 	rows, err := tx.Query(ctx,
-		`SELECT id FROM providers
+		`SELECT id, token_hash, se_public_key, session_id,
+		        session_epoch, hard_untrust_epoch
+		 FROM providers
 		 WHERE account_id = $1
-		   AND ((serial_number = $2 AND serial_number <> '') OR id = $2)`,
+		   AND ((serial_number = $2 AND serial_number <> '') OR id = $2)
+		 FOR UPDATE`,
 		ownerAccountID, serialOrID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("store: delete providers select: %w", err)
 	}
-	var ids []string
+	var (
+		ids          []string
+		tokenHashes  []string
+		seKeys       []string
+		sessionIDs   []string
+		sessionEpoch = make(map[string]int64)
+	)
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var (
+			id, tokenHash, seKey, sessionID string
+			epoch, hardUntrustEpoch         int64
+		)
+		if err := rows.Scan(
+			&id, &tokenHash, &seKey, &sessionID, &epoch, &hardUntrustEpoch,
+		); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("store: delete providers scan: %w", err)
 		}
 		ids = append(ids, id)
+		if tokenHash != "" {
+			tokenHashes = append(tokenHashes, tokenHash)
+		}
+		if seKey != "" {
+			seKeys = append(seKeys, seKey)
+		}
+		if sessionID != "" {
+			sessionIDs = append(sessionIDs, sessionID)
+		}
+		if epoch < hardUntrustEpoch {
+			epoch = hardUntrustEpoch
+		}
+		if epoch < 1 {
+			epoch = 1
+		}
+		sessionEpoch[id] = epoch
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -4732,6 +4530,75 @@ func (s *PostgresStore) DeleteProvidersBySerial(ctx context.Context, ownerAccoun
 			return 0, fmt.Errorf("store: delete providers commit: %w", err)
 		}
 		return 0, nil
+	}
+
+	// The machine credential, reusable hardware proof, durable hard-trust state,
+	// live session, reputation, and provider rows are one revocation boundary.
+	// Revoking first also makes a late asynchronous heartbeat upsert fail closed.
+	if _, err := tx.Exec(ctx,
+		`UPDATE provider_tokens
+		 SET active = FALSE, revoked_at = NOW(), updated_at = NOW()
+		 WHERE account_id = $1
+		   AND active
+		   AND (
+		       (token_hash = ANY($2) AND token_hash <> '')
+		       OR (provider_id = ANY($3) AND provider_id <> '')
+		       OR provider_id = ''
+		   )`,
+		ownerAccountID, tokenHashes, ids,
+	); err != nil {
+		return 0, fmt.Errorf("store: revoke deleted provider tokens: %w", err)
+	}
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM provider_trust_reuse
+		 WHERE (provider_id = ANY($1) AND provider_id <> '')
+		    OR (se_pubkey = ANY($2) AND se_pubkey <> '')`,
+		ids, seKeys,
+	); err != nil {
+		return 0, fmt.Errorf("store: invalidate deleted provider trust: %w", err)
+	}
+	if s.ownershipEpoch > 0 {
+		for _, id := range ids {
+			providerUUID, parseErr := uuid.Parse(id)
+			if parseErr != nil {
+				continue // pre-Objective-7 Go session ids were not constrained UUIDs
+			}
+			digest := sha256.Sum256([]byte("owner-delete:" + ownerAccountID + ":" + id))
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO rust_coord.provider_hard_untrust_epochs (
+				    provider_id, hard_untrust_epoch, reason, evidence_digest,
+				    owner_epoch
+				 )
+				 VALUES ($1, $2, 'owner deleted machine', $3, $4)
+				 ON CONFLICT (provider_id) DO UPDATE SET
+				    hard_untrust_epoch = GREATEST(
+				        rust_coord.provider_hard_untrust_epochs.hard_untrust_epoch,
+				        EXCLUDED.hard_untrust_epoch
+				    ),
+				    reason = EXCLUDED.reason,
+				    evidence_digest = EXCLUDED.evidence_digest,
+				    owner_epoch = EXCLUDED.owner_epoch,
+				    version = rust_coord.provider_hard_untrust_epochs.version + 1,
+				    updated_at = NOW()`,
+				providerUUID, sessionEpoch[id], digest[:], s.ownershipEpoch,
+			); err != nil {
+				return 0, fmt.Errorf("store: hard-fence deleted provider: %w", err)
+			}
+		}
+	}
+	sessionIDs = append(sessionIDs, ids...)
+	if _, err := tx.Exec(ctx,
+		`UPDATE provider_sessions
+		 SET last_seen = NOW(),
+		     disconnected_at = COALESCE(disconnected_at, NOW()),
+		     disconnect_reason = CASE
+		         WHEN disconnected_at IS NULL THEN 'credential revoked'
+		         ELSE disconnect_reason
+		     END
+		 WHERE session_id = ANY($1)`,
+		sessionIDs,
+	); err != nil {
+		return 0, fmt.Errorf("store: close deleted provider sessions: %w", err)
 	}
 
 	// provider_reputation.provider_id has a FK to providers(id) with NO
@@ -4931,7 +4798,10 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at FROM provider_trust_reuse`)
+		`SELECT se_pubkey, provider_id, serial, trust_level, binary_hash,
+		        sip_enabled, secure_boot_full, mda_udid, hard_untrust_epoch,
+		        enrolled, security_info_at, verified_at
+		 FROM provider_trust_reuse`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list provider trust reuse: %w", err)
 	}
@@ -4940,7 +4810,20 @@ func (s *PostgresStore) ListProviderTrustReuse(ctx context.Context) ([]ProviderT
 	var out []ProviderTrustReuse
 	for rows.Next() {
 		var rec ProviderTrustReuse
-		if err := rows.Scan(&rec.SEPubKey, &rec.Serial, &rec.TrustLevel, &rec.BinaryHash, &rec.SIPEnabled, &rec.SecureBootFull, &rec.MDAUDID, &rec.VerifiedAt); err != nil {
+		if err := rows.Scan(
+			&rec.SEPubKey,
+			&rec.ProviderID,
+			&rec.Serial,
+			&rec.TrustLevel,
+			&rec.BinaryHash,
+			&rec.SIPEnabled,
+			&rec.SecureBootFull,
+			&rec.MDAUDID,
+			&rec.HardUntrustEpoch,
+			&rec.Enrolled,
+			&rec.SecurityInfoAt,
+			&rec.VerifiedAt,
+		); err != nil {
 			return nil, fmt.Errorf("store: scan provider trust reuse: %w", err)
 		}
 		out = append(out, rec)
@@ -4959,11 +4842,36 @@ func (s *PostgresStore) UpsertProviderTrustReuse(ctx context.Context, rec Provid
 	defer cancel()
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_trust_reuse (se_pubkey, serial, trust_level, binary_hash, sip_enabled, secure_boot_full, mda_udid, verified_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO provider_trust_reuse (
+		    se_pubkey, provider_id, serial, trust_level, binary_hash,
+		    sip_enabled, secure_boot_full, mda_udid, hard_untrust_epoch,
+		    enrolled, security_info_at, verified_at
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 ON CONFLICT (se_pubkey) DO UPDATE SET
-			serial = $2, trust_level = $3, binary_hash = $4, sip_enabled = $5, secure_boot_full = $6, mda_udid = $7, verified_at = $8`,
-		rec.SEPubKey, rec.Serial, rec.TrustLevel, rec.BinaryHash, rec.SIPEnabled, rec.SecureBootFull, rec.MDAUDID, rec.VerifiedAt,
+			provider_id = EXCLUDED.provider_id,
+			serial = EXCLUDED.serial,
+			trust_level = EXCLUDED.trust_level,
+			binary_hash = EXCLUDED.binary_hash,
+			sip_enabled = EXCLUDED.sip_enabled,
+			secure_boot_full = EXCLUDED.secure_boot_full,
+			mda_udid = EXCLUDED.mda_udid,
+			hard_untrust_epoch = EXCLUDED.hard_untrust_epoch,
+			enrolled = EXCLUDED.enrolled,
+			security_info_at = EXCLUDED.security_info_at,
+			verified_at = EXCLUDED.verified_at`,
+		rec.SEPubKey,
+		rec.ProviderID,
+		rec.Serial,
+		rec.TrustLevel,
+		rec.BinaryHash,
+		rec.SIPEnabled,
+		rec.SecureBootFull,
+		rec.MDAUDID,
+		rec.HardUntrustEpoch,
+		rec.Enrolled,
+		rec.SecurityInfoAt,
+		rec.VerifiedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: upsert provider trust reuse: %w", err)

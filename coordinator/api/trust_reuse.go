@@ -354,7 +354,9 @@ func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, bi
 	// an empty binaryHash can never satisfy the read gate (b) so it would be a dead
 	// row. (ApplyLateSecurityInfo can derive empty values when AttestationResult is
 	// absent or carries no binary hash.)
-	if s == nil || s.trustReuseCache == nil || provider == nil || seKey == "" || serial == "" || binaryHash == "" {
+	if s == nil || s.trustReuseCache == nil || provider == nil ||
+		seKey == "" || serial == "" || binaryHash == "" || udid == "" ||
+		!sipEnabled || !secureBootFull {
 		return
 	}
 	normHash, err := normalizeSHA256Hex(binaryHash, "binary_hash")
@@ -363,19 +365,23 @@ func (s *Server) recordTrustReuse(provider *registry.Provider, seKey, serial, bi
 		// binary-hash match, so this would be a dead row. Skip caching.
 		return
 	}
-	rec := store.ProviderTrustReuse{
-		SEPubKey:       seKey,
-		Serial:         serial,
-		TrustLevel:     string(registry.TrustHardware),
-		BinaryHash:     normHash,
-		SIPEnabled:     sipEnabled,
-		SecureBootFull: secureBootFull,
-		MDAUDID:        udid,
-		VerifiedAt:     s.trustReuseCache.now(),
-	}
-
 	// Capture the hard-untrust epoch at grant time (FIX A).
 	epoch := provider.HardUntrustEpoch()
+	verifiedAt := s.trustReuseCache.now()
+	rec := store.ProviderTrustReuse{
+		SEPubKey:         seKey,
+		ProviderID:       provider.ID,
+		Serial:           serial,
+		TrustLevel:       string(registry.TrustHardware),
+		BinaryHash:       normHash,
+		SIPEnabled:       sipEnabled,
+		SecureBootFull:   secureBootFull,
+		MDAUDID:          udid,
+		HardUntrustEpoch: int64(epoch),
+		Enrolled:         true,
+		SecurityInfoAt:   &verifiedAt,
+		VerifiedAt:       verifiedAt,
+	}
 
 	// Record in-memory so an immediate same-process reconnect can fast-skip.
 	s.trustReuseCache.recordTrust(rec)

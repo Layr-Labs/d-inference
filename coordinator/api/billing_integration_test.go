@@ -30,6 +30,14 @@ func (s failingCreditStore) Credit(accountID string, amountMicroUSD int64, entry
 	return errors.New("forced credit failure")
 }
 
+func (s failingCreditStore) ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (bool, error) {
+	return false, store.ErrFinancialOperationConflict
+}
+
+func (s failingCreditStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	return "", store.ErrFinancialOperationConflict
+}
+
 // TestIntegration_ConsumerBillingCharge verifies that a consumer's balance is
 // debited after a successful inference request. The charge amount should match
 // the pricing for the model and tokens used.

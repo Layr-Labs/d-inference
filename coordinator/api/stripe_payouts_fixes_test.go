@@ -504,7 +504,7 @@ func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing
 
 // TestConnectWebhookTransferReversedOnPaidRowNeedsHuman: a reversal landing
 // on an already-paid withdrawal (bank payout completed, then clawback) is
-// ambiguous — never auto-refund, leave the row paid for manual review.
+// ambiguous — never auto-refund, durably quarantine it for manual review.
 func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -514,16 +514,23 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	mkWithdrawal(t, st, store.StripeWithdrawal{
 		ID: "wd-rev-paid", AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
-		Method: "standard", Status: "paid", TransferID: "tr_rev_p",
+		Method: "standard", Status: "paid", TransferID: "tr_rev_p", PayoutID: "po_rev_p",
 	})
 	balBefore := st.GetBalance(user.AccountID)
 
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
 		t.Fatalf("got %d: %s", w.Code, w.Body.String())
 	}
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_rev_p")); w.Code != http.StatusOK {
+		t.Fatalf("redelivery got %d: %s", w.Code, w.Body.String())
+	}
+	if w := deliverConnectWebhook(t, srv,
+		payoutEventPayload("po_rev_p", user.StripeAccountID, "failed", false, time.Now().Unix())); w.Code != http.StatusOK {
+		t.Fatalf("payout failure got %d: %s", w.Code, w.Body.String())
+	}
 	wd, _ := st.GetStripeWithdrawal("wd-rev-paid")
-	if wd.Status != "paid" || wd.Refunded {
-		t.Errorf("row = status %q refunded=%v, want paid/false (manual review)", wd.Status, wd.Refunded)
+	if wd.Status != "review_pending" || wd.Refunded {
+		t.Errorf("row = status %q refunded=%v, want review_pending/false", wd.Status, wd.Refunded)
 	}
 	if bal := st.GetBalance(user.AccountID); bal != balBefore {
 		t.Errorf("balance moved on a paid row: %d -> %d", balBefore, bal)
@@ -572,10 +579,9 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *
 	return srv, flaky
 }
 
-// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
-// lands but the row persist fails → 500 → Stripe redelivers → the
-// reference-deduped credit no-ops and the persist completes. Exactly one
-// refund, terminal row.
+// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure proves the
+// reversal path no longer has a credit-versus-row persist seam: the dedicated
+// atomic store operation succeeds even when the legacy Update method is faulted.
 func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -590,8 +596,8 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	balBefore := flaky.GetBalance(user.AccountID)
 
 	flaky.failUpdates = true
-	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
-		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
+	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusOK {
+		t.Fatalf("atomic reversal got %d", w.Code)
 	}
 	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
 		t.Fatalf("credit should have landed once: balance = %d", bal)

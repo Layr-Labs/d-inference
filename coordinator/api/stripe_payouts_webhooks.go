@@ -420,6 +420,13 @@ func (s *Server) reconcileUnmatchedPayout(pe *billing.PayoutEvent, success bool)
 // SweepPayoutID stamped when the sweep claimed them; rows claimed by other
 // sweeps are untouched.
 func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
+	failureReason := "sweep_payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
+		" (payout " + pe.ID + "; next sweep will retry)"
+	if err := s.billing.Store().RecordStripeSweepFailure(pe.ID, failureReason); err != nil {
+		s.logger.Error("stripe connect webhook: sweep failure tombstone failed",
+			"error", err, "stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID)
+		return err
+	}
 	// Looked up by the sweep stamp directly (not by scanning the account's
 	// paid rows): exact, and immune to any per-account list bound.
 	paid, err := s.billing.Store().ListStripeWithdrawalsBySweepPayoutID(pe.ID)
@@ -435,11 +442,10 @@ func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
 		if wd.Status != "paid" || wd.Refunded {
 			continue
 		}
-		wd.Status = "transferred"
-		wd.SweepPayoutID = ""
-		wd.FailureReason = "sweep_payout_failed " + pe.FailureCode + ": " + pe.FailureReason +
-			" (payout " + pe.ID + "; next sweep will retry)"
-		if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+		applied, err := s.billing.Store().ReopenStripeWithdrawalAfterSweepFailure(
+			wd.ID, pe.ID, failureReason,
+		)
+		if err != nil {
 			s.logger.Error("stripe connect webhook: sweep bounce reopen failed",
 				"error", err, "withdrawal_id", wd.ID)
 			if firstErr == nil {
@@ -447,7 +453,9 @@ func (s *Server) reopenSweepBouncedRows(pe *billing.PayoutEvent) error {
 			}
 			continue
 		}
-		reopened++
+		if applied {
+			reopened++
+		}
 	}
 	s.logger.Warn("stripe connect webhook: sweep payout failed — will retry on next schedule",
 		"stripe_account_id", pe.ConnectedAcct, "payout_id", pe.ID,
@@ -484,14 +492,6 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 			"transfer_id", te.ID, "error", err)
 		return err
 	}
-	if wd.Status == "paid" {
-		// The user's bank payout completed AND the transfer reversed — an
-		// ambiguous clawback state. Never auto-refund a paid row; surface it
-		// for a human decision.
-		s.logger.Error("stripe connect webhook: transfer reversed on an already-paid withdrawal — manual review required",
-			"withdrawal_id", wd.ID, "transfer_id", te.ID, "stripe_account_id", wd.StripeAccountID)
-		return nil
-	}
 	if wd.Refunded {
 		// Terminal (covers legacy rows refunded under the old semantics).
 		// This status flip is what keeps the already-refunded row out of
@@ -524,34 +524,20 @@ func (s *Server) handleTransferFailed(event *billing.WebhookEvent) error {
 			"stripe_account_id", wd.StripeAccountID)
 		return nil
 	}
-	netMicroUSD := wd.AmountMicroUSD - wd.FeeMicroUSD
-	if netMicroUSD > 0 {
-		if _, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, netMicroUSD,
-			store.LedgerRefund, "stripe_withdraw:"+wd.ID); err != nil {
-			s.logger.Error("stripe connect webhook: principal refund failed", "error", err, "withdrawal_id", wd.ID)
-			return err // Refunded stays false — redelivery retries idempotently
-		}
-	}
-	if wd.FeeMicroUSD > 0 {
-		// No-ops if the instant-fee path already credited this reference.
-		applied, err := s.billing.Store().CreditWithdrawableOnce(wd.AccountID, wd.FeeMicroUSD,
-			store.LedgerRefund, "stripe_withdraw_fee:"+wd.ID)
-		if err != nil {
-			s.logger.Error("stripe connect webhook: fee refund failed", "error", err, "withdrawal_id", wd.ID)
-			return err
-		}
-		if applied {
-			wd.FeeRefunded = true
-		}
-	}
-	wd.Refunded = true
-	wd.Status = "failed"
-	wd.FailureReason = "transfer_reversed"
-	if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
-		// Credits are reference-idempotent — redelivery skips them and
-		// retries this persist.
-		s.logger.Error("stripe connect webhook: mark failed failed", "error", err)
+	refunded, manualReview, err := s.billing.Store().RefundStripeWithdrawalOnReversal(wd.ID)
+	if err != nil {
+		s.logger.Error("stripe connect webhook: atomic reversal refund failed",
+			"error", err, "withdrawal_id", wd.ID)
 		return err
+	}
+	if manualReview {
+		s.logger.Error("stripe connect webhook: transfer reversed on an already-paid withdrawal — manual review required",
+			"withdrawal_id", wd.ID, "transfer_id", te.ID, "stripe_account_id", wd.StripeAccountID)
+		return nil
+	}
+	if refunded {
+		s.logger.Warn("stripe connect webhook: reversed transfer refunded atomically",
+			"withdrawal_id", wd.ID, "transfer_id", te.ID)
 	}
 	return nil
 }

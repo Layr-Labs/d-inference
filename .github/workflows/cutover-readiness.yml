@@ -1,0 +1,345 @@
+name: Coordinator Cutover Readiness
+
+on:
+  pull_request:
+    paths:
+      - "scripts/cutover-readiness.py"
+      - "scripts/cutover_readiness/**"
+      - "scripts/run-fault-matrix.sh"
+      - "scripts/rehearse-coordinator-rollback.sh"
+      - "scripts/tests/test_cutover_readiness.*"
+      - "scripts/tests/test_fault_workflow_parity.py"
+      - "deploy/cutover/**"
+      - "docs/operations/coordinator-cutover.md"
+      - "docs/operations/coordinator-incident-response.md"
+      - "docs/operations/coordinator-ownership-matrix.md"
+      - "docs/operations/go-coordinator-retirement.md"
+      - "Makefile"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/cutover-readiness.yml"
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cutover-readiness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  evidence-contract:
+    name: Offline Evidence Contract
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Verify fault workflow command parity
+        run: python3 -m unittest scripts.tests.test_fault_workflow_parity
+      - name: Validate fail-closed evidence and shell safety
+        run: scripts/tests/test_cutover_readiness.sh
+      - name: Parse policies and workflow
+        run: |
+          python3 -m json.tool deploy/cutover/gates.json >/dev/null
+          python3 -m json.tool deploy/cutover/datadog-queries.json >/dev/null
+          python3 -m json.tool deploy/cutover/datadog-queries-canary.json >/dev/null
+          python3 -m json.tool deploy/cutover/evidence-schema.json >/dev/null
+          python3 -c 'import yaml; yaml.safe_load(open(".github/workflows/cutover-readiness.yml"))'
+
+  fault-evidence:
+    name: Scheduled Fault Evidence
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'Layr-Labs/d-inference' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+      id-token: none
+      attestations: none
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
+        env:
+          POSTGRES_USER: rust_coord
+          POSTGRES_PASSWORD: rust_coord
+          POSTGRES_DB: rust_coord
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rust_coord -d rust_coord"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DARKBLOOM_TEST_DATABASE_URL: postgres://rust_coord:rust_coord@127.0.0.1:5432/rust_coord?sslmode=disable
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Apply migrations to isolated PostgreSQL
+        run: >-
+          go run ./coordinator/cmd/migrate
+          -database-url "$DARKBLOOM_TEST_DATABASE_URL"
+      - name: Verify protected workflow and signed environment target
+        env:
+          CUTOVER_ENVIRONMENT_MANIFEST_JSON: ${{ vars.CUTOVER_ENVIRONMENT_MANIFEST_JSON }}
+          CUTOVER_EVIDENCE_PUBLIC_KEY_PEM: ${{ vars.CUTOVER_EVIDENCE_PUBLIC_KEY_PEM }}
+        run: |
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_REF" = \
+            "$GITHUB_REPOSITORY/.github/workflows/cutover-readiness.yml@$GITHUB_REF"
+          test -n "$CUTOVER_ENVIRONMENT_MANIFEST_JSON"
+          test -n "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM"
+          umask 077
+          printf '%s\n' "$CUTOVER_ENVIRONMENT_MANIFEST_JSON" \
+            > /tmp/cutover-environment.json
+          printf '%s\n' "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM" \
+            > /tmp/cutover-evidence.pub.pem
+          python3 scripts/cutover-readiness.py verify-environment-manifest \
+            --manifest /tmp/cutover-environment.json \
+            --trusted-key /tmp/cutover-evidence.pub.pem
+      - name: Run executable fault tests and emit unsigned hashed evidence
+        env:
+          CUTOVER_EVIDENCE_PUBLIC_KEY_PEM: ${{ vars.CUTOVER_EVIDENCE_PUBLIC_KEY_PEM }}
+        run: |
+          umask 077
+          openssl genpkey -algorithm EC \
+            -pkeyopt ec_paramgen_curve:P-256 \
+            -out /tmp/fault-receipt-ephemeral.pem
+          openssl pkey -in /tmp/fault-receipt-ephemeral.pem -pubout \
+            -out /tmp/fault-receipt-ephemeral.pub.pem
+          timeout 5100 scripts/run-fault-matrix.sh \
+            --output artifacts/cutover/fault-matrix.json \
+            --signing-key /tmp/fault-receipt-ephemeral.pem \
+            --trusted-key /tmp/fault-receipt-ephemeral.pub.pem
+          python3 scripts/cutover-readiness.py import-fault \
+            --source artifacts/cutover/fault-matrix.json \
+            --trusted-receipt-key /tmp/fault-receipt-ephemeral.pub.pem \
+            --environment-manifest /tmp/cutover-environment.json \
+            --trusted-environment-key /tmp/cutover-evidence.pub.pem \
+            --output artifacts/cutover/fault.json
+          python3 scripts/cutover-readiness.py verify-unsigned-hash \
+            --report artifacts/cutover/fault.json \
+            --expected-type fault
+          (
+            cd artifacts/cutover
+            sha256sum fault.json fault-matrix.json > SHA256SUMS
+          )
+      - name: Upload fault report and hashed logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cutover-fault-evidence
+          path: |
+            artifacts/cutover/fault.json
+            artifacts/cutover/fault-matrix.json
+            artifacts/cutover/SHA256SUMS
+          if-no-files-found: error
+
+  rollback-rehearsal:
+    name: Scheduled Local Rollback Rehearsal
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.repository == 'Layr-Labs/d-inference' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    permissions:
+      contents: read
+      id-token: none
+      attestations: none
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.97.0 --profile minimal
+      - name: Verify target authorization and pull its exact image pair
+        env:
+          CUTOVER_ENVIRONMENT_MANIFEST_JSON: ${{ vars.CUTOVER_ENVIRONMENT_MANIFEST_JSON }}
+          CUTOVER_EVIDENCE_PUBLIC_KEY_PEM: ${{ vars.CUTOVER_EVIDENCE_PUBLIC_KEY_PEM }}
+        run: |
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_REF" = \
+            "$GITHUB_REPOSITORY/.github/workflows/cutover-readiness.yml@$GITHUB_REF"
+          test -n "$CUTOVER_ENVIRONMENT_MANIFEST_JSON"
+          test -n "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM"
+          umask 077
+          printf '%s\n' "$CUTOVER_ENVIRONMENT_MANIFEST_JSON" \
+            > /tmp/cutover-environment.json
+          printf '%s\n' "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM" \
+            > /tmp/cutover-evidence.pub.pem
+          python3 scripts/cutover-readiness.py verify-environment-manifest \
+            --manifest /tmp/cutover-environment.json \
+            --trusted-key /tmp/cutover-evidence.pub.pem
+          candidate=$(jq -er \
+            '.payload.environment_binding.descriptor.candidate_image' \
+            /tmp/cutover-environment.json)
+          fallback=$(jq -er \
+            '.payload.environment_binding.descriptor.fallback_image' \
+            /tmp/cutover-environment.json)
+          test "$candidate" != "$fallback"
+          docker pull "$candidate"
+          docker pull "$fallback"
+          docker pull \
+            postgres:16@sha256:be01cf82fc7dbba824acf0a82e150b4b360f3ff93c6631d7844af431e841a95c
+          printf '%s\n' "$candidate" > /tmp/candidate-image
+          printf '%s\n' "$fallback" > /tmp/fallback-image
+      - name: Rehearse fallback and emit unsigned hashed evidence
+        env:
+          CUTOVER_EVIDENCE_PUBLIC_KEY_PEM: ${{ vars.CUTOVER_EVIDENCE_PUBLIC_KEY_PEM }}
+        run: |
+          test -n "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM"
+          umask 077
+          printf '%s\n' "$CUTOVER_EVIDENCE_PUBLIC_KEY_PEM" > /tmp/cutover-evidence.pub.pem
+          scripts/rehearse-coordinator-rollback.sh \
+            --candidate-image "$(cat /tmp/candidate-image)" \
+            --fallback-image "$(cat /tmp/fallback-image)" \
+            --environment-manifest /tmp/cutover-environment.json \
+            --trusted-environment-key /tmp/cutover-evidence.pub.pem \
+            --output artifacts/cutover/rollback-drill.json
+          python3 scripts/cutover-readiness.py verify-unsigned-hash \
+            --report artifacts/cutover/rollback-drill.json \
+            --expected-type rollback_drill
+          (
+            cd artifacts/cutover
+            sha256sum rollback-drill.json > ROLLBACK_SHA256SUMS
+          )
+      - name: Upload rollback evidence and hashed logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cutover-rollback-evidence
+          path: |
+            artifacts/cutover/rollback-drill.json*
+            artifacts/cutover/ROLLBACK_SHA256SUMS
+          if-no-files-found: error
+
+  sign-evidence:
+    name: Protected Keyless Cutover Evidence Signer
+    needs:
+      - fault-evidence
+      - rollback-rehearsal
+    if: >-
+      always() &&
+      needs.fault-evidence.result == 'success' &&
+      needs.rollback-rehearsal.result == 'success' &&
+      github.repository == 'Layr-Labs/d-inference' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: cutover-evidence-signer
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 15
+    steps:
+      - name: Verify protected immutable signer context
+        run: |
+          test "$GITHUB_REF_PROTECTED" = true
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_REF" = \
+            "$GITHUB_REPOSITORY/.github/workflows/cutover-readiness.yml@$GITHUB_REF"
+      - name: Download successful test-job artifacts without repository checkout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cutover-fault-evidence
+          path: /tmp/cutover-evidence/fault
+      - name: Download successful rollback artifact without repository checkout
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: cutover-rollback-evidence
+          path: /tmp/cutover-evidence/rollback
+      - name: Verify artifact hashes and unsigned canonical envelopes
+        run: |
+          (
+            cd /tmp/cutover-evidence/fault
+            sha256sum --check SHA256SUMS
+          )
+          (
+            cd /tmp/cutover-evidence/rollback
+            sha256sum --check ROLLBACK_SHA256SUMS
+          )
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          reports = (
+              Path("/tmp/cutover-evidence/fault/fault.json"),
+              Path("/tmp/cutover-evidence/rollback/rollback-drill.json"),
+          )
+          for report_path in reports:
+              report = json.loads(report_path.read_text(encoding="utf-8"))
+              integrity = report.get("integrity")
+              if not isinstance(integrity, dict) or "signature" in integrity:
+                  raise SystemExit(f"{report_path} is not an unsigned hashed report")
+              payload = {key: value for key, value in report.items() if key != "integrity"}
+              encoded = json.dumps(
+                  payload,
+                  ensure_ascii=False,
+                  allow_nan=False,
+                  separators=(",", ":"),
+                  sort_keys=True,
+              ).encode()
+              if hashlib.sha256(encoded).hexdigest() != integrity.get("canonical_sha256"):
+                  raise SystemExit(f"{report_path} canonical hash mismatch")
+          PY
+      - name: Create GitHub artifact attestations after hash verification
+        id: attest
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: |
+            /tmp/cutover-evidence/fault/fault.json
+            /tmp/cutover-evidence/rollback/rollback-drill.json
+      - name: Install pinned Cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+      - name: Keyless-sign and verify attested evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/cutover-readiness.yml@${GITHUB_REF}"
+          for report in \
+            /tmp/cutover-evidence/fault/fault.json \
+            /tmp/cutover-evidence/rollback/rollback-drill.json; do
+            cosign sign-blob --yes \
+              --bundle "${report}.sigstore.json" \
+              "$report"
+            gh attestation download "$report" \
+              --repo "$GITHUB_REPOSITORY" \
+              > "${report}.github-attestation.jsonl"
+            cosign verify-blob \
+              --bundle "${report}.sigstore.json" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-github-workflow-sha "$GITHUB_SHA" \
+              --certificate-github-workflow-ref "$GITHUB_REF" \
+              --certificate-github-workflow-repository "$GITHUB_REPOSITORY" \
+              "$report"
+            gh attestation verify "$report" \
+              --bundle "${report}.github-attestation.jsonl" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow .github/workflows/cutover-readiness.yml
+          done
+      - name: Upload authenticated cutover evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cutover-keyless-evidence
+          path: |
+            /tmp/cutover-evidence/fault/fault.json
+            /tmp/cutover-evidence/fault/fault.json.sigstore.json
+            /tmp/cutover-evidence/fault/fault.json.github-attestation.jsonl
+            /tmp/cutover-evidence/rollback/rollback-drill.json
+            /tmp/cutover-evidence/rollback/rollback-drill.json.sigstore.json
+            /tmp/cutover-evidence/rollback/rollback-drill.json.github-attestation.jsonl
+          if-no-files-found: error
+

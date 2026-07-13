@@ -8,8 +8,11 @@ package api
 
 import (
 	"context"
+	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,6 +21,89 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
+
+func assertPendingResponseClosed(t *testing.T, pending *registry.PendingRequest) {
+	t.Helper()
+	if _, ok := <-pending.ChunkCh; ok {
+		t.Fatal("chunk channel remained open after terminal error")
+	}
+	if _, ok := <-pending.CompleteCh; ok {
+		t.Fatal("completion channel remained open after terminal error")
+	}
+	if _, ok := <-pending.ErrorCh; ok {
+		t.Fatal("error channel remained open after terminal error")
+	}
+}
+
+type flakyInferenceSettlementStore struct {
+	store.Store
+	mu        sync.Mutex
+	remaining int
+	attempts  int
+}
+
+type ambiguousInferenceSettlementStore struct {
+	store.Store
+	mu       sync.Mutex
+	injected bool
+	attempts int
+}
+
+func reserveSettlementTestBalance(
+	t *testing.T,
+	storeBackend store.Store,
+	accountID string,
+	amount int64,
+	reservationID string,
+) int64 {
+	t.Helper()
+	reservedWithdrawable, _, err := storeBackend.ReserveInferenceBalance(
+		accountID, amount, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reservedWithdrawable
+}
+
+func (s *ambiguousInferenceSettlementStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	s.mu.Lock()
+	s.attempts++
+	inject := !s.injected
+	if inject {
+		s.injected = true
+	}
+	s.mu.Unlock()
+	disposition, err := s.Store.SettleInference(settlement)
+	if inject && err == nil {
+		return "", errors.New("ambiguous commit result")
+	}
+	return disposition, err
+}
+
+func (s *ambiguousInferenceSettlementStore) Attempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
+
+func (s *flakyInferenceSettlementStore) SettleInference(settlement *store.InferenceSettlement) (store.InferenceSettlementDisposition, error) {
+	s.mu.Lock()
+	s.attempts++
+	if s.remaining > 0 {
+		s.remaining--
+		s.mu.Unlock()
+		return "", errors.New("transient settlement failure")
+	}
+	s.mu.Unlock()
+	return s.Store.SettleInference(settlement)
+}
+
+func (s *flakyInferenceSettlementStore) Attempts() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.attempts
+}
 
 func TestNonStreamingCompleteObjectWithoutUsageDoesNotReturnSuccessAfterRefund(t *testing.T) {
 	srv, _, ledger := billingTestServer(t)
@@ -80,18 +166,22 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 
 	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
-	if err := ledger.Charge(consumerID, expectedCost, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, expectedCost, "linked-provider-custom-price",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "linked-provider-custom-price",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: expectedCost,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "linked-provider-custom-price",
+		ReservationID:                    "linked-provider-custom-price",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 expectedCost,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             expectedCost,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 	provider.AddPending(pr)
 
@@ -116,7 +206,7 @@ func TestLinkedProviderAccountCustomPriceUsedForSettlement(t *testing.T) {
 // handleComplete leaving AvgResponseTime untouched is what keeps that path
 // race-free.
 func TestHandleCompleteRecordsJobSuccessOnly(t *testing.T) {
-	srv, _, ledger := billingTestServer(t)
+	srv, st, _ := billingTestServer(t)
 
 	model := "job-success-model"
 	provider := srv.registry.Register("job-success-provider", nil, &protocol.RegisterMessage{
@@ -126,18 +216,22 @@ func TestHandleCompleteRecordsJobSuccessOnly(t *testing.T) {
 	consumerID := testConsumerID
 	usage := protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 500}
 	cost := payments.CalculateCost(model, usage.PromptTokens, usage.CompletionTokens)
-	if err := ledger.Charge(consumerID, cost, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, cost, "job-success",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "job-success",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: cost,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "job-success",
+		ReservationID:                    "job-success",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 cost,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             cost,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 	provider.AddPending(pr)
 
@@ -180,10 +274,286 @@ func TestRefundReservedBalanceDoesNotFinalizeWhenCreditFails(t *testing.T) {
 	}
 }
 
-// TestOverageChargeBeforeClamp verifies that when a provider's actual cost
-// exceeds the pre-flight reservation, the coordinator attempts to charge the
-// consumer the overage before falling back to the hard clamp.
-func TestOverageChargeBeforeClamp(t *testing.T) {
+func TestCompletionRetriesAtomicSettlementWithoutPartialProjection(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	flaky := &flakyInferenceSettlementStore{Store: st, remaining: 2}
+	srv.store = flaky
+	const (
+		model         = "retry-settlement-model"
+		reservationID = "retry-settlement-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("retry-settlement-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "retry-settlement-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "retry-settlement-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	usage := protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000}
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID, Usage: usage,
+	})
+	if flaky.Attempts() != settlementRetryAttempts {
+		t.Fatalf("settlement attempts = %d, want %d", flaky.Attempts(), settlementRetryAttempts)
+	}
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-250 {
+		t.Fatalf("consumer balance = %d, want %d", balance, initialBalance-250)
+	}
+	if payout := st.GetWithdrawableBalance("retry-settlement-provider-account"); payout != 250 {
+		t.Fatalf("provider payout = %d, want 250", payout)
+	}
+	if usageRows := st.UsageByConsumer(testConsumerID); len(usageRows) != 1 {
+		t.Fatalf("usage rows = %d, want 1", len(usageRows))
+	}
+}
+
+func TestAmbiguousSettlementCommitResolvesDurableReplay(t *testing.T) {
+	srv, backing := newReservationTestServer(t, ServerConfig{}, nil)
+	createServiceUser(t, backing, "svc-ambiguous")
+	if err := backing.Credit("svc-ambiguous", 1_000_000, store.LedgerDeposit, "seed"); err != nil {
+		t.Fatal(err)
+	}
+	const hold int64 = 500_000
+	serviceMode, reservedWithdrawable, err := srv.reserveInitialBalance(
+		"svc-ambiguous", "ambiguous-model", hold, "reserve-ambiguous",
+	)
+	if err != nil || serviceMode {
+		t.Fatalf("reserve service=%t err=%v", serviceMode, err)
+	}
+	ambiguous := &ambiguousInferenceSettlementStore{Store: backing}
+	srv.store = ambiguous
+	provider := srv.registry.Register("ambiguous-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: "ambiguous-model", ModelType: "chat", Quantization: "4bit"}},
+	})
+	pr := &registry.PendingRequest{
+		RequestID: "ambiguous-attempt", ReservationID: "reserve-ambiguous",
+		Model: "ambiguous-model", ConsumerKey: "svc-ambiguous",
+		ReservedMicroUSD: hold, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: hold, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000},
+	})
+	if ambiguous.Attempts() != 2 {
+		t.Fatalf("settlement attempts = %d, want applied+replay", ambiguous.Attempts())
+	}
+	select {
+	case <-pr.CompleteCh:
+	default:
+		t.Fatal("committed replay did not signal completion")
+	}
+	if balance := backing.GetBalance("svc-ambiguous"); balance != 999_750 {
+		t.Fatalf("ambiguous replay balance = %d, want 999750", balance)
+	}
+}
+
+func TestCompletionSettlementFailureDoesNotSignalSuccessOrMoveBeneficiaryMoney(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	srv.store = failingCreditStore{Store: st}
+	const (
+		model         = "failed-settlement-model"
+		reservationID = "failed-settlement-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("failed-settlement-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "failed-settlement-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "failed-settlement-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1000},
+	})
+	select {
+	case completion, ok := <-pr.CompleteCh:
+		if ok {
+			t.Fatalf("failed settlement signaled successful completion: %+v", completion)
+		}
+	default:
+		t.Fatal("failed settlement left completion channel open")
+	}
+	select {
+	case terminal := <-pr.ErrorCh:
+		if terminal.StatusCode != http.StatusServiceUnavailable ||
+			terminal.ErrorReason != "settlement_pending" {
+			t.Fatalf("settlement failure terminal = %+v", terminal)
+		}
+	default:
+		t.Fatal("failed settlement did not signal a retryable error")
+	}
+	assertPendingResponseClosed(t, pr)
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-reserved {
+		t.Fatalf("failed settlement changed held consumer balance to %d", balance)
+	}
+	if payout := st.GetWithdrawableBalance("failed-settlement-provider-account"); payout != 0 {
+		t.Fatalf("failed settlement paid provider %d", payout)
+	}
+	if !pr.IsReservationFinalized() {
+		t.Fatal("durable review did not fence the local reservation")
+	}
+}
+
+func TestInvalidProviderUsageReleasesReservationWithoutPayout(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	const (
+		model         = "invalid-usage-model"
+		reservationID = "invalid-usage-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("invalid-usage-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "invalid-usage-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "invalid-usage-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID, RequestedMaxTokens: 100,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: int(math.MaxInt32) + 1, CompletionTokens: 10},
+	})
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance {
+		t.Fatalf("invalid usage left consumer charged: balance=%d want=%d", balance, initialBalance)
+	}
+	if payout := st.GetWithdrawableBalance("invalid-usage-provider-account"); payout != 0 {
+		t.Fatalf("invalid usage paid provider %d", payout)
+	}
+	select {
+	case terminal := <-pr.ErrorCh:
+		if terminal.ErrorReason != "invalid_provider_usage" {
+			t.Fatalf("terminal = %+v", terminal)
+		}
+	default:
+		t.Fatal("invalid usage did not produce error terminal")
+	}
+	assertPendingResponseClosed(t, pr)
+}
+
+func TestBoundedProviderUsageCapsPlainRequestPromptEstimate(t *testing.T) {
+	pending := &registry.PendingRequest{
+		EstimatedPromptTokens: 100,
+		RequestedMaxTokens:    50,
+	}
+	usage, invalid, capped := boundedProviderUsage(pending, protocol.UsageInfo{
+		PromptTokens:     2_000,
+		CompletionTokens: 40,
+		ReasoningTokens:  20,
+	})
+	if invalid || !capped {
+		t.Fatalf("bounded usage = %+v invalid=%t capped=%t", usage, invalid, capped)
+	}
+	if usage.PromptTokens != 1_024 {
+		t.Fatalf("prompt tokens = %d, want conservative cap 1024", usage.PromptTokens)
+	}
+
+	unknownEstimate := &registry.PendingRequest{RequestedMaxTokens: 50}
+	usage, invalid, capped = boundedProviderUsage(unknownEstimate, protocol.UsageInfo{
+		PromptTokens:     2_000,
+		CompletionTokens: 40,
+	})
+	if invalid || capped || usage.PromptTokens != 2_000 {
+		t.Fatalf("unknown estimate was capped: %+v invalid=%t capped=%t", usage, invalid, capped)
+	}
+}
+
+func TestProviderCompletionUsageIsCappedAtFundedOutputBound(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	const (
+		model         = "capped-usage-model"
+		reservationID = "capped-usage-reservation"
+		reserved      = int64(500)
+	)
+	initialBalance := ledger.Balance(testConsumerID)
+	reservedWithdrawable, _, err := st.ReserveInferenceBalance(
+		testConsumerID, reserved, reservationID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := srv.registry.Register("capped-usage-provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{ID: model, ModelType: "chat", Quantization: "4bit"}},
+	})
+	provider.Mu().Lock()
+	provider.AccountID = "capped-usage-provider-account"
+	provider.Mu().Unlock()
+	pr := &registry.PendingRequest{
+		RequestID: "capped-usage-attempt", ReservationID: reservationID,
+		Model: model, ConsumerKey: testConsumerID, RequestedMaxTokens: 10,
+		ReservedMicroUSD: reserved, ReservedWithdrawableMicroUSD: reservedWithdrawable,
+		BaseReservedMicroUSD: reserved, BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh: make(chan string, 1), CompleteCh: make(chan protocol.UsageInfo, 1),
+		ErrorCh: make(chan protocol.InferenceErrorMessage, 1),
+	}
+	provider.AddPending(pr)
+	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
+		Type: protocol.TypeInferenceComplete, RequestID: pr.RequestID,
+		Usage: protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 100},
+	})
+	expectedCost := payments.CalculateCost(model, 1000, 10)
+	if balance := ledger.Balance(testConsumerID); balance != initialBalance-expectedCost {
+		t.Fatalf("consumer balance = %d, want %d", balance, initialBalance-expectedCost)
+	}
+	rows := st.UsageByConsumer(testConsumerID)
+	if len(rows) != 1 || rows[0].CompletionTokens != 10 {
+		t.Fatalf("capped usage rows = %+v", rows)
+	}
+}
+
+// TestReportedCostCannotExceedFundedReservation verifies that provider-reported
+// usage can never create a post-generation debit or payout above the durable
+// pre-start funding bound.
+func TestReportedCostCannotExceedFundedReservation(t *testing.T) {
 	srv, st, ledger := billingTestServer(t)
 
 	model := "overage-test-model"
@@ -210,18 +580,22 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 
 	consumerID := testConsumerID
 	initialBalance := ledger.Balance(consumerID)
-	if err := ledger.Charge(consumerID, reservedAmount, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, reservedAmount, "overage-charge-test",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "overage-charge-test",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: reservedAmount,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "overage-charge-test",
+		ReservationID:                    "overage-charge-test",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 reservedAmount,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             reservedAmount,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 	provider.AddPending(pr)
 
@@ -231,15 +605,12 @@ func TestOverageChargeBeforeClamp(t *testing.T) {
 		Usage:     usage,
 	})
 
-	// The overage should have been charged successfully, so the consumer
-	// pays the full actual cost (reservation + overage), not the clamped
-	// reservation amount.
-	expectedPayout := payments.ProviderPayout(actualCost)
+	expectedPayout := payments.ProviderPayout(reservedAmount)
 	if got := st.GetWithdrawableBalance(accountID); got != expectedPayout {
-		t.Errorf("provider payout = %d, want %d (full actual cost payout)", got, expectedPayout)
+		t.Errorf("provider payout = %d, want funded cap %d", got, expectedPayout)
 	}
-	if got := ledger.Balance(consumerID); got != initialBalance-actualCost {
-		t.Errorf("consumer balance = %d, want %d (charged full actual cost)", got, initialBalance-actualCost)
+	if got := ledger.Balance(consumerID); got != initialBalance-reservedAmount {
+		t.Errorf("consumer balance = %d, want funded cap %d", got, initialBalance-reservedAmount)
 	}
 }
 
@@ -272,18 +643,22 @@ func TestOverageChargeClampOnInsufficientBalance(t *testing.T) {
 	// will fail due to insufficient balance.
 	consumerID := "low-balance-consumer"
 	_ = st.Credit(consumerID, reservedAmount, store.LedgerDeposit, "test-setup")
-	if err := srv.ledger.Charge(consumerID, reservedAmount, "reserve:"+consumerID); err != nil {
-		t.Fatalf("reserve balance: %v", err)
-	}
+	reservedWithdrawable := reserveSettlementTestBalance(
+		t, st, consumerID, reservedAmount, "overage-clamp-test",
+	)
 
 	pr := &registry.PendingRequest{
-		RequestID:        "overage-clamp-test",
-		Model:            model,
-		ConsumerKey:      consumerID,
-		ReservedMicroUSD: reservedAmount,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:                        "overage-clamp-test",
+		ReservationID:                    "overage-clamp-test",
+		Model:                            model,
+		ConsumerKey:                      consumerID,
+		ReservedMicroUSD:                 reservedAmount,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawable,
+		BaseReservedMicroUSD:             reservedAmount,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawable,
+		ChunkCh:                          make(chan string, 1),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
 	}
 	provider.AddPending(pr)
 

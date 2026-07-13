@@ -22,19 +22,36 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	if _, err := ApplyPostgresMigrations(ctx, dbURL, MigrationOptions{}); err != nil {
+		t.Fatalf("ApplyPostgresMigrations: %v", err)
+	}
 	s, err := NewPostgres(ctx, Config{DatabaseURL: dbURL})
 	if err != nil {
 		t.Fatalf("NewPostgres: %v", err)
 	}
+	if err := s.ActivateCoordinatorOwnership(ctx, true); err != nil {
+		s.Close()
+		t.Fatalf("ActivateCoordinatorOwnership: %v", err)
+	}
 
 	// Clean tables for test isolation.
 	for _, table := range []string{
+		"rust_coord.inference_jobs",
+		"rust_coord.external_events",
+		"rust_coord.outbox",
+		"rust_coord.fee_projection_checkpoints",
+		"rust_coord.provider_hard_untrust_epochs",
 		"usage",
 		"payments",
 		"api_keys",
 		"balances",
 		"ledger_entries",
+		"balance_reservation_operations",
+		"inference_settlements",
+		"inference_settlement_reviews",
+		"inference_completion_intents",
 		"billing_sessions",
+		"stripe_deposit_events",
 		"users",
 		"device_codes",
 		"provider_tokens",
@@ -46,6 +63,7 @@ func testPostgresStore(t *testing.T) *PostgresStore {
 		"provider_payouts",
 		"providers",
 		"stripe_withdrawals",
+		"stripe_sweep_failures",
 		"provider_sessions",
 		"inference_routes",
 		"request_rejections",

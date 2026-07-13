@@ -34,20 +34,32 @@ type keySpend struct {
 	days     map[string]int64 // "2006-01-02" (UTC) → micro-USD
 }
 
+type balanceReservationOperation struct {
+	accountID            string
+	kind                 string
+	amountMicroUSD       int64
+	withdrawableMicroUSD int64
+}
+
 const keySpendRetentionDays = 40
 
 // MemoryStore manages API keys, usage records, payments, and balances in memory.
 type MemoryStore struct {
-	mu            sync.RWMutex
-	keyRecords    map[string]*APIKey // raw key → record (metadata + limits)
-	keysByID      map[string]string  // public key ID → raw key
-	keySpend      map[string]*keySpend
-	usage         []UsageRecord
-	payments      []PaymentRecord
-	balances      map[string]int64 // accountID → micro-USD
-	withdrawable  map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
-	ledgerEntries []LedgerEntry
-	ledgerSeq     int64 // auto-increment ID
+	mu                           sync.RWMutex
+	keyRecords                   map[string]*APIKey // raw key → record (metadata + limits)
+	keysByID                     map[string]string  // public key ID → raw key
+	keySpend                     map[string]*keySpend
+	usage                        []UsageRecord
+	payments                     []PaymentRecord
+	balances                     map[string]int64 // accountID → micro-USD
+	withdrawable                 map[string]int64 // accountID → withdrawable micro-USD (subset of balance)
+	ledgerEntries                []LedgerEntry
+	ledgerSeq                    int64 // auto-increment ID
+	balanceReservationOperations map[string]balanceReservationOperation
+	inferenceSettlements         map[string]*InferenceSettlement
+	inferenceSettlementReviews   map[string]*InferenceSettlement
+	inferenceSettlementReasons   map[string]string
+	inferenceCompletionIntents   map[string]*InferenceCompletionIntent
 
 	// Referral system
 	referrersByCode    map[string]*Referrer // code → referrer
@@ -56,7 +68,9 @@ type MemoryStore struct {
 	referralCounts     map[string]int       // referrerCode → count of referred accounts
 
 	// Billing sessions
-	billingSessions map[string]*BillingSession // sessionID → session
+	billingSessions      map[string]*BillingSession    // sessionID → session
+	stripeDepositEvents  map[string]StripeDepositEvent // Stripe event ID → disposition
+	stripeCheckoutEvents map[string]string             // Checkout Session ID → Stripe event ID
 
 	// Custom pricing
 	modelPrices map[string]ModelPrice // "accountID:model" → price
@@ -81,6 +95,7 @@ type MemoryStore struct {
 	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
 	stripeWithdrawalsByPayoutID   map[string]string   // payoutID → withdrawalID
 	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
+	stripeSweepFailures           map[string]string
 
 	// Device authorization
 	deviceCodesByCode     map[string]*DeviceCode // deviceCode → DeviceCode
@@ -157,11 +172,18 @@ func NewMemory(scfg Config) *MemoryStore {
 		balances:                      make(map[string]int64),
 		withdrawable:                  make(map[string]int64),
 		ledgerEntries:                 make([]LedgerEntry, 0),
+		balanceReservationOperations:  make(map[string]balanceReservationOperation),
+		inferenceSettlements:          make(map[string]*InferenceSettlement),
+		inferenceSettlementReviews:    make(map[string]*InferenceSettlement),
+		inferenceSettlementReasons:    make(map[string]string),
+		inferenceCompletionIntents:    make(map[string]*InferenceCompletionIntent),
 		referrersByCode:               make(map[string]*Referrer),
 		referrersByAccount:            make(map[string]*Referrer),
 		referrals:                     make(map[string]string),
 		referralCounts:                make(map[string]int),
 		billingSessions:               make(map[string]*BillingSession),
+		stripeDepositEvents:           make(map[string]StripeDepositEvent),
+		stripeCheckoutEvents:          make(map[string]string),
 		modelPrices:                   make(map[string]ModelPrice),
 		modelRegistry:                 make(map[string]*ModelRegistryEntry),
 		modelAliases:                  make(map[string]*ModelAlias),
@@ -177,6 +199,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		stripeWithdrawalsByTransferID: make(map[string]string),
 		stripeWithdrawalsByPayoutID:   make(map[string]string),
 		stripeWithdrawalsByAccount:    make(map[string][]string),
+		stripeSweepFailures:           make(map[string]string),
 		deviceCodesByCode:             make(map[string]*DeviceCode),
 		deviceCodesByUserCode:         make(map[string]*DeviceCode),
 		providerTokens:                make(map[string]*ProviderToken),
@@ -1232,6 +1255,8 @@ func (s *MemoryStore) KeyCount() int {
 }
 
 // GetBalance returns the current balance in micro-USD for an account.
+func (s *MemoryStore) OwnershipLost() <-chan struct{} { return nil }
+
 func (s *MemoryStore) GetBalance(accountID string) int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1341,6 +1366,75 @@ func (s *MemoryStore) Debit(accountID string, amountMicroUSD int64, entryType Le
 		CreatedAt:      time.Now(),
 	})
 	return nil
+}
+
+func (s *MemoryStore) ReserveInferenceBalance(accountID string, amountMicroUSD int64, operationKey string) (int64, bool, error) {
+	if amountMicroUSD <= 0 || operationKey == "" {
+		return 0, false, ErrFinancialOperationConflict
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.balanceReservationOperations[operationKey]; ok {
+		if existing.kind != "reserve" || existing.accountID != accountID ||
+			existing.amountMicroUSD != amountMicroUSD {
+			return 0, false, ErrFinancialOperationConflict
+		}
+		return existing.withdrawableMicroUSD, false, nil
+	}
+	balance := s.balances[accountID]
+	if balance < amountMicroUSD {
+		return 0, false, ErrInsufficientBalance
+	}
+	withdrawable := s.withdrawable[accountID]
+	nonwithdrawable := balance - withdrawable
+	if nonwithdrawable < 0 {
+		nonwithdrawable = 0
+	}
+	reservedWithdrawable := amountMicroUSD - nonwithdrawable
+	if reservedWithdrawable < 0 {
+		reservedWithdrawable = 0
+	}
+	if reservedWithdrawable > withdrawable {
+		reservedWithdrawable = withdrawable
+	}
+	s.balances[accountID] -= amountMicroUSD
+	s.withdrawable[accountID] -= reservedWithdrawable
+	s.ledgerSeq++
+	s.ledgerEntries = append(s.ledgerEntries, LedgerEntry{
+		ID: s.ledgerSeq, AccountID: accountID, Type: LedgerCharge,
+		AmountMicroUSD: -amountMicroUSD, BalanceAfter: s.balances[accountID],
+		Reference: "reserve:" + operationKey, CreatedAt: time.Now(),
+	})
+	s.balanceReservationOperations[operationKey] = balanceReservationOperation{
+		accountID: accountID, kind: "reserve", amountMicroUSD: amountMicroUSD,
+		withdrawableMicroUSD: reservedWithdrawable,
+	}
+	return reservedWithdrawable, true, nil
+}
+
+func (s *MemoryStore) ReleaseInferenceReservation(accountID string, amountMicroUSD, withdrawableMicroUSD int64, operationKey, reference string) (bool, error) {
+	if amountMicroUSD < 0 || withdrawableMicroUSD < 0 || withdrawableMicroUSD > amountMicroUSD || operationKey == "" {
+		return false, ErrFinancialOperationConflict
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.balanceReservationOperations[operationKey]; ok {
+		if existing.kind != "release" || existing.accountID != accountID ||
+			existing.amountMicroUSD != amountMicroUSD ||
+			existing.withdrawableMicroUSD != withdrawableMicroUSD {
+			return false, ErrFinancialOperationConflict
+		}
+		return false, nil
+	}
+	if amountMicroUSD > 0 {
+		s.creditLocked(accountID, amountMicroUSD, LedgerRefund, reference, time.Now())
+		s.withdrawable[accountID] += withdrawableMicroUSD
+	}
+	s.balanceReservationOperations[operationKey] = balanceReservationOperation{
+		accountID: accountID, kind: "release", amountMicroUSD: amountMicroUSD,
+		withdrawableMicroUSD: withdrawableMicroUSD,
+	}
+	return true, nil
 }
 
 // MigrateAccountBalance moves the full balance (and its withdrawable subset)
@@ -1534,8 +1628,142 @@ func (s *MemoryStore) CreateBillingSession(session *BillingSession) error {
 		return fmt.Errorf("billing session %q already exists", session.ID)
 	}
 	copy := *session
+	if copy.Currency == "" {
+		copy.Currency = "usd"
+	}
+	copy.Currency = strings.ToLower(copy.Currency)
 	s.billingSessions[session.ID] = &copy
 	return nil
+}
+
+func (s *MemoryStore) SetBillingSessionExternalID(sessionID, externalID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if externalID == "" {
+		return errors.New("external billing session ID is required")
+	}
+	session, ok := s.billingSessions[sessionID]
+	if !ok {
+		return fmt.Errorf("billing session %q not found", sessionID)
+	}
+	if session.ExternalID != "" {
+		if session.ExternalID == externalID {
+			return nil
+		}
+		return fmt.Errorf("billing session %q already bound to another external ID", sessionID)
+	}
+	for id, candidate := range s.billingSessions {
+		if id != sessionID && candidate.ExternalID == externalID {
+			return fmt.Errorf("external billing session ID %q already bound", externalID)
+		}
+	}
+	session.ExternalID = externalID
+	return nil
+}
+
+func (s *MemoryStore) ApplyStripeDeposit(eventID, billingSessionID, checkoutSessionID, currency string, amountMicroUSD int64) (*StripeDepositResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if eventID == "" || checkoutSessionID == "" {
+		return nil, ErrStripeDepositMismatch
+	}
+	currency = strings.ToLower(currency)
+	if existing, ok := s.stripeDepositEvents[eventID]; ok {
+		if existing.BillingSessionID != billingSessionID || existing.CheckoutSessionID != checkoutSessionID ||
+			existing.AmountMicroUSD != amountMicroUSD || existing.Currency != currency {
+			return nil, ErrStripeDepositConflict
+		}
+		if existing.Status != "applied" && existing.Status != "replayed" {
+			return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, existing.Reason)
+		}
+		session := *s.billingSessions[billingSessionID]
+		return &StripeDepositResult{Session: session, Applied: false}, nil
+	}
+	if priorEventID, ok := s.stripeCheckoutEvents[checkoutSessionID]; ok {
+		existing := s.stripeDepositEvents[priorEventID]
+		if existing.BillingSessionID != billingSessionID || existing.AmountMicroUSD != amountMicroUSD ||
+			existing.Currency != currency {
+			return nil, ErrStripeDepositConflict
+		}
+		if existing.Status != "applied" && existing.Status != "replayed" {
+			return nil, fmt.Errorf("%w: %s", ErrStripeDepositMismatch, existing.Reason)
+		}
+		session := *s.billingSessions[billingSessionID]
+		return &StripeDepositResult{Session: session, Applied: false}, nil
+	}
+
+	event := StripeDepositEvent{
+		EventID: eventID, CheckoutSessionID: checkoutSessionID,
+		BillingSessionID: billingSessionID, AmountMicroUSD: amountMicroUSD,
+		Currency: currency, Status: "received",
+	}
+	s.stripeDepositEvents[eventID] = event
+	s.stripeCheckoutEvents[checkoutSessionID] = eventID
+
+	session, ok := s.billingSessions[billingSessionID]
+	if !ok {
+		return nil, s.rejectStripeDepositLocked(eventID, "unknown_billing_session")
+	}
+	if session.PaymentMethod != "stripe" {
+		return nil, s.rejectStripeDepositLocked(eventID, "payment_method_mismatch")
+	}
+	if session.Currency == "" {
+		session.Currency = "usd"
+	}
+	if currency != session.Currency || session.Currency != "usd" {
+		return nil, s.rejectStripeDepositLocked(eventID, "currency_mismatch")
+	}
+	if amountMicroUSD <= 0 || session.AmountMicroUSD != amountMicroUSD {
+		return nil, s.rejectStripeDepositLocked(eventID, "amount_mismatch")
+	}
+	if session.ExternalID != "" && session.ExternalID != checkoutSessionID {
+		return nil, s.rejectStripeDepositLocked(eventID, "checkout_session_mismatch")
+	}
+	for id, candidate := range s.billingSessions {
+		if id != billingSessionID && candidate.ExternalID == checkoutSessionID {
+			return nil, s.rejectStripeDepositLocked(eventID, "checkout_session_conflict")
+		}
+	}
+	if session.Status == "completed" {
+		if session.ExternalID != checkoutSessionID {
+			return nil, s.rejectStripeDepositLocked(eventID, "completed_session_mismatch")
+		}
+		event.Status = "replayed"
+		s.stripeDepositEvents[eventID] = event
+		copy := *session
+		return &StripeDepositResult{Session: copy, Applied: false}, nil
+	}
+	if session.Status != "pending" {
+		return nil, s.rejectStripeDepositLocked(eventID, "billing_session_not_pending")
+	}
+
+	if session.ReferralCode != "" {
+		if _, alreadyReferred := s.referrals[session.AccountID]; !alreadyReferred {
+			if referrer := s.referrersByCode[session.ReferralCode]; referrer != nil &&
+				referrer.AccountID != session.AccountID {
+				s.referrals[session.AccountID] = session.ReferralCode
+				s.referralCounts[session.ReferralCode]++
+			}
+		}
+	}
+	session.ExternalID = checkoutSessionID
+	session.ProcessedEventID = eventID
+	session.Status = "completed"
+	now := time.Now()
+	session.CompletedAt = &now
+	s.creditLocked(session.AccountID, amountMicroUSD, LedgerStripeDeposit, "stripe:"+checkoutSessionID, now)
+	event.Status = "applied"
+	s.stripeDepositEvents[eventID] = event
+	copy := *session
+	return &StripeDepositResult{Session: copy, Applied: true}, nil
+}
+
+func (s *MemoryStore) rejectStripeDepositLocked(eventID, reason string) error {
+	event := s.stripeDepositEvents[eventID]
+	event.Status = "rejected"
+	event.Reason = reason
+	s.stripeDepositEvents[eventID] = event
+	return fmt.Errorf("%w: %s", ErrStripeDepositMismatch, reason)
 }
 
 // GetBillingSession retrieves a billing session by ID.
@@ -2312,12 +2540,92 @@ func (s *MemoryStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayout
 	if w.PayoutID != expectedPayoutID {
 		return false, nil // payout detached/replaced concurrently — stale event
 	}
+	if sweepPayoutID != "" {
+		if _, failed := s.stripeSweepFailures[sweepPayoutID]; failed {
+			return false, nil
+		}
+	}
 	w.Status = "paid"
 	if sweepPayoutID != "" {
 		w.SweepPayoutID = sweepPayoutID
 	}
 	w.UpdatedAt = time.Now()
 	return true, nil
+}
+
+func (s *MemoryStore) RecordStripeSweepFailure(
+	sweepPayoutID, failureReason string,
+) error {
+	if sweepPayoutID == "" {
+		return errors.New("sweep payout ID is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.stripeSweepFailures[sweepPayoutID] = failureReason
+	return nil
+}
+
+func (s *MemoryStore) RefundStripeWithdrawalOnReversal(id string) (bool, bool, error) {
+	if id == "" {
+		return false, false, errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status == "paid" || w.Status == "review_pending" {
+		if w.Status == "paid" {
+			w.Status = "review_pending"
+			w.FailureReason = "transfer_reversed_after_paid"
+			w.UpdatedAt = time.Now()
+		}
+		return false, true, nil
+	}
+	if w.Refunded {
+		w.Status = "failed"
+		w.FailureReason = "transfer_reversed"
+		w.UpdatedAt = time.Now()
+		return false, false, nil
+	}
+	now := time.Now()
+	net := w.AmountMicroUSD - w.FeeMicroUSD
+	if net > 0 && !s.hasLedgerReferenceLocked(
+		w.AccountID, LedgerRefund, "stripe_withdraw:"+w.ID,
+	) {
+		s.creditLocked(w.AccountID, net, LedgerRefund, "stripe_withdraw:"+w.ID, now)
+		s.withdrawable[w.AccountID] += net
+	}
+	if w.FeeMicroUSD > 0 && !w.FeeRefunded {
+		if !s.hasLedgerReferenceLocked(
+			w.AccountID, LedgerRefund, "stripe_withdraw_fee:"+w.ID,
+		) {
+			s.creditLocked(w.AccountID, w.FeeMicroUSD, LedgerRefund, "stripe_withdraw_fee:"+w.ID, now)
+			s.withdrawable[w.AccountID] += w.FeeMicroUSD
+		}
+		w.FeeRefunded = true
+	}
+	w.Refunded = true
+	w.Status = "failed"
+	w.FailureReason = "transfer_reversed"
+	w.UpdatedAt = now
+	return true, false, nil
+}
+
+func (s *MemoryStore) hasLedgerReferenceLocked(
+	accountID string,
+	entryType LedgerEntryType,
+	reference string,
+) bool {
+	for i := range s.ledgerEntries {
+		entry := s.ledgerEntries[i]
+		if entry.AccountID == accountID && entry.Type == entryType &&
+			entry.Reference == reference {
+			return true
+		}
+	}
+	return false
 }
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
@@ -2332,7 +2640,7 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	if !ok {
 		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
 	}
-	if w.Refunded || w.Status == "failed" {
+	if w.Refunded || w.Status == "failed" || w.Status == "review_pending" {
 		return false, nil // a concurrent reversal terminalized it — never reopen
 	}
 	if w.PayoutID != "" {
@@ -2342,6 +2650,28 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	w.PayoutID = ""
 	w.FailureReason = failureReason
 	w.FeeRefunded = w.FeeRefunded || feeRefunded
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (s *MemoryStore) ReopenStripeWithdrawalAfterSweepFailure(
+	id, sweepPayoutID, failureReason string,
+) (bool, error) {
+	if id == "" || sweepPayoutID == "" {
+		return false, errors.New("stripe withdrawal and sweep payout IDs are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status != "paid" || w.Refunded || w.SweepPayoutID != sweepPayoutID {
+		return false, nil
+	}
+	w.Status = "transferred"
+	w.SweepPayoutID = ""
+	w.FailureReason = failureReason
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2488,6 +2818,16 @@ func (s *MemoryStore) CreateProviderToken(pt *ProviderToken) error {
 		return errors.New("provider token already exists")
 	}
 	copy := *pt
+	now := time.Now()
+	if copy.CreatedAt.IsZero() {
+		copy.CreatedAt = now
+	}
+	if copy.UpdatedAt.IsZero() {
+		copy.UpdatedAt = now
+	}
+	if !copy.Active && copy.RevokedAt == nil {
+		copy.RevokedAt = &now
+	}
 	s.providerTokens[pt.TokenHash] = &copy
 	return nil
 }
@@ -2517,7 +2857,10 @@ func (s *MemoryStore) RevokeProviderToken(token string) error {
 	if !ok {
 		return errors.New("provider token not found")
 	}
+	now := time.Now()
 	pt.Active = false
+	pt.RevokedAt = &now
+	pt.UpdatedAt = now
 	return nil
 }
 
@@ -3044,15 +3387,64 @@ func (s *MemoryStore) DeleteProvidersBySerial(_ context.Context, ownerAccountID,
 	// only delete rows owned by the caller — rows owned by another account are
 	// skipped and not counted, leaving the caller to decide 403 vs 404.
 	var matched []string
+	tokenHashes := make(map[string]struct{})
+	seKeys := make(map[string]struct{})
 	for id, rec := range s.providerRecords {
 		if rec.AccountID != ownerAccountID {
 			continue
 		}
 		if (rec.SerialNumber == serialOrID && rec.SerialNumber != "") || rec.ID == serialOrID {
 			matched = append(matched, id)
+			if rec.TokenHash != "" {
+				tokenHashes[rec.TokenHash] = struct{}{}
+			}
+			if rec.SEPublicKey != "" {
+				seKeys[rec.SEPublicKey] = struct{}{}
+			}
 		}
 	}
 
+	now := time.Now()
+	for _, token := range s.providerTokens {
+		_, linkedHash := tokenHashes[token.TokenHash]
+		linkedProvider := false
+		for _, id := range matched {
+			if token.ProviderID == id && token.ProviderID != "" {
+				linkedProvider = true
+				break
+			}
+		}
+		legacyUnlinked := token.ProviderID == ""
+		if token.AccountID == ownerAccountID && token.Active && (linkedHash || linkedProvider || legacyUnlinked) {
+			token.Active = false
+			token.RevokedAt = &now
+			token.UpdatedAt = now
+		}
+	}
+	for seKey, reuse := range s.providerTrustReuse {
+		_, linkedKey := seKeys[seKey]
+		linkedProvider := false
+		for _, id := range matched {
+			if reuse.ProviderID == id {
+				linkedProvider = true
+				break
+			}
+		}
+		if linkedKey || linkedProvider {
+			delete(s.providerTrustReuse, seKey)
+		}
+	}
+	for i := range s.providerSessions {
+		session := &s.providerSessions[i]
+		for _, id := range matched {
+			if session.SessionID == id && session.DisconnectedAt == nil {
+				session.LastSeen = now
+				session.DisconnectedAt = &now
+				session.DisconnectReason = "credential revoked"
+				break
+			}
+		}
+	}
 	for _, id := range matched {
 		rec := s.providerRecords[id]
 		if rec.SerialNumber != "" && s.serialToProviderID[rec.SerialNumber] == id {

@@ -22,6 +22,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,7 +32,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
-	"github.com/eigeninference/d-inference/coordinator/saferun"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
 
@@ -234,15 +234,26 @@ func (s *Server) cancelDispatch(provider *registry.Provider, pr *registry.Pendin
 // here — that is handled once by refundReservation (full failure) or by the
 // winning attempt's settlement.
 func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
-	if pr == nil {
+	if pr == nil || pr.TerminalClaimed() {
 		return
 	}
 	extra := pr.ReservedMicroUSD - pr.BaseReservedMicroUSD
 	if extra <= 0 {
 		return
 	}
-	_ = s.store.Credit(pr.ConsumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+pr.RequestID)
+	extraWithdrawable := pr.ReservedWithdrawableMicroUSD - pr.BaseReservedWithdrawableMicroUSD
+	if _, err := s.releaseInferenceReservationWithRetry(
+		pr.ConsumerKey, extra, extraWithdrawable,
+		reservationTopUpReleaseKey(pr), "reservation_extra_refund:"+pr.RequestID,
+	); err != nil {
+		s.logger.Error("failed to refund provider-specific reservation top-up",
+			"request_id", pr.RequestID,
+			"error", err,
+		)
+		return
+	}
 	pr.ReservedMicroUSD = pr.BaseReservedMicroUSD
+	pr.ReservedWithdrawableMicroUSD = pr.BaseReservedWithdrawableMicroUSD
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
@@ -683,6 +694,8 @@ func (s *Server) dispatchOneProvider(
 	consumerKey string,
 	consumerLocation *store.ProviderLocation,
 	reservedMicroUSD int64,
+	reservedWithdrawableMicroUSD int64,
+	reservationID string,
 	estimatedPromptTokens int,
 	requestedMaxTokens int,
 	tokenAdmission registry.TokenAdmission,
@@ -712,34 +725,37 @@ func (s *Server) dispatchOneProvider(
 		// inference_complete immediately is correlated to the right route row.
 		// Setting it after the send (on the dispatch goroutine) would race the
 		// provider WS reader goroutine's handleComplete read of pr.Attempt.
-		Attempt:                attempt,
-		Model:                  model,
-		PublicModel:            publicModel,
-		ConsumerKey:            consumerKey,
-		KeyID:                  keyIDFromContext(r.Context()),
-		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
-		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
-		ConsumerLocation:       consumerLocation,
-		IsResponsesAPI:         isResponsesAPI,
-		EstimatedPromptTokens:  estimatedPromptTokens,
-		RequiresVision:         requiresVision,
-		Traits:                 traits,
-		RequestedMaxTokens:     requestedMaxTokens,
-		TokenAdmission:         tokenAdmission,
-		CacheAffinityKey:       cacheAffinityKey,
-		ReservedMicroUSD:       reservedMicroUSD,
-		BaseReservedMicroUSD:   reservedMicroUSD,
-		ServiceReservation:     serviceReservation,
-		AllowedProviderSerials: allowedProviderSerials,
-		SelfRouteOnly:          policy.enabled,
-		PreferOwner:            policy.prefer,
-		OwnerAccountID:         policy.ownerAccountID,
-		FreeSelfRoute:          policy.enabled,
-		AcceptedCh:             make(chan struct{}, 1),
-		ChunkCh:                make(chan string, chunkBufferSize),
-		CompleteCh:             make(chan protocol.UsageInfo, 1),
-		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
-		Timing:                 timing,
+		Attempt:                          attempt,
+		Model:                            model,
+		PublicModel:                      publicModel,
+		ConsumerKey:                      consumerKey,
+		KeyID:                            keyIDFromContext(r.Context()),
+		KeyLimitMicroUSD:                 keyLimitMicroFromContext(r.Context()),
+		KeyLimitReset:                    keyLimitResetFromContext(r.Context()),
+		ConsumerLocation:                 consumerLocation,
+		IsResponsesAPI:                   isResponsesAPI,
+		EstimatedPromptTokens:            estimatedPromptTokens,
+		RequiresVision:                   requiresVision,
+		Traits:                           traits,
+		RequestedMaxTokens:               requestedMaxTokens,
+		TokenAdmission:                   tokenAdmission,
+		CacheAffinityKey:                 cacheAffinityKey,
+		ReservedMicroUSD:                 reservedMicroUSD,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawableMicroUSD,
+		ReservationID:                    reservationID,
+		BaseReservedMicroUSD:             reservedMicroUSD,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawableMicroUSD,
+		ServiceReservation:               serviceReservation,
+		AllowedProviderSerials:           allowedProviderSerials,
+		SelfRouteOnly:                    policy.enabled,
+		PreferOwner:                      policy.prefer,
+		OwnerAccountID:                   policy.ownerAccountID,
+		FreeSelfRoute:                    policy.enabled,
+		AcceptedCh:                       make(chan struct{}, 1),
+		ChunkCh:                          make(chan string, chunkBufferSize),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                           timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
@@ -833,14 +849,7 @@ func (s *Server) dispatchOneProvider(
 	// reserveAdditionalForProvider may have added. The caller's
 	// refundReservation only covers the base reservation.
 	refundExtra := func() {
-		extra := pr.ReservedMicroUSD - reservedMicroUSD
-		if extra > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
-			pr.ReservedMicroUSD = reservedMicroUSD
-		}
+		s.refundProviderExtra(pr)
 	}
 
 	// E2E encryption
@@ -991,16 +1000,25 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	if pr == nil || pr.ReservedMicroUSD <= 0 {
 		return false
 	}
+	if pr.TerminalClaimed() {
+		return false
+	}
 	if reference == "" {
 		reference = "reservation_refund:" + pr.RequestID
 	}
 	start := time.Now()
 	finalized, err := pr.FinalizeReservation(func() error {
-		if pr.ServiceReservation {
-			s.releaseServiceReservation(pr, "refund")
-			return nil
+		if pr.ReservationID == "" {
+			pr.ReservationID = pr.RequestID
 		}
-		return s.store.Credit(pr.ConsumerKey, pr.ReservedMicroUSD, store.LedgerRefund, reference)
+		_, err := s.releaseInferenceReservationWithRetry(
+			pr.ConsumerKey,
+			pr.ReservedMicroUSD,
+			pr.ReservedWithdrawableMicroUSD,
+			reservationFinalizationKey(pr.ReservationID),
+			reference,
+		)
+		return err
 	})
 	if err != nil {
 		s.logger.Error("failed to refund reservation",
@@ -1016,10 +1034,8 @@ func (s *Server) refundReservedBalance(pr *registry.PendingRequest, reference st
 	}
 	tags := []string{"model:" + pr.Model, "mode:" + reservationMetricMode(pr.ServiceReservation)}
 	s.ddIncr("billing.reservation_refunds", tags)
-	if !pr.ServiceReservation {
-		s.ddIncr("billing.reservation_releases", append(tags, "reason:refund"))
-		s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
-	}
+	s.ddIncr("billing.reservation_releases", append(tags, "reason:refund"))
+	s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_refund"})
 	return true
 }
 
@@ -1115,15 +1131,24 @@ func (s *Server) reserveAdditionalForProvider(pr *registry.PendingRequest, provi
 	// fit, the request fails with 402. Checked BEFORE charging the top-up.
 	if pr.KeyID != "" && pr.KeyLimitMicroUSD != nil {
 		since := store.KeySpendWindowStart(pr.KeyLimitReset, time.Now())
-		if s.store.KeySpendSince(pr.KeyID, since)+required > *pr.KeyLimitMicroUSD {
+		spent := s.store.KeySpendSince(pr.KeyID, since)
+		if spent >= *pr.KeyLimitMicroUSD ||
+			required > *pr.KeyLimitMicroUSD-spent {
 			return pr.ReservedMicroUSD, store.ErrInsufficientBalance
 		}
 	}
 	extra := required - pr.ReservedMicroUSD
-	if err := s.ledger.Charge(pr.ConsumerKey, extra, "reserve:"+pr.ConsumerKey); err != nil {
+	if pr.ReservationID == "" {
+		pr.ReservationID = pr.RequestID
+	}
+	addedWithdrawable, _, err := s.reserveInferenceBalanceWithRetry(
+		pr.ConsumerKey, extra, reservationTopUpKey(pr),
+	)
+	if err != nil {
 		return pr.ReservedMicroUSD, err
 	}
 	pr.ReservedMicroUSD = required
+	pr.ReservedWithdrawableMicroUSD += addedWithdrawable
 	s.ddHistogram("billing.reserved_micro_usd", float64(required), []string{"model:" + pr.Model})
 	return required, nil
 }
@@ -1383,7 +1408,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 
 	// Pre-flight balance reservation + per-key spend cap (see
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservedMicroUSD, reservedWithdrawableMicroUSD, reservationID, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -1402,7 +1427,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// Refund reservation on early errors (before inference starts).
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKeyFromContext(r.Context()), model, reservedMicroUSD, serviceReservation)
+			s.releaseInitialReservation(
+				consumerKeyFromContext(r.Context()), model,
+				reservedMicroUSD, reservedWithdrawableMicroUSD,
+				reservationID, serviceReservation,
+			)
 		}
 	}
 
@@ -1486,16 +1515,15 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dispatch to a provider with speculative TTFT-aware dispatch. On the
-	// first attempt we dispatch to the best provider (primary), and start a
-	// speculative timer at 50% of the TTFT deadline. If the primary hasn't
-	// produced a first chunk by the speculative timer, a backup provider is
-	// dispatched in parallel and both race. If the primary fails outright
-	// (error before the speculative timer), up to maxDispatchAttempts
-	// sequential retries are performed without speculation.
+	// Dispatch to a provider with TTFT-aware dispatch. Paid and service-reserved
+	// requests are strictly sequential: start-stage speculation gave two attempt
+	// IDs independent settlement guards over one logical reservation. Free
+	// self-route (and billing-disabled development) may retain the legacy
+	// first-content race. Provider failures still receive bounded sequential
+	// pre-content retries.
 	//
 	// No HTTP response is written until a provider starts generating, so
-	// retries and speculative dispatch are invisible to the consumer.
+	// retries and any free-only speculative dispatch are invisible to the consumer.
 	// Dispatch is driven by the per-request state machine in dispatch.go: it
 	// picks a provider (or queues), runs the speculative TTFT-aware first-chunk
 	// wait with an invisible backup race + failover up to maxDispatchAttempts,
@@ -1550,31 +1578,34 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	d := &dispatchState{
-		s:                      s,
-		w:                      w,
-		r:                      r,
-		model:                  model,
-		publicModel:            publicModel,
-		rawBody:                rawBody,
-		consumerKey:            consumerKey,
-		consumerLocation:       consumerLocation,
-		reservedMicroUSD:       reservedMicroUSD,
-		tokenAdmission:         tokenAdmission,
-		serviceReservation:     serviceReservation,
-		estimatedPromptTokens:  estimatedPromptTokens,
-		requestedMaxTokens:     requestedMaxTokens,
-		requiresVision:         requiresVision,
-		hasTools:               hasTools,
-		isResponsesAPI:         isResponsesAPI,
-		stream:                 stream,
-		policy:                 policy,
-		allowedProviderSerials: allowedProviderSerials,
-		cacheAffinityKey:       cacheAffinityKey,
-		timing:                 timing,
-		deadline:               deadline,
-		speculativeAt:          time.Duration(float64(deadline) * speculativeTimerRatio),
-		modelMaxContext:        modelMaxContext,
-		refundReservation:      refundReservation,
+		s:                            s,
+		w:                            w,
+		r:                            r,
+		model:                        model,
+		publicModel:                  publicModel,
+		rawBody:                      rawBody,
+		consumerKey:                  consumerKey,
+		consumerLocation:             consumerLocation,
+		reservedMicroUSD:             reservedMicroUSD,
+		reservedWithdrawableMicroUSD: reservedWithdrawableMicroUSD,
+		reservationID:                reservationID,
+		tokenAdmission:               tokenAdmission,
+		serviceReservation:           serviceReservation,
+		estimatedPromptTokens:        estimatedPromptTokens,
+		requestedMaxTokens:           requestedMaxTokens,
+		requiresVision:               requiresVision,
+		hasTools:                     hasTools,
+		isResponsesAPI:               isResponsesAPI,
+		stream:                       stream,
+		policy:                       policy,
+		allowedProviderSerials:       allowedProviderSerials,
+		cacheAffinityKey:             cacheAffinityKey,
+		timing:                       timing,
+		deadline:                     deadline,
+		speculativeAt:                time.Duration(float64(deadline) * speculativeTimerRatio),
+		allowSpeculation:             s.billing == nil || policy.enabled,
+		modelMaxContext:              modelMaxContext,
+		refundReservation:            refundReservation,
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),
 	}
@@ -2976,12 +3007,19 @@ func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
 // draining=true for observability, but the status code stays 200.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, types.HealthResponse{
-		Status:      "ok",
-		Draining:    s.IsDraining(),
-		Providers:   s.registry.ProviderCount(),
-		Version:     BuildVersion,
-		BuildCommit: BuildCommit,
-		BuildDate:   BuildDate,
+		Status:           "ok",
+		Draining:         s.IsDraining(),
+		Providers:        s.registry.ProviderCount(),
+		Version:          BuildVersion,
+		BuildCommit:      BuildCommit,
+		BuildDate:        BuildDate,
+		ImageDigest:      os.Getenv("EIGENINFERENCE_IMAGE_DIGEST"),
+		ListenerIdentity: os.Getenv("EIGENINFERENCE_LISTENER_IDENTITY"),
+		CoordinatorOwnershipID: os.Getenv(
+			"EIGENINFERENCE_COORDINATOR_OWNERSHIP_ID",
+		),
+		CoordinatorAppID: os.Getenv("EIGENINFERENCE_PRIVY_APP_ID"),
+		EnvironmentID:    os.Getenv("EIGENINFERENCE_ENVIRONMENT_ID"),
 	})
 }
 
@@ -3295,7 +3333,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// reserveInferenceBalance). Self-route and a nil billing backend are free.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	reservedMicroUSD, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
+	reservedMicroUSD, reservedWithdrawableMicroUSD, reservationID, serviceReservation, reserveHandled := s.reserveInferenceBalance(w, r, parsed, balanceReservationParams{
 		model:                 model,
 		publicModel:           publicModel,
 		billingPromptTokens:   billingPromptTokens,
@@ -3311,7 +3349,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	refundReservation := func() {
 		if reservedMicroUSD > 0 {
-			s.releaseInitialReservation(consumerKey, model, reservedMicroUSD, serviceReservation)
+			s.releaseInitialReservation(
+				consumerKey, model,
+				reservedMicroUSD, reservedWithdrawableMicroUSD,
+				reservationID, serviceReservation,
+			)
 		}
 	}
 	timing.ReservedAt = time.Now()
@@ -3390,17 +3432,20 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequiresVision:         requiresVision,
 		CacheAffinityKey:       cacheAffinityKey,
 		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
-		Traits:               registry.RequestTraits{HasTools: hasTools},
-		RequestedMaxTokens:   requestedMaxTokens,
-		TokenAdmission:       tokenAdmission,
-		ReservedMicroUSD:     reservedMicroUSD,
-		BaseReservedMicroUSD: reservedMicroUSD,
-		ServiceReservation:   serviceReservation,
-		AcceptedCh:           make(chan struct{}, 1),
-		ChunkCh:              make(chan string, chunkBufferSize),
-		CompleteCh:           make(chan protocol.UsageInfo, 1),
-		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
-		Timing:               timing,
+		Traits:                           registry.RequestTraits{HasTools: hasTools},
+		RequestedMaxTokens:               requestedMaxTokens,
+		TokenAdmission:                   tokenAdmission,
+		ReservedMicroUSD:                 reservedMicroUSD,
+		ReservedWithdrawableMicroUSD:     reservedWithdrawableMicroUSD,
+		ReservationID:                    reservationID,
+		BaseReservedMicroUSD:             reservedMicroUSD,
+		BaseReservedWithdrawableMicroUSD: reservedWithdrawableMicroUSD,
+		ServiceReservation:               serviceReservation,
+		AcceptedCh:                       make(chan struct{}, 1),
+		ChunkCh:                          make(chan string, chunkBufferSize),
+		CompleteCh:                       make(chan protocol.UsageInfo, 1),
+		ErrorCh:                          make(chan protocol.InferenceErrorMessage, 1),
+		Timing:                           timing,
 	}
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
@@ -3421,14 +3466,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// the difference between pr.ReservedMicroUSD and the original
 	// reservedMicroUSD.
 	refundExtra := func() {
-		extra := pr.ReservedMicroUSD - reservedMicroUSD
-		if extra > 0 {
-			start := time.Now()
-			_ = s.store.Credit(consumerKey, extra, store.LedgerRefund, "reservation_extra_refund:"+requestID)
-			s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + model})
-			s.ddHistogram("store.credit.latency_ms", float64(time.Since(start).Milliseconds()), []string{"op:reservation_extra_refund"})
-			pr.ReservedMicroUSD = reservedMicroUSD
-		}
+		s.refundProviderExtra(pr)
 	}
 
 	var provider *registry.Provider
@@ -3981,7 +4019,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			s.holdForSettlement(stale)
 		} else {
 			refundPr := pr
-			saferun.Go(s.logger, "api.postTerminalSweep", func() {
+			s.submitFinancialFinalizer(func() {
 				s.refundReservedBalance(refundPr, "post_terminal_sweep:"+requestID)
 			})
 		}

@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    )\n                    SELECT\n                        jobs.version = $4\n                            AND jobs.state = $5\n                            AND jobs.owner_epoch = $2 AS current,\n                        balances.balance_micro_usd\n                            >= GREATEST(\n                                0::BIGINT,\n                                $6::BIGINT - jobs.reserved_total_micro_usd\n                            ) AS funded,\n                        NOT EXISTS (\n                            SELECT 1\n                            FROM rust_coord.provider_hard_untrust_epochs\n                                AS untrusted\n                            WHERE untrusted.provider_id = $7\n                              AND untrusted.hard_untrust_epoch >= $8\n                        ) AS provider_trusted,\n                        (\n                            jobs.api_key_reserved_micro_usd = 0\n                            OR EXISTS (\n                                SELECT 1\n                                FROM public.api_keys AS keys\n                                WHERE keys.id = jobs.api_key_id\n                                  AND keys.key_hash = jobs.consumer_key_hash\n                                  AND keys.owner_account_id = jobs.account_id\n                                  AND keys.active\n                                  AND (\n                                      keys.expires_at IS NULL\n                                      OR keys.expires_at > NOW()\n                                  )\n                                  AND (\n                                      keys.allowed_models IN ('', '[]')\n                                      OR EXISTS (\n                                          SELECT 1\n                                          FROM jsonb_array_elements_text(\n                                              keys.allowed_models::JSONB\n                                          ) AS allowed(model)\n                                          WHERE allowed.model IN ($9, $10)\n                                      )\n                                  )\n                                  AND (\n                                      NOT keys.self_route_only\n                                      OR EXISTS (\n                                          SELECT 1\n                                          FROM public.providers AS providers\n                                          WHERE providers.id = $7::TEXT\n                                            AND providers.account_id =\n                                                jobs.account_id\n                                            AND providers.connected\n                                            AND providers.trust_level = 'hardware'\n                                            AND providers.session_epoch = $8\n                                      )\n                                  )\n                            )\n                        ) AS api_key_controls_allowed,\n                        (\n                            jobs.api_key_reserved_micro_usd = 0\n                            OR EXISTS (\n                                SELECT 1\n                                FROM public.api_keys AS keys\n                                WHERE keys.id = jobs.api_key_id\n                                  AND keys.key_hash = jobs.consumer_key_hash\n                                  AND keys.owner_account_id = jobs.account_id\n                                  AND (\n                                      keys.limit_micro_usd IS NULL\n                                      OR (\n                                          COALESCE((\n                                              SELECT SUM(usage.cost_micro_usd)\n                                              FROM public.usage\n                                              WHERE usage.key_id = keys.id\n                                                AND usage.created_at >=\n                                                  CASE keys.limit_reset\n                                                    WHEN 'daily'\n                                                      THEN date_trunc('day', NOW())\n                                                    WHEN 'weekly'\n                                                      THEN date_trunc('week', NOW())\n                                                    WHEN 'monthly'\n                                                      THEN date_trunc('month', NOW())\n                                                    ELSE '-infinity'::TIMESTAMPTZ\n                                                  END\n                                          ), 0)::NUMERIC\n                                          + COALESCE((\n                                              SELECT SUM(\n                                                  controlled_jobs\n                                                      .api_key_reserved_micro_usd\n                                              )\n                                              FROM rust_coord.inference_jobs\n                                                  AS controlled_jobs\n                                              WHERE controlled_jobs.api_key_id =\n                                                    keys.id\n                                                AND controlled_jobs.account_id =\n                                                    jobs.account_id\n                                                AND controlled_jobs.job_id <>\n                                                    jobs.job_id\n                                                AND controlled_jobs.state NOT IN (\n                                                  'settled',\n                                                  'released',\n                                                  'settled_reviewed',\n                                                  'released_reviewed'\n                                                )\n                                          ), 0)::NUMERIC\n                                          + $6::NUMERIC\n                                          <= keys.limit_micro_usd::NUMERIC\n                                      )\n                                  )\n                            )\n                        ) AS api_key_spend_allowed\n                    FROM rust_coord.inference_jobs AS jobs\n                    JOIN public.balances AS balances\n                      ON balances.account_id = jobs.account_id\n                    WHERE jobs.job_id = $3\n                      AND EXISTS (SELECT 1 FROM authority)\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "funded",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "provider_trusted",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "api_key_controls_allowed",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "api_key_spend_allowed",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Int8",
+        "Uuid",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "06d9596d4c1dbe1486023e0cdd70d041258359e348adb17ec59d280e71150228"
+}

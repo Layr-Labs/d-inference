@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    )\n                    SELECT\n                        EXISTS (\n                            SELECT 1\n                            FROM public.balances\n                            WHERE account_id = $3\n                              AND balance_micro_usd >= $4\n                              AND withdrawable_micro_usd >= $4\n                              AND withdrawable_micro_usd\n                                  <= balance_micro_usd\n                        ) AS funded,\n                        EXISTS (\n                            SELECT 1\n                            FROM public.stripe_withdrawals\n                            WHERE id = $5\n                        ) AS withdrawal_conflict\n                    WHERE EXISTS (SELECT 1 FROM authority)\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "funded",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "withdrawal_conflict",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "3928b6902dcc8ad5aa4c046a15fb37cc4dfc5c5c8b412ec89d31562e23456a06"
+}

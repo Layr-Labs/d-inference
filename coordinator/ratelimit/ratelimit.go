@@ -327,19 +327,26 @@ func (l *Limiter) StartPruner(ctx context.Context, logger *slog.Logger, recoverF
 		if recoverFn != nil {
 			defer recoverFn()
 		}
-		ticker := time.NewTicker(l.cfg.PruneEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if dropped := l.Prune(); dropped > 0 && logger != nil {
-					logger.Debug("rate limiter pruned idle accounts", "dropped", dropped)
-				}
+		l.RunPruner(ctx, logger)
+	}()
+}
+
+// RunPruner runs idle-bucket pruning synchronously until ctx is cancelled.
+// Callers that supervise background work use this form so cancellation can be
+// joined before ownership handoff.
+func (l *Limiter) RunPruner(ctx context.Context, logger *slog.Logger) {
+	ticker := time.NewTicker(l.cfg.PruneEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if dropped := l.Prune(); dropped > 0 && logger != nil {
+				logger.Debug("rate limiter pruned idle accounts", "dropped", dropped)
 			}
 		}
-	}()
+	}
 }
 
 // Size returns the current number of tracked accounts. Intended for

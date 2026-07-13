@@ -1,0 +1,41 @@
+# Production build-only pipeline. It never SSHes, mutates VM metadata, or
+# deploys. A human later invokes deploy-prod.sh with the immutable SHA tag.
+timeout: 1800s
+
+substitutions:
+  _IMAGE: us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        exec docker build \
+          --tag="${_IMAGE}:$SHORT_SHA" \
+          --file=coordinator/Dockerfile \
+          --build-arg="BUILD_VERSION=$SHORT_SHA" \
+          --build-arg="BUILD_COMMIT=$COMMIT_SHA" \
+          --build-arg="BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          .
+
+  - id: image-smoke
+    name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - --rm
+      - --entrypoint=/usr/local/bin/coordinator-image-check
+      - '${_IMAGE}:$SHORT_SHA'
+      - smoke
+
+  - id: push-sha
+    name: gcr.io/cloud-builders/docker
+    args: [push, '${_IMAGE}:$SHORT_SHA']
+
+images:
+  - '${_IMAGE}:$SHORT_SHA'

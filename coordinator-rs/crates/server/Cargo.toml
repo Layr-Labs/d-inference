@@ -1,0 +1,66 @@
+[package]
+name = "darkbloom-coordinator-server"
+description = "Axum and SQLx composition root for the Darkbloom coordinator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+fault-injection = []
+pilot-load = ["dep:tokio-tungstenite"]
+
+[dependencies]
+axum = { version = "0.8.9", features = ["ws", "http2"] }
+base64 = "0.22.1"
+crypto_box = "0.9.1"
+darkbloom-coordinator-core = { version = "0.1.0", path = "../core" }
+darkbloom-coordinator-protocol = { version = "0.1.0", path = "../protocol" }
+futures-util = { version = "0.3.32", features = ["sink"] }
+hmac = "0.13.0"
+ipnet = "2.12.0"
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }
+opentelemetry = { version = "0.32.0", features = ["trace"] }
+opentelemetry-datadog = { version = "0.20.0", features = ["reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.32.1", features = ["trace", "rt-tokio"] }
+p256 = { version = "0.14.0", features = ["ecdsa", "pkcs8", "pem"] }
+rand = "0.10.2"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "stream", "rustls"] }
+secrecy = "0.10.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "json", "macros"] }
+subtle = "2.6.1"
+thiserror = "2.0.18"
+tokio = { version = "1.52.3", features = ["full"] }
+tokio-stream = "0.1.18"
+tokio-util = { version = "0.7.18", features = ["rt"] }
+tokio-tungstenite = { version = "0.29.0", optional = true }
+tracing = "0.1.44"
+tracing-opentelemetry = { version = "0.33.0", default-features = false }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
+url = "2.5.8"
+uuid = { version = "1.23.4", features = ["v4"] }
+zeroize = "1.9.0"
+
+[dev-dependencies]
+http-body-util = "0.1.3"
+tokio-tungstenite = "0.29.0"
+tower = { version = "0.5.3", features = ["util"] }
+url = "2.5.8"
+
+[[test]]
+name = "fault_injection"
+path = "tests/fault_injection.rs"
+required-features = ["fault-injection"]
+
+[[bin]]
+name = "darkbloom-pilot-peer"
+path = "src/bin/pilot-peer.rs"
+required-features = ["pilot-load"]
+
+[lints]
+workspace = true

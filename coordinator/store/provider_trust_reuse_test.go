@@ -15,6 +15,7 @@ func providerTrustReuseRoundTrip(t *testing.T, st Store) {
 	ctx := context.Background()
 	// Truncate to avoid sub-second/tz round-trip noise across backends.
 	t0 := time.Now().UTC().Truncate(time.Second)
+	securityInfoAt := t0
 
 	// Empty SE key is a no-op (defensive — never persist an unkeyed row).
 	if err := st.UpsertProviderTrustReuse(ctx, ProviderTrustReuse{TrustLevel: "hardware", VerifiedAt: t0}); err != nil {
@@ -25,19 +26,36 @@ func providerTrustReuseRoundTrip(t *testing.T, st Store) {
 	}
 
 	recA := ProviderTrustReuse{
-		SEPubKey:       "se-A",
-		Serial:         "SER-A",
-		TrustLevel:     "hardware",
-		BinaryHash:     "aaaa",
-		SIPEnabled:     true,
-		SecureBootFull: true,
-		MDAUDID:        "UDID-A",
-		VerifiedAt:     t0,
+		SEPubKey:         "se-A",
+		ProviderID:       "provider-A",
+		Serial:           "SER-A",
+		TrustLevel:       "hardware",
+		BinaryHash:       "aaaa",
+		SIPEnabled:       true,
+		SecureBootFull:   true,
+		MDAUDID:          "UDID-A",
+		HardUntrustEpoch: 2,
+		Enrolled:         true,
+		SecurityInfoAt:   &securityInfoAt,
+		VerifiedAt:       t0,
 	}
 	if err := st.UpsertProviderTrustReuse(ctx, recA); err != nil {
 		t.Fatalf("upsert A: %v", err)
 	}
-	if err := st.UpsertProviderTrustReuse(ctx, ProviderTrustReuse{SEPubKey: "se-B", Serial: "SER-B", TrustLevel: "hardware", VerifiedAt: t0}); err != nil {
+	if err := st.UpsertProviderTrustReuse(ctx, ProviderTrustReuse{
+		SEPubKey:         "se-B",
+		ProviderID:       "provider-B",
+		Serial:           "SER-B",
+		TrustLevel:       "hardware",
+		BinaryHash:       "bbbb",
+		SIPEnabled:       true,
+		SecureBootFull:   true,
+		MDAUDID:          "UDID-B",
+		HardUntrustEpoch: 1,
+		Enrolled:         true,
+		SecurityInfoAt:   &securityInfoAt,
+		VerifiedAt:       t0,
+	}); err != nil {
 		t.Fatalf("upsert B: %v", err)
 	}
 
@@ -53,16 +71,22 @@ func providerTrustReuseRoundTrip(t *testing.T, st Store) {
 		byKey[r.SEPubKey] = r
 	}
 	got := byKey["se-A"]
-	if got.Serial != "SER-A" || got.TrustLevel != "hardware" || got.BinaryHash != "aaaa" ||
-		!got.SIPEnabled || !got.SecureBootFull || got.MDAUDID != "UDID-A" || !got.VerifiedAt.Equal(t0) {
+	if got.ProviderID != "provider-A" || got.Serial != "SER-A" ||
+		got.TrustLevel != "hardware" || got.BinaryHash != "aaaa" ||
+		!got.SIPEnabled || !got.SecureBootFull || got.MDAUDID != "UDID-A" ||
+		got.HardUntrustEpoch != 2 || !got.Enrolled || got.SecurityInfoAt == nil ||
+		!got.SecurityInfoAt.Equal(securityInfoAt) || !got.VerifiedAt.Equal(t0) {
 		t.Fatalf("se-A round-trip mismatch: %+v", got)
 	}
 
 	// Upsert the same key with new values overwrites (no duplicate).
 	t1 := t0.Add(10 * time.Minute)
+	securityInfoAtUpdated := t1
 	if err := st.UpsertProviderTrustReuse(ctx, ProviderTrustReuse{
-		SEPubKey: "se-A", Serial: "SER-A2", TrustLevel: "hardware", BinaryHash: "bbbb",
-		SIPEnabled: true, SecureBootFull: false, MDAUDID: "UDID-A2", VerifiedAt: t1,
+		SEPubKey: "se-A", ProviderID: "provider-A", Serial: "SER-A2",
+		TrustLevel: "hardware", BinaryHash: "bbbb", SIPEnabled: true,
+		SecureBootFull: true, MDAUDID: "UDID-A2", HardUntrustEpoch: 3,
+		Enrolled: true, SecurityInfoAt: &securityInfoAtUpdated, VerifiedAt: t1,
 	}); err != nil {
 		t.Fatalf("re-upsert A: %v", err)
 	}
@@ -74,7 +98,12 @@ func providerTrustReuseRoundTrip(t *testing.T, st Store) {
 		t.Fatalf("re-upsert must not duplicate: len = %d, want 2", len(rows))
 	}
 	for _, r := range rows {
-		if r.SEPubKey == "se-A" && (r.Serial != "SER-A2" || r.BinaryHash != "bbbb" || r.SecureBootFull || r.MDAUDID != "UDID-A2" || !r.VerifiedAt.Equal(t1)) {
+		if r.SEPubKey == "se-A" &&
+			(r.ProviderID != "provider-A" || r.Serial != "SER-A2" ||
+				r.BinaryHash != "bbbb" || !r.SecureBootFull ||
+				r.MDAUDID != "UDID-A2" || r.HardUntrustEpoch != 3 ||
+				!r.Enrolled || r.SecurityInfoAt == nil ||
+				!r.SecurityInfoAt.Equal(securityInfoAtUpdated) || !r.VerifiedAt.Equal(t1)) {
 			t.Fatalf("se-A overwrite mismatch: %+v", r)
 		}
 	}

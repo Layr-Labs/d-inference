@@ -30,6 +30,14 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 // treating every error as not-found.
 var ErrNotFound = errors.New("not found")
 
+var (
+	ErrStripeDepositMismatch      = errors.New("Stripe deposit does not match its local billing order")
+	ErrStripeDepositConflict      = errors.New("Stripe deposit event identity conflict")
+	ErrFinancialOperationConflict = errors.New("financial operation key reused with different parameters")
+	ErrCommitOutcomeUnknown       = errors.New("database commit outcome unknown")
+	ErrOwnershipLost              = errors.New("coordinator database ownership lost")
+)
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -87,6 +95,45 @@ type UsageRecord struct {
 	RequestID        string            `json:"request_id,omitempty"`
 	CostMicroUSD     int64             `json:"cost_micro_usd,omitempty"`
 	CreatedAt        time.Time         `json:"created_at,omitempty"`
+}
+
+// InferenceSettlement contains the complete frozen financial projection for
+// one funded Go-coordinator request. Prompt/response content is never stored.
+type InferenceSettlement struct {
+	ReservationID                string
+	RequestID                    string
+	ConsumerAccountID            string
+	ReservedMicroUSD             int64
+	ReservedWithdrawableMicroUSD int64
+	ReservationPreDebited        bool
+	CostMicroUSD                 int64
+	ProviderEarning              *ProviderEarning
+	PlatformFeeMicroUSD          int64
+	ReferrerAccountID            string
+	ReferralRewardMicroUSD       int64
+	Usage                        *UsageRecord
+}
+
+type InferenceSettlementDisposition string
+
+const (
+	InferenceSettlementApplied         InferenceSettlementDisposition = "applied"
+	InferenceSettlementReplayed        InferenceSettlementDisposition = "replayed"
+	InferenceSettlementAlreadyReleased InferenceSettlementDisposition = "already_released"
+	InferenceSettlementReviewPending   InferenceSettlementDisposition = "review_pending"
+)
+
+func (d InferenceSettlementDisposition) IsSettled() bool {
+	return d == InferenceSettlementApplied || d == InferenceSettlementReplayed
+}
+
+type InferenceCompletionIntent struct {
+	ReservationID    string
+	RequestID        string
+	ProviderID       string
+	PromptTokens     int64
+	CompletionTokens int64
+	ReasoningTokens  int64
 }
 
 // maxTelemetryReadRows is the hard upper bound on rows returned by the routing
@@ -747,11 +794,14 @@ type DeviceCode struct {
 // ProviderToken is a long-lived auth token linking a provider machine to an account.
 // Created when a device code is approved; used by the provider on every WebSocket connect.
 type ProviderToken struct {
-	TokenHash string    `json:"token_hash"` // SHA-256 of the raw token
-	AccountID string    `json:"account_id"` // the account this provider is linked to
-	Label     string    `json:"label"`      // human-readable label (e.g. hostname)
-	Active    bool      `json:"active"`
-	CreatedAt time.Time `json:"created_at"`
+	TokenHash  string     `json:"token_hash"`  // SHA-256 of the raw token
+	AccountID  string     `json:"account_id"`  // the account this provider is linked to
+	ProviderID string     `json:"provider_id"` // stable provider identity when assigned
+	Label      string     `json:"label"`       // human-readable label (e.g. hostname)
+	Active     bool       `json:"active"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 // InviteCode represents a coordinator-generated invite code that grants credits.
@@ -827,15 +877,34 @@ type ProviderPayout struct {
 
 // BillingSession tracks an in-progress payment via any method (Stripe).
 type BillingSession struct {
-	ID             string     `json:"id"`
-	AccountID      string     `json:"account_id"`
-	PaymentMethod  string     `json:"payment_method"` // "stripe"
-	AmountMicroUSD int64      `json:"amount_micro_usd"`
-	ExternalID     string     `json:"external_id"`   // Stripe session ID, tx hash, etc.
-	Status         string     `json:"status"`        // "pending", "completed", "expired"
-	ReferralCode   string     `json:"referral_code"` // optional
-	CreatedAt      time.Time  `json:"created_at"`
-	CompletedAt    *time.Time `json:"completed_at,omitempty"`
+	ID               string     `json:"id"`
+	AccountID        string     `json:"account_id"`
+	PaymentMethod    string     `json:"payment_method"` // "stripe"
+	Currency         string     `json:"currency"`       // lowercase ISO currency
+	AmountMicroUSD   int64      `json:"amount_micro_usd"`
+	ExternalID       string     `json:"external_id"` // Stripe session ID, tx hash, etc.
+	ProcessedEventID string     `json:"processed_event_id,omitempty"`
+	Status           string     `json:"status"`        // "pending", "completed", "expired"
+	ReferralCode     string     `json:"referral_code"` // optional
+	CreatedAt        time.Time  `json:"created_at"`
+	CompletedAt      *time.Time `json:"completed_at,omitempty"`
+}
+
+// StripeDepositResult is the durable disposition of a verified Stripe event.
+// Applied is true only for the transaction that moved money.
+type StripeDepositResult struct {
+	Session BillingSession
+	Applied bool
+}
+
+type StripeDepositEvent struct {
+	EventID           string
+	CheckoutSessionID string
+	BillingSessionID  string
+	AmountMicroUSD    int64
+	Currency          string
+	Status            string
+	Reason            string
 }
 
 // ProviderRecord is the persistent representation of a provider for storage.
@@ -864,6 +933,7 @@ type ProviderRecord struct {
 	LastChallengeVerified      *time.Time      `json:"last_challenge_verified,omitempty"`
 	FailedChallenges           int             `json:"failed_challenges"`
 	AccountID                  string          `json:"account_id,omitempty"`
+	TokenHash                  string          `json:"-"` // device credential linkage; never exposed
 	LifetimeRequestsServed     int64           `json:"lifetime_requests_served"`
 	LifetimeTokensGenerated    int64           `json:"lifetime_tokens_generated"`
 	LastSessionRequestsServed  int64           `json:"last_session_requests_served"`
@@ -963,12 +1033,16 @@ type CodeAttestation struct {
 // freshness window, so a persisted row can only ever let the coordinator skip a
 // redundant live MDM round-trip — never extend or fabricate trust.
 type ProviderTrustReuse struct {
-	SEPubKey       string    `json:"se_pubkey"`        // base64 Secure Enclave P-256 public key (bound at registration)
-	Serial         string    `json:"serial"`           // device serial number proven by the SE attestation at last verification
-	TrustLevel     string    `json:"trust_level"`      // trust level earned at last verification (only "hardware" is reusable)
-	BinaryHash     string    `json:"binary_hash"`      // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
-	SIPEnabled     bool      `json:"sip_enabled"`      // SIP posture confirmed by MDM at last verification
-	SecureBootFull bool      `json:"secure_boot_full"` // Secure Boot (full) confirmed by MDM at last verification
-	MDAUDID        string    `json:"mda_udid"`         // MDM/MDA device UDID at last verification (diagnostics)
-	VerifiedAt     time.Time `json:"verified_at"`      // instant of the successful live MDM verification
+	SEPubKey         string     `json:"se_pubkey"`          // base64 Secure Enclave P-256 public key (bound at registration)
+	ProviderID       string     `json:"provider_id"`        // durable provider identity that earned this proof
+	Serial           string     `json:"serial"`             // device serial number proven by the SE attestation at last verification
+	TrustLevel       string     `json:"trust_level"`        // trust level earned at last verification (only "hardware" is reusable)
+	BinaryHash       string     `json:"binary_hash"`        // provider binary SHA-256 at last verification; reuse requires the fresh signed challenge to match
+	SIPEnabled       bool       `json:"sip_enabled"`        // SIP posture confirmed by MDM at last verification
+	SecureBootFull   bool       `json:"secure_boot_full"`   // Secure Boot (full) confirmed by MDM at last verification
+	MDAUDID          string     `json:"mda_udid"`           // MDM/MDA device UDID at last verification (diagnostics)
+	HardUntrustEpoch int64      `json:"hard_untrust_epoch"` // hard-untrust epoch observed when the proof was recorded
+	Enrolled         bool       `json:"enrolled"`           // MDM enrollment was live when SecurityInfo was accepted
+	SecurityInfoAt   *time.Time `json:"security_info_at"`   // instant of the live MDM SecurityInfo proof
+	VerifiedAt       time.Time  `json:"verified_at"`        // instant of the successful live MDM verification
 }

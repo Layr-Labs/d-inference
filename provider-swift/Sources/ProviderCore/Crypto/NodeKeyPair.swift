@@ -96,6 +96,34 @@ public struct NodeKeyPair: Sendable {
         publicKeyData
     }
 
+    /// Seal one protocol-v2 header-bound frame without exposing the process
+    /// X25519 secret outside this type.
+    public func sealProtocolV2Frame(
+        recipientPublicKey: Data,
+        header: V2BinaryFrameHeader,
+        plaintext: Data
+    ) throws -> Data {
+        try V2FrameCrypto.seal(
+            senderPrivateKey: secretKeyBytes,
+            recipientPublicKey: recipientPublicKey,
+            header: header,
+            plaintext: plaintext
+        )
+    }
+
+    /// Open one protocol-v2 header-bound frame without exposing this key
+    /// pair's X25519 secret. Used by consumers and real-wire integration tests.
+    public func openProtocolV2Frame(
+        senderPublicKey: Data,
+        wire: Data
+    ) throws -> V2OpenedFrame {
+        try V2FrameCrypto.open(
+            recipientPrivateKey: secretKeyBytes,
+            senderPublicKey: senderPublicKey,
+            wire: wire
+        )
+    }
+
     // MARK: - Decrypt
 
     /// Decrypt a NaCl box message.
@@ -116,11 +144,13 @@ public struct NodeKeyPair: Sendable {
         // swift-sodium's open(nonceAndAuthenticatedCipherText:...) expects
         // the combined format: nonce (24) || tag (16) || encrypted_data,
         // which is exactly the wire format we receive.
-        guard let plaintext = sodium.box.open(
+        guard
+            let plaintext = sodium.box.open(
             nonceAndAuthenticatedCipherText: Bytes(ciphertext),
             senderPublicKey: Bytes(senderPublicKey),
             recipientSecretKey: Bytes(secretKeyBytes)
-        ) else {
+            )
+        else {
             throw CryptoError.decryptionFailed
         }
 
@@ -145,11 +175,13 @@ public struct NodeKeyPair: Sendable {
         // to the authenticated ciphertext, producing the combined format:
         // nonce (24) || tag (16) || encrypted_data.
         // Use the Bytes? overload (combined format), not the tuple overload.
-        guard let sealed: Bytes = sodium.box.seal(
+        guard
+            let sealed: Bytes = sodium.box.seal(
             message: Bytes(plaintext),
             recipientPublicKey: Bytes(recipientPublicKey),
             senderSecretKey: Bytes(secretKeyBytes)
-        ) else {
+            )
+        else {
             throw CryptoError.encryptionFailed
         }
 
@@ -168,10 +200,12 @@ public struct NodeKeyPair: Sendable {
         guard recipientPublicKey.count == 32 else {
             throw CryptoError.invalidPublicKeyLength(got: recipientPublicKey.count)
         }
-        guard let key = sodium.box.beforenm(
+        guard
+            let key = sodium.box.beforenm(
             recipientPublicKey: Bytes(recipientPublicKey),
             senderSecretKey: Bytes(secretKeyBytes)
-        ) else {
+            )
+        else {
             throw CryptoError.encryptionFailed
         }
         return Data(key)
@@ -182,10 +216,12 @@ public struct NodeKeyPair: Sendable {
     /// Output format is identical to ``encrypt(recipientPublicKey:plaintext:)``:
     /// `nonce (24 bytes) || authenticated_ciphertext`.
     public func encryptWithSharedKey(_ sharedKey: Data, plaintext: Data) throws -> Data {
-        guard let sealed: Bytes = sodium.box.seal(
+        guard
+            let sealed: Bytes = sodium.box.seal(
             message: Bytes(plaintext),
             beforenm: Bytes(sharedKey)
-        ) else {
+            )
+        else {
             throw CryptoError.encryptionFailed
         }
         return Data(sealed)
@@ -209,7 +245,8 @@ public struct NodeKeyPair: Sendable {
     /// Decrypt an `EncryptedPayload` (the wire type used in WebSocket messages).
     public func decryptPayload(_ payload: EncryptedPayload) throws -> Data {
         guard let ephemeralKeyData = Data(base64Encoded: payload.ephemeralPublicKey),
-              ephemeralKeyData.count == 32 else {
+            ephemeralKeyData.count == 32
+        else {
             throw CryptoError.invalidPublicKeyLength(
                 got: Data(base64Encoded: payload.ephemeralPublicKey)?.count ?? 0
             )

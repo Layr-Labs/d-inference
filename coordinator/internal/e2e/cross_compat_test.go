@@ -35,7 +35,7 @@ func TestCrossLanguageEncryption(t *testing.T) {
 
 	// Build the Rust decryptor (release mode for speed).
 	t.Log("Building Rust decryptor…")
-	build := exec.Command("cargo", "build", "--release")
+	build := exec.Command("cargo", "build", "--release", "--locked")
 	build.Dir = crateDir
 	build.Env = append(os.Environ(), "CARGO_TERM_COLOR=never")
 	if out, err := build.CombinedOutput(); err != nil {

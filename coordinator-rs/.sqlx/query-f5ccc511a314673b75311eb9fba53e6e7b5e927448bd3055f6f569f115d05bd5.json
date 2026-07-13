@@ -1,0 +1,55 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    WITH authority AS MATERIALIZED (\n                        SELECT 1\n                        FROM public.coordinator_ownership\n                        WHERE singleton = TRUE AND owner_id = $1 AND epoch = $2\n                    ),\n                    failure_tombstone AS (\n                        INSERT INTO public.stripe_sweep_failures (\n                            payout_id,\n                            failure_reason\n                        )\n                        SELECT $8, $9\n                        FROM authority\n                        WHERE $4 = 'paid'\n                          AND $5 = 'transferred'\n                          AND $8 <> ''\n                          AND $9 <> ''\n                        ON CONFLICT (payout_id) DO UPDATE SET\n                            failure_reason = EXCLUDED.failure_reason\n                        RETURNING payout_id\n                    ),\n                    withdrawal_update AS (\n                        UPDATE public.stripe_withdrawals AS withdrawals\n                        SET\n                            status = $5,\n                            transfer_id = CASE\n                                WHEN $6 <> '' THEN $6 ELSE withdrawals.transfer_id\n                            END,\n                            payout_id = CASE\n                                WHEN $7 <> '' THEN $7 ELSE withdrawals.payout_id\n                            END,\n                            sweep_payout_id = CASE\n                                WHEN $5 = 'transferred' AND $4 = 'paid'\n                                THEN withdrawals.sweep_payout_id\n                                WHEN $5 = 'transferred' THEN ''\n                                WHEN $8 <> '' THEN $8\n                                ELSE withdrawals.sweep_payout_id\n                            END,\n                            failure_reason = CASE\n                                WHEN $9 <> '' THEN $9 ELSE withdrawals.failure_reason\n                            END,\n                            updated_at = NOW()\n                        FROM authority\n                        LEFT JOIN (\n                            SELECT COUNT(*) AS recorded\n                            FROM failure_tombstone\n                        ) AS failure_record ON TRUE\n                        WHERE withdrawals.id = $3\n                          AND withdrawals.status = $4\n                          AND withdrawals.refunded = FALSE\n                          AND (\n                              $6 = ''\n                              OR withdrawals.transfer_id = ''\n                              OR withdrawals.transfer_id = $6\n                          )\n                          AND (\n                              $7 = ''\n                              OR withdrawals.payout_id = ''\n                              OR withdrawals.payout_id = $7\n                          )\n                          AND (\n                              $8 = ''\n                              OR $4 <> 'paid'\n                              OR withdrawals.sweep_payout_id = $8\n                          )\n                          AND (\n                              $5 <> 'paid'\n                              OR $8 = ''\n                              OR withdrawals.sweep_payout_id <> $8\n                          )\n                          AND (\n                              $5 <> 'paid'\n                              OR $8 = ''\n                              OR NOT EXISTS (\n                                  SELECT 1\n                                  FROM public.stripe_sweep_failures AS failures\n                                  WHERE failures.payout_id = $8\n                              )\n                          )\n                        RETURNING withdrawals.id, withdrawals.account_id\n                    ),\n                    operation_insert AS (\n                        INSERT INTO rust_coord.financial_operations (\n                            operation_id,\n                            operation_key,\n                            operation_digest,\n                            kind,\n                            status,\n                            account_id,\n                            amount_total_micro_usd,\n                            amount_withdrawable_micro_usd,\n                            result,\n                            owner_epoch,\n                            version,\n                            completed_at\n                        )\n                        SELECT\n                            $10,\n                            $11,\n                            $12,\n                            'withdrawal_complete',\n                            'applied',\n                            withdrawal_update.account_id,\n                            0,\n                            0,\n                            jsonb_build_object(\n                                'withdrawal_id', $3,\n                                'status', $5,\n                                'refunded', FALSE,\n                                'manual_review', ($5 = 'review_pending')\n                            ),\n                            $2,\n                            2,\n                            NOW()\n                        FROM withdrawal_update\n                        RETURNING operation_id\n                    )\n                    SELECT\n                        $3::TEXT AS withdrawal_id,\n                        $5::TEXT AS status,\n                        FALSE AS refunded,\n                        ($5 = 'review_pending') AS manual_review\n                    FROM operation_insert\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "withdrawal_id",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "status",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "refunded",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "manual_review",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Uuid",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f5ccc511a314673b75311eb9fba53e6e7b5e927448bd3055f6f569f115d05bd5"
+}

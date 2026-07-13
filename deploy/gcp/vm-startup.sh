@@ -1,150 +1,137 @@
 #!/bin/bash
-# Startup script for the dev coordinator GCE VM (Ubuntu 24.04 LTS + Docker).
-# Runs on every boot via the instance's `startup-script` metadata. Idempotent.
-#
-# Responsibilities on first boot:
-#   1. Install Docker, gcloud, cloud-sql-proxy
-#   2. Format + mount the attached persistent data disk at /mnt/disks/userdata
-#      (same path as EigenCloud prod, so the container's start.sh works unchanged)
-#   3. Install a systemd unit for cloud-sql-proxy (Cloud SQL on 127.0.0.1:5432)
-#   4. Install a systemd unit for the coordinator container
-#   5. Fetch secrets from Secret Manager, write /etc/d-inference/env
-#   6. Install Datadog Agent (metrics + traces + journald log collection)
-#
-# On subsequent boots:
-#   - Re-fetch secrets (picks up rotations)
-#   - Re-pull latest container image
-#   - Restart systemd units
-#
-# Redeploys from Cloud Build do NOT go through this script — they SSH in and
-# `systemctl restart d-inference-coordinator`, which re-pulls the pinned image.
-
+# Idempotent GCE startup for dev and prod coordinator VMs. Serving migrations
+# are deliberately absent: every schema change is an external deploy step.
 set -euo pipefail
 exec > >(tee /var/log/d-inference-startup.log) 2>&1
-echo "==> Startup at $(date -Iseconds)"
 
-REGISTRY_HOST="us-central1-docker.pkg.dev"
-IMAGE_REPO="${REGISTRY_HOST}/sepolia-ai/coordinator/coordinator"
+readonly META_ATTR="http://metadata.google.internal/computeMetadata/v1/instance/attributes"
+readonly DATA_MOUNT=/mnt/disks/userdata
+readonly ENV_DIR=/etc/d-inference
 
-DATA_DEV="/dev/disk/by-id/google-d-inference-dev-data"
-DATA_MOUNT="/mnt/disks/userdata"
-ENV_DIR="/etc/d-inference"
-ENV_FILE="${ENV_DIR}/env"
+metadata_value() {
+  curl -fsSL -H "Metadata-Flavor: Google" "$META_ATTR/$1"
+}
 
-# ---- 1. Packages ----
-# Install gcloud + Docker + cloud-sql-proxy FIRST. Nothing later in this script
-# can call `gcloud` before this block completes (Ubuntu 24.04 ships no gcloud
-# by default — it would fail silently and break secret fetching).
+metadata_value_optional() {
+  metadata_value "$1" 2>/dev/null || true
+}
+
+install_metadata_file() {
+  local attribute=$1
+  local destination=$2
+  local mode=$3
+  local temporary
+  temporary=$(mktemp)
+  metadata_value "$attribute" >"$temporary"
+  install -m "$mode" "$temporary" "$destination"
+  rm -f "$temporary"
+}
+
+ENVIRONMENT=$(metadata_value_optional DINF_ENVIRONMENT)
+ENVIRONMENT=${ENVIRONMENT:-dev}
+[[ "$ENVIRONMENT" == "dev" || "$ENVIRONMENT" == "prod" ]] || {
+  echo "invalid DINF_ENVIRONMENT metadata" >&2
+  exit 1
+}
+PROJECT=$(metadata_value DINF_GCP_PROJECT)
+[[ "$PROJECT" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]] || {
+  echo "invalid DINF_GCP_PROJECT metadata" >&2
+  exit 1
+}
+readonly PROJECT
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y ca-certificates curl gnupg jq apt-transport-https
+apt-get install -y ca-certificates curl gnupg jq apt-transport-https util-linux
 
 if ! command -v gcloud >/dev/null; then
-  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | \
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg |
     gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
   echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" \
-    > /etc/apt/sources.list.d/google-cloud-sdk.list
+    >/etc/apt/sources.list.d/google-cloud-sdk.list
   apt-get update
   apt-get install -y google-cloud-cli
 fi
 
 if ! command -v docker >/dev/null; then
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg | \
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg |
     gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" \
-    > /etc/apt/sources.list.d/docker.list
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
+    >/etc/apt/sources.list.d/docker.list
   apt-get update
   apt-get install -y docker-ce docker-ce-cli containerd.io
 fi
 
-if ! command -v cloud-sql-proxy >/dev/null; then
-  curl -fsSL -o /usr/local/bin/cloud-sql-proxy \
-    https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.11.0/cloud-sql-proxy.linux.amd64
-  chmod +x /usr/local/bin/cloud-sql-proxy
-fi
-
-# Caddy for TLS termination + reverse proxy to the coordinator on :8080.
-# In prod, EigenCloud injects Caddy next to the container; on our GCE VM we
-# run it as a host-level systemd service. Auto-TLS via Let's Encrypt
-# HTTP-01 challenge (port 80 allowed by firewall).
 if ! command -v caddy >/dev/null; then
-  curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | \
+  curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key |
     gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
   echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
-    > /etc/apt/sources.list.d/caddy-stable.list
+    >/etc/apt/sources.list.d/caddy-stable.list
   apt-get update
   apt-get install -y caddy
 fi
 
-# Now it is safe to invoke gcloud.
-SQL_CONN=$(gcloud sql instances describe d-inference-dev-db --format='value(connectionName)')
-if [ -z "$SQL_CONN" ]; then
-  echo "!! failed to resolve Cloud SQL connection name — aborting"
-  exit 1
-fi
-
-# ---- 2. Persistent data disk ----
 mkdir -p "$DATA_MOUNT"
-if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
-  mkfs.ext4 -F "$DATA_DEV"
+if ! mountpoint -q "$DATA_MOUNT"; then
+  DATA_DEV=$(metadata_value_optional DINF_DATA_DEVICE)
+  if [[ -z "$DATA_DEV" && "$ENVIRONMENT" == "dev" ]]; then
+    DATA_DEV=/dev/disk/by-id/google-d-inference-dev-data
+  fi
+  [[ -n "$DATA_DEV" && -b "$DATA_DEV" ]] || {
+    echo "persistent data device metadata is required before startup" >&2
+    exit 1
+  }
+  if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+    mkfs.ext4 -F "$DATA_DEV"
+  fi
+  mount -o noatime,discard "$DATA_DEV" "$DATA_MOUNT"
+  grep -qF "$DATA_DEV $DATA_MOUNT " /etc/fstab ||
+    echo "$DATA_DEV $DATA_MOUNT ext4 noatime,discard 0 2" >>/etc/fstab
 fi
-mountpoint -q "$DATA_MOUNT" || mount -o noatime,discard "$DATA_DEV" "$DATA_MOUNT"
-grep -q "$DATA_DEV" /etc/fstab || \
-  echo "$DATA_DEV $DATA_MOUNT ext4 noatime,discard 0 2" >> /etc/fstab
 
-# ---- 3. Fetch secrets ----
-mkdir -p "$ENV_DIR"
-chmod 700 "$ENV_DIR"
+install -d -m 0700 "$ENV_DIR"
+install -d -m 0755 /opt/d-inference/deploy
+install -d -m 0755 /usr/share/doc/d-inference
+install_metadata_file dinf-run-coordinator /opt/d-inference/deploy/run-coordinator.sh 0755
+install_metadata_file dinf-run-recovery /opt/d-inference/deploy/run-recovery.sh 0755
+install_metadata_file dinf-coordinator-unit \
+  /opt/d-inference/deploy/d-inference-coordinator.service 0644
+install_metadata_file dinf-recovery-unit \
+  /opt/d-inference/deploy/d-inference-recovery.service 0644
+install_metadata_file dinf-offline-recovery-doc \
+  /usr/share/doc/d-inference/offline-recovery.md 0644
+install_metadata_file dinf-configure-caddy \
+  /usr/local/bin/d-inference-configure-caddy.sh 0755
+install_metadata_file dinf-refresh-env /usr/local/bin/d-inference-refresh-env.sh 0755
 
-fetch() {
-  gcloud --quiet secrets versions access latest --secret="$1" 2>/dev/null || true
-}
+install -m 0755 /opt/d-inference/deploy/run-coordinator.sh /usr/local/bin/d-inference-run.sh
+install -m 0755 /opt/d-inference/deploy/run-recovery.sh /usr/local/bin/d-inference-recovery-run.sh
+install -m 0644 /opt/d-inference/deploy/d-inference-coordinator.service \
+  /etc/systemd/system/d-inference-coordinator.service
+install -m 0644 /opt/d-inference/deploy/d-inference-recovery.service \
+  /etc/systemd/system/d-inference-recovery.service
 
-cat > "$ENV_FILE" <<EOF
-EIGENINFERENCE_PORT=8080
-EIGENINFERENCE_MIN_TRUST=hardware
-EIGENINFERENCE_BILLING_MOCK=false
-EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
-EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
-CORS_ORIGIN=https://console.dev.darkbloom.xyz
-EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
-EIGENINFERENCE_SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
-EIGENINFERENCE_SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
-EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
-EIGENINFERENCE_REFERRAL_SHARE_PCT=15
-DOMAIN=api.dev.darkbloom.xyz
-APP_PORT=8080
-EIGENINFERENCE_MDM_URL=https://localhost:9002
-EIGENINFERENCE_ADMIN_KEY=$(fetch eigeninference-admin-key)
-EIGENINFERENCE_RELEASE_KEY=$(fetch eigeninference-release-key)
-EIGENINFERENCE_PRIVY_APP_ID=$(fetch eigeninference-privy-app-id)
-EIGENINFERENCE_PRIVY_APP_SECRET=$(fetch eigeninference-privy-app-secret)
-EIGENINFERENCE_PRIVY_VERIFICATION_KEY=$(fetch eigeninference-privy-verification-key)
-EIGENINFERENCE_DATABASE_URL=$(fetch eigeninference-database-url)
-MNEMONIC=$(fetch eigeninference-solana-mnemonic)
-MICROMDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
-EIGENINFERENCE_MDM_API_KEY=$(fetch eigeninference-micromdm-api-key)
-MDM_PUSH_P12_B64=$(fetch eigeninference-mdm-push-p12-b64)
-PROFILE_SIGNING_P12_B64=$(fetch eigeninference-profile-signing-p12-b64)
-PROFILE_SIGNING_P12_PASSWORD=$(fetch eigeninference-profile-signing-p12-password)
-EIGENINFERENCE_STRIPE_SECRET_KEY=$(fetch eigeninference-stripe-secret-key)
-EIGENINFERENCE_STRIPE_WEBHOOK_SECRET=$(fetch eigeninference-stripe-webhook-secret)
-EIGENINFERENCE_STRIPE_SUCCESS_URL=$(fetch eigeninference-stripe-success-url)
-EIGENINFERENCE_STRIPE_CANCEL_URL=$(fetch eigeninference-stripe-cancel-url)
-EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET=$(fetch eigeninference-stripe-connect-webhook-secret)
-EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL=$(fetch eigeninference-stripe-connect-return-url)
-EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL=$(fetch eigeninference-stripe-connect-refresh-url)
-DD_API_KEY=$(fetch eigeninference-dd-api-key)
-DD_SITE=$(fetch eigeninference-dd-site)
-DD_ENV=development
-DD_SERVICE=d-inference-coordinator
-DD_AGENT_HOST=localhost
-EOF
-chmod 600 "$ENV_FILE"
+/usr/local/bin/d-inference-refresh-env.sh "$ENVIRONMENT" "$PROJECT"
 
-# ---- 4. cloud-sql-proxy systemd unit ----
-cat > /etc/systemd/system/cloud-sql-proxy.service <<EOF
+if [[ "$ENVIRONMENT" == "dev" ]]; then
+  if ! command -v cloud-sql-proxy >/dev/null; then
+    curl -fsSL -o /usr/local/bin/cloud-sql-proxy \
+      https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.11.0/cloud-sql-proxy.linux.amd64
+    chmod 0755 /usr/local/bin/cloud-sql-proxy
+  fi
+  SQL_INSTANCE=$(metadata_value DINF_SQL_INSTANCE)
+  [[ "$SQL_INSTANCE" =~ ^[a-z][a-z0-9-]{0,96}[a-z0-9]$ ]] || {
+    echo "invalid DINF_SQL_INSTANCE metadata" >&2
+    exit 1
+  }
+  SQL_CONN=$(gcloud sql instances describe "$SQL_INSTANCE" \
+    --project="$PROJECT" --format='value(connectionName)')
+  [[ -n "$SQL_CONN" ]] || {
+    echo "failed to resolve dev Cloud SQL connection name" >&2
+    exit 1
+  }
+  cat >/etc/systemd/system/cloud-sql-proxy.service <<EOF
 [Unit]
 Description=Cloud SQL Auth Proxy
 After=network-online.target
@@ -158,151 +145,78 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+  systemctl enable cloud-sql-proxy.service
+fi
 
-# ---- 5. Coordinator startup wrapper + systemd unit ----
-# Wrapper resolves the image tag from instance metadata at each start so
-# Cloud Build can pin a specific SHA by writing DINF_IMAGE_TAG. Auth to
-# Artifact Registry uses the VM's service-account access token from the
-# metadata server — no gcloud dependency, so the wrapper works even if
-# google-cloud-cli isn't present at /usr/bin/gcloud.
-cat > /usr/local/bin/d-inference-run.sh <<'WRAPPER'
-#!/bin/bash
-set -euo pipefail
-META="http://metadata.google.internal/computeMetadata/v1/instance"
-TAG=$(curl -fsSL -H "Metadata-Flavor: Google" "$META/attributes/DINF_IMAGE_TAG" 2>/dev/null || echo latest)
-IMAGE="us-central1-docker.pkg.dev/sepolia-ai/coordinator/coordinator:${TAG}"
-echo "Starting coordinator with image $IMAGE"
+read_env_value() {
+  local key=$1
+  awk -v key="$key" '
+    index($0, key "=") == 1 {
+      print substr($0, length(key) + 2)
+      found=1
+      exit
+    }
+    END { if (!found) exit 1 }
+  ' "$ENV_DIR/env"
+}
 
-# Fetch an access token for the VM's default SA and docker login.
-TOKEN=$(curl -fsSL -H "Metadata-Flavor: Google" \
-  "$META/service-accounts/default/token" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
-printf '%s' "$TOKEN" | /usr/bin/docker login -u oauth2accesstoken --password-stdin us-central1-docker.pkg.dev
-unset TOKEN
-
-/usr/bin/docker pull "$IMAGE"
-exec /usr/bin/docker run --rm --name d-inference-coordinator \
-  --network host \
-  --env-file /etc/d-inference/env \
-  --mount type=bind,source=/mnt/disks/userdata,target=/mnt/disks/userdata \
-  "$IMAGE"
-WRAPPER
-chmod +x /usr/local/bin/d-inference-run.sh
-
-cat > /etc/systemd/system/d-inference-coordinator.service <<EOF
-[Unit]
-Description=d-inference dev coordinator
-After=docker.service cloud-sql-proxy.service datadog-agent.service
-Requires=docker.service cloud-sql-proxy.service
-Wants=datadog-agent.service
-
-[Service]
-Restart=always
-RestartSec=5
-TimeoutStopSec=45
-ExecStartPre=-/usr/bin/docker stop d-inference-coordinator
-ExecStartPre=-/usr/bin/docker rm d-inference-coordinator
-ExecStart=/usr/local/bin/d-inference-run.sh
-ExecStop=/usr/bin/docker stop -t 30 d-inference-coordinator
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# ---- 6. Datadog Agent ----
-# Install the DD Agent as a host-level service so the coordinator gets proper
-# DogStatsD (8125), APM trace (8126), and journald log collection.  The agent
-# handles batching, compression, retries, and back-pressure — replacing the
-# coordinator's DIY HTTP log forwarder for general logs.
-DD_API_KEY_VAL=$(fetch eigeninference-dd-api-key)
-DD_SITE_VAL=$(fetch eigeninference-dd-site)
-if [ -n "$DD_API_KEY_VAL" ]; then
-  if ! command -v datadog-agent >/dev/null 2>&1 && ! dpkg -l datadog-agent >/dev/null 2>&1; then
-    DD_API_KEY="$DD_API_KEY_VAL" \
-    DD_SITE="${DD_SITE_VAL:-datadoghq.com}" \
-    bash -c "$(curl -fsSL https://s3.amazonaws.com/dd-agent/scripts/install_script_agent7.sh)"
+DD_API_KEY_VALUE=$(read_env_value DD_API_KEY || true)
+DD_SITE_VALUE=$(read_env_value DD_SITE || true)
+DD_ENV_VALUE=$(read_env_value DD_ENV || true)
+if [[ -n "$DD_API_KEY_VALUE" ]]; then
+  if ! command -v datadog-agent >/dev/null 2>&1; then
+    DD_API_KEY="$DD_API_KEY_VALUE" DD_SITE="${DD_SITE_VALUE:-datadoghq.com}" \
+      bash -c "$(curl -fsSL https://s3.amazonaws.com/dd-agent/scripts/install_script_agent7.sh)"
   fi
-
-  # Ensure the agent is configured for this environment.
-  mkdir -p /etc/datadog-agent
-  cat > /etc/datadog-agent/datadog.yaml <<DDYAML
-api_key: ${DD_API_KEY_VAL}
-site: ${DD_SITE_VAL:-datadoghq.com}
-env: development
-hostname: d-inference-dev
-
-logs_enabled: true
-apm_config:
-  enabled: true
-  receiver_socket: ""
-dogstatsd_socket: ""
-DDYAML
-
-  # Journald log collection for the coordinator container.
   usermod -a -G systemd-journal dd-agent
-  mkdir -p /etc/datadog-agent/conf.d/journald.d
-  cat > /etc/datadog-agent/conf.d/journald.d/conf.yaml <<JYAML
+  DATADOG_CONFIG=/etc/datadog-agent/datadog.yaml
+  sed -i \
+    '/^# BEGIN D-INFERENCE HISTOGRAMS$/,/^# END D-INFERENCE HISTOGRAMS$/d' \
+    "$DATADOG_CONFIG"
+  cat >>"$DATADOG_CONFIG" <<'EOF'
+# BEGIN D-INFERENCE HISTOGRAMS
+histogram_aggregates:
+  - max
+  - median
+  - avg
+  - count
+histogram_percentiles:
+  - 0.95
+  - 0.99
+# END D-INFERENCE HISTOGRAMS
+EOF
+  install -d -m 0755 /etc/datadog-agent/conf.d/journald.d
+  cat >/etc/datadog-agent/conf.d/journald.d/conf.yaml <<EOF
 logs:
   - type: journald
     include_units:
       - d-inference-coordinator.service
+      - d-inference-recovery.service
     service: d-inference-coordinator
     source: coordinator
     tags:
-      - env:development
-JYAML
-else
-  echo "DD_API_KEY empty — skipping Datadog Agent install"
+      - env:${DD_ENV_VALUE:-$ENVIRONMENT}
+EOF
+  install -d -m 0755 /etc/systemd/system/datadog-agent.service.d
+  cat >/etc/systemd/system/datadog-agent.service.d/d-inference-observability.conf <<'EOF'
+[Service]
+Environment=DD_LOGS_ENABLED=true
+Environment=DD_APM_ENABLED=true
+Environment=DD_APM_RECEIVER_PORT=8126
+Environment=DD_DOGSTATSD_PORT=8125
+EOF
 fi
-
-# ---- 7. Caddy config (TLS terminator + path routing for coordinator/MicroMDM) ----
-# Mirrors the prod coordinator/Caddyfile routes:
-#   /scep, /mdm/*  -> MicroMDM (127.0.0.1:9002, HTTPS self-signed)
-#   everything else -> coordinator (127.0.0.1:8080, HTTP)
-# Without these routes, Mac enrollment fails with "SCEP server rejected."
-cat > /etc/caddy/Caddyfile <<'CADDYFILE'
-api.dev.darkbloom.xyz {
-  # MicroMDM — SCEP + MDM checkin/connect
-  handle /scep {
-    reverse_proxy https://127.0.0.1:9002 {
-      transport http {
-        tls_insecure_skip_verify
-      }
-    }
-  }
-  handle /mdm/* {
-    reverse_proxy https://127.0.0.1:9002 {
-      transport http {
-        tls_insecure_skip_verify
-      }
-    }
-  }
-
-  # All other traffic -> coordinator (HTTP + WebSocket)
-  reverse_proxy 127.0.0.1:8080 {
-    health_uri /health
-    health_interval 30s
-    health_timeout 5s
-    health_status 200
-  }
-
-  request_body {
-    max_size 25MB
-  }
-
-  log {
-    output stdout
-    format console
-    level INFO
-  }
-}
-CADDYFILE
+unset DD_API_KEY_VALUE DD_SITE_VALUE DD_ENV_VALUE DATADOG_CONFIG
 
 systemctl daemon-reload
-systemctl enable cloud-sql-proxy.service datadog-agent.service d-inference-coordinator.service caddy.service
-systemctl restart cloud-sql-proxy.service
-systemctl restart datadog-agent.service
-systemctl restart d-inference-coordinator.service
-systemctl restart caddy.service
-
-echo "==> Startup complete at $(date -Iseconds)"
+[[ -z "$(read_env_value DD_API_KEY || true)" ]] ||
+  systemctl restart datadog-agent.service
+systemctl enable docker.service caddy.service d-inference-coordinator.service
+systemctl disable d-inference-recovery.service >/dev/null 2>&1 || true
+[[ "$ENVIRONMENT" != "dev" ]] || systemctl restart cloud-sql-proxy.service
+/usr/local/bin/d-inference-configure-caddy.sh "$ENVIRONMENT"
+if [[ -n "$(metadata_value_optional DINF_IMAGE)" ]]; then
+  systemctl restart d-inference-coordinator.service
+else
+  echo "DINF_IMAGE is not committed; coordinator remains stopped"
+fi

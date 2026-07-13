@@ -1,0 +1,381 @@
+{
+  "ci": {
+    "actor": null,
+    "job": null,
+    "oidc_audience": "sigstore",
+    "oidc_issuer": "https://token.actions.githubusercontent.com",
+    "provider": "local",
+    "run_attempt": null,
+    "run_id": null,
+    "run_url": null,
+    "workflow": null,
+    "workflow_ref": null
+  },
+  "environment": {
+    "kernel_release": "6.12.94+",
+    "machine": "x86_64",
+    "os_release": {
+      "id": "ubuntu",
+      "version_id": "24.04"
+    },
+    "platform": "Linux-6.12.94+-x86_64-with-glibc2.39"
+  },
+  "executables": {
+    "go_coordinator": {
+      "path": "artifacts/pilot-load/bin/go-coordinator",
+      "sha256": "c4940fcf632b565a359b2bf95cd7445260a3fb90077b37a4a5a3a5f4102330de",
+      "size_bytes": 45926496
+    },
+    "go_peer": {
+      "path": "coordinator-rs/target/release/darkbloom-pilot-peer",
+      "sha256": "9e55cd8150550eef2dc566d370859118570eb802fd0d93a1d452f451eaa5751b",
+      "size_bytes": 6277536
+    },
+    "rust_coordinator": {
+      "path": "coordinator-rs/target/release/darkbloom-coordinator-server",
+      "sha256": "520b5caa5306a0b5e2a822cd4b4a9d2ffe631ec951490930f9bc59e20d55c168",
+      "size_bytes": 31900512
+    },
+    "rust_peer": {
+      "path": "coordinator-rs/target/release/darkbloom-pilot-peer",
+      "sha256": "9e55cd8150550eef2dc566d370859118570eb802fd0d93a1d452f451eaa5751b",
+      "size_bytes": 6277536
+    }
+  },
+  "execution_environment": {
+    "database_pool_max": {
+      "go": 80,
+      "rust": 16
+    },
+    "source_baseline_mode": "measured"
+  },
+  "fixture_version": 1,
+  "generated_at": "2026-07-12T15:31:16.446570+00:00",
+  "inputs": {
+    "allowed_differences": {
+      "path": "/workspace/e2e/pilot/allowed-differences.json",
+      "sha256": "9b70d3c1db1785bc341ba7e5f6d849a9c28892d97c40f200a95914092d67aa20",
+      "size_bytes": 16545
+    },
+    "oracle": {
+      "path": "/workspace/e2e/pilot/expected-contract.json",
+      "sha256": "bcfd749d6fd690f603478e2a2b3338b19d0ae7e85fb50707084401f5dfd281c4",
+      "size_bytes": 3665
+    },
+    "profiles": {
+      "path": "/workspace/e2e/pilot/profiles.json",
+      "sha256": "9465e9c0593282962799e9f504715172a3e131d1e6c5bf039c37d08df09e62a1",
+      "size_bytes": 5284
+    }
+  },
+  "profile": {
+    "concurrency_ramp": [
+      1,
+      4,
+      16,
+      32
+    ],
+    "name": "quick",
+    "request_count": 200,
+    "seed": 901,
+    "websocket_sessions": 1000
+  },
+  "resources": {
+    "databases": {
+      "go": {
+        "active_peak": 38,
+        "pool_max": 80,
+        "source": "runtime_counter",
+        "utilization_peak": 0.2375
+      },
+      "rust": {
+        "active_peak": 18,
+        "pool_max": 16,
+        "source": "runtime_counter",
+        "utilization_peak": 0.3125
+      }
+    },
+    "mailboxes": {
+      "go": {
+        "available": true,
+        "capacity": 24032.0,
+        "used_peak": 2.0,
+        "utilization_peak": 8.322237017310254e-05
+      },
+      "rust": {
+        "available": true,
+        "capacity": 1029.0,
+        "used_peak": 5.0,
+        "utilization_peak": 0.004859086491739553
+      }
+    },
+    "processes": {
+      "go-coordinator": {
+        "alive_end": true,
+        "available": true,
+        "fd_end": 1044,
+        "fd_growth": 26,
+        "fd_peak": 1074,
+        "fd_start": 1018,
+        "rss_end_bytes": 164511744,
+        "rss_growth_bytes": 43307008,
+        "rss_peak_bytes": 174043136,
+        "rss_start_bytes": 121204736,
+        "tasks_end": 10,
+        "tasks_growth": 0,
+        "tasks_peak": 10,
+        "tasks_start": 10
+      },
+      "rust-coordinator": {
+        "alive_end": true,
+        "available": true,
+        "fd_end": 1027,
+        "fd_growth": 5,
+        "fd_peak": 1032,
+        "fd_start": 1022,
+        "rss_end_bytes": 224096256,
+        "rss_growth_bytes": 3145728,
+        "rss_peak_bytes": 224862208,
+        "rss_start_bytes": 220950528,
+        "tasks_end": 40,
+        "tasks_growth": 0,
+        "tasks_peak": 40,
+        "tasks_start": 40
+      }
+    },
+    "samples": 13,
+    "sessions": {
+      "go": {
+        "available": true,
+        "hardware_sessions_end": 0.0,
+        "protocol_v1_sessions_end": 1000.0,
+        "protocol_v2_sessions_end": 0.0,
+        "provider_sessions_end": 1000.0,
+        "provider_sessions_min": 1000.0,
+        "self_signed_sessions_end": 1000.0,
+        "untrusted_sessions_end": 0.0
+      },
+      "rust": {
+        "available": true,
+        "hardware_sessions_end": 0.0,
+        "protocol_v1_sessions_end": 0.0,
+        "protocol_v2_sessions_end": 1000.0,
+        "provider_sessions_end": 1000.0,
+        "provider_sessions_min": 1000.0,
+        "self_signed_sessions_end": 1000.0,
+        "untrusted_sessions_end": 0.0
+      }
+    }
+  },
+  "review": {
+    "generator_run_id": null,
+    "generator_source_commit": "4f7bbbda7cea9b4bc84d20407b81cb67392294a7",
+    "status": "reviewed"
+  },
+  "sample_thresholds": {
+    "max": 100,
+    "p50": 100,
+    "p95": 100,
+    "p99": 100
+  },
+  "schema_version": 1,
+  "schemas": {
+    "baseline": 2,
+    "fixture": 1,
+    "report": 1
+  },
+  "source": {
+    "commit": "4f7bbbda7cea9b4bc84d20407b81cb67392294a7",
+    "ref": null,
+    "repository": null,
+    "tracked_worktree_dirty": true
+  },
+  "source_commit": "4f7bbbda7cea9b4bc84d20407b81cb67392294a7",
+  "source_report": {
+    "path": "artifacts/pilot-load/quick/report.json",
+    "sha256": "2cd811b513439156ef1ed3f6d63ac60f0258ff79af60bd34884c4aa8dba42e96",
+    "size_bytes": 854830
+  },
+  "targets": {
+    "go": {
+      "concurrency_levels": [
+        1,
+        4,
+        16,
+        32
+      ],
+      "cycles": 1,
+      "elapsed_seconds": 12.461935086001176,
+      "load_elapsed_seconds": 11.129073724005139,
+      "prediction_error_ms": {
+        "max": 650.0243660167325,
+        "mean_absolute": 121.97959444299114,
+        "p50": 47.635700994869694,
+        "p95": 476.0240654987865,
+        "p99": 614.054137083003,
+        "samples": 206,
+        "sources": {
+          "trace_oracle": 206
+        }
+      },
+      "requests": 215,
+      "slow_consumers": 15,
+      "stages_ms": {
+        "body": {
+          "max": 838.3512529835571,
+          "p50": 2.752773987594992,
+          "p95": 260.117162106326,
+          "p99": 828.7444733158918,
+          "samples": 215
+        },
+        "dispatch": {
+          "max": 0.046,
+          "p50": 0.008,
+          "p95": 0.01575,
+          "p99": 0.022,
+          "samples": 206
+        },
+        "encrypt": {
+          "max": 69.733,
+          "p50": 1.713,
+          "p95": 9.713000000000001,
+          "p99": 23.01469999999995,
+          "samples": 206
+        },
+        "headers": {
+          "max": 655.0064930052031,
+          "p50": 45.475138002075255,
+          "p95": 478.2694711902878,
+          "p99": 616.3412727409745,
+          "samples": 215
+        },
+        "parse": {
+          "max": 68.488,
+          "p50": 2.1945,
+          "p95": 37.4905,
+          "p99": 50.62724999999995,
+          "samples": 206
+        },
+        "provider": {
+          "max": 501.039,
+          "p50": 1.121,
+          "p95": 43.088750000000005,
+          "p99": 47.95605,
+          "samples": 206
+        },
+        "queue": {
+          "max": 0.0,
+          "p50": 0.0,
+          "p95": 0.0,
+          "p99": 0.0,
+          "samples": 206
+        },
+        "reserve": {
+          "max": 122.283,
+          "p50": 3.989,
+          "p95": 47.50025,
+          "p99": 71.71434999999997,
+          "samples": 206
+        },
+        "route": {
+          "max": 251.963,
+          "p50": 15.986999999999998,
+          "p95": 196.2945,
+          "p99": 215.23284999999993,
+          "samples": 206
+        },
+        "total": {
+          "max": 1141.51867601322,
+          "p50": 73.01954599097371,
+          "p95": 651.8876228947192,
+          "p99": 956.8127272737917,
+          "samples": 215
+        },
+        "ttft": {
+          "max": 655.0243660167325,
+          "p50": 45.49836300429888,
+          "p95": 478.2863168016775,
+          "p99": 616.3602410652679,
+          "samples": 215
+        }
+      },
+      "statuses": {
+        "200": 208,
+        "400": 1,
+        "401": 3,
+        "404": 3
+      },
+      "throughput_rps": 17.25253730791097,
+      "transport_errors": 0
+    },
+    "rust": {
+      "concurrency_levels": [
+        1,
+        4,
+        16,
+        32
+      ],
+      "cycles": 1,
+      "elapsed_seconds": 12.461935086001176,
+      "load_elapsed_seconds": 11.129073724005139,
+      "prediction_error_ms": {
+        "max": 594.9945600051433,
+        "mean_absolute": 131.04783297661214,
+        "p50": 100.28752001118846,
+        "p95": 290.6157908134629,
+        "p99": 347.4850594461898,
+        "samples": 205,
+        "sources": {
+          "trace_oracle": 205
+        }
+      },
+      "requests": 215,
+      "slow_consumers": 15,
+      "stages_ms": {
+        "body": {
+          "max": 843.7291070003994,
+          "p50": 0.9091290121432394,
+          "p95": 152.18982699734624,
+          "p99": 834.6253896149574,
+          "samples": 215
+        },
+        "headers": {
+          "max": 599.9833130044863,
+          "p50": 102.64037002343684,
+          "p95": 282.1749270049622,
+          "p99": 311.2517270341052,
+          "samples": 215
+        },
+        "total": {
+          "max": 1149.5763900165912,
+          "p50": 109.19905500486493,
+          "p95": 391.23778180801344,
+          "p99": 974.2466795229122,
+          "samples": 215
+        },
+        "ttft": {
+          "max": 599.9945600051433,
+          "p50": 103.29901898512617,
+          "p95": 291.5653378091521,
+          "p99": 349.7030255442955,
+          "samples": 215
+        }
+      },
+      "statuses": {
+        "200": 207,
+        "400": 1,
+        "401": 3,
+        "404": 3,
+        "499": 1
+      },
+      "throughput_rps": 17.25253730791097,
+      "transport_errors": 0
+    }
+  },
+  "tool": {
+    "name": "darkbloom-objective9-pilot",
+    "python": "3.12.3",
+    "source_sha256": "15471ed70db0517fbd1fbda9093c2a7172ab25ab2000056ada5bf43ae61df344",
+    "version": "2.6.0"
+  }
+}

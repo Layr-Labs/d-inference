@@ -1,0 +1,10 @@
+{
+  "schema_version": 2,
+  "algorithm": "x25519-xsalsa20-poly1305-nacl-box-with-dbv2-header-binding",
+  "sender_private_key_base64": "dwdtCnMYpX08FsFyUbJmRd9ML4frwJkqsXf7pR25LCo=",
+  "sender_public_key_base64": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=",
+  "recipient_private_key_base64": "XasIfmJKikt54X+Lg4AO5m87sSkmGLb9HC+LJ/+I4Os=",
+  "recipient_public_key_base64": "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=",
+  "plaintext_base64": "Ym91bmQgYXBwbGljYXRpb24gcGxhaW50ZXh0",
+  "wire_base64": "REJWMgIDAMAAAhEiEBAQEBAQEBAQEBAQEBAQECAgICAgICAgICAgICAgICABAgMEBQYHCDAwMDAwMDAwMDAwMDAwMDBAQEBAQEBAQEBAQEBAQEBAUFBQUFBQUFBQUFBQUFBQUGBgYGBgYGBgYGBgYGBgYGBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHCAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgBESExQVFhcYAAABDSEiIyQlJicotdldClkSrN3EK5SfmG6WQAGvEV4KNsRPu/pmS0TFvfHdfH8X1WTGmFLIhMARKbzZ2HWAIDmHL4tTVfn1QwEUBRiIPXWkfKy+0b5nr6T0AjEr32PTOt78NpWoRoA6ZNC161IpqTYiS1sJLJYyNHZ82TvlHptdhp/Qy1RoYyUGuWwc/wnMoRKAc2HcVnOTnesG45m5VKXNpGKbpPngdKPxI0HwnlyBRKXCcsn4spHk1nfgpLHd5vgjJgeL1EBjTvajxHy3NTLhP3wJ/j/xARUkoDg6Umh3195Uz5QzPwG8SMRQIPjylVyL2o6mSLHDzv00HkDdEwJQ2Vl9hOpCSZdz/SD8pzSuzyWBNO++VVM="
+}

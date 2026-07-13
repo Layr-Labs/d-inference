@@ -7,6 +7,7 @@ enum ToolChoicePromptPolicy {
         let messages: [OpenAIChatMessage]
         let tools: [OpenAITool]?
         let requiresToolCall: Bool
+        let allowedToolNames: Set<String>
     }
 
     static func prepare(_ request: OpenAIChatCompletionRequest) throws -> Prepared {
@@ -14,7 +15,10 @@ enum ToolChoicePromptPolicy {
         switch request.toolChoice {
         case nil, .mode(.auto):
             return Prepared(
-                messages: request.messages, tools: request.tools, requiresToolCall: false)
+                messages: request.messages,
+                tools: request.tools,
+                requiresToolCall: false,
+                allowedToolNames: Set(request.tools?.map(\.function.name) ?? []))
 
         case .mode(.none):
             return Prepared(
@@ -22,7 +26,8 @@ enum ToolChoicePromptPolicy {
                     "Do not call any tool. Answer the user directly without emitting a tool call.",
                     to: request.messages),
                 tools: nil,
-                requiresToolCall: false)
+                requiresToolCall: false,
+                allowedToolNames: [])
 
         case .mode(.required):
             guard let tools = request.tools, !tools.isEmpty else {
@@ -45,7 +50,8 @@ enum ToolChoicePromptPolicy {
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
                 tools: tools,
-                requiresToolCall: true)
+                requiresToolCall: true,
+                allowedToolNames: Set(tools.map(\.function.name)))
 
         case .function(let name):
             guard let selected = request.tools?.first(where: { $0.function.name == name }) else {
@@ -60,7 +66,8 @@ enum ToolChoicePromptPolicy {
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
                 tools: [selected],
-                requiresToolCall: true)
+                requiresToolCall: true,
+                allowedToolNames: [name])
         }
     }
 

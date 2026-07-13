@@ -1121,6 +1121,111 @@ struct EngineV2RequestRoutingTests {
         #expect(events.isEmpty)
     }
 
+    @Test("required tool choice suppresses preamble after a valid call")
+    func requiredToolChoiceSuppressesPreamble() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(
+                text: "preamble<|tool_call>call:calculate{expression:2+2}<tool_call|>",
+                tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: .user, content: .text("hello"))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .mode(.required))
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        var contents: [String] = []
+        var calls: [ToolCall] = []
+        for try await event in stream {
+            switch event {
+            case .content(let content): contents.append(content)
+            case .toolCall(let call): calls.append(call)
+            case .info: break
+            }
+        }
+        #expect(contents.isEmpty)
+        #expect(calls.map(\.function.name) == ["calculate"])
+    }
+
+    @Test("named tool choice rejects a parsed different function")
+    func namedToolChoiceRejectsDifferentFunction() async throws {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(
+                text: "<tool_call><function=get_current_weather>"
+                    + "<parameter=location>Boston</parameter></function></tool_call>",
+                tokens: [10], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "qwen3_5",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: .user, content: .text("weather"))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .function(name: "calculate"))
+
+        do {
+            let stream = try await providerEngine.streamChatCompletion(request: request)
+            for try await _ in stream {}
+            Issue.record("expected named tool_choice mismatch")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .generationFailed("model emitted a tool call outside tool_choice"))
+        }
+    }
+
+    @Test("forced tool choice rejects multimodal requests before media work")
+    func forcedToolChoiceRejectsMultimodalRequest() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        container: makeStubContainer(),
+                        isVLM: true,
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(
+                role: .user,
+                content: .parts([.text("describe"), .imageURL("data:image/png;base64,AA==")]))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .mode(.required))
+
+        do {
+            _ = try await providerEngine.streamChatCompletion(request: request)
+            Issue.record("expected forced multimodal tool choice rejection")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .invalidToolPayload(
+                "forced tool_choice is not supported for multimodal requests"))
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
     @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")
     func coordinatorPathThreadsSaltAndLogprobs() async throws {
         let engine = WiringScriptedEngine(script: .stream([

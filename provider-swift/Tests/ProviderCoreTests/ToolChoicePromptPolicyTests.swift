@@ -13,6 +13,7 @@ struct ToolChoicePromptPolicyTests {
 
         #expect(prepared.tools == nil)
         #expect(prepared.requiresToolCall == false)
+        #expect(prepared.allowedToolNames.isEmpty)
         #expect(prepared.messages.first?.role == .system)
         #expect(prepared.messages.first?.textContent.contains("Do not call any tool") == true)
     }
@@ -23,6 +24,7 @@ struct ToolChoicePromptPolicyTests {
 
         #expect(prepared.tools?.map(\.function.name) == ["get_current_weather", "calculate"])
         #expect(prepared.requiresToolCall == true)
+        #expect(prepared.allowedToolNames == ["get_current_weather", "calculate"])
         #expect(prepared.messages.first?.textContent.contains("Call one") == true)
         #expect(prepared.messages.last?.textContent.contains("Call one") == true)
     }
@@ -34,6 +36,7 @@ struct ToolChoicePromptPolicyTests {
 
         #expect(prepared.tools?.map(\.function.name) == ["calculate"])
         #expect(prepared.requiresToolCall == true)
+        #expect(prepared.allowedToolNames == ["calculate"])
         #expect(prepared.messages.first?.textContent.contains("'calculate'") == true)
         #expect(prepared.messages.last?.textContent.contains("'calculate'") == true)
     }

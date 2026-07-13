@@ -310,6 +310,7 @@ function providerServesGemmaRollout(provider: ProviderStats): boolean {
   return provider.models?.some((model) => GEMMA_ROLLOUT_IDS.has(model)) ?? false;
 }
 
+
 function gemmaRolloutProviders(providers: ProviderStats[]): ProviderStats[] {
   return providers.filter(providerServesGemmaRollout);
 }

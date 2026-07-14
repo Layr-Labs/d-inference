@@ -43,6 +43,7 @@ public struct MTPBenchmarkConfiguration: Sendable {
     public let modes: [MTPBenchmarkMode]
     public let maxTokensPerRow: Int
     public let purpose: MTPBenchmarkPurpose
+    public let mtpExpectation: MTPBenchmarkMTPExpectation
     public let stopPolicy: MTPBenchmarkStopPolicy
     public let warmupIterations: Int
     public let measurementRepetitions: Int
@@ -63,6 +64,7 @@ public struct MTPBenchmarkConfiguration: Sendable {
         modes: [MTPBenchmarkMode] = MTPBenchmarkRunner.standardModes,
         maxTokensPerRow: Int = 64,
         purpose: MTPBenchmarkPurpose,
+        mtpExpectation: MTPBenchmarkMTPExpectation = .active,
         stopPolicy: MTPBenchmarkStopPolicy,
         warmupIterations: Int = 0,
         measurementRepetitions: Int = 1,
@@ -78,6 +80,7 @@ public struct MTPBenchmarkConfiguration: Sendable {
         self.modes = modes
         self.maxTokensPerRow = max(1, maxTokensPerRow)
         self.purpose = purpose
+        self.mtpExpectation = mtpExpectation
         self.stopPolicy = stopPolicy
         self.warmupIterations = warmupIterations
         self.measurementRepetitions = measurementRepetitions
@@ -153,6 +156,7 @@ public enum MTPBenchmarkRunner {
                 runFingerprint: configuration.runFingerprint,
                 buildConfiguration: .current,
                 purpose: configuration.purpose,
+                mtpExpectation: configuration.mtpExpectation,
                 stopPolicy: configuration.stopPolicy,
                 startedAt: startedDate,
                 completedAt: complete ? Date() : nil,
@@ -246,6 +250,16 @@ public enum MTPBenchmarkRunner {
         guard !configuration.runFingerprint.isEmpty else {
             throw MTPBenchmarkError.invalidStopPolicy("run fingerprint is empty")
         }
+        guard configuration.mtpExpectation.isWellFormed else {
+            throw MTPBenchmarkError.invalidMTPExpectation(
+                "expected-inactive mode requires a nonempty exact reason or prefix; active mode must not carry inactive reasons")
+        }
+        if configuration.purpose == .productionPerformance,
+           configuration.mtpExpectation.expectsInactive
+        {
+            throw MTPBenchmarkError.invalidMTPExpectation(
+                "production performance cannot certify expected-inactive target-only fallback")
+        }
         if configuration.purpose == .productionPerformance,
            MTPBenchmarkBuildConfiguration.current == .debug
         {
@@ -325,7 +339,11 @@ public enum MTPBenchmarkRunner {
         do {
             let before = await session.metrics()
             try requireBeforeDeadline(deadlineAt)
-            try validateActivation(metrics: before, mode: key.mode, beforeRun: true)
+            try validateActivation(
+                metrics: before,
+                mode: key.mode,
+                expectation: configuration.mtpExpectation,
+                beforeRun: true)
             let batch = try await runBatch(
                 engine: session.engine,
                 prompts: configuration.prompts,
@@ -341,7 +359,8 @@ public enum MTPBenchmarkRunner {
                 batchSize: key.batchSize,
                 adaptiveDraftingExpected: configuration.adaptiveDraftingBatchSizes.contains(
                     key.batchSize),
-                allowedSkipReasons: configuration.allowedSkipReasons)
+                allowedSkipReasons: configuration.allowedSkipReasons,
+                expectation: configuration.mtpExpectation)
             await session.engine.shutdown()
             didShutdown = true
             try requireBeforeDeadline(deadlineAt)
@@ -363,9 +382,14 @@ public enum MTPBenchmarkRunner {
         mode: MTPBenchmarkMode,
         batchSize: Int,
         adaptiveDraftingExpected: Bool,
-        allowedSkipReasons: Set<String>
+        allowedSkipReasons: Set<String>,
+        expectation: MTPBenchmarkMTPExpectation = .active
     ) throws {
-        try validateActivation(metrics: metrics, mode: mode, beforeRun: false)
+        try validateActivation(
+            metrics: metrics,
+            mode: mode,
+            expectation: expectation,
+            beforeRun: false)
         let unexpectedSkips = Set(metrics.skippedRows.keys).subtracting(allowedSkipReasons)
         guard unexpectedSkips.isEmpty else {
             throw MTPBenchmarkError.invalidMetrics(
@@ -374,11 +398,12 @@ public enum MTPBenchmarkRunner {
         let expectedBucket = decodeRowBucket(batchSize)
         switch mode.kind {
         case .targetOnly:
-            guard metrics.rounds == 0, metrics.proposedTokens == 0 else {
-                throw MTPBenchmarkError.invalidMetrics(
-                    "target-only baseline reported speculative work")
-            }
+            try validateNoSpeculativeWork(metrics, context: "target-only baseline")
         case .fixed:
+            if expectation.expectsInactive {
+                try validateNoSpeculativeWork(metrics, context: "\(mode.label), B=\(batchSize)")
+                return
+            }
             let expectedDepth = (mode.verificationWidth ?? 1) - 1
             guard observedBucket(metrics, expectedBucket: expectedBucket) else {
                 throw MTPBenchmarkError.invalidMetrics(
@@ -403,6 +428,10 @@ public enum MTPBenchmarkRunner {
                 }
             }
         case .adaptive:
+            if expectation.expectsInactive {
+                try validateNoSpeculativeWork(metrics, context: "adaptive B=\(batchSize)")
+                return
+            }
             guard observedBucket(metrics, expectedBucket: expectedBucket) else {
                 throw MTPBenchmarkError.invalidMetrics(
                     "adaptive B=\(batchSize) never observed decode-row bucket \(expectedBucket)")
@@ -433,14 +462,61 @@ public enum MTPBenchmarkRunner {
     private static func validateActivation(
         metrics: MTPBenchmarkMetrics,
         mode: MTPBenchmarkMode,
+        expectation: MTPBenchmarkMTPExpectation,
         beforeRun: Bool
     ) throws {
-        if mode.requestsMTP, !metrics.active {
-            throw MTPBenchmarkError.mtpRequestedButInactive(mode.label)
-        }
         if !mode.requestsMTP, metrics.active {
             throw MTPBenchmarkError.invalidMetrics(
                 "target-only baseline unexpectedly reported MTP active\(beforeRun ? " before execution" : "")")
+        }
+        guard mode.requestsMTP else { return }
+
+        if expectation.expectsInactive {
+            guard !metrics.active else {
+                throw MTPBenchmarkError.invalidMetrics(
+                    "\(mode.label) unexpectedly reported MTP active in expected-inactive mode\(beforeRun ? " before execution" : "")")
+            }
+            guard expectation.matchesInactiveReason(metrics.inactiveReason) else {
+                throw MTPBenchmarkError.invalidMetrics(
+                    "\(mode.label) inactive reason did not match the declared exact value or prefix")
+            }
+            try validateNoSpeculativeWork(
+                metrics,
+                context: "\(mode.label) expected-inactive metrics\(beforeRun ? " before execution" : "")")
+        } else {
+            guard metrics.active else {
+                let detail = metrics.inactiveReason ?? "missing inactive reason"
+                throw MTPBenchmarkError.mtpRequestedButInactive(
+                    "\(mode.label) (\(detail))")
+            }
+            guard metrics.inactiveReason == nil else {
+                throw MTPBenchmarkError.invalidMetrics(
+                    "\(mode.label) reported active MTP with an inactive reason")
+            }
+        }
+    }
+
+    private static func validateNoSpeculativeWork(
+        _ metrics: MTPBenchmarkMetrics,
+        context: String
+    ) throws {
+        guard metrics.rounds == 0,
+              metrics.seedRows == 0,
+              metrics.proposedTokens == 0,
+              metrics.acceptedDraftTokens == 0,
+              metrics.committedTokens == 0,
+              metrics.acceptanceByPosition.isEmpty,
+              metrics.conditionalAcceptance.isEmpty,
+              metrics.skippedRows.isEmpty,
+              metrics.depthSelections.isEmpty,
+              metrics.controllerFallbacks.isEmpty,
+              metrics.costInputs.isEmpty,
+              metrics.totalRoundWallTimeNanos == nil,
+              metrics.assistantTimeNanos == nil,
+              metrics.targetVerifyTimeNanos == nil
+        else {
+            throw MTPBenchmarkError.invalidMetrics(
+                "\(context) reported speculative work")
         }
     }
 

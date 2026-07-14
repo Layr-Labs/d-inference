@@ -26,6 +26,66 @@ public enum MTPBenchmarkPurpose: String, Codable, Sendable {
     public var performanceEligible: Bool { self == .productionPerformance }
 }
 
+/// Declares whether requested fixed/adaptive cases must exercise MTP or must
+/// prove a specific fail-open safety gate. Inactive validation is never
+/// inferred from the machine or the engine result.
+public struct MTPBenchmarkMTPExpectation: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        case active
+        case expectedInactive = "expected_inactive"
+    }
+
+    public static let m5HardwareSafetyGate = MTPBenchmarkMTPExpectation(
+        kind: .expectedInactive,
+        allowedInactiveReasonPrefixes: [
+            "rectangular MTP verification is disabled on Apple M5"
+        ])
+
+    public let kind: Kind
+    public let allowedInactiveReasonValues: [String]
+    public let allowedInactiveReasonPrefixes: [String]
+
+    public static let active = MTPBenchmarkMTPExpectation(kind: .active)
+
+    public static func expectedInactive(
+        allowedReasonValues: [String] = [],
+        allowedReasonPrefixes: [String] = []
+    ) -> MTPBenchmarkMTPExpectation {
+        MTPBenchmarkMTPExpectation(
+            kind: .expectedInactive,
+            allowedInactiveReasonValues: allowedReasonValues,
+            allowedInactiveReasonPrefixes: allowedReasonPrefixes)
+    }
+
+    public init(
+        kind: Kind,
+        allowedInactiveReasonValues: [String] = [],
+        allowedInactiveReasonPrefixes: [String] = []
+    ) {
+        self.kind = kind
+        self.allowedInactiveReasonValues = allowedInactiveReasonValues.sorted()
+        self.allowedInactiveReasonPrefixes = allowedInactiveReasonPrefixes.sorted()
+    }
+
+    public var expectsInactive: Bool { kind == .expectedInactive }
+
+    public func matchesInactiveReason(_ reason: String?) -> Bool {
+        guard let reason, !reason.isEmpty else { return false }
+        return allowedInactiveReasonValues.contains(reason)
+            || allowedInactiveReasonPrefixes.contains { reason.hasPrefix($0) }
+    }
+
+    var isWellFormed: Bool {
+        let values = allowedInactiveReasonValues + allowedInactiveReasonPrefixes
+        switch kind {
+        case .active:
+            return values.isEmpty
+        case .expectedInactive:
+            return !values.isEmpty && values.allSatisfy { !$0.isEmpty }
+        }
+    }
+}
+
 public struct MTPBenchmarkStopPolicy: Equatable, Sendable {
     public enum Kind: String, Codable, Sendable {
         case rawFixedLengthNoStop = "raw_fixed_length_no_stop"
@@ -271,6 +331,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     }
 
     public let active: Bool
+    public let inactiveReason: String?
     public let selectedDepth: Int?
     public let decodeRowBucket: Int?
     public let rounds: Int
@@ -290,6 +351,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
 
     public init(
         active: Bool,
+        inactiveReason: String? = nil,
         selectedDepth: Int? = nil,
         decodeRowBucket: Int? = nil,
         rounds: Int = 0,
@@ -308,6 +370,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
         targetVerifyTimeNanos: UInt64? = nil
     ) {
         self.active = active
+        self.inactiveReason = inactiveReason
         self.selectedDepth = selectedDepth
         self.decodeRowBucket = decodeRowBucket
         self.rounds = rounds
@@ -331,6 +394,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     fileprivate func withoutPerformanceMeasurements() -> MTPBenchmarkMetrics {
         MTPBenchmarkMetrics(
             active: active,
+            inactiveReason: inactiveReason,
             selectedDepth: selectedDepth,
             decodeRowBucket: decodeRowBucket,
             rounds: rounds,
@@ -556,12 +620,13 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
 }
 
 public struct MTPBenchmarkReport: Codable, Sendable {
-    public static let currentSchemaVersion = 4
+    public static let currentSchemaVersion = 5
 
     public let schemaVersion: Int
     public let runFingerprint: String
     public let buildConfiguration: MTPBenchmarkBuildConfiguration
     public let purpose: MTPBenchmarkPurpose
+    public let mtpExpectation: MTPBenchmarkMTPExpectation
     public let stopPolicy: MTPBenchmarkStopPolicySummary
     public let startedAt: Date
     public let generatedAt: Date
@@ -581,9 +646,10 @@ public struct MTPBenchmarkReport: Codable, Sendable {
 
     public static func buildBoundFingerprint(
         _ launchFingerprint: String,
-        buildConfiguration: MTPBenchmarkBuildConfiguration
+        buildConfiguration: MTPBenchmarkBuildConfiguration,
+        mtpExpectation: MTPBenchmarkMTPExpectation = .active
     ) -> String {
-        "\(buildConfiguration.rawValue):\(launchFingerprint)"
+        "\(buildConfiguration.rawValue):\(mtpExpectation.kind.rawValue):\(launchFingerprint)"
     }
 
     public init(
@@ -591,6 +657,7 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         runFingerprint: String,
         buildConfiguration: MTPBenchmarkBuildConfiguration = .current,
         purpose: MTPBenchmarkPurpose,
+        mtpExpectation: MTPBenchmarkMTPExpectation = .active,
         stopPolicy: MTPBenchmarkStopPolicy,
         startedAt: Date,
         generatedAt: Date = Date(),
@@ -611,9 +678,11 @@ public struct MTPBenchmarkReport: Codable, Sendable {
         self.schemaVersion = schemaVersion
         self.runFingerprint = Self.buildBoundFingerprint(
             runFingerprint,
-            buildConfiguration: buildConfiguration)
+            buildConfiguration: buildConfiguration,
+            mtpExpectation: mtpExpectation)
         self.buildConfiguration = buildConfiguration
         self.purpose = purpose
+        self.mtpExpectation = mtpExpectation
         self.stopPolicy = MTPBenchmarkStopPolicySummary(stopPolicy)
         self.startedAt = startedAt
         self.generatedAt = generatedAt
@@ -844,6 +913,7 @@ public enum MTPBenchmarkError: Error, CustomStringConvertible, Sendable {
     case emptyPromptCorpus
     case missingTargetOnlyBaseline
     case invalidStopPolicy(String)
+    case invalidMTPExpectation(String)
     case mtpRequestedButInactive(String)
     case productionMTPSeamUnavailable
     case missingTerminalEvent(row: Int)
@@ -876,6 +946,8 @@ public enum MTPBenchmarkError: Error, CustomStringConvertible, Sendable {
             return "MTP benchmark modes must include a target-only parity baseline"
         case .invalidStopPolicy(let detail):
             return "invalid MTP benchmark stop policy: \(detail)"
+        case .invalidMTPExpectation(let detail):
+            return "invalid MTP benchmark activation expectation: \(detail)"
         case .mtpRequestedButInactive(let mode):
             return "MTP was requested for \(mode), but the production engine reported it inactive"
         case .productionMTPSeamUnavailable:

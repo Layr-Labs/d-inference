@@ -24,10 +24,13 @@ PACKAGE_ROOT = REPO_ROOT / "provider-swift"
 DEFAULT_TARGET_ID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 DEFAULT_ASSISTANT_ID = "mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit"
 DEFAULT_TEST_FILTER = "GemmaMTPPerformanceLiveTests"
-REPORT_SCHEMA_VERSION = 4
+REPORT_SCHEMA_VERSION = 5
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
+M5_INACTIVE_REASON_PREFIX = (
+    "rectangular MTP verification is disabled on Apple M5"
+)
 MAX_CACHE_ROOTS = 8
 MAX_FALLBACK_REPOSITORY_ENTRIES = 4096
 MAX_FALLBACK_REPOSITORIES = 8
@@ -567,6 +570,57 @@ def observed_bucket(metrics: dict[str, Any], expected: int) -> bool:
     )
 
 
+def expected_mtp_expectation(expect_inactive: bool) -> dict[str, Any]:
+    return {
+        "kind": "expected_inactive" if expect_inactive else "active",
+        "allowedInactiveReasonValues": [],
+        "allowedInactiveReasonPrefixes": (
+            [M5_INACTIVE_REASON_PREFIX] if expect_inactive else []
+        ),
+    }
+
+
+def inactive_reason_matches(
+    metrics: dict[str, Any], expectation: dict[str, Any]
+) -> bool:
+    reason = metrics.get("inactiveReason")
+    if not isinstance(reason, str) or not reason:
+        return False
+    return reason in expectation["allowedInactiveReasonValues"] or any(
+        reason.startswith(prefix)
+        for prefix in expectation["allowedInactiveReasonPrefixes"]
+    )
+
+
+def validate_zero_speculative_work(metrics: dict[str, Any], label: str) -> None:
+    for field in (
+        "rounds",
+        "seedRows",
+        "proposedTokens",
+        "acceptedDraftTokens",
+        "committedTokens",
+    ):
+        if metrics.get(field) != 0:
+            raise ValueError(f"{label} reported speculative work in {field}")
+    for field in (
+        "acceptanceByPosition",
+        "conditionalAcceptance",
+        "skippedRows",
+        "depthSelections",
+        "controllerFallbacks",
+        "costInputs",
+    ):
+        if metrics.get(field) not in ([], {}):
+            raise ValueError(f"{label} reported speculative work in {field}")
+    for field in (
+        "totalRoundWallTimeNanos",
+        "assistantTimeNanos",
+        "targetVerifyTimeNanos",
+    ):
+        if metrics.get(field) is not None:
+            raise ValueError(f"{label} reported speculative timing in {field}")
+
+
 def recursively_present_keys(value: Any, wanted: set[str]) -> set[str]:
     found: set[str] = set()
     if isinstance(value, dict):
@@ -674,6 +728,7 @@ def validate_report(
     warmup: int,
     repetitions: int,
     seed: int,
+    expect_mtp_inactive: bool,
 ) -> None:
     encoded, metadata = run.read_regular(REPORT_NAME, MAX_REPORT_BYTES)
     if metadata.st_mtime < launch_time - 1:
@@ -685,11 +740,18 @@ def validate_report(
         raise ValueError(
             f"schemaVersion is {report.get('schemaVersion')}, expected {REPORT_SCHEMA_VERSION}"
         )
-    expected_fingerprint = f"{build_configuration}:{fingerprint}"
+    expectation = expected_mtp_expectation(expect_mtp_inactive)
+    expected_fingerprint = (
+        f"{build_configuration}:{expectation['kind']}:{fingerprint}"
+    )
     if report.get("runFingerprint") != expected_fingerprint:
         raise ValueError("run fingerprint does not match this launch")
     if report.get("buildConfiguration") != build_configuration:
         raise ValueError("report build configuration does not match this launch")
+    if report.get("mtpExpectation") != expectation:
+        raise ValueError("report MTP expectation does not match this launch")
+    if mode == "production-performance" and expect_mtp_inactive:
+        raise ValueError("production performance cannot be expected-inactive")
     if report.get("complete") is not True:
         raise ValueError("report is only a partial checkpoint")
     if report.get("expectedCaseCount") != 40:
@@ -815,9 +877,21 @@ def validate_report(
         if kind == "target_only":
             if metrics.get("active") is not False:
                 raise ValueError(f"target-only B{batch} reported MTP active")
-            if metrics.get("rounds") != 0 or metrics.get("proposedTokens") != 0:
-                raise ValueError(f"target-only B{batch} reported speculative work")
+            validate_zero_speculative_work(metrics, f"target-only B{batch}")
         elif kind == "fixed":
+            if expect_mtp_inactive:
+                if metrics.get("active") is not False:
+                    raise ValueError(
+                        f"fixed L{width}/B{batch} unexpectedly reported MTP active"
+                    )
+                if not inactive_reason_matches(metrics, expectation):
+                    raise ValueError(
+                        f"fixed L{width}/B{batch} inactive reason is not allowed"
+                    )
+                validate_zero_speculative_work(
+                    metrics, f"fixed L{width}/B{batch} expected-inactive"
+                )
+                continue
             if metrics.get("active") is not True or not observed_bucket(metrics, expected_bucket):
                 raise ValueError(f"fixed L{width}/B{batch} did not prove activation/bucket")
             depth = width - 1
@@ -835,6 +909,19 @@ def validate_report(
                 ):
                     raise ValueError(f"fixed L{width}/B{batch} lacks depth/bucket cost evidence")
         elif kind == "adaptive":
+            if expect_mtp_inactive:
+                if metrics.get("active") is not False:
+                    raise ValueError(
+                        f"adaptive B{batch} unexpectedly reported MTP active"
+                    )
+                if not inactive_reason_matches(metrics, expectation):
+                    raise ValueError(
+                        f"adaptive B{batch} inactive reason is not allowed"
+                    )
+                validate_zero_speculative_work(
+                    metrics, f"adaptive B{batch} expected-inactive"
+                )
+                continue
             if metrics.get("active") is not True or not observed_bucket(metrics, expected_bucket):
                 raise ValueError(f"adaptive B{batch} did not prove activation/bucket")
             if metrics.get("rounds", 0) <= 0 or metrics.get("proposedTokens", 0) <= 0:
@@ -883,6 +970,7 @@ def fingerprint_for(
             "target_fingerprint": target["artifactFingerprint"],
             "assistant_fingerprint": assistant["artifactFingerprint"],
             "mode": args.mode,
+            "mtp_expectation": expected_mtp_expectation(args.expect_mtp_inactive),
             "build_configuration": build_configuration,
             "test_filter": args.test_filter,
             "max_tokens": args.max_tokens,
@@ -945,6 +1033,9 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                 "DARKBLOOM_MTP_BENCHMARK_BUILD_CONFIGURATION": build_configuration,
                 "DARKBLOOM_MTP_BENCHMARK_MAX_TOKENS": str(args.max_tokens),
                 "DARKBLOOM_MTP_BENCHMARK_MODE": args.mode,
+                "DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE": (
+                    "1" if args.expect_mtp_inactive else "0"
+                ),
                 "DARKBLOOM_MTP_BENCHMARK_WARMUP": str(warmup),
                 "DARKBLOOM_MTP_BENCHMARK_REPETITIONS": str(repetitions),
                 "DARKBLOOM_MTP_BENCHMARK_SEED": str(args.seed),
@@ -970,10 +1061,14 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
         print(f"result={output}")
         print(f"log={log_path}")
         print(f"mode={args.mode}")
+        print(f"expect_mtp_inactive={args.expect_mtp_inactive}")
         print(f"build_configuration={build_configuration}")
         print(f"test_filter={args.test_filter}")
         print(f"launch_fingerprint={fingerprint}")
-        print(f"report_fingerprint={build_configuration}:{fingerprint}")
+        expectation_kind = expected_mtp_expectation(args.expect_mtp_inactive)["kind"]
+        print(
+            f"report_fingerprint={build_configuration}:{expectation_kind}:{fingerprint}"
+        )
         sys.stdout.flush()
 
         process = subprocess.Popen(
@@ -1011,6 +1106,7 @@ def worker_main(args: argparse.Namespace, warmup: int, repetitions: int) -> int:
                     warmup=warmup,
                     repetitions=repetitions,
                     seed=args.seed,
+                    expect_mtp_inactive=args.expect_mtp_inactive,
                 )
             except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
                 print(
@@ -1036,6 +1132,7 @@ def supervisor_main(args: argparse.Namespace, warmup: int, repetitions: int) -> 
         "created_at": datetime.now(timezone.utc).isoformat(),
         "build_configuration": "debug" if args.debug else "release",
         "mode": args.mode,
+        "mtp_expectation": expected_mtp_expectation(args.expect_mtp_inactive),
         "test_filter": args.test_filter,
         "timeout_seconds": args.timeout_seconds,
     }
@@ -1185,6 +1282,14 @@ def parse_arguments() -> argparse.Namespace:
         default="raw-parity",
         help="raw parity recursively omits performance keys; performance requires release",
     )
+    parser.add_argument(
+        "--expect-mtp-inactive",
+        action="store_true",
+        help=(
+            "require fixed/adaptive cases to match the stable Apple M5 hardware "
+            "safety-veto reason, perform zero speculative work, and retain target-only parity"
+        ),
+    )
     parser.add_argument("--warmup", type=int)
     parser.add_argument("--repetitions", type=int)
     parser.add_argument("--seed", type=int, default=0x4D545032)
@@ -1210,6 +1315,8 @@ def parse_arguments() -> argparse.Namespace:
         parser.error("--timeout-seconds and --max-tokens must be positive; --seed nonnegative")
     if args.mode == "production-performance" and args.debug:
         parser.error("production-performance mode requires a release build")
+    if args.mode == "production-performance" and args.expect_mtp_inactive:
+        parser.error("production-performance mode rejects --expect-mtp-inactive")
     if not args.test_filter or args.test_filter.startswith("-"):
         parser.error("--test-filter must be nonempty")
     return args

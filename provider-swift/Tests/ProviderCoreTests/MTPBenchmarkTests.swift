@@ -167,6 +167,7 @@ struct MTPBenchmarkTests {
         let decoded = try JSONDecoder.withISO8601.decode(MTPBenchmarkReport.self, from: data)
         #expect(decoded.schemaVersion == MTPBenchmarkReport.currentSchemaVersion)
         #expect(decoded.buildConfiguration == .current)
+        #expect(decoded.mtpExpectation == .active)
         #expect(decoded.cases.first?.tokenParity == true)
         #expect(decoded.cases.first?.metrics.selectedDepth == 2)
         #expect(decoded.cases.first?.metrics.totalRoundWallTimeNanos == 1_000)
@@ -177,6 +178,117 @@ struct MTPBenchmarkTests {
         #expect(decoded.stopPolicy.configuredTokenCount == 2)
         let object = try JSONSerialization.jsonObject(with: data)
         #expect(findKeys(in: object, matching: ["tokenIDs"]).isEmpty)
+    }
+
+    @Test("expected-inactive metrics require the declared reason and zero work")
+    func expectedInactiveMetricsValidation() throws {
+        let mode = try MTPBenchmarkMode.fixed(verificationWidth: 3)
+        let reason = "rectangular MTP verification is disabled on Apple M5 Max: target-only and [B, 1+k] target argmax parity is not certified"
+        let exactExpectation = MTPBenchmarkMTPExpectation.expectedInactive(
+            allowedReasonValues: [reason])
+
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(active: false, inactiveReason: reason),
+                mode: mode,
+                batchSize: 2,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [])
+        }
+        for invalid in [
+            MTPBenchmarkMetrics(active: false),
+            MTPBenchmarkMetrics(active: false, inactiveReason: "configuration disabled"),
+            MTPBenchmarkMetrics(active: false, inactiveReason: reason, rounds: 1),
+        ] {
+            #expect(throws: MTPBenchmarkError.self) {
+                try MTPBenchmarkRunner.validateMetrics(
+                    invalid,
+                    mode: mode,
+                    batchSize: 2,
+                    adaptiveDraftingExpected: true,
+                    allowedSkipReasons: [],
+                    expectation: exactExpectation)
+            }
+        }
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(active: true),
+                mode: mode,
+                batchSize: 2,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [],
+                expectation: exactExpectation)
+        }
+
+        try MTPBenchmarkRunner.validateMetrics(
+            MTPBenchmarkMetrics(active: false, inactiveReason: reason),
+            mode: mode,
+            batchSize: 2,
+            adaptiveDraftingExpected: true,
+            allowedSkipReasons: [],
+            expectation: exactExpectation)
+        #expect(MTPBenchmarkMTPExpectation.m5HardwareSafetyGate
+            .matchesInactiveReason(reason))
+    }
+
+    @Test("expected-inactive raw report preserves reason without raw tokens or timing")
+    func expectedInactiveReportSerialization() throws {
+        let artifact = testArtifact()
+        let reason = "rectangular MTP verification is disabled on Apple M5 Max: target-only and [B, 1+k] target argmax parity is not certified"
+        let expectation = MTPBenchmarkMTPExpectation.m5HardwareSafetyGate
+        let report = MTPBenchmarkReport(
+            runFingerprint: "inactive-unit-test",
+            purpose: .rawParityStress,
+            mtpExpectation: expectation,
+            stopPolicy: .rawFixedLength,
+            startedAt: Date(),
+            completedAt: Date(),
+            complete: true,
+            expectedCaseCount: 1,
+            target: artifact,
+            assistant: artifact,
+            hardware: testHardware(),
+            maxTokensPerRow: 1,
+            warmupIterations: 0,
+            measurementRepetitions: 1,
+            modeOrderSeed: 1,
+            coverage: .shortContextMatrix(target: artifact, assistant: artifact),
+            elapsedMs: 10,
+            cases: [.init(
+                mode: .adaptive,
+                batchSize: 1,
+                measurementRepetitions: 1,
+                medianAggregateDecodeTokensPerSecond: 10,
+                tokenParity: true,
+                parityMismatchRows: [],
+                rows: [.init(
+                    promptName: "p",
+                    tokenCount: 1,
+                    opaqueTokenDigest: String(repeating: "e", count: 64),
+                    timeToFirstTokenMs: 1,
+                    interTokenLatencyMs: 2,
+                    decodeTokensPerSecond: 3,
+                    lastTokenLatencyMs: 4,
+                    finishReason: "length")],
+                metrics: .init(active: false, inactiveReason: reason))])
+
+        let data = try report.jsonData()
+        let decoded = try JSONDecoder.withISO8601.decode(MTPBenchmarkReport.self, from: data)
+        #expect(decoded.mtpExpectation == expectation)
+        #expect(decoded.cases.first?.metrics.inactiveReason == reason)
+        #expect(decoded.runFingerprint.contains(":expected_inactive:"))
+        let object = try JSONSerialization.jsonObject(with: data)
+        #expect(findKeys(in: object, matching: ["inactiveReason"]) == ["inactiveReason"])
+        #expect(findKeys(in: object, matching: ["tokenIDs"]).isEmpty)
+        #expect(findKeys(in: object, matching: [
+            "elapsedMs",
+            "medianAggregateDecodeTokensPerSecond",
+            "timeToFirstTokenMs",
+            "interTokenLatencyMs",
+            "decodeTokensPerSecond",
+            "lastTokenLatencyMs",
+            "totalRoundWallTimeNanos",
+        ]).isEmpty)
     }
 
     @Test("stream and aggregate timing use token timestamps and N-1 intervals")
@@ -400,6 +512,30 @@ struct MTPBenchmarkTests {
         #expect(report.cases.first?.rows.first?.decodeTokensPerSecond == 0)
         #expect(report.elapsedMs != nil)
         #endif
+    }
+
+    @Test("production performance rejects expected-inactive certification")
+    func productionPerformanceRejectsExpectedInactive() async {
+        let artifact = testArtifact()
+        let sessions = MTPBenchmarkSessionFactory { _, _ in
+            MTPBenchmarkSession(engine: SuccessfulLengthEngine()) { .inactive }
+        }
+        await #expect(throws: MTPBenchmarkError.self) {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact,
+                assistant: artifact,
+                hardware: testHardware(),
+                configuration: MTPBenchmarkConfiguration(
+                    prompts: [.init(name: "prompt", tokenIDs: [1])],
+                    batchSizes: [1],
+                    modes: [.targetOnly],
+                    maxTokensPerRow: 1,
+                    purpose: .productionPerformance,
+                    mtpExpectation: .m5HardwareSafetyGate,
+                    stopPolicy: .production(tokenIDs: [9]),
+                    deadline: .seconds(2)),
+                sessions: sessions)
+        }
     }
 
     @Test("all non-performance reports recursively omit performance keys")

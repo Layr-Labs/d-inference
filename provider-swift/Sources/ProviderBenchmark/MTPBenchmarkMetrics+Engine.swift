@@ -33,9 +33,12 @@ extension MTPBenchmarkMetrics {
 
 public enum MTPBenchmarkEngineMetrics {
     public static func snapshot(engine: any CBv2Engine) -> MTPBenchmarkMetrics {
-        guard let engine = engine as? EngineV2,
-              let metrics = engine.mtpMetricsSnapshot()
-        else { return .inactive }
+        guard let engine = engine as? EngineV2 else { return .inactive }
+        guard let metrics = engine.mtpMetricsSnapshot() else {
+            return MTPBenchmarkMetrics(
+                active: false,
+                inactiveReason: engine.mtpInactiveReason)
+        }
         return MTPBenchmarkMetrics(engineMetrics: metrics)
     }
 }

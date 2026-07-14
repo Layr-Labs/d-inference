@@ -141,6 +141,12 @@ enum MTPProductionLiveFixtures {
         }
     }
 
+    static var benchmarkMTPExpectation: MTPBenchmarkMTPExpectation {
+        truthy(environment["DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE"])
+            ? .m5HardwareSafetyGate
+            : .active
+    }
+
     static func benchmarkStopPolicy(
         bundle: MTPProductionModelBundle
     ) -> MTPBenchmarkStopPolicy {

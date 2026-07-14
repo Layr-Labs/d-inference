@@ -57,6 +57,14 @@ private actor SlowFunnelCatalog: SpecDecCatalogLooking {
     }
 }
 
+private actor FunnelSleepProbe {
+    private(set) var durations: [Duration] = []
+
+    func sleep(_ duration: Duration) {
+        durations.append(duration)
+    }
+}
+
 private func funnelModel(id: String = "gemma-4-target", metadata: [String: JSONValue]? = nil) -> CatalogModel {
     CatalogModel(
         id: id, s3Name: "unused", displayName: id, sizeGb: 1,
@@ -280,18 +288,20 @@ struct SpecDecArtifactFunnelTests {
         #expect(await catalog.cancellations == 1)
     }
 
-    @Test("catalog prewarm has a short fail-open deadline")
+    @Test("catalog prewarm fails open when the short deadline wins")
     func prewarmDeadline() async {
+        let sleepProbe = FunnelSleepProbe()
         let funnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(
                 storeRoot: FileManager.default.temporaryDirectory,
                 cdnBaseURL: "http://127.0.0.1:1"),
             catalog: SlowFunnelCatalog())
-        let started = ContinuousClock.now
         let warmed = await funnel.prewarmCatalog(
-            modelId: "gemma-4-target", timeout: .milliseconds(20))
+            modelId: "gemma-4-target",
+            timeout: .milliseconds(20),
+            sleep: { duration in await sleepProbe.sleep(duration) })
         #expect(!warmed)
-        #expect(ContinuousClock.now - started < .milliseconds(250))
+        #expect(await sleepProbe.durations == [.milliseconds(20)])
         await funnel.shutdown()
     }
 }

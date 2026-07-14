@@ -576,13 +576,13 @@ struct CoordinatorIntegrationTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let captured = await captureStderr {
-            await UpdateBanner.run(
-                coordinatorURL: baseURL.absoluteString,
-                currentVersion: ProviderCore.version,
-                timeout: 2.0
-            )
-        }
+        let output = BannerOutputBox()
+        await UpdateBanner.run(
+            coordinatorURL: baseURL.absoluteString,
+            currentVersion: ProviderCore.version,
+            timeout: 2.0,
+            write: { output.append($0) })
+        let captured = output.text
         #expect(captured.isEmpty, "expected no banner; got: \(captured)")
     }
 
@@ -596,13 +596,13 @@ struct CoordinatorIntegrationTests {
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        let captured = await captureStderr {
-            await UpdateBanner.run(
-                coordinatorURL: baseURL.absoluteString,
-                currentVersion: "0.5.0",
-                timeout: 2.0
-            )
-        }
+        let output = BannerOutputBox()
+        await UpdateBanner.run(
+            coordinatorURL: baseURL.absoluteString,
+            currentVersion: "0.5.0",
+            timeout: 2.0,
+            write: { output.append($0) })
+        let captured = output.text
         #expect(captured.contains("Update available"), "stderr: \(captured)")
         #expect(captured.contains("99.0.0"))
         #expect(captured.contains("darkbloom update"))
@@ -722,29 +722,15 @@ private final class LoopStateBox: @unchecked Sendable {
     }
 }
 
-// MARK: Stderr capture
+private final class BannerOutputBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
 
-/// Run the given async closure with stderr (FD 2) redirected into a Pipe and
-/// return the bytes written to it as a UTF-8 string.
-///
-/// This is best-effort: only output that goes through `FileHandle.standardError`
-/// or the C-level `stderr` is captured. swift-log's stderr handler routes
-/// through STDERR_FILENO so the existing UpdateBanner banner (which calls
-/// `FileHandle.standardError.write`) is captured.
-private func captureStderr(_ body: () async -> Void) async -> String {
-    let pipe = Pipe()
-    let originalFD = dup(fileno(stderr))
-    setvbuf(stderr, nil, _IONBF, 0)
-    let pipeFD = pipe.fileHandleForWriting.fileDescriptor
-    dup2(pipeFD, fileno(stderr))
+    func append(_ value: Data) {
+        lock.withLock { data.append(value) }
+    }
 
-    await body()
-
-    fflush(stderr)
-    dup2(originalFD, fileno(stderr))
-    close(originalFD)
-    try? pipe.fileHandleForWriting.close()
-
-    let data = (try? pipe.fileHandleForReading.readToEnd()) ?? Data()
-    return String(data: data, encoding: .utf8) ?? ""
+    var text: String {
+        lock.withLock { String(data: data, encoding: .utf8) ?? "" }
+    }
 }

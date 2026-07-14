@@ -67,7 +67,13 @@ actor SpecDecArtifactFunnel {
     /// loads. The deadline is intentionally short and fail-open; target loads
     /// never await catalog or artifact network I/O themselves.
     @discardableResult
-    func prewarmCatalog(modelId: String, timeout: Duration) async -> Bool {
+    func prewarmCatalog(
+        modelId: String,
+        timeout: Duration,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
+            try await taskSleep(duration)
+        }
+    ) async -> Bool {
         guard !isShutdown, let catalog else { return false }
         return await withTaskGroup(of: Bool.self) { group in
             group.addTask {
@@ -80,7 +86,7 @@ actor SpecDecArtifactFunnel {
             }
             group.addTask {
                 do {
-                    try await taskSleep(timeout)
+                    try await sleep(timeout)
                 } catch {
                     return false
                 }

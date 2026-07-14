@@ -114,8 +114,17 @@ enum SSDPrefixCachePolicy {
 
     /// Estimated stage time for `bytes` at the conservative rate.
     static func estimatedStageMillis(bytes: Int) -> Int {
+        Int(estimatedStageMillisDouble(bytes: bytes))
+    }
+
+    /// Wire/scoring estimate for a future read of the durable leading run.
+    /// Positive durable bytes always carry a positive cost, and hostile sizes
+    /// are bounded to the protocol's ten-minute ceiling.
+    static func estimatedStageMillisDouble(bytes: Int) -> Double {
         guard bytes > 0 else { return 0 }
-        return Int((Double(bytes) / conservativeStageBytesPerSecond) * 1000.0)
+        let estimate = (Double(bytes) / conservativeStageBytesPerSecond) * 1000.0
+        guard estimate.isFinite else { return PrefixCacheReadyResult.maxStageMs }
+        return min(PrefixCacheReadyResult.maxStageMs, max(1, estimate.rounded(.up)))
     }
 
     // MARK: - Low-disk guard

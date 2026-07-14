@@ -445,18 +445,26 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 // only known when the provider later sends complete/error; handleComplete or
 // post-commit response handlers update them.
 func (d *dispatchState) successRoutingOutcome() *store.InferenceRouteOutcome {
-	return committedRouteOutcome(d.pr)
+	return d.successRoutingOutcomeFor(d.pr)
+}
+
+func (d *dispatchState) successRoutingOutcomeFor(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
+	return committedRouteOutcome(pr)
 }
 
 // errorRoutingOutcome builds an error / timeout / cancelled outcome.
 func (d *dispatchState) errorRoutingOutcome(status, class string, code int) *store.InferenceRouteOutcome {
+	return d.errorRoutingOutcomeFor(d.pr, status, class, code)
+}
+
+func (d *dispatchState) errorRoutingOutcomeFor(pr *registry.PendingRequest, status, class string, code int) *store.InferenceRouteOutcome {
 	providerReason, errorText := "", ""
 	if routeOutcomeUsesProviderErrorText(class) {
 		providerReason = d.lastErrReason
 		errorText = d.lastErr
 	}
 	out := routeOutcomeWithReason(status, class, code, providerReason, errorText)
-	applyPendingRouteTelemetry(out, d.pr)
+	applyPendingRouteTelemetry(out, pr)
 	return out
 }
 
@@ -509,17 +517,21 @@ func providerReportedBudget(provider *registry.Provider, model string) int64 {
 // pre-dispatch failures (queue reservation DB error, invalid key, keygen, send
 // failure) and coordinator-side timeouts are NOT flagged.
 func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutcome {
+	return d.providerFailedRoutingOutcomeFor(d.pr)
+}
+
+func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
 	if isTerminalClientErrorCode(d.lastErrCode) {
 		// Deterministic client-shape 4xx: a malformed/unservable-by-shape request,
 		// not a provider fault. Record as client_error WITHOUT AdmittedButFailed so
 		// it stays out of the admission-mismatch gauge.
-		return d.errorRoutingOutcome("error", errorClassClientError, d.lastErrCode)
+		return d.errorRoutingOutcomeFor(pr, "error", errorClassClientError, d.lastErrCode)
 	}
 	class := "provider_error"
 	if providerDisconnectedError(d.lastErr, d.lastErrCode) {
 		class = "provider_disconnect_pre_commit"
 	}
-	out := d.errorRoutingOutcome("error", class, d.lastErrCode)
+	out := d.errorRoutingOutcomeFor(pr, "error", class, d.lastErrCode)
 	out.AdmittedButFailed = true
 	return out
 }
@@ -604,8 +616,42 @@ func (d *dispatchState) rejectionInfoWithDecision(stage, reason string, status, 
 	return info
 }
 
-// updateRoutingOutcome writes a final outcome update for the current attempt
-// asynchronously. It is a no-op when there is no request ID to correlate.
+// dispatchRoutingAttempt is immutable identity captured before a wait path can
+// clear or promote mutable dispatchState provider/request fields.
+type dispatchRoutingAttempt struct {
+	provider  *registry.Provider
+	pending   *registry.PendingRequest
+	requestID string
+	attempt   int
+}
+
+func routingAttempt(provider *registry.Provider, pr *registry.PendingRequest, requestID string, attempt int) dispatchRoutingAttempt {
+	return dispatchRoutingAttempt{provider: provider, pending: pr, requestID: requestID, attempt: attempt}
+}
+
+func (d *dispatchState) currentOrCapturedRoutingAttempt(captured dispatchRoutingAttempt) dispatchRoutingAttempt {
+	if d.pr == nil {
+		return captured
+	}
+	return routingAttempt(d.provider, d.pr, d.routingOutcomeKey(), d.attempt)
+}
+
+func (d *dispatchState) updateRoutingOutcomeForAttempt(target dispatchRoutingAttempt, outcome *store.InferenceRouteOutcome) {
+	requestID, attempt := target.requestID, target.attempt
+	if requestID == "" {
+		return
+	}
+	providerMatches := target.provider == nil ||
+		(target.pending != nil && target.pending.ProviderID != "" && target.pending.ProviderID == target.provider.ID)
+	if target.pending != nil && target.pending.RequestID == requestID && target.pending.Attempt == attempt && providerMatches {
+		d.s.updateInferenceRouteOutcomeForPending(target.pending, outcome)
+		return
+	}
+	d.s.updateInferenceRouteOutcomeWithModel(requestID, attempt, d.model, outcome)
+}
+
+// updateRoutingOutcome writes an outcome update for the current attempt. It is
+// a no-op when there is no request ID to correlate.
 func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcome) {
 	requestID := d.routingOutcomeKey()
 	if requestID == "" {
@@ -614,7 +660,7 @@ func (d *dispatchState) updateRoutingOutcome(outcome *store.InferenceRouteOutcom
 	// Capture attempt on the dispatch goroutine: the closure runs on a telemetry
 	// sink worker, while run()'s retry loop concurrently advances d.attempt.
 	attempt := d.attempt
-	d.s.updateInferenceRouteOutcomeWithModel(requestID, attempt, d.model, outcome)
+	d.updateRoutingOutcomeForAttempt(routingAttempt(d.provider, d.pr, requestID, attempt), outcome)
 }
 
 func (d *dispatchState) markSpeculativeLoser(pr *registry.PendingRequest) {
@@ -962,11 +1008,30 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", 0))
 			return outcomeRetry
 		}
-		// Version-gated penalty strip (see bodyForProvider). The queued path seals
-		// here, separately from dispatchOneProvider.
-		sealedBody := bodyForProvider(d.rawBody, d.requiresVision, d.provider)
+		if err := s.registry.PrepareCacheAttempt(d.pr, d.provider); err != nil {
+			s.registry.ForgetCacheAttempt(d.pr)
+			d.provider.RemovePending(d.requestID)
+			s.registry.SetProviderIdle(d.provider.ID)
+			s.refundProviderExtra(d.pr)
+			d.setLastError("failed to prepare cache-safe request", http.StatusInternalServerError)
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", http.StatusInternalServerError))
+			return outcomeRetry
+		}
+		// Version-gated penalty strip plus protocol-0 cache isolation. The queued
+		// path seals here, separately from dispatchOneProvider.
+		sealedBody, err := bodyForCacheAttempt(d.rawBody, d.requiresVision, d.provider, d.pr)
+		if err != nil {
+			s.registry.ForgetCacheAttempt(d.pr)
+			d.provider.RemovePending(d.requestID)
+			s.registry.SetProviderIdle(d.provider.ID)
+			s.refundProviderExtra(d.pr)
+			d.setLastError("failed to prepare provider request", http.StatusInternalServerError)
+			d.updateRoutingOutcome(d.errorRoutingOutcome("error", "provider_error", http.StatusInternalServerError))
+			return outcomeRetry
+		}
 		encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
 		if err != nil {
+			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
 			s.refundProviderExtra(d.pr)
@@ -975,11 +1040,6 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			return outcomeRetry
 		}
 		d.timing.EncryptedAt = time.Now()
-		if err := s.registry.PrepareCacheAttempt(d.pr, d.provider); err != nil {
-			s.registry.ForgetCacheAttempt(d.pr)
-			s.ddIncr("routing.cache_prepare_error", nil)
-			s.logger.Warn("cache routing attempt disabled", "request_id", d.requestID, "provider_id", d.provider.ID, "error", err)
-		}
 		wireMsg := map[string]any{
 			"type":       protocol.TypeInferenceRequest,
 			"request_id": d.requestID,
@@ -1143,21 +1203,23 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 	s := d.s
 	r := d.r
 	provider, pr := d.provider, d.pr
+	captured := routingAttempt(provider, pr, pr.RequestID, pr.Attempt)
 
 	defer func() {
+		target := d.currentOrCapturedRoutingAttempt(captured)
 		switch outcome {
 		case outcomeCommitted:
-			d.updateRoutingOutcome(d.successRoutingOutcome())
+			d.updateRoutingOutcomeForAttempt(target, d.successRoutingOutcomeFor(target.pending))
 		case outcomeRetry:
 			if d.lastErrCode == http.StatusGatewayTimeout {
-				d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "first_chunk_timeout", d.lastErrCode))
+				d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "first_chunk_timeout", d.lastErrCode))
 			} else {
 				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
-				d.updateRoutingOutcome(d.providerFailedRoutingOutcome())
+				d.updateRoutingOutcomeForAttempt(target, d.providerFailedRoutingOutcomeFor(target.pending))
 			}
 		case outcomeClientGone:
 			d.emitClientGone(phaseBeforeFirstToken)
-			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+			d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "cancelled", "client_gone", 0))
 		}
 	}()
 
@@ -1965,25 +2027,27 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 	s := d.s
 	r := d.r
 	provider, pr := d.provider, d.pr
+	captured := routingAttempt(provider, pr, pr.RequestID, pr.Attempt)
 
 	defer func() {
+		target := d.currentOrCapturedRoutingAttempt(captured)
 		switch outcome {
 		case outcomeCommitted:
-			d.updateRoutingOutcome(d.successRoutingOutcome())
+			d.updateRoutingOutcomeForAttempt(target, d.successRoutingOutcomeFor(target.pending))
 		case outcomeRetry:
 			if d.lastErrCode == http.StatusGatewayTimeout {
 				if d.preambleLiveness {
-					d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "preamble_liveness_timeout", d.lastErrCode))
+					d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "preamble_liveness_timeout", d.lastErrCode))
 				} else {
-					d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "accepted_timeout", d.lastErrCode))
+					d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "accepted_timeout", d.lastErrCode))
 				}
 			} else {
 				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
-				d.updateRoutingOutcome(d.providerFailedRoutingOutcome())
+				d.updateRoutingOutcomeForAttempt(target, d.providerFailedRoutingOutcomeFor(target.pending))
 			}
 		case outcomeClientGone:
 			d.emitClientGone(phaseBeforeFirstToken)
-			d.updateRoutingOutcome(d.errorRoutingOutcome("cancelled", "client_gone", 0))
+			d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "cancelled", "client_gone", 0))
 		}
 	}()
 
@@ -2393,6 +2457,10 @@ func adjustLatencyForPrefill(raw time.Duration, promptTokens int, prefillTPS flo
 	return raw
 }
 
+func shouldRecordReputationLatency(pr *registry.PendingRequest, firstChunk string) bool {
+	return pr != nil && pr.Timing != nil && firstChunk != "" && !pr.CacheRoutingParticipates()
+}
+
 func (d *dispatchState) writeCommittedResponse() {
 	s := d.s
 	w, r := d.w, d.r
@@ -2414,7 +2482,7 @@ func (d *dispatchState) writeCommittedResponse() {
 	// prompt-size prefill is removed using the coordinator-side prompt estimate
 	// (known up front, adequate for normalization) and the provider's benchmarked
 	// PrefillTPS (set once at registration, read-only thereafter).
-	if pr.Timing != nil && d.firstChunk != "" {
+	if shouldRecordReputationLatency(pr, d.firstChunk) {
 		// FirstContentAt was already stamped at the content-commit site
 		// (commitFirstContent), earlier in THIS goroutine, so contentLatency reads
 		// a set value here. No re-stamp needed; just read it for the reputation

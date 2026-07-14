@@ -156,11 +156,22 @@ type PendingRequest struct {
 	MinDecodeTPS float64
 	// CacheRoute contains coordinator-only HMAC route keys. They are never sent
 	// to providers, logged, or persisted.
-	CacheRoute          CacheRoute
-	CacheReceiptNonce   string
-	CacheScope          string
-	cacheRoutingHints   map[string]cacheRoutingHint
-	cacheRoutingObserve bool
+	CacheRoute        CacheRoute
+	CacheReceiptNonce string
+	CacheScope        string
+	// LegacyCacheBustKey is injected only into the encrypted provider-bound
+	// request body for protocol-0 providers. It is never reflected to the caller.
+	LegacyCacheBustKey string
+	// Cache selection fields are low-cardinality terminal-correlation metadata.
+	// They contain no route keys, scopes, account identifiers, or provider IDs.
+	CacheSelectionMode        string
+	CacheSelectionKind        string
+	CacheSelectionTier        string
+	CacheSelectionDiscountMs  float64
+	CacheSelectionSelected    bool
+	CacheSelectionWouldChange bool
+	cacheRoutingHints         map[string]cacheRoutingHint
+	cacheRoutingObserve       bool
 	// TokenAdmission records the output-token charge admitted at request time so
 	// successful completion can reconcile any positive actual-output delta.
 	TokenAdmission TokenAdmission
@@ -194,6 +205,7 @@ type PendingRequest struct {
 	reservationFinalized  bool
 	routeOutcomeMu        sync.Mutex
 	routeOutcomeFinalized bool
+	cacheTerminalEmitted  bool
 
 	// Timing fields for latency decomposition. Written and read by the
 	// consumer/dispatch goroutine that owns the request. The reputation latency
@@ -227,6 +239,22 @@ type PendingRequest struct {
 	// the first reject so event ordering cannot distort the five-minute rate.
 	// Guarded by timingMu like contentCommitted (same writer/reader goroutines).
 	rateOutcomeCounted bool
+}
+
+// MarkCacheTerminalTelemetryEmitted claims the single terminal cache-selection
+// metric for this attempt. Provider terminals and consumer-side synthetic
+// disconnect/timeout paths can race; only the first terminal seam emits.
+func (pr *PendingRequest) MarkCacheTerminalTelemetryEmitted() bool {
+	if pr == nil {
+		return false
+	}
+	pr.routeOutcomeMu.Lock()
+	defer pr.routeOutcomeMu.Unlock()
+	if pr.cacheTerminalEmitted {
+		return false
+	}
+	pr.cacheTerminalEmitted = true
+	return true
 }
 
 // MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under

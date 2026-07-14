@@ -166,6 +166,10 @@ public actor ProviderLoop {
     internal let powerAssertion: InferencePowerAssertion
     internal let preloadTaskStarted: (@Sendable (String) -> Void)?
     internal let beforeModelLoad: (@Sendable (String) async -> Void)?
+    /// Test-only overrides for weight-hash disk operations. Production leaves
+    /// these nil and calls `WeightHasher` directly.
+    internal var weightHashFingerprintOverride: (@Sendable (URL) -> String?)?
+    internal var weightHashComputeOverride: (@Sendable (URL, String) -> String?)?
 
     /// Per-model inference slots. Each loaded model gets one EngineV2Bridge.
     /// Keyed by model ID.
@@ -582,6 +586,9 @@ public actor ProviderLoop {
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
+        /// Hash verified for the exact bytes bracketed around this slot's load.
+        /// Reused only when rebuilding the engine over the retained container.
+        let cacheEligibleWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
         let isVLM: Bool

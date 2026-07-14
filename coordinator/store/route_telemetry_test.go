@@ -21,6 +21,15 @@ func TestLegacyCacheAffinityScrubMigration(t *testing.T) {
 		!strings.Contains(legacyCacheAffinityGuardTrigger, "BEFORE INSERT OR UPDATE OF cache_affinity_key") {
 		t.Fatal("legacy cache-affinity write guard is incomplete")
 	}
+	for _, required := range []string{
+		"tg.tgrelid",
+		"target.relname = 'inference_routes'",
+		"ns.nspname = current_schema()",
+	} {
+		if !strings.Contains(legacyCacheAffinityGuardTrigger, required) {
+			t.Fatalf("legacy cache-affinity trigger existence check missing %q", required)
+		}
+	}
 }
 
 func TestInferenceRoute_Memory(t *testing.T) {

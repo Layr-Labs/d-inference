@@ -655,6 +655,90 @@ func hasCacheUsage(usage protocol.UsageInfo) bool {
 		usage.PrefillTokensSaved != 0 || usage.CacheStageMs != 0
 }
 
+func lowCardinalityCacheSelectionKind(kind string) string {
+	switch kind {
+	case "exact", "conversation_explicit", "conversation_derived":
+		return kind
+	default:
+		return "none"
+	}
+}
+
+func cacheSelectionTerminalTags(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid, usagePresent bool) []string {
+	mode := "none"
+	if pr != nil && (pr.CacheSelectionMode == "active" || pr.CacheSelectionMode == "observe") {
+		mode = pr.CacheSelectionMode
+	}
+	result := "unreported"
+	if usagePresent && !usageValid {
+		result = "invalid"
+	} else if usageValid {
+		if usage.CacheOutcome == "hit" {
+			result = "hit"
+		} else {
+			result = "non_hit"
+		}
+	}
+	kind, tier := "none", "none"
+	selected, wouldChange := false, false
+	if pr != nil {
+		kind = lowCardinalityCacheSelectionKind(pr.CacheSelectionKind)
+		tier = lowCardinalityCacheTier(pr.CacheSelectionTier)
+		selected = pr.CacheSelectionSelected
+		wouldChange = pr.CacheSelectionWouldChange
+		// Observe mode never dispatches its hypothetical cache winner. Keep its
+		// terminal correlation explicitly baseline-only even if malformed metadata
+		// claims otherwise, so it cannot be read as hypothetical-provider precision.
+		if mode == "observe" {
+			selected = false
+		}
+	}
+	return []string{
+		"mode:" + mode,
+		"kind:" + kind,
+		"tier:" + tier,
+		"selected:" + strconv.FormatBool(selected),
+		"would_change:" + strconv.FormatBool(wouldChange),
+		"result:" + result,
+	}
+}
+
+func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid, usagePresent bool) bool {
+	if pr == nil || (!pr.CacheRoutingParticipates() && pr.CacheSelectionKind == "") {
+		return false
+	}
+	if !pr.MarkCacheTerminalTelemetryEmitted() {
+		return false
+	}
+	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
+	s.ddIncr("routing.cache_selection_terminal", tags)
+	if pr.CacheSelectionKind != "" {
+		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags[:len(tags)-1])
+		if pr.CacheSelectionMode == "active" && pr.CacheSelectionSelected {
+			s.ddIncr("routing.cache_selection_precision", tags)
+		}
+	}
+	return true
+}
+
+func cacheSelectionTTFTSample(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid bool, actualTTFTMs float64) (float64, []string, bool) {
+	if pr == nil || !usageValid || actualTTFTMs <= 0 || math.IsNaN(actualTTFTMs) || math.IsInf(actualTTFTMs, 0) {
+		return 0, nil, false
+	}
+	if pr.CacheSelectionMode != "active" && pr.CacheSelectionMode != "observe" {
+		return 0, nil, false
+	}
+	return actualTTFTMs, cacheSelectionTerminalTags(pr, usage, true, true), true
+}
+
+func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid bool, actualTTFTMs float64) {
+	value, tags, ok := cacheSelectionTTFTSample(pr, usage, usageValid, actualTTFTMs)
+	if !ok {
+		return
+	}
+	s.ddHistogram("routing.cache_selection_ttft_ms", value, tags)
+}
+
 // CodeAttestResponseTimeout bounds how long the coordinator will accept a
 // provider's WebSocket reply to an APNs code-identity challenge after the push.
 // It is no longer a blocking wait (Fix 1): verification happens in the read-loop
@@ -1683,8 +1767,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			"prompt_tokens", msg.Usage.PromptTokens,
 		)
 	}
+	cacheUsagePresent := hasCacheUsage(msg.Usage)
 	cacheUsageValid := validCacheUsage(msg.Usage)
-	if hasCacheUsage(msg.Usage) && !cacheUsageValid {
+	if cacheUsagePresent && !cacheUsageValid {
 		s.ddIncr("routing.cache_usage_rejected", nil)
 		clearCacheUsage(&msg.Usage)
 	}
@@ -1695,6 +1780,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddCount("routing.cache_prefill_tokens_saved", int64(msg.Usage.PrefillTokensSaved), tags)
 		s.ddHistogram("routing.cache_stage_ms", msg.Usage.CacheStageMs, tags)
 	}
+	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
@@ -1985,6 +2071,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// the provider completed and billing settled, but the client did not receive
 		// the full response.
 		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
+		// Join only after both inputs are authoritative: cacheUsageValid was
+		// established from the terminal usage above, and completeRouteOutcome read
+		// the committed attempt's mutex-guarded first-content timestamp after the
+		// fallback stamp. No request, provider, route, or scope identifier is tagged.
+		if cacheTerminalClaimed {
+			s.emitCacheSelectionTTFT(pr, msg.Usage, cacheUsageValid, outcome.ActualTTFTMs)
+		}
 		if pr.Timing != nil {
 			// completeRouteOutcome already applied the per-attempt timing via
 			// applyPendingRouteTelemetry — actual_ttft_ms (from FirstContentAt),
@@ -2161,6 +2254,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
+	// Provider errors carry no validated cache usage, but still close the
+	// selection/outcome correlation denominator as an unreported result.
+	s.emitCacheSelectionTerminal(pr, protocol.UsageInfo{}, false, false)
 
 	// Record a job failure, but not for capacity rejections or consumer
 	// cancellations — neither is a provider fault. Capacity = load shedding the

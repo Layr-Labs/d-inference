@@ -183,7 +183,8 @@ extension ProviderLoop {
                 container: slot.container,
                 tokenizer: slot.tokenizer,
                 sizing: slot.sizing,
-                kvBytesCapacity: grant)
+                kvBytesCapacity: grant,
+                cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
             // makeEngineV2BridgeForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
 
@@ -214,6 +215,7 @@ extension ProviderLoop {
                 container: slot.container,
                 tokenizer: slot.tokenizer,
                 sizing: slot.sizing,
+                cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
                 isVLM: slot.isVLM,
                 modelType: slot.modelType,
                 lastInferenceAt: .now

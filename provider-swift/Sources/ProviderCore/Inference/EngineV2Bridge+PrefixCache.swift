@@ -31,12 +31,11 @@ import os
 // MARK: - Per-request usage signal
 
 /// Thread-safe, set-once-read-late box for a request's terminal usage
-/// detail. One instance per inference request (created by the coordinator
-/// inference handler only when the slot serves via the v2 engine); written
-/// by the bridge pump at the engine terminal, read by the frames loop when
-/// the trailing usage chunk arrives. The pump records BEFORE yielding the
-/// terminal events, and the usage SSE frame is only encoded downstream of
-/// those events, so the read always observes the write.
+/// detail and final lookup receipt. One instance per inference request
+/// (created by the coordinator inference handler only when the slot serves
+/// via the v2 engine); finalized by terminal usage or by the precise
+/// pre-terminal failure path. On success the pump records BEFORE yielding
+/// terminal events, so the trailing usage frame always observes the write.
 public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     private let lock = NSLock()
     private var _prefixCacheHitTokens: Int?
@@ -122,6 +121,23 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
     func record(stageResult: SSDPrefixCacheStageResult) {
         lock.withLock { _stageResult = stageResult }
+    }
+
+    func finalizeLookup(
+        failure: PrefixCacheLookupFailureClass,
+        fallbackTier: PrefixCacheTier
+    ) {
+        let resolved: PrefixCacheLookupResult? = lock.withLock {
+            guard !didEmitLookup else { return nil }
+            let result = _stageResult?.resolved(failure: failure)
+                ?? PrefixCacheLookupResult(
+                    outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
+                    tier: fallbackTier)
+            _lookupResult = result
+            didEmitLookup = true
+            return result
+        }
+        if let resolved { onLookupResolved?(resolved) }
     }
 
     func recordCacheDisabled(tier: PrefixCacheTier?) {

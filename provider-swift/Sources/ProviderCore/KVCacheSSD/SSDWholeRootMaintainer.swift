@@ -76,7 +76,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             for file in contents.tempFiles {
                 if SSDBlockStore.isStaleTempFile(
                     modifiedAt: file.modifiedAt, nowSeconds: nowSeconds),
-                    (try? FileManager.default.removeItem(at: file.url)) != nil
+                    SSDBlockStore.removeItemIfSafe(at: file.url, under: root)
                 {
                     result.tempFilesRemoved += 1
                 } else {
@@ -94,7 +94,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                 for file in files {
                     if nowSeconds - file.modifiedAt >= ttlSeconds
                     {
-                        if (try? FileManager.default.removeItem(at: file.url)) != nil {
+                        if SSDBlockStore.removeItemIfSafe(at: file.url, under: root) {
                             result.ttlExpired += 1
                         } else {
                             survivors.append(file)
@@ -114,7 +114,8 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                     return $0.url.path < $1.url.path
                 }
                 for file in files where total > limit {
-                    guard (try? FileManager.default.removeItem(at: file.url)) != nil else { continue }
+                    guard SSDBlockStore.removeItemIfSafe(at: file.url, under: root)
+                    else { continue }
                     total = max(0, total - file.bytes)
                     result.budgetEvicted += 1
                 }

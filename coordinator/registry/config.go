@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -201,10 +202,10 @@ func (c CacheRoutingConfig) Check() error {
 	if c.MaxHolders < 1 || c.MaxHolders > 32 {
 		return fmt.Errorf("registry: cache routing max holders must be between 1 and 32")
 	}
-	if c.MaxDiscountMs < 0 || c.MaxDiscountMs > 10_000 {
+	if math.IsNaN(c.MaxDiscountMs) || math.IsInf(c.MaxDiscountMs, 0) || c.MaxDiscountMs < 0 || c.MaxDiscountMs > 10_000 {
 		return fmt.Errorf("registry: cache routing max discount must be between 0 and 10000ms")
 	}
-	if c.MaxCostFraction < 0 || c.MaxCostFraction > 1 {
+	if math.IsNaN(c.MaxCostFraction) || math.IsInf(c.MaxCostFraction, 0) || c.MaxCostFraction < 0 || c.MaxCostFraction > 1 {
 		return fmt.Errorf("registry: cache routing max cost fraction must be between 0 and 1")
 	}
 	if mode != CacheRoutingOff {

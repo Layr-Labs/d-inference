@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -122,5 +123,33 @@ func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
 	cfg := ReadConfig().CacheRouting
 	if cfg.Mode != "" || cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 || cfg.MaxDiscountMs != 1000 || cfg.MaxCostFraction != .35 || cfg.Dedicated {
 		t.Fatalf("cache routing defaults = %+v", cfg)
+	}
+}
+
+func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
+	base := CacheRoutingConfig{
+		Mode: CacheRoutingOff, TTL: time.Minute, MaxHolders: 4,
+		MaxDiscountMs: 1000, MaxCostFraction: .35,
+	}
+	for _, tc := range []struct {
+		name       string
+		discountMs float64
+		fraction   float64
+	}{
+		{name: "discount_nan", discountMs: math.NaN(), fraction: .35},
+		{name: "discount_pos_inf", discountMs: math.Inf(1), fraction: .35},
+		{name: "discount_neg_inf", discountMs: math.Inf(-1), fraction: .35},
+		{name: "fraction_nan", discountMs: 1000, fraction: math.NaN()},
+		{name: "fraction_pos_inf", discountMs: 1000, fraction: math.Inf(1)},
+		{name: "fraction_neg_inf", discountMs: 1000, fraction: math.Inf(-1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.MaxDiscountMs = tc.discountMs
+			cfg.MaxCostFraction = tc.fraction
+			if err := cfg.Check(); err == nil {
+				t.Fatalf("accepted non-finite cache routing config: %+v", cfg)
+			}
+		})
 	}
 }

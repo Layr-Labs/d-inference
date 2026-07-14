@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -19,30 +20,62 @@ func newCacheReceiptNonce() (string, error) {
 }
 
 // PrepareCacheAttempt creates the provider-visible opaque scope and nonce only
-// for protocol-v1 providers and catalog builds with an immutable expected hash.
-// All registry/provider locks are released before HMAC and tracker mutation.
+// for protocol-v1 providers whose advertised weight hash matches the catalog.
+// Protocol-0 providers instead receive an encrypted-body-only, unique cache
+// buster so old code cannot derive a caller-controlled remote namespace.
 func (r *Registry) PrepareCacheAttempt(pr *PendingRequest, provider *Provider) error {
-	if r == nil || pr == nil || provider == nil || (pr.CacheRoute.ExactKey == "" && pr.CacheRoute.ConversationKey == "") {
+	if r == nil || pr == nil || provider == nil {
 		return nil
 	}
+	// A PendingRequest can be reused by a queued retry. Never carry cache fields
+	// from its previous selected provider into the next attempt.
+	r.ForgetCacheAttempt(pr)
 	provider.mu.Lock()
 	protocolVersion := provider.PrefixCacheProtocol
 	providerID := provider.ID
+	providerWeightHash := ""
+	for _, model := range provider.Models {
+		if model.ID == pr.Model {
+			providerWeightHash = strings.TrimSpace(model.WeightHash)
+			break
+		}
+	}
 	provider.mu.Unlock()
 	if protocolVersion < 1 {
+		bust, err := newCacheReceiptNonce()
+		if err != nil {
+			return err
+		}
+		pr.LegacyCacheBustKey = "darkbloom-uncached-" + bust
 		return nil
 	}
-	expectedHash := r.CatalogWeightHash(pr.Model)
-	if expectedHash == "" {
+	if !pr.CacheRoute.present() {
+		return nil
+	}
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	mode := r.cacheRoutingMode
+	expectedHash := ""
+	if entry, ok := r.modelCatalog[pr.Model]; ok {
+		expectedHash = strings.TrimSpace(entry.WeightHash)
+	}
+	r.mu.RUnlock()
+	if mode == CacheRoutingOff || tracker == nil {
+		return nil
+	}
+	if expectedHash == "" || providerWeightHash == "" || !strings.EqualFold(providerWeightHash, expectedHash) {
 		return nil
 	}
 	scope := r.ProviderCacheScope(pr.ConsumerKey, pr.Model, expectedHash, pr.CacheRoute.ScopeNamespace)
 	if scope == "" {
 		return nil
 	}
-	nonce, err := r.cacheRouting.registerAttempt(pr.RequestID, providerID, pr.Model, pr.CacheRoute, time.Now())
+	nonce, err := tracker.registerAttempt(pr.RequestID, providerID, pr.Model, pr.CacheRoute, time.Now())
 	if err != nil {
 		return err
+	}
+	if nonce == "" {
+		return nil
 	}
 	pr.CacheReceiptNonce = nonce
 	pr.CacheScope = scope
@@ -53,9 +86,15 @@ func (r *Registry) ForgetCacheAttempt(pr *PendingRequest) {
 	if r == nil || pr == nil {
 		return
 	}
-	r.cacheRouting.forgetAttempt(pr.CacheReceiptNonce)
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	if tracker != nil {
+		tracker.forgetAttempt(pr.CacheReceiptNonce)
+	}
 	pr.CacheReceiptNonce = ""
 	pr.CacheScope = ""
+	pr.LegacyCacheBustKey = ""
 }
 
 func (r *Registry) ApplyPrefixCacheLookup(providerID string, msg *protocol.PrefixCacheLookupMessage) bool {
@@ -122,7 +161,12 @@ func (r *Registry) MarkCacheAttemptTerminal(pr *PendingRequest) {
 	if r == nil || pr == nil {
 		return
 	}
-	r.cacheRouting.markAttemptTerminal(pr.CacheReceiptNonce, time.Now())
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	if tracker != nil {
+		tracker.markAttemptTerminal(pr.CacheReceiptNonce, time.Now())
+	}
 }
 
 func validCacheOutcome(outcome string) bool {
@@ -170,6 +214,13 @@ func (t *cacheRoutingTracker) applyLookup(providerID string, msg *protocol.Prefi
 			if key == "" {
 				continue
 			}
+			ref := cacheHolderRef{key: key, providerID: providerID}
+			if watermark, exists := t.activeWatermarkLocked(ref, now); exists {
+				if attempt.Sequence < watermark.Sequence {
+					continue
+				}
+				t.advanceWatermarkLocked(ref, attempt.Sequence, now)
+			}
 			holder, _ := t.activeHolderLocked(key, providerID, now)
 			holder.ProviderID = providerID
 			if attempt.Sequence > holder.EvidenceSequence {
@@ -195,6 +246,14 @@ func (t *cacheRoutingTracker) applyLookup(providerID string, msg *protocol.Prefi
 			break
 		}
 		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			ref := cacheHolderRef{key: key, providerID: providerID}
+			if watermark, exists := t.activeWatermarkLocked(ref, now); exists && attempt.Sequence < watermark.Sequence {
+				continue
+			}
+			t.advanceWatermarkLocked(ref, attempt.Sequence, now)
 			holder, exists := t.activeHolderLocked(key, providerID, now)
 			if exists && holder.EvidenceSequence > attempt.Sequence {
 				continue
@@ -209,6 +268,14 @@ func (t *cacheRoutingTracker) applyLookup(providerID string, msg *protocol.Prefi
 			break
 		}
 		for _, key := range keys {
+			if key == "" {
+				continue
+			}
+			ref := cacheHolderRef{key: key, providerID: providerID}
+			if watermark, exists := t.activeWatermarkLocked(ref, now); exists && attempt.Sequence < watermark.Sequence {
+				continue
+			}
+			t.advanceWatermarkLocked(ref, attempt.Sequence, now)
 			holder, exists := t.activeHolderLocked(key, providerID, now)
 			if !exists || holder.EvidenceSequence > attempt.Sequence {
 				continue
@@ -226,8 +293,12 @@ func (t *cacheRoutingTracker) applyLookup(providerID string, msg *protocol.Prefi
 }
 
 func (t *cacheRoutingTracker) applyReady(providerID string, msg *protocol.PrefixCacheReadyMessage, now time.Time) bool {
-	if t == nil || msg == nil || msg.Tier == "" || !validCacheTier(msg.Tier) || !validReceiptNumbers(msg.ReadyTokens, msg.ExpectedPrefillTokensSaved, 0) || msg.ReadyTokens <= 0 || msg.RequiredRecomputeTokens < 0 || msg.RequiredRecomputeTokens > cacheRoutingMaxReceiptTokens || msg.ReadyTokens < msg.RequiredRecomputeTokens || msg.ExpectedPrefillTokensSaved != msg.ReadyTokens-msg.RequiredRecomputeTokens {
+	if t == nil || msg == nil || msg.Tier == "" || !validCacheTier(msg.Tier) || !validReceiptNumbers(msg.ReadyTokens, msg.ExpectedPrefillTokensSaved, msg.StageMs) || msg.ReadyTokens <= 0 || msg.RequiredRecomputeTokens < 0 || msg.RequiredRecomputeTokens > cacheRoutingMaxReceiptTokens || msg.ReadyTokens < msg.RequiredRecomputeTokens || msg.ExpectedPrefillTokensSaved != msg.ReadyTokens-msg.RequiredRecomputeTokens {
 		return false
+	}
+	stageMs := msg.StageMs
+	if msg.Tier == "ssd" && stageMs == 0 {
+		stageMs = cacheRoutingUnmeasuredSSDStageMs
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -246,15 +317,33 @@ func (t *cacheRoutingTracker) applyReady(providerID string, msg *protocol.Prefix
 		if key == "" {
 			continue
 		}
-		current, _ := t.activeHolderLocked(key, providerID, now)
+		ref := cacheHolderRef{key: key, providerID: providerID}
+		current, currentExists := t.activeHolderLocked(key, providerID, now)
 		if current.ProviderID != "" && !now.Before(current.ExpiresAt) {
 			t.removeHolderLocked(key, providerID)
 			current = cacheHolder{}
+			currentExists = false
 		}
-		authoritativeReady := attempt.Sequence >= current.EvidenceSequence
-		sequenceAdvanced := attempt.Sequence > current.EvidenceSequence
+		watermark, watermarkExists := t.activeWatermarkLocked(ref, now)
+		// Physical ready evidence from an older attempt may still extend a live
+		// holder's prefix, but it must never recreate a holder removed/suppressed
+		// by newer negative evidence.
+		if watermarkExists && attempt.Sequence < watermark.Sequence && !currentExists {
+			continue
+		}
+		latestSequence := current.EvidenceSequence
+		if watermark.Sequence > latestSequence {
+			latestSequence = watermark.Sequence
+		}
+		authoritativeReady := attempt.Sequence >= latestSequence
+		sequenceAdvanced := attempt.Sequence > latestSequence
+		if authoritativeReady && watermarkExists {
+			t.advanceWatermarkLocked(ref, attempt.Sequence, now)
+		}
 		if sequenceAdvanced {
 			current.EvidenceSequence = attempt.Sequence
+		} else if watermark.Sequence > current.EvidenceSequence {
+			current.EvidenceSequence = watermark.Sequence
 		}
 		if authoritativeReady {
 			current.SuppressedUntil = time.Time{}
@@ -270,6 +359,7 @@ func (t *cacheRoutingTracker) applyReady(providerID string, msg *protocol.Prefix
 			if authoritativeReady && current.ReadyTokens == msg.ReadyTokens {
 				current.RequiredRecomputeTokens = msg.RequiredRecomputeTokens
 				current.PrefillTokensSaved = msg.ExpectedPrefillTokensSaved
+				current.StageMs = stageMs
 				current.Tier = msg.Tier
 			}
 			if authoritativeReady || sequenceAdvanced {
@@ -284,12 +374,16 @@ func (t *cacheRoutingTracker) applyReady(providerID string, msg *protocol.Prefix
 		current.ReadyTokens = msg.ReadyTokens
 		current.RequiredRecomputeTokens = msg.RequiredRecomputeTokens
 		current.PrefillTokensSaved = msg.ExpectedPrefillTokensSaved
+		current.StageMs = stageMs
 		current.Tier = msg.Tier
 		current.Outcome = "ready"
 		current.Confirmed = true
 		current.UpdatedAt = now
 		current.ExpiresAt = now.Add(t.ttl)
 		t.upsertHolderLocked(key, current)
+		if !authoritativeReady && watermarkExists {
+			t.advanceWatermarkLocked(ref, watermark.Sequence, now)
+		}
 	}
 	return true
 }
@@ -303,6 +397,10 @@ func (t *cacheRoutingTracker) resetLocked(now time.Time) {
 	t.holderOrderByRef = make(map[cacheHolderRef]*cacheHolderOrderEntry)
 	t.attemptOrder = nil
 	t.attemptOrderByNonce = make(map[string]*cacheAttemptOrderEntry)
+	t.watermarks = make(map[cacheHolderRef]cacheEvidenceWatermark)
+	t.watermarkOrder = nil
+	t.watermarkOrderByRef = make(map[cacheHolderRef]*cacheWatermarkOrderEntry)
+	t.activeAttemptRefs = make(map[cacheHolderRef]*cacheActiveAttemptRefState)
 	t.nextAttemptSequence = 0
 }
 
@@ -322,10 +420,19 @@ func (t *cacheRoutingTracker) disconnect(providerID string) {
 			t.removeAttemptLocked(nonce)
 		}
 	}
+	for ref := range t.watermarks {
+		if ref.providerID == providerID {
+			t.removeWatermarkLocked(ref)
+		}
+	}
 }
 
 func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAttempt) {
+	if previous, exists := t.attempts[nonce]; exists {
+		t.removeActiveAttemptRefsLocked(nonce, previous)
+	}
 	t.attempts[nonce] = attempt
+	t.addActiveAttemptRefsLocked(nonce, attempt)
 	if entry := t.attemptOrderByNonce[nonce]; entry != nil {
 		entry.createdAt = attempt.CreatedAt
 		heap.Fix(&t.attemptOrder, entry.index)
@@ -337,6 +444,9 @@ func (t *cacheRoutingTracker) storeAttemptLocked(nonce string, attempt cacheAtte
 }
 
 func (t *cacheRoutingTracker) removeAttemptLocked(nonce string) {
+	if attempt, exists := t.attempts[nonce]; exists {
+		t.removeActiveAttemptRefsLocked(nonce, attempt)
+	}
 	delete(t.attempts, nonce)
 	if entry := t.attemptOrderByNonce[nonce]; entry != nil {
 		heap.Remove(&t.attemptOrder, entry.index)
@@ -439,6 +549,11 @@ func (t *cacheRoutingTracker) sweepLocked(now time.Time) {
 	for nonce, attempt := range t.attempts {
 		if !now.Before(attempt.ExpiresAt) {
 			t.removeAttemptLocked(nonce)
+		}
+	}
+	for ref, watermark := range t.watermarks {
+		if !now.Before(watermark.ExpiresAt) {
+			t.removeWatermarkLocked(ref)
 		}
 	}
 }

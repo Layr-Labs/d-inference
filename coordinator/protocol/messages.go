@@ -339,13 +339,14 @@ type PrefixCacheLookupMessage struct {
 // PrefixCacheReadyMessage confirms that reusable prefix state is ready after
 // an inference attempt. Ready receipts may arrive after inference_complete.
 type PrefixCacheReadyMessage struct {
-	Type                       string `json:"type"`
-	RequestID                  string `json:"request_id"`
-	CacheReceiptNonce          string `json:"cache_receipt_nonce"`
-	ReadyTokens                int    `json:"ready_tokens"`
-	RequiredRecomputeTokens    int    `json:"required_recompute_tokens,omitempty"`
-	ExpectedPrefillTokensSaved int    `json:"expected_prefill_tokens_saved,omitempty"`
-	Tier                       string `json:"tier,omitempty"`
+	Type                       string  `json:"type"`
+	RequestID                  string  `json:"request_id"`
+	CacheReceiptNonce          string  `json:"cache_receipt_nonce"`
+	ReadyTokens                int     `json:"ready_tokens"`
+	RequiredRecomputeTokens    int     `json:"required_recompute_tokens,omitempty"`
+	ExpectedPrefillTokensSaved int     `json:"expected_prefill_tokens_saved,omitempty"`
+	Tier                       string  `json:"tier,omitempty"`
+	StageMs                    float64 `json:"stage_ms,omitempty"`
 }
 
 // InferenceCompleteMessage signals the provider finished generating.

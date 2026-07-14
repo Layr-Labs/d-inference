@@ -3,6 +3,7 @@ package registry
 import (
 	"math"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
@@ -345,6 +346,18 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		pr.cacheRoutingHints = cacheTracker.hints(pr.CacheRoute, cacheMode, time.Now())
 		pr.cacheRoutingObserve = cacheMode == CacheRoutingObserve
 	}
+	pr.CacheSelectionMode = ""
+	pr.CacheSelectionKind = ""
+	pr.CacheSelectionTier = ""
+	pr.CacheSelectionDiscountMs = 0
+	pr.CacheSelectionSelected = false
+	pr.CacheSelectionWouldChange = false
+	if pr.CacheRoutingParticipates() && cacheMode != CacheRoutingOff {
+		pr.CacheSelectionMode = "active"
+		if cacheMode == CacheRoutingObserve {
+			pr.CacheSelectionMode = "observe"
+		}
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -421,6 +434,19 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		}
 	}
 
+	bd := selected.breakdown
+	if selected.cacheKind != "" {
+		pr.CacheSelectionMode = "active"
+		pr.CacheSelectionKind = selected.cacheKind
+		if strings.HasPrefix(pr.CacheSelectionKind, "observe_") {
+			pr.CacheSelectionMode = "observe"
+			pr.CacheSelectionKind = strings.TrimPrefix(pr.CacheSelectionKind, "observe_")
+		}
+		pr.CacheSelectionTier = selected.cacheTier
+		pr.CacheSelectionDiscountMs = bd.CacheDiscountMs
+		pr.CacheSelectionSelected = pr.CacheSelectionMode == "active"
+		pr.CacheSelectionWouldChange = selected.cacheWouldChange
+	}
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
 	// If this pair's capacity-reject cooldown just EXPIRED, this reservation is
@@ -437,13 +463,12 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		r.RecordWarmPoolColdDispatch(model)
 	}
 
-	bd := selected.breakdown
 	// Register the RAW estimate with the calibrator so the first-content
 	// observation (API layer, RecordTTFTObservation) can be joined to it.
 	// Warm-slot winners only (StateMs == 0): a cold dispatch's actual includes
 	// model-load time the flow estimate does not model, which would poison the
 	// ratio sample.
-	if bd.RawTTFTMs > 0 && bd.StateMs == 0 {
+	if bd.RawTTFTMs > 0 && bd.StateMs == 0 && !pr.CacheRoutingParticipates() {
 		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, selected.snapshot.chipFamily, bd.RawTTFTMs)
 	}
 	decision := RoutingDecision{

@@ -233,7 +233,8 @@ extension ProviderLoop {
         modelDirectory: URL?,
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let existing = await existingSlotGrants(excludingModelId: modelId)
         let newcomer = EngineV2KVSizing.ResliceSlot(
@@ -310,7 +311,8 @@ extension ProviderLoop {
                 container: newcomerBox.borrow(),
                 tokenizer: tokenizer,
                 sizing: sizing,
-                kvBytesCapacity: targets[modelId] ?? 0)
+                kvBytesCapacity: targets[modelId] ?? 0,
+                cacheEligibleWeightHash: cacheEligibleWeightHash)
         } catch {
             newcomerBox.release()
             MLX.Memory.clearCache()
@@ -409,7 +411,8 @@ extension ProviderLoop {
         container: ModelContainer,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int
+        kvBytesCapacity: Int,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
@@ -489,8 +492,8 @@ extension ProviderLoop {
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 // SSD-tier metadata binding: the verified hash for the bytes
-                // this slot loaded (nil ⇒ model-id binding degradation).
-                weightHash: liveModelHashes[modelId],
+                // this slot loaded (nil/blank disables reusable SSD caching).
+                weightHash: cacheEligibleWeightHash,
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         }

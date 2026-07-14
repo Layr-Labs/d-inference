@@ -929,7 +929,8 @@ import Testing
         readyTokens: 8192,
         requiredRecomputeTokens: 1536,
         expectedPrefillTokensSaved: 6656,
-        tier: .ssd))
+        tier: .ssd,
+        stageMs: 18.75))
     for message in [lookup, ready] {
         let data = try ProviderProtocolCodec.encodeProviderMessage(message)
         #expect(try ProviderProtocolCodec.decodeProviderMessage(from: data) == message)
@@ -944,6 +945,13 @@ import Testing
     #expect(readyObject["type"] as? String == "prefix_cache_ready")
     #expect(readyObject["ready_tokens"] as? Int == 8192)
     #expect(readyObject["required_recompute_tokens"] as? Int == 1536)
+    #expect(readyObject["stage_ms"] as? Double == 18.75)
+
+    let legacyReadyJSON = #"{"type":"prefix_cache_ready","request_id":"r","cache_receipt_nonce":"n","ready_tokens":8,"required_recompute_tokens":0,"expected_prefill_tokens_saved":8,"tier":"ssd"}"#
+    guard case .prefixCacheReady(let legacyReady) = try ProviderProtocolCodec.decodeProviderMessage(
+        from: Data(legacyReadyJSON.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(legacyReady.stageMs == nil)
 }
 
 @Test func usageInfoCacheFieldsAreOptionalAndBackwardCompatible() throws {

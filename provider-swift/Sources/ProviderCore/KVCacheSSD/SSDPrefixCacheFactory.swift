@@ -77,8 +77,10 @@ enum SSDPrefixCacheFactory {
         SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: cacheRootDirectory())
     }
 
-    /// Build the SSD tier for a supported model slot. `weightHash` nil falls
-    /// back to the model id (same binding degradation as the legacy tier).
+    /// Build the SSD tier for a supported model slot. Reusable ciphertext is
+    /// permitted only when it can be bound to the verified hash of the live
+    /// weights. A missing/blank hash disables the tier instead of degrading to
+    /// a model-id binding that could survive a weight replacement.
     static func make(
         modelId: String,
         weightHash: String?,
@@ -86,6 +88,26 @@ enum SSDPrefixCacheFactory {
         kvBudget: GlobalKVCacheBudget?,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) async -> SSDPrefixCache? {
+        guard let weightHash = verifiedWeightHash(weightHash) else {
+            #if canImport(os)
+            logger.warning(
+                "ssd prefix cache disabled for \(modelId, privacy: .public): verified live weight hash unavailable")
+            #endif
+            return nil
+        }
+        let wholeRoot = cacheRootDirectory()
+        let dir = cacheDirectory(modelId: modelId)
+        do {
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: wholeRoot,
+                modelRoot: dir)
+        } catch {
+            #if canImport(os)
+            logger.warning(
+                "ssd prefix cache disabled for \(modelId, privacy: .public): unsafe cache path (\(String(describing: error), privacy: .public))")
+            #endif
+            return nil
+        }
         // KEK: SE-wrapped + Keychain-persisted (files must survive restart
         // — restart warmth is the feature). Same construction + escape
         // hatch as the legacy tier.
@@ -119,18 +141,15 @@ enum SSDPrefixCacheFactory {
             kekKey = ephKey
         }
 
-        let dir = cacheDirectory(modelId: modelId)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let wholeRoot = cacheRootDirectory()
-
         let blockSize = PrefixCachePolicy.blockSize
         let config = SSDPrefixCache.Config(
             modelId: modelId,
-            weightHash: (weightHash?.isEmpty == false) ? weightHash! : modelId,
+            weightHash: weightHash,
             blockSize: blockSize,
             adoptionBoundTokens: PrefixCachePolicy.adoptionBoundTokens(layerKinds: layerKinds),
             layoutEpoch: SSDBlockStore.layoutEpoch(blockSize: blockSize, layerKinds: layerKinds),
             root: dir,
+            dedicatedRoot: wholeRoot,
             ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: environment),
             minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
             maxStageBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
@@ -164,5 +183,11 @@ enum SSDPrefixCacheFactory {
             "ssd prefix cache active for \(modelId, privacy: .public) at \(dir.path, privacy: .public): ttl \(config.ttlSeconds)s sliding, box-wide disk budget \(PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment, freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))) B, adoption bound \(config.adoptionBoundTokens) tok — HMAC-keyed names (T-041 leak #2 closed), no memory carve")
         #endif
         return cache
+    }
+
+    static func verifiedWeightHash(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }

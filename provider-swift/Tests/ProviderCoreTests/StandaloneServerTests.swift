@@ -535,6 +535,13 @@ private struct StandalonePendingLoadObservation: Error {
     let reservedBytes: UInt64
 }
 
+private final class StandaloneHashRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String?] = []
+    func record(_ value: String?) { lock.withLock { values.append(value) } }
+    var snapshot: [String?] { lock.withLock { values } }
+}
+
 private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
     let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
@@ -620,6 +627,27 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
         residentWeightBytes: UInt64(standaloneSizing(weightsGiB: 15).weightsBytes),
         configReserveBytes: 0)
     #expect(recorder.entries.map(\.grant) == [Int(expected)])
+}
+
+@Test func standaloneFactoryReceivesVerifiedCacheWeightHash() async throws {
+    let server = standaloneTestServer()
+    let hashes = StandaloneHashRecorder()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            onCacheEligibleWeightHash: hashes.record,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    _ = try await server.buildSlotForTesting(
+        modelId: "gpt-oss-20b",
+        modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15),
+        cacheEligibleWeightHash: "verified-standalone-hash")
+
+    #expect(hashes.snapshot == ["verified-standalone-hash"])
+    #expect(SSDPrefixCacheFactory.verifiedWeightHash(hashes.snapshot[0]) != nil)
 }
 
 @Test func standaloneSecondLoadReslicesAndEvictionRegrows() async throws {

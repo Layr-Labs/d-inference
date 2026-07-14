@@ -211,6 +211,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var requiredRecomputeTokens: UInt64
         public var expectedPrefillTokensSaved: UInt64
         public var tier: PrefixCacheTier
+        public var stageMs: Double?
 
         public init(
             requestId: String,
@@ -218,7 +219,8 @@ public enum ProviderMessage: Sendable, Equatable {
             readyTokens: UInt64,
             requiredRecomputeTokens: UInt64,
             expectedPrefillTokensSaved: UInt64,
-            tier: PrefixCacheTier
+            tier: PrefixCacheTier,
+            stageMs: Double? = nil
         ) {
             self.requestId = requestId
             self.cacheReceiptNonce = cacheReceiptNonce
@@ -226,6 +228,11 @@ public enum ProviderMessage: Sendable, Equatable {
             self.requiredRecomputeTokens = requiredRecomputeTokens
             self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
             self.tier = tier
+            if let stageMs, stageMs.isFinite {
+                self.stageMs = min(PrefixCacheReadyResult.maxStageMs, max(0, stageMs))
+            } else {
+                self.stageMs = nil
+            }
         }
     }
 
@@ -587,6 +594,7 @@ extension ProviderMessage: Codable {
             try container.encode(receipt.requiredRecomputeTokens, forKey: .requiredRecomputeTokens)
             try container.encode(receipt.expectedPrefillTokensSaved, forKey: .expectedPrefillTokensSaved)
             try container.encode(receipt.tier, forKey: .tier)
+            try container.encodeIfPresent(receipt.stageMs, forKey: .stageMs)
         }
     }
 
@@ -736,7 +744,8 @@ extension ProviderMessage: Codable {
                 readyTokens: try container.decode(UInt64.self, forKey: .readyTokens),
                 requiredRecomputeTokens: try container.decode(UInt64.self, forKey: .requiredRecomputeTokens),
                 expectedPrefillTokensSaved: try container.decode(UInt64.self, forKey: .expectedPrefillTokensSaved),
-                tier: try container.decode(PrefixCacheTier.self, forKey: .tier)
+                tier: try container.decode(PrefixCacheTier.self, forKey: .tier),
+                stageMs: try container.decodeIfPresent(Double.self, forKey: .stageMs)
             ))
         }
     }

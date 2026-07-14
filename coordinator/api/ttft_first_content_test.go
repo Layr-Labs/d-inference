@@ -25,6 +25,11 @@ import (
 // (ActualTTFTMs == 0).
 func TestFastCompletionStampsActualTTFT(t *testing.T) {
 	srv, st, _ := billingTestServer(t)
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
 
 	model := "fast-ttft-model"
 	provider := srv.registry.Register("fast-ttft-provider", nil, &protocol.RegisterMessage{
@@ -35,13 +40,18 @@ func TestFastCompletionStampsActualTTFT(t *testing.T) {
 	// chunk the dispatch goroutine has NOT yet stamped (FirstContentAt zero) —
 	// exactly the fast-completion race the fix closes.
 	pr := &registry.PendingRequest{
-		RequestID:        "fast-ttft-req",
-		Model:            model,
-		ConsumerKey:      testConsumerID,
-		ReservedMicroUSD: 10_000_000,
-		ChunkCh:          make(chan string, 1),
-		CompleteCh:       make(chan protocol.UsageInfo, 1),
-		ErrorCh:          make(chan protocol.InferenceErrorMessage, 1),
+		RequestID:              "fast-ttft-req",
+		Model:                  model,
+		ConsumerKey:            testConsumerID,
+		ReservedMicroUSD:       10_000_000,
+		ChunkCh:                make(chan string, 1),
+		CompleteCh:             make(chan protocol.UsageInfo, 1),
+		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
+		CacheRoute:             registry.CacheRoute{ExactKey: "coordinator-only"},
+		CacheSelectionMode:     "active",
+		CacheSelectionKind:     "exact",
+		CacheSelectionTier:     "memory",
+		CacheSelectionSelected: true,
 		Timing: &registry.RequestTiming{
 			ReceivedAt:   time.Now().Add(-60 * time.Millisecond),
 			DispatchedAt: time.Now().Add(-50 * time.Millisecond),
@@ -66,8 +76,16 @@ func TestFastCompletionStampsActualTTFT(t *testing.T) {
 	srv.handleComplete(provider.ID, provider, &protocol.InferenceCompleteMessage{
 		Type:      protocol.TypeInferenceComplete,
 		RequestID: pr.RequestID,
-		Usage:     protocol.UsageInfo{PromptTokens: 1000, CompletionTokens: 1},
+		Usage: protocol.UsageInfo{
+			PromptTokens: 1000, CompletionTokens: 1,
+			CacheOutcome: "miss_absent",
+		},
 	})
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	if !hasMetric(packets, "routing.cache_selection_ttft_ms:") || !hasMetric(packets, "selected:true") || !hasMetric(packets, "result:non_hit") {
+		t.Fatalf("cache-selected non-hit TTFT was not emitted after authoritative fallback timing: %v", packets)
+	}
 
 	// The outcome write is best-effort async (telemetry sink), so poll for it.
 	deadline := time.Now().Add(2 * time.Second)

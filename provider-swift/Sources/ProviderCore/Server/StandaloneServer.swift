@@ -134,17 +134,23 @@ public actor StandaloneServer {
         let physicalMemoryBytes: UInt64?
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
         let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
+        let computeWeightHash: (@Sendable (URL, String) -> String?)?
+        let onCacheEligibleWeightHash: (@Sendable (String?) -> Void)?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
             physicalMemoryBytes: UInt64? = nil,
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
+            computeWeightHash: (@Sendable (URL, String) -> String?)? = nil,
+            onCacheEligibleWeightHash: (@Sendable (String?) -> Void)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
             self.emitTelemetry = emitTelemetry
             self.beforeWeightLoad = beforeWeightLoad
+            self.computeWeightHash = computeWeightHash
+            self.onCacheEligibleWeightHash = onCacheEligibleWeightHash
             self.makeEngine = makeEngine
         }
     }
@@ -372,7 +378,8 @@ public actor StandaloneServer {
         container: MLXLMCommon.ModelContainer,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
-        isVLM: Bool = false
+        isVLM: Bool = false,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         // Convenience shape: box the container the way loadModel does (the
         // caller also holds its own reference, so unwind-ordering assertions
@@ -385,7 +392,8 @@ public actor StandaloneServer {
             modelDirectory: nil,
             newcomer: newcomer,
             tokenizer: tokenizer,
-            sizing: sizing)
+            sizing: sizing,
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
         guard let installContainer = newcomer.container else {
             throw StandaloneServerError.capacityUnavailable(
                 "internal: newcomer container missing at install for '\(modelId)'")
@@ -412,7 +420,8 @@ public actor StandaloneServer {
         modelDirectory: URL? = nil,
         newcomer: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         try await resliceAndBuildSlot(
             modelId: modelId,
@@ -421,7 +430,8 @@ public actor StandaloneServer {
             modelDirectory: modelDirectory,
             newcomer: newcomer,
             tokenizer: tokenizer,
-            sizing: sizing)
+            sizing: sizing,
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
     }
 
     /// Test seam: the post-bridge-guard failure unwind (retire bridge →
@@ -524,7 +534,8 @@ public actor StandaloneServer {
         modelDirectory: URL?,
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let existing = await existingSlotGrants(excludingModelId: modelId)
         let newcomer = EngineV2KVSizing.ResliceSlot(
@@ -586,6 +597,7 @@ public actor StandaloneServer {
         // last strong reference and `release()` frees the weights.
         let bridge: EngineV2Bridge
         do {
+            v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
             bridge = try await EngineV2SlotFactory.makeProductionBridge(
                 modelId: modelId,
                 modelType: modelType,
@@ -600,6 +612,7 @@ public actor StandaloneServer {
                 kvQuantConfigured: config.kvQuant,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                weightHash: cacheEligibleWeightHash,
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 makeEngineOverride: v2TestHooks?.makeEngine,
                 logInfo: { standaloneLogger.info("\($0)") },
@@ -895,6 +908,18 @@ public actor StandaloneServer {
         models.map { $0.id }.sorted()
     }
 
+    private func computeStandaloneWeightHash(
+        modelPath: URL, modelId: String
+    ) async -> String? {
+        let override = v2TestHooks?.computeWeightHash
+        return await Task.detached(priority: .utility) {
+            let hash = override != nil
+                ? override!(modelPath, modelId)
+                : WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)
+            return SSDPrefixCacheFactory.verifiedWeightHash(hash)
+        }.value
+    }
+
     /// Lazy-load a model if it isn't already resident. Serializes loads and
     /// applies LRU + memory-headroom eviction, then builds the v2 slot
     /// through the shared sizing → re-slice → bridge path.
@@ -975,6 +1000,13 @@ public actor StandaloneServer {
                 requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
+            let reusableSSDRequested: Bool = {
+                if case .ssd = PrefixCachePolicy.mode() { return true }
+                return false
+            }()
+            let preLoadCacheHash = reusableSSDRequested
+                ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
+                : nil
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -989,6 +1021,12 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             try Task.checkCancellation()
+            let postLoadCacheHash = reusableSSDRequested
+                ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
+                : nil
+            let cacheEligibleWeightHash = ProviderLoop.cryptographicallyBracketedCacheHash(
+                preLoadHash: preLoadCacheHash,
+                postLoadHash: postLoadCacheHash)
 
             // Scheduler-free sizing snapshot: weight bytes + the engine-truth
             // fp16 KV rate + context window — everything the re-slice and
@@ -1049,7 +1087,8 @@ public actor StandaloneServer {
                     modelDirectory: modelPath,
                     newcomer: newcomer,
                     tokenizer: tokenizer,
-                    sizing: sizing)
+                    sizing: sizing,
+                    cacheEligibleWeightHash: cacheEligibleWeightHash)
             } catch let error as StandaloneServerError {
                 MLX.Memory.clearCache()
                 throw error

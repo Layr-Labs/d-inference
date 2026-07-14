@@ -183,8 +183,13 @@ enum SSDBlockStore {
         metadata: SSDBlockMetadata,
         chunks: [Data],
         kekKey: SymmetricKey,
-        strictFsync: Bool = false
-    ) throws {
+        strictFsync: Bool = false,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
+    ) throws -> Int {
+        let modelRoot = url.deletingLastPathComponent().deletingLastPathComponent()
+        guard isSafeBlockURL(url, modelRoot: modelRoot) else {
+            throw SSDBlockStoreError.ioFailure("unsafe block path")
+        }
         guard chunks.count == metadata.chunkPlaintextSizes.count,
             chunks.count == metadata.chunks.count
         else {
@@ -202,33 +207,17 @@ enum SSDBlockStore {
         let header = try assembleHeader(
             fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
 
-        let dir = url.deletingLastPathComponent()
-        try ensureDirectory(dir)
-        let tmpURL = temporaryFileURL(for: url)
         do {
-            FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: tmpURL)
-            defer { try? handle.close() }
+            return try SSDNoFollowIO.writeAtomically(
+                to: url,
+                strictFsync: strictFsync,
+                beforeOperation: beforeOperation
+            ) { handle in
             try handle.write(contentsOf: header)
             try writeEncryptedBody(handle, chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
-            if strictFsync { try handle.synchronize() }
-        } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
-            throw SSDBlockStoreError.ioFailure("write tmp: \(error)")
-        }
-        do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
-            } else {
-                do {
-                    try FileManager.default.moveItem(at: tmpURL, to: url)
-                } catch {
-                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
-                }
             }
         } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
-            throw SSDBlockStoreError.ioFailure("atomic rename: \(error)")
+            throw SSDBlockStoreError.ioFailure("descriptor-relative write: \(error)")
         }
     }
 
@@ -237,12 +226,20 @@ enum SSDBlockStore {
     /// Read + authenticate one block file. Any auth/binding failure throws;
     /// the caller deletes the file and falls back to recompute.
     static func read(
-        from url: URL, kekKey: SymmetricKey
+        from url: URL,
+        kekKey: SymmetricKey,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
     ) throws -> (SSDBlockMetadata, [Data]) {
-        let header = try readHeader(at: url)
+        guard isSafeBlockURL(url), isRealRegularFile(url) else {
+            throw SSDBlockStoreError.ioFailure("unsafe block path")
+        }
+        let handle = try SSDNoFollowIO.openRegularFileForReading(
+            at: url, beforeOperation: beforeOperation)
+        defer { try? handle.close() }
+        let header = try readHeader(from: handle)
         let dek = try unwrapDEK(
             wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
-        let plaintexts = try decryptChunks(at: url, header: header, dek: dek)
+        let plaintexts = try decryptChunks(from: handle, header: header, dek: dek)
         return (header.metadata, plaintexts)
     }
 
@@ -250,8 +247,17 @@ enum SSDBlockStore {
     /// chunk decrypt. NOTE: an unauthenticated read (the AAD is only
     /// verified when chunks are opened); scan decisions made on it are
     /// re-verified at adoption time by the full authenticated `read`.
-    static func readMetadataOnly(from url: URL) throws -> SSDBlockMetadata {
-        try readHeader(at: url).metadata
+    static func readMetadataOnly(
+        from url: URL,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
+    ) throws -> SSDBlockMetadata {
+        guard isSafeBlockURL(url), isRealRegularFile(url) else {
+            throw SSDBlockStoreError.ioFailure("unsafe block path")
+        }
+        let handle = try SSDNoFollowIO.openRegularFileForReading(
+            at: url, beforeOperation: beforeOperation)
+        defer { try? handle.close() }
+        return try readHeader(from: handle).metadata
     }
 
     // MARK: Temp sweep
@@ -290,9 +296,7 @@ enum SSDBlockStore {
     /// Maintenance performs deletion, so following a caller-controlled root
     /// outside the dedicated cache hierarchy is never acceptable.
     static func isSafeMaintenanceRoot(_ root: URL) -> Bool {
-        let standardized = root.standardizedFileURL
-        return standardized.path
-            == standardized.resolvingSymlinksInPath().standardizedFileURL.path
+        pathResolvesToItself(root)
     }
 
     static func isStaleTempFile(modifiedAt: Int64?, nowSeconds: Int64) -> Bool {
@@ -342,7 +346,7 @@ enum SSDBlockStore {
                         },
                         nowSeconds: nowSeconds)
                 else { continue }
-                if (try? fm.removeItem(at: url)) != nil {
+                if removeItemIfSafe(at: url, under: root) {
                     removed += 1
                 }
             }
@@ -406,16 +410,13 @@ enum SSDBlockStore {
     }
 
     private static func decryptChunks(
-        at url: URL, header: ParsedHeader, dek: SymmetricKey
+        from handle: FileHandle, header: ParsedHeader, dek: SymmetricKey
     ) throws -> [Data] {
-        let handle: FileHandle
         do {
-            handle = try FileHandle(forReadingFrom: url)
             try handle.seek(toOffset: header.bodyOffset)
         } catch {
-            throw SSDBlockStoreError.ioFailure("open/seek \(url.lastPathComponent): \(error)")
+            throw SSDBlockStoreError.ioFailure("seek encrypted body: \(error)")
         }
-        defer { try? handle.close() }
 
         let countBytes = try readExactly(4, from: handle, what: "chunk count")
         let chunkCount = readUInt32LE(countBytes, at: 0)
@@ -466,15 +467,8 @@ enum SSDBlockStore {
         let bodyOffset: UInt64
     }
 
-    private static func readHeader(at url: URL) throws -> ParsedHeader {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            throw SSDBlockStoreError.ioFailure("open \(url.lastPathComponent): \(error)")
-        }
-        defer { try? handle.close() }
-
+    private static func readHeader(from handle: FileHandle) throws -> ParsedHeader {
+        try handle.seek(toOffset: 0)
         let prefix = try readExactly(24, from: handle, what: "header prefix")
         guard Array(prefix.prefix(4)) == magic else {
             throw SSDBlockStoreError.malformedHeader("magic mismatch")
@@ -616,14 +610,4 @@ enum SSDBlockStore {
         return Data(buf)
     }
 
-    private static func ensureDirectory(_ url: URL) throws {
-        if !FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try FileManager.default.createDirectory(
-                    at: url, withIntermediateDirectories: true)
-            } catch {
-                throw SSDBlockStoreError.ioFailure("mkdir \(url.path): \(error)")
-            }
-        }
-    }
 }

@@ -275,15 +275,20 @@ final class SSDWriteBehind: @unchecked Sendable {
                 continue
             }
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: block.tag16Hex)
+            guard SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root) else {
+                stats.add(donationsDropped: 1)
+                continue
+            }
+            let fileBytes: Int
             do {
                 if let writeBlock = config.writeBlock {
-                    let fileBytes = try writeBlock(block, url)
+                    fileBytes = try writeBlock(block, url)
                     index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
                     stats.add(blocksWritten: 1, bytesWritten: fileBytes)
                     maySettleDurable = true
                     continue
                 }
-                try SSDBlockStore.write(
+                fileBytes = try SSDBlockStore.write(
                     to: url, metadata: block.metadata, chunks: block.chunks,
                     kekKey: config.kekKey, strictFsync: config.strictFsync)
             } catch {
@@ -299,8 +304,6 @@ final class SSDWriteBehind: @unchecked Sendable {
                 }
                 continue
             }
-            let fileBytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
-                ?? block.plaintextBytes
             // Index LAST, after the durable rename (spec §3.2 step 7).
             index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
             stats.add(blocksWritten: 1, bytesWritten: fileBytes)

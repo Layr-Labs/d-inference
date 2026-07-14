@@ -102,8 +102,19 @@ func (s *Server) updateInferenceRouteOutcomeForPending(pr *registry.PendingReque
 	if pr == nil {
 		return
 	}
-	if outcome != nil && outcome.FinalStatus != "" && !pr.MarkRouteOutcomeFinalized() {
-		return
+	terminal := outcome != nil && outcome.FinalStatus != ""
+	if terminal {
+		if !pr.MarkRouteOutcomeFinalized() {
+			return
+		}
+		// Consumer-side synthetic terminals (notably registry.Disconnect's
+		// ErrorCh delivery, local timeout, and grace expiry) do not pass through a
+		// provider terminal handler. Close their cache-selection denominator as
+		// unreported; the per-attempt claim makes this idempotent with provider
+		// complete/error races.
+		if s != nil {
+			s.emitCacheSelectionTerminal(pr, protocol.UsageInfo{}, false, false)
+		}
 	}
 	s.updateInferenceRouteOutcomeWithModel(pr.RequestID, pr.Attempt, pr.Model, outcome)
 }

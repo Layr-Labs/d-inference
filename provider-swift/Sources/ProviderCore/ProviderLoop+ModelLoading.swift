@@ -23,10 +23,15 @@ extension ProviderLoop {
     /// `liveModelHashes` entry now reflects bytes on disk. `effectiveFingerprint`
     /// is what the after-load TOCTOU check compares against to decide whether the
     /// bytes drifted between hashing and loading.
-    private struct WeightHashRefreshResult {
+    struct WeightHashRefreshResult: Sendable {
+        /// Fingerprint observed by this attempt, even when hashing failed.
+        let observedFingerprint: String?
         /// Fingerprint that `liveModelHashes[modelId]` now corresponds to, or nil
         /// if we have no trustworthy fingerprint (stat failed / recompute failed).
         let effectiveFingerprint: String?
+        /// Hash eligible to bind reusable cache state during this load. Unlike
+        /// `liveModelHashes`, this is nil after a failed recomputation.
+        let cacheEligibleWeightHash: String?
     }
 
     /// Re-hash the weights for `modelId` and update `liveModelHashes` /
@@ -41,16 +46,32 @@ extension ProviderLoop {
     /// a stale hash would make the coordinator hard-untrust this provider for a
     /// "model swap" even though the disk is correct. Returns the fingerprint the
     /// recorded hash now corresponds to so the caller can detect a post-load drift.
-    private func refreshWeightHash(modelId: String, modelPath: URL) async throws -> WeightHashRefreshResult {
+    func refreshWeightHash(
+        modelId: String,
+        modelPath: URL,
+        requireFreshCryptographicHash: Bool = false
+    ) async throws -> WeightHashRefreshResult {
         let priorFingerprint = modelHashFingerprints[modelId]
-        let hasPriorHash = liveModelHashes[modelId] != nil
+        let priorHash = SSDPrefixCacheFactory.verifiedWeightHash(liveModelHashes[modelId])
+        let fingerprintOverride = weightHashFingerprintOverride
+        let hashOverride = weightHashComputeOverride
         let refresh = await Task.detached(priority: .utility) {
             () -> (fingerprint: String?, hash: String?, skipped: Bool) in
-            let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-            if let fingerprint, fingerprint == priorFingerprint, hasPriorHash {
+            let fingerprint = fingerprintOverride != nil
+                ? fingerprintOverride!(modelPath)
+                : WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+            if !requireFreshCryptographicHash,
+                let fingerprint, fingerprint == priorFingerprint, priorHash != nil
+            {
                 return (fingerprint, nil, true)  // unchanged — keep cached hash
             }
-            return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
+            let hash = hashOverride != nil
+                ? hashOverride!(modelPath, modelId)
+                : WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)
+            return (
+                fingerprint,
+                SSDPrefixCacheFactory.verifiedWeightHash(hash),
+                false)
         }.value
         try Task.checkCancellation()
         if isShuttingDown { throw CancellationError() }
@@ -60,7 +81,8 @@ extension ProviderLoop {
         // the next reload fingerprint-match against the stale hash and silently
         // skip the retry — turning a transient read failure into a persistently
         // stale report.
-        let haveTrustworthyHash = refresh.hash != nil || refresh.skipped
+        let cacheEligibleWeightHash = refresh.hash ?? (refresh.skipped ? priorHash : nil)
+        let haveTrustworthyHash = refresh.fingerprint != nil && cacheEligibleWeightHash != nil
         if let fingerprint = refresh.fingerprint, haveTrustworthyHash {
             modelHashFingerprints[modelId] = fingerprint
         }
@@ -86,8 +108,40 @@ extension ProviderLoop {
         // nil when we couldn't establish a trustworthy hash/fingerprint pair, in
         // which case the after-load check should re-hash (safe direction).
         return WeightHashRefreshResult(
-            effectiveFingerprint: haveTrustworthyHash ? refresh.fingerprint : nil
+            observedFingerprint: refresh.fingerprint,
+            effectiveFingerprint: haveTrustworthyHash ? refresh.fingerprint : nil,
+            cacheEligibleWeightHash: haveTrustworthyHash ? cacheEligibleWeightHash : nil
         )
+    }
+
+    /// Resolve the only hash safe to bind to the loaded container. Fingerprint
+    /// drift makes the exact bytes consumed by the loader ambiguous, so the SSD
+    /// tier remains disabled even if a later disk re-hash succeeds.
+    static func cacheEligibleWeightHash(
+        preLoad: WeightHashRefreshResult,
+        postLoadFingerprint: String?,
+        postLoadRefresh: WeightHashRefreshResult?
+    ) -> String? {
+        guard let postLoadFingerprint else { return nil }
+        if preLoad.effectiveFingerprint == postLoadFingerprint {
+            return preLoad.cacheEligibleWeightHash
+        }
+        // A failed pre-load hash can be retried after load only when the same
+        // observed fingerprint brackets the entire load.
+        guard preLoad.observedFingerprint == postLoadFingerprint,
+            postLoadRefresh?.effectiveFingerprint == postLoadFingerprint
+        else { return nil }
+        return postLoadRefresh?.cacheEligibleWeightHash
+    }
+
+    static func cryptographicallyBracketedCacheHash(
+        preLoadHash: String?, postLoadHash: String?
+    ) -> String? {
+        guard let preLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(preLoadHash),
+            let postLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(postLoadHash),
+            preLoadHash == postLoadHash
+        else { return nil }
+        return preLoadHash
     }
 
     /// Load `modelId` if it is not already resident.
@@ -235,7 +289,14 @@ extension ProviderLoop {
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
             // start. (See `refreshWeightHash` for the full rationale.)
-            let preLoadRefresh = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+            let reusableSSDRequested: Bool = {
+                if case .ssd = PrefixCachePolicy.mode() { return true }
+                return false
+            }()
+            let preLoadRefresh = try await refreshWeightHash(
+                modelId: modelId,
+                modelPath: modelPath,
+                requireFreshCryptographicHash: reusableSSDRequested)
 
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
@@ -262,13 +323,30 @@ extension ProviderLoop {
             // fingerprint and no re-read. A nil pre-load fingerprint also forces a
             // re-hash here — we never recorded a trustworthy hash, so re-deriving
             // it post-load is the safe direction.
-            let postLoadFingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-            if preLoadRefresh.effectiveFingerprint == nil
+            let postLoadFingerprint = weightHashFingerprintOverride != nil
+                ? weightHashFingerprintOverride!(modelPath)
+                : WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+            var postLoadRefresh: WeightHashRefreshResult?
+            if reusableSSDRequested {
+                // A size/mtime fingerprint cannot prove exact bytes. Re-hash
+                // cryptographically after every reusable-cache load and require
+                // equality with the independently-computed pre-load hash.
+                postLoadRefresh = try await refreshWeightHash(
+                    modelId: modelId,
+                    modelPath: modelPath,
+                    requireFreshCryptographicHash: true)
+            } else if preLoadRefresh.effectiveFingerprint == nil
                 || postLoadFingerprint != preLoadRefresh.effectiveFingerprint {
                 logger.warning(
                     "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
-                _ = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+                postLoadRefresh = try await refreshWeightHash(
+                    modelId: modelId, modelPath: modelPath)
             }
+            let cacheEligibleWeightHash = reusableSSDRequested
+                ? Self.cryptographicallyBracketedCacheHash(
+                    preLoadHash: preLoadRefresh.cacheEligibleWeightHash,
+                    postLoadHash: postLoadRefresh?.cacheEligibleWeightHash)
+                : nil
             // Hard-fail without Metal (moved from the legacy scheduler's
             // loadModel): CPU inference is not acceptable, and with no
             // legacy engine left this is a load failure, not a log line.
@@ -367,7 +445,8 @@ extension ProviderLoop {
                     modelDirectory: modelPath,
                     newcomer: newcomer,
                     tokenizer: tokenizer,
-                    sizing: sizing
+                    sizing: sizing,
+                    cacheEligibleWeightHash: cacheEligibleWeightHash
                 )
             } catch let error as InferenceError {
                 // Already shaped (e.g. the re-slice floor refusal) — record +
@@ -444,6 +523,7 @@ extension ProviderLoop {
                 container: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now

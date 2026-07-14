@@ -866,11 +866,25 @@ func (s *Server) dispatchOneProvider(
 		return nil, nil, decision, "failed to generate session keys", http.StatusInternalServerError
 	}
 
+	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
+		s.registry.ForgetCacheAttempt(pr)
+		refundExtra()
+		cleanupPending()
+		return nil, nil, decision, "failed to prepare cache-safe request", http.StatusInternalServerError
+	}
 	// Pre-fix providers crash on a vision request carrying sampling penalties;
-	// strip them for those providers only (see bodyForProvider).
-	sealedBody := bodyForProvider(rawBody, requiresVision, provider)
+	// strip them for those providers only. Protocol-0 providers additionally get
+	// a coordinator-authored prompt_cache_key only inside this sealed body.
+	sealedBody, err := bodyForCacheAttempt(rawBody, requiresVision, provider, pr)
+	if err != nil {
+		s.registry.ForgetCacheAttempt(pr)
+		refundExtra()
+		cleanupPending()
+		return nil, nil, decision, "failed to prepare provider request", http.StatusInternalServerError
+	}
 	encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
 	if err != nil {
+		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
 		return nil, nil, decision, "failed to encrypt request", http.StatusInternalServerError
@@ -878,12 +892,6 @@ func (s *Server) dispatchOneProvider(
 	if pr.Timing != nil {
 		pr.Timing.EncryptedAt = time.Now()
 	}
-	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		s.ddIncr("routing.cache_prepare_error", nil)
-		s.logger.Warn("cache routing attempt disabled", "request_id", requestID, "provider_id", provider.ID, "error", err)
-	}
-
 	wireMsg := map[string]any{
 		"type":       protocol.TypeInferenceRequest,
 		"request_id": requestID,
@@ -963,6 +971,30 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 		return stripped
 	}
 	return rawBody
+}
+
+func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
+	body := bodyForProvider(rawBody, requiresVision, provider)
+	if pr == nil || pr.LegacyCacheBustKey == "" {
+		return body, nil
+	}
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, err
+	}
+	keyJSON, err := json.Marshal(pr.LegacyCacheBustKey)
+	if err != nil {
+		return nil, err
+	}
+	parsed["prompt_cache_key"] = keyJSON
+	sealed, err := marshalForwardBody(parsed)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealed) > maxInferenceBodyBytes {
+		return nil, fmt.Errorf("provider request body exceeds the %d-byte limit after cache isolation", maxInferenceBodyBytes)
+	}
+	return sealed, nil
 }
 
 // defaultMaxOutputTokens is the ceiling injected into requests that don't set
@@ -1645,6 +1677,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		if firstChunk == "" || isSSEDoneChunk(firstChunk) {
 			continue
 		}
+		firstChunk = sanitizeStreamCacheDetails(firstChunk)
 		if isResponsesAPIEventChunk(firstChunk) {
 			sawResponsesAPI = true
 		}
@@ -1784,6 +1817,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 					sawResponsesAPI = true
 				}
 			}
+			chunk = sanitizeStreamCacheDetails(chunk)
 			// Swallow the provider's own "data: [DONE]" terminator. The
 			// coordinator appends terminal events of its own (held usage with
 			// the reasoning breakdown, SE signature) and then emits exactly ONE
@@ -1868,7 +1902,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 
 	for _, firstChunk := range firstChunks {
 		if firstChunk != "" {
-			emitter.handleChunk(firstChunk)
+			emitter.handleChunk(sanitizeStreamCacheDetails(firstChunk))
 		}
 	}
 
@@ -1899,7 +1933,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				emitter.finish(usage)
 				return
 			}
-			emitter.handleChunk(chunk)
+			emitter.handleChunk(sanitizeStreamCacheDetails(chunk))
 			if !timer.Stop() {
 				select {
 				case <-timer.C:
@@ -2034,6 +2068,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								// Native passthrough (object=="response"): the provider
 								// echoed the concrete build id; rewrite it to the public
 								// alias so the consumer never sees the quant/build.
+								sanitizeCacheDetailIntoRawResponsesUsage(obj, completeUsage)
 								if pr.PublicModel != "" {
 									obj["model"] = consumerModel(pr)
 								}
@@ -2479,21 +2514,180 @@ func injectReasoningDetailIntoRawUsage(obj map[string]any, usage protocol.UsageI
 }
 
 func injectCacheDetailIntoRawUsage(obj map[string]any, usage protocol.UsageInfo) {
-	if usage.CachedTokens <= 0 {
-		return
-	}
 	usageObj, ok := obj["usage"].(map[string]any)
 	if !ok {
 		return
 	}
-	details, _ := usageObj["prompt_tokens_details"].(map[string]any)
+	details, detailsOK := usageObj["prompt_tokens_details"].(map[string]any)
 	if details == nil {
+		if usage.CachedTokens <= 0 {
+			// A malformed/non-object provider detail cannot be selectively
+			// sanitized, so remove it rather than forwarding untrusted cache data.
+			if !detailsOK {
+				delete(usageObj, "prompt_tokens_details")
+			}
+			return
+		}
 		details = map[string]any{}
 	}
-	if _, exists := details["cached_tokens"]; !exists {
+	if usage.CachedTokens > 0 {
 		details["cached_tokens"] = usage.CachedTokens
+	} else {
+		delete(details, "cached_tokens")
 	}
-	usageObj["prompt_tokens_details"] = details
+	if len(details) == 0 {
+		delete(usageObj, "prompt_tokens_details")
+	} else {
+		usageObj["prompt_tokens_details"] = details
+	}
+}
+
+func sanitizeCacheDetailIntoRawResponsesUsage(obj map[string]any, usage protocol.UsageInfo) {
+	usageObj, ok := obj["usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	details, detailsOK := usageObj["input_tokens_details"].(map[string]any)
+	if details == nil {
+		if usage.CachedTokens <= 0 {
+			if !detailsOK {
+				delete(usageObj, "input_tokens_details")
+			}
+			return
+		}
+		details = map[string]any{}
+	}
+	if usage.CachedTokens > 0 {
+		details["cached_tokens"] = usage.CachedTokens
+	} else {
+		delete(details, "cached_tokens")
+	}
+	if len(details) == 0 {
+		delete(usageObj, "input_tokens_details")
+	} else {
+		usageObj["input_tokens_details"] = details
+	}
+}
+
+func removeCachedTokenDetail(usageObj map[string]any, detailField string) bool {
+	details, ok := usageObj[detailField].(map[string]any)
+	if !ok || details == nil {
+		return false
+	}
+	if _, exists := details["cached_tokens"]; !exists {
+		return false
+	}
+	delete(details, "cached_tokens")
+	if len(details) == 0 {
+		delete(usageObj, detailField)
+	} else {
+		usageObj[detailField] = details
+	}
+	return true
+}
+
+func sanitizeStreamCacheDetailsJSON(raw string) (string, bool) {
+	var obj map[string]any
+	if json.Unmarshal([]byte(raw), &obj) != nil {
+		return raw, false
+	}
+	changed := false
+	if usageObj, ok := obj["usage"].(map[string]any); ok {
+		changed = removeCachedTokenDetail(usageObj, "prompt_tokens_details") || changed
+		changed = removeCachedTokenDetail(usageObj, "input_tokens_details") || changed
+	}
+	if response, ok := obj["response"].(map[string]any); ok {
+		if usageObj, ok := response["usage"].(map[string]any); ok {
+			changed = removeCachedTokenDetail(usageObj, "prompt_tokens_details") || changed
+			changed = removeCachedTokenDetail(usageObj, "input_tokens_details") || changed
+		}
+	}
+	if !changed {
+		return raw, false
+	}
+	b, err := marshalForwardBody(obj)
+	if err != nil {
+		return raw, false
+	}
+	return string(b), true
+}
+
+func sseDataValue(line string) (string, bool) {
+	colon := strings.IndexByte(line, ':')
+	field, value := line, ""
+	if colon >= 0 {
+		field, value = line[:colon], line[colon+1:]
+		if strings.HasPrefix(value, " ") {
+			value = value[1:]
+		}
+	}
+	return value, field == "data"
+}
+
+func sanitizeStreamCacheEventGroup(group string) (string, bool) {
+	lines := strings.Split(group, "\n")
+	data := make([]string, 0, len(lines))
+	firstData := -1
+	for i, line := range lines {
+		if value, ok := sseDataValue(line); ok {
+			if firstData < 0 {
+				firstData = i
+			}
+			data = append(data, value)
+		}
+	}
+	if firstData < 0 {
+		if len(lines) == 1 {
+			if sanitized, ok := sanitizeStreamCacheDetailsJSON(strings.TrimSpace(group)); ok {
+				return sanitized, true
+			}
+		}
+		return group, false
+	}
+	sanitized, changed := sanitizeStreamCacheDetailsJSON(strings.Join(data, "\n"))
+	if !changed {
+		return group, false
+	}
+	out := make([]string, 0, len(lines)-len(data)+1)
+	for i, line := range lines {
+		if _, ok := sseDataValue(line); ok {
+			if i == firstData {
+				out = append(out, "data: "+sanitized)
+			}
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n"), true
+}
+
+// sanitizeStreamCacheDetails removes provider-supplied cached_tokens from any
+// streamed frame before it can reach the consumer. SSE data fields are joined
+// per the specification across each blank-line-delimited event, then a changed
+// payload is emitted as one safe data line while event/id/comments are retained.
+// Terminal usage is validated independently and re-added only to the held usage
+// frame at stream completion.
+func sanitizeStreamCacheDetails(chunk string) string {
+	// A normal field takes the literal fast path. A disguised equivalent must use
+	// a JSON Unicode escape (for example cached\u005ftokens); no other valid JSON
+	// escape can encode an ASCII letter or underscore. Parse those frames too,
+	// while leaving the overwhelmingly common escape-free content frame untouched.
+	if !strings.Contains(chunk, `"cached_tokens"`) && !strings.Contains(chunk, `\u`) {
+		return chunk
+	}
+	normalized := strings.ReplaceAll(strings.ReplaceAll(chunk, "\r\n", "\n"), "\r", "\n")
+	groups := strings.Split(normalized, "\n\n")
+	changed := false
+	for i, group := range groups {
+		if sanitized, ok := sanitizeStreamCacheEventGroup(group); ok {
+			groups[i] = sanitized
+			changed = true
+		}
+	}
+	if changed {
+		return strings.Join(groups, "\n\n")
+	}
+	return chunk
 }
 
 // parseUsageOnlyStreamChunk decodes a terminal include_usage chunk (empty choices
@@ -3779,11 +3973,31 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
+		s.registry.ForgetCacheAttempt(pr)
+		cleanupPending()
+		refundExtra()
+		refundReservation()
+		s.ddIncr("routing.cache_prepare_error", nil)
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusInternalServerError))
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to prepare cache-safe request"))
+		return
+	}
 	// Version-gated penalty strip for vision requests (Anthropic /v1/messages
 	// carries image blocks); this handler seals separately from dispatchOneProvider.
-	inferenceBody = bodyForProvider(inferenceBody, requiresVision, provider)
+	inferenceBody, err = bodyForCacheAttempt(inferenceBody, requiresVision, provider, pr)
+	if err != nil {
+		s.registry.ForgetCacheAttempt(pr)
+		cleanupPending()
+		refundExtra()
+		refundReservation()
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusInternalServerError))
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to prepare provider request"))
+		return
+	}
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)
 	if err != nil {
+		s.registry.ForgetCacheAttempt(pr)
 		cleanupPending()
 		refundExtra()
 		refundReservation()
@@ -3792,12 +4006,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	timing.EncryptedAt = time.Now()
-	if err := s.registry.PrepareCacheAttempt(pr, provider); err != nil {
-		s.registry.ForgetCacheAttempt(pr)
-		s.ddIncr("routing.cache_prepare_error", nil)
-		s.logger.Warn("cache routing attempt disabled", "request_id", requestID, "provider_id", provider.ID, "error", err)
-	}
-
 	wireMsg := map[string]any{
 		"type":       protocol.TypeInferenceRequest,
 		"request_id": requestID,

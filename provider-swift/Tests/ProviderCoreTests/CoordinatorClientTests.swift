@@ -171,8 +171,10 @@ import Testing
         readyTokens: 1024,
         requiredRecomputeTokens: 256,
         expectedPrefillTokensSaved: 768,
-        tier: .ssd))
+        tier: .ssd,
+        stageMs: 3.5))
     #expect(ready.contains(#""type":"prefix_cache_ready""#))
+    #expect(ready.contains(#""stage_ms":3.5"#))
 }
 
 @Test func coordinatorHeartbeatConstructionOmitRulesMatchProtocol() throws {

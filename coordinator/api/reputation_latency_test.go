@@ -95,3 +95,17 @@ func TestAdjustLatencyForPrefill(t *testing.T) {
 		}
 	}
 }
+
+func TestCacheParticipationSuppressesReputationLatency(t *testing.T) {
+	plain := &registry.PendingRequest{Timing: &registry.RequestTiming{}}
+	if !shouldRecordReputationLatency(plain, "data: content") {
+		t.Fatal("ordinary content attempt should record reputation latency")
+	}
+	cached := &registry.PendingRequest{
+		Timing:     &registry.RequestTiming{},
+		CacheRoute: registry.CacheRoute{ExactKey: "coordinator-only-route"},
+	}
+	if shouldRecordReputationLatency(cached, "data: content") {
+		t.Fatal("cache-participating attempt recorded full-prefill reputation latency")
+	}
+}

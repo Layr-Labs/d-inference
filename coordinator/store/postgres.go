@@ -104,7 +104,16 @@ RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
 END $$`
 
 const legacyCacheAffinityGuardTrigger = `DO $$ BEGIN
-	IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'clear_legacy_cache_affinity_key') THEN
+	IF NOT EXISTS (
+		SELECT 1
+		FROM pg_trigger tg
+		JOIN pg_class target ON target.oid = tg.tgrelid
+		JOIN pg_namespace ns ON ns.oid = target.relnamespace
+		WHERE tg.tgname = 'clear_legacy_cache_affinity_key'
+		  AND NOT tg.tgisinternal
+		  AND target.relname = 'inference_routes'
+		  AND ns.nspname = current_schema()
+	) THEN
 		CREATE TRIGGER clear_legacy_cache_affinity_key
 		BEFORE INSERT OR UPDATE OF cache_affinity_key ON inference_routes
 		FOR EACH ROW EXECUTE FUNCTION clear_legacy_cache_affinity_key();

@@ -21,8 +21,16 @@ const (
 	cacheRoutingSweepInterval          = 30 * time.Second
 	cacheRoutingMaxEntries             = 10_000
 	cacheRoutingMaxAttempts            = 50_000
-	cacheRoutingMaxReceiptTokens       = 1_000_000
-	cacheRoutingMaxStageMs             = 10 * 60 * 1000.0
+	// Each attempt can carry both an exact and conversation route key. Keeping
+	// two watermarks per live attempt prevents cap eviction from reopening a
+	// delayed-receipt resurrection window while remaining strictly bounded.
+	cacheRoutingMaxWatermarks    = 2 * cacheRoutingMaxAttempts
+	cacheRoutingMaxReceiptTokens = 1_000_000
+	cacheRoutingMaxStageMs       = 10 * 60 * 1000.0
+	// Older protocol-v1 providers omit stage_ms on durable SSD-ready receipts.
+	// Treat that cost as unknown and maximally conservative until a measured hit
+	// replaces it, rather than granting SSD evidence a zero-cost discount.
+	cacheRoutingUnmeasuredSSDStageMs = cacheRoutingMaxStageMs
 )
 
 type CacheRoute struct {
@@ -30,6 +38,17 @@ type CacheRoute struct {
 	ConversationKey  string
 	ConversationKind string
 	ScopeNamespace   string
+}
+
+func (r CacheRoute) present() bool {
+	return r.ExactKey != "" || r.ConversationKey != ""
+}
+
+// CacheRoutingParticipates reports whether this request was derived while a
+// cache rollout mode was enabled. Callers use it only to suppress feedback that
+// assumes a full prefill; route keys themselves remain registry-private.
+func (pr *PendingRequest) CacheRoutingParticipates() bool {
+	return pr != nil && pr.CacheRoute.present()
 }
 
 type cacheRouteKeys struct {
@@ -121,6 +140,50 @@ type cacheHolderRef struct {
 	providerID string
 }
 
+type cacheEvidenceWatermark struct {
+	Sequence  uint64
+	UpdatedAt time.Time
+	ExpiresAt time.Time
+}
+
+type cacheWatermarkOrderEntry struct {
+	ref       cacheHolderRef
+	updatedAt time.Time
+	index     int
+}
+
+type cacheWatermarkOrderHeap []*cacheWatermarkOrderEntry
+
+func (h cacheWatermarkOrderHeap) Len() int { return len(h) }
+func (h cacheWatermarkOrderHeap) Less(i, j int) bool {
+	if !h[i].updatedAt.Equal(h[j].updatedAt) {
+		return h[i].updatedAt.Before(h[j].updatedAt)
+	}
+	if h[i].ref.key != h[j].ref.key {
+		return h[i].ref.key < h[j].ref.key
+	}
+	return h[i].ref.providerID < h[j].ref.providerID
+}
+func (h cacheWatermarkOrderHeap) Swap(i, j int) {
+	h[i], h[j] = h[j], h[i]
+	h[i].index = i
+	h[j].index = j
+}
+func (h *cacheWatermarkOrderHeap) Push(value any) {
+	entry := value.(*cacheWatermarkOrderEntry)
+	entry.index = len(*h)
+	*h = append(*h, entry)
+}
+func (h *cacheWatermarkOrderHeap) Pop() any {
+	old := *h
+	last := len(old) - 1
+	entry := old[last]
+	old[last] = nil
+	entry.index = -1
+	*h = old[:last]
+	return entry
+}
+
 type cacheHolderOrderEntry struct {
 	ref       cacheHolderRef
 	updatedAt time.Time
@@ -169,6 +232,7 @@ type cacheRoutingTracker struct {
 	maxHolders          int
 	maxEntries          int
 	maxAttempts         int
+	maxWatermarks       int
 	holderCount         int
 	lastSweep           time.Time
 	holders             map[string]map[string]cacheHolder
@@ -177,6 +241,10 @@ type cacheRoutingTracker struct {
 	holderOrderByRef    map[cacheHolderRef]*cacheHolderOrderEntry
 	attemptOrder        cacheAttemptOrderHeap
 	attemptOrderByNonce map[string]*cacheAttemptOrderEntry
+	watermarks          map[cacheHolderRef]cacheEvidenceWatermark
+	watermarkOrder      cacheWatermarkOrderHeap
+	watermarkOrderByRef map[cacheHolderRef]*cacheWatermarkOrderEntry
+	activeAttemptRefs   map[cacheHolderRef]*cacheActiveAttemptRefState
 	nextAttemptSequence uint64
 }
 
@@ -188,8 +256,10 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		maxHolders = defaultCacheRoutingMaxHolders
 	}
 	return &cacheRoutingTracker{
-		ttl: ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
+		ttl: ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts, maxWatermarks: cacheRoutingMaxWatermarks,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
+		watermarks: make(map[cacheHolderRef]cacheEvidenceWatermark), watermarkOrderByRef: make(map[cacheHolderRef]*cacheWatermarkOrderEntry),
+		activeAttemptRefs: make(map[cacheHolderRef]*cacheActiveAttemptRefState),
 	}
 }

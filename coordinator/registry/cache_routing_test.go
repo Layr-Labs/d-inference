@@ -3,6 +3,7 @@ package registry
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,15 @@ func TestCacheRouteDerivationIsolationAndPrecedence(t *testing.T) {
 	if !strings.HasPrefix(withoutHeader.ScopeNamespace, "prompt_cache_key:") {
 		t.Fatalf("scope namespace %q did not use prompt key", withoutHeader.ScopeNamespace)
 	}
+	otherHeader := reg.DeriveCacheRoute("acct-a", "build-a", "/v1/chat/completions", deleteSession, "other-header-session", false)
+	if header.ExactKey == otherHeader.ExactKey {
+		t.Fatal("different X-Session-Id namespaces shared exact evidence")
+	}
+	bodySessionA := reg.DeriveCacheRoute("acct-a", "build-a", "/v1/chat/completions", body, "header-a", false)
+	bodySessionB := reg.DeriveCacheRoute("acct-a", "build-a", "/v1/chat/completions", body, "header-b", false)
+	if bodySessionA.ExactKey != bodySessionB.ExactKey || bodySessionA.ScopeNamespace != bodySessionB.ScopeNamespace {
+		t.Fatal("X-Session-Id overrode body session_id precedence")
+	}
 }
 
 func TestCacheRoutingOffDerivesNothing(t *testing.T) {
@@ -57,6 +67,18 @@ func TestCacheRoutingOffDerivesNothing(t *testing.T) {
 	route := reg.DeriveCacheRoute("account", "model", "/v1/chat/completions", []byte(`{"messages":[{"role":"user","content":"hello"}]}`), "session", false)
 	if route != (CacheRoute{}) {
 		t.Fatalf("off mode derived route keys: %+v", route)
+	}
+}
+
+func TestCacheRoutingOffStillIsolatesLegacyProviderBody(t *testing.T) {
+	reg := New(testLogger())
+	pr := &PendingRequest{RequestID: "request", Model: "model", ConsumerKey: "account"}
+	legacy := &Provider{ID: "legacy", PrefixCacheProtocol: 0}
+	if err := reg.PrepareCacheAttempt(pr, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if pr.LegacyCacheBustKey == "" || pr.CacheReceiptNonce != "" || pr.CacheScope != "" {
+		t.Fatalf("off-mode legacy preparation = bust %q nonce %q scope %q", pr.LegacyCacheBustKey, pr.CacheReceiptNonce, pr.CacheScope)
 	}
 }
 
@@ -131,11 +153,37 @@ func TestPrepareCacheAttemptVersionAndExpectedHashGates(t *testing.T) {
 	if err := reg.PrepareCacheAttempt(pr, provider); err != nil {
 		t.Fatal(err)
 	}
-	if pr.CacheScope != "" || pr.CacheReceiptNonce != "" {
-		t.Fatal("legacy provider received cache fields")
+	if pr.CacheScope != "" || pr.CacheReceiptNonce != "" || pr.LegacyCacheBustKey == "" {
+		t.Fatal("legacy provider did not receive only an encrypted-body cache buster")
+	}
+	firstBust := pr.LegacyCacheBustKey
+	if err := reg.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if pr.LegacyCacheBustKey == "" || pr.LegacyCacheBustKey == firstBust {
+		t.Fatal("legacy retry reused its prior cache buster")
 	}
 	provider.mu.Lock()
 	provider.PrefixCacheProtocol = 1
+	provider.Models = []protocol.ModelInfo{{ID: "model"}}
+	provider.mu.Unlock()
+	if err := reg.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if pr.CacheScope != "" || pr.CacheReceiptNonce != "" || pr.LegacyCacheBustKey != "" {
+		t.Fatal("protocol-v1 provider without a weight hash received cache fields")
+	}
+	provider.mu.Lock()
+	provider.Models = []protocol.ModelInfo{{ID: "model", WeightHash: "mismatched-hash"}}
+	provider.mu.Unlock()
+	if err := reg.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if pr.CacheScope != "" || pr.CacheReceiptNonce != "" {
+		t.Fatal("protocol-v1 provider with a mismatched weight hash received cache fields")
+	}
+	provider.mu.Lock()
+	provider.Models = []protocol.ModelInfo{{ID: "model", WeightHash: "EXPECTED-HASH"}}
 	provider.mu.Unlock()
 	if err := reg.PrepareCacheAttempt(pr, provider); err != nil {
 		t.Fatal(err)
@@ -154,6 +202,42 @@ func TestPrepareCacheAttemptVersionAndExpectedHashGates(t *testing.T) {
 	}
 	if withoutHash.CacheScope != "" || withoutHash.CacheReceiptNonce != "" {
 		t.Fatal("build without expected immutable hash received cache fields")
+	}
+}
+
+func TestNegativeWatermarkBlocksDelayedPositiveResurrection(t *testing.T) {
+	for _, negative := range []string{"miss_absent", "miss_corrupt", "skipped_capacity"} {
+		for _, positive := range []string{"hit", "ready"} {
+			t.Run(negative+"_then_older_"+positive, func(t *testing.T) {
+				tracker := newCacheRoutingTracker(time.Minute, 4)
+				now := time.Unix(140, 0)
+				route := CacheRoute{ExactKey: "exact", ConversationKey: "conversation"}
+				olderNonce, _ := tracker.registerAttempt("older", "provider", "model", route, now)
+				newerNonce, _ := tracker.registerAttempt("newer", "provider", "model", route, now.Add(time.Second))
+				if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+					RequestID: "newer", CacheReceiptNonce: newerNonce, Outcome: negative,
+				}, now.Add(2*time.Second)) {
+					t.Fatal("newer negative receipt rejected")
+				}
+				delayedAt := now.Add(2 * time.Minute)
+				if positive == "hit" {
+					if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+						RequestID: "older", CacheReceiptNonce: olderNonce, Outcome: "hit",
+						Tier: "memory", CachedTokens: 1000, PrefillTokensSaved: 900,
+					}, delayedAt) {
+						t.Fatal("delayed older hit receipt rejected")
+					}
+				} else if !tracker.applyReady("provider", &protocol.PrefixCacheReadyMessage{
+					RequestID: "older", CacheReceiptNonce: olderNonce, ReadyTokens: 1000,
+					RequiredRecomputeTokens: 100, ExpectedPrefillTokensSaved: 900, Tier: "memory",
+				}, delayedAt) {
+					t.Fatal("delayed older ready receipt rejected")
+				}
+				if hints := tracker.hints(route, CacheRoutingConversation, delayedAt.Add(time.Second)); len(hints) != 0 {
+					t.Fatalf("%s resurrected evidence after newer %s: %+v", positive, negative, hints)
+				}
+			})
+		}
 	}
 }
 
@@ -187,6 +271,49 @@ func TestCacheReceiptNonceLifecycleAndReadyAfterTerminal(t *testing.T) {
 	}
 	if got := tracker.hints(route, CacheRoutingConversation, terminalAt.Add(time.Minute))["provider"]; got.ReadyTokens != 768 || got.RecomputeTokens != 32 {
 		t.Fatalf("ready hint = %+v", got)
+	}
+}
+
+func TestSSDReadyStageCostIsMeasuredOrConservative(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stageMs float64
+		want    float64
+	}{
+		{name: "measured", stageMs: 17.5, want: 17.5},
+		{name: "omitted", stageMs: 0, want: cacheRoutingUnmeasuredSSDStageMs},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tracker := newCacheRoutingTracker(time.Minute, 4)
+			now := time.Unix(125, 0)
+			route := CacheRoute{ExactKey: "exact"}
+			nonce, _ := tracker.registerAttempt("request", "provider", "model", route, now)
+			if !tracker.applyReady("provider", &protocol.PrefixCacheReadyMessage{
+				RequestID: "request", CacheReceiptNonce: nonce, ReadyTokens: 1000,
+				RequiredRecomputeTokens: 100, ExpectedPrefillTokensSaved: 900,
+				Tier: "ssd", StageMs: tc.stageMs,
+			}, now.Add(time.Second)) {
+				t.Fatal("ready receipt rejected")
+			}
+			if got := tracker.hints(route, CacheRoutingExact, now.Add(2*time.Second))["provider"].StageMs; got != tc.want {
+				t.Fatalf("ready stage = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSSDReadyStageCostRejectsInvalidNumbers(t *testing.T) {
+	for _, stageMs := range []float64{-1, cacheRoutingMaxStageMs + 1, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		tracker := newCacheRoutingTracker(time.Minute, 4)
+		now := time.Unix(130, 0)
+		nonce, _ := tracker.registerAttempt("request", "provider", "model", CacheRoute{ExactKey: "exact"}, now)
+		if tracker.applyReady("provider", &protocol.PrefixCacheReadyMessage{
+			RequestID: "request", CacheReceiptNonce: nonce, ReadyTokens: 1000,
+			RequiredRecomputeTokens: 100, ExpectedPrefillTokensSaved: 900,
+			Tier: "ssd", StageMs: stageMs,
+		}, now.Add(time.Second)) {
+			t.Fatalf("accepted invalid SSD ready stage_ms %v", stageMs)
+		}
 	}
 }
 
@@ -428,6 +555,14 @@ func TestOlderReadyCannotClearNewerCapacitySuppression(t *testing.T) {
 	if hints := tracker.hints(route, CacheRoutingExact, now.Add(4*time.Second)); len(hints) != 0 {
 		t.Fatalf("older ready cleared newer capacity suppression: %+v", hints)
 	}
+	tracker.mu.Lock()
+	holder := tracker.holders[route.ExactKey]["provider"]
+	newerSequence := tracker.attempts[newerNonce].Sequence
+	watermark := tracker.watermarks[cacheHolderRef{key: route.ExactKey, providerID: "provider"}]
+	tracker.mu.Unlock()
+	if holder.ReadyTokens != 1500 || holder.EvidenceSequence != newerSequence || holder.SuppressedUntil.IsZero() || watermark.Sequence != newerSequence {
+		t.Fatalf("older physical extension regressed newer negative ordering: holder=%+v watermark=%+v newer_sequence=%d", holder, watermark, newerSequence)
+	}
 }
 
 func TestEqualNewerReadyRefreshesHolderLifetime(t *testing.T) {
@@ -466,6 +601,7 @@ func TestCacheAttemptSequenceWrapClearsOldEvidence(t *testing.T) {
 	tracker.upsertForTest("old", "provider", now, 1000)
 	oldNonce, _ := tracker.registerAttempt("old", "provider", "model", CacheRoute{ExactKey: "old"}, now)
 	tracker.mu.Lock()
+	tracker.advanceWatermarkLocked(cacheHolderRef{key: "old", providerID: "provider"}, 1, now)
 	tracker.nextAttemptSequence = ^uint64(0)
 	tracker.mu.Unlock()
 	newNonce, _ := tracker.registerAttempt("new", "provider", "model", CacheRoute{ExactKey: "new"}, now.Add(time.Second))
@@ -473,6 +609,12 @@ func TestCacheAttemptSequenceWrapClearsOldEvidence(t *testing.T) {
 	defer tracker.mu.Unlock()
 	if len(tracker.holders) != 0 {
 		t.Fatalf("sequence wrap retained old holders: %+v", tracker.holders)
+	}
+	if len(tracker.watermarks) != 0 || len(tracker.watermarkOrder) != 0 || len(tracker.watermarkOrderByRef) != 0 {
+		t.Fatal("sequence wrap retained old evidence watermarks")
+	}
+	if _, retained := tracker.activeAttemptRefs[cacheHolderRef{key: "old", providerID: "provider"}]; retained || len(tracker.activeAttemptRefs) != 1 {
+		t.Fatalf("sequence wrap retained old active-attempt refs: %+v", tracker.activeAttemptRefs)
 	}
 	if _, exists := tracker.attempts[oldNonce]; exists {
 		t.Fatal("sequence wrap retained old attempt")
@@ -590,11 +732,155 @@ func TestCacheReceiptValidationAndDisconnect(t *testing.T) {
 		t.Fatal("valid receipt rejected after invalid receipt")
 	}
 	tracker.disconnect("provider")
-	if len(tracker.hints(route, CacheRoutingExact, now)) != 0 || len(tracker.attempts) != 0 {
-		t.Fatal("disconnect retained holder or attempt")
+	if len(tracker.hints(route, CacheRoutingExact, now)) != 0 || len(tracker.attempts) != 0 || len(tracker.watermarks) != 0 {
+		t.Fatal("disconnect retained holder, attempt, or watermark")
 	}
-	if len(tracker.holderOrder) != 0 || len(tracker.holderOrderByRef) != 0 || len(tracker.attemptOrder) != 0 || len(tracker.attemptOrderByNonce) != 0 {
+	if len(tracker.holderOrder) != 0 || len(tracker.holderOrderByRef) != 0 || len(tracker.attemptOrder) != 0 || len(tracker.attemptOrderByNonce) != 0 || len(tracker.watermarkOrder) != 0 || len(tracker.watermarkOrderByRef) != 0 || len(tracker.activeAttemptRefs) != 0 {
 		t.Fatal("disconnect retained cap ordering metadata")
+	}
+}
+
+func TestCacheEvidenceWatermarksRemainBounded(t *testing.T) {
+	tracker := newCacheRoutingTracker(time.Minute, 4)
+	if tracker.maxWatermarks < 2*tracker.maxAttempts {
+		t.Fatalf("default watermark cap %d cannot cover two keys for %d live attempts", tracker.maxWatermarks, tracker.maxAttempts)
+	}
+	tracker.maxWatermarks = 2
+	now := time.Unix(225, 0)
+	for i, key := range []string{"route-a", "route-b", "route-c"} {
+		requestID := fmt.Sprintf("request-%d", i)
+		nonce, _ := tracker.registerAttempt(requestID, "provider", "model", CacheRoute{ExactKey: key}, now.Add(time.Duration(i)*time.Second))
+		if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+			RequestID: requestID, CacheReceiptNonce: nonce, Outcome: "miss_absent",
+		}, now.Add(time.Duration(i)*time.Second)) {
+			t.Fatalf("negative receipt %d rejected", i)
+		}
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if len(tracker.watermarks) != 2 || len(tracker.watermarkOrder) != 2 || len(tracker.watermarkOrderByRef) != 2 {
+		t.Fatalf("watermark cap mismatch: live=%d heap=%d index=%d", len(tracker.watermarks), len(tracker.watermarkOrder), len(tracker.watermarkOrderByRef))
+	}
+	if _, oldestRetained := tracker.watermarks[cacheHolderRef{key: "route-a", providerID: "provider"}]; oldestRetained {
+		t.Fatal("watermark cap retained oldest evidence")
+	}
+}
+
+func TestCacheWatermarkCapPreservesActiveDelayedAttempt(t *testing.T) {
+	tracker := newCacheRoutingTracker(time.Minute, 4)
+	tracker.maxWatermarks = 2
+	now := time.Unix(235, 0)
+	protectedRoute := CacheRoute{ExactKey: "protected"}
+	olderNonce, _ := tracker.registerAttempt("older", "provider", "model", protectedRoute, now)
+	newerNonce, _ := tracker.registerAttempt("newer", "provider", "model", protectedRoute, now.Add(time.Second))
+	if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+		RequestID: "newer", CacheReceiptNonce: newerNonce, Outcome: "miss_absent",
+	}, now.Add(2*time.Second)) {
+		t.Fatal("newer negative receipt rejected")
+	}
+	tracker.forgetAttempt(newerNonce)
+
+	for i, key := range []string{"completed-a", "completed-b"} {
+		requestID := fmt.Sprintf("completed-%d", i)
+		nonce, _ := tracker.registerAttempt(requestID, "provider", "model", CacheRoute{ExactKey: key}, now.Add(time.Duration(3+i)*time.Second))
+		if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+			RequestID: requestID, CacheReceiptNonce: nonce, Outcome: "miss_absent",
+		}, now.Add(time.Duration(3+i)*time.Second)) {
+			t.Fatalf("completed tombstone %d rejected", i)
+		}
+		tracker.forgetAttempt(nonce)
+	}
+
+	protectedRef := cacheHolderRef{key: protectedRoute.ExactKey, providerID: "provider"}
+	tracker.mu.Lock()
+	_, retained := tracker.watermarks[protectedRef]
+	bounded := len(tracker.watermarks) == tracker.maxWatermarks
+	tracker.mu.Unlock()
+	if !retained || !bounded {
+		t.Fatalf("overflow evicted protected watermark or exceeded cap: retained=%t count=%d", retained, len(tracker.watermarks))
+	}
+	if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+		RequestID: "older", CacheReceiptNonce: olderNonce, Outcome: "hit",
+		Tier: "memory", CachedTokens: 100, PrefillTokensSaved: 90,
+	}, now.Add(10*time.Second)) {
+		t.Fatal("delayed older hit receipt rejected")
+	}
+	if hints := tracker.hints(protectedRoute, CacheRoutingExact, now.Add(11*time.Second)); len(hints) != 0 {
+		t.Fatalf("delayed older hit resurrected evidence after cap churn: %+v", hints)
+	}
+	tracker.forgetAttempt(olderNonce)
+	tracker.mu.Lock()
+	_, stillActive := tracker.activeAttemptRefs[protectedRef]
+	_, nowEvictable := tracker.watermarkOrderByRef[protectedRef]
+	tracker.mu.Unlock()
+	if stillActive || !nowEvictable {
+		t.Fatalf("attempt removal did not release indexed protection: active=%t evictable=%t", stillActive, nowEvictable)
+	}
+}
+
+func TestCacheWatermarkCapIndexedMetadataUnderChurn(t *testing.T) {
+	tracker := newCacheRoutingTracker(time.Minute, 4)
+	tracker.maxWatermarks = 32
+	now := time.Unix(238, 0)
+	protectedRoute := CacheRoute{ExactKey: "protected"}
+	olderNonce, _ := tracker.registerAttempt("older", "provider", "model", protectedRoute, now)
+	newerNonce, _ := tracker.registerAttempt("newer", "provider", "model", protectedRoute, now.Add(time.Millisecond))
+	if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+		RequestID: "newer", CacheReceiptNonce: newerNonce, Outcome: "miss_absent",
+	}, now.Add(2*time.Millisecond)) {
+		t.Fatal("protected tombstone rejected")
+	}
+	tracker.forgetAttempt(newerNonce)
+
+	for i := 0; i < 5000; i++ {
+		requestID := fmt.Sprintf("churn-%d", i)
+		key := fmt.Sprintf("route-%d", i)
+		at := now.Add(time.Duration(i+3) * time.Millisecond)
+		nonce, _ := tracker.registerAttempt(requestID, "provider", "model", CacheRoute{ExactKey: key}, at)
+		if !tracker.applyLookup("provider", &protocol.PrefixCacheLookupMessage{
+			RequestID: requestID, CacheReceiptNonce: nonce, Outcome: "miss_absent",
+		}, at) {
+			t.Fatalf("churn receipt %d rejected", i)
+		}
+		tracker.forgetAttempt(nonce)
+	}
+
+	protectedRef := cacheHolderRef{key: protectedRoute.ExactKey, providerID: "provider"}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	if len(tracker.watermarks) != tracker.maxWatermarks {
+		t.Fatalf("watermarks=%d, want cap %d", len(tracker.watermarks), tracker.maxWatermarks)
+	}
+	if _, retained := tracker.watermarks[protectedRef]; !retained {
+		t.Fatal("indexed cap churn evicted protected watermark")
+	}
+	if _, evictable := tracker.watermarkOrderByRef[protectedRef]; evictable {
+		t.Fatal("protected watermark remained in eviction heap")
+	}
+	if state := tracker.activeAttemptRefs[protectedRef]; state == nil || len(state.order) != 1 || state.order[0].nonce != olderNonce {
+		t.Fatalf("active-attempt protection metadata = %+v", state)
+	}
+	if len(tracker.watermarkOrder) != tracker.maxWatermarks-1 || len(tracker.watermarkOrderByRef) != len(tracker.watermarkOrder) {
+		t.Fatalf("eviction metadata mismatch: heap=%d index=%d", len(tracker.watermarkOrder), len(tracker.watermarkOrderByRef))
+	}
+	for index, entry := range tracker.watermarkOrder {
+		if entry.index != index || tracker.watermarkOrderByRef[entry.ref] != entry {
+			t.Fatalf("eviction heap index %d is inconsistent: %+v", index, entry)
+		}
+	}
+}
+
+func TestCacheEvidenceWatermarkExpiresAfterReceiptWindow(t *testing.T) {
+	tracker := newCacheRoutingTracker(time.Minute, 4)
+	now := time.Unix(240, 0)
+	ref := cacheHolderRef{key: "route", providerID: "provider"}
+	tracker.mu.Lock()
+	tracker.advanceWatermarkLocked(ref, 1, now)
+	tracker.sweepLocked(now.Add(cacheRoutingInFlightAttemptTTL))
+	_, retained := tracker.watermarks[ref]
+	tracker.mu.Unlock()
+	if retained {
+		t.Fatal("watermark survived the full delayed-receipt window")
 	}
 }
 
@@ -711,14 +997,14 @@ func TestCacheCapOrderMetadataRemainsBounded(t *testing.T) {
 	tracker.forgetAttempt(nonce)
 	tracker.mu.Lock()
 	tracker.removeHolderLocked("exact", "provider")
-	if len(tracker.holderOrder) != 0 || len(tracker.holderOrderByRef) != 0 || len(tracker.attemptOrder) != 0 || len(tracker.attemptOrderByNonce) != 0 {
+	if len(tracker.holderOrder) != 0 || len(tracker.holderOrderByRef) != 0 || len(tracker.attemptOrder) != 0 || len(tracker.attemptOrderByNonce) != 0 || len(tracker.activeAttemptRefs) != 0 {
 		tracker.mu.Unlock()
 		t.Fatal("forget/remove retained cap ordering metadata")
 	}
 	tracker.upsertHolderLocked("expired", cacheHolder{ProviderID: "provider", UpdatedAt: now, ExpiresAt: now})
 	tracker.storeAttemptLocked("expired", cacheAttempt{CreatedAt: now, ExpiresAt: now})
 	tracker.sweepLocked(now)
-	if len(tracker.holderOrder) != 0 || len(tracker.holderOrderByRef) != 0 || len(tracker.attemptOrder) != 0 || len(tracker.attemptOrderByNonce) != 0 {
+	if len(tracker.holderOrder) != 0 || len(tracker.holderOrderByRef) != 0 || len(tracker.attemptOrder) != 0 || len(tracker.attemptOrderByNonce) != 0 || len(tracker.activeAttemptRefs) != 0 {
 		tracker.mu.Unlock()
 		t.Fatal("sweep retained expired cap ordering metadata")
 	}
@@ -811,9 +1097,13 @@ func TestCacheRoutingAppliesBoundedExactDiscount(t *testing.T) {
 	provider := makeSchedulerProvider(t, reg, "provider", model, 100)
 	route := CacheRoute{ExactKey: "exact", ConversationKey: "conversation", ConversationKind: "explicit"}
 	reg.cacheRouting.upsertForTest(route.ExactKey, provider.ID, time.Now(), 4096)
-	selected, decision := reg.ReserveProviderEx(model, &PendingRequest{RequestID: "request", Model: model, EstimatedPromptTokens: 4096, RequestedMaxTokens: 128, CacheRoute: route})
+	pr := &PendingRequest{RequestID: "request", Model: model, EstimatedPromptTokens: 4096, RequestedMaxTokens: 128, CacheRoute: route}
+	selected, decision := reg.ReserveProviderEx(model, pr)
 	if selected == nil || decision.CacheKind != "exact" || decision.CacheDiscountMs <= 0 || decision.CacheDiscountMs > 1000 || decision.CacheDiscountMs > (decision.CostMs+decision.CacheDiscountMs)*.35+1 {
 		t.Fatalf("invalid exact discount: selected=%v decision=%+v", selected, decision)
+	}
+	if pr.CacheSelectionMode != "active" || pr.CacheSelectionKind != "exact" || pr.CacheSelectionTier != "memory" || !pr.CacheSelectionSelected || pr.CacheSelectionWouldChange || pr.CacheSelectionDiscountMs != decision.CacheDiscountMs {
+		t.Fatalf("pending cache selection metadata = %+v", pr)
 	}
 }
 
@@ -883,15 +1173,19 @@ func TestCacheRoutingObserveReportsChangedWinner(t *testing.T) {
 	route := CacheRoute{ExactKey: "exact"}
 	reg.cacheRouting.upsertForTest(route.ExactKey, cached.ID, time.Now(), 4096)
 
-	selected, decision := reg.ReserveProviderEx(model, &PendingRequest{
+	pr := &PendingRequest{
 		RequestID: "request", Model: model, EstimatedPromptTokens: 4096,
 		RequestedMaxTokens: 128, CacheRoute: route,
-	})
+	}
+	selected, decision := reg.ReserveProviderEx(model, pr)
 	if selected == nil || selected.ID != baseline.ID {
 		t.Fatalf("observe mode selected %v, want baseline provider %q; decision=%+v", selected, baseline.ID, decision)
 	}
 	if !decision.CacheWouldChange || decision.CacheKind != "observe_exact" || decision.CacheDiscountMs <= 0 {
 		t.Fatalf("cache discount did not change shadow winner: %+v", decision)
+	}
+	if pr.CacheSelectionMode != "observe" || pr.CacheSelectionKind != "exact" || pr.CacheSelectionSelected || !pr.CacheSelectionWouldChange || pr.CacheSelectionDiscountMs != decision.CacheDiscountMs {
+		t.Fatalf("pending observe metadata = %+v", pr)
 	}
 }
 

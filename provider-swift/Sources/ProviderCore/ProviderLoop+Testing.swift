@@ -25,6 +25,27 @@ extension ProviderLoop {
     /// Test seam: recorded weight hash for a model (nil when unknown).
     func modelHashForTesting(_ id: String) -> String? { modelHashes[id] }
 
+    func liveModelHashForTesting(_ id: String) -> String? { liveModelHashes[id] }
+
+    func setWeightHashOperationsForTesting(
+        fingerprint: (@Sendable (URL) -> String?)?,
+        computeHash: (@Sendable (URL, String) -> String?)?
+    ) {
+        weightHashFingerprintOverride = fingerprint
+        weightHashComputeOverride = computeHash
+    }
+
+    func refreshWeightHashForTesting(
+        modelId: String,
+        modelPath: URL,
+        requireFreshCryptographicHash: Bool = false
+    ) async throws -> WeightHashRefreshResult {
+        try await refreshWeightHash(
+            modelId: modelId,
+            modelPath: modelPath,
+            requireFreshCryptographicHash: requireFreshCryptographicHash)
+    }
+
     /// Test seam: exposes the prefetch pre-check decision.
     func prefetchPreCheckForTesting(_ id: String) -> PrefetchPreCheck { prefetchPreCheck(modelId: id) }
 
@@ -267,6 +288,7 @@ extension ProviderLoop {
                 container: try newcomer.borrow(),
                 tokenizer: tokenizer,
                 sizing: sizing,
+                cacheEligibleWeightHash: nil,
                 isVLM: false,
                 modelType: modelType,
                 lastInferenceAt: .now
@@ -297,6 +319,7 @@ extension ProviderLoop {
             container: container,
             tokenizer: tokenizer,
             sizing: sizing,
+            cacheEligibleWeightHash: nil,
             isVLM: false,
             modelType: modelType,
             lastInferenceAt: .now

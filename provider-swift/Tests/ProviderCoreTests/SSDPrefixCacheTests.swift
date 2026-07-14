@@ -351,6 +351,162 @@ struct SSDBlockStoreTests {
         #expect(!FileManager.default.fileExists(atPath: stale.path))
         #expect(FileManager.default.fileExists(atPath: young.path))
     }
+
+    @Test("active cache I/O rejects symlinked root, model, and fanout paths")
+    func activeSymlinkIOFailsClosed() throws {
+        let parent = tempDir("active-symlinks")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let fm = FileManager.default
+
+        let realDedicated = parent.appendingPathComponent("real", isDirectory: true)
+        let linkedDedicated = parent.appendingPathComponent("linked", isDirectory: true)
+        try fm.createDirectory(at: realDedicated, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: linkedDedicated, withDestinationURL: realDedicated)
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: linkedDedicated,
+                modelRoot: linkedDedicated.appendingPathComponent("aaaaaaaaaaaa"))
+        }
+
+        let outsideModel = parent.appendingPathComponent("outside-model", isDirectory: true)
+        try fm.createDirectory(at: outsideModel, withIntermediateDirectories: true)
+        let modelLink = realDedicated.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+        try fm.createSymbolicLink(at: modelLink, withDestinationURL: outsideModel)
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: realDedicated,
+                modelRoot: modelLink)
+        }
+        try fm.removeItem(at: modelLink)
+
+        let modelRoot = realDedicated.appendingPathComponent("bbbbbbbbbbbb", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(
+            dedicatedRoot: realDedicated,
+            modelRoot: modelRoot)
+        let outsideFanout = parent.appendingPathComponent("outside-fanout", isDirectory: true)
+        try fm.createDirectory(at: outsideFanout, withIntermediateDirectories: true)
+        let fanoutLink = modelRoot.appendingPathComponent("aa", isDirectory: true)
+        try fm.createSymbolicLink(at: fanoutLink, withDestinationURL: outsideFanout)
+        let url = SSDBlockStore.fileURL(
+            root: modelRoot,
+            tag16Hex: "aabbccdd00112233445566778899eeff")
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.write(
+                to: url,
+                metadata: fixtureMetadata(sizes: [32]),
+                chunks: [Data(repeating: 1, count: 32)],
+                kekKey: SymmetricKey(size: .bits256))
+        }
+        #expect((try fm.contentsOfDirectory(atPath: outsideFanout.path)).isEmpty)
+
+        let cache = makeCache(
+            dir: modelRoot,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000))
+        defer { cache.close() }
+        cache.scanOnDisk()
+        #expect(cache.index.count == 0)
+        let escapedFile = outsideFanout.appendingPathComponent(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.dbk2")
+        try Data("must-survive".utf8).write(to: escapedFile)
+        cache.index.insert(
+            tag16: Data(repeating: 0xaa, count: 16),
+            fileBytes: 32,
+            lastAccess: 0)
+        cache.sweepExpiredEntries()
+        #expect(cache.index.count == 1, "unsafe fanout must block destructive cleanup")
+        #expect(fm.fileExists(atPath: escapedFile.path))
+    }
+
+    @Test("descriptor-relative active I/O cannot be redirected by a fanout symlink race")
+    func activeIORenameToSymlinkRace() throws {
+        struct Fixture {
+            let parent: URL
+            let modelRoot: URL
+            let file: URL
+            let outsideFile: URL
+            let hook: @Sendable (SSDActiveIOOperation) -> Void
+        }
+        var parents: [URL] = []
+        defer { for parent in parents { try? FileManager.default.removeItem(at: parent) } }
+        let kek = SymmetricKey(size: .bits256)
+        let tag = "aabbccdd00112233445566778899eeff"
+        let originalChunk = Data(repeating: 3, count: 32)
+        let outsideSentinel = Data("outside-must-remain-untouched".utf8)
+
+        func makeFixture(_ label: String) throws -> Fixture {
+            let parent = tempDir("nofollow-\(label)")
+            parents.append(parent)
+            let dedicated = parent.appendingPathComponent("cache", isDirectory: true)
+            let modelRoot = dedicated.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: dedicated, modelRoot: modelRoot)
+            let file = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: tag)
+            _ = try SSDBlockStore.write(
+                to: file,
+                metadata: fixtureMetadata(sizes: [originalChunk.count]),
+                chunks: [originalChunk],
+                kekKey: kek)
+
+            let fanout = file.deletingLastPathComponent()
+            let detachedFanout = modelRoot.appendingPathComponent("detached-aa")
+            let outsideFanout = parent.appendingPathComponent("outside-aa", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: outsideFanout, withIntermediateDirectories: true)
+            let outsideFile = outsideFanout.appendingPathComponent(file.lastPathComponent)
+            try outsideSentinel.write(to: outsideFile)
+            let hook: @Sendable (SSDActiveIOOperation) -> Void = { _ in
+                try! FileManager.default.moveItem(at: fanout, to: detachedFanout)
+                try! FileManager.default.createSymbolicLink(
+                    at: fanout, withDestinationURL: outsideFanout)
+            }
+            return Fixture(
+                parent: parent,
+                modelRoot: modelRoot,
+                file: file,
+                outsideFile: outsideFile,
+                hook: hook)
+        }
+
+        let readFixture = try makeFixture("read")
+        let (readMetadata, readChunks) = try SSDBlockStore.read(
+            from: readFixture.file,
+            kekKey: kek,
+            beforeOperation: readFixture.hook)
+        #expect(readMetadata.weightHash == "w-hash")
+        #expect(readChunks == [originalChunk])
+        #expect(try Data(contentsOf: readFixture.outsideFile) == outsideSentinel)
+
+        let writeFixture = try makeFixture("write")
+        _ = try SSDBlockStore.write(
+            to: writeFixture.file,
+            metadata: fixtureMetadata(sizes: [48]),
+            chunks: [Data(repeating: 9, count: 48)],
+            kekKey: kek,
+            beforeOperation: writeFixture.hook)
+        #expect(try Data(contentsOf: writeFixture.outsideFile) == outsideSentinel)
+
+        let touchFixture = try makeFixture("touch")
+        let outsideDate = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: outsideDate],
+            ofItemAtPath: touchFixture.outsideFile.path)
+        SSDBlockStore.setAttributesIfSafe(
+            [.modificationDate: Date(timeIntervalSince1970: 9_000)],
+            at: touchFixture.file,
+            under: touchFixture.modelRoot,
+            beforeOperation: touchFixture.hook)
+        let untouchedDate = try touchFixture.outsideFile.resourceValues(
+            forKeys: [.contentModificationDateKey]).contentModificationDate
+        #expect(untouchedDate == outsideDate)
+
+        let deleteFixture = try makeFixture("delete")
+        #expect(SSDBlockStore.removeItemIfSafe(
+            at: deleteFixture.file,
+            under: deleteFixture.modelRoot,
+            beforeOperation: deleteFixture.hook))
+        #expect(try Data(contentsOf: deleteFixture.outsideFile) == outsideSentinel)
+    }
 }
 
 // MARK: - Mode selection + no-carve
@@ -404,6 +560,22 @@ struct SSDPrefixCacheModeTests {
             slotKVBytesCapacity: slot, requestedBudgetBytes: 0, kvBytesPerToken: 24_576)
         #expect(carve.engineKVBytesCapacity == slot)
         #expect(carve.prefixCacheBudgetBytes == 0)
+    }
+
+    @Test("reusable SSD cache requires a verified non-empty live weight hash")
+    func verifiedWeightBindingRequired() {
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash(nil) == nil)
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash("") == nil)
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash(" \n\t ") == nil)
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash("  abcd1234  ") == "abcd1234")
+    }
+
+    @Test("durable-byte stage estimate is positive, conservative, and wire-bounded")
+    func durableStageEstimate() {
+        #expect(SSDPrefixCachePolicy.estimatedStageMillis(bytes: 1) == 1)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: 1) > 0)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: Int.max)
+            == PrefixCacheReadyResult.maxStageMs)
     }
 
     @Test("box-wide disk budget: env override wins; default = min(20 GiB, free/2)")
@@ -840,10 +1012,11 @@ struct SSDPrefixCacheReadyReceiptTests {
 
         correlatedDonate(cache, requestID: requestID, tokenCount: 64)
         #expect(await box.waitForCount(1))
-        #expect(box.snapshot[0] == PrefixCacheReadyResult(
-            readyTokens: 64,
-            requiredRecomputeTokens: 0,
-            expectedPrefillTokensSaved: 64))
+        #expect(box.snapshot[0].readyTokens == 64)
+        #expect(box.snapshot[0].requiredRecomputeTokens == 0)
+        #expect(box.snapshot[0].expectedPrefillTokensSaved == 64)
+        #expect(try #require(box.snapshot[0].stageMs) > 0)
+        #expect(try #require(box.snapshot[0].stageMs) <= PrefixCacheReadyResult.maxStageMs)
 
         correlatedDonate(cache, requestID: requestID, tokenCount: 72)
         #expect(await box.waitForCount(2))
@@ -1330,7 +1503,7 @@ struct SSDPrefixCacheReservationTests {
         #expect(!dbk2Files(under: dir).isEmpty)
     }
 
-    @Test("two same-prefix requests share ONE entry reservation — no double-charge, no orphaned residency")
+    @Test("concurrent same-prefix requests bind exact tickets to one reserved entry")
     func sharedEntryReservedExactlyOnce() async throws {
         // Regression (Codex, v0.7.5 SSD review — SSDPrefixCache staging
         // ticket accounting): when two concurrent same-prefix requests
@@ -1352,38 +1525,106 @@ struct SSDPrefixCacheReservationTests {
         defer { cache.close() }
 
         let prompt = Array(0 ..< tokenCount) + [1]
-        // A creates the staged entry; B attaches to the SAME entry.
-        #expect((await cache.stage(requestID: "req-A", promptTokens: prompt, cacheScope: "")).staged)
-        let afterA = await budget.outstandingReservedBytes()
-        #expect(afterA > 0)
-        #expect((await cache.stage(requestID: "req-B", promptTokens: prompt, cacheScope: "")).staged)
+        let requestA = CBv2RequestID(101)
+        let requestB = CBv2RequestID(102)
+        // Race both stages. One creates the entry and the other attaches,
+        // regardless of which disk read wins.
+        async let stageA = cache.stage(
+            requestID: requestA, promptTokens: prompt, cacheScope: "")
+        async let stageB = cache.stage(
+            requestID: requestB, promptTokens: prompt, cacheScope: "")
+        let (resultA, resultB) = await (stageA, stageB)
+        #expect(resultA.staged)
+        #expect(resultB.staged)
+        let sharedReservation = await budget.outstandingReservedBytes()
+        #expect(sharedReservation > 0)
         // Charged ONCE: attaching adds a residency ticket, not a reservation.
         // (Pre-fix this was 2 × afterA.)
         #expect(
-            await budget.outstandingReservedBytes() == afterA,
+            sharedReservation == UInt64(cache.bytesInUse),
             "attaching to a staged entry must not add a second reservation")
-        #expect(cache.bytesInUse == Int(afterA))
+        #expect(cache.bytesInUse == Int(sharedReservation))
 
-        // Both engines look up the shared arrays (two live pins).
-        let hit = try #require(
-            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
-        _ = try #require(
-            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
-        // A fully completes (adoption + terminal backstop) while B is STILL
-        // pinned and the entry is STILL resident. Its reservation must NOT
-        // be released here — residency stays covered.
-        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
-        cache.completeStaging(requestID: "req-A")
+        // An unrelated request cannot consume either staged ticket. B can
+        // finish while A's lookup is still delayed without stealing A's pin.
+        #expect(cache.lookup(
+            requestID: CBv2RequestID(999),
+            tokens: prompt,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil) == nil)
+        let hitB = try #require(cache.lookup(
+            requestID: requestB,
+            tokens: prompt,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil))
+        cache.endAdoption(
+            requestID: requestB,
+            tokens: prompt,
+            matched: hitB.matched,
+            cacheSalt: nil)
+        cache.completeStaging(requestID: requestB)
         #expect(
-            await budget.outstandingReservedBytes() == afterA,
+            await budget.outstandingReservedBytes() == sharedReservation,
             "a resident shared entry must stay reserved until its LAST user leaves")
-        #expect(cache.bytesInUse == Int(afterA))
+        #expect(cache.bytesInUse == Int(sharedReservation))
 
-        // B finishes; the entry retires and the single reservation drains.
-        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
-        cache.completeStaging(requestID: "req-B")
+        // A's slower lookup remains valid after B's terminal backstop. Only
+        // A can balance A's ticket; then the shared reservation drains.
+        let hitA = try #require(cache.lookup(
+            requestID: requestA,
+            tokens: prompt,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil))
+        cache.endAdoption(
+            requestID: requestA,
+            tokens: prompt,
+            matched: hitA.matched,
+            cacheSalt: nil)
+        cache.completeStaging(requestID: requestA)
         #expect(await waitForZeroOutstanding(budget), "the last user must drain the entry reservation")
         #expect(cache.bytesInUse == 0)
+    }
+
+    @Test("two cache instances may reserve the same raw receipt id independently")
+    func instanceNamespacesPreventGlobalReservationCollisions() async throws {
+        let parent = tempDir("res-instance-namespace")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let budget = makeBudget()
+        let clock = ClockBox(10_000)
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent("aaaaaaaaaaaa"),
+            withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent("bbbbbbbbbbbb"),
+            withIntermediateDirectories: false)
+        let cacheA = await makeStagedCache(
+            dir: parent.appendingPathComponent("aaaaaaaaaaaa"),
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            kvBudget: budget)
+        let cacheB = await makeStagedCache(
+            dir: parent.appendingPathComponent("bbbbbbbbbbbb"),
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            kvBudget: budget)
+        defer { cacheA.close(); cacheB.close() }
+
+        let requestID = CBv2RequestID(1)
+        let prompt = Array(0 ..< tokenCount) + [1]
+        let resultA = await cacheA.stage(
+            requestID: requestID, promptTokens: prompt, cacheScope: "")
+        let resultB = await cacheB.stage(
+            requestID: requestID, promptTokens: prompt, cacheScope: "")
+
+        #expect(resultA.staged)
+        #expect(resultB.staged)
+        #expect(await budget.outstandingReservedBytes()
+            == UInt64(cacheA.bytesInUse + cacheB.bytesInUse))
+        #expect((await budget.reservationIDsForTesting()).count == 2)
+
+        await cacheA.abandonStaging(requestID: requestID)
+        await cacheB.abandonStaging(requestID: requestID)
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 }
 
@@ -1466,6 +1707,9 @@ struct SSDWholeRootMaintenanceTests {
         payloadBytes: Int = 128
     ) throws -> URL {
         let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(
+            dedicatedRoot: root,
+            modelRoot: modelRoot)
         let url = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: tagHex)
         let chunk = Data(repeating: 7, count: payloadBytes)
         let metadata = SSDBlockMetadata(

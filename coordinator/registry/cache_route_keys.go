@@ -82,10 +82,18 @@ func (r *Registry) DeriveCacheRoute(account, model, endpoint string, finalBody [
 		return CacheRoute{}
 	}
 	exactDigest := sha256.Sum256(canonicalBytes)
-	exactKey := opaqueHMAC(keys.route, "exact-v2", account, endpoint, model, string(exactDigest[:]))
+	explicit, hasExplicit := explicitCacheNamespace(body, sessionHeader)
+	// The header is not part of the sealed JSON body, so bind the effective
+	// explicit namespace (including its source prefix) into exact identity.
+	// Body session_id and prompt_cache_key retain their existing precedence.
+	exactNamespace := ""
+	if hasExplicit {
+		exactNamespace = explicit
+	}
+	exactKey := opaqueHMAC(keys.route, "exact-v2", account, endpoint, model, string(exactDigest[:]), exactNamespace)
 	route := CacheRoute{ExactKey: exactKey, ScopeNamespace: base64.RawURLEncoding.EncodeToString(exactDigest[:])}
 
-	if explicit, ok := explicitCacheNamespace(body, sessionHeader); ok {
+	if hasExplicit {
 		route.ConversationKey = opaqueHMAC(keys.route, "conversation-explicit-v2", account, endpoint, model, explicit)
 		route.ConversationKind = "explicit"
 		route.ScopeNamespace = explicit

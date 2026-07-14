@@ -25,21 +25,76 @@ public struct PrefixCacheLookupResult: Sendable, Equatable {
 }
 
 public struct PrefixCacheReadyResult: Sendable, Equatable {
+    public static let maxStageMs = 600_000.0
+
     public let readyTokens: Int
     public let requiredRecomputeTokens: Int
     public let expectedPrefillTokensSaved: Int
     public let tier: PrefixCacheTier
+    public let stageMs: Double?
 
     public init(
         readyTokens: Int,
         requiredRecomputeTokens: Int,
         expectedPrefillTokensSaved: Int,
-        tier: PrefixCacheTier = .ssd
+        tier: PrefixCacheTier = .ssd,
+        stageMs: Double? = nil
     ) {
         self.readyTokens = max(0, readyTokens)
         self.requiredRecomputeTokens = max(0, requiredRecomputeTokens)
         self.expectedPrefillTokensSaved = max(0, expectedPrefillTokensSaved)
         self.tier = tier
+        if let stageMs, stageMs.isFinite {
+            self.stageMs = min(Self.maxStageMs, max(0, stageMs))
+        } else {
+            self.stageMs = nil
+        }
+    }
+}
+
+/// One receipt resolver shared by the outer provider handler and the engine
+/// bridge. The outer path owns it until the detached inference task is spawned;
+/// bridge usage or an early failure may resolve it, and every later attempt is
+/// a no-op.
+final class PrefixCacheLookupReceiptFinalizer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resolved = false
+    private let callback: (@Sendable (PrefixCacheLookupResult) -> Void)?
+
+    init(callback: (@Sendable (PrefixCacheLookupResult) -> Void)?) {
+        self.callback = callback
+    }
+
+    func resolve(_ result: PrefixCacheLookupResult) {
+        let shouldDeliver = lock.withLock { () -> Bool in
+            guard !resolved else { return false }
+            resolved = true
+            return true
+        }
+        if shouldDeliver { callback?(result) }
+    }
+
+    func finalize(
+        failure: PrefixCacheLookupFailureClass,
+        tier: PrefixCacheTier? = nil
+    ) {
+        resolve(PrefixCacheLookupResult(
+            outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
+            tier: tier))
+    }
+
+    /// Queue the final lookup receipt before the terminal inference message.
+    /// `SendHandle.send` is synchronous/nonblocking, so this establishes
+    /// outbound ordering without a task hop. A bridge-resolved receipt makes
+    /// the fallback finalization a no-op.
+    func sendTerminal(
+        _ message: OutboundMessage,
+        fallbackFailure: PrefixCacheLookupFailureClass,
+        tier: PrefixCacheTier? = nil,
+        send: SendHandle
+    ) {
+        finalize(failure: fallbackFailure, tier: tier)
+        send.send(message)
     }
 }
 
@@ -82,7 +137,7 @@ enum PrefixCacheReceiptEmitter {
                 prefillTokensSaved: result.prefillTokensSaved > 0
                     ? UInt64(result.prefillTokensSaved) : nil,
                 stageMs: result.stageMs)
-            Task.detached { send.send(message) }
+            send.send(message)
         }
         let ready: @Sendable (PrefixCacheReadyResult) -> Void = { result in
             let message = OutboundMessage.prefixCacheReady(
@@ -91,8 +146,9 @@ enum PrefixCacheReceiptEmitter {
                 readyTokens: UInt64(result.readyTokens),
                 requiredRecomputeTokens: UInt64(result.requiredRecomputeTokens),
                 expectedPrefillTokensSaved: UInt64(result.expectedPrefillTokensSaved),
-                tier: result.tier)
-            Task.detached { send.send(message) }
+                tier: result.tier,
+                stageMs: result.stageMs)
+            send.send(message)
         }
         return (lookup, ready)
     }
@@ -105,6 +161,11 @@ enum SSDPrefixCacheStageDisposition: Sendable, Equatable {
     case skippedCapacity
     case skippedCost
     case skippedPolicy
+}
+
+enum PrefixCacheLookupFailureClass: Sendable {
+    case capacity
+    case policy
 }
 
 struct SSDPrefixCacheStageResult: Sendable, Equatable {
@@ -152,5 +213,15 @@ struct SSDPrefixCacheStageResult: Sendable, Equatable {
             outcome = .skippedPolicy
         }
         return PrefixCacheLookupResult(outcome: outcome, tier: .ssd, stageMs: stageMs)
+    }
+
+    func resolved(failure: PrefixCacheLookupFailureClass) -> PrefixCacheLookupResult {
+        if case .staged = disposition {
+            return PrefixCacheLookupResult(
+                outcome: failure == .capacity ? .skippedCapacity : .skippedPolicy,
+                tier: .ssd,
+                stageMs: stageMs)
+        }
+        return resolved(actualCachedTokens: 0)
     }
 }

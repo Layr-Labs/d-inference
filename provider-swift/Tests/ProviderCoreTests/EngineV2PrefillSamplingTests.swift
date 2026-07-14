@@ -75,6 +75,41 @@ struct EngineV2PrefillSamplingTests {
         #expect(tps == 500)
     }
 
+    @Test("terminal cache outcome admits only genuinely cold prefills")
+    func coldOutcomeClassifier() {
+        for outcome in [
+            CBv2PrefixCacheOutcome.disabled, .miss, .skippedPolicy,
+            .skippedCapacity, .adoptionFailed,
+        ] {
+            #expect(EngineV2Bridge.isColdPrefillSample(usage: CBv2Usage(
+                promptTokens: 100,
+                completionTokens: 1,
+                prefixCacheOutcome: outcome)))
+        }
+        #expect(!EngineV2Bridge.isColdPrefillSample(usage: CBv2Usage(
+            promptTokens: 100,
+            completionTokens: 1,
+            prefixCacheOutcome: .hit,
+            prefixCacheMatchedTokens: 64,
+            prefixCachePrefillTokensSaved: 48)))
+        // Saved-token truth is authoritative even if an older/malformed
+        // engine reports a non-hit enum.
+        #expect(!EngineV2Bridge.isColdPrefillSample(usage: CBv2Usage(
+            promptTokens: 100,
+            completionTokens: 1,
+            prefixCacheOutcome: .miss,
+            prefixCachePrefillTokensSaved: 48)))
+        // A real hit can be invalidated by preemption before terminal usage.
+        // The engine then reports adoptionFailed/saved=0 but retains the raw
+        // matched prefix. It is not a trustworthy cold-prefill sample.
+        #expect(!EngineV2Bridge.isColdPrefillSample(usage: CBv2Usage(
+            promptTokens: 100,
+            completionTokens: 1,
+            prefixCacheOutcome: .adoptionFailed,
+            prefixCacheMatchedTokens: 64,
+            prefixCachePrefillTokensSaved: 0)))
+    }
+
     @Test("successful finish feeds the EWMA from submit→first-token timing")
     func ewmaPopulatedFromRealTiming() async throws {
         let engine = PrefillScriptEngine()
@@ -134,6 +169,39 @@ struct EngineV2PrefillSamplingTests {
         continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
         continuation.yield(.finished(
             reason: .cancelled, usage: CBv2Usage(promptTokens: 200, completionTokens: 1)))
+        continuation.finish()
+        _ = await consumer.value
+
+        #expect(await bridge.backendSlotCapacity().observedPrefillTps == 0)
+    }
+
+    @Test("cache-hit submit-to-first-token timing never feeds the cold prefill EWMA")
+    func cacheHitsDoNotSample() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+        let stream = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 7, count: 200),
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")]),
+            requestId: "req-prefill-hit")
+        let consumer = Task { for await _ in stream {} }
+        try await Task.sleep(for: .milliseconds(50))
+        let continuation = try #require(engine.continuations.first)
+        continuation.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        continuation.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(
+                promptTokens: 200,
+                completionTokens: 1,
+                prefixCacheHitTokens: 128,
+                prefixCacheOutcome: .hit,
+                prefixCacheMatchedTokens: 160,
+                prefixCachePrefillTokensSaved: 128)))
         continuation.finish()
         _ = await consumer.value
 

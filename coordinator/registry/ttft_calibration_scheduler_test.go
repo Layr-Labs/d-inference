@@ -189,3 +189,45 @@ func TestTTFTCalibrationSkipsColdPredictions(t *testing.T) {
 		t.Fatal("cold-slot prediction must not be joinable")
 	}
 }
+
+func TestTTFTCalibrationSkipsCacheParticipatingRequests(t *testing.T) {
+	resetCalibrator(t)
+	reg := New(testLogger())
+	model := "calib-cache-model"
+	calibrationTestProvider(t, reg, "cache-box", model, 100, 100)
+	const promptTokens = 1000
+	const rawEstimateMs = 10_010.0
+
+	for i := 0; i < ttftCalibrationWarmupObs; i++ {
+		req := &PendingRequest{
+			RequestID:             fmt.Sprintf("cache-calib-%d", i),
+			Model:                 model,
+			EstimatedPromptTokens: promptTokens,
+			RequestedMaxTokens:    128,
+			CacheRoute:            CacheRoute{ExactKey: "cache-route"},
+		}
+		selected, decision := reg.ReserveProviderEx(model, req)
+		if selected == nil {
+			t.Fatalf("cache reserve %d failed: %+v", i, decision)
+		}
+		if _, ok := RecordTTFTObservation(req.RequestID, req.Attempt, rawEstimateMs*0.1); ok {
+			t.Fatal("cache-participating request produced a calibration sample")
+		}
+		selected.RemovePending(req.RequestID)
+		reg.SetProviderIdle(selected.ID)
+	}
+	if got := TTFTCalibrationRatio(model, "M3"); got != 1 {
+		t.Fatalf("cache requests lowered calibrator ratio to %v", got)
+	}
+
+	gated := &PendingRequest{
+		RequestID:             "cache-gated",
+		Model:                 model,
+		EstimatedPromptTokens: promptTokens,
+		RequestedMaxTokens:    128,
+		MaxTTFTMs:             5000,
+	}
+	if selected, decision := reg.ReserveProviderEx(model, gated); selected != nil || decision.TTFTRejections != 1 {
+		t.Fatalf("cache samples weakened hard gate: selected=%v decision=%+v", selected, decision)
+	}
+}

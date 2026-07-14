@@ -89,6 +89,90 @@ func TestStreamingChatReasoningTokensInUsage(t *testing.T) {
 	}
 }
 
+func TestStreamingFramesCannotForwardUnvalidatedCachedTokens(t *testing.T) {
+	logger := quietLogger()
+	srv := NewServer(registry.New(logger), store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	pr := &registry.PendingRequest{
+		RequestID:  "cache-stream",
+		Model:      "model",
+		ChunkCh:    make(chan string, 4),
+		ErrorCh:    make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh: make(chan protocol.UsageInfo, 1),
+	}
+	pr.ChunkCh <- `data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"hi"},"finish_reason":null}],"usage":{"prompt_tokens_details":{"cached\u005ftokens":999,"audio_tokens":3}}}`
+	pr.ChunkCh <- `data: {"object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens_details":{"\u0063ached_tokens":888,"audio_tokens":4}}}`
+	pr.ChunkCh <- `data: {"object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_\u0074okens":777,"audio_tokens":5}}}`
+	close(pr.ChunkCh)
+	pr.CompleteCh <- protocol.UsageInfo{
+		PromptTokens: 10, CompletionTokens: 2,
+		CacheOutcome: "hit", CacheTier: "memory", CachedTokens: 4, PrefillTokensSaved: 3,
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
+	body := rec.Body.String()
+	for _, untrusted := range []string{"999", "888", "777"} {
+		if strings.Contains(body, untrusted) {
+			t.Fatalf("stream forwarded unvalidated cache detail %s: %s", untrusted, body)
+		}
+	}
+	if strings.Count(body, `"cached_tokens":4`) != 1 {
+		t.Fatalf("authoritative terminal cached_tokens not emitted exactly once: %s", body)
+	}
+	for _, preserved := range []string{`"audio_tokens":3`, `"audio_tokens":4`, `"audio_tokens":5`} {
+		if !strings.Contains(body, preserved) {
+			t.Fatalf("stream sanitization removed unrelated detail %s: %s", preserved, body)
+		}
+	}
+}
+
+func TestSanitizeNestedResponsesStreamCacheDetails(t *testing.T) {
+	chunk := "event: response.completed\n" +
+		"id: response-7\n" +
+		": retain this comment\n" +
+		`data: {"type":"response.completed","response":{"usage":{` + "\n" +
+		`data: "input_tokens_details":{"cached\u005ftokens":99,"audio_tokens":7}}}}` + "\n\n"
+	got := sanitizeStreamCacheDetails(chunk)
+	if strings.Contains(got, `"cached_tokens"`) || strings.Contains(got, `cached\u005ftokens`) || strings.Contains(got, "99") {
+		t.Fatalf("nested Responses cached_tokens survived: %s", got)
+	}
+	if !strings.Contains(got, `"audio_tokens":7`) || !strings.Contains(got, "event: response.completed") ||
+		!strings.Contains(got, "id: response-7") || !strings.Contains(got, ": retain this comment") || strings.Count(got, "data:") != 1 {
+		t.Fatalf("nested Responses sanitization removed unrelated content: %s", got)
+	}
+}
+
+func TestSanitizeSplitMultilineChatStreamCacheDetails(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		choices string
+	}{
+		{name: "content", choices: `[{"delta":{"content":"hi"},"finish_reason":null}]`},
+		{name: "finish", choices: `[{"delta":{},"finish_reason":"stop"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			chunk := "event: message\n" +
+				"id: chat-9\n" +
+				": keepalive\n" +
+				`data: {"object":"chat.completion.chunk","choices":` + tc.choices + `,` + "\n" +
+				`data: "usage":{"prompt_tokens_details":{"cached\u005ftokens":123,"audio_tokens":6}}}` + "\n\n"
+			got := sanitizeStreamCacheDetails(chunk)
+			if strings.Contains(got, "123") || strings.Contains(got, `cached\u005ftokens`) || strings.Contains(got, `"cached_tokens"`) {
+				t.Fatalf("split %s frame retained cached_tokens: %s", tc.name, got)
+			}
+			for _, preserved := range []string{`"audio_tokens":6`, "event: message", "id: chat-9", ": keepalive"} {
+				if !strings.Contains(got, preserved) {
+					t.Fatalf("split %s frame lost %q: %s", tc.name, preserved, got)
+				}
+			}
+			if strings.Count(got, "data:") != 1 || !strings.HasSuffix(got, "\n\n") {
+				t.Fatalf("split %s frame was not re-emitted as one data line/event: %q", tc.name, got)
+			}
+		})
+	}
+}
+
 // TestStreamingChatUsageOnlyFirstChunk covers the zero-delta case: a completion
 // that streams no content/reasoning deltas, so the include_usage frame is the very
 // FIRST chunk handed to the handler. It must still be held and have the reasoning

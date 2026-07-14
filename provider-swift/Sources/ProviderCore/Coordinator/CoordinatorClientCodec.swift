@@ -186,7 +186,7 @@ public enum CoordinatorClientCodec {
 
         case .prefixCacheReady(
             let requestId, let nonce, let readyTokens,
-            let requiredRecomputeTokens, let expectedPrefillTokensSaved, let tier
+            let requiredRecomputeTokens, let expectedPrefillTokensSaved, let tier, let stageMs
         ):
             return .prefixCacheReady(ProviderMessage.PrefixCacheReady(
                 requestId: requestId,
@@ -194,7 +194,8 @@ public enum CoordinatorClientCodec {
                 readyTokens: readyTokens,
                 requiredRecomputeTokens: requiredRecomputeTokens,
                 expectedPrefillTokensSaved: expectedPrefillTokensSaved,
-                tier: tier
+                tier: tier,
+                stageMs: stageMs
             ))
         }
     }

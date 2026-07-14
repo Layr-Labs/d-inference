@@ -125,7 +125,8 @@ After asynchronous donation settles, the provider may send:
   "ready_tokens": 8192,
   "required_recompute_tokens": 1536,
   "expected_prefill_tokens_saved": 6656,
-  "tier": "ssd"
+  "tier": "ssd",
+  "stage_ms": 420
 }
 ```
 
@@ -133,11 +134,15 @@ SSD ready means encryption, atomic rename, index insertion, global budget enforc
 contiguous readability all completed. Queue drops, rate limits, low disk, ENOSPC, write
 failure, corruption, shutdown, and immediate eviction do not produce ready. A partial
 leading run can report readiness only when it independently clears the benefit floor.
-Receipt emission never delays chunks or `inference_complete`.
+`stage_ms` is the conservative predicted cost to read and decrypt that durable run on a
+future request, not donation-write latency. Receipt emission never delays chunks or
+`inference_complete`.
 
 New protocol and usage fields are optional. Old providers remain eligible but serve
-uncached. New providers receiving an old-coordinator request serve it uncached rather than
-falling back to a shared remote scope. Go and Swift wire shapes live in
+uncached: the coordinator overwrites their encrypted-body `prompt_cache_key` with a fresh
+per-attempt buster, including while cache routing is off, so legacy caller-derived or empty
+namespaces cannot reuse state. New providers receiving an old-coordinator request serve it
+uncached rather than falling back to a shared remote scope. Go and Swift wire shapes live in
 `coordinator/protocol/messages.go` and
 `provider-swift/Sources/ProviderCore/Protocol/Messages.swift`.
 
@@ -153,7 +158,13 @@ tokens must increase monotonically. Attempt records survive terminal inference f
 minutes because SSD writes complete asynchronously. Attempts also receive a coordinator-
 local monotonic sequence: a delayed negative receipt from an older attempt cannot remove
 or suppress holder evidence established by a newer attempt, while a newer miss can still
-invalidate older evidence.
+invalidate older evidence. A separately bounded evidence watermark survives holder removal,
+so delayed older hit or ready receipts cannot resurrect state after that newer negative.
+Watermarks cover both exact and conversation references for every live delayed attempt and
+expire only after the longer of holder TTL and in-flight attempt TTL. Active-attempt
+sequence heaps keep protected tombstones out of the eviction heap, so capped steady-state
+maintenance remains logarithmic and completed-attempt churn cannot evict evidence required
+by an older live receipt.
 
 Attempt and holder caps use indexed oldest-first heaps, so steady-state insertion at the
 50,000-attempt and 10,000-holder global bounds remains logarithmic. Expiry sweeps are
@@ -176,7 +187,9 @@ cooldown state, loaded-slot state, memory, concurrency, queues, pooled KV, full 
 budget, and TTFT admission.
 
 Reservations continue to use the full prompt and requested output. A stale receipt or
-staging refusal must safely fall back to cold prefill without overcommitment.
+staging refusal must safely fall back to cold prefill without overcommitment. If optional
+SSD staging consumes the last shared headroom, the provider abandons and releases staging,
+retries the full cold reservation, and rejects only if that cold request itself cannot fit.
 
 For an eligible holder:
 
@@ -192,9 +205,11 @@ adjusted_cost = baseline_cost - discount
 ```
 
 Prefill rate must come from cache-miss measurements or a safe benchmark fallback, never an
-EWMA contaminated by cache hits. Exact and conversation discounts do not stack. There is
-no hard affinity override. A busy holder whose adjusted cost is still worse loses to an
-idle provider without a cache.
+EWMA contaminated by cache hits. Cache-participating requests are also excluded from the
+coordinator's full-prefill TTFT calibration and reputation samples because their cache
+outcome is not authoritative at first-content time. Exact and conversation discounts do
+not stack. There is no hard affinity override. A busy holder whose adjusted cost is still
+worse loses to an idle provider without a cache.
 
 Modes are `off`, `observe`, `exact`, and `conversation`. Observe calculates hypothetical
 selection without changing the winner. Dedicated models require their separate enable
@@ -218,6 +233,14 @@ malformed. `off` starts without a secret and disables remote cache participation
 The encrypted SSD tier retains current token-chain, weight, layout, block-size, media, and
 lossless-snapshot checks in
 `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift`.
+The tier is constructed only with a nonempty verified live weight hash, and the coordinator
+sends a remote scope only when the selected provider advertises that same catalog hash.
+The cache-eligible hash requires independently successful cryptographic hashes immediately
+before and after model load, and those hashes must match exactly. Size/mtime fingerprints
+remain a change detector for attestation bookkeeping but cannot authorize reusable KV. A
+failed or mismatched bracket disables reusable SSD cache even if an older hash remains
+available for operator-visible attestation state. Standalone mode performs the same bracket
+before enabling its local SSD tier. There is no model-ID fallback for reusable KV.
 
 Startup and periodic maintenance account for every owned model directory under the `kv2`
 root, including unloaded models. Sliding TTL and the box-wide byte budget therefore do not
@@ -231,7 +254,24 @@ use the writer's canonical uppercase spelling. Young temporary files are treated
 their bytes count toward the global budget, but neither TTL nor budget maintenance deletes
 them. Only exact owned temporary files at least one hour old are crash-orphan candidates.
 Deletion-sensitive traversal also rejects a maintenance root reached through a symlinked
-path component, in addition to rejecting symlinked model and fanout descendants.
+path component, in addition to rejecting symlinked model and fanout descendants. The same
+root/model/fanout checks apply to active scan, read, write, attribute, rename, and deletion
+paths; unsafe cache roots disable the tier rather than following them. On Darwin, active
+file operations open every directory component with `O_NOFOLLOW` and perform read, write,
+rename, touch, and deletion relative to verified directory descriptors, so a concurrent
+fanout-to-symlink replacement cannot redirect I/O outside `kv2`.
+
+SSD staging tickets are keyed by the submission-unique `prefixCacheReceiptID`. The engine
+passes that identity through request-aware lookup and `endAdoption`, so concurrent identical
+prefixes cannot consume each other's pins or let one terminal backstop retire a slower peer.
+Ticket and reservation keys also include a cache-instance namespace, preventing identical
+per-bridge receipt counters from colliding in the process-wide KV budget.
+Every cache-enabled attempt with a receipt nonce finalizes exactly one lookup result,
+including outer-handler drain/admission/load/media/encryption failures, pre-engine capacity
+rejection, submit rejection, and terminal-less teardown. Lookup and ready receipts are
+enqueued synchronously through the thread-safe control sender before a terminal error or
+completion, while the transport itself remains asynchronous; terminal cleanup therefore
+cannot overtake or lose the request's sole receipt.
 
 Natural completion remains the first donation path. Early prompt-only donation occurs
 after full prefill and the first sampled token, behind `DARKBLOOM_EARLY_PROMPT_DONATION`
@@ -247,19 +287,31 @@ deterministic sampler request ID. See
 `provider-swift/Sources/ProviderCore/Inference/EngineV2Bridge.swift`. Completion clears the
 request's exact pending-job identity; later cancellation or preemption therefore releases
 immediately instead of waiting behind unrelated donation-queue work. A request whose own
-donation is still materializing remains charged until that job completes.
+donation is still materializing remains charged until that job completes. Each early job is
+bound to the exact source sequence rows that produced its snapshot; replacement rows from a
+preempted/requeued request release independently. Graceful drain waits for every early or
+terminal donation obligation that still owns backend state, subject to the existing bounded
+shutdown timeout.
 
 ## Telemetry and billing
 
 Low-cardinality telemetry records source kind, holder availability, hypothetical and
 actual selection, baseline and adjusted cost, discount, outcome, tier, cached tokens,
-prefill tokens saved, and stage time. It never records keys or client identifiers. Cold
-prefill, memory hit, SSD staging, and post-adoption prefill remain separate measurements.
+prefill tokens saved, and stage time. Selection metadata is carried on the pending attempt
+and joined to terminal outcome, making per-kind hit precision and non-hit performance
+measurable without request IDs, keys, or client identifiers. Provider completion, provider
+error, consumer timeout, and synthetic WebSocket-disconnect terminals share one idempotent
+per-attempt metric claim. Cold prefill, memory hit, SSD staging, and post-adoption prefill
+remain separate measurements; any request with matched, adopted, or saved cache tokens is
+excluded from the cold-prefill EWMA even if later preemption changes its terminal outcome.
 
 Cached tokens remain part of prompt-token billing in this release. Provider terminal usage
 reports cache details for calibration. OpenAI chat and Responses output now fills the
-existing standard `cached_tokens` usage detail when a validated hit occurs; totals and
-prices do not change. Anthropic billing and usage totals remain unchanged.
+existing standard `cached_tokens` usage detail when a validated hit occurs; sanitized
+terminal usage always overwrites or removes any raw provider-supplied cache detail in
+complete, held-stream, native Responses, content-bearing, and finish-bearing stream payloads.
+Totals and prices do not change.
+Anthropic billing and usage totals remain unchanged.
 
 ## Rollout and rollback
 
@@ -273,7 +325,8 @@ prices do not change. Anthropic billing and usage totals remain unchanged.
 5. Enable exact routing for a narrow canary.
 6. Enable explicit conversation routing, then derived anchors.
 7. Canary dedicated models independently.
-8. Enable early prompt donation independently after contiguous and paged safety tests.
+8. Enable contiguous early prompt donation independently after cancellation, preemption,
+   drain, and retained-state gates; paged early donation remains disabled.
 
 Rollback sets routing to `observe` or `off`, then independently disables receipts or early
 donation. Rollback never restores caller-controlled or unscoped remote namespaces.

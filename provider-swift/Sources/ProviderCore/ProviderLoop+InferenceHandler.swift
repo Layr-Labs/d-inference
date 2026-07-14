@@ -34,14 +34,20 @@ extension ProviderLoop {
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining.
-    private func rejectIfDrainingForUpdate(requestId: String, send: SendHandle) -> Bool {
+    private func rejectIfDrainingForUpdate(
+        requestId: String,
+        send: SendHandle,
+        lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
+    ) -> Bool {
         guard isDrainingForUpdate else { return false }
-        send.send(.inferenceError(
-            requestId: requestId,
-            error: providerDrainingForUpdateReason,
-            statusCode: 503,
-            errorReason: nil
-        ))
+        lookupReceiptFinalizer.sendTerminal(
+            .inferenceError(
+                requestId: requestId,
+                error: providerDrainingForUpdateReason,
+                statusCode: 503,
+                errorReason: nil),
+            fallbackFailure: .capacity,
+            send: send)
         return true
     }
 
@@ -96,31 +102,60 @@ extension ProviderLoop {
     ) async {
         logger.info("Processing inference request: \(requestId)")
 
+        // Cache receipt ownership begins before any admission/decrypt/load work.
+        // A valid nonce must settle exactly once even when the request never
+        // reaches EngineV2Bridge.submitTokenized.
+        let remoteCache = RemotePrefixCacheContext(
+            cacheScope: authenticatedCacheScope,
+            cacheReceiptNonce: cacheReceiptNonce)
+        let receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
+            requestID: requestId,
+            nonce: remoteCache.receiptNonce,
+            send: send)
+        let lookupReceiptFinalizer = PrefixCacheLookupReceiptFinalizer(
+            callback: receiptCallbacks.lookup)
+        var receiptTransferredToTask = false
+        defer {
+            if !receiptTransferredToTask {
+                lookupReceiptFinalizer.finalize(failure: .policy)
+            }
+        }
+
         if isShuttingDown {
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "provider is shutting down",
-                statusCode: 503,
-                errorReason: nil
-            ))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "provider is shutting down",
+                    statusCode: 503,
+                    errorReason: nil),
+                fallbackFailure: .capacity,
+                send: send)
             return
         }
 
         // Fast-path drain reject (skips decrypt/parse work). Re-checked
         // authoritatively at step 4. See `rejectIfDrainingForUpdate`.
-        if rejectIfDrainingForUpdate(requestId: requestId, send: send) { return }
+        if rejectIfDrainingForUpdate(
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
 
         // 1. Decrypt the request body. Both `ciphertext` and
         // `senderPublicKey` are already base64-decoded by CoordinatorClient,
         // so we hand the raw bytes straight to NodeKeyPair.decrypt.
         guard let senderKey = senderPublicKey, senderKey.count == 32 else {
             logger.error("[\(requestId)] missing or malformed sender public key")
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "missing or malformed ephemeral_public_key",
-                statusCode: 400,
-                errorReason: nil
-            ))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "missing or malformed ephemeral_public_key",
+                    statusCode: 400,
+                    errorReason: nil),
+                fallbackFailure: .policy,
+                send: send)
             return
         }
 
@@ -132,12 +167,14 @@ extension ProviderLoop {
             )
         } catch {
             logger.error("[\(requestId)] decryption failed: \(error)")
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "decryption failed",
-                statusCode: 400,
-                errorReason: nil
-            ))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "decryption failed",
+                    statusCode: 400,
+                    errorReason: nil),
+                fallbackFailure: .policy,
+                send: send)
             return
         }
 
@@ -161,7 +198,14 @@ extension ProviderLoop {
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
             logger.error("[\(requestId)] Failed to parse chat request (\(type(of: error)))")
-            send.send(.inferenceError(requestId: requestId, error: "invalid request body", statusCode: 400, errorReason: nil))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "invalid request body",
+                    statusCode: 400,
+                    errorReason: nil),
+                fallbackFailure: .policy,
+                send: send)
             return
         }
 
@@ -176,9 +220,6 @@ extension ProviderLoop {
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
         // scope; those requests still serve, but with caching disabled.
-        let remoteCache = RemotePrefixCacheContext(
-            cacheScope: authenticatedCacheScope,
-            cacheReceiptNonce: cacheReceiptNonce)
         let cacheScope = remoteCache.scope ?? ""
         // OpenAI `logprobs` / `top_logprobs` (also absent from the upstream
         // request shape). Non-nil only when the request asked for logprobs;
@@ -199,12 +240,14 @@ extension ProviderLoop {
         let modelId = chatRequest.model
         if await fastAdmissionReject(modelId: modelId) {
             logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
-            send.send(.inferenceError(
-                requestId: requestId,
-                error: "insufficient memory to load model '\(modelId)'",
-                statusCode: 503,
-                errorReason: nil
-            ))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "insufficient memory to load model '\(modelId)'",
+                    statusCode: 503,
+                    errorReason: nil),
+                fallbackFailure: .capacity,
+                send: send)
             return
         }
 
@@ -215,7 +258,13 @@ extension ProviderLoop {
         // registration below, so on the actor it is atomic: either we reject now,
         // or the request is counted in `hasInflightWork` before any drain
         // snapshot can miss it.
-        if rejectIfDrainingForUpdate(requestId: requestId, send: send) { return }
+        if rejectIfDrainingForUpdate(
+            requestId: requestId,
+            send: send,
+            lookupReceiptFinalizer: lookupReceiptFinalizer)
+        {
+            return
+        }
 
         // 5. Send inference_accepted
         send.send(.inferenceAccepted(requestId: requestId))
@@ -243,7 +292,14 @@ extension ProviderLoop {
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
             let statusCode = Self.loadErrorStatusCode(for: error)
-            send.send(.inferenceError(requestId: requestId, error: "model load failed: \(error.localizedDescription)", statusCode: statusCode, errorReason: "model_load"))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "model load failed: \(error.localizedDescription)",
+                    statusCode: statusCode,
+                    errorReason: "model_load"),
+                fallbackFailure: statusCode == 503 ? .capacity : .policy,
+                send: send)
             return
         }
 
@@ -261,7 +317,14 @@ extension ProviderLoop {
             }
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] Model '\(modelId)' disappeared after load")
-            send.send(.inferenceError(requestId: requestId, error: "model unavailable", statusCode: 500, errorReason: nil))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "model unavailable",
+                    statusCode: 500,
+                    errorReason: nil),
+                fallbackFailure: .policy,
+                send: send)
             return
         }
 
@@ -307,8 +370,10 @@ extension ProviderLoop {
         // the assembled assistant text, extracted by parsing each emitted
         // chunk back from its JSON delta.
         let me = self
+        receiptTransferredToTask = true
         let task = Task.detached {
             defer {
+                lookupReceiptFinalizer.finalize(failure: .policy)
                 Task {
                     await registry.finish(requestId: requestId)
                     await me.finishInflightRequest(requestId: requestId)
@@ -329,12 +394,14 @@ extension ProviderLoop {
             } catch {
                 log.error("[\(requestId)] Shared key precomputation failed: \(error)")
                 providerStats.incrementChunkEncryptionErrors()
-                send.send(.inferenceError(
-                    requestId: requestId,
-                    error: "response encryption failed",
-                    statusCode: 500,
-                    errorReason: nil
-                ))
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        error: "response encryption failed",
+                        statusCode: 500,
+                        errorReason: nil),
+                    fallbackFailure: .policy,
+                    send: send)
                 return
             }
 
@@ -352,12 +419,14 @@ extension ProviderLoop {
                 } catch {
                     log.error("[\(requestId)] Chunk encryption failed: \(error)")
                     providerStats.incrementChunkEncryptionErrors()
-                    send.send(.inferenceError(
-                        requestId: requestId,
-                        error: "response encryption failed",
-                        statusCode: 500,
-                        errorReason: nil
-                    ))
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            error: "response encryption failed",
+                            statusCode: 500,
+                            errorReason: nil),
+                        fallbackFailure: .policy,
+                        send: send)
                     return false
                 }
 
@@ -383,12 +452,8 @@ extension ProviderLoop {
             // the signal always exists.
             // Best-effort detached delivery: callbacks never hold a cache lock
             // or delay inference terminal messages.
-            let receiptCallbacks = PrefixCacheReceiptEmitter.callbacks(
-                requestID: requestId,
-                nonce: remoteCache.receiptNonce,
-                send: send)
             let v2UsageSignal = EngineV2RequestUsageSignal(
-                onLookupResolved: receiptCallbacks.lookup,
+                onLookupResolved: lookupReceiptFinalizer.resolve,
                 onCacheReady: receiptCallbacks.ready)
 
             // Build a single-model engine view bound to the scheduler we
@@ -469,12 +534,14 @@ extension ProviderLoop {
                 if error is CancellationError || token.isCancelled {
                     log.info("[\(requestId)] Request cancelled while starting the stream")
                     providerStats.incrementCancellationsBeforeOutput()
-                    send.send(.inferenceError(
-                        requestId: requestId,
-                        error: "request cancelled",
-                        statusCode: 499,
-                        errorReason: nil
-                    ))
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            error: "request cancelled",
+                            statusCode: 499,
+                            errorReason: nil),
+                        fallbackFailure: .policy,
+                        send: send)
                     return
                 }
                 log.error("[\(requestId)] Failed to start stream: \(error)")
@@ -507,12 +574,14 @@ extension ProviderLoop {
                         )
                     }
                 }
-                send.send(.inferenceError(
-                    requestId: requestId,
-                    error: error.localizedDescription,
-                    statusCode: statusCode,
-                    errorReason: reason
-                ))
+                lookupReceiptFinalizer.sendTerminal(
+                    .inferenceError(
+                        requestId: requestId,
+                        error: error.localizedDescription,
+                        statusCode: statusCode,
+                        errorReason: reason),
+                    fallbackFailure: statusCode == 503 ? .capacity : .policy,
+                    send: send)
                 return
             }
 
@@ -705,12 +774,14 @@ extension ProviderLoop {
                     // Mid-stream generation error. Left unclassified (nil): the
                     // Harmony channel-tags / null-bridge template failures surface
                     // at stream START (see the catch below), not here.
-                    send.send(.inferenceError(
-                        requestId: requestId,
-                        error: error.localizedDescription,
-                        statusCode: statusCode,
-                        errorReason: nil
-                    ))
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            error: error.localizedDescription,
+                            statusCode: statusCode,
+                            errorReason: nil),
+                        fallbackFailure: statusCode == 503 ? .capacity : .policy,
+                        send: send)
                     return
                 }
             }
@@ -759,12 +830,14 @@ extension ProviderLoop {
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
                     providerStats.incrementCancellationsBeforeOutput()
-                    send.send(.inferenceError(
-                        requestId: requestId,
-                        error: "request cancelled",
-                        statusCode: 499,
-                        errorReason: nil
-                    ))
+                    lookupReceiptFinalizer.sendTerminal(
+                        .inferenceError(
+                            requestId: requestId,
+                            error: "request cancelled",
+                            statusCode: 499,
+                            errorReason: nil),
+                        fallbackFailure: .policy,
+                        send: send)
                     return
                 }
                 if completionTokens == 0 {
@@ -867,12 +940,14 @@ extension ProviderLoop {
                 prefillTokensSaved: cacheResult.map { UInt64(max(0, $0.prefillTokensSaved)) },
                 cacheStageMs: cacheResult?.stageMs
             )
-            send.send(.inferenceComplete(
-                requestId: requestId,
-                usage: usageInfo,
-                seSignature: attestation.signature,
-                responseHash: attestation.hash
-            ))
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceComplete(
+                    requestId: requestId,
+                    usage: usageInfo,
+                    seSignature: attestation.signature,
+                    responseHash: attestation.hash),
+                fallbackFailure: .policy,
+                send: send)
 
             log.info(
                 "[\(requestId)] Complete\(cancelledMidStream ? " (cancelled mid-stream, partial settle)" : ""): "

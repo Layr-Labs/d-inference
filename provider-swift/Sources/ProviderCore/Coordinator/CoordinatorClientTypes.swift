@@ -159,7 +159,8 @@ public enum OutboundMessage: Sendable {
         readyTokens: UInt64,
         requiredRecomputeTokens: UInt64,
         expectedPrefillTokensSaved: UInt64,
-        tier: PrefixCacheTier
+        tier: PrefixCacheTier,
+        stageMs: Double?
     )
 }
 

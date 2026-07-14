@@ -10,7 +10,8 @@
 // declares (the value `ModelScanner.parseModelInfo` stamps on `ModelInfo`):
 //
 //   * `gpt_oss`      — GPT-OSS (GPTOSSModel)
-//   * `gemma4…`      — Gemma 4 text (`gemma4_text`) AND the Gemma 4 VLM
+//   * `gemma4`       — Gemma 4 VLM wrapper
+//   * `gemma4_text`  — Gemma 4 text target
 //                      wrapper (`gemma4`, served via the weight-sharing
 //                      text-model extraction + vision prefill)
 //
@@ -25,26 +26,22 @@
 import Foundation
 
 public enum EngineV2SupportedModels {
+    /// Exact config namespaces registered by the official Gemma 4 target
+    /// factories. Keep this closed: assistant checkpoints intentionally share
+    /// the `gemma4` prefix and must never become advertised chat targets.
+    private static let gemma4TargetTypes: Set<String> = ["gemma4", "gemma4_text"]
+
+    static func isGemma4Target(modelType: String?) -> Bool {
+        guard let raw = normalized(modelType) else { return false }
+        return gemma4TargetTypes.contains(raw)
+    }
+
     /// Whether the v2 engine can serve this `model_type` (config.json).
     /// nil/unknown types are unsupported — fail closed.
     public static func isSupported(modelType: String?) -> Bool {
-        guard let raw = modelType?.trimmingCharacters(in: .whitespaces).lowercased(),
-            !raw.isEmpty
-        else { return false }
+        guard let raw = normalized(modelType) else { return false }
         if raw == "gpt_oss" { return true }
-        // `gemma4_assistant` is the KV-less MTP drafter checkpoint, NOT a
-        // servable chat model (no standalone forward — it attends a frozen
-        // snapshot of the target's KV). Without this carve-out the gemma4
-        // prefix match below would advertise a hand-downloaded drafter in
-        // the HF cache as a chat model and the coordinator could route to
-        // it. Drafters bind engine-side only (spec-dec dir / mtp_drafter_path),
-        // never scanned, advertised, or attested.
-        if raw == "gemma4_assistant" { return false }
-        // Gemma 4 family: `gemma4` (VLM wrapper), `gemma4_text`, and any
-        // future gemma4-suffixed text/VLM variant. Deliberately a prefix so
-        // `gemma3`/`gemma2` (no CBv2 adapter) can never match.
-        if raw.hasPrefix("gemma4") { return true }
-        return false
+        return gemma4TargetTypes.contains(raw)
     }
 
     /// Split an advertised-model list into (supported, unsupported) by the
@@ -62,5 +59,12 @@ public enum EngineV2SupportedModels {
             }
         }
         return (supported, unsupported)
+    }
+
+    private static func normalized(_ modelType: String?) -> String? {
+        guard let raw = modelType?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(), !raw.isEmpty
+        else { return nil }
+        return raw
     }
 }

@@ -220,6 +220,26 @@ public actor GlobalKVCacheBudget {
         reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
     }
 
+    /// Atomically replace the in-flight load reservation when target weights
+    /// become live but an optional assistant is still pending. Zero removes it.
+    public func replacePendingLoadReservation(requestID: String, bytes: UInt64) {
+        let previous = reservations[requestID]?.bytes
+        if bytes == 0 {
+            reservations.removeValue(forKey: requestID)
+        } else if let createdAt = reservations[requestID]?.createdAt {
+            reservations[requestID] = Reservation(bytes: bytes, createdAt: createdAt)
+        } else {
+            reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+        }
+        // Removing or shrinking a real pending-load promise proves the ledger
+        // is making progress, exactly like `release`. Do not let a rejection
+        // streak armed against the larger footprint audit live reservations.
+        if let previous, bytes < previous {
+            rejectionStreakStart = nil
+            lastRejectionAt = nil
+        }
+    }
+
     /// Atomically shrink an existing reservation to a smaller byte count,
     /// freeing the difference. `reserve`/`release` cannot express a shrink:
     /// `reserve` refuses when an entry already exists for the id, and a
@@ -415,6 +435,10 @@ public actor GlobalKVCacheBudget {
     /// deterministically (they run the injected `clearCache` synchronously on the
     /// reclaimer actor) instead of racing the fire-and-forget signal tasks.
     var reclaimerForTesting: KVPoolReclaimer { reclaimer }
+
+    func rejectionStreakArmedForTesting() -> Bool {
+        rejectionStreakStart != nil || lastRejectionAt != nil
+    }
 
     /// Current reservation ids, so tests can assert the ledger is empty (or
     /// holds exactly the expected live entries) after a load/audit sequence.

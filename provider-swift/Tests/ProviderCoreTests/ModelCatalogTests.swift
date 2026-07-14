@@ -156,6 +156,87 @@ struct ModelCatalogTests {
         #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
     }
 
+    @Test("catalog streaming accepts the exact response-byte boundary")
+    func catalogResponseExactBoundary() async throws {
+        let base = Data(#"{"models":[]}"#.utf8)
+        var body = base
+        body.append(Data(
+            repeating: UInt8(ascii: " "),
+            count: ModelCatalogClient.maximumCatalogResponseBytes - base.count))
+        CatalogBodyURLProtocol.payload = body
+        CatalogBodyURLProtocol.includeContentLength = false
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        let models = try await client.fetchCatalog()
+        #expect(models.isEmpty)
+    }
+
+    @Test("catalog streaming rejects one byte beyond the response bound")
+    func catalogResponseOverBoundary() async {
+        let base = Data(#"{"models":[]}"#.utf8)
+        var body = base
+        body.append(Data(
+            repeating: UInt8(ascii: " "),
+            count: ModelCatalogClient.maximumCatalogResponseBytes - base.count + 1))
+        CatalogBodyURLProtocol.payload = body
+        CatalogBodyURLProtocol.includeContentLength = false
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await client.fetchCatalog()
+        }
+    }
+
+    @Test("catalog rejects excessive JSON nesting before decode")
+    func catalogNestingBound() async {
+        let nesting = String(repeating: "[", count: 33)
+            + String(repeating: "]", count: 33)
+        CatalogBodyURLProtocol.payload = Data(
+            "{\"models\":[],\"ignored\":\(nesting)}".utf8)
+        CatalogBodyURLProtocol.includeContentLength = true
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await client.fetchCatalog()
+        }
+    }
+
+    @Test("catalog rejects model arrays beyond the provider count bound")
+    func catalogModelCountBound() async {
+        let model = #"{"id":"m","s3_name":"m","display_name":"m","model_type":"text","size_gb":1}"#
+        let models = Array(
+            repeating: model,
+            count: ModelCatalogClient.maximumCatalogModelCount + 1
+        ).joined(separator: ",")
+        CatalogBodyURLProtocol.payload = Data("{\"models\":[\(models)]}".utf8)
+        CatalogBodyURLProtocol.includeContentLength = true
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await client.fetchCatalog()
+        }
+    }
+
     @Test("downloader honors DARKBLOOM_R2_CDN_URL env override")
     func downloaderEnvOverride() {
         setenv("DARKBLOOM_R2_CDN_URL", "https://example.test/cdn", 1)
@@ -410,6 +491,35 @@ struct ModelCatalogTests {
 // unit-test the wire format without exposing the internal type.
 private struct CatalogResponseShim: Codable {
     let models: [CatalogModel]
+}
+
+private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var payload = Data()
+    nonisolated(unsafe) static var includeContentLength = true
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var headers: [String: String]? = nil
+        if Self.includeContentLength {
+            headers = ["Content-Length": "\(Self.payload.count)"]
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let chunkSize = 16 * 1024
+        var offset = 0
+        while offset < Self.payload.count {
+            let end = min(offset + chunkSize, Self.payload.count)
+            client?.urlProtocol(self, didLoad: Self.payload.subdata(in: offset..<end))
+            offset = end
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
 }
 
 private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {

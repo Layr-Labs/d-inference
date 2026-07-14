@@ -91,7 +91,9 @@ extension Start {
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
                 engineV2KVBackend: config.backend.engineV2KVBackend,
-                engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel
+                engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
+                mtp: config.backend.mtp,
+                mtpDrafterPath: config.backend.mtpDrafterPath
             ),
             models: advertised
         )

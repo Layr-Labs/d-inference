@@ -72,6 +72,11 @@ final class EngineV2NewcomerBox: @unchecked Sendable {
 
 extension ProviderLoop {
 
+    struct EngineV2SlotBuild {
+        let bundle: ProviderEngineBundle
+        let sizing: SlotSizingSnapshot
+    }
+
     /// Whether any live slot exists. Every slot serves through the v2
     /// engine as of v0.7.5, so this is a plain occupancy check — the
     /// capacity/cancellation hooks use it to skip the runtime actor hop
@@ -105,6 +110,7 @@ extension ProviderLoop {
         /// shared-gate reserve — so mixed paged+contiguous re-slice
         /// orchestration is testable without weights.
         let kvBackendKindByModel: [String: EngineV2KVBackendKind]
+        let assistantLoader: (any ProviderMTPAssistantLoading)?
         /// Scripted engine builder: (modelId, kvBytesCapacity) — the second
         /// argument is the RE-SLICED, POST-CARVE admission ceiling the
         /// production path would hand `makeProductionEngine`, exposed so
@@ -119,6 +125,7 @@ extension ProviderLoop {
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             physicalMemoryBytes: UInt64? = nil,
             kvBackendKindByModel: [String: EngineV2KVBackendKind] = [:],
+            assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.environment = environment
@@ -127,6 +134,7 @@ extension ProviderLoop {
             self.emitTelemetry = emitTelemetry
             self.physicalMemoryBytes = physicalMemoryBytes
             self.kvBackendKindByModel = kvBackendKindByModel
+            self.assistantLoader = assistantLoader
             self.makeEngine = makeEngine
         }
     }
@@ -235,13 +243,61 @@ extension ProviderLoop {
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot
     ) async throws -> EngineV2Bridge {
+        let build = try await resliceAndBuildEngineV2Bundle(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory,
+            newcomer: newcomerBox,
+            tokenizer: tokenizer,
+            targetSizing: sizing,
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)))
+        return build.bundle.bridge
+    }
+
+    /// MTP-aware load funnel. Target extraction and assistant load/bind complete
+    /// before final sizing and re-slicing, so fallback removes the prospective
+    /// assistant charge and active MTP adds it exactly once.
+    internal func resliceAndBuildEngineV2Bundle(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool,
+        modelDirectory: URL?,
+        newcomer newcomerBox: EngineV2NewcomerBox,
+        tokenizer: TokenizerHandle,
+        targetSizing: SlotSizingSnapshot,
+        specDecPreparation: SpecDecPreparation
+    ) async throws -> EngineV2SlotBuild {
+        var prepared: EngineV2PreparedModel
+        do {
+            let slotLogger = logger
+            prepared = try await EngineV2SlotFactory.prepareProductionModel(
+                modelId: modelId,
+                isVLM: isVLM,
+                modelDirectory: modelDirectory,
+                container: newcomerBox.borrow(),
+                specDecPreparation: specDecPreparation,
+                assistantLoader: engineV2SlotHooks?.assistantLoader
+                    ?? Gemma4ProviderMTPAssistantLoader(),
+                emitTelemetry: engineV2SlotHooks?.emitTelemetry,
+                logInfo: { slotLogger.info($0) },
+                logWarning: { slotLogger.warning($0) })
+        } catch {
+            newcomerBox.release()
+            MLX.Memory.clearCache()
+            throw error
+        }
+        var sizing = targetSizing.replacingAuxiliaryWeightBytes(
+            prepared.assistantBytes)
         let existing = await existingSlotGrants(excludingModelId: modelId)
         let newcomer = EngineV2KVSizing.ResliceSlot(
             modelId: modelId,
             fp16KVBytesPerToken: sizing.fp16KVBytesPerToken,
             maxContextLength: sizing.maxContextLength)
-        let fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
-        let targets = EngineV2KVSizing.resliceGrants(
+        var fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+        var targets = EngineV2KVSizing.resliceGrants(
             existing: existing.map(\.slot),
             newcomer: newcomer,
             fleetKVBudgetBytes: fleetBudget)
@@ -259,9 +315,27 @@ extension ProviderLoop {
         for entry in existing where entry.bridge.prefixCacheBudgetBytes > 0 {
             fixedCarveBytes[entry.slot.modelId] = entry.bridge.prefixCacheBudgetBytes
         }
-        guard
-            EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-                targets, fixedCarveBytes: fixedCarveBytes)
+        if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
+        {
+            logger.warning(
+                "mtp: model=\(modelId) fallback reason="
+                    + "\(MTPFallbackReason.assistantResliceFloor.rawValue); "
+                    + "retrying target-only before refusing the load")
+            prepared.assistant?.release()
+            prepared = prepared.fallingBack(.assistantResliceFloor)
+            sizing = targetSizing.replacingAuxiliaryWeightBytes(0)
+            await kvBudget.replacePendingLoadReservation(
+                requestID: "pending-load:\(modelId)", bytes: 0)
+            MLX.Memory.clearCache()
+            fleetBudget = fleetKVBudgetBytes(extraWeightBytes: sizing.weightsBytes)
+            targets = EngineV2KVSizing.resliceGrants(
+                existing: existing.map(\.slot),
+                newcomer: newcomer,
+                fleetKVBudgetBytes: fleetBudget)
+        }
+        guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
+            targets, fixedCarveBytes: fixedCarveBytes)
         else {
             let floorGb = String(
                 format: "%.1f",
@@ -277,6 +351,7 @@ extension ProviderLoop {
             // Pre-shrink refusal: no grants were mutated, but drop the
             // newcomer's weights promptly so live residency reflects the
             // refusal before the caller's error handling runs.
+            prepared.assistant?.release()
             newcomerBox.release()
             MLX.Memory.clearCache()
             throw InferenceError.modelLoadFailed(message)
@@ -300,9 +375,9 @@ extension ProviderLoop {
         // `borrow()` is evaluated inline so the container reference lives
         // only for the duration of the call — by the time this catch runs,
         // the box holds the last strong reference and `release()` frees it.
-        let bridge: EngineV2Bridge
+        let bundle: ProviderEngineBundle
         do {
-            bridge = try await makeEngineV2BridgeForSlot(
+            bundle = try await makeEngineV2BundleForSlot(
                 modelId: modelId,
                 modelType: modelType,
                 isVLM: isVLM,
@@ -310,8 +385,11 @@ extension ProviderLoop {
                 container: newcomerBox.borrow(),
                 tokenizer: tokenizer,
                 sizing: sizing,
-                kvBytesCapacity: targets[modelId] ?? 0)
+                kvBytesCapacity: targets[modelId] ?? 0,
+                specDecPreparation: specDecPreparation,
+                preparedModel: prepared)
         } catch {
+            prepared.assistant?.release()
             newcomerBox.release()
             MLX.Memory.clearCache()
             for entry in existing {
@@ -328,7 +406,7 @@ extension ProviderLoop {
                 await entry.bridge.updateKVBytesCapacity(target)
             }
         }
-        return bridge
+        return EngineV2SlotBuild(bundle: bundle, sizing: sizing)
     }
 
     /// Failure unwind AFTER a successful bridge build (the post-bridge
@@ -338,14 +416,27 @@ extension ProviderLoop {
     /// Σ(grants) never exceeds it. Caller holds the re-slice gate.
     internal func unwindBuiltSlotAndRegrow(
         modelId: String,
-        bridge: EngineV2Bridge,
+        bundle: ProviderEngineBundle,
         newcomer: EngineV2NewcomerBox
     ) async {
         await engineV2Runtime.unregister(modelId: modelId)
-        await bridge.shutdown()
+        await bundle.bridge.shutdown()
+        bundle.releaseAssistant()
         newcomer.release()
         MLX.Memory.clearCache()
         await resliceGrowSurvivorsLocked()
+    }
+
+    /// Compatibility overload for target-only tests.
+    internal func unwindBuiltSlotAndRegrow(
+        modelId: String,
+        bridge: EngineV2Bridge,
+        newcomer: EngineV2NewcomerBox
+    ) async {
+        await unwindBuiltSlotAndRegrow(
+            modelId: modelId,
+            bundle: ProviderEngineBundle(targetOnly: bridge),
+            newcomer: newcomer)
     }
 
     /// Grow the surviving slots back to their re-sliced shares after an
@@ -411,6 +502,34 @@ extension ProviderLoop {
         sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int
     ) async throws -> EngineV2Bridge {
+        try await makeEngineV2BundleForSlot(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory,
+            container: container,
+            tokenizer: tokenizer,
+            sizing: sizing,
+            kvBytesCapacity: kvBytesCapacity,
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            preparedModel: nil
+        ).bridge
+    }
+
+    internal func makeEngineV2BundleForSlot(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool = false,
+        modelDirectory: URL? = nil,
+        container: ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        kvBytesCapacity: Int,
+        specDecPreparation: SpecDecPreparation,
+        preparedModel: EngineV2PreparedModel?
+    ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
         // Assembly is shared with the standalone server via
@@ -432,7 +551,7 @@ extension ProviderLoop {
         // and hands the builder the REDUCED capacity, and the bridge the
         // budget bookkeeping, so the claim/heartbeat math is testable
         // without a real engine (no cache INSTANCE exists under hooks).
-        let bridge: EngineV2Bridge
+        let bundle: ProviderEngineBundle
         if let hooks = engineV2SlotHooks {
             let carve = EngineV2SlotFactory.resolvePrefixCarve(
                 modelId: modelId,
@@ -444,7 +563,7 @@ extension ProviderLoop {
                 environment: hooks.environment
             ).carve
             let hookBuilder = hooks.makeEngine
-            bridge = try EngineV2Factory.makeBridge(
+            let bridge = try EngineV2Factory.makeBridge(
                 modelId: modelId,
                 tokenizer: tokenizer,
                 eosTokenIds: hooks.eosTokenIds,
@@ -466,6 +585,14 @@ extension ProviderLoop {
                         kvBackendKind: hooks.kvBackendKindByModel[modelId] ?? .contiguous,
                         kvBackendFallbackReason: nil)
                 })
+            let status = preparedModel?.mtpStatus ?? specDecPreparation.status
+            await bridge.configureMTPStatus(status)
+            bundle = ProviderEngineBundle(
+                bridge: bridge,
+                assistant: preparedModel?.assistant,
+                assistantBytes: status.assistantBytes,
+                mtpArtifact: preparedModel?.mtpArtifact,
+                mtpStatus: status)
             // WARN once (per load) that kv_quant is ignored on the v2 path
             // (fp16 caches are what the engine builds).
             if loopConfig.config.backend.kvQuant {
@@ -474,7 +601,7 @@ extension ProviderLoop {
             }
         } else {
             let slotLogger = logger
-            bridge = try await EngineV2SlotFactory.makeProductionBridge(
+            bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
                 modelType: modelType,
                 isVLM: isVLM,
@@ -491,9 +618,12 @@ extension ProviderLoop {
                 // SSD-tier metadata binding: the verified hash for the bytes
                 // this slot loaded (nil ⇒ model-id binding degradation).
                 weightHash: liveModelHashes[modelId],
+                specDecPreparation: specDecPreparation,
+                preparedModel: preparedModel,
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         }
+        let bridge = bundle.bridge
 
         // Register before the slot goes live so capacity heartbeats and
         // cancellation fan-out see the bridge from the first request.
@@ -512,6 +642,6 @@ extension ProviderLoop {
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
                     + "[kv=\(bridge.kvBackendKind.rawValue)]")
         }
-        return bridge
+        return bundle
     }
 }

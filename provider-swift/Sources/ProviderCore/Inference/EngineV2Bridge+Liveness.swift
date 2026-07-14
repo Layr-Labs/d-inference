@@ -47,8 +47,8 @@ extension EngineV2Bridge {
     /// verdict never depends on heartbeat cadence. Never fires while a
     /// recovery is already in flight for this bridge.
     func confirmedWedgeForRecovery(now: ContinuousClock.Instant = .now) -> Bool {
-        guard !recoveryReloading else { return false }
-        wedgeMonitor.sampleSteps(engine.capacity().stepsExecuted, now: now)
+        guard !recoveryReloading, ownedEngine != nil else { return false }
+        wedgeMonitor.sampleSteps(capacitySnapshot().stepsExecuted, now: now)
         return wedgeMonitor.consecutiveAdmitsWithoutFirstToken >= 1
             && wedgeMonitor.dryStreakSeconds(now: now) >= Self.recoveryStallSeconds
             && wedgeMonitor.secondsSinceLastStep(now: now) >= Self.recoveryStallSeconds

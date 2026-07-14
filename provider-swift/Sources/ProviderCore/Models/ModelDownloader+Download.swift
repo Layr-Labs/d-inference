@@ -36,6 +36,7 @@ extension ModelDownloader {
             onProgress: nil,
             required: true,
             expectedSHA256: job.file.sha256.lowercased(),
+            maximumBytes: job.file.sizeBytes,
             onChunk: onChunk
         )
         guard ok else {

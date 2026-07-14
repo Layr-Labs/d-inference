@@ -198,22 +198,28 @@ struct MTPBetaFeatureTests {
     }
 }
 
-// MARK: - Supported-set drafter carve-out
+// MARK: - Closed Gemma target namespace
 
-@Suite("EngineV2 supported set: gemma4_assistant carve-out")
+@Suite("EngineV2 supported set: closed Gemma target namespace")
 struct MTPSupportedModelsTests {
 
-    @Test("gemma4_assistant is never a servable chat model")
-    func assistantExcluded() {
-        #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4_assistant") == false)
-        // Same normalization (trim + lowercase) as every other type check.
-        #expect(EngineV2SupportedModels.isSupported(modelType: " GEMMA4_ASSISTANT ") == false)
+    @Test("assistant namespace variants are never servable chat models")
+    func assistantVariantsExcluded() {
+        for type in [
+            "gemma4_assistant", " GEMMA4_ASSISTANT ",
+            "gemma4_assistant_v2", "gemma4_text_assistant",
+            "gemma4_mtp", "gemma4-drafter",
+        ] {
+            #expect(!EngineV2SupportedModels.isSupported(modelType: type), "type=\(type)")
+            #expect(!EngineV2SupportedModels.isGemma4Target(modelType: type), "type=\(type)")
+        }
     }
 
-    @Test("the rest of the gemma4 prefix family stays supported")
-    func gemma4FamilyStillSupported() {
+    @Test("only official Gemma target config types are supported")
+    func officialGemmaTargetsSupported() {
         #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4") == true)
         #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4_text") == true)
+        #expect(EngineV2SupportedModels.isGemma4Target(modelType: " GEMMA4_TEXT "))
         #expect(EngineV2SupportedModels.isSupported(modelType: "gpt_oss") == true)
         // Non-CBv2 families still fail closed.
         #expect(EngineV2SupportedModels.isSupported(modelType: "gemma3") == false)

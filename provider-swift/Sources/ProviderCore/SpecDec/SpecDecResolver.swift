@@ -1,190 +1,373 @@
-/// SpecDecResolver -- resolves the local drafter directory for a catalog
-/// model that carries a `spec_dec` distribution pointer (plan D2).
-///
-/// The target build's registry entry attaches
-/// `metadata.spec_dec = {"r2_prefix": "v2-specdec/<artifact>/<version>"}`.
-/// This resolver fetches that artifact's `manifest.json` from the model CDN
-/// (same source/env as `ModelDownloader`: `DARKBLOOM_R2_CDN_URL`, default
-/// `https://models.darkbloom.ai`), downloads each listed file with per-file
-/// SHA-256 verification into a staging dir, and atomically publishes it under
-/// `~/.darkbloom/spec-dec/<key>/`.
-///
-/// FAIL-OPEN CONTRACT: every failure -- no metadata pointer, HTTP error, SHA
-/// mismatch after retries, disk full -- returns nil after one WARN log, never
-/// throws. A drafter problem must never become a slot/load failure; the
-/// caller falls back to plain decode (availability beats speculation).
-///
-/// Deliberately absent (plan D3): aggregate-hash enforcement and registry
-/// pinning. Per-file SHA-256 from the artifact's own manifest is the only
-/// integrity gate, because greedy-accept-walk drafter bytes cannot alter
-/// output content.
-
 import Foundation
 import Logging
 import ProviderCoreFoundation
 
-public struct SpecDecResolver: Sendable {
+private actor SpecDecResolutionCoordinator {
+    static let shared = SpecDecResolutionCoordinator()
 
+    struct Key: Sendable, Hashable {
+        let storeRoot: String
+        let cdnIdentity: String
+        let reference: SpecDecArtifactReference
+        let allowDownload: Bool
+    }
+
+    private struct Inflight {
+        let id: UUID
+        let task: Task<SpecDecResolution, Never>
+        let keepAlive: Bool
+        var waiters: [UUID: CheckedContinuation<SpecDecResolution, Never>]
+    }
+    private var inflight: [Key: Inflight] = [:]
+    private let maximumInflight = 4
+
+    func run(
+        key: Key,
+        operation: @escaping @Sendable () async -> SpecDecResolution
+    ) async -> SpecDecResolution {
+        let inflightID: UUID
+        if let existing = inflight[key] {
+            inflightID = existing.id
+        } else {
+            guard inflight.count < maximumInflight else {
+                return .fallback(.artifactNotCached, detail: "MTP prefetch concurrency limit reached")
+            }
+            let id = UUID()
+            let task = Task {
+                let result = await operation()
+                self.finished(key: key, id: id, result: result)
+                return result
+            }
+            inflight[key] = Inflight(
+                id: id, task: task, keepAlive: false, waiters: [:])
+            inflightID = id
+        }
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                guard var current = inflight[key], current.id == inflightID else {
+                    continuation.resume(returning: .fallback(
+                        .fileDownloadFailed,
+                        detail: "MTP prefetch ended before waiter registration"))
+                    return
+                }
+                current.waiters[waiterID] = continuation
+                inflight[key] = current
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(
+                    key: key, inflightID: inflightID, waiterID: waiterID)
+            }
+        }
+    }
+
+    func schedule(
+        key: Key,
+        operation: @escaping @Sendable () async -> SpecDecResolution
+    ) {
+        guard inflight[key] == nil, inflight.count < maximumInflight else { return }
+        let id = UUID()
+        let task = Task {
+            let result = await operation()
+            self.finished(key: key, id: id, result: result)
+            return result
+        }
+        inflight[key] = Inflight(
+            id: id, task: task, keepAlive: true, waiters: [:])
+    }
+
+    private func cancelWaiter(
+        key: Key,
+        inflightID: UUID,
+        waiterID: UUID
+    ) {
+        guard var current = inflight[key], current.id == inflightID,
+            let continuation = current.waiters.removeValue(forKey: waiterID)
+        else { return }
+        if current.waiters.isEmpty, !current.keepAlive {
+            inflight.removeValue(forKey: key)
+            current.task.cancel()
+        } else {
+            inflight[key] = current
+        }
+        continuation.resume(returning: .fallback(
+            .fileDownloadFailed, detail: "MTP prefetch was cancelled"))
+    }
+
+    private func finished(
+        key: Key,
+        id: UUID,
+        result: SpecDecResolution
+    ) {
+        guard let current = inflight[key], current.id == id else { return }
+        inflight.removeValue(forKey: key)
+        for continuation in current.waiters.values {
+            continuation.resume(returning: result)
+        }
+    }
+}
+
+public struct SpecDecResolver: Sendable {
     private let storeRoot: URL
     private let downloader: ModelDownloader
-
+    private let prefetchTimeout: Duration
     private static let logger = Logger(label: "darkbloom.SpecDecResolver")
 
-    /// - Parameters:
-    ///   - storeRoot: drafter store root; defaults to `~/.darkbloom/spec-dec/`
-    ///     (override for tests).
-    ///   - cdnBaseURL: CDN base; defaults to `DARKBLOOM_R2_CDN_URL` /
-    ///     `https://models.darkbloom.ai`, the same resolution `ModelDownloader`
-    ///     uses (override for tests).
-    ///   - urlSession: transport (override for tests).
-    public init(storeRoot: URL? = nil, cdnBaseURL: String? = nil, urlSession: URLSession = .shared) {
+    public init(
+        storeRoot: URL? = nil,
+        cdnBaseURL: String? = nil,
+        urlSession: URLSession = .shared,
+        prefetchTimeout: Duration = .seconds(120)
+    ) {
         self.storeRoot = storeRoot ?? SpecDecStore.defaultRoot()
         self.downloader = ModelDownloader(r2CDNURL: cdnBaseURL, urlSession: urlSession)
+        self.prefetchTimeout = prefetchTimeout
     }
 
-    /// The `metadata.spec_dec.r2_prefix` pointer, when the catalog entry
-    /// carries one. Callers can use this to check for a pointer cheaply
-    /// (without the resolver's fail-open WARN) before resolving.
     public static func specDecR2Prefix(for model: CatalogModel) -> String? {
-        guard case .string(let prefix)? = model.metadata?["spec_dec"]?["r2_prefix"],
-              !prefix.isEmpty
-        else { return nil }
-        return prefix
+        guard case .success(let reference) = SpecDecMetadata.reference(for: model) else { return nil }
+        return reference.r2Prefix
     }
 
-    /// Resolve the local drafter directory for `model`. Returns a directory
-    /// containing the artifact's files + its `manifest.json`, or nil (with one
-    /// WARN log) on any failure. When a complete verified copy is already on
-    /// disk no network traffic happens; otherwise the artifact is downloaded
-    /// iff `allowDownload` is true.
+    func resolve(model: CatalogModel, allowDownload: Bool) async -> SpecDecResolution {
+        let reference: SpecDecArtifactReference
+        switch SpecDecMetadata.reference(for: model) {
+        case .success(let value): reference = value
+        case .failure(let error): return .fallback(error.reason, detail: error.description)
+        }
+        let cached = resolveCached(reference: reference)
+        guard cached.reason == .artifactNotCached, allowDownload else { return cached }
+
+        let key = resolutionKey(reference: reference, allowDownload: true)
+        await SpecDecResolutionCoordinator.shared.schedule(key: key) {
+            await boundedDownload(reference: reference)
+        }
+        return cached
+    }
+
+    /// Explicit prefetch lifecycle used by the background artifact funnel and
+    /// tests. Callers that are loading a target use `resolve`, which only checks
+    /// verified local state and schedules this work without awaiting it.
+    func prefetch(model: CatalogModel) async -> SpecDecResolution {
+        let reference: SpecDecArtifactReference
+        switch SpecDecMetadata.reference(for: model) {
+        case .success(let value): reference = value
+        case .failure(let error): return .fallback(error.reason, detail: error.description)
+        }
+        let cached = resolveCached(reference: reference)
+        guard cached.reason == .artifactNotCached else { return cached }
+        let key = resolutionKey(reference: reference, allowDownload: true)
+        return await SpecDecResolutionCoordinator.shared.run(key: key) {
+            await boundedDownload(reference: reference)
+        }
+    }
+
+    /// URL-only convenience surface. Cold downloads are scheduled and return
+    /// nil immediately; a later call observes the verified publication.
     public func drafterDirectory(for model: CatalogModel, allowDownload: Bool) async -> URL? {
-        guard let prefix = Self.specDecR2Prefix(for: model) else {
-            Self.logger.warning(
-                "spec-dec: model \(model.id) carries no spec_dec.r2_prefix metadata; no drafter")
-            return nil
+        let result = await resolve(model: model, allowDownload: allowDownload)
+        if let reason = result.reason {
+            let message = "spec-dec: model \(model.id) fallback reason=\(reason.rawValue)"
+                + (result.detail.map { " detail=\($0)" } ?? "")
+            Self.logger.warning("\(message)")
         }
-
-        let artifactDir = SpecDecStore.artifactDirectory(root: storeRoot, r2Prefix: prefix)
-        if SpecDecStore.verifiedManifest(at: artifactDir) != nil {
-            return artifactDir
-        }
-
-        guard allowDownload else {
-            Self.logger.warning(
-                "spec-dec: no verified local copy of \(prefix) for \(model.id) and downloads are disabled; no drafter")
-            return nil
-        }
-
-        do {
-            try await downloadArtifact(r2Prefix: prefix, into: artifactDir)
-        } catch {
-            Self.logger.warning(
-                "spec-dec: fetch of \(prefix) for \(model.id) failed (\(errorDetail(error))); falling back to plain decode")
-            return nil
-        }
-
-        // Re-verify the published copy so a nil here always means "not usable".
-        guard SpecDecStore.verifiedManifest(at: artifactDir) != nil else {
-            Self.logger.warning(
-                "spec-dec: downloaded copy of \(prefix) for \(model.id) failed verification; falling back to plain decode")
-            return nil
-        }
-        return artifactDir
+        return result.artifact?.directory
     }
 
-    // MARK: - Download
-
-    /// Fetch `<cdn>/<r2_prefix>/manifest.json`, download every listed file
-    /// with per-file SHA-256 verification into a stable staging dir (resuming
-    /// already-valid files / `.part` prefixes), stage the manifest bytes as
-    /// the completeness marker, then atomically publish to `artifactDir`.
-    private func downloadArtifact(r2Prefix: String, into artifactDir: URL) async throws {
-        let (manifest, manifestData) = try await fetchManifest(r2Prefix: r2Prefix)
-
-        guard !manifest.files.isEmpty else {
-            throw ModelCatalogError.downloadFailed("manifest contains no files")
+    private func resolveCached(reference: SpecDecArtifactReference) -> SpecDecResolution {
+        let artifactDir = SpecDecStore.artifactDirectory(
+            root: storeRoot, r2Prefix: reference.r2Prefix)
+        if FileManager.default.fileExists(atPath: artifactDir.path) {
+            switch SpecDecStore.verifyPublishedArtifact(at: artifactDir, reference: reference) {
+            case .success(let verification):
+                return .resolved(artifact(from: verification, directory: artifactDir, reference: reference))
+            case .failure(let error):
+                // Immutable publications are never replaced in place. A warm
+                // corruption is observable and target decode remains available.
+                return .fallback(.warmArtifactCorrupt, detail: error.description)
+            }
         }
-        guard manifest.files.count == manifest.fileCount else {
-            throw ModelCatalogError.downloadFailed(
-                "manifest file_count \(manifest.fileCount) does not match files array")
+        return .fallback(.artifactNotCached)
+    }
+
+    private func downloadAndPublish(
+        reference: SpecDecArtifactReference
+    ) async -> SpecDecResolution {
+        let artifactDir = SpecDecStore.artifactDirectory(
+            root: storeRoot, r2Prefix: reference.r2Prefix)
+        // A task can sit behind the bounded coordinator while another process
+        // publishes the artifact. Recheck before opening a network transfer.
+        let cached = resolveCached(reference: reference)
+        guard cached.reason == .artifactNotCached else { return cached }
+        do {
+            try FileManager.default.createDirectory(
+                at: storeRoot, withIntermediateDirectories: true)
+            let staging = SpecDecStore.stagingDirectory(
+                root: storeRoot, r2Prefix: reference.r2Prefix)
+            defer { try? FileManager.default.removeItem(at: staging) }
+            _ = try await downloadArtifact(reference: reference, staging: staging)
+            switch SpecDecStore.publishImmutable(
+                staging: staging, destination: artifactDir, reference: reference)
+            {
+            case .success(let published):
+                return .resolved(artifact(from: published, directory: artifactDir, reference: reference))
+            case .failure(let error):
+                return .fallback(error.reason, detail: error.description)
+            }
+        } catch let failure as ResolverFailure {
+            return .fallback(failure.reason, detail: failure.description)
+        } catch {
+            return .fallback(.fileDownloadFailed, detail: error.localizedDescription)
+        }
+    }
+
+    private func boundedDownload(
+        reference: SpecDecArtifactReference
+    ) async -> SpecDecResolution {
+        await withTaskGroup(of: SpecDecResolution.self) { group in
+            group.addTask {
+                await downloadAndPublish(reference: reference)
+            }
+            group.addTask {
+                do {
+                    try await taskSleep(prefetchTimeout)
+                    return .fallback(
+                        .fileDownloadFailed,
+                        detail: "MTP prefetch exceeded its owned deadline")
+                } catch {
+                    return .fallback(
+                        .fileDownloadFailed,
+                        detail: "MTP prefetch was cancelled")
+                }
+            }
+            let result = await group.next()
+                ?? .fallback(.fileDownloadFailed, detail: "MTP prefetch ended without a result")
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func resolutionKey(
+        reference: SpecDecArtifactReference,
+        allowDownload: Bool
+    ) -> SpecDecResolutionCoordinator.Key {
+        .init(
+            storeRoot: storeRoot.standardizedFileURL.path,
+            cdnIdentity: downloader.r2CDNURL,
+            reference: reference,
+            allowDownload: allowDownload)
+    }
+
+    private func downloadArtifact(
+        reference: SpecDecArtifactReference,
+        staging: URL
+    ) async throws -> SpecDecStore.Verification {
+        let (manifest, manifestData) = try await fetchManifest(reference: reference)
+        switch SpecDecStore.validateManifest(manifest, data: manifestData, reference: reference) {
+        case .failure(let error): throw ResolverFailure(reason: error.reason, description: error.description)
+        case .success: break
         }
 
         let fm = FileManager.default
-        let stagingDir = SpecDecStore.stagingDirectory(root: storeRoot, r2Prefix: r2Prefix)
-        try fm.createDirectory(at: stagingDir, withIntermediateDirectories: true)
-
-        // NOTE: URLs are built from the artifact's own manifest prefix
-        // deliberately -- there is no catalog pinning to cross-check (D3).
-        let jobs = try manifest.files.map { file -> (file: ManifestFile, destination: URL, url: String) in
-            let relativePath = try ModelDownloader.validatedManifestRelativePath(file.path)
-            return (
+        try fm.createDirectory(at: staging, withIntermediateDirectories: false)
+        let jobs = manifest.files.map { file in
+            (
                 file: file,
-                destination: stagingDir.appendingPathComponent(relativePath, isDirectory: false),
-                url: "\(downloader.r2CDNURL)/\(ModelDownloader.escapeR2Path(r2Prefix))/\(ModelDownloader.escapeR2Path(relativePath))"
+                destination: staging.appendingPathComponent(file.path, isDirectory: false),
+                url: "\(downloader.r2CDNURL)/\(ModelDownloader.escapeR2Path(reference.r2Prefix))/\(ModelDownloader.escapeR2Path(file.path))"
             )
         }
-
-        // Disk pre-check sized to what is actually left to fetch (valid staged
-        // files and `.part` prefixes are credited), same as the model paths.
-        let alreadyValid = jobs.map {
-            ModelDownloader.fileMatches($0.destination, size: $0.file.sizeBytes, sha256: $0.file.sha256)
-        }
-        let partBytes = jobs.map { downloader.fileSize($0.destination.appendingPathExtension("part")) }
         try ModelDownloader.ensureAvailableCapacity(
-            at: storeRoot,
-            requiredBytes: ModelDownloader.remainingBytesToFetch(
-                sizes: jobs.map(\.file.sizeBytes), alreadyValid: alreadyValid, partBytes: partBytes
-            )
-        )
+            at: storeRoot, requiredBytes: manifest.totalSizeBytes)
 
-        // Sequential fetch (drafter artifacts are small -- ~2 files, ~226 MiB);
-        // each file byte-resumes and is size + SHA-256 verified before promotion.
-        for (job, valid) in zip(jobs, alreadyValid) where !valid {
-            try await downloader.downloadManifestFileWithResume(job)
+        for job in jobs {
+            do {
+                try await downloader.downloadManifestFileWithResume(job)
+            } catch {
+                let detail = String(describing: error)
+                let reason: MTPFallbackReason = detail.contains("SHA-256 mismatch")
+                    ? .fileDigestMismatch : .fileDownloadFailed
+                throw ResolverFailure(reason: reason, description: detail)
+            }
         }
-
-        // The staged manifest doubles as the store's completeness marker: it is
-        // written only after every file verified, and the publish below is atomic.
         try manifestData.write(
-            to: stagingDir.appendingPathComponent(SpecDecStore.manifestFileName, isDirectory: false))
-
-        try ModelDownloader.publishStagedSnapshot(stagingDir, to: artifactDir)
-        // Staging was consumed by the publish; best-effort husk cleanup.
-        try? fm.removeItem(at: stagingDir)
+            to: staging.appendingPathComponent(SpecDecStore.manifestFileName),
+            options: [.atomic])
+        switch SpecDecStore.verifyPublishedArtifact(at: staging, reference: reference) {
+        case .success(let verification): return verification
+        case .failure(let error):
+            throw ResolverFailure(reason: error.reason, description: error.description)
+        }
     }
 
-    private func fetchManifest(r2Prefix: String) async throws -> (ModelManifest, Data) {
-        let urlString = "\(downloader.r2CDNURL)/\(ModelDownloader.escapeR2Path(r2Prefix))/manifest.json"
+    private func fetchManifest(
+        reference: SpecDecArtifactReference
+    ) async throws -> (ModelManifest, Data) {
+        let urlString = "\(downloader.r2CDNURL)/\(ModelDownloader.escapeR2Path(reference.r2Prefix))/manifest.json"
         guard let url = URL(string: urlString) else {
-            throw ModelCatalogError.downloadFailed("invalid manifest URL: \(urlString)")
+            throw ResolverFailure(reason: .manifestFetchFailed, description: "invalid manifest URL")
         }
-
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let data: Data
+        let bytes: URLSession.AsyncBytes
         let response: URLResponse
         do {
-            (data, response) = try await downloader.urlSession.data(for: request)
+            (bytes, response) = try await downloader.urlSession.bytes(for: request)
         } catch {
-            throw ModelCatalogError.downloadFailed("manifest.json: \(error.localizedDescription)")
+            throw ResolverFailure(reason: .manifestFetchFailed, description: "manifest request failed")
         }
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            throw ModelCatalogError.downloadFailed("manifest.json: HTTP \(http.statusCode)")
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw ResolverFailure(reason: .manifestFetchFailed, description: "manifest returned a non-success status")
         }
-
+        if response.expectedContentLength > Int64(SpecDecLimits.maximumManifestBytes) {
+            throw ResolverFailure(reason: .manifestMalformed, description: "manifest exceeds byte bound")
+        }
+        var data = Data()
+        data.reserveCapacity(min(
+            max(0, Int(response.expectedContentLength)), SpecDecLimits.maximumManifestBytes))
         do {
-            let manifest = try ModelCatalogClient.manifestDecoder.decode(ModelManifest.self, from: data)
-            return (manifest, data)
+            for try await byte in bytes {
+                guard data.count < SpecDecLimits.maximumManifestBytes else {
+                    throw ResolverFailure(reason: .manifestMalformed, description: "manifest exceeds byte bound")
+                }
+                data.append(byte)
+            }
+        } catch let failure as ResolverFailure {
+            throw failure
         } catch {
-            throw ModelCatalogError.downloadFailed("manifest.json decode failed: \(error.localizedDescription)")
+            throw ResolverFailure(reason: .manifestFetchFailed, description: "manifest stream failed")
+        }
+        do {
+            return (
+                try ModelCatalogClient.manifestDecoder.decode(ModelManifest.self, from: data),
+                data)
+        } catch {
+            throw ResolverFailure(reason: .manifestMalformed, description: "manifest JSON decode failed")
         }
     }
 
-    private func errorDetail(_ error: Error) -> String {
-        if let catalogError = error as? ModelCatalogError { return catalogError.description }
-        return error.localizedDescription
+    private func artifact(
+        from verification: SpecDecStore.Verification,
+        directory: URL,
+        reference: SpecDecArtifactReference
+    ) -> SpecDecArtifact {
+        SpecDecArtifact(
+            directory: directory,
+            source: .catalog,
+            revision: reference.revision,
+            artifactBytes: verification.artifactBytes,
+            residentBytes: SpecDecLimits.residentEstimate(
+                artifactBytes: verification.artifactBytes),
+            manifestSHA256: verification.manifestSHA256,
+            catalogReference: reference)
+    }
+
+    private struct ResolverFailure: Error, Sendable, CustomStringConvertible {
+        let reason: MTPFallbackReason
+        let description: String
     }
 }

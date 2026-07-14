@@ -75,6 +75,12 @@ struct LaunchAgentEnvironmentTests {
             from: ["DARKBLOOM_MLX_RESOURCE_DEBUG": "0", "PATH": "/usr/bin"])
         #expect(out == ["DARKBLOOM_MLX_RESOURCE_DEBUG": "0"])
     }
+
+    @Test func forwardsMTPKillSwitchToDaemon() {
+        let out = LaunchAgent.passthroughEnvironment(
+            from: ["DARKBLOOM_CBV2_MTP": "0", "PATH": "/usr/bin"])
+        #expect(out == ["DARKBLOOM_CBV2_MTP": "0"])
+    }
 }
 
 @Suite("LaunchAgent service plist")

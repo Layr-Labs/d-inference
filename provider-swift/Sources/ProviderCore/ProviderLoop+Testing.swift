@@ -185,6 +185,27 @@ extension ProviderLoop {
         )
     }
 
+    /// MTP-aware variant of the production re-slice seam. The returned sizing
+    /// and bundle expose whether an optional assistant survived admission.
+    func resliceAndBuildEngineV2BundleForTesting(
+        modelId: String,
+        modelType: String?,
+        newcomer: EngineV2NewcomerBox,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        specDecPreparation: SpecDecPreparation
+    ) async throws -> EngineV2SlotBuild {
+        try await resliceAndBuildEngineV2Bundle(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: false,
+            modelDirectory: nil,
+            newcomer: newcomer,
+            tokenizer: tokenizer,
+            targetSizing: sizing,
+            specDecPreparation: specDecPreparation)
+    }
+
     /// Box variant: the caller hands over container OWNERSHIP, so the
     /// unwind-ordering regression tests can observe (via a weak reference)
     /// that a failed build releases the newcomer's weights BEFORE survivor
@@ -303,6 +324,24 @@ extension ProviderLoop {
         )
     }
 
+    func installModelBundleForTesting(
+        modelId: String,
+        bundle: ProviderEngineBundle,
+        container: MLXLMCommon.ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        modelType: String?
+    ) {
+        modelSlots[modelId] = ModelSlot(
+            engineBundle: bundle,
+            container: container,
+            tokenizer: tokenizer,
+            sizing: sizing,
+            isVLM: false,
+            modelType: modelType,
+            lastInferenceAt: .now)
+    }
+
     /// Test seam: remove an installed slot without the unload machinery.
     func removeModelSlotForTesting(modelId: String) {
         modelSlots.removeValue(forKey: modelId)
@@ -312,6 +351,10 @@ extension ProviderLoop {
     /// recompute the fleet KV budget from real slot weights).
     func slotSizingForTesting(modelId: String) -> SlotSizingSnapshot? {
         modelSlots[modelId]?.sizing
+    }
+
+    func slotMTPStatusForTesting(modelId: String) -> MTPActivationStatus? {
+        modelSlots[modelId]?.engineBundle.mtpStatus
     }
 
     /// Test seam: the live bridge for a loaded slot.
@@ -325,6 +368,16 @@ extension ProviderLoop {
 
     /// Test seam: the current aggregate backend capacity snapshot.
     func backendCapacityForTesting() -> BackendCapacity? { state.backendCapacity }
+
+    func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {
+        await kvBudget.reservePendingLoad(requestID: requestID, bytes: bytes)
+    }
+
+    func outstandingKVReservationBytesForTesting() async -> UInt64 {
+        await kvBudget.outstandingReservedBytes()
+    }
+
+    func kvBudgetForTesting() -> GlobalKVCacheBudget { kvBudget }
 
     // MARK: - Wedge self-recovery seams
 

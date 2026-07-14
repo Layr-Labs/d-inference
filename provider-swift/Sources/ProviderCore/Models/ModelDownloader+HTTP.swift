@@ -42,6 +42,7 @@ extension ModelDownloader {
         onProgress: (@Sendable (ProgressEvent) -> Void)?,
         required: Bool,
         expectedSHA256: String? = nil,
+        maximumBytes: Int64? = nil,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         guard let url = URL(string: urlString) else {
@@ -66,6 +67,7 @@ extension ModelDownloader {
                     to: partial,
                     label: label,
                     required: required,
+                    maximumBytes: maximumBytes,
                     onChunk: onChunk
                 )
                 guard ok else {
@@ -127,6 +129,7 @@ extension ModelDownloader {
         to partial: URL,
         label: String,
         required: Bool,
+        maximumBytes: Int64?,
         onChunk: (@Sendable (Int64) -> Void)? = nil
     ) async throws -> Bool {
         let existingBytes = fileSize(partial)
@@ -145,6 +148,7 @@ extension ModelDownloader {
             partial: partial,
             existingBytes: existingBytes,
             label: label,
+            maximumTotalBytes: maximumBytes,
             onChunk: onChunk
         )
         let task = urlSession.dataTask(with: request)

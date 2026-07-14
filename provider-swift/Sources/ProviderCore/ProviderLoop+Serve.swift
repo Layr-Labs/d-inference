@@ -83,16 +83,23 @@ extension ProviderLoop {
             OOMDetector.clearMarker()
         }
 
+        // 1. Apply security hardening
+        try await applySecurityHardening()
+
+        // MTP catalog metadata is process-local. Give it one short, owned
+        // prewarm before either startup preloads or the unified local endpoint
+        // can perform the first normal cold target load. This never downloads
+        // assistant bytes and fails open on timeout.
+        await prewarmSpecDecCatalog()
+
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
-        // models. Started before the coordinator connection so local clients can
-        // serve immediately; torn down on shutdown.
+        // models. It starts after the bounded metadata prewarm, but still before
+        // the coordinator connection, so local serving keeps coordinator
+        // independence while a cached assistant can join the first target load.
         if let localEndpoint = loopConfig.localEndpoint {
             startLocalEndpoint(localEndpoint)
         }
         defer { stopLocalEndpoint() }
-
-        // 1. Apply security hardening
-        try await applySecurityHardening()
 
         // Arm the loaded-models persistence now that this loop is actually
         // serving (test instances never flip this, so their unload paths
@@ -320,6 +327,7 @@ extension ProviderLoop {
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
         desiredPrefetchRetryTasks.removeAll()
         desiredPrefetchRetryAttempts.removeAll()
+        await specDecFunnel.shutdown()
         // Cancel background prefetch downloads (no GPU slot, but they hold a
         // network connection and disk staging we want to release promptly).
         if let prefetchCoordinator {

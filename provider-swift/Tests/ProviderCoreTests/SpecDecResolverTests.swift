@@ -24,6 +24,7 @@ private final class SpecDecFileServer: @unchecked Sendable {
     private var files: [String: Data] = [:]
     private var requested: [String] = []
     private var serverTask: Task<Void, Never>?
+    private var responseDelayNanoseconds: UInt64 = 0
 
     func setFiles(_ files: [String: Data]) {
         lock.lock(); self.files = files; lock.unlock()
@@ -37,12 +38,20 @@ private final class SpecDecFileServer: @unchecked Sendable {
         lock.lock(); requested = []; lock.unlock()
     }
 
+    func setResponseDelay(milliseconds: UInt64) {
+        lock.withLock { responseDelayNanoseconds = milliseconds * 1_000_000 }
+    }
+
     private func record(_ path: String) {
         lock.lock(); requested.append(path); lock.unlock()
     }
 
     private func body(for path: String) -> Data? {
         lock.lock(); defer { lock.unlock() }; return files[path]
+    }
+
+    private func responseDelay() -> UInt64 {
+        lock.withLock { responseDelayNanoseconds }
     }
 
     /// Bind 127.0.0.1 on a system-assigned port and return the base URL.
@@ -55,6 +64,8 @@ private final class SpecDecFileServer: @unchecked Sendable {
             guard let self else { return Response(status: .internalServerError) }
             let path = request.uri.path
             self.record(path)
+            let delay = self.responseDelay()
+            if delay > 0 { try? await Task.sleep(nanoseconds: delay) }
             guard let full = self.body(for: path) else {
                 return Response(status: .notFound)
             }
@@ -145,6 +156,15 @@ private func sha256Hex(_ data: Data) -> String {
     return hasher.finalize().map { String(format: "%02x", $0) }.joined()
 }
 
+private func aggregateHex(_ files: [(String, Data)]) -> String {
+    var aggregate = SHA256()
+    for (_, data) in files.sorted(by: { $0.0 < $1.0 }) {
+        let digest = SHA256.hash(data: data)
+        digest.withUnsafeBytes { aggregate.update(bufferPointer: $0) }
+    }
+    return aggregate.finalize().map { String(format: "%02x", $0) }.joined()
+}
+
 /// A tiny two-file drafter artifact (config + weights), deterministic bytes.
 private struct DrafterFixture {
     let prefix: String
@@ -169,9 +189,9 @@ private struct DrafterFixture {
             modelID: "darkbloom/gemma4-drafter-4bit",
             version: "v1",
             r2Prefix: prefix,
-            // Junk aggregate: the resolver performs NO aggregate-hash
-            // enforcement by design (plan D3) -- per-file SHA-256 only.
-            aggregateSHA256: String(repeating: "0", count: 64),
+            aggregateSHA256: aggregateHex([
+                ("config.json", configBytes), ("model.safetensors", weightBytes),
+            ]),
             totalSizeBytes: Int64(configBytes.count + weightBytes.count),
             fileCount: 2,
             files: [
@@ -186,13 +206,18 @@ private struct DrafterFixture {
 
     /// path -> bytes map for the file server (manifest.json + both files).
     func served() throws -> [String: Data] {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
         return [
-            "/\(prefix)/manifest.json": try encoder.encode(manifest),
+            "/\(prefix)/manifest.json": try manifestData(),
             "/\(prefix)/config.json": configBytes,
             "/\(prefix)/model.safetensors": weightBytes,
         ]
+    }
+
+    func manifestData() throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(manifest)
     }
 }
 
@@ -205,6 +230,46 @@ private func makeModel(id: String, specDecPrefix: String?) -> CatalogModel {
         id: id, s3Name: "unused", displayName: id, sizeGb: 15.0,
         r2Prefix: "v2/\(id)/v1", metadata: metadata
     )
+}
+
+private func makePinnedModel(id: String, fixture: DrafterFixture) throws -> CatalogModel {
+    let manifestData = try fixture.manifestData()
+    return makeTrustedModel(
+        id: id,
+        prefix: fixture.prefix,
+        manifestData: manifestData,
+        totalSizeBytes: fixture.manifest.totalSizeBytes,
+        fileCount: fixture.manifest.fileCount,
+        configSHA256: sha256Hex(fixture.configBytes),
+        revision: fixture.manifest.version)
+}
+
+private func makeTrustedModel(
+    id: String,
+    prefix: String,
+    manifestData: Data,
+    totalSizeBytes: Int64,
+    fileCount: Int,
+    configSHA256: String,
+    revision: String,
+    manifestSHA256: String? = nil,
+    maximumFileCount: Int = 64
+) -> CatalogModel {
+    let metadata: [String: JSONValue] = [
+        "spec_dec": .object([
+            ("r2_prefix", .string(prefix)),
+            ("manifest_sha256", .string(manifestSHA256 ?? sha256Hex(manifestData))),
+            ("total_size_bytes", .int(totalSizeBytes)),
+            ("file_count", .int(Int64(fileCount))),
+            ("max_file_count", .int(Int64(maximumFileCount))),
+            ("allowed_file_types", .array([.string("config"), .string("weight")])),
+            ("config_sha256", .string(configSHA256)),
+            ("revision", .string(revision)),
+        ])
+    ]
+    return CatalogModel(
+        id: id, s3Name: "unused", displayName: id, sizeGb: 15,
+        metadata: metadata)
 }
 
 private func makeTempStoreRoot() -> URL {
@@ -230,10 +295,12 @@ struct SpecDecResolverTests {
         let storeRoot = makeTempStoreRoot()
         defer { try? FileManager.default.removeItem(at: storeRoot) }
         let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
-        let model = makeModel(id: "gemma-4-26b-qat", specDecPrefix: prefix)
+        let model = try makePinnedModel(id: "gemma-4-26b-qat", fixture: fixture)
 
-        let dir = await resolver.drafterDirectory(for: model, allowDownload: true)
-        let resolved = try #require(dir)
+        let cold = await resolver.resolve(model: model, allowDownload: true)
+        #expect(cold.artifact == nil)
+        #expect(cold.reason == .artifactNotCached)
+        let resolved = try #require(await resolver.prefetch(model: model).artifact?.directory)
 
         // Resolved dir lives under the store root (never the HF cache) and is
         // keyed by the prefix hash.
@@ -246,8 +313,9 @@ struct SpecDecResolverTests {
             ModelManifest.self, from: Data(contentsOf: resolved.appendingPathComponent("manifest.json")))
         #expect(storedManifest == fixture.manifest)
         // Staging was consumed by the atomic publish.
-        let staging = SpecDecStore.stagingDirectory(root: storeRoot, r2Prefix: prefix)
-        #expect(!FileManager.default.fileExists(atPath: staging.path))
+        let remaining = try FileManager.default.contentsOfDirectory(
+            at: storeRoot, includingPropertiesForKeys: nil)
+        #expect(!remaining.contains { $0.lastPathComponent.hasPrefix(".staging-") })
     }
 
     @Test("corrupt file (SHA mismatch after retries) fails open: nil, nothing published")
@@ -263,10 +331,11 @@ struct SpecDecResolverTests {
         let storeRoot = makeTempStoreRoot()
         defer { try? FileManager.default.removeItem(at: storeRoot) }
         let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
-        let model = makeModel(id: "gemma-4-26b-qat", specDecPrefix: prefix)
+        let model = try makePinnedModel(id: "gemma-4-26b-qat", fixture: fixture)
 
-        let dir = await resolver.drafterDirectory(for: model, allowDownload: true)
-        #expect(dir == nil)
+        let result = await resolver.prefetch(model: model)
+        #expect(result.artifact == nil)
+        #expect(result.reason == .fileDigestMismatch)
         // Nothing was published: the artifact dir does not exist.
         let artifactDir = SpecDecStore.artifactDirectory(root: storeRoot, r2Prefix: prefix)
         #expect(!FileManager.default.fileExists(atPath: artifactDir.path))
@@ -309,7 +378,7 @@ struct SpecDecResolverTests {
         #expect(server.requestedPaths().isEmpty)
         // And the helper mirrors the same decode.
         #expect(SpecDecResolver.specDecR2Prefix(for: bare) == nil)
-        #expect(SpecDecResolver.specDecR2Prefix(for: makeModel(id: "m", specDecPrefix: "p/q")) == "p/q")
+        #expect(SpecDecResolver.specDecR2Prefix(for: makeModel(id: "m", specDecPrefix: "p/q")) == nil)
     }
 
     @Test("manifest 404 fails open: nil, nothing published")
@@ -322,11 +391,16 @@ struct SpecDecResolverTests {
         let storeRoot = makeTempStoreRoot()
         defer { try? FileManager.default.removeItem(at: storeRoot) }
         let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
-        let model = makeModel(id: "gemma-4-26b-qat", specDecPrefix: "v2-specdec/missing/v1")
+        let prefix = "v2-specdec/missing/v1"
+        let model = makeTrustedModel(
+            id: "gemma-4-26b-qat", prefix: prefix,
+            manifestData: Data("missing".utf8), totalSizeBytes: 2,
+            fileCount: 2, configSHA256: String(repeating: "0", count: 64),
+            revision: "v1")
 
-        #expect(await resolver.drafterDirectory(for: model, allowDownload: true) == nil)
+        #expect(await resolver.prefetch(model: model).reason == .manifestFetchFailed)
         #expect(!FileManager.default.fileExists(
-            atPath: SpecDecStore.artifactDirectory(root: storeRoot, r2Prefix: "v2-specdec/missing/v1").path))
+            atPath: SpecDecStore.artifactDirectory(root: storeRoot, r2Prefix: prefix).path))
     }
 
     @Test("warm re-resolve returns the stored copy with zero network traffic")
@@ -342,18 +416,18 @@ struct SpecDecResolverTests {
         let storeRoot = makeTempStoreRoot()
         defer { try? FileManager.default.removeItem(at: storeRoot) }
         let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
-        let model = makeModel(id: "gemma-4-26b-qat", specDecPrefix: prefix)
+        let model = try makePinnedModel(id: "gemma-4-26b-qat", fixture: fixture)
 
-        let first = try #require(await resolver.drafterDirectory(for: model, allowDownload: true))
+        let first = try #require(await resolver.prefetch(model: model).artifact?.directory)
         #expect(!server.requestedPaths().isEmpty)
 
         server.clearRequested()
-        let second = try #require(await resolver.drafterDirectory(for: model, allowDownload: true))
+        let second = try #require(await resolver.resolve(model: model, allowDownload: true).artifact?.directory)
         #expect(second == first)
         #expect(server.requestedPaths().isEmpty, "warm re-resolve must not touch the CDN")
 
         // allowDownload: false also resolves a verified stored copy.
-        let third = try #require(await resolver.drafterDirectory(for: model, allowDownload: false))
+        let third = try #require(await resolver.resolve(model: model, allowDownload: false).artifact?.directory)
         #expect(third == first)
         #expect(server.requestedPaths().isEmpty)
     }
@@ -371,9 +445,9 @@ struct SpecDecResolverTests {
         let storeRoot = makeTempStoreRoot()
         defer { try? FileManager.default.removeItem(at: storeRoot) }
         let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
-        let model = makeModel(id: "gemma-4-26b-qat", specDecPrefix: prefix)
+        let model = try makePinnedModel(id: "gemma-4-26b-qat", fixture: fixture)
 
-        #expect(await resolver.drafterDirectory(for: model, allowDownload: false) == nil)
+        #expect(await resolver.resolve(model: model, allowDownload: false).reason == .artifactNotCached)
         #expect(server.requestedPaths().isEmpty)
     }
 
@@ -392,14 +466,383 @@ struct SpecDecResolverTests {
         let resolver = SpecDecResolver(storeRoot: storeRoot, cdnBaseURL: baseURL.absoluteString)
 
         // Two DIFFERENT catalog builds (qat + 8bit) point at the same artifact.
-        let qat = makeModel(id: "gemma-4-26b-qat", specDecPrefix: prefix)
-        let eightBit = makeModel(id: "gemma-4-26b-8bit", specDecPrefix: prefix)
+        let qat = try makePinnedModel(id: "gemma-4-26b-qat", fixture: fixture)
+        let eightBit = try makePinnedModel(id: "gemma-4-26b-8bit", fixture: fixture)
 
-        let qatDir = try #require(await resolver.drafterDirectory(for: qat, allowDownload: true))
+        let qatDir = try #require(await resolver.prefetch(model: qat).artifact?.directory)
         server.clearRequested()
 
-        let eightBitDir = try #require(await resolver.drafterDirectory(for: eightBit, allowDownload: true))
+        let eightBitDir = try #require(await resolver.resolve(model: eightBit, allowDownload: true).artifact?.directory)
         #expect(eightBitDir == qatDir, "both builds must resolve to the same stored artifact")
         #expect(server.requestedPaths().isEmpty, "the second build must reuse the first download")
+    }
+
+    @Test("production metadata pins manifest, total bytes, file count, roles, config, and revision")
+    func productionMetadataPinsArtifact() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-pinned/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+
+        let result = await resolver.prefetch(
+            model: try makePinnedModel(id: "gemma-4-26b-qat", fixture: fixture))
+        let artifact = try #require(result.artifact)
+        #expect(result.reason == nil)
+        #expect(artifact.artifactBytes == UInt64(fixture.manifest.totalSizeBytes))
+        #expect(artifact.residentBytes == SpecDecLimits.residentEstimate(
+            artifactBytes: UInt64(fixture.manifest.totalSizeBytes)))
+        #expect(artifact.revision == "v1")
+        #expect(artifact.manifestSHA256 == sha256Hex(try fixture.manifestData()))
+    }
+
+    @Test("catalog manifest digest mismatch is rejected before any file download")
+    func manifestDigestMismatch() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-manifest-digest/v1")
+        server.setFiles(try fixture.served())
+        let model = makeTrustedModel(
+            id: "gemma-4", prefix: fixture.prefix,
+            manifestData: try fixture.manifestData(),
+            totalSizeBytes: fixture.manifest.totalSizeBytes,
+            fileCount: fixture.manifest.fileCount,
+            configSHA256: sha256Hex(fixture.configBytes),
+            revision: fixture.manifest.version,
+            manifestSHA256: String(repeating: "a", count: 64))
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let result = await SpecDecResolver(
+            storeRoot: root, cdnBaseURL: baseURL.absoluteString
+        ).prefetch(model: model)
+        #expect(result.reason == .manifestDigestMismatch)
+        #expect(server.requestedPaths() == ["/\(fixture.prefix)/manifest.json"])
+    }
+
+    @Test("path traversal in manifest is rejected")
+    func pathTraversalRejected() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let prefix = "v2-specdec/gemma4-traversal/v1"
+        let config = Data("{}".utf8)
+        let manifest = ModelManifest(
+            schemaVersion: 1, modelID: "assistant", version: "v1", r2Prefix: prefix,
+            aggregateSHA256: String(repeating: "0", count: 64),
+            totalSizeBytes: Int64(config.count + 1), fileCount: 2,
+            files: [
+                .init(path: "config.json", sizeBytes: Int64(config.count), sha256: sha256Hex(config), role: "config"),
+                .init(path: "../model.safetensors", sizeBytes: 1, sha256: String(repeating: "0", count: 64), role: "weight"),
+            ], createdAt: Date(timeIntervalSince1970: 0))
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let manifestData = try encoder.encode(manifest)
+        server.setFiles(["/\(prefix)/manifest.json": manifestData])
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = makeTrustedModel(
+            id: "gemma-4", prefix: prefix, manifestData: manifestData,
+            totalSizeBytes: manifest.totalSizeBytes, fileCount: manifest.fileCount,
+            configSHA256: sha256Hex(config), revision: manifest.version)
+        let result = await SpecDecResolver(
+            storeRoot: root, cdnBaseURL: baseURL.absoluteString
+        ).prefetch(model: model)
+        #expect(result.reason == .pathInvalid)
+    }
+
+    @Test("artifact total and file count bounds reject hostile manifests")
+    func sizeAndCountBounds() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let oversizedPrefix = "v2-specdec/gemma4-oversize/v1"
+        let oversized = ModelManifest(
+            schemaVersion: 1, modelID: "assistant", version: "v1", r2Prefix: oversizedPrefix,
+            aggregateSHA256: String(repeating: "0", count: 64),
+            totalSizeBytes: Int64(SpecDecLimits.maximumArtifactBytes + 1), fileCount: 2,
+            files: [
+                .init(path: "config.json", sizeBytes: 1, sha256: String(repeating: "0", count: 64), role: "config"),
+                .init(path: "model.safetensors", sizeBytes: 1, sha256: String(repeating: "0", count: 64), role: "weight"),
+            ], createdAt: Date(timeIntervalSince1970: 0))
+        let countPrefix = "v2-specdec/gemma4-count/v1"
+        var files = [ManifestFile(
+            path: "config.json", sizeBytes: 1,
+            sha256: String(repeating: "0", count: 64), role: "config")]
+        for index in 0..<SpecDecLimits.maximumFileCount {
+            files.append(.init(
+                path: "model-\(index).safetensors", sizeBytes: 1,
+                sha256: String(repeating: "0", count: 64), role: "weight"))
+        }
+        let tooMany = ModelManifest(
+            schemaVersion: 1, modelID: "assistant", version: "v1", r2Prefix: countPrefix,
+            aggregateSHA256: String(repeating: "0", count: 64),
+            totalSizeBytes: Int64(files.count), fileCount: files.count,
+            files: files, createdAt: Date(timeIntervalSince1970: 0))
+        let oversizedData = try encoder.encode(oversized)
+        let tooManyData = try encoder.encode(tooMany)
+        server.setFiles([
+            "/\(oversizedPrefix)/manifest.json": oversizedData,
+            "/\(countPrefix)/manifest.json": tooManyData,
+        ])
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let oversizedModel = makeTrustedModel(
+            id: "gemma-4", prefix: oversizedPrefix, manifestData: oversizedData,
+            totalSizeBytes: 2, fileCount: 2,
+            configSHA256: String(repeating: "0", count: 64), revision: "v1")
+        let countModel = makeTrustedModel(
+            id: "gemma-4", prefix: countPrefix, manifestData: tooManyData,
+            totalSizeBytes: Int64(files.count), fileCount: 2,
+            configSHA256: String(repeating: "0", count: 64), revision: "v1",
+            maximumFileCount: 2)
+        #expect(await resolver.prefetch(model: oversizedModel).reason == .artifactOversize)
+        #expect(await resolver.prefetch(model: countModel).reason == .fileCountInvalid)
+    }
+
+    @Test("concurrent same-prefix resolution publishes and downloads once")
+    func concurrentReuse() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-concurrent/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+
+        async let first = resolver.prefetch(model: model)
+        async let second = resolver.prefetch(model: model)
+        let results = await [first, second]
+        #expect(results.allSatisfy { $0.artifact != nil })
+        #expect(results[0].artifact?.directory == results[1].artifact?.directory)
+        let paths = server.requestedPaths()
+        #expect(paths.filter { $0.hasSuffix("manifest.json") }.count == 1)
+        #expect(paths.filter { $0.hasSuffix("config.json") }.count == 1)
+        #expect(paths.filter { $0.hasSuffix("model.safetensors") }.count == 1)
+    }
+
+    @Test("cancelling one of two coalesced waiters preserves the shared transfer")
+    func oneCancelledWaiterDoesNotCancelPeer() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setResponseDelay(milliseconds: 100)
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-two-waiters/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+
+        let first = Task { await resolver.prefetch(model: model) }
+        let second = Task { await resolver.prefetch(model: model) }
+        for _ in 0..<100 where server.requestedPaths().isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        first.cancel()
+        let cancelled = await first.value
+        let survivor = await second.value
+
+        #expect(cancelled.artifact == nil)
+        #expect(cancelled.detail == "MTP prefetch was cancelled")
+        #expect(survivor.artifact != nil)
+        let paths = server.requestedPaths()
+        #expect(paths.filter { $0.hasSuffix("manifest.json") }.count == 1)
+        #expect(paths.filter { $0.hasSuffix("config.json") }.count == 1)
+        #expect(paths.filter { $0.hasSuffix("model.safetensors") }.count == 1)
+    }
+
+    @Test("cancelled final waiter cannot cancel a same-key successor")
+    func delayedCancellationCannotCancelSuccessor() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setResponseDelay(milliseconds: 150)
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-successor/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+
+        let predecessor = Task { await resolver.prefetch(model: model) }
+        for _ in 0..<100 where server.requestedPaths().isEmpty {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        predecessor.cancel()
+        let cancelled = await predecessor.value
+        #expect(cancelled.detail == "MTP prefetch was cancelled")
+
+        server.clearRequested()
+        let successor = await resolver.prefetch(model: model)
+        #expect(successor.artifact != nil)
+        let successorPaths = server.requestedPaths()
+        #expect(successorPaths.filter { $0.hasSuffix("manifest.json") }.count == 1)
+        #expect(successorPaths.filter { $0.hasSuffix("config.json") }.count == 1)
+        #expect(successorPaths.filter { $0.hasSuffix("model.safetensors") }.count == 1)
+    }
+
+    @Test("warm same-size corruption is hash-detected and never size-trusted")
+    func warmCorruptionDetected() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-warm-corrupt/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+        let first = try #require(await resolver.prefetch(model: model).artifact)
+        var corrupted = fixture.weightBytes
+        corrupted[corrupted.startIndex] ^= 0xff
+        try corrupted.write(to: first.directory.appendingPathComponent("model.safetensors"))
+        server.clearRequested()
+
+        let warm = await resolver.resolve(model: model, allowDownload: true)
+        #expect(warm.artifact == nil)
+        #expect(warm.reason == .warmArtifactCorrupt)
+        #expect(server.requestedPaths().isEmpty)
+    }
+
+    @Test("catalog metadata requires every immutable trust anchor before network")
+    func requiredTrustAnchors() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-required-anchors/v1")
+        server.setFiles(try fixture.served())
+        let pinned = try makePinnedModel(id: "gemma-4", fixture: fixture)
+        let pairs = try #require({ () -> [(String, JSONValue)]? in
+            guard case .object(let value)? = pinned.metadata?["spec_dec"] else { return nil }
+            return value
+        }())
+        let required = [
+            "manifest_sha256", "total_size_bytes", "file_count", "max_file_count",
+            "allowed_file_types", "config_sha256", "revision",
+        ]
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+
+        for omitted in required {
+            let model = CatalogModel(
+                id: "gemma-4-\(omitted)", s3Name: "unused", displayName: "g", sizeGb: 1,
+                metadata: ["spec_dec": .object(pairs.filter { $0.0 != omitted })])
+            let result = await resolver.resolve(model: model, allowDownload: true)
+            #expect(result.artifact == nil)
+            #expect(result.reason == .metadataMalformed, "omitted=\(omitted)")
+        }
+        let prefixOnly = await resolver.resolve(
+            model: makeModel(id: "gemma-4-prefix-only", specDecPrefix: fixture.prefix),
+            allowDownload: true)
+        #expect(prefixOnly.artifact == nil)
+        #expect(prefixOnly.reason == .metadataMalformed)
+        #expect(server.requestedPaths().isEmpty)
+    }
+
+    @Test("cold catalog artifact returns immediately while owned prefetch continues")
+    func coldResolutionIsNonblocking() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setResponseDelay(milliseconds: 200)
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-nonblocking/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+
+        let started = ContinuousClock.now
+        let cold = await resolver.resolve(model: model, allowDownload: true)
+        let elapsed = ContinuousClock.now - started
+        #expect(cold.reason == .artifactNotCached)
+        #expect(elapsed < .milliseconds(100), "target load waited for optional artifact network")
+
+        let prefetched = await resolver.prefetch(model: model)
+        #expect(prefetched.artifact != nil)
+    }
+
+    @Test("conflicting trust references never share an in-flight verdict")
+    func conflictingReferencesAreIsolated() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-conflicting/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let good = try makePinnedModel(id: "gemma-4-good", fixture: fixture)
+        let bad = makeTrustedModel(
+            id: "gemma-4-bad", prefix: fixture.prefix,
+            manifestData: try fixture.manifestData(),
+            totalSizeBytes: fixture.manifest.totalSizeBytes,
+            fileCount: fixture.manifest.fileCount,
+            configSHA256: sha256Hex(fixture.configBytes), revision: "v1",
+            manifestSHA256: String(repeating: "f", count: 64))
+
+        async let goodResult = resolver.prefetch(model: good)
+        async let badResult = resolver.prefetch(model: bad)
+        let results = await (goodResult, badResult)
+        #expect(results.0.artifact != nil)
+        #expect(results.1.artifact == nil)
+        #expect(results.1.reason == .manifestDigestMismatch)
+        #expect(server.requestedPaths().filter { $0.hasSuffix("manifest.json") }.count == 2)
+    }
+
+    @Test("no-download policy never waits on an in-flight downloading policy")
+    func conflictingPoliciesAreIsolated() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setResponseDelay(milliseconds: 200)
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-policy/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+
+        async let prefetch = resolver.prefetch(model: model)
+        try await Task.sleep(nanoseconds: 20_000_000)
+        let started = ContinuousClock.now
+        let noDownload = await resolver.resolve(model: model, allowDownload: false)
+        #expect(ContinuousClock.now - started < .milliseconds(100))
+        #expect(noDownload.reason == .artifactNotCached)
+        let prefetched = await prefetch
+        #expect(prefetched.artifact != nil)
+    }
+
+    @Test("prefetch deadline cancels the transfer and removes staging")
+    func prefetchDeadlineOwnsCancellation() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        server.setResponseDelay(milliseconds: 500)
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-timeout/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let resolver = SpecDecResolver(
+            storeRoot: root, cdnBaseURL: baseURL.absoluteString,
+            prefetchTimeout: .milliseconds(50))
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+
+        let started = ContinuousClock.now
+        let result = await resolver.prefetch(model: model)
+        #expect(ContinuousClock.now - started < .milliseconds(300))
+        #expect(result.artifact == nil)
+        #expect(result.reason == .fileDownloadFailed)
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: nil)) ?? []
+        #expect(!contents.contains { $0.lastPathComponent.hasPrefix(".staging-") })
     }
 }

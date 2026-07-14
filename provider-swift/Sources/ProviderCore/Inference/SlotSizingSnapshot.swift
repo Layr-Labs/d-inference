@@ -41,6 +41,11 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
     /// folding at construction means every consumer sees the sum with zero
     /// consumer-site changes.
     public let weightsBytes: Int
+    /// Target container bytes only. Kept separately so a fail-open assistant
+    /// load can remove its prospective charge before final re-slicing.
+    public let targetWeightsBytes: Int
+    /// Resident assistant estimate. Zero for target-only/fallback slots.
+    public let auxiliaryWeightBytes: Int
     /// fp16 per-token KV cost (bytes/token), engine-truth marginal rate —
     /// see the header. 0 = unknown (non-CBv2 family; such models are not
     /// advertised and cannot serve, but the snapshot itself never fails).
@@ -65,10 +70,26 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         maxContextLength: Int,
         defaultMaxTokens: Int
     ) {
-        self.weightsBytes = weightsBytes + max(0, auxiliaryWeightBytes)
+        self.targetWeightsBytes = max(0, weightsBytes)
+        self.auxiliaryWeightBytes = max(0, auxiliaryWeightBytes)
+        let (total, overflow) = self.targetWeightsBytes.addingReportingOverflow(
+            self.auxiliaryWeightBytes)
+        self.weightsBytes = overflow ? Int.max : total
         self.fp16KVBytesPerToken = fp16KVBytesPerToken
         self.maxContextLength = maxContextLength
         self.defaultMaxTokens = defaultMaxTokens
+    }
+
+    /// Replace, rather than add to, the auxiliary charge. This is the only
+    /// legal transition from a pre-admission candidate estimate to the bytes
+    /// of an actually retained assistant.
+    public func replacingAuxiliaryWeightBytes(_ bytes: UInt64) -> SlotSizingSnapshot {
+        SlotSizingSnapshot(
+            weightsBytes: targetWeightsBytes,
+            auxiliaryWeightBytes: Int(min(bytes, UInt64(Int.max))),
+            fp16KVBytesPerToken: fp16KVBytesPerToken,
+            maxContextLength: maxContextLength,
+            defaultMaxTokens: defaultMaxTokens)
     }
 
     // MARK: - Builder

@@ -272,6 +272,7 @@ public enum LaunchAgent: Sendable {
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_PREFIX_CACHE_SSD",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
+        "DARKBLOOM_CBV2_MTP",
     ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

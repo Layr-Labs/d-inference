@@ -168,7 +168,7 @@ extension EngineV2Bridge {
     /// engine capacity — for co-resident slots, so Σ(engine ceilings +
     /// cache budgets) never exceeds the unified-memory KV budget.
     public func slotKVBytesClaim() -> Int {
-        let snapshot = engine.capacity()
+        let snapshot = capacitySnapshot()
         let engineClaim =
             kvBackendKind == .paged && snapshot.kvBytesBackendCapacity > 0
             ? snapshot.kvBytesBackendCapacity
@@ -182,7 +182,7 @@ extension EngineV2Bridge {
     /// rollback uses this exact value; unlike `slotKVBytesClaim()`, it does
     /// not replace a shrunk paged ledger with the larger immutable pool.
     func resliceAdmissionBytesClaim() -> Int {
-        let (sum, overflow) = engine.capacity().kvBytesCapacity
+        let (sum, overflow) = capacitySnapshot().kvBytesCapacity
             .addingReportingOverflow(prefixCacheBudgetBytes)
         return overflow ? Int.max : sum
     }

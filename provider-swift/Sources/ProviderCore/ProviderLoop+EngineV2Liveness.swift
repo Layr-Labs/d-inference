@@ -17,9 +17,10 @@
 ///     recovering: telemetry `engine_v2_self_restart` (ERROR)
 ///                 → old bridge marked "reloading" (heartbeat honesty)
 ///                 → drain: cancel pumps + bounded engine drain
-///                 → rebuild engine+bridge over the SAME container with the
-///                   slot's CURRENT grant (no re-slice) via the existing
-///                   factory path (re-registers in `EngineV2Runtime`)
+///                 → rebuild engine+bridge over the SAME container, preserving
+///                   target-only posture or moving the already-bound assistant
+///                 → if assistant revalidation fails, atomically install
+///                   target-only sizing/status and re-slice the freed bytes
 ///                 → swap the ModelSlot's bridge → serving
 ///     recovering ──rebuild throws──▶ unload (fail loud: slot gone, the
 ///                 coordinator's heartbeat view drops it and routes around)
@@ -156,7 +157,7 @@ extension ProviderLoop {
         // bridge stays registered in the runtime for exactly that reason).
         await bridge.beginRecoveryReload()
 
-        // The recovered engine keeps the slot's CURRENT TOTAL grant
+        // An unchanged posture keeps the slot's CURRENT TOTAL grant
         // (engine ceiling + prefix-cache budget, `slotKVBytesClaim` —
         // T-041) — recovery is not a re-slice; co-resident slots' grants
         // are untouched and Σ(claims) ≤ fleet budget is preserved by
@@ -165,6 +166,12 @@ extension ProviderLoop {
         // the rebuilt slot reproduces grant + carve; the cache itself
         // restarts empty (its KV died with the wedged engine).
         let grant = await bridge.slotKVBytesClaim()
+
+        // Move, never duplicate, the slot-owned assistant. A target-only slot
+        // yields nil and cannot discover or activate an artifact during recovery.
+        // If rebuilding fails, this local remains the sole owner and is released
+        // on the failure path below.
+        var recoveryAssistant = slot.engineBundle.takeAssistantForRecovery()
 
         // Drain: cancel the bridge's pump tasks (in-flight requests get
         // their teardown terminal + shared-KV release) and drain the
@@ -175,17 +182,96 @@ extension ProviderLoop {
 
         let rebuildStartedAt = ContinuousClock.now
         do {
-            let newBridge = try await makeEngineV2BridgeForSlot(
+            let slotLogger = logger
+            let modelDirectory = ModelScanner.resolveLocalPath(modelID: modelId)
+            var prepared = try await EngineV2SlotFactory.prepareRecoveryModel(
+                modelId: modelId,
+                isVLM: slot.isVLM,
+                modelDirectory: modelDirectory,
+                container: slot.container,
+                previousArtifact: slot.engineBundle.mtpArtifact,
+                previousStatus: slot.engineBundle.mtpStatus,
+                assistant: recoveryAssistant,
+                emitTelemetry: engineV2SlotHooks?.emitTelemetry,
+                logInfo: { slotLogger.info($0) },
+                logWarning: { slotLogger.warning($0) })
+            if prepared.assistant == nil {
+                recoveryAssistant?.release()
+                recoveryAssistant = nil
+            }
+            var rebuiltSizing = slot.sizing.replacingAuxiliaryWeightBytes(
+                prepared.assistantBytes)
+            var rebuildPreparation = SpecDecPreparation(
+                artifact: prepared.mtpArtifact, status: prepared.mtpStatus)
+            var newBundle = try await makeEngineV2BundleForSlot(
                 modelId: modelId,
                 modelType: slot.modelType,
                 isVLM: slot.isVLM,
-                modelDirectory: ModelScanner.resolveLocalPath(modelID: modelId),
+                modelDirectory: modelDirectory,
                 container: slot.container,
                 tokenizer: slot.tokenizer,
-                sizing: slot.sizing,
-                kvBytesCapacity: grant)
+                sizing: rebuiltSizing,
+                kvBytesCapacity: grant,
+                specDecPreparation: rebuildPreparation,
+                preparedModel: prepared)
+            // The replacement bundle now owns the moved handle.
+            recoveryAssistant = nil
+            var newBridge = newBundle.bridge
             // makeEngineV2BridgeForSlot re-registered `newBridge` in
             // engineV2Runtime (replacing the old bridge's entry).
+
+            MLX.Memory.clearCache()
+            var postBuildServeable = KVHeadroomProbe.postBuildServeable(
+                kvBackendKind: newBridge.kvBackendKind,
+                pagedPoolBytes: await newBridge.kvBackendPoolBytes())
+            // Scripted hook engines are not concrete EngineV2 instances and
+            // cannot expose MTP metrics; their prepared bundle status is the
+            // test seam's runtime truth. Production still requires live metrics.
+            let runtimeMTPActive: Bool
+            if engineV2SlotHooks != nil {
+                runtimeMTPActive = newBundle.mtpStatus.active
+            } else {
+                runtimeMTPActive = await newBridge.mtpStatusSnapshot().active
+            }
+            if newBundle.mtpStatus.active,
+                !postBuildServeable || !runtimeMTPActive
+            {
+                let reason: MTPFallbackReason = runtimeMTPActive
+                    ? .assistantPostBuildHeadroom : .engineInactive
+                logger.warning(
+                    "mtp: model=\(modelId) recovery fallback reason=\(reason.rawValue); rebuilding target-only")
+                await engineV2Runtime.unregister(modelId: modelId)
+                await newBridge.shutdown()
+                newBundle.releaseAssistant()
+                MLX.Memory.clearCache()
+                rebuildPreparation = rebuildPreparation.fallingBack(reason)
+                prepared = prepared.fallingBack(reason)
+                rebuiltSizing = slot.sizing.replacingAuxiliaryWeightBytes(0)
+                newBundle = try await makeEngineV2BundleForSlot(
+                    modelId: modelId,
+                    modelType: slot.modelType,
+                    isVLM: slot.isVLM,
+                    modelDirectory: modelDirectory,
+                    container: slot.container,
+                    tokenizer: slot.tokenizer,
+                    sizing: rebuiltSizing,
+                    kvBytesCapacity: grant,
+                    specDecPreparation: rebuildPreparation,
+                    preparedModel: prepared)
+                newBridge = newBundle.bridge
+                MLX.Memory.clearCache()
+                postBuildServeable = KVHeadroomProbe.postBuildServeable(
+                    kvBackendKind: newBridge.kvBackendKind,
+                    pagedPoolBytes: await newBridge.kvBackendPoolBytes())
+            }
+            if !postBuildServeable {
+                await engineV2Runtime.unregister(modelId: modelId)
+                await newBridge.shutdown()
+                newBundle.releaseAssistant()
+                MLX.Memory.clearCache()
+                throw InferenceError.modelLoadFailed(
+                    "engine_v2 self-restart of '\(modelId)' left insufficient KV headroom")
+            }
 
             let rebuildElapsed = ContinuousClock.now - rebuildStartedAt
             let rebuildMs = Int64(
@@ -202,22 +288,30 @@ extension ProviderLoop {
                 // happen under the gate, so this ordering can never strip a
                 // successor load's fresh registration by model id.
                 await engineV2Runtime.unregister(modelId: modelId)
-                releaseResliceGate()
                 await newBridge.shutdown()
+                newBundle.releaseAssistant()
+                MLX.Memory.clearCache()
+                releaseResliceGate()
                 logger.warning(
                     "engine_v2 liveness: \(modelId) was unloaded mid-recovery — rebuilt engine discarded")
                 return
             }
 
             modelSlots[modelId] = ModelSlot(
-                engineV2: newBridge,
+                engineBundle: newBundle,
                 container: slot.container,
                 tokenizer: slot.tokenizer,
-                sizing: slot.sizing,
+                sizing: rebuiltSizing,
                 isVLM: slot.isVLM,
                 modelType: slot.modelType,
                 lastInferenceAt: .now
             )
+            if rebuiltSizing.auxiliaryWeightBytes != slot.sizing.auxiliaryWeightBytes {
+                // The assistant bytes just left residency. Publish the new
+                // target-only posture and recompute every live grant while the
+                // same re-slice gate still excludes loads and unload regrows.
+                await resliceGrowSurvivorsLocked()
+            }
             releaseResliceGate()
 
             await newBridge.emitSelfRestartTelemetry(
@@ -231,6 +325,7 @@ extension ProviderLoop {
             syncWarmModelState()
             await updateAggregateCapacity()
         } catch {
+            recoveryAssistant?.release()
             // Rebuild failed (refusal telemetry already fired inside the
             // factory). The slot cannot serve — fail loud: unload it so
             // heartbeats stop advertising and the coordinator reroutes.

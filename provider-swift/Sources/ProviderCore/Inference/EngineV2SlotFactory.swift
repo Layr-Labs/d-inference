@@ -23,17 +23,6 @@
 import Foundation
 import MLXLMCommon
 
-/// Model handle + EOS config snapshot pulled out of `ModelContainer.perform`.
-///
-/// `@unchecked Sendable` justification: the module reference crosses the
-/// container's isolation exactly once, at load time, to be handed to the v2
-/// engine — which serializes every use on its own engine thread.
-struct EngineV2ModelSnapshot: @unchecked Sendable {
-    let model: any LanguageModel
-    let eosTokenIds: Set<Int>
-    let extraEOSTokens: [String]
-}
-
 enum EngineV2SlotFactory {
 
     // MARK: - Prefix-cache carve (T-041, v0.7.5)
@@ -220,6 +209,59 @@ enum EngineV2SlotFactory {
         logInfo: @escaping @Sendable (String) -> Void = { _ in },
         logWarning: @escaping @Sendable (String) -> Void = { _ in }
     ) async throws -> EngineV2Bridge {
+        try await makeProductionBundle(
+            modelId: modelId,
+            modelType: modelType,
+            isVLM: isVLM,
+            modelDirectory: modelDirectory,
+            container: container,
+            tokenizer: tokenizer,
+            sizing: sizing,
+            kvBytesCapacity: kvBytesCapacity,
+            maxConcurrentRequests: maxConcurrentRequests,
+            kvBudget: kvBudget,
+            kvQuantConfigured: kvQuantConfigured,
+            kvBackendConfig: kvBackendConfig,
+            kvBackendConfigByModel: kvBackendConfigByModel,
+            weightHash: weightHash,
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            environment: environment,
+            emitTelemetry: emitTelemetry,
+            makeEngineOverride: makeEngineOverride,
+            logInfo: logInfo,
+            logWarning: logWarning
+        ).bridge
+    }
+
+    /// Production bundle assembly. Assistant preparation is deliberately
+    /// fail-open; target extraction/engine construction retain their existing
+    /// fail-loud semantics.
+    static func makeProductionBundle(
+        modelId: String,
+        modelType: String?,
+        isVLM: Bool,
+        modelDirectory: URL?,
+        container: ModelContainer,
+        tokenizer: TokenizerHandle,
+        sizing: SlotSizingSnapshot,
+        kvBytesCapacity: Int,
+        maxConcurrentRequests: Int,
+        kvBudget: GlobalKVCacheBudget?,
+        kvQuantConfigured: Bool,
+        kvBackendConfig: String = "auto",
+        kvBackendConfigByModel: [String: String] = [:],
+        weightHash: String? = nil,
+        specDecPreparation: SpecDecPreparation,
+        preparedModel: EngineV2PreparedModel? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
+        makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
+        assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
+        logInfo: @escaping @Sendable (String) -> Void = { _ in },
+        logWarning: @escaping @Sendable (String) -> Void = { _ in }
+    ) async throws -> ProviderEngineBundle {
         // KV-backend gate, slot-veto layer (`EngineV2KVBackendPolicy`):
         // parse the operator selection (per-model override wins; typo →
         // WARN + auto), then force contiguous for slots the paged cache
@@ -244,17 +286,41 @@ enum EngineV2SlotFactory {
                 "engine_v2: \(modelId) paged KV backend forced to contiguous "
                     + "(\(veto))")
         }
-        // Snapshot the model handle + EOS config out of the container.
-        // Handing the module reference to the v2 engine serializes all
-        // forward passes on the engine's own step thread. Taken BEFORE the
-        // carve because the per-model funding gate needs the model's layer
-        // shape.
-        let snapshot = await container.perform { ctx in
-            EngineV2ModelSnapshot(
-                model: ctx.model,
-                eosTokenIds: ctx.configuration.eosTokenIds,
-                extraEOSTokens: ctx.configuration.extraEOSTokens.sorted())
+        let prepared: EngineV2PreparedModel
+        if let preparedModel {
+            prepared = preparedModel
+        } else if makeEngineOverride != nil {
+            // Scripted engines intentionally do not construct real assistants.
+            prepared = try await prepareProductionModel(
+                modelId: modelId,
+                isVLM: isVLM,
+                modelDirectory: modelDirectory,
+                container: container,
+                specDecPreparation: SpecDecPreparation(
+                    artifact: nil, status: specDecPreparation.status),
+                assistantLoader: assistantLoader,
+                emitTelemetry: emitTelemetry,
+                logInfo: logInfo,
+                logWarning: logWarning)
+        } else {
+            prepared = try await prepareProductionModel(
+                modelId: modelId,
+                isVLM: isVLM,
+                modelDirectory: modelDirectory,
+                container: container,
+                specDecPreparation: specDecPreparation,
+                assistantLoader: assistantLoader,
+                emitTelemetry: emitTelemetry,
+                logInfo: logInfo,
+                logWarning: logWarning)
         }
+        let snapshot = prepared.snapshot
+        let servingModel = prepared.servingModel
+        let assistantHandle = prepared.assistant
+        let mtpStatus = prepared.mtpStatus
+        let mtpConfig = CBv2MTPConfig(
+            enabled: assistantHandle != nil,
+            fixedDraftTokens: nil)
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
         // adds its generation-config action stops) — from the
         // scheduler-free policy home.
@@ -274,7 +340,7 @@ enum EngineV2SlotFactory {
             modelId: modelId,
             isVLM: isVLM,
             modelDirectory: modelDirectory,
-            model: snapshot.model,
+            model: servingModel,
             slotKVBytesCapacity: kvBytesCapacity,
             kvBytesPerToken: sizing.fp16KVBytesPerToken,
             environment: environment)
@@ -318,13 +384,7 @@ enum EngineV2SlotFactory {
                         + "this slot; tiers do not compose in v1")
             }
             let ssdLayerKinds: [CBv2LayerKind]?
-            if isVLM {
-                ssdLayerKinds = modelDirectory.flatMap {
-                    EngineV2VLMTextExtraction.cbv2LayerKinds(modelDirectory: $0)
-                }
-            } else {
-                ssdLayerKinds = EngineV2Factory.cbv2LayerKinds(model: snapshot.model)
-            }
+            ssdLayerKinds = EngineV2Factory.cbv2LayerKinds(model: servingModel)
             if let ssdLayerKinds {
                 ssdPrefixCache = await SSDPrefixCacheFactory.make(
                     modelId: modelId,
@@ -363,32 +423,14 @@ enum EngineV2SlotFactory {
             }
         } else {
             makeEngine = {
-                // VLM slot: extract the CBv2-adapted MLXLLM text model over
-                // the SAME weight arrays (zero extra weight memory) and
-                // build the engine on that; any extraction/verify/parity
-                // failure throws into the factory's engine_v2_refusal ERROR.
-                let servingModel: any LanguageModel
-                if isVLM {
-                    guard let modelDirectory else {
-                        throw EngineV2VLMTextExtractionError.missingModelDirectory
-                    }
-                    let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-                        from: snapshot.model, modelDirectory: modelDirectory)
-                    if let parityDiff = extraction.parityMaxAbsLogitDiff {
-                        logInfo(
-                            "engine_v2: \(modelId) VLM text-model extraction passed the "
-                                + "load-time forward parity gate (max |Δlogit| \(parityDiff))")
-                    }
-                    servingModel = extraction.model
-                } else {
-                    servingModel = snapshot.model
-                }
                 return try EngineV2Factory.makeProductionBuild(
                     model: servingModel,
                     tokenizer: tokenizer.inner,
                     kvBytesCapacity: engineKVBytesCapacity,
                     prefixCache: enginePrefixCache,
                     maxConcurrentRequests: maxConcurrentRequests,
+                    mtpDrafter: assistantHandle?.drafter,
+                    mtpConfig: mtpConfig,
                     kvBackend: kvBackendSelection,
                     // Sizes the paged pool's per-group split
                     // (`nominalMaxSequenceLength`); 0/unknown → factory
@@ -430,6 +472,7 @@ enum EngineV2SlotFactory {
         if let ssdPrefixCache {
             await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
         }
+        await bridge.configureMTPStatus(mtpStatus)
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(
@@ -443,6 +486,18 @@ enum EngineV2SlotFactory {
             EngineV2Factory.emitKVQuantUnsupportedTelemetry(
                 modelId: modelId, emitTelemetry: emitTelemetry)
         }
-        return bridge
+        let reason = mtpStatus.reason?.rawValue ?? "none"
+        let revision = mtpStatus.revision ?? "none"
+        logInfo(
+            "mtp: model=\(modelId) configured=\(mtpStatus.configured) active=\(mtpStatus.active) "
+                + "reason=\(reason) source=\(mtpStatus.source?.rawValue ?? "none") "
+                + "revision=\(revision) artifact_bytes=\(mtpStatus.artifactBytes) "
+                + "assistant_bytes=\(mtpStatus.assistantBytes)")
+        return ProviderEngineBundle(
+            bridge: bridge,
+            assistant: assistantHandle,
+            assistantBytes: mtpStatus.assistantBytes,
+            mtpArtifact: prepared.mtpArtifact,
+            mtpStatus: mtpStatus)
     }
 }

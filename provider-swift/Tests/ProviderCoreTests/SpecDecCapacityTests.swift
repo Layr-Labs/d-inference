@@ -48,10 +48,11 @@ struct SpecDecSizingSnapshotTests {
         let folded = snapshot(weights: 15_000_000_000, aux: Int(drafterEstimateBytes))
         let direct = snapshot(weights: 15_000_000_000 + Int(drafterEstimateBytes))
         #expect(folded.weightsBytes == 15_000_000_000 + Int(drafterEstimateBytes))
-        // Equatable identity is the "all consumers see the sum" guarantee:
-        // no consumer can distinguish the folded snapshot from one whose
-        // target weights were simply that much larger.
-        #expect(folded == direct)
+        // Downstream capacity consumers read the identical folded total. The
+        // component fields intentionally remain distinct for fail-open rebuilds.
+        #expect(folded.weightsBytes == direct.weightsBytes)
+        #expect(folded.fp16KVBytesPerToken == direct.fp16KVBytesPerToken)
+        #expect(folded.maxContextLength == direct.maxContextLength)
     }
 
     @Test("default (0) and negative auxiliary bytes leave weightsBytes unchanged")
@@ -59,6 +60,26 @@ struct SpecDecSizingSnapshotTests {
         #expect(snapshot(weights: 100).weightsBytes == 100)
         #expect(snapshot(weights: 100, aux: 0).weightsBytes == 100)
         #expect(snapshot(weights: 100, aux: -7).weightsBytes == 100)
+    }
+
+    @Test("weight-byte sum saturates instead of trapping at Int boundary")
+    func sizingSaturates() {
+        let saturated = snapshot(weights: Int.max - 4, aux: 10)
+        #expect(saturated.weightsBytes == Int.max)
+        #expect(saturated.targetWeightsBytes == Int.max - 4)
+        #expect(saturated.auxiliaryWeightBytes == 10)
+    }
+
+    @Test("replacing auxiliary bytes charges active assistant exactly once")
+    func replacingAuxiliaryIsExact() {
+        let candidate = snapshot(weights: 1_000, aux: 200)
+        let active = candidate.replacingAuxiliaryWeightBytes(200)
+        let fallback = candidate.replacingAuxiliaryWeightBytes(0)
+        #expect(active.weightsBytes == 1_200)
+        #expect(active.targetWeightsBytes == 1_000)
+        #expect(active.auxiliaryWeightBytes == 200)
+        #expect(fallback.weightsBytes == 1_000)
+        #expect(fallback.auxiliaryWeightBytes == 0)
     }
 
     @Test("KV-rate fields are untouched by auxiliary bytes (drafter writes no KV)")
@@ -172,6 +193,57 @@ struct SpecDecLoadGateTests {
                 estimatedWeightsGb: Double(UInt64.max) / 1_073_741_824 * 0.999,
                 extraWeightBytes: .max)
                 == .max)
+    }
+
+    @Test("assistant admission boundary is exact and malformed inputs fail closed")
+    func assistantAdmissionBoundary() {
+        let oneGiB: UInt64 = 1_073_741_824
+        #expect(ProviderLoop.assistantMemoryFits(
+            availableGb: 11, targetRequiredGb: 10, assistantBytes: oneGiB))
+        #expect(!ProviderLoop.assistantMemoryFits(
+            availableGb: 10.999, targetRequiredGb: 10,
+            assistantBytes: oneGiB))
+        #expect(!ProviderLoop.assistantMemoryFits(
+            availableGb: .nan, targetRequiredGb: 10, assistantBytes: oneGiB))
+        #expect(!ProviderLoop.assistantMemoryFits(
+            availableGb: 11, targetRequiredGb: .infinity, assistantBytes: oneGiB))
+    }
+
+    @Test("pending reservation atomically transfers from target+assistant to assistant only")
+    func pendingReservationTransfer() async {
+        let budget = GlobalKVCacheBudget(
+            memorySnapshot: {
+                .init(total: 10_000, active: 0, cache: 0, systemAvailable: 10_000)
+            })
+        await budget.reservePendingLoad(requestID: "load", bytes: 1_200)
+        #expect(await budget.outstandingReservedBytes() == 1_200)
+        await budget.replacePendingLoadReservation(requestID: "load", bytes: 200)
+        #expect(await budget.outstandingReservedBytes() == 200)
+        await budget.replacePendingLoadReservation(requestID: "load", bytes: 0)
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("pending reservation shrink and removal reset rejection audit progress")
+    func pendingReservationProgressResetsAuditStreak() async {
+        let unit: UInt64 = 1_073_741_824
+        let budget = GlobalKVCacheBudget(
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(total: 8 * unit, active: 0, cache: 0, systemAvailable: .max)
+            })
+        await budget.reservePendingLoad(requestID: "load", bytes: 6 * unit)
+        #expect(!(await budget.reserveBytes(requestID: "rejected-1", bytes: unit)))
+        #expect(await budget.rejectionStreakArmedForTesting())
+
+        await budget.replacePendingLoadReservation(requestID: "load", bytes: 5 * unit)
+        #expect(!(await budget.rejectionStreakArmedForTesting()))
+        #expect(!(await budget.reserveBytes(requestID: "rejected-2", bytes: 2 * unit)))
+        #expect(await budget.rejectionStreakArmedForTesting())
+
+        await budget.replacePendingLoadReservation(requestID: "load", bytes: 0)
+        #expect(!(await budget.rejectionStreakArmedForTesting()))
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 }
 

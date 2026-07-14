@@ -42,7 +42,7 @@ extension EngineV2Bridge {
         now: ContinuousClock.Instant = .now,
         kvBytesBudgetClamp: Int? = nil
     ) -> BackendSlotCapacity {
-        let snapshot = engine.capacity()
+        let snapshot = capacitySnapshot()
 
         // Sample loop progress into the wedge monitor on the heartbeat
         // cadence (mirrors `sampleEngineSteps`), then emit the step_wedge
@@ -178,7 +178,7 @@ extension EngineV2Bridge {
     /// cache budget — so Σ(engine ceilings + cache budgets) stays within
     /// the process-wide KV budget (`EngineV2KVSizing.engineKVBytesCapacity`).
     public func engineKVBytesCapacity() -> Int {
-        engine.capacity().kvBytesCapacity
+        capacitySnapshot().kvBytesCapacity
     }
 
     // MARK: - engine_v2.step_wedge

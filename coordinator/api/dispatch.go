@@ -440,14 +440,6 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	}
 }
 
-// successRoutingOutcome builds a success outcome for the committed attempt.
-// Token counts and final_status are left empty because the final terminal is
-// only known when the provider later sends complete/error; handleComplete or
-// post-commit response handlers update them.
-func (d *dispatchState) successRoutingOutcome() *store.InferenceRouteOutcome {
-	return d.successRoutingOutcomeFor(d.pr)
-}
-
 func (d *dispatchState) successRoutingOutcomeFor(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
 	return committedRouteOutcome(pr)
 }

@@ -245,15 +245,17 @@ private func loadSlot(
 /// Drive a wedge: one hanging admit (engine accepts, never yields) plus a
 /// step-counter baseline sample at `t0`. The engine's steps never advance,
 /// so any later verdict ≥ the stall window sees the full flatline.
+@discardableResult
 private func injectWedge(
     bridge: EngineV2Bridge, modelId: String, at t0: ContinuousClock.Instant
-) async {
-    _ = await bridge.submitTokenized(
+) async -> AsyncStream<GenerationEvent> {
+    let stream = await bridge.submitTokenized(
         promptTokens: [1, 2, 3],
         request: makeChatRequest(model: modelId),
         requestId: "req-wedge-\(modelId)")
     // Baseline step sample (the heartbeat normally does this).
     _ = await bridge.backendSlotCapacity(now: t0)
+    return stream
 }
 
 // MARK: - Bridge-level verdict + heartbeat state
@@ -569,7 +571,8 @@ struct EngineV2LivenessRecoveryTests {
         let engine = factory.built[0].engine
 
         let t0 = ContinuousClock.Instant.now
-        await injectWedge(bridge: bridge, modelId: Self.modelA, at: t0)
+        let firstWedgeStream = await injectWedge(
+            bridge: bridge, modelId: Self.modelA, at: t0)
         // A recovery attempt happened 60s ago (inside the 120s cooldown).
         let tWedge = t0.advanced(by: .seconds(130))
         await loop.setEngineV2LastRecoveryAtForTesting(
@@ -591,6 +594,7 @@ struct EngineV2LivenessRecoveryTests {
         // No restart/complete events fired.
         #expect(!telemetry.operations().contains("engine_v2_self_restart"))
         #expect(!telemetry.operations().contains("engine_v2_self_restart_complete"))
+        withExtendedLifetime(firstWedgeStream) {}
     }
 
     @Test("outside the cooldown a re-wedge recovers again (cooldown anchored on the attempt)")
@@ -603,7 +607,8 @@ struct EngineV2LivenessRecoveryTests {
 
         // First recovery.
         let t0 = ContinuousClock.Instant.now
-        await injectWedge(bridge: bridge, modelId: Self.modelA, at: t0)
+        let firstWedgeStream = await injectWedge(
+            bridge: bridge, modelId: Self.modelA, at: t0)
         let firstAttempt = t0.advanced(by: .seconds(130))
         await loop.recoverWedgedEngineV2SlotsForTesting(now: firstAttempt)
         #expect(factory.built.count == 2)
@@ -611,13 +616,16 @@ struct EngineV2LivenessRecoveryTests {
 
         // The rebuilt engine wedges again, but the second confirmation
         // lands AFTER the cooldown expired — recover again, don't unload.
-        await injectWedge(bridge: secondBridge, modelId: Self.modelA, at: firstAttempt)
+        let secondWedgeStream = await injectWedge(
+            bridge: secondBridge, modelId: Self.modelA, at: firstAttempt)
         let secondAttempt = firstAttempt.advanced(by: .seconds(130))
         await loop.recoverWedgedEngineV2SlotsForTesting(now: secondAttempt)
         #expect(factory.built.count == 3)
         #expect(await loop.slotBridgeForTesting(modelId: Self.modelA) != nil)
         #expect(await runtime.bridge(forModel: Self.modelA) != nil)
         #expect(await loop.engineV2LastRecoveryAtForTesting(modelId: Self.modelA) == secondAttempt)
+        withExtendedLifetime(firstWedgeStream) {}
+        withExtendedLifetime(secondWedgeStream) {}
     }
 
     @Test("rebuild failure: refusal + slot unload — never a half-alive slot")

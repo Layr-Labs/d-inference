@@ -2003,12 +2003,6 @@ struct SSDWholeRootMaintenanceTests {
         }
         #expect(!FileManager.default.fileExists(atPath: temp.path))
         SSDWholeRootMaintainer.shared.stopPeriodicMaintenance(root: root)
-        SSDWholeRootMaintainer.shared.startPeriodicMaintenance(
-            root: root,
-            ttlSeconds: 900,
-            intervalSeconds: 3600,
-            nowSeconds: { 10_000 },
-            budgetBytes: { 1 << 20 })
 
         let restartedTemp = SSDBlockStore.temporaryFileURL(
             for: destination,
@@ -2018,6 +2012,12 @@ struct SSDWholeRootMaintenanceTests {
             [.modificationDate: Date(timeIntervalSince1970:
                 TimeInterval(10_000 - SSDBlockStore.crashTempTTLSeconds))],
             ofItemAtPath: restartedTemp.path)
+        SSDWholeRootMaintainer.shared.startPeriodicMaintenance(
+            root: root,
+            ttlSeconds: 900,
+            intervalSeconds: 3600,
+            nowSeconds: { 10_000 },
+            budgetBytes: { 1 << 20 })
         let restartDeadline = ContinuousClock.now + .seconds(2)
         while ContinuousClock.now < restartDeadline,
             FileManager.default.fileExists(atPath: restartedTemp.path)

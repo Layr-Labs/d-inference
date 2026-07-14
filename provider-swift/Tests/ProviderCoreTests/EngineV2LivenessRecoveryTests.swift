@@ -223,10 +223,11 @@ private func makeSizing(
         defaultMaxTokens: 4096)
 }
 
-private func makeChatRequest(model: String) -> ChatCompletionRequest {
+private func makeChatRequest(model: String, maxTokens: Int? = nil) -> ChatCompletionRequest {
     ChatCompletionRequest(
         model: model,
-        messages: [ChatMessage(role: "user", content: "hi")])
+        messages: [ChatMessage(role: "user", content: "hi")],
+        max_tokens: maxTokens)
 }
 
 /// Install a v2 slot through the REAL load path (re-slice + factory +
@@ -251,7 +252,9 @@ private func injectWedge(
 ) async -> AsyncStream<GenerationEvent> {
     let stream = await bridge.submitTokenized(
         promptTokens: [1, 2, 3],
-        request: makeChatRequest(model: modelId),
+        // Liveness tests exercise the engine state machine, not the
+        // process-wide KV budget shared by parallel test suites.
+        request: makeChatRequest(model: modelId, maxTokens: 0),
         requestId: "req-wedge-\(modelId)")
     // Baseline step sample (the heartbeat normally does this).
     _ = await bridge.backendSlotCapacity(now: t0)

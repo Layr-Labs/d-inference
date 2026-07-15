@@ -596,6 +596,36 @@ struct MTPBenchmarkTests {
         }
     }
 
+    @Test("production evidence pins active cases to the automatic verifier")
+    func productionRequiresAutomaticVerifier() throws {
+        let mode = try MTPBenchmarkMode.fixed(verificationWidth: 1)
+        let serialMetrics = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "serial_target",
+            serialVerificationRounds: 3,
+            selectedDepth: 0,
+            decodeRowBucket: 1,
+            depthSelections: ["0": 1])
+        // Raw parity remains mode-agnostic (the serial/rectangular
+        // diagnostic vehicle).
+        try MTPBenchmarkRunner.validateMetrics(
+            serialMetrics,
+            mode: mode,
+            batchSize: 1,
+            adaptiveDraftingExpected: false,
+            allowedSkipReasons: [])
+        // Production evidence must reject the retired serial verifier.
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                serialMetrics,
+                mode: mode,
+                batchSize: 1,
+                adaptiveDraftingExpected: false,
+                allowedSkipReasons: [],
+                requireAutomaticVerification: true)
+        }
+    }
+
     @Test("adaptive mode must actually draft where requested")
     func adaptiveMustDraft() {
         #expect(throws: MTPBenchmarkError.self) {
@@ -1036,6 +1066,58 @@ struct MTPBenchmarkTests {
             Issue.record("benchmark certified a stop terminal past maxTokens")
         } catch let error as MTPBenchmarkError {
             #expect(error.description.contains("production terminal within maxTokens"))
+        }
+    }
+
+    @Test("token parity mismatch and missing baseline cannot certify")
+    func parityMismatchCannotCertify() async throws {
+        let artifact = testArtifact()
+        let fixedMetrics = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "automatic",
+            maxAutomaticRectangularTokens: 8,
+            selectedDepth: 0,
+            decodeRowBucket: 1,
+            depthSelections: ["0": 1])
+        // Target-only emits token 9; the MTP session emits a DIFFERENT valid
+        // token 7 — target authority requires this to fail certification.
+        let sessions = MTPBenchmarkSessionFactory { mode, _ in
+            if mode.kind == .targetOnly {
+                return MTPBenchmarkSession(
+                    engine: ConfiguredStopEngine(stopToken: 9)) { .inactive }
+            }
+            return MTPBenchmarkSession(
+                engine: SameTokenLengthEngine(token: 7)) { fixedMetrics }
+        }
+        func configuration(modes: [MTPBenchmarkMode]) -> MTPBenchmarkConfiguration {
+            MTPBenchmarkConfiguration(
+                prompts: [.init(name: "prompt", tokenIDs: [1])],
+                batchSizes: [1],
+                modes: modes,
+                maxTokensPerRow: 1,
+                purpose: .productionCorrectness,
+                stopPolicy: .production(tokenIDs: [9, 7]),
+                deadline: .seconds(2))
+        }
+        do {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact, assistant: artifact, hardware: testHardware(),
+                configuration: configuration(
+                    modes: [.targetOnly, try .fixed(verificationWidth: 1)]),
+                sessions: sessions)
+            Issue.record("divergent tokens were certified as parity")
+        } catch MTPBenchmarkError.tokenParityMismatch(let mode, let batchSize, let rows) {
+            #expect(mode == "fixed-L1")
+            #expect(batchSize == 1)
+            #expect(rows == [0])
+        }
+        // A configuration without the target-only baseline cannot even start.
+        await #expect(throws: MTPBenchmarkError.self) {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact, assistant: artifact, hardware: testHardware(),
+                configuration: configuration(
+                    modes: [try .fixed(verificationWidth: 1)]),
+                sessions: sessions)
         }
     }
 

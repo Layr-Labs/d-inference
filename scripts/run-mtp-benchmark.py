@@ -1133,6 +1133,16 @@ def validate_report(
                 continue
             if metrics.get("active") is not True:
                 raise ValueError(f"fixed L{width}/B{batch} did not prove activation")
+            # Production evidence certifies the PRODUCTION mechanism: active
+            # cases must have run the automatic verifier with zero serial
+            # rounds. Raw parity stays mode-agnostic (the serial/rectangular
+            # diagnostic vehicle).
+            if mode != "raw-parity" and (
+                metrics.get("verificationMode") != "automatic"
+                or metrics.get("serialVerificationRounds", 0) not in (None, 0)
+            ):
+                raise ValueError(
+                    f"fixed L{width}/B{batch} production evidence requires the automatic verifier")
             depth = width - 1
             if validate_automatic_fixed_fallback(
                 metrics, batch, depth, f"fixed L{width}/B{batch}"
@@ -1169,6 +1179,12 @@ def validate_report(
                 continue
             if metrics.get("active") is not True or not observed_bucket(metrics, expected_bucket):
                 raise ValueError(f"adaptive B{batch} did not prove activation/bucket")
+            if mode != "raw-parity" and (
+                metrics.get("verificationMode") != "automatic"
+                or metrics.get("serialVerificationRounds", 0) not in (None, 0)
+            ):
+                raise ValueError(
+                    f"adaptive B{batch} production evidence requires the automatic verifier")
             if validate_automatic_adaptive_within_cap(
                 metrics, batch, f"adaptive B{batch}"
             ):

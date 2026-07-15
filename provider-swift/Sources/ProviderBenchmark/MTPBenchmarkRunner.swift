@@ -377,7 +377,8 @@ public enum MTPBenchmarkRunner {
                 adaptiveDraftingExpected: configuration.adaptiveDraftingBatchSizes.contains(
                     key.batchSize),
                 allowedSkipReasons: configuration.allowedSkipReasons,
-                expectation: configuration.mtpExpectation)
+                expectation: configuration.mtpExpectation,
+                requireAutomaticVerification: configuration.purpose != .rawParityStress)
             await session.engine.shutdown()
             didShutdown = true
             try requireBeforeDeadline(deadlineAt)
@@ -400,13 +401,30 @@ public enum MTPBenchmarkRunner {
         batchSize: Int,
         adaptiveDraftingExpected: Bool,
         allowedSkipReasons: Set<String>,
-        expectation: MTPBenchmarkMTPExpectation = .active
+        expectation: MTPBenchmarkMTPExpectation = .active,
+        requireAutomaticVerification: Bool = false
     ) throws {
         try validateActivation(
             metrics: metrics,
             mode: mode,
             expectation: expectation,
             beforeRun: false)
+        // Production evidence certifies the PRODUCTION mechanism: every
+        // active MTP case must have run the automatic verifier with zero
+        // serial rounds (a stray DARKBLOOM_MTP_VERIFICATION_MODE in the
+        // launching shell must not certify the serial oracle). Raw parity
+        // stays mode-agnostic — it is the serial/rectangular diagnostic
+        // vehicle. Target-authoritative token/finish-reason parity against
+        // the target-only baseline is enforced unconditionally in `run`.
+        if requireAutomaticVerification, mode.requestsMTP, !expectation.expectsInactive {
+            guard metrics.verificationMode == "automatic",
+                  (metrics.serialVerificationRounds ?? 0) == 0
+            else {
+                throw MTPBenchmarkError.invalidMetrics(
+                    "\(mode.label), B=\(batchSize) production evidence requires the "
+                        + "automatic verifier (mode=\(metrics.verificationMode ?? "nil"))")
+            }
+        }
         let unexpectedSkips = Set(metrics.skippedRows.keys).subtracting(allowedSkipReasons)
         guard unexpectedSkips.isEmpty else {
             throw MTPBenchmarkError.invalidMetrics(

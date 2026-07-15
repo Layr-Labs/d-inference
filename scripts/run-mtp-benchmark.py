@@ -621,6 +621,100 @@ def validate_zero_speculative_work(metrics: dict[str, Any], label: str) -> None:
             raise ValueError(f"{label} reported speculative timing in {field}")
 
 
+def automatic_rectangular_cap(metrics: dict[str, Any]) -> int | None:
+    if metrics.get("verificationMode") != "automatic":
+        return None
+    cap = metrics.get("maxAutomaticRectangularTokens")
+    if isinstance(cap, int) and not isinstance(cap, bool) and cap >= 0:
+        return cap
+    return None
+
+
+def positive_cost_inputs(metrics: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in metrics.get("costInputs", [])
+        if isinstance(item, dict)
+        and item.get("draftDepth", 0) > 0
+        and item.get("sampleCount", 0) > 0
+    ]
+
+
+def positive_costs_within_cap(metrics: dict[str, Any], cap: int) -> bool:
+    return all(
+        item.get("decodeRowBucket", 0) * (item.get("draftDepth", 0) + 1) <= cap
+        for item in positive_cost_inputs(metrics)
+    )
+
+
+def validate_automatic_fixed_fallback(
+    metrics: dict[str, Any], batch: int, depth: int, label: str
+) -> bool:
+    """Mirror MTPBenchmarkRunner.validateAutomaticDepthLimitFallback.
+
+    A fixed depth whose batch * (1 + k) exceeds the automatic cap is clamped
+    before seed/draft work: either to a smaller positive depth (rectangular
+    rounds without controller cost samples, because cost attribution rejects
+    depth-mismatched work) or to certified zero-work target-only chaining.
+    """
+    cap = automatic_rectangular_cap(metrics)
+    if cap is None or batch * (depth + 1) <= cap:
+        return False
+    selections = metrics.get("depthSelections", {})
+    has_positive_depth = any(
+        key.isdigit() and int(key) > 0 and count > 0
+        for key, count in selections.items()
+        if isinstance(key, str) and isinstance(count, int)
+    )
+    if (
+        metrics.get("controllerFallbacks", {}).get("automatic_rectangular_limit", 0) <= 0
+        or not positive_costs_within_cap(metrics, cap)
+        or metrics.get("serialVerificationRounds", 0) != 0
+    ):
+        raise ValueError(f"{label} escaped its rectangular limit")
+    if has_positive_depth:
+        if (
+            metrics.get("rounds", 0) <= 0
+            or metrics.get("proposedTokens", 0) <= 0
+            or metrics.get("rectangularVerificationRounds", 0) <= 0
+        ):
+            raise ValueError(f"{label} lacks clamped-depth evidence")
+        return True
+    if (
+        metrics.get("selectedDepth") != 0
+        or selections.get("0", 0) <= 0
+        or metrics.get("rounds", 0) != 0
+        or metrics.get("seedRows", 0) != 0
+        or metrics.get("proposedTokens", 0) != 0
+        or metrics.get("acceptedDraftTokens", 0) != 0
+        or metrics.get("committedTokens", 0) != 0
+        or metrics.get("rectangularVerificationRounds", 0) != 0
+        or metrics.get("costInputs") not in ([], None)
+    ):
+        raise ValueError(f"{label} reported uncategorized work")
+    return True
+
+
+def validate_automatic_adaptive_within_cap(
+    metrics: dict[str, Any], batch: int, label: str
+) -> bool:
+    """Adaptive drafting cannot be demanded when even depth one exceeds the
+    automatic cap at this batch size; any drafting after tail rows drain must
+    stay rectangular and inside the cap."""
+    cap = automatic_rectangular_cap(metrics)
+    if cap is None or batch * 2 <= cap:
+        return False
+    rounds = metrics.get("rounds", 0)
+    if (
+        not positive_costs_within_cap(metrics, cap)
+        or metrics.get("serialVerificationRounds", 0) != 0
+        or (rounds > 0 and metrics.get("proposedTokens", 0) <= 0)
+        or (rounds == 0 and metrics.get("rectangularVerificationRounds", 0) != 0)
+    ):
+        raise ValueError(f"{label} escaped its automatic rectangular limit")
+    return True
+
+
 def recursively_present_keys(value: Any, wanted: set[str]) -> set[str]:
     found: set[str] = set()
     if isinstance(value, dict):
@@ -892,9 +986,15 @@ def validate_report(
                     metrics, f"fixed L{width}/B{batch} expected-inactive"
                 )
                 continue
-            if metrics.get("active") is not True or not observed_bucket(metrics, expected_bucket):
-                raise ValueError(f"fixed L{width}/B{batch} did not prove activation/bucket")
+            if metrics.get("active") is not True:
+                raise ValueError(f"fixed L{width}/B{batch} did not prove activation")
             depth = width - 1
+            if validate_automatic_fixed_fallback(
+                metrics, batch, depth, f"fixed L{width}/B{batch}"
+            ):
+                continue
+            if not observed_bucket(metrics, expected_bucket):
+                raise ValueError(f"fixed L{width}/B{batch} did not prove its bucket")
             if metrics.get("depthSelections", {}).get(str(depth), 0) <= 0:
                 raise ValueError(f"fixed L{width}/B{batch} never selected depth {depth}")
             if depth > 0:
@@ -924,6 +1024,10 @@ def validate_report(
                 continue
             if metrics.get("active") is not True or not observed_bucket(metrics, expected_bucket):
                 raise ValueError(f"adaptive B{batch} did not prove activation/bucket")
+            if validate_automatic_adaptive_within_cap(
+                metrics, batch, f"adaptive B{batch}"
+            ):
+                continue
             if metrics.get("rounds", 0) <= 0 or metrics.get("proposedTokens", 0) <= 0:
                 raise ValueError(f"adaptive B{batch} did not draft")
             if not any(

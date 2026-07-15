@@ -207,8 +207,27 @@ struct FanServiceTests {
             requireRootOwnership: false
         )
         #expect(pending.fanIndices.isEmpty)
-        #expect(pending.ownsFtst)
+        #expect(!pending.ownsFtst)
+        #expect(pending.verifyAllFans)
 
+        backend.setByte("Ftst", to: 1)
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: recoveryInventory(),
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(backend.byte(for: "F0Md") == 1)
+        #expect(backend.byte(for: "F1Md") == 1)
+        #expect(backend.byte(for: "Ftst") == 1)
+
+        backend.setByte("Ftst", to: 0)
+        backend.setByte("F0Md", to: 0)
+        backend.setByte("F1Md", to: 0)
         try FanOwnershipRecovery.reconcile(
             backend: backend,
             inventory: recoveryInventory(),
@@ -352,6 +371,18 @@ struct FanServiceTests {
             _ = try JSONDecoder().decode(FanSensorBaseline.self, from: invalid)
         }
     }
+
+    @Test("legacy ownership journal defaults full verification off")
+    func legacyJournalDecoding() throws {
+        let data = Data(#"{"fanIndices":[],"ownsFtst":true}"#.utf8)
+        let journal = try JSONDecoder().decode(
+            FanSessionJournal.self,
+            from: data
+        )
+        #expect(journal.fanIndices.isEmpty)
+        #expect(journal.ownsFtst)
+        #expect(!journal.verifyAllFans)
+    }
 }
 
 private func recoveryInventory() -> FanInventory {
@@ -429,6 +460,12 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return values[key]
+    }
+
+    func setByte(_ key: SMCKey, to value: UInt8) {
+        lock.lock()
+        values[key] = value
+        lock.unlock()
     }
 
     func writes(to key: SMCKey, value: UInt8) -> Int {

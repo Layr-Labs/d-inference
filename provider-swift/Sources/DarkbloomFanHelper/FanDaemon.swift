@@ -502,9 +502,9 @@ actor FanDaemon {
             persistedLastError = nil
             return
         }
+        persistedLastError = nil
         do {
             try FanDurableFile.remove(paths.lastFailure)
-            persistedLastError = nil
             failureFileMayExist = false
         } catch {
             // Keep the persistence marker so the next healthy tick retries

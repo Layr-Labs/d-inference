@@ -31,12 +31,13 @@ public enum FanOwnershipRecovery {
             from: journalURL,
             requireRootOwnership: requireRootOwnership
         )
-        if journal.ownsFtst, inventory.fans.isEmpty {
+        let verifyAllFans = journal.verifyAllFans || journal.ownsFtst
+        if verifyAllFans, inventory.fans.isEmpty {
             let gateOutcome = FanAutomaticRestore.run(
                 backend: backend,
                 fans: [],
                 ftstKey: inventory.ftstKey,
-                ownsFtst: true,
+                ownsFtst: journal.ownsFtst,
                 timing: timing
             )
             var failures = gateOutcome.failures
@@ -47,10 +48,34 @@ public enum FanOwnershipRecovery {
                     "fan inventory is unavailable; full Auto verification is pending"
                 ))
             ))
-            // Keep the Ftst marker even if the best-effort clear succeeded. It
-            // now also means every fan must be verified when discovery returns.
             try FanDurableFile.writeJSON(
-                FanSessionJournal(fanIndices: journal.fanIndices, ownsFtst: true),
+                FanSessionJournal(
+                    fanIndices: journal.fanIndices,
+                    ownsFtst: gateOutcome.ownsFtst,
+                    verifyAllFans: true
+                ),
+                to: journalURL,
+                permissions: 0o600,
+                owner: journalOwner
+            )
+            throw FanOwnershipRecoveryError(failures: failures)
+        }
+        if verifyAllFans, !journal.ownsFtst {
+            let failures = FanAutomaticRestore.verifyAutomatic(
+                backend: backend,
+                fans: inventory.fans,
+                timing: timing
+            )
+            guard !failures.isEmpty else {
+                try FanDurableFile.remove(journalURL)
+                return
+            }
+            try FanDurableFile.writeJSON(
+                FanSessionJournal(
+                    fanIndices: journal.fanIndices,
+                    ownsFtst: false,
+                    verifyAllFans: true
+                ),
                 to: journalURL,
                 permissions: 0o600,
                 owner: journalOwner
@@ -62,7 +87,7 @@ public enum FanOwnershipRecovery {
         var unresolvedFans: [Int] = []
         var recoverableFans: [FanCapability] = []
         var recoveryIndices = Set(journal.fanIndices)
-        if journal.ownsFtst {
+        if verifyAllFans {
             // v1 helpers could narrow fanIndices to empty after an immediate
             // pre-release Auto readback while retaining Ftst ownership. Treat
             // every discovered fan as possibly controlled during migration so
@@ -99,7 +124,8 @@ public enum FanOwnershipRecovery {
         try FanDurableFile.writeJSON(
             FanSessionJournal(
                 fanIndices: unresolvedFans,
-                ownsFtst: outcome.ownsFtst
+                ownsFtst: outcome.ownsFtst,
+                verifyAllFans: verifyAllFans
             ),
             to: journalURL,
             permissions: 0o600,

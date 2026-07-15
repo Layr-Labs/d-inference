@@ -115,10 +115,34 @@ public struct FanServicePaths: Equatable, Sendable {
 public struct FanSessionJournal: Equatable, Codable, Sendable {
     public let fanIndices: [Int]
     public let ownsFtst: Bool
+    public let verifyAllFans: Bool
 
-    public init(fanIndices: [Int], ownsFtst: Bool) {
+    public init(
+        fanIndices: [Int],
+        ownsFtst: Bool,
+        verifyAllFans: Bool = false
+    ) {
         self.fanIndices = Array(Set(fanIndices)).sorted()
         self.ownsFtst = ownsFtst
+        self.verifyAllFans = verifyAllFans
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case fanIndices
+        case ownsFtst
+        case verifyAllFans
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            fanIndices: try container.decode([Int].self, forKey: .fanIndices),
+            ownsFtst: try container.decode(Bool.self, forKey: .ownsFtst),
+            verifyAllFans: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .verifyAllFans
+            ) ?? false
+        )
     }
 }
 

@@ -21,6 +21,53 @@ public struct FanAutomaticRestoreOutcome: Equatable, Sendable {
 /// release second. A later round then re-verifies fans after macOS has had an
 /// opportunity to reclaim them.
 public enum FanAutomaticRestore {
+    public static func verifyAutomatic(
+        backend: any SMCBackend,
+        fans: [FanCapability],
+        timing: FanControlTiming = .production
+    ) -> [FanRollbackFailure] {
+        var unresolved: [Int: FanCapability] = [:]
+        for fan in fans {
+            unresolved[fan.index] = fan
+        }
+        var errors: [Int: FanRollbackError] = [:]
+        var terminal = Set<Int>()
+
+        for attempt in 0..<timing.automaticRestoreAttempts {
+            for fan in unresolved.values.sorted(by: { $0.index < $1.index })
+                where !terminal.contains(fan.index)
+            {
+                do {
+                    let raw = try backend.read(fan.modeKey).uint8()
+                    guard FanMode(rawValue: raw).isAutomatic else {
+                        throw FanRollbackError.modeNotAutomatic(rawValue: raw)
+                    }
+                    unresolved.removeValue(forKey: fan.index)
+                    errors.removeValue(forKey: fan.index)
+                } catch {
+                    let normalized = normalize(error)
+                    errors[fan.index] = normalized
+                    if !isRetryable(normalized) {
+                        terminal.insert(fan.index)
+                    }
+                }
+            }
+            if unresolved.isEmpty || terminal.count == unresolved.count {
+                break
+            }
+            if attempt + 1 < timing.automaticRestoreAttempts {
+                timing.sleep(timing.retryDelaySeconds)
+            }
+        }
+        return unresolved.keys.sorted().map { index in
+            FanRollbackFailure(
+                fanIndex: index,
+                step: .restoreMode,
+                error: errors[index] ?? .modeNotAutomatic(rawValue: 1)
+            )
+        }
+    }
+
     public static func run(
         backend: any SMCBackend,
         fans: [FanCapability],

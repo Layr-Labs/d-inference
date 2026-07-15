@@ -481,6 +481,7 @@ actor FanDaemon {
     private func setLastError(_ message: String) {
         lastError = message
         guard persistedLastError != message else { return }
+        failureFileMayExist = true
         do {
             try FanDurableFile.writeJSON(
                 FanLastFailure(message: message),
@@ -489,7 +490,6 @@ actor FanDaemon {
                 owner: journalOwner
             )
             persistedLastError = message
-            failureFileMayExist = true
         } catch {
             persistedLastError = nil
         }

@@ -169,6 +169,59 @@ struct FanServiceTests {
         #expect(!FileManager.default.fileExists(atPath: journal.path))
     }
 
+    @Test("Ftst-only journal waits for fan inventory before verification")
+    func legacyJournalWaitsForFanDiscovery() throws {
+        let backend = RecoveryBackend()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-empty-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+        let emptyInventory = FanInventory(
+            chipFamily: .m4,
+            fans: [],
+            gpuTemperatureKeys: [],
+            ftstKey: "Ftst"
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: emptyInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(backend.byte(for: "Ftst") == 0)
+        let pending = try FanDurableFile.readJSON(
+            FanSessionJournal.self,
+            from: journal,
+            requireRootOwnership: false
+        )
+        #expect(pending.fanIndices.isEmpty)
+        #expect(pending.ownsFtst)
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: recoveryInventory(),
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "F1Md") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
     @Test("durable writer rejects a symlink parent directory")
     func durableWriterRejectsSymlinkParent() throws {
         let root = FileManager.default.temporaryDirectory

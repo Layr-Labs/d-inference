@@ -55,6 +55,7 @@ do {
     }
     var persistedFailure = previousFailure?.message
     if let discoveryError {
+        failureFileMayExist = true
         do {
             try FanDurableFile.writeJSON(
                 FanLastFailure(message: discoveryError),
@@ -62,7 +63,6 @@ do {
                 permissions: 0o600
             )
             persistedFailure = discoveryError
-            failureFileMayExist = true
         } catch {
             persistedFailure = previousFailure?.message
         }

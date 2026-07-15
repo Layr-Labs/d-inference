@@ -467,6 +467,38 @@ struct MTPResliceFallbackTests {
         build.bundle.releaseAssistant()
     }
 
+    @Test("standalone prepare-stage fail-open drops the drafter's pending reservation")
+    func standalonePrepareFailOpenReleasesPhantomReservation() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let server = StandaloneServer(config: .init(maxCachedModels: 3))
+        await server.setV2TestHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorFailingAssistantLoader(),
+            makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
+        await server.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+
+        let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
+        let build = try await server.resliceAndBuildMTPBundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: newcomer,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 1),
+            specDecPreparation: .init(
+                artifact: artifact, status: .candidate(artifact)))
+
+        #expect(build.bundle.mtpStatus.reason == MTPFallbackReason.assistantLoadFailed)
+        #expect(build.bundle.assistantBytes == 0)
+        // The phantom reservation must be gone the moment the fallback is
+        // decided (mirrors the ProviderLoop regression test).
+        #expect(await server.debugOutstandingKVReservationBytes() == 0)
+        await build.bundle.bridge.shutdown()
+        build.bundle.releaseAssistant()
+        await server.stopAndWait()
+    }
+
     @Test("standalone concurrent same-model load rechecks residency after MTP preparation")
     func standalonePreparationRaceRechecksResidency() async throws {
         let fakeId = "darkbloom-tests/standalone-race-\(UUID().uuidString.prefix(8))"

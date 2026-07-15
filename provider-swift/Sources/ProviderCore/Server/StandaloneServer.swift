@@ -662,6 +662,14 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
             throw error
         }
+        // Prepare-stage fail-open: the drafter never became resident, so drop
+        // its share of the pending-load reservation now instead of holding
+        // phantom bytes through the re-slice and engine build (mirrors
+        // ProviderLoop.resliceAndBuildEngineV2Bundle).
+        if prepared.assistant == nil, specDecPreparation.artifact != nil {
+            await kvBudget.replacePendingLoadReservation(
+                requestID: "pending-load:\(modelId)", bytes: 0)
+        }
         var sizing = targetSizing.replacingAuxiliaryWeightBytes(
             prepared.assistantBytes)
         let existing = await existingSlotGrants(excludingModelId: modelId)

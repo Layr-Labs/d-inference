@@ -492,13 +492,15 @@ public enum MTPBenchmarkRunner {
                 "automatic fixed-depth fallback B=\(batchSize) escaped its rectangular limit")
         }
         if hasPositiveDepth {
+            // The depth controller intentionally refuses cost attribution
+            // when the finalized depth differs from its requested depth, so
+            // clamped rounds may record no positive cost inputs at all.
             guard metrics.rounds > 0,
                   metrics.proposedTokens > 0,
-                  !positiveCosts.isEmpty,
                   (metrics.rectangularVerificationRounds ?? 0) > 0
             else {
                 throw MTPBenchmarkError.invalidMetrics(
-                    "automatic fixed-depth fallback B=\(batchSize) lacks safe smaller-batch evidence")
+                    "automatic fixed-depth fallback B=\(batchSize) lacks clamped-depth evidence")
             }
             return true
         }

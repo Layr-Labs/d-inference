@@ -418,6 +418,8 @@ struct MTPBenchmarkTests {
         // records only positive selections. The validator must not demand
         // depth-zero selections in that case (found by the real M4 matrix at
         // B=4 with fixed L=3 clamping to k=1).
+        // No cost inputs on purpose: the controller refuses attribution when
+        // the finalized depth differs from its requested fixed depth.
         let positiveClamp = MTPBenchmarkMetrics(
             active: true,
             verificationMode: "automatic",
@@ -429,11 +431,7 @@ struct MTPBenchmarkTests {
             rounds: 6,
             proposedTokens: 6,
             depthSelections: ["1": 6],
-            controllerFallbacks: ["automatic_rectangular_limit": 6],
-            costInputs: [.init(
-                decodeRowBucket: 4,
-                draftDepth: 1,
-                sampleCount: 6)])
+            controllerFallbacks: ["automatic_rectangular_limit": 6])
         try MTPBenchmarkRunner.validateMetrics(
             positiveClamp,
             mode: try MTPBenchmarkMode.fixed(verificationWidth: 3),

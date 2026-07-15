@@ -10,6 +10,7 @@ import Darwin
 
 private enum FanDaemonError: Error {
     case automaticRestoreFailed
+    case controlAuthorizationChanged
 }
 
 actor FanDaemon {
@@ -43,6 +44,7 @@ actor FanDaemon {
     private var gpuTemperatureC: Double?
     private var fanReadings: [FanReading] = []
     private var lastError: String?
+    private var persistedLastError: String?
     private var lastMaintenanceAt: TimeInterval = 0
 
     init(
@@ -57,6 +59,7 @@ actor FanDaemon {
         requireRootJournalOwnership: Bool = true,
         discoverInventory: DiscoverInventory? = nil,
         controllerFactory: ControllerFactory? = nil,
+        baselineSensorKeys: [SMCKey] = [],
         initialLastError: String? = nil,
         initialDiscoveryError: String? = nil
     ) {
@@ -67,7 +70,8 @@ actor FanDaemon {
         self.controller = controller
         self.hardwareRecovery = FanHardwareRecovery(
             inventory: inventory,
-            initialError: initialDiscoveryError
+            initialError: initialDiscoveryError,
+            baselineSensorKeys: baselineSensorKeys
         )
         self.uptime = uptime
         self.journalOwner = journalOwner
@@ -96,6 +100,7 @@ actor FanDaemon {
         self.policy = FanPolicyStateMachine(configuration: configuration.policy)
         self.mode = configuration.enabled ? .waitingForProvider : .disabled
         self.lastError = initialLastError
+        self.persistedLastError = nil
     }
 
     func start() {
@@ -192,7 +197,8 @@ actor FanDaemon {
             },
             lastError: lastError,
             hardwareReady: hardwareReady,
-            recoveryPending: hardwareRecovery.recoveryPending,
+            recoveryPending: hardwareRecovery.recoveryPending
+                || hardwareRecovery.baselineNeedsPersistence,
             discoveryError: hardwareRecovery.discoveryError,
             quarantinedSensorKeys: hardwareRecovery.quarantinedSensorKeys
                 .map(\.rawValue)
@@ -253,16 +259,31 @@ actor FanDaemon {
         if hardwareRecovery.discoveryRequired {
             await refreshHardwareIfDue()
         }
-        guard hardwareReady else {
+        guard hardwareRecovery.hardwareReady else {
             let message = hardwareReadinessMessage
             setLastError(message)
             mode = .unsupported
             return
         }
+        persistSensorBaselineIfNeeded()
+        guard hardwareReady else {
+            mode = .error
+            return
+        }
 
         do {
             fanReadings = try reader.fanReadings(in: hardwareRecovery.inventory)
-            let temperatures = try reader.gpuTemperatures(in: hardwareRecovery.inventory)
+            let temperatures: [GPUTemperatureReading]
+            do {
+                temperatures = try reader.gpuTemperatures(
+                    in: hardwareRecovery.inventory
+                )
+            } catch {
+                hardwareRecovery.markSensorFailure(error)
+                leaseSessionID = nil
+                leaseExpiresAt = 0
+                throw error
+            }
             gpuTemperatureC = temperatures.map(\.celsius).max()
 
             if ProcessInfo.processInfo.thermalState == .serious
@@ -285,13 +306,6 @@ actor FanDaemon {
             let message = String(describing: error)
             setLastError(message)
             logger.error("fan policy tick failed: \(String(describing: error), privacy: .public)")
-            if let hardwareError = error as? FanHardwareError,
-               case .invalidTemperature(let key, _) = hardwareError
-            {
-                hardwareRecovery.markInvalidSensor(key)
-                leaseSessionID = nil
-                leaseExpiresAt = 0
-            }
             _ = await restoreAutomatic(reason: "fan policy failure")
             mode = .error
         }
@@ -303,10 +317,13 @@ actor FanDaemon {
             mode = serviceMode(for: reason)
         case .engage(let speedPercent, _):
             do {
+                let lease = leaseSessionID
+                try await requireControlAuthorization(lease)
                 let session = try await controller.engage(
                     speedPercent: speedPercent,
                     recordOwnership: recordOwnership
                 )
+                try await requireControlAuthorization(lease)
                 try persistOwnership(session)
                 lastMaintenanceAt = uptime()
                 mode = .manual
@@ -318,15 +335,19 @@ actor FanDaemon {
             }
         case .maintain:
             if uptime() - lastMaintenanceAt >= Self.maintenanceIntervalSeconds {
+                let lease = leaseSessionID
+                try await requireControlAuthorization(lease)
                 // Refresh the journal with current ownership. The controller
                 // widens Ftst ownership only after it observes the gate free,
                 // immediately before a possible write.
                 if let currentSession = await controller.currentSession() {
                     try persistOwnership(currentSession)
                 }
+                try await requireControlAuthorization(lease)
                 let session = try await controller.maintain(
                     recordOwnership: recordOwnership
                 )
+                try await requireControlAuthorization(lease)
                 try persistOwnership(session)
                 lastMaintenanceAt = uptime()
             }
@@ -398,10 +419,31 @@ actor FanDaemon {
 
     private var hardwareReady: Bool {
         hardwareRecovery.hardwareReady
+            && !hardwareRecovery.baselineNeedsPersistence
     }
 
     private var hardwareReadinessMessage: String {
-        hardwareRecovery.readinessMessage
+        if hardwareRecovery.hardwareReady,
+           hardwareRecovery.baselineNeedsPersistence
+        {
+            return "fan sensor baseline is not durable; retrying"
+        }
+        return hardwareRecovery.readinessMessage
+    }
+
+    private func requireControlAuthorization(_ expectedLease: UUID?) async throws {
+        guard let expectedLease,
+              leaseSessionID == expectedLease,
+              providerLeaseActive,
+              hardwareReady
+        else {
+            guard await restoreAutomatic(
+                reason: "provider authorization changed during fan control"
+            ) else {
+                throw FanDaemonError.automaticRestoreFailed
+            }
+            throw FanDaemonError.controlAuthorizationChanged
+        }
     }
 
     private func refreshHardwareIfDue() async {
@@ -433,20 +475,46 @@ actor FanDaemon {
     }
 
     private func setLastError(_ message: String) {
-        guard lastError != message else { return }
         lastError = message
-        try? FanDurableFile.writeJSON(
-            FanLastFailure(message: message),
-            to: paths.lastFailure,
-            permissions: 0o600,
-            owner: journalOwner
-        )
+        guard persistedLastError != message else { return }
+        do {
+            try FanDurableFile.writeJSON(
+                FanLastFailure(message: message),
+                to: paths.lastFailure,
+                permissions: 0o600,
+                owner: journalOwner
+            )
+            persistedLastError = message
+        } catch {
+            persistedLastError = nil
+        }
     }
 
     private func clearLastError() {
-        guard lastError != nil else { return }
+        guard lastError != nil || persistedLastError != nil else { return }
         lastError = nil
-        try? FanDurableFile.remove(paths.lastFailure)
+        do {
+            try FanDurableFile.remove(paths.lastFailure)
+            persistedLastError = nil
+        } catch {
+            // Keep the persistence marker so the next healthy tick retries
+            // removal without continuing to surface a resolved active error.
+        }
+    }
+
+    private func persistSensorBaselineIfNeeded() {
+        guard hardwareRecovery.baselineNeedsPersistence else { return }
+        do {
+            try FanDurableFile.writeJSON(
+                hardwareRecovery.sensorBaseline,
+                to: paths.sensorBaseline,
+                permissions: 0o600,
+                owner: journalOwner
+            )
+            hardwareRecovery.markBaselinePersisted()
+        } catch {
+            setLastError("could not persist fan sensor baseline: \(error)")
+        }
     }
 
     private func serviceMode(for reason: FanPolicyReason) -> FanServiceMode {

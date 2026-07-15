@@ -80,13 +80,15 @@ public struct FanServicePaths: Equatable, Sendable {
     public let configuration: URL
     public let sessionJournal: URL
     public let lastFailure: URL
+    public let sensorBaseline: URL
 
     public init(
         helper: URL,
         launchDaemonPlist: URL,
         configuration: URL,
         sessionJournal: URL,
-        lastFailure: URL? = nil
+        lastFailure: URL? = nil,
+        sensorBaseline: URL? = nil
     ) {
         self.helper = helper
         self.launchDaemonPlist = launchDaemonPlist
@@ -95,6 +97,9 @@ public struct FanServicePaths: Equatable, Sendable {
         self.lastFailure = lastFailure
             ?? sessionJournal.deletingLastPathComponent()
             .appendingPathComponent("fan-last-failure.json")
+        self.sensorBaseline = sensorBaseline
+            ?? sessionJournal.deletingLastPathComponent()
+            .appendingPathComponent("fan-sensor-baseline.json")
     }
 
     public static let production = FanServicePaths(
@@ -102,7 +107,8 @@ public struct FanServicePaths: Equatable, Sendable {
         launchDaemonPlist: URL(fileURLWithPath: "/Library/LaunchDaemons/io.darkbloom.fan.plist"),
         configuration: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-policy.json"),
         sessionJournal: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-session.json"),
-        lastFailure: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-last-failure.json")
+        lastFailure: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-last-failure.json"),
+        sensorBaseline: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-sensor-baseline.json")
     )
 }
 
@@ -157,5 +163,62 @@ public struct FanLastFailure: Equatable, Codable, Sendable {
         self.schema = schema
         self.message = message
         self.occurredAt = try container.decode(Date.self, forKey: .occurredAt)
+    }
+}
+
+public struct FanSensorBaseline: Equatable, Codable, Sendable {
+    public static let schemaVersion = 1
+
+    public let schema: Int
+    public let chipFamily: FanChipFamily
+    public let sensorKeys: [SMCKey]
+
+    public init(chipFamily: FanChipFamily, sensorKeys: [SMCKey]) {
+        self.schema = Self.schemaVersion
+        self.chipFamily = chipFamily
+        self.sensorKeys = Array(Set(sensorKeys)).sorted {
+            $0.rawValue < $1.rawValue
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case chipFamily = "chip_family"
+        case sensorKeys = "sensor_keys"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let schema = try container.decode(Int.self, forKey: .schema)
+        guard schema == Self.schemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schema,
+                in: container,
+                debugDescription: "unsupported fan sensor baseline schema \(schema)"
+            )
+        }
+        let chipFamily = try container.decode(
+            FanChipFamily.self,
+            forKey: .chipFamily
+        )
+        let sensorKeys = try container.decode(
+            [SMCKey].self,
+            forKey: .sensorKeys
+        )
+        let unique = Set(sensorKeys)
+        let catalog = Set(GPUTemperatureCatalog.keys(for: chipFamily))
+        guard !unique.isEmpty,
+              unique.count == sensorKeys.count,
+              unique.isSubset(of: catalog)
+        else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .sensorKeys,
+                in: container,
+                debugDescription: "fan sensor baseline is invalid"
+            )
+        }
+        self.schema = schema
+        self.chipFamily = chipFamily
+        self.sensorKeys = sensorKeys.sorted { $0.rawValue < $1.rawValue }
     }
 }

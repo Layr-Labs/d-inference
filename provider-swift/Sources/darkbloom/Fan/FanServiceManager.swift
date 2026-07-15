@@ -321,6 +321,7 @@ struct FanServiceManager {
         try FanDurableFile.remove(paths.helper)
         try FanDurableFile.remove(paths.configuration)
         try FanDurableFile.remove(paths.lastFailure)
+        try FanDurableFile.remove(paths.sensorBaseline)
     }
 
     func isInstalled() -> Bool {
@@ -373,6 +374,14 @@ struct FanServiceManager {
         guard !hardware.inventory.gpuTemperatureKeys.isEmpty else {
             throw FanServiceManagerError.unsupported(
                 "no validated GPU temperature sensor was found for \(hardware.inventory.chipFamily.rawValue)"
+            )
+        }
+        let requiredSensors = GPUTemperatureCatalog.minimumReadyCount(
+            for: hardware.inventory.chipFamily
+        )
+        guard hardware.inventory.gpuTemperatureKeys.count >= requiredSensors else {
+            throw FanServiceManagerError.unsupported(
+                "only \(hardware.inventory.gpuTemperatureKeys.count)/\(requiredSensors) required GPU sensors were ready for \(hardware.inventory.chipFamily.rawValue)"
             )
         }
         return hardware

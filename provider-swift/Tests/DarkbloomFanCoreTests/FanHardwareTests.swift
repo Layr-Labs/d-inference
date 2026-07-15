@@ -20,6 +20,9 @@ struct FanHardwareTests {
         #expect(GPUTemperatureCatalog.keys(for: .m4).contains("Tg1U"))
         #expect(GPUTemperatureCatalog.keys(for: .m5).contains("Tg1g"))
         #expect(GPUTemperatureCatalog.keys(for: .unknown).isEmpty)
+        #expect(GPUTemperatureCatalog.minimumReadyCount(for: .m4) == 5)
+        #expect(GPUTemperatureCatalog.minimumReadyCount(for: .m3) == 4)
+        #expect(GPUTemperatureCatalog.minimumReadyCount(for: .unknown) == 1)
     }
 
     @Test("discovers all required fan keys and uppercase mode keys")

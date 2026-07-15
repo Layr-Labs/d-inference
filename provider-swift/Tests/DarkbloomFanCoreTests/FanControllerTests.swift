@@ -724,6 +724,11 @@ struct FanControllerTests {
 
         backend.queue([.replace([1]), .succeed], for: "F0Md")
         backend.queue([.replace([1]), .succeed], for: "Ftst")
+        backend.installWriteHook { key, bytes in
+            if key == "Ftst", bytes == [0] {
+                backend.setUI8("F0Md", FanMode.manual.rawValue)
+            }
+        }
 
         try await controller.restoreAutomatic()
 
@@ -732,7 +737,7 @@ struct FanControllerTests {
         #expect(await controller.currentSession() == nil)
         #expect(backend.operations.filter {
             $0 == .write("F0Md", [FanMode.automatic.rawValue])
-        }.count == 2)
+        }.count == 3)
         #expect(backend.operations.filter {
             $0 == .write("Ftst", [0])
         }.count == 2)

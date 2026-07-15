@@ -2427,7 +2427,8 @@ threats:
       - description: >
           Incomplete discovery rejects leases and retries in-process. A runtime invalid
           sensor revokes the lease and restores Auto before rediscovery can quarantine
-          it; a fresh lease requires the remaining sensor quorum to be healthy.
+          it; a fresh lease requires both the chip-family catalog quorum and the
+          root-owned last-known-good sensor-set quorum to remain healthy across restart.
         status: implemented
     open_findings: []
     severity: medium

@@ -25,6 +25,10 @@ do {
         FanLastFailure.self,
         from: paths.lastFailure
     )
+    let sensorBaseline = try? FanDurableFile.readJSON(
+        FanSensorBaseline.self,
+        from: paths.sensorBaseline
+    )
     let backend = try AppleSMCBackend()
     let reader = FanHardwareReader(backend: backend)
     let recoveryInventory = try reader.discoverForRecovery()
@@ -94,6 +98,9 @@ do {
         inventory: inventory,
         reader: reader,
         controller: controller,
+        baselineSensorKeys: sensorBaseline?.chipFamily == inventory.chipFamily
+            ? sensorBaseline?.sensorKeys ?? []
+            : [],
         initialLastError: discoveryError ?? previousFailure?.message,
         initialDiscoveryError: discoveryError
     )

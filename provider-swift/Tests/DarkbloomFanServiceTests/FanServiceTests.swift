@@ -249,6 +249,25 @@ struct FanServiceTests {
         #expect(status.discoveryError == nil)
         #expect(status.quarantinedSensorKeys == nil)
     }
+
+    @Test("sensor baseline round-trips only catalog keys")
+    func sensorBaselineValidation() throws {
+        let baseline = FanSensorBaseline(
+            chipFamily: .m4,
+            sensorKeys: ["Tg1k", "Tg1U"]
+        )
+        let encoded = try JSONEncoder().encode(baseline)
+        let decoded = try JSONDecoder().decode(
+            FanSensorBaseline.self,
+            from: encoded
+        )
+        #expect(decoded == baseline)
+
+        let invalid = Data(#"{"schema":1,"chip_family":"M4","sensor_keys":[{"rawValue":"Nope"}]}"#.utf8)
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(FanSensorBaseline.self, from: invalid)
+        }
+    }
 }
 
 private func recoveryInventory() -> FanInventory {

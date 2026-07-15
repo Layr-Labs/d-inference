@@ -64,6 +64,7 @@ public enum FanAutomaticRestore {
                 }
             }
 
+            var releasedFtstThisRound = false
             if unresolvedFtst, !terminalFtst {
                 if let ftstKey {
                     do {
@@ -74,6 +75,7 @@ public enum FanAutomaticRestore {
                         }
                         unresolvedFtst = false
                         ftstError = nil
+                        releasedFtstThisRound = true
                     } catch {
                         let normalized = normalize(error)
                         ftstError = normalized
@@ -82,6 +84,30 @@ public enum FanAutomaticRestore {
                 } else {
                     ftstError = .smc(.keyNotFound("Ftst"))
                     terminalFtst = true
+                }
+            }
+
+            if releasedFtstThisRound {
+                for fan in fans.sorted(by: { $0.index < $1.index }) {
+                    do {
+                        let raw = try backend.read(fan.modeKey).uint8()
+                        guard FanMode(rawValue: raw).isAutomatic else {
+                            throw FanRollbackError.modeNotAutomatic(rawValue: raw)
+                        }
+                        unresolvedFans.removeValue(forKey: fan.index)
+                        fanErrors.removeValue(forKey: fan.index)
+                        terminalFans.remove(fan.index)
+                        clearTargetBestEffort(backend: backend, fan: fan)
+                    } catch {
+                        let normalized = normalize(error)
+                        unresolvedFans[fan.index] = fan
+                        fanErrors[fan.index] = normalized
+                        if isRetryable(normalized) {
+                            terminalFans.remove(fan.index)
+                        } else {
+                            terminalFans.insert(fan.index)
+                        }
+                    }
                 }
             }
 

@@ -1,4 +1,5 @@
 import DarkbloomFanCore
+import DarkbloomFanService
 import Foundation
 
 struct FanHardwareRecovery {
@@ -8,18 +9,44 @@ struct FanHardwareRecovery {
     private(set) var discoveryRequired: Bool
     private(set) var discoveryError: String?
     private(set) var quarantinedSensorKeys: Set<SMCKey> = []
+    private(set) var baselineNeedsPersistence: Bool
+    private var baselineSensorKeys: Set<SMCKey>
     private var minimumSensorCount: Int
     private var lastDiscoveryAt = -Double.infinity
 
-    init(inventory: FanInventory, initialError: String?) {
+    init(
+        inventory: FanInventory,
+        initialError: String?,
+        baselineSensorKeys: [SMCKey] = []
+    ) {
+        let persistedBaseline = Set(baselineSensorKeys)
+        let catalogMinimum = GPUTemperatureCatalog.minimumReadyCount(
+            for: inventory.chipFamily
+        )
+        let baselineMinimum = persistedBaseline.isEmpty
+            ? 1
+            : max(1, (persistedBaseline.count + 1) / 2)
+        let minimumSensorCount = max(catalogMinimum, baselineMinimum)
+        let discoveredKeys = Set(inventory.gpuTemperatureKeys)
+        let requiredOverlap = persistedBaseline.isEmpty
+            ? 0
+            : baselineMinimum
+        let initialQuorum = discoveredKeys.count >= minimumSensorCount
+            && discoveredKeys.intersection(persistedBaseline).count
+                >= requiredOverlap
+
         self.inventory = inventory
         self.discoveryError = initialError
         self.discoveryRequired = initialError != nil
             || inventory.fans.isEmpty
-            || inventory.gpuTemperatureKeys.isEmpty
-        self.minimumSensorCount = inventory.gpuTemperatureKeys.isEmpty
-            ? 1
-            : max(1, (inventory.gpuTemperatureKeys.count + 1) / 2)
+            || !initialQuorum
+        self.minimumSensorCount = minimumSensorCount
+        self.baselineSensorKeys = persistedBaseline
+        if initialQuorum {
+            self.baselineSensorKeys.formUnion(discoveredKeys)
+        }
+        self.baselineNeedsPersistence = initialQuorum
+            && self.baselineSensorKeys != persistedBaseline
     }
 
     var hardwareReady: Bool {
@@ -29,13 +56,15 @@ struct FanHardwareRecovery {
     }
 
     var recoveryPending: Bool {
-        !hardwareReady
-            && !inventory.fans.isEmpty
+        discoveryRequired
             && !GPUTemperatureCatalog.keys(for: inventory.chipFamily).isEmpty
     }
 
     var readinessMessage: String {
         if inventory.fans.isEmpty {
+            if recoveryPending {
+                return "fan hardware discovery found no controllable fans; retrying"
+            }
             return "fan control unsupported: this Mac reports no controllable fans"
         }
         let catalog = GPUTemperatureCatalog.keys(for: inventory.chipFamily)
@@ -45,14 +74,22 @@ struct FanHardwareRecovery {
         if let discoveryError {
             return discoveryError
         }
-        return "GPU sensors are not ready (\(inventory.gpuTemperatureKeys.count)/\(minimumSensorCount) required); discovery will retry"
+        let overlap = Set(inventory.gpuTemperatureKeys)
+            .intersection(baselineSensorKeys)
+            .count
+        let requiredOverlap = baselineSensorKeys.isEmpty
+            ? 0
+            : max(1, (baselineSensorKeys.count + 1) / 2)
+        return "GPU sensors are not ready (count \(inventory.gpuTemperatureKeys.count)/\(minimumSensorCount), baseline overlap \(overlap)/\(requiredOverlap)); discovery will retry"
     }
 
-    mutating func markInvalidSensor(_ key: SMCKey) {
-        quarantinedSensorKeys.insert(key)
+    mutating func markSensorFailure(_ error: Error) {
+        if let key = Self.sensorKey(from: error) {
+            quarantinedSensorKeys.insert(key)
+        }
         discoveryRequired = true
         lastDiscoveryAt = -Double.infinity
-        discoveryError = "GPU sensor \(key) became invalid; restoring Auto before rediscovery"
+        discoveryError = "GPU sensor read failed: \(error); restoring Auto before rediscovery"
     }
 
     mutating func markWake() {
@@ -73,27 +110,33 @@ struct FanHardwareRecovery {
 
     @discardableResult
     mutating func apply(_ refreshed: FanInventory) -> Bool {
-        let required = max(
-            minimumSensorCount,
-            refreshed.gpuTemperatureKeys.isEmpty
-                ? 1
-                : max(1, (refreshed.gpuTemperatureKeys.count + 1) / 2)
-        )
+        let refreshedKeys = Set(refreshed.gpuTemperatureKeys)
+        let requiredOverlap = baselineSensorKeys.isEmpty
+            ? 0
+            : max(1, (baselineSensorKeys.count + 1) / 2)
         inventory = refreshed
-        minimumSensorCount = required
 
         guard !refreshed.fans.isEmpty,
-              refreshed.gpuTemperatureKeys.count >= required
+              refreshedKeys.count >= minimumSensorCount,
+              refreshedKeys.intersection(baselineSensorKeys).count
+                >= requiredOverlap
         else {
             discoveryRequired = true
-            discoveryError = "GPU sensor discovery found \(refreshed.gpuTemperatureKeys.count)/\(required) required sensors for \(refreshed.chipFamily.rawValue); retrying"
+            discoveryError = readinessMessage
             return false
         }
 
-        let discoveredKeys = Set(refreshed.gpuTemperatureKeys)
         quarantinedSensorKeys = Set(quarantinedSensorKeys.filter {
-            !discoveredKeys.contains($0)
+            !refreshedKeys.contains($0)
         })
+        let priorBaseline = baselineSensorKeys
+        baselineSensorKeys.formUnion(refreshedKeys)
+        minimumSensorCount = max(
+            minimumSensorCount,
+            max(1, (baselineSensorKeys.count + 1) / 2)
+        )
+        baselineNeedsPersistence = baselineNeedsPersistence
+            || baselineSensorKeys != priorBaseline
         discoveryRequired = false
         discoveryError = nil
         return true
@@ -102,5 +145,44 @@ struct FanHardwareRecovery {
     mutating func recordDiscoveryFailure(_ error: Error) {
         discoveryRequired = true
         discoveryError = "fan hardware discovery failed: \(error); retrying"
+    }
+
+    var sensorBaseline: FanSensorBaseline {
+        FanSensorBaseline(
+            chipFamily: inventory.chipFamily,
+            sensorKeys: Array(baselineSensorKeys)
+        )
+    }
+
+    mutating func markBaselinePersisted() {
+        baselineNeedsPersistence = false
+    }
+
+    private static func sensorKey(from error: Error) -> SMCKey? {
+        if let hardware = error as? FanHardwareError {
+            switch hardware {
+            case .invalidTemperature(let key, _):
+                return key
+            case .backend(let smc):
+                return sensorKey(from: smc)
+            default:
+                return nil
+            }
+        }
+        guard let smc = error as? SMCError else { return nil }
+        switch smc {
+        case .callFailed(_, let key, _), .notPrivileged(_, let key):
+            return key
+        case .keyNotFound(let key),
+             .firmwareRejected(_, let key, _),
+             .invalidDataSize(let key, _),
+             .dataLengthMismatch(let key, _, _),
+             .typeMismatch(let key, _, _),
+             .unsupportedDataType(let key, _),
+             .nonFiniteValue(let key):
+            return key
+        default:
+            return nil
+        }
     }
 }

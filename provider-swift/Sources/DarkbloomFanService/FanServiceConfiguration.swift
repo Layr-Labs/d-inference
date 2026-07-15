@@ -79,24 +79,30 @@ public struct FanServicePaths: Equatable, Sendable {
     public let launchDaemonPlist: URL
     public let configuration: URL
     public let sessionJournal: URL
+    public let lastFailure: URL
 
     public init(
         helper: URL,
         launchDaemonPlist: URL,
         configuration: URL,
-        sessionJournal: URL
+        sessionJournal: URL,
+        lastFailure: URL? = nil
     ) {
         self.helper = helper
         self.launchDaemonPlist = launchDaemonPlist
         self.configuration = configuration
         self.sessionJournal = sessionJournal
+        self.lastFailure = lastFailure
+            ?? sessionJournal.deletingLastPathComponent()
+            .appendingPathComponent("fan-last-failure.json")
     }
 
     public static let production = FanServicePaths(
         helper: URL(fileURLWithPath: "/Library/PrivilegedHelperTools/io.darkbloom.fan-helper"),
         launchDaemonPlist: URL(fileURLWithPath: "/Library/LaunchDaemons/io.darkbloom.fan.plist"),
         configuration: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-policy.json"),
-        sessionJournal: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-session.json")
+        sessionJournal: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-session.json"),
+        lastFailure: URL(fileURLWithPath: "/Library/Application Support/Darkbloom/fan-last-failure.json")
     )
 }
 
@@ -107,5 +113,49 @@ public struct FanSessionJournal: Equatable, Codable, Sendable {
     public init(fanIndices: [Int], ownsFtst: Bool) {
         self.fanIndices = Array(Set(fanIndices)).sorted()
         self.ownsFtst = ownsFtst
+    }
+}
+
+public struct FanLastFailure: Equatable, Codable, Sendable {
+    public static let schemaVersion = 1
+    private static let maximumMessageCharacters = 4_096
+
+    public let schema: Int
+    public let message: String
+    public let occurredAt: Date
+
+    public init(message: String, occurredAt: Date = Date()) {
+        self.schema = Self.schemaVersion
+        self.message = String(message.prefix(Self.maximumMessageCharacters))
+        self.occurredAt = occurredAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case message
+        case occurredAt = "occurred_at"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let schema = try container.decode(Int.self, forKey: .schema)
+        guard schema == Self.schemaVersion else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schema,
+                in: container,
+                debugDescription: "unsupported fan failure schema \(schema)"
+            )
+        }
+        let message = try container.decode(String.self, forKey: .message)
+        guard !message.isEmpty, message.count <= Self.maximumMessageCharacters else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .message,
+                in: container,
+                debugDescription: "fan failure message is invalid"
+            )
+        }
+        self.schema = schema
+        self.message = message
+        self.occurredAt = try container.decode(Date.self, forKey: .occurredAt)
     }
 }

@@ -182,6 +182,114 @@ struct FanDaemonTests {
         #expect(journal.ownsFtst)
     }
 
+    @Test("M4 Max invalid sensor restores Auto, rediscovers, and reacquires lease")
+    func m4MaxInvalidSensorRecovery() async throws {
+        let gpuKeys: [SMCKey] = [
+            "Tg0G", "Tg0H", "Tg1U", "Tg1k",
+            "Tg0K", "Tg0L", "Tg0d", "Tg0e",
+        ]
+        let harness = try makeHarness(
+            inventoryGPUKeys: gpuKeys,
+            backendGPUKeys: gpuKeys
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.backend.rejectNextManualWrite()
+
+        let firstLease = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(firstLease.ok)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+        #expect(harness.backend.byte("Ftst") == 1)
+
+        harness.backend.setNumber("Tg1k", to: -4)
+        await harness.daemon.tick()
+
+        let failed = await harness.daemon.status()
+        #expect(failed.mode == .error)
+        #expect(!failed.providerActive)
+        #expect(failed.recoveryPending == true)
+        #expect(failed.quarantinedSensorKeys == ["Tg1k"])
+        #expect(harness.backend.byte("F0Md") == FanMode.automatic.rawValue)
+        #expect(harness.backend.byte("Ftst") == 0)
+
+        harness.clock.advance(by: 5)
+        await harness.daemon.tick()
+        let recovered = await harness.daemon.status()
+        #expect(recovered.hardwareReady == true)
+        #expect(recovered.mode == .waitingForProvider)
+        #expect(recovered.gpuSensorKeys.count == 7)
+        #expect(!recovered.gpuSensorKeys.contains("Tg1k"))
+
+        let renewed = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(renewed.ok)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+        #expect(harness.backend.byte("F0Md") == FanMode.manual.rawValue)
+    }
+
+    @Test("empty startup inventory rejects leases until sensors recover")
+    func emptyStartupInventoryRediscovery() async throws {
+        let gpuKeys: [SMCKey] = [
+            "Tg0G", "Tg0H", "Tg1U", "Tg1k",
+            "Tg0K", "Tg0L", "Tg0d", "Tg0e",
+        ]
+        let harness = try makeHarness(
+            inventoryGPUKeys: [],
+            backendGPUKeys: gpuKeys,
+            initialDiscoveryError: "GPU sensor discovery returned no plausible readings"
+        )
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        for key in gpuKeys {
+            harness.backend.setNumber(key, to: -4)
+        }
+
+        let rejected = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(!rejected.ok)
+        #expect(rejected.message?.contains("GPU sensor discovery") == true)
+
+        await harness.daemon.tick()
+        let unavailable = await harness.daemon.status()
+        #expect(unavailable.mode == .unsupported)
+        #expect(unavailable.hardwareReady == false)
+        #expect(unavailable.recoveryPending == true)
+        #expect(unavailable.lastError != nil)
+        #expect(FileManager.default.fileExists(atPath: harness.paths.lastFailure.path))
+
+        for key in gpuKeys {
+            harness.backend.setNumber(key, to: 50)
+        }
+        harness.clock.advance(by: 5)
+        await harness.daemon.tick()
+
+        let recovered = await harness.daemon.status()
+        #expect(recovered.hardwareReady == true)
+        #expect(recovered.recoveryPending == false)
+        #expect(recovered.gpuSensorKeys == gpuKeys.map(\.rawValue))
+        #expect(recovered.lastError == nil)
+        #expect(!FileManager.default.fileExists(atPath: harness.paths.lastFailure.path))
+
+        let accepted = await harness.daemon.renewLease(
+            sessionID: UUID(),
+            protocolVersion: FanIPC.protocolVersion,
+            providerVersion: "0.7.10"
+        )
+        #expect(accepted.ok)
+        await harness.daemon.tick()
+        #expect((await harness.daemon.status()).mode == .manual)
+    }
+
     @Test("maintenance never journals or clears a foreign Ftst gate")
     func maintenancePreservesForeignFtst() async throws {
         let harness = try makeHarness()
@@ -214,7 +322,12 @@ private struct FanDaemonHarness {
     let clock: TestUptime
 }
 
-private func makeHarness() throws -> FanDaemonHarness {
+private func makeHarness(
+    inventoryGPUKeys: [SMCKey] = ["Tg1U"],
+    backendGPUKeys: [SMCKey] = ["Tg1U"],
+    initialLastError: String? = nil,
+    initialDiscoveryError: String? = nil
+) throws -> FanDaemonHarness {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("fan-daemon-test-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -224,7 +337,10 @@ private func makeHarness() throws -> FanDaemonHarness {
         configuration: root.appendingPathComponent("policy.json"),
         sessionJournal: root.appendingPathComponent("session.json")
     )
-    let backend = DaemonBackend(journalURL: paths.sessionJournal)
+    let backend = DaemonBackend(
+        journalURL: paths.sessionJournal,
+        gpuKeys: backendGPUKeys
+    )
     let inventory = FanInventory(
         chipFamily: .m4,
         fans: [FanCapability(
@@ -235,20 +351,22 @@ private func makeHarness() throws -> FanDaemonHarness {
             targetKey: "F0Tg",
             modeKey: "F0Md"
         )],
-        gpuTemperatureKeys: ["Tg1U"],
+        gpuTemperatureKeys: inventoryGPUKeys,
         ftstKey: "Ftst"
     )
     let reader = FanHardwareReader(backend: backend)
+    let timing = FanControlTiming(
+        ftstSettleSeconds: 0,
+        retryDelaySeconds: 0,
+        manualModeAttempts: 2,
+        automaticRestoreAttempts: 1,
+        verificationAttempts: 1,
+        sleep: { _ in }
+    )
     let controller = TransactionalFanController(
         backend: backend,
         inventory: inventory,
-        timing: FanControlTiming(
-            ftstSettleSeconds: 0,
-            retryDelaySeconds: 0,
-            manualModeAttempts: 2,
-            verificationAttempts: 1,
-            sleep: { _ in }
-        )
+        timing: timing
     )
     let clock = TestUptime()
     let configuration = FanServiceConfiguration(
@@ -272,7 +390,19 @@ private func makeHarness() throws -> FanDaemonHarness {
         controller: controller,
         uptime: { clock.value },
         journalOwner: nil,
-        requireRootJournalOwnership: false
+        requireRootJournalOwnership: false,
+        discoverInventory: {
+            try reader.discover(brandString: "Apple M4 Max")
+        },
+        controllerFactory: { refreshedInventory in
+            TransactionalFanController(
+                backend: backend,
+                inventory: refreshedInventory,
+                timing: timing
+            )
+        },
+        initialLastError: initialLastError,
+        initialDiscoveryError: initialDiscoveryError
     )
     return FanDaemonHarness(
         root: root,
@@ -303,29 +433,35 @@ private final class TestUptime: @unchecked Sendable {
 private final class DaemonBackend: SMCBackend, @unchecked Sendable {
     private let lock = NSLock()
     private let journalURL: URL
-    private var numbers: [SMCKey: Double] = [
-        "F0Ac": 0,
-        "F0Mn": 1_350,
-        "F0Mx": 5_000,
-        "F0Tg": 0,
-        "Tg1U": 50,
-    ]
-    private var bytes: [SMCKey: UInt8] = ["F0Md": 0, "Ftst": 0]
+    private var numbers: [SMCKey: Double]
+    private var bytes: [SMCKey: UInt8] = ["FNum": 1, "F0Md": 0, "Ftst": 0]
     private(set) var journalExistedBeforeFirstManualWrite = false
     private(set) var journalClaimedFtstBeforeFirstFtstWrite = false
     private var failAutomaticRestore = false
     private var rejectManualWrite = false
     private var claimFtstOnManualRejection = false
 
-    init(journalURL: URL) {
+    init(journalURL: URL, gpuKeys: [SMCKey]) {
         self.journalURL = journalURL
+        self.numbers = [
+            "F0Ac": 0,
+            "F0Mn": 1_350,
+            "F0Mx": 5_000,
+            "F0Tg": 0,
+        ]
+        for key in gpuKeys {
+            numbers[key] = 50
+        }
     }
 
     func keyInfo(for key: SMCKey) throws -> SMCKeyInfo {
         if bytes[key] != nil {
             return SMCKeyInfo(dataSize: 1, dataType: try SMCDataType("ui8 "))
         }
-        return SMCKeyInfo(dataSize: 4, dataType: try SMCDataType("flt "))
+        if numbers[key] != nil {
+            return SMCKeyInfo(dataSize: 4, dataType: try SMCDataType("flt "))
+        }
+        throw SMCError.keyNotFound(key)
     }
 
     func read(_ key: SMCKey) throws -> SMCValue {
@@ -338,7 +474,9 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
                 bytes: [byte]
             )
         }
-        let value = numbers[key] ?? 0
+        guard let value = numbers[key] else {
+            throw SMCError.keyNotFound(key)
+        }
         return try SMCValue(
             key: key,
             info: SMCKeyInfo(dataSize: 4, dataType: try SMCDataType("flt ")),
@@ -407,6 +545,12 @@ private final class DaemonBackend: SMCBackend, @unchecked Sendable {
     func setByte(_ key: SMCKey, to value: UInt8) {
         lock.lock()
         bytes[key] = value
+        lock.unlock()
+    }
+
+    func setNumber(_ key: SMCKey, to value: Double) {
+        lock.lock()
+        numbers[key] = value
         lock.unlock()
     }
 

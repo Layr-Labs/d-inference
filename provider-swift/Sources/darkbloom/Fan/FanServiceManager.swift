@@ -89,7 +89,10 @@ struct FanServiceManager {
             try bootstrap()
             try kickstart()
 
-            for _ in 0..<30 {
+            var lastReadinessError: String?
+            // Discovery retries every five seconds. Give the helper enough
+            // time for two fresh SMC snapshots before treating startup as bad.
+            for _ in 0..<120 {
                 if let status = try? FanHelperClient().status() {
                     guard status.enabled,
                           status.configuredUID == configuredUID,
@@ -99,12 +102,21 @@ struct FanServiceManager {
                             "helper status does not match the installed policy"
                         )
                     }
+                    if status.hardwareReady == false {
+                        lastReadinessError = status.discoveryError
+                            ?? status.lastError
+                            ?? "fan hardware discovery is not ready"
+                        Thread.sleep(forTimeInterval: 0.1)
+                        continue
+                    }
                     return status
                 }
                 Thread.sleep(forTimeInterval: 0.1)
             }
             throw FanServiceManagerError.launchctlFailed(
-                "helper started but did not answer status"
+                lastReadinessError.map {
+                    "helper started but fan hardware was not ready: \($0)"
+                } ?? "helper started but did not answer status"
             )
         } catch {
             let enableError = error
@@ -273,6 +285,7 @@ struct FanServiceManager {
             }
             try bootoutWithRetries()
             try setLabelEnabled(false)
+            try? FanDurableFile.remove(paths.lastFailure)
             return
         }
 
@@ -294,6 +307,7 @@ struct FanServiceManager {
             try bootoutWithRetries()
         }
         try setLabelEnabled(false)
+        try? FanDurableFile.remove(paths.lastFailure)
     }
 
     func uninstall() throws {
@@ -306,6 +320,7 @@ struct FanServiceManager {
         try FanDurableFile.remove(paths.launchDaemonPlist)
         try FanDurableFile.remove(paths.helper)
         try FanDurableFile.remove(paths.configuration)
+        try FanDurableFile.remove(paths.lastFailure)
     }
 
     func isInstalled() -> Bool {

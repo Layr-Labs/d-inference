@@ -21,6 +21,10 @@ guard FanCodeRequirements.ownIdentityIsProduction else {
 
 let paths = FanServicePaths.production
 do {
+    let previousFailure = try? FanDurableFile.readJSON(
+        FanLastFailure.self,
+        from: paths.lastFailure
+    )
     let backend = try AppleSMCBackend()
     let reader = FanHardwareReader(backend: backend)
     let recoveryInventory = try reader.discoverForRecovery()
@@ -30,7 +34,29 @@ do {
         inventory: recoveryInventory,
         journalURL: paths.sessionJournal
     )
-    let inventory = try reader.discover()
+    let inventory: FanInventory
+    let discoveryError: String?
+    do {
+        let discovered = try reader.discover()
+        inventory = discovered
+        if discovered.fans.isEmpty {
+            discoveryError = "fan hardware discovery found no controllable fans"
+        } else if discovered.gpuTemperatureKeys.isEmpty {
+            discoveryError = "GPU sensor discovery returned no plausible readings; retrying in the helper"
+        } else {
+            discoveryError = nil
+        }
+    } catch {
+        inventory = recoveryInventory
+        discoveryError = "fan hardware discovery failed: \(error); retrying in the helper"
+    }
+    if let discoveryError {
+        try? FanDurableFile.writeJSON(
+            FanLastFailure(message: discoveryError),
+            to: paths.lastFailure,
+            permissions: 0o600
+        )
+    }
 
     let configuration: FanServiceConfiguration
     do {
@@ -67,7 +93,9 @@ do {
         backend: backend,
         inventory: inventory,
         reader: reader,
-        controller: controller
+        controller: controller,
+        initialLastError: discoveryError ?? previousFailure?.message,
+        initialDiscoveryError: discoveryError
     )
     let xpcService = FanXPCService(
         daemon: daemon,
@@ -99,6 +127,11 @@ do {
         RunLoop.main.run()
     }
 } catch {
+    try? FanDurableFile.writeJSON(
+        FanLastFailure(message: "fan helper startup failed: \(error)"),
+        to: paths.lastFailure,
+        permissions: 0o600
+    )
     logger.fault("fan helper startup failed: \(String(describing: error), privacy: .public)")
     exit(1)
 }

@@ -20,7 +20,8 @@ public enum FanOwnershipRecovery {
         inventory: FanInventory,
         journalURL: URL,
         requireRootOwnership: Bool = true,
-        journalOwner: (uid: uid_t, gid: gid_t)? = (0, 0)
+        journalOwner: (uid: uid_t, gid: gid_t)? = (0, 0),
+        timing: FanControlTiming = .production
     ) throws {
         guard FileManager.default.fileExists(atPath: journalURL.path) else {
             return
@@ -33,53 +34,29 @@ public enum FanOwnershipRecovery {
 
         var failures: [FanRollbackFailure] = []
         var unresolvedFans: [Int] = []
+        var recoverableFans: [FanCapability] = []
         for index in journal.fanIndices {
-            do {
-                guard let fan = inventory.fans.first(where: { $0.index == index }) else {
-                    throw FanControllerError.noFans
-                }
-                try backend.write(fan.modeKey, bytes: [FanMode.automatic.rawValue])
-                let rawMode = try backend.read(fan.modeKey).uint8()
-                guard FanMode(rawValue: rawMode).isAutomatic else {
-                    throw FanRollbackError.modeNotAutomatic(rawValue: rawMode)
-                }
-                if let zero = try? SMCValue.float32Bytes(0, key: fan.targetKey) {
-                    try? backend.write(fan.targetKey, bytes: zero)
-                }
-            } catch {
+            guard let fan = inventory.fans.first(where: { $0.index == index }) else {
                 unresolvedFans.append(index)
                 failures.append(FanRollbackFailure(
                     fanIndex: index,
                     step: .restoreMode,
-                    error: recoveryError(error)
+                    error: .smc(.injectedFailure(FanControllerError.noFans.description))
                 ))
+                continue
             }
+            recoverableFans.append(fan)
         }
 
-        var unresolvedFtst = false
-        if journal.ownsFtst, let ftstKey = inventory.ftstKey {
-            do {
-                try backend.write(ftstKey, bytes: [0])
-                let value = try backend.read(ftstKey).uint8()
-                guard value == 0 else {
-                    throw FanRollbackError.ftstStillSet(rawValue: value)
-                }
-            } catch {
-                unresolvedFtst = true
-                failures.append(FanRollbackFailure(
-                    fanIndex: nil,
-                    step: .clearFtst,
-                    error: recoveryError(error)
-                ))
-            }
-        } else if journal.ownsFtst {
-            unresolvedFtst = true
-            failures.append(FanRollbackFailure(
-                fanIndex: nil,
-                step: .clearFtst,
-                error: .smc(.keyNotFound("Ftst"))
-            ))
-        }
+        let outcome = FanAutomaticRestore.run(
+            backend: backend,
+            fans: recoverableFans,
+            ftstKey: inventory.ftstKey,
+            ownsFtst: journal.ownsFtst,
+            timing: timing
+        )
+        unresolvedFans.append(contentsOf: outcome.unresolvedFanIndices)
+        failures.append(contentsOf: outcome.failures)
 
         guard !failures.isEmpty else {
             try FanDurableFile.remove(journalURL)
@@ -88,7 +65,7 @@ public enum FanOwnershipRecovery {
         try FanDurableFile.writeJSON(
             FanSessionJournal(
                 fanIndices: unresolvedFans,
-                ownsFtst: unresolvedFtst
+                ownsFtst: outcome.ownsFtst
             ),
             to: journalURL,
             permissions: 0o600,
@@ -97,17 +74,4 @@ public enum FanOwnershipRecovery {
         throw FanOwnershipRecoveryError(failures: failures)
     }
 
-    private static func recoveryError(_ error: Error) -> FanRollbackError {
-        if let error = error as? FanRollbackError { return error }
-        if let error = error as? FanHardwareError { return .hardware(error) }
-        if let error = error as? SMCError { return .smc(error) }
-        if let error = error as? FanControllerError {
-            switch error {
-            case .hardware(let hardware): return .hardware(hardware)
-            case .smc(let smc): return .smc(smc)
-            default: return .smc(.injectedFailure(error.description))
-            }
-        }
-        return .smc(.injectedFailure(String(describing: error)))
-    }
 }

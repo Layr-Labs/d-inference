@@ -128,7 +128,8 @@ struct FanServiceTests {
             backend: backend,
             inventory: inventory,
             journalURL: journal,
-            requireRootOwnership: false
+            requireRootOwnership: false,
+            timing: recoveryTestTiming()
         )
 
         #expect(backend.byte(for: "F0Md") == 0)
@@ -185,7 +186,8 @@ struct FanServiceTests {
                 inventory: inventory,
                 journalURL: journal,
                 requireRootOwnership: false,
-                journalOwner: nil
+                journalOwner: nil,
+                timing: recoveryTestTiming()
             )
         }
         #expect(backend.byte(for: "F0Md") == 1)
@@ -198,6 +200,54 @@ struct FanServiceTests {
         )
         #expect(unresolved.fanIndices == [0])
         #expect(!unresolved.ownsFtst)
+    }
+
+    @Test("startup recovery retries stale M4 mode and Ftst readback")
+    func recoveryRetriesStaleReadback() throws {
+        let backend = RecoveryBackend(
+            staleAutomaticReadbacks: 2,
+            staleFtstReadbacks: 2
+        )
+        let inventory = recoveryInventory()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [0], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming(attempts: 3)
+        )
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+        #expect(backend.writes(to: "F0Md", value: 0) == 3)
+        #expect(backend.writes(to: "Ftst", value: 0) == 3)
+    }
+
+    @Test("new status decoder accepts protocol v1 payloads")
+    func statusBackwardCompatibility() throws {
+        let data = Data(#"{"helperVersion":"1","protocolVersion":1,"enabled":true,"configuredUID":502,"providerActive":false,"mode":"unsupported","chip":"M4","gpuSensorKeys":[],"gpuTemperatureC":null,"triggerTemperatureC":45,"releaseTemperatureC":40,"speedPercent":80,"fans":[],"lastError":null,"updatedAt":0}"#.utf8)
+
+        let status = try FanIPCCoding.decode(FanServiceStatus.self, from: data)
+
+        #expect(status.mode == .unsupported)
+        #expect(status.hardwareReady == nil)
+        #expect(status.recoveryPending == nil)
+        #expect(status.discoveryError == nil)
+        #expect(status.quarantinedSensorKeys == nil)
     }
 }
 
@@ -223,9 +273,18 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
     private let lock = NSLock()
     private var values: [SMCKey: UInt8] = ["F0Md": 1, "F1Md": 1, "Ftst": 1]
     private let failFanZeroRestore: Bool
+    private var staleAutomaticReadbacks: Int
+    private var staleFtstReadbacks: Int
+    private var recordedWrites: [(SMCKey, UInt8)] = []
 
-    init(failFanZeroRestore: Bool = false) {
+    init(
+        failFanZeroRestore: Bool = false,
+        staleAutomaticReadbacks: Int = 0,
+        staleFtstReadbacks: Int = 0
+    ) {
         self.failFanZeroRestore = failFanZeroRestore
+        self.staleAutomaticReadbacks = staleAutomaticReadbacks
+        self.staleFtstReadbacks = staleFtstReadbacks
     }
 
     func keyInfo(for _: SMCKey) throws -> SMCKeyInfo {
@@ -244,9 +303,20 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
 
     func write(_ key: SMCKey, bytes: [UInt8]) throws {
         lock.lock()
+        recordedWrites.append((key, bytes[0]))
         if failFanZeroRestore, key == "F0Md", bytes[0] == 0 {
             lock.unlock()
             throw SMCError.injectedFailure("fan zero restore failed")
+        }
+        if key == "F0Md", bytes[0] == 0, staleAutomaticReadbacks > 0 {
+            staleAutomaticReadbacks -= 1
+            lock.unlock()
+            return
+        }
+        if key == "Ftst", bytes[0] == 0, staleFtstReadbacks > 0 {
+            staleFtstReadbacks -= 1
+            lock.unlock()
+            return
         }
         values[key] = bytes[0]
         lock.unlock()
@@ -257,4 +327,21 @@ private final class RecoveryBackend: SMCBackend, @unchecked Sendable {
         defer { lock.unlock() }
         return values[key]
     }
+
+    func writes(to key: SMCKey, value: UInt8) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedWrites.filter { $0.0 == key && $0.1 == value }.count
+    }
+}
+
+private func recoveryTestTiming(attempts: Int = 1) -> FanControlTiming {
+    FanControlTiming(
+        ftstSettleSeconds: 0,
+        retryDelaySeconds: 0,
+        manualModeAttempts: 1,
+        automaticRestoreAttempts: attempts,
+        verificationAttempts: 1,
+        sleep: { _ in }
+    )
 }

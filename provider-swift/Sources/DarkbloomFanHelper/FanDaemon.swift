@@ -14,19 +14,24 @@ private enum FanDaemonError: Error {
 
 actor FanDaemon {
     typealias Uptime = @Sendable () -> TimeInterval
+    typealias DiscoverInventory = @Sendable () throws -> FanInventory
+    typealias ControllerFactory = @Sendable (FanInventory) -> TransactionalFanController
     private static let maintenanceIntervalSeconds: TimeInterval = 5
 
     private let logger = Logger(subsystem: "io.darkbloom.fan", category: "daemon")
     private let configuration: FanServiceConfiguration
     private let paths: FanServicePaths
     private let backend: any SMCBackend
-    private let inventory: FanInventory
     private let reader: FanHardwareReader
-    private let controller: TransactionalFanController
     private let uptime: Uptime
     private let journalOwner: (uid: uid_t, gid: gid_t)?
     private let requireRootJournalOwnership: Bool
     private let recordOwnership: @Sendable (FanControlOwnership) throws -> Void
+    private let discoverInventory: DiscoverInventory
+    private let controllerFactory: ControllerFactory
+
+    private var controller: TransactionalFanController
+    private var hardwareRecovery: FanHardwareRecovery
 
     private var policy: FanPolicyStateMachine
     private var pollTask: Task<Void, Never>?
@@ -49,17 +54,33 @@ actor FanDaemon {
         controller: TransactionalFanController,
         uptime: @escaping Uptime = { ProcessInfo.processInfo.systemUptime },
         journalOwner: (uid: uid_t, gid: gid_t)? = (0, 0),
-        requireRootJournalOwnership: Bool = true
+        requireRootJournalOwnership: Bool = true,
+        discoverInventory: DiscoverInventory? = nil,
+        controllerFactory: ControllerFactory? = nil,
+        initialLastError: String? = nil,
+        initialDiscoveryError: String? = nil
     ) {
         self.configuration = configuration
         self.paths = paths
         self.backend = backend
-        self.inventory = inventory
         self.reader = reader
         self.controller = controller
+        self.hardwareRecovery = FanHardwareRecovery(
+            inventory: inventory,
+            initialError: initialDiscoveryError
+        )
         self.uptime = uptime
         self.journalOwner = journalOwner
         self.requireRootJournalOwnership = requireRootJournalOwnership
+        self.discoverInventory = discoverInventory ?? {
+            try reader.discover()
+        }
+        self.controllerFactory = controllerFactory ?? { refreshedInventory in
+            TransactionalFanController(
+                backend: backend,
+                inventory: refreshedInventory
+            )
+        }
         let journalURL = paths.sessionJournal
         self.recordOwnership = { ownership in
             try FanDurableFile.writeJSON(
@@ -74,6 +95,7 @@ actor FanDaemon {
         }
         self.policy = FanPolicyStateMachine(configuration: configuration.policy)
         self.mode = configuration.enabled ? .waitingForProvider : .disabled
+        self.lastError = initialLastError
     }
 
     func start() {
@@ -109,6 +131,9 @@ actor FanDaemon {
         }
         guard providerVersion.utf8.count <= 64 else {
             return FanIPCReply(ok: false, message: "provider version is invalid")
+        }
+        guard hardwareReady else {
+            return FanIPCReply(ok: false, message: hardwareReadinessMessage)
         }
         leaseSessionID = sessionID
         leaseExpiresAt = uptime() + FanIPC.leaseDurationSeconds
@@ -149,8 +174,8 @@ actor FanDaemon {
             configuredUID: configuration.configuredUID,
             providerActive: providerLeaseActive,
             mode: mode,
-            chip: inventory.chipFamily.rawValue,
-            gpuSensorKeys: inventory.gpuTemperatureKeys.map(\.rawValue),
+            chip: hardwareRecovery.inventory.chipFamily.rawValue,
+            gpuSensorKeys: hardwareRecovery.inventory.gpuTemperatureKeys.map(\.rawValue),
             gpuTemperatureC: gpuTemperatureC,
             triggerTemperatureC: configuration.policy.triggerCelsius,
             releaseTemperatureC: configuration.policy.releaseCelsius,
@@ -165,7 +190,13 @@ actor FanDaemon {
                     mode: describe(reading.mode)
                 )
             },
-            lastError: lastError
+            lastError: lastError,
+            hardwareReady: hardwareReady,
+            recoveryPending: hardwareRecovery.recoveryPending,
+            discoveryError: hardwareRecovery.discoveryError,
+            quarantinedSensorKeys: hardwareRecovery.quarantinedSensorKeys
+                .map(\.rawValue)
+                .sorted()
         )
     }
 
@@ -190,6 +221,7 @@ actor FanDaemon {
         powerSuspended = false
         leaseSessionID = nil
         leaseExpiresAt = 0
+        hardwareRecovery.markWake()
         mode = effectiveEnabled ? .waitingForProvider : .disabled
     }
 
@@ -203,26 +235,34 @@ actor FanDaemon {
 
     func tick() async {
         guard effectiveEnabled else {
-            mode = await restoreAutomatic(reason: "fan control disabled")
-                ? .disabled : .error
+            let restored = await restoreAutomatic(reason: "fan control disabled")
+            mode = restored ? .disabled : .error
+            if restored {
+                clearLastError()
+            }
             return
         }
-        guard !inventory.fans.isEmpty, !inventory.gpuTemperatureKeys.isEmpty else {
-            mode = await restoreAutomatic(
-                reason: "fan hardware or GPU sensors unavailable"
-            ) ? .unsupported : .error
-            return
-        }
-        if (!providerLeaseActive || mode == .error), await hasPossibleOwnership {
+        if (!providerLeaseActive || mode == .error || hardwareRecovery.discoveryRequired),
+           await hasPossibleOwnership
+        {
             mode = await restoreAutomatic(reason: "retrying automatic restoration")
                 ? (providerLeaseActive ? .waitingForTemperature : .waitingForProvider)
                 : .error
             return
         }
+        if hardwareRecovery.discoveryRequired {
+            await refreshHardwareIfDue()
+        }
+        guard hardwareReady else {
+            let message = hardwareReadinessMessage
+            setLastError(message)
+            mode = .unsupported
+            return
+        }
 
         do {
-            fanReadings = try reader.fanReadings(in: inventory)
-            let temperatures = try reader.gpuTemperatures(in: inventory)
+            fanReadings = try reader.fanReadings(in: hardwareRecovery.inventory)
+            let temperatures = try reader.gpuTemperatures(in: hardwareRecovery.inventory)
             gpuTemperatureC = temperatures.map(\.celsius).max()
 
             if ProcessInfo.processInfo.thermalState == .serious
@@ -240,10 +280,18 @@ actor FanDaemon {
                 controlHealthy: true
             ))
             try await apply(action)
-            lastError = nil
+            clearLastError()
         } catch {
-            lastError = String(describing: error)
+            let message = String(describing: error)
+            setLastError(message)
             logger.error("fan policy tick failed: \(String(describing: error), privacy: .public)")
+            if let hardwareError = error as? FanHardwareError,
+               case .invalidTemperature(let key, _) = hardwareError
+            {
+                hardwareRecovery.markInvalidSensor(key)
+                leaseSessionID = nil
+                leaseExpiresAt = 0
+            }
             _ = await restoreAutomatic(reason: "fan policy failure")
             mode = .error
         }
@@ -321,7 +369,7 @@ actor FanDaemon {
             } else {
                 try FanOwnershipRecovery.reconcile(
                     backend: backend,
-                    inventory: inventory,
+                    inventory: hardwareRecovery.inventory,
                     journalURL: paths.sessionJournal,
                     requireRootOwnership: requireRootJournalOwnership,
                     journalOwner: journalOwner
@@ -335,7 +383,7 @@ actor FanDaemon {
             logger.info("restored automatic fan control: \(reason, privacy: .public)")
             return true
         } catch {
-            lastError = "automatic restore failed: \(error)"
+            setLastError("automatic restore failed: \(error)")
             logger.fault("automatic fan restore failed: \(String(describing: error), privacy: .public)")
             return false
         }
@@ -346,6 +394,59 @@ actor FanDaemon {
             await controller.isControlling
                 || FileManager.default.fileExists(atPath: paths.sessionJournal.path)
         }
+    }
+
+    private var hardwareReady: Bool {
+        hardwareRecovery.hardwareReady
+    }
+
+    private var hardwareReadinessMessage: String {
+        hardwareRecovery.readinessMessage
+    }
+
+    private func refreshHardwareIfDue() async {
+        let now = uptime()
+        guard hardwareRecovery.beginDiscoveryIfDue(now: now) else {
+            return
+        }
+        guard !(await controller.isControlling),
+              !FileManager.default.fileExists(atPath: paths.sessionJournal.path)
+        else {
+            return
+        }
+
+        do {
+            let refreshed = try discoverInventory()
+            let ready = hardwareRecovery.apply(refreshed)
+            controller = controllerFactory(refreshed)
+            fanReadings = []
+            gpuTemperatureC = nil
+
+            guard ready else { return }
+            mode = .waitingForProvider
+            logger.notice(
+                "fan hardware discovery recovered with \(refreshed.gpuTemperatureKeys.count, privacy: .public) GPU sensors"
+            )
+        } catch {
+            hardwareRecovery.recordDiscoveryFailure(error)
+        }
+    }
+
+    private func setLastError(_ message: String) {
+        guard lastError != message else { return }
+        lastError = message
+        try? FanDurableFile.writeJSON(
+            FanLastFailure(message: message),
+            to: paths.lastFailure,
+            permissions: 0o600,
+            owner: journalOwner
+        )
+    }
+
+    private func clearLastError() {
+        guard lastError != nil else { return }
+        lastError = nil
+        try? FanDurableFile.remove(paths.lastFailure)
     }
 
     private func serviceMode(for reason: FanPolicyReason) -> FanServiceMode {

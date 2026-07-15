@@ -4,6 +4,7 @@ public struct FanControlTiming: Sendable {
     public let ftstSettleSeconds: TimeInterval
     public let retryDelaySeconds: TimeInterval
     public let manualModeAttempts: Int
+    public let automaticRestoreAttempts: Int
     public let verificationAttempts: Int
     public let sleep: @Sendable (TimeInterval) -> Void
 
@@ -11,6 +12,7 @@ public struct FanControlTiming: Sendable {
         ftstSettleSeconds: TimeInterval = 0.5,
         retryDelaySeconds: TimeInterval = 0.1,
         manualModeAttempts: Int = 100,
+        automaticRestoreAttempts: Int = 50,
         verificationAttempts: Int = 3,
         sleep: @escaping @Sendable (TimeInterval) -> Void = {
             Thread.sleep(forTimeInterval: $0)
@@ -19,10 +21,12 @@ public struct FanControlTiming: Sendable {
         precondition(ftstSettleSeconds >= 0)
         precondition(retryDelaySeconds >= 0)
         precondition(manualModeAttempts > 0)
+        precondition(automaticRestoreAttempts > 0)
         precondition(verificationAttempts > 0)
         self.ftstSettleSeconds = ftstSettleSeconds
         self.retryDelaySeconds = retryDelaySeconds
         self.manualModeAttempts = manualModeAttempts
+        self.automaticRestoreAttempts = automaticRestoreAttempts
         self.verificationAttempts = verificationAttempts
         self.sleep = sleep
     }
@@ -616,62 +620,23 @@ public actor TransactionalFanController {
     private func restoreTrackedState(
         recordOwnership: @Sendable (FanControlOwnership) throws -> Void = { _ in }
     ) -> [FanRollbackFailure] {
-        var failures: [FanRollbackFailure] = []
-        var stillUncertain: [Int: FanCapability] = [:]
-
-        for fan in possiblyControlledFans.values.sorted(by: { $0.index < $1.index }) {
-            do {
-                try backend.write(fan.modeKey, bytes: [FanMode.automatic.rawValue])
-                let raw = try readUI8(fan.modeKey)
-                guard FanMode(rawValue: raw).isAutomatic else {
-                    throw FanRollbackError.modeNotAutomatic(rawValue: raw)
-                }
-                // Auto mode is authoritative. Clearing the stale manual target
-                // is best-effort defense against a later accidental mode toggle;
-                // failure here must not turn a verified Auto restore into error.
-                if let zero = try? SMCValue.float32Bytes(0, key: fan.targetKey) {
-                    try? backend.write(fan.targetKey, bytes: zero)
-                }
-            } catch {
-                let rollbackError = normalizeRollback(error)
-                failures.append(FanRollbackFailure(
-                    fanIndex: fan.index,
-                    step: .restoreMode,
-                    error: rollbackError
-                ))
-                stillUncertain[fan.index] = fan
-            }
-        }
-
-        var ftstStillUncertain = false
-        if mayOwnFtst, let ftstKey = inventory.ftstKey {
-            do {
-                try backend.write(ftstKey, bytes: [0])
-                let raw = try readUI8(ftstKey)
-                guard raw == 0 else {
-                    throw FanRollbackError.ftstStillSet(rawValue: raw)
-                }
-            } catch {
-                failures.append(FanRollbackFailure(
-                    fanIndex: nil,
-                    step: .clearFtst,
-                    error: normalizeRollback(error)
-                ))
-                ftstStillUncertain = true
-            }
-        } else if mayOwnFtst {
-            failures.append(FanRollbackFailure(
-                fanIndex: nil,
-                step: .clearFtst,
-                error: .smc(.keyNotFound("Ftst"))
-            ))
-            ftstStillUncertain = true
+        let outcome = FanAutomaticRestore.run(
+            backend: backend,
+            fans: Array(possiblyControlledFans.values),
+            ftstKey: inventory.ftstKey,
+            ownsFtst: mayOwnFtst,
+            timing: timing
+        )
+        var failures = outcome.failures
+        let unresolvedFans = Set(outcome.unresolvedFanIndices)
+        let stillUncertain = possiblyControlledFans.filter {
+            unresolvedFans.contains($0.key)
         }
 
         do {
             try recordOwnership(FanControlOwnership(
                 fanIndices: Array(stillUncertain.keys),
-                ownsFtst: ftstStillUncertain
+                ownsFtst: outcome.ownsFtst
             ))
         } catch {
             failures.append(FanRollbackFailure(
@@ -685,7 +650,7 @@ public actor TransactionalFanController {
         }
         possiblyControlledFans = stillUncertain
         targetRPMByFan = targetRPMByFan.filter { stillUncertain[$0.key] != nil }
-        mayOwnFtst = ftstStillUncertain
+        mayOwnFtst = outcome.ownsFtst
         return failures
     }
 
@@ -747,17 +712,4 @@ public actor TransactionalFanController {
         return .smc(.injectedFailure(String(describing: error)))
     }
 
-    private func normalizeRollback(_ error: Error) -> FanRollbackError {
-        if let error = error as? FanRollbackError { return error }
-        if let error = error as? FanControllerError {
-            switch error {
-            case .smc(let smcError): return .smc(smcError)
-            case .hardware(let hardwareError): return .hardware(hardwareError)
-            default: return .smc(.injectedFailure(error.description))
-            }
-        }
-        if let error = error as? FanHardwareError { return .hardware(error) }
-        if let error = error as? SMCError { return .smc(error) }
-        return .smc(.injectedFailure(String(describing: error)))
-    }
 }

@@ -442,6 +442,9 @@ public enum MTPBenchmarkRunner {
                     "adaptive B=\(batchSize) never observed decode-row bucket \(expectedBucket)")
             }
             if adaptiveDraftingExpected {
+                if try validateAutomaticAdaptiveWithinCap(metrics, batchSize: batchSize) {
+                    return
+                }
                 guard metrics.rounds > 0, metrics.proposedTokens > 0 else {
                     throw MTPBenchmarkError.invalidMetrics(
                         "adaptive B=\(batchSize) was expected to draft but did not")
@@ -482,7 +485,6 @@ public enum MTPBenchmarkRunner {
             $0.decodeRowBucket * ($0.draftDepth + 1) <= maxRectangularTokens
         }
         guard metrics.controllerFallbacks["automatic_rectangular_limit", default: 0] > 0,
-              metrics.depthSelections["0", default: 0] > 0,
               costsStayWithinLimit,
               (metrics.serialVerificationRounds ?? 0) == 0
         else {
@@ -501,6 +503,7 @@ public enum MTPBenchmarkRunner {
             return true
         }
         guard metrics.selectedDepth == 0,
+              metrics.depthSelections["0", default: 0] > 0,
               metrics.rounds == 0,
               metrics.seedRows == 0,
               metrics.proposedTokens == 0,
@@ -517,6 +520,34 @@ public enum MTPBenchmarkRunner {
         else {
             throw MTPBenchmarkError.invalidMetrics(
                 "automatic fixed-depth fallback B=\(batchSize) reported uncategorized work")
+        }
+        return true
+    }
+
+    /// Adaptive drafting cannot be demanded when even depth one exceeds the
+    /// automatic rectangular work cap at the submitted batch size. Any
+    /// drafting that does happen (for example after tail rows drain) must
+    /// stay rectangular and inside the cap.
+    private static func validateAutomaticAdaptiveWithinCap(
+        _ metrics: MTPBenchmarkMetrics,
+        batchSize: Int
+    ) throws -> Bool {
+        guard metrics.verificationMode == "automatic",
+              let maxRectangularTokens = metrics.maxAutomaticRectangularTokens,
+              batchSize * 2 > maxRectangularTokens
+        else { return false }
+
+        let positiveCosts = metrics.costInputs.filter { $0.draftDepth > 0 && $0.sampleCount > 0 }
+        let costsStayWithinLimit = positiveCosts.allSatisfy {
+            $0.decodeRowBucket * ($0.draftDepth + 1) <= maxRectangularTokens
+        }
+        guard costsStayWithinLimit,
+              (metrics.serialVerificationRounds ?? 0) == 0,
+              metrics.rounds == 0 || metrics.proposedTokens > 0,
+              metrics.rounds > 0 || (metrics.rectangularVerificationRounds ?? 0) == 0
+        else {
+            throw MTPBenchmarkError.invalidMetrics(
+                "adaptive B=\(batchSize) escaped its automatic rectangular limit")
         }
         return true
     }

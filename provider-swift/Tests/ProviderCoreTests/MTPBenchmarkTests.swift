@@ -414,6 +414,60 @@ struct MTPBenchmarkTests {
             adaptiveDraftingExpected: true,
             allowedSkipReasons: [])
 
+        // Regression: a requested depth clamped to a SMALLER POSITIVE depth
+        // records only positive selections. The validator must not demand
+        // depth-zero selections in that case (found by the real M4 matrix at
+        // B=4 with fixed L=3 clamping to k=1).
+        let positiveClamp = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "automatic",
+            maxAutomaticRectangularTokens: 8,
+            rectangularVerificationRounds: 6,
+            serialVerificationRounds: 0,
+            selectedDepth: 1,
+            decodeRowBucket: 4,
+            rounds: 6,
+            proposedTokens: 6,
+            depthSelections: ["1": 6],
+            controllerFallbacks: ["automatic_rectangular_limit": 6],
+            costInputs: [.init(
+                decodeRowBucket: 4,
+                draftDepth: 1,
+                sampleCount: 6)])
+        try MTPBenchmarkRunner.validateMetrics(
+            positiveClamp,
+            mode: try MTPBenchmarkMode.fixed(verificationWidth: 3),
+            batchSize: 4,
+            adaptiveDraftingExpected: true,
+            allowedSkipReasons: [])
+
+        // A positive cost input whose bucket * (depth + 1) exceeds the cap
+        // proves work escaped the envelope and must fail even with the
+        // fallback reason recorded.
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(
+                    active: true,
+                    verificationMode: "automatic",
+                    maxAutomaticRectangularTokens: 8,
+                    rectangularVerificationRounds: 2,
+                    serialVerificationRounds: 0,
+                    selectedDepth: 1,
+                    decodeRowBucket: 8,
+                    rounds: 2,
+                    proposedTokens: 2,
+                    depthSelections: ["1": 2],
+                    controllerFallbacks: ["automatic_rectangular_limit": 2],
+                    costInputs: [.init(
+                        decodeRowBucket: 8,
+                        draftDepth: 1,
+                        sampleCount: 2)]),
+                mode: mode,
+                batchSize: 8,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [])
+        }
+
         #expect(throws: MTPBenchmarkError.self) {
             try MTPBenchmarkRunner.validateMetrics(
                 MTPBenchmarkMetrics(
@@ -426,6 +480,53 @@ struct MTPBenchmarkTests {
                     controllerFallbacks: ["automatic_rectangular_limit": 4]),
                 mode: mode,
                 batchSize: 4,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [])
+        }
+    }
+
+    @Test("adaptive accepts certified within-cap behavior when the cap forbids drafting")
+    func adaptiveAutomaticCapValidation() throws {
+        // B=8 with cap 8: even depth one exceeds the cap, so zero drafting
+        // with only depth-zero selections is the correct outcome.
+        try MTPBenchmarkRunner.validateMetrics(
+            MTPBenchmarkMetrics(
+                active: true,
+                verificationMode: "automatic",
+                maxAutomaticRectangularTokens: 8,
+                rectangularVerificationRounds: 0,
+                serialVerificationRounds: 0,
+                selectedDepth: 0,
+                decodeRowBucket: 8,
+                depthSelections: ["0": 4],
+                controllerFallbacks: ["warmup": 4]),
+            mode: .adaptive,
+            batchSize: 8,
+            adaptiveDraftingExpected: true,
+            allowedSkipReasons: [])
+
+        // Late-drain drafting at a smaller bucket stays acceptable only while
+        // rectangular and inside the cap; serial rounds must fail.
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(
+                    active: true,
+                    verificationMode: "automatic",
+                    maxAutomaticRectangularTokens: 8,
+                    rectangularVerificationRounds: 1,
+                    serialVerificationRounds: 1,
+                    selectedDepth: 1,
+                    decodeRowBucket: 4,
+                    rounds: 2,
+                    proposedTokens: 2,
+                    depthSelections: ["0": 2, "1": 2],
+                    controllerFallbacks: ["automatic_rectangular_limit": 2],
+                    costInputs: [.init(
+                        decodeRowBucket: 4,
+                        draftDepth: 1,
+                        sampleCount: 2)]),
+                mode: .adaptive,
+                batchSize: 8,
                 adaptiveDraftingExpected: true,
                 allowedSkipReasons: [])
         }

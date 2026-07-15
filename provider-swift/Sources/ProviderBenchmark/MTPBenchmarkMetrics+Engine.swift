@@ -7,6 +7,9 @@ extension MTPBenchmarkMetrics {
         self.init(
             active: value.active,
             verificationMode: value.verificationMode.rawValue,
+            maxAutomaticRectangularTokens: value.maxAutomaticRectangularTokens,
+            rectangularVerificationRounds: value.rectangularVerificationRounds,
+            serialVerificationRounds: value.serialVerificationRounds,
             selectedDepth: value.selectedDepth,
             decodeRowBucket: value.decodeRowBucket,
             rounds: value.rounds,

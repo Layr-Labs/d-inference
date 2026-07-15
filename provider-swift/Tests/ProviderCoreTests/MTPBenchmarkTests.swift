@@ -24,8 +24,14 @@ struct MTPBenchmarkTests {
     func verificationModeProjection() {
         var engineMetrics = CBv2MTPMetrics()
         engineMetrics.verificationMode = .rectangular
+        engineMetrics.maxAutomaticRectangularTokens = 8
+        engineMetrics.rectangularVerificationRounds = 3
+        engineMetrics.serialVerificationRounds = 1
         let projected = MTPBenchmarkMetrics(engineMetrics: engineMetrics)
         #expect(projected.verificationMode == "rectangular")
+        #expect(projected.maxAutomaticRectangularTokens == 8)
+        #expect(projected.rectangularVerificationRounds == 3)
+        #expect(projected.serialVerificationRounds == 1)
     }
 
     @Test("artifact inspection records immutable config and shard provenance")
@@ -358,6 +364,68 @@ struct MTPBenchmarkTests {
                     costInputs: metrics.costInputs),
                 mode: mode,
                 batchSize: 2,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [])
+        }
+    }
+
+    @Test("automatic fixed depth accepts certified target-only fallback")
+    func automaticFixedDepthFallbackValidation() throws {
+        let mode = try MTPBenchmarkMode.fixed(verificationWidth: 2)
+        let fallback = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "automatic",
+            maxAutomaticRectangularTokens: 8,
+            rectangularVerificationRounds: 0,
+            serialVerificationRounds: 0,
+            selectedDepth: 0,
+            decodeRowBucket: 8,
+            depthSelections: ["0": 4],
+            controllerFallbacks: ["automatic_rectangular_limit": 4],
+            totalRoundWallTimeNanos: 0)
+
+        try MTPBenchmarkRunner.validateMetrics(
+            fallback,
+            mode: mode,
+            batchSize: 8,
+            adaptiveDraftingExpected: true,
+            allowedSkipReasons: [])
+
+        let safeAfterBatchShrink = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "automatic",
+            maxAutomaticRectangularTokens: 8,
+            rectangularVerificationRounds: 2,
+            serialVerificationRounds: 0,
+            selectedDepth: 1,
+            decodeRowBucket: 4,
+            rounds: 2,
+            proposedTokens: 8,
+            depthSelections: ["0": 2, "1": 2],
+            controllerFallbacks: ["automatic_rectangular_limit": 2],
+            costInputs: [.init(
+                decodeRowBucket: 4,
+                draftDepth: 1,
+                sampleCount: 2)])
+        try MTPBenchmarkRunner.validateMetrics(
+            safeAfterBatchShrink,
+            mode: mode,
+            batchSize: 8,
+            adaptiveDraftingExpected: true,
+            allowedSkipReasons: [])
+
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(
+                    active: true,
+                    verificationMode: "automatic",
+                    maxAutomaticRectangularTokens: 8,
+                    selectedDepth: 0,
+                    decodeRowBucket: 4,
+                    depthSelections: ["0": 4],
+                    controllerFallbacks: ["automatic_rectangular_limit": 4]),
+                mode: mode,
+                batchSize: 4,
                 adaptiveDraftingExpected: true,
                 allowedSkipReasons: [])
         }

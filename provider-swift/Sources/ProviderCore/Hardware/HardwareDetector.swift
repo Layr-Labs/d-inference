@@ -65,7 +65,7 @@ public enum HardwareDetector: Sendable {
 
 // MARK: - sysctl Helpers
 
-private func sysctlString(_ key: String) throws -> String {
+func sysctlString(_ key: String) throws -> String {
     var size: Int = 0
     guard sysctlbyname(key, nil, &size, nil, 0) == 0, size > 0 else {
         throw HardwareError.sysctlFailed(key)

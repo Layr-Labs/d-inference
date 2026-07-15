@@ -405,6 +405,11 @@ public enum MTPBenchmarkRunner {
                 return
             }
             let expectedDepth = (mode.verificationWidth ?? 1) - 1
+            if try validateAutomaticDepthLimitFallback(
+                metrics, batchSize: batchSize, requestedDepth: expectedDepth)
+            {
+                return
+            }
             guard observedBucket(metrics, expectedBucket: expectedBucket) else {
                 throw MTPBenchmarkError.invalidMetrics(
                     "\(mode.label), B=\(batchSize) never observed decode-row bucket \(expectedBucket)")
@@ -457,6 +462,63 @@ public enum MTPBenchmarkRunner {
                 }
             }
         }
+    }
+
+    private static func validateAutomaticDepthLimitFallback(
+        _ metrics: MTPBenchmarkMetrics,
+        batchSize: Int,
+        requestedDepth: Int
+    ) throws -> Bool {
+        guard metrics.verificationMode == "automatic",
+              let maxRectangularTokens = metrics.maxAutomaticRectangularTokens,
+              batchSize * (requestedDepth + 1) > maxRectangularTokens
+        else { return false }
+
+        let hasPositiveDepth = metrics.depthSelections.contains {
+            (Int($0.key) ?? 0) > 0 && $0.value > 0
+        }
+        let positiveCosts = metrics.costInputs.filter { $0.draftDepth > 0 && $0.sampleCount > 0 }
+        let costsStayWithinLimit = positiveCosts.allSatisfy {
+            $0.decodeRowBucket * ($0.draftDepth + 1) <= maxRectangularTokens
+        }
+        guard metrics.controllerFallbacks["automatic_rectangular_limit", default: 0] > 0,
+              metrics.depthSelections["0", default: 0] > 0,
+              costsStayWithinLimit,
+              (metrics.serialVerificationRounds ?? 0) == 0
+        else {
+            throw MTPBenchmarkError.invalidMetrics(
+                "automatic fixed-depth fallback B=\(batchSize) escaped its rectangular limit")
+        }
+        if hasPositiveDepth {
+            guard metrics.rounds > 0,
+                  metrics.proposedTokens > 0,
+                  !positiveCosts.isEmpty,
+                  (metrics.rectangularVerificationRounds ?? 0) > 0
+            else {
+                throw MTPBenchmarkError.invalidMetrics(
+                    "automatic fixed-depth fallback B=\(batchSize) lacks safe smaller-batch evidence")
+            }
+            return true
+        }
+        guard metrics.selectedDepth == 0,
+              metrics.rounds == 0,
+              metrics.seedRows == 0,
+              metrics.proposedTokens == 0,
+              metrics.acceptedDraftTokens == 0,
+              metrics.committedTokens == 0,
+              metrics.acceptanceByPosition.isEmpty,
+              metrics.conditionalAcceptance.isEmpty,
+              metrics.skippedRows.isEmpty,
+              metrics.costInputs.isEmpty,
+              (metrics.totalRoundWallTimeNanos ?? 0) == 0,
+              metrics.assistantTimeNanos == nil,
+              metrics.targetVerifyTimeNanos == nil,
+              (metrics.rectangularVerificationRounds ?? 0) == 0
+        else {
+            throw MTPBenchmarkError.invalidMetrics(
+                "automatic fixed-depth fallback B=\(batchSize) reported uncategorized work")
+        }
+        return true
     }
 
     private static func validateActivation(

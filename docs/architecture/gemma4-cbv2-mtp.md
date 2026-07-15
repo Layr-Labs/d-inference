@@ -3,7 +3,9 @@
 **Status:** implemented and under review in d-inference PR
 [#547](https://github.com/Layr-Labs/d-inference/pull/547), which pins the engine
 implementation in mlx-swift-lm PR
-[#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74). Default-off; not
+[#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74), plus the exact
+automatic-verifier repair in mlx-swift-lm PR
+[#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). Default-off; not
 released, registered, or deployed.
 
 This document is the implementation contract for production Gemma 4
@@ -20,9 +22,12 @@ Continuous Batching V2 (CBv2).
 The production branch now includes:
 
 - Native CBv2 seed/draft/verify rounds with target-authoritative acceptance.
-- A chip-independent serial target verifier that keeps MTP active from M1
-  through M5; rectangular verification is explicit opt-in rather than a
-  hardware denylist.
+- An exact automatic verifier that accelerates certified rectangular work on
+  M1 through M5 and clamps to ordinary target-only decode before drafting when
+  no positive safe depth fits. Serial target verification remains explicit.
+- Decode-shaped rectangular attention: projections and feed-forward work stay
+  batched, while every provisional query uses canonical `L=1` attention over
+  its exact visible KV prefix.
 - Step-global eligibility and commit cadence for quantized MoE parity.
 - Exact full, quantized, and staged-window KV rollback.
 - Strict absolute-position assistant sliding masks.
@@ -71,6 +76,10 @@ Review-driven correctness defects found and fixed during implementation:
 | Real provider paths | load/bind, fail-open assistant failure, tool-templated VLM, and image-prefill paths passed |
 | M4 Max serial-target QAT/QAT matrix | 40/40 parity, 36/36 requested speculative cases active, 714 rounds, 2,175 proposals, 1,179 accepted, zero mismatch rows; report records `serial_target`; SHA-256 `b90e7f6671f409d11e621ede4040e8e18060a17dfe7bbbcd555efe1e968bdd15` |
 | M5 Max serial-target QAT/QAT matrix | 40/40 parity, 36/36 requested speculative cases active, 630 rounds, 1,827 proposals, 1,189 accepted, zero mismatch rows; report records `serial_target`; SHA-256 `53d2bd99e6a21c7745d73a4ab617b2855d57c2199ec2a90357bf1c7faf2aa2a5` |
+| M5 Max first-divergence diagnostic | Rectangular B8/L6 first diverged in layer-0 quantized Q/K projection because target-only and rectangular shapes selected different quantized matmul reductions; B1/L2 also exposed shape-dependent SDPA. Decode-shaped attention plus a bounded projection work envelope produced exact layer states, final logits, and storage-owning K/V |
+| M5 Max exact rollback | B4/L2 with one accepted and one rejected position: final logits byte-equal, `kvMismatches=0` after rollback |
+| M5 Max production k=1 TPS | B1 `139.73` vs `119.67` target-only (`+16.76%`); B2 `187.43` vs `173.97` (`+7.73%`); B4 `222.02` vs `180.77` (`+22.82%`); B8 safely performed zero draft/verification rounds and measured `306.65` vs `306.77` (`-0.04%`) |
+| M4 Max production k=1 TPS | B1 `+11.4%`; B2 `+0.3%`; B4 `+8.3%`; all measured MTP rounds used rectangular verification and zero serial rounds |
 | Products | `ProviderCore`, `ProviderBenchmark` debug/release, and `darkbloom` build passed |
 | Diff checks | parent and nested diffs clean |
 
@@ -114,6 +123,16 @@ unchanged, but an exact post-fix performance rerun was interrupted and is not
 claimed as complete. The schema-v4 raw parity matrices were rerun after the
 final engine/config hardening.
 
+The production repair uses fixed `k=1`, not an untrained adaptive controller.
+Its automatic work cap is `batch * (1+k) <= 4` on M1/M2/unknown hardware and
+`<= 8` on M3/M4/M5. The operator override may only tighten that certified
+maximum. M5 exactness was measured across the full safe envelope: B1/L2...L8,
+B2/L2...L4, B4/L2, final logits, every decoder layer, storage-owning K/V, and
+partial rollback. M4 was checked at B1/L3, B2/L2, and B4/L2. M1 through M3
+were not physically available; their conservative limits follow the pinned
+MLX quantized-kernel dispatch bounds and must not be expanded without physical
+parity and TPS evidence.
+
 Residual engineering risks are explicit: Swift cannot cancel synchronous MLX
 construction inside the process, so live validation relies on the process-group
 supervisor; same-user mutation after catalog verification remains a general
@@ -132,9 +151,9 @@ Build the official Gemma 4 assistant path:
 - Frozen K/V from the last storage-owning full-attention and
   sliding-attention target layers.
 - Constant assistant position within a draft round.
-- Linear draft proposals followed by chip-independent serial target
-  verification by default; rectangular target verification remains an
-  explicit optimization.
+- Linear draft proposals followed by automatic exact rectangular verification
+  within a chip-certified work envelope, with pre-draft target-only fallback
+  and explicit serial target verification retained as a diagnostic oracle.
 - Target-authoritative greedy acceptance.
 - Exact per-row KV commit or rollback.
 - Continuous batching with ordinary decode and chunked-prefill neighbors.
@@ -220,7 +239,7 @@ flowchart LR
   Controller --> Scheduler[SchedulerV2 plan]
   Scheduler --> Seed[Seed hidden and bonus]
   Seed --> Draft[Sequential frozen-KV drafts]
-  Draft --> Verify[Serial target-authority verify by default]
+  Draft --> Verify[Automatic exact target-authority verify]
   Verify --> Accept[Target-authoritative accept walk]
   Accept --> Commit[KV commit or rollback]
   Commit --> Stream[Consumer token stream]
@@ -270,6 +289,7 @@ The engine exposes a lock-safe snapshot with at least:
 - Skip and fallback counts by stable reason.
 - Selected depth.
 - Planned decode rows.
+- Configured rectangular work cap and actual rectangular/serial round counts.
 - Round wall time or committed-token goodput inputs.
 
 Provider observability consumes snapshots. It does not mutate controller or
@@ -304,13 +324,14 @@ content.
 
 ### Evaluation Boundaries
 
-Rectangular verification keeps draft IDs, target argmaxes, and target hidden
-state device-resident until the existing CBv2 finalize boundary. The default
-serial target mode instead materializes every `[B,1]` target column and its KV
-inner state before constructing the next column. This adds device
-synchronization but prevents lazy mutable-cache versions from crossing the
-canonical target step boundary. Token IDs still reach the host only at the
-existing finalize acceptance readback.
+Automatic rectangular verification keeps draft IDs, target argmaxes, and
+target hidden state device-resident until the existing CBv2 finalize boundary.
+Projection and feed-forward tensors retain `[B,L]` shape only inside the
+certified work envelope. Attention evaluates each query through canonical
+`L=1` SDPA with its exact visible staged KV prefix. Explicit `serial_target`
+instead materializes every `[B,1]` target column and its KV inner state before
+constructing the next column. Token IDs reach the host only at the existing
+finalize acceptance readback.
 
 ### Frozen Assistant State
 
@@ -328,8 +349,9 @@ not decided by comments or inherited code; tensor parity decides it.
 ### Speculative KV Transaction
 
 Target verification computes `1+k` provisional positions either through
-serial `[B,1]` target calls or an explicitly selected `[B,1+k]` call. After
-acceptance:
+automatic bounded `[B,1+k]` scoring or explicit serial `[B,1]` target calls.
+The automatic planner clamps depth before seed or draft work; if no positive
+depth fits, ordinary target-only chaining continues. After acceptance:
 
 - Full and quantized contiguous KV roll back the rejected suffix exactly.
 - Windowed rings accumulate one or more staged writes so rejected tokens never
@@ -569,8 +591,9 @@ probabilities (`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/
 MTPContractsV2.swift:126-149` and `Libraries/MLXLLM/Models/
 Gemma4CBv2MTPDrafter.swift:104-122`). Target verification reduces each target
 column to argmax IDs before the finalize acceptance readback. The default
-serial mode materializes `[B,1]` target/KV state between columns; explicit
-rectangular mode uses one `[B,1+k,vocab]` result
+automatic mode uses bounded `[B,1+k,vocab]` scoring with decode-shaped
+attention; explicit serial mode materializes `[B,1]` target/KV state between
+columns
 (`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/
 EngineLoopV2+MTPTargetVerification.swift`).
 
@@ -1078,19 +1101,33 @@ target-only. Paged-window activation remains separately default-off until the
 matrix, randomized oracle, full engine suites, and release goodput measurement
 pass with zero temporary-page leaks.
 
-### Universal Serial Verification And Rectangular Certification
+### Automatic Exact Verification And Serial Fallback
 
 #### Current Default And Evidence
 
-**Current.** MTP construction no longer reads a chip name or denies a hardware
-family. `CBv2MTPConfig.verificationMode` defaults to `serial_target`, and the
-engine scores every known target column through the same eager `[B,1]` target
-forward used by ordinary decode
-(`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` and
-`EngineLoopV2+MTPTargetVerification.swift`). Each column and its KV inner state
-are materialized before the next target column is constructed. The assistant
-still drafts `k` tokens, target authority still accepts or corrects them, and
-one KV transaction commits only the confirmed prefix.
+**Current.** MTP construction no longer denies a hardware family.
+`CBv2MTPConfig.verificationMode` defaults to `automatic`, with a conservative
+work cap of four target rows when no provider policy is supplied
+(`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift`). The
+provider selects a certified maximum of four on M1/M2/unknown hardware and
+eight on M3/M4/M5, and starts production at fixed `k=1`
+(`provider-swift/Sources/ProviderCore/Inference/
+MTPAutomaticVerificationPolicy.swift` and `EngineV2SlotFactory.swift`). An
+environment override can only reduce, never expand, the hardware maximum.
+
+Before seed or draft work, `CBv2MTPRoundDriver` limits `k` so
+`batch * (1+k)` stays inside that envelope. A zero limit returns to ordinary
+target-only chaining with no assistant seed, proposal, rectangular verify, or
+serial verify. Positive depths use one rectangular target pass. Projections
+and feed-forward layers remain batched; `CBv2AttentionV1` evaluates each query
+through the canonical `L=1` attention dispatch with only the KV prefix visible
+at that provisional position. The target argmax still accepts or corrects each
+proposal, and one KV transaction commits only the confirmed prefix.
+
+`serial_target` remains an explicit correctness oracle and defensive fallback.
+It scores each column through the same eager `[B,1]` target forward as ordinary
+decode, materializing the column and KV state before constructing the next.
+It is exact but structurally unable to provide the production acceleration.
 
 Windowed storage now accumulates multiple serial speculative updates before
 one rollback/commit. KV-shared decode layers borrow the staged source view only
@@ -1101,30 +1138,33 @@ full rollback, partial rollback, repeated serial updates, and post-wrap sharing
 and repeatedly partial rejection, mixed batches, stop/length tails,
 cancellation, request-ID reuse, and compiled/eager transitions.
 
-The earlier rectangular result remains important: remote M5 Max testing found
-repeatable target-argmax drift between serial `[B,1]` and `[B,1+k]`, including
-the production QAT pair at B8/L6. That evidence is recorded on engine PR
-[#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74#issuecomment-4974224001).
-It justifies keeping rectangular mode explicit; it no longer justifies denying
-MTP on M5.
+The first-divergence harness explained the earlier M5 failure. Production QAT
+B8/L6 first diverged in layer-0 Q/K quantized projections: serial and
+rectangular shapes selected different MLX reduction paths. B1/L2 additionally
+diverged in shape-dependent SDPA. The repaired path does not assume a chip is
+safe. It bounds projection geometry to the exact tested kernel regime and
+makes attention dispatch identical to canonical decode. On M5, the complete
+exact envelope is `B * L <= 8`; B8 therefore has no positive safe depth. On M4,
+the measured safe shapes include B1/L3, B2/L2, and B4/L2. The production cap is
+intentionally smaller than some individually measured shapes because one
+simple invariant is easier to audit and enforce.
 
 The current capability table is:
 
-| Chip family | Default MTP mode | Current evidence | Rectangular optimization |
+| Chip family | Automatic work cap | Current evidence | Fallback |
 |---|---|---|---|
-| M1 | Serial target | Same chip-independent `[B,1]` path as ordinary CBv2 decode; no dedicated physical MTP artifact in this branch | Explicit opt-in only after tuple certification |
-| M2 | Serial target | Same chip-independent `[B,1]` path as ordinary CBv2 decode; no dedicated physical MTP artifact in this branch | Explicit opt-in only after tuple certification |
-| M3 | Serial target | Same chip-independent `[B,1]` path as ordinary CBv2 decode; no dedicated physical MTP artifact in this branch | Explicit opt-in only after tuple certification |
-| M4 | Serial target | M4 Max real QAT matrix: 40/40 parity, all 36 speculative cases active, zero mismatch rows | Available only by explicit config; prior bounded rectangular matrices passed |
-| M5 | Serial target | M5 Max real QAT matrix: 40/40 parity, all 36 speculative cases active, zero mismatch rows | Uncertified; prior rectangular QAT B8/L6 drift remains reproducible evidence |
-| Unknown/future | Serial target | Structural authority comes from the ordinary eager decode path | Explicit opt-in only after tuple certification |
+| M1 | `B * L <= 4` | Conservative pinned-MLX kernel bound; no physical matrix in this branch | Pre-draft target-only when no positive depth fits; explicit serial remains available |
+| M2 | `B * L <= 4` | Conservative pinned-MLX kernel bound; no physical matrix in this branch | Same |
+| M3 | `B * L <= 8` | Pinned-MLX kernel bound; no physical matrix in this branch | Same |
+| M4 | `B * L <= 8` | Real QAT exact shapes and partial rollback; fixed k=1 TPS non-regressing at B1/B2/B4 | Same |
+| M5 | `B * L <= 8` | Every safe-envelope shape exact through final logits and committed K/V; fixed k=1 TPS `+16.76%/+7.73%/+22.82%` at B1/B2/B4 | B8 target-only: zero draft/verify rounds, `-0.04%` TPS |
+| Unknown/future | `B * L <= 4` | Conservative floor only | Same |
 
-The serial default makes MTP functional across Apple Silicon; it does not claim
-a speedup over target-only. The measured-goodput controller may select depth
-zero when drafter plus serial target work is unprofitable. Rectangular mode is
-the acceleration optimization and requires independent evidence.
+Physical M1/M2/M3 parity and performance matrices remain required before
+raising their bounds. The lack of those machines is not converted into an
+unsafe optimistic assumption.
 
-#### Rectangular Optimization Plan
+#### Expanding The Exact Envelope
 
 1. Start from byte-identical committed KV and compare serial `[B,1]` target
    calls with one `[B,L]` call. Compare logits, argmax, pre-norm hidden,
@@ -1135,8 +1175,9 @@ the acceleration optimization and requires independent evidence.
 3. Bisect the first divergent operation across projections, RoPE, attention,
    quantized matmul, MoE, residuals, norms, and LM head. Record selected Metal
    kernels and exact tensor geometry.
-4. Force reference and optimized paths one operation at a time. If the root
-   cause is in MLX/Metal, land or pin the narrow fix before enabling the mode.
+4. Force reference and optimized paths one operation at a time. If a larger
+   shape crosses an MLX/Metal reduction boundary, keep the lower cap or land
+   and pin a narrow exact kernel fix before expanding it.
 5. Re-run real QAT matrices, repeated rejection, mixed batching, KV rollback,
    lifecycle, and release performance on every exact chip/OS/MLX/model tuple
    intended for rectangular use.
@@ -1144,8 +1185,8 @@ the acceleration optimization and requires independent evidence.
 Normal model load does not self-certify by running rectangular work. A future
 positive capability lookup may key on exact chip identifier, macOS range, MLX
 revision, model hash, quantization, batch ceiling, and verification width.
-Missing entries continue using serial target verification, not target-only and
-not an inactive MTP driver.
+Missing or oversized entries clamp before drafting and continue target-only;
+they do not deactivate the loaded target or silently run serial speculation.
 
 ### Audited Runtime Comparison
 
@@ -1161,7 +1202,7 @@ needs its own memory, synchronization, and kernel evidence.
 | Tree/top-k | No; one proposal per position and one linear verify | Gemma 4 speculator is linear, one token per step; other speculators have separate tree/block modes | Frozen-KV reuses EAGLE tree machinery and tests top-k 1 and 3; top-k > 1 is backend-restricted |
 | Sliding-window attention | Contiguous SWA staging is exact; paged SWA speculation disabled | KV manager accounts for sliding-window block removal against processed/in-flight tokens; Gemma shares the last non-shared layer of each attention type | Frozen draft resolves typed physical target layers and participates in SWA eviction/pool resolution; page/tree backend combinations are restricted |
 | Adaptive depth | Online batch-bucketed measured-goodput controller including depth zero | Optional configured batch-size-to-k schedule; it is not online measured goodput and is disabled with data parallelism | Generic adaptive runtime exists, but `FrozenKVMTPWorkerV2` asserts that adaptive mode is unsupported |
-| Tests and limits | Greedy token parity across real QAT/8bit pairings; serial-target M4/M5 QAT matrices active and exact; no stochastic CBv2 or paged-SWA proof; rectangular mode remains tuple-certified only | Generic chi-square rejection tests, processor/constraint tests, dynamic-depth unit tests, and Gemma E4B correctness/acceptance E2E. Gemma E2E allows partial token agreement and does not directly certify Apple kernels | Frozen-KV E4B GSM8K/acceptance E2E for top-k 1/3 and SWA-pool resolver tests. No Frozen stochastic/adaptive test; mixed chunking is disabled for speculative mode |
+| Tests and limits | Greedy token parity across real QAT/8bit pairings; serial-target M4/M5 matrices; exact automatic M4/M5 shape, rollback, and TPS evidence; conservative M1-M3 kernel bounds without physical matrices; no stochastic CBv2 or paged-SWA proof | Generic chi-square rejection tests, processor/constraint tests, dynamic-depth unit tests, and Gemma E4B correctness/acceptance E2E. Gemma E2E allows partial token agreement and does not directly certify Apple kernels | Frozen-KV E4B GSM8K/acceptance E2E for top-k 1/3 and SWA-pool resolver tests. No Frozen stochastic/adaptive test; mixed chunking is disabled for speculative mode |
 
 Primary audited paths:
 
@@ -1207,15 +1248,15 @@ fallback.
 | F1: stochastic linear MTP on current safe storage | F0; certified rectangular tuple or separately specified serial stochastic path | Device-only `p/q` processing, rejection/residual/bonus packet, RNG lanes, target logprobs; contiguous full/quantized/window staging only | Deterministic and chi-square matrices pass; target-authoritative readback; all unsupported sampler/constraint rows fall back; release goodput non-regressing where enabled |
 | F2: paged-window greedy staging | F0 | Temporary page reservation, committed/provisional tables, remap/copy commit, full-to-SWA mapping, lifecycle/accounting | Exact matrix and 10,000-operation state model pass; real Gemma boundary parity passes; zero page/accounting leaks; stochastic remains off on paged rows |
 | F3: compose stochastic and paged staging | F1 and F2 | Same stochastic transaction over paged full/SWA rows | Cross-product sampling, KV, logprob, cancellation, prefix, and capacity tests pass; no extra sync or distribution drift |
-| F4: rectangular optimization certification | F0; first-divergence root cause or invariant target kernel | Reviewed positive entries for exact chip/OS/MLX/model tuples | Exact rectangular entries pass all comparison gates; missing tuples remain on serial target MTP; optimization canaries stay default-off until separately approved |
+| F4: exact-envelope expansion | F0; first-divergence root cause or invariant target kernel | Reviewed larger positive bounds for exact chip/OS/MLX/model tuples | Larger shapes pass all comparison and TPS gates; missing tuples retain their existing conservative cap; oversized work clamps to target-only before drafting |
 | F5: controlled rollout | Relevant capability phases | Independent stochastic, paged-window, and chip allowlists plus kill switches and content-free telemetry | Owned-box canaries, production-duration replay, memory/energy/TTFT/goodput gates, rollback drill, and operator documentation complete |
 
 The future engine work is complete only when every enabled tuple is positively
 certified, stochastic output matches the target distribution, paged state is
 value-exact after every lifecycle exit, no new host synchronization appears,
 provider accounting includes all temporary work, and disabling any new
-capability returns immediately to the already-validated serial-target greedy
-MTP or target-only path.
+capability returns immediately to the already-validated automatic greedy MTP,
+explicit serial oracle, or target-only path.
 
 ### Explicit Non-Goals
 
@@ -1225,8 +1266,9 @@ top-k branching, relaxed/block acceptance, online assistant training, beam
 search, or per-row variable verification depth. SGLang's tree implementation
 is comparison evidence only. They also do not move speculation into the
 coordinator, change assistant artifact trust/ownership, promise bitwise
-stochastic equality between MTP-on and MTP-off, or default-enable rectangular
-verification on an uncertified tuple. Those are separate designs and reviews.
+stochastic equality between MTP-on and MTP-off, or expand the automatic
+rectangular envelope beyond a certified bound. Those are separate designs and
+reviews.
 
 ## Rollout Gates
 

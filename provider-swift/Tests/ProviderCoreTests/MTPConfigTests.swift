@@ -14,6 +14,22 @@ import Testing
 
 @Suite("MTP config keys")
 struct MTPConfigKeyTests {
+    @Test func automaticVerificationPolicyUsesConservativeGenerationBounds() {
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M1 Max") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M2 Ultra") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M3 Pro") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M4 Max") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M5") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Unknown") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "12"],
+            chipName: "Apple M1 Max") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "6"],
+            chipName: "Apple M5 Max") == 6)
+        #expect(MTPAutomaticVerificationPolicy.initialDraftTokens == 1)
+    }
+
 
     @Test("absent keys default to mtp=false, no drafter path")
     func defaultsWhenAbsent() {

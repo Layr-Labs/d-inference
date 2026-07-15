@@ -8,6 +8,8 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let configured: Bool
     public let active: Bool
     public let verificationMode: String?
+    public let rectangularVerificationRounds: Int
+    public let serialVerificationRounds: Int
     public let fallbackReason: MTPFallbackReason?
     public let assistantSource: SpecDecArtifactSource?
     public let assistantRevision: String?
@@ -29,6 +31,8 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
         self.configured = status.configured
         self.active = status.active && engineActive
         self.verificationMode = metrics?.verificationMode.rawValue
+        self.rectangularVerificationRounds = metrics?.rectangularVerificationRounds ?? 0
+        self.serialVerificationRounds = metrics?.serialVerificationRounds ?? 0
         self.fallbackReason = status.active && !engineActive ? .engineInactive : status.reason
         self.assistantSource = status.source
         self.assistantRevision = status.revision

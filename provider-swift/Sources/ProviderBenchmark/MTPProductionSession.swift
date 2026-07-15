@@ -163,6 +163,14 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
         mode: MTPBenchmarkMode,
         batchSize: Int
     ) async throws -> MTPBenchmarkSession {
+        let verificationMode: CBv2MTPVerificationMode = {
+            switch ProcessInfo.processInfo.environment["DARKBLOOM_MTP_VERIFICATION_MODE"] {
+            case "rectangular": return .rectangular
+            case "serial", "serial_target": return .serialTarget
+            default: return .automatic
+            }
+        }()
+        let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens()
         let mtpDrafter: (any CBv2MTPDrafter)?
         let mtpConfig: CBv2MTPConfig
         switch mode.kind {
@@ -179,14 +187,18 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
                 enabled: true,
                 maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens,
                 maxSpeculativeBatch: 8,
-                fixedDraftTokens: fixedDraftTokens)
+                fixedDraftTokens: fixedDraftTokens,
+                verificationMode: verificationMode,
+                maxAutomaticRectangularTokens: automaticRectangularTokens)
         case .adaptive:
             mtpDrafter = drafter
             mtpConfig = CBv2MTPConfig(
                 enabled: true,
                 maxDraftTokens: CBv2MTPConfig.testedMaxDraftTokens,
                 maxSpeculativeBatch: 8,
-                fixedDraftTokens: nil)
+                fixedDraftTokens: nil,
+                verificationMode: verificationMode,
+                maxAutomaticRectangularTokens: automaticRectangularTokens)
         }
         let engine = try EngineV2Factory.makeProductionEngine(
             model: servingModel,

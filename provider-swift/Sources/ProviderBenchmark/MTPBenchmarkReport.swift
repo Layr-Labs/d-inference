@@ -334,6 +334,9 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
 
     public let active: Bool
     public let verificationMode: String?
+    public let maxAutomaticRectangularTokens: Int?
+    public let rectangularVerificationRounds: Int?
+    public let serialVerificationRounds: Int?
     public let inactiveReason: String?
     public let selectedDepth: Int?
     public let decodeRowBucket: Int?
@@ -355,6 +358,9 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     public init(
         active: Bool,
         verificationMode: String? = nil,
+        maxAutomaticRectangularTokens: Int? = nil,
+        rectangularVerificationRounds: Int? = nil,
+        serialVerificationRounds: Int? = nil,
         inactiveReason: String? = nil,
         selectedDepth: Int? = nil,
         decodeRowBucket: Int? = nil,
@@ -375,6 +381,9 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     ) {
         self.active = active
         self.verificationMode = verificationMode
+        self.maxAutomaticRectangularTokens = maxAutomaticRectangularTokens
+        self.rectangularVerificationRounds = rectangularVerificationRounds
+        self.serialVerificationRounds = serialVerificationRounds
         self.inactiveReason = inactiveReason
         self.selectedDepth = selectedDepth
         self.decodeRowBucket = decodeRowBucket
@@ -400,6 +409,9 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
         MTPBenchmarkMetrics(
             active: active,
             verificationMode: verificationMode,
+            maxAutomaticRectangularTokens: maxAutomaticRectangularTokens,
+            rectangularVerificationRounds: rectangularVerificationRounds,
+            serialVerificationRounds: serialVerificationRounds,
             inactiveReason: inactiveReason,
             selectedDepth: selectedDepth,
             decodeRowBucket: decodeRowBucket,

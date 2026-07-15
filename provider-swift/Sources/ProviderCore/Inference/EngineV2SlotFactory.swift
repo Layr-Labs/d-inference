@@ -318,9 +318,13 @@ enum EngineV2SlotFactory {
         let servingModel = prepared.servingModel
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
+        let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: environment)
         let mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
-            fixedDraftTokens: nil)
+            fixedDraftTokens: MTPAutomaticVerificationPolicy.initialDraftTokens,
+            verificationMode: .automatic,
+            maxAutomaticRectangularTokens: automaticRectangularTokens)
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
         // adds its generation-config action stops) — from the
         // scheduler-free policy home.

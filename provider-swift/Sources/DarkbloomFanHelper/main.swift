@@ -21,6 +21,9 @@ guard FanCodeRequirements.ownIdentityIsProduction else {
 
 let paths = FanServicePaths.production
 do {
+    var failureFileMayExist = FileManager.default.fileExists(
+        atPath: paths.lastFailure.path
+    )
     let previousFailure = try? FanDurableFile.readJSON(
         FanLastFailure.self,
         from: paths.lastFailure
@@ -59,6 +62,7 @@ do {
                 permissions: 0o600
             )
             persistedFailure = discoveryError
+            failureFileMayExist = true
         } catch {
             persistedFailure = previousFailure?.message
         }
@@ -105,6 +109,7 @@ do {
             : [],
         initialLastError: discoveryError ?? previousFailure?.message,
         initialPersistedLastError: persistedFailure,
+        initialFailureFileMayExist: failureFileMayExist,
         initialDiscoveryError: discoveryError
     )
     let xpcService = FanXPCService(

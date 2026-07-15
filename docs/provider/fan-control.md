@@ -140,6 +140,11 @@ self-updater never replaces the root-installed copy. A compatible helper keeps
 working; a protocol mismatch grants no lease and leaves the fans in Auto. Run
 `sudo darkbloom fan enable` again to install a newer bundled helper.
 
+The recovery changes use local fan protocol v2. A v2 provider deliberately
+cannot renew a lease on the original v1 helper, because v1 lacks the restore and
+rediscovery guarantees above. The `fan-helper-v1` bundle capability marker is
+unchanged: it identifies the signed helper artifact, not its local XPC protocol.
+
 The release workflow, installer, and self-updater require agreement between the
 CLI capability string, sealed `fan-helper-v1` marker, nested executable mode, and
 the helper's exact Developer ID signature. Pre-v0.7.9 bundles with none of these

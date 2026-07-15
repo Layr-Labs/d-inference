@@ -45,6 +45,7 @@ actor FanDaemon {
     private var fanReadings: [FanReading] = []
     private var lastError: String?
     private var persistedLastError: String?
+    private var failureFileMayExist: Bool
     private var lastMaintenanceAt: TimeInterval = 0
 
     init(
@@ -62,6 +63,7 @@ actor FanDaemon {
         baselineSensorKeys: [SMCKey] = [],
         initialLastError: String? = nil,
         initialPersistedLastError: String? = nil,
+        initialFailureFileMayExist: Bool = false,
         initialDiscoveryError: String? = nil
     ) {
         self.configuration = configuration
@@ -102,6 +104,7 @@ actor FanDaemon {
         self.mode = configuration.enabled ? .waitingForProvider : .disabled
         self.lastError = initialLastError
         self.persistedLastError = initialPersistedLastError
+        self.failureFileMayExist = initialFailureFileMayExist
     }
 
     func start() {
@@ -486,17 +489,23 @@ actor FanDaemon {
                 owner: journalOwner
             )
             persistedLastError = message
+            failureFileMayExist = true
         } catch {
             persistedLastError = nil
         }
     }
 
     private func clearLastError() {
-        guard lastError != nil || persistedLastError != nil else { return }
+        guard lastError != nil || failureFileMayExist else { return }
         lastError = nil
+        guard failureFileMayExist else {
+            persistedLastError = nil
+            return
+        }
         do {
             try FanDurableFile.remove(paths.lastFailure)
             persistedLastError = nil
+            failureFileMayExist = false
         } catch {
             // Keep the persistence marker so the next healthy tick retries
             // removal without continuing to surface a resolved active error.

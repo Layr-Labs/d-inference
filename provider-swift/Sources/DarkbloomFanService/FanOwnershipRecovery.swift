@@ -35,7 +35,15 @@ public enum FanOwnershipRecovery {
         var failures: [FanRollbackFailure] = []
         var unresolvedFans: [Int] = []
         var recoverableFans: [FanCapability] = []
-        for index in journal.fanIndices {
+        var recoveryIndices = Set(journal.fanIndices)
+        if journal.ownsFtst {
+            // v1 helpers could narrow fanIndices to empty after an immediate
+            // pre-release Auto readback while retaining Ftst ownership. Treat
+            // every discovered fan as possibly controlled during migration so
+            // Ftst release is always followed by complete fan verification.
+            recoveryIndices.formUnion(inventory.fans.map(\.index))
+        }
+        for index in recoveryIndices.sorted() {
             guard let fan = inventory.fans.first(where: { $0.index == index }) else {
                 unresolvedFans.append(index)
                 failures.append(FanRollbackFailure(

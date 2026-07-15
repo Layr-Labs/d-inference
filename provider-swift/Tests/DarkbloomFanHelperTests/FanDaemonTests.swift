@@ -76,13 +76,13 @@ struct FanDaemonTests {
         #expect(!(await harness.daemon.status()).providerActive)
     }
 
-    @Test("protocol mismatch never grants a lease")
-    func protocolMismatch() async throws {
+    @Test("legacy helper protocol never grants a lease")
+    func legacyProtocolMismatch() async throws {
         let harness = try makeHarness()
         defer { try? FileManager.default.removeItem(at: harness.root) }
         let reply = await harness.daemon.renewLease(
             sessionID: UUID(),
-            protocolVersion: FanIPC.protocolVersion + 1,
+            protocolVersion: FanIPC.protocolVersion - 1,
             providerVersion: "0.7.9"
         )
         #expect(!reply.ok)

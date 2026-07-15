@@ -2,8 +2,8 @@ import Foundation
 
 public enum FanIPC {
     public static let machServiceName = "io.darkbloom.fan"
-    public static let protocolVersion = 1
-    public static let helperVersion = "1"
+    public static let protocolVersion = 2
+    public static let helperVersion = "2"
     public static let helperIdentifier = "io.darkbloom.fan-helper"
     public static let providerIdentifier = "io.darkbloom.provider"
     public static let teamID = "SLDQ2GJ6TL"

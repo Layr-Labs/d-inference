@@ -108,7 +108,7 @@ struct FanServiceTests {
         }
     }
 
-    @Test("startup reconciliation restores only journaled fans and Ftst")
+    @Test("Ftst startup reconciliation verifies every fan")
     func journalRecovery() throws {
         let backend = RecoveryBackend()
         let inventory = recoveryInventory()
@@ -133,7 +133,38 @@ struct FanServiceTests {
         )
 
         #expect(backend.byte(for: "F0Md") == 0)
-        #expect(backend.byte(for: "F1Md") == 1)
+        #expect(backend.byte(for: "F1Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("legacy Ftst-only journal restores every discovered fan")
+    func legacyFtstOnlyJournalRecovery() throws {
+        let backend = RecoveryBackend()
+        let inventory = recoveryInventory()
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-legacy-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "F1Md") == 0)
         #expect(backend.byte(for: "Ftst") == 0)
         #expect(!FileManager.default.fileExists(atPath: journal.path))
     }

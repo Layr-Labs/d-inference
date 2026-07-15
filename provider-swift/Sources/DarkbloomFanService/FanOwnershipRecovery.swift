@@ -60,34 +60,11 @@ public enum FanOwnershipRecovery {
             )
             throw FanOwnershipRecoveryError(failures: failures)
         }
-        if verifyAllFans, !journal.ownsFtst {
-            let failures = FanAutomaticRestore.verifyAutomatic(
-                backend: backend,
-                fans: inventory.fans,
-                timing: timing
-            )
-            guard !failures.isEmpty else {
-                try FanDurableFile.remove(journalURL)
-                return
-            }
-            try FanDurableFile.writeJSON(
-                FanSessionJournal(
-                    fanIndices: journal.fanIndices,
-                    ownsFtst: false,
-                    verifyAllFans: true
-                ),
-                to: journalURL,
-                permissions: 0o600,
-                owner: journalOwner
-            )
-            throw FanOwnershipRecoveryError(failures: failures)
-        }
-
         var failures: [FanRollbackFailure] = []
-        var unresolvedFans: [Int] = []
+        var unresolvedFans = Set<Int>()
         var recoverableFans: [FanCapability] = []
         var recoveryIndices = Set(journal.fanIndices)
-        if verifyAllFans {
+        if journal.ownsFtst {
             // v1 helpers could narrow fanIndices to empty after an immediate
             // pre-release Auto readback while retaining Ftst ownership. Treat
             // every discovered fan as possibly controlled during migration so
@@ -96,7 +73,7 @@ public enum FanOwnershipRecovery {
         }
         for index in recoveryIndices.sorted() {
             guard let fan = inventory.fans.first(where: { $0.index == index }) else {
-                unresolvedFans.append(index)
+                unresolvedFans.insert(index)
                 failures.append(FanRollbackFailure(
                     fanIndex: index,
                     step: .restoreMode,
@@ -114,8 +91,24 @@ public enum FanOwnershipRecovery {
             ownsFtst: journal.ownsFtst,
             timing: timing
         )
-        unresolvedFans.append(contentsOf: outcome.unresolvedFanIndices)
+        unresolvedFans.formUnion(outcome.unresolvedFanIndices)
         failures.append(contentsOf: outcome.failures)
+
+        if verifyAllFans, !outcome.ownsFtst {
+            let verificationFailures = FanAutomaticRestore.verifyAutomatic(
+                backend: backend,
+                fans: inventory.fans,
+                timing: timing
+            )
+            failures.append(contentsOf: verificationFailures)
+            for failure in verificationFailures {
+                if let index = failure.fanIndex,
+                   recoveryIndices.contains(index)
+                {
+                    unresolvedFans.insert(index)
+                }
+            }
+        }
 
         guard !failures.isEmpty else {
             try FanDurableFile.remove(journalURL)
@@ -123,7 +116,7 @@ public enum FanOwnershipRecovery {
         }
         try FanDurableFile.writeJSON(
             FanSessionJournal(
-                fanIndices: unresolvedFans,
+                fanIndices: Array(unresolvedFans),
                 ownsFtst: outcome.ownsFtst,
                 verifyAllFans: verifyAllFans
             ),

@@ -241,6 +241,113 @@ struct FanServiceTests {
         #expect(!FileManager.default.fileExists(atPath: journal.path))
     }
 
+    @Test("verification marker retains a tracked fan missing from partial discovery")
+    func verificationMarkerSurvivesPartialDiscovery() throws {
+        let backend = RecoveryBackend()
+        backend.setByte("F0Md", to: 0)
+        let inventory = recoveryInventory()
+        let partialInventory = FanInventory(
+            chipFamily: inventory.chipFamily,
+            fans: [inventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: inventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-partial-inventory-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [1],
+                ownsFtst: false,
+                verifyAllFans: true
+            ),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: partialInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        let pending = try FanDurableFile.readJSON(
+            FanSessionJournal.self,
+            from: journal,
+            requireRootOwnership: false
+        )
+        #expect(pending.fanIndices == [1])
+        #expect(pending.verifyAllFans)
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+        #expect(backend.byte(for: "F1Md") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("verification marker retries writes for tracked fans")
+    func verificationMarkerRetriesTrackedFan() throws {
+        let backend = RecoveryBackend(staleAutomaticReadbacks: 1)
+        let fullInventory = recoveryInventory()
+        let inventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-tracked-retry-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [0],
+                ownsFtst: false,
+                verifyAllFans: true
+            ),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: inventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(backend.byte(for: "F0Md") == 1)
+
+        try FanOwnershipRecovery.reconcile(
+            backend: backend,
+            inventory: inventory,
+            journalURL: journal,
+            requireRootOwnership: false,
+            journalOwner: nil,
+            timing: recoveryTestTiming()
+        )
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(!FileManager.default.fileExists(atPath: journal.path))
+    }
+
     @Test("durable writer rejects a symlink parent directory")
     func durableWriterRejectsSymlinkParent() throws {
         let root = FileManager.default.temporaryDirectory

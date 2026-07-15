@@ -247,7 +247,29 @@ def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
     repository = snapshot.parent.parent
     config = confined_regular_file(snapshot / "config.json", repository)
     config_size = config.stat().st_size
+    if config_size > 4 * 1024 * 1024:
+        raise ValueError("config.json exceeds the 4 MiB launch-side cap")
     config_digest = sha256_file(config)
+    # Independently parse the coverage-relevant metadata from the SAME bytes
+    # that were hashed, so the supervisor's coverage gates do not depend
+    # solely on the Swift inspector's transcription of these fields.
+    with open(config, "rb") as handle:
+        parsed = json.loads(read_bounded(handle.fileno(), 4 * 1024 * 1024))
+    if not isinstance(parsed, dict):
+        raise ValueError("config.json root is not an object")
+    raw_quantization = parsed.get("quantization")
+    config_metadata = {
+        "model_type": parsed.get("model_type"),
+        "dtype": parsed.get("dtype"),
+        "quantization_bits": (
+            raw_quantization.get("bits")
+            if isinstance(raw_quantization, dict)
+            and isinstance(raw_quantization.get("bits"), int)
+            and not isinstance(raw_quantization.get("bits"), bool)
+            else None
+        ),
+        "has_quantization": isinstance(raw_quantization, dict),
+    }
     entries, truncated = bounded_scandir(snapshot, MAX_SNAPSHOT_ENTRIES)
     if truncated:
         raise ValueError(f"snapshot entry scan exceeds {MAX_SNAPSHOT_ENTRIES}")
@@ -302,6 +324,7 @@ def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
         "revision": revision,
         "configSizeBytes": config_size,
         "configSHA256": config_digest,
+        "configMetadata": config_metadata,
         "weightFiles": weights,
         "artifactFingerprint": hashlib.sha256(payload).hexdigest(),
     }
@@ -439,6 +462,8 @@ class SecureRunDirectory:
             try:
                 os.unlink(temporary, dir_fd=self.directory_fd)
             except FileNotFoundError:
+                # os.replace already moved the temp file into place, so
+                # best-effort cleanup finding nothing is the success case.
                 pass
 
     def read_regular(self, name: str, maximum_bytes: int) -> tuple[bytes, os.stat_result]:
@@ -512,17 +537,23 @@ def terminate_group(process: subprocess.Popen[Any]) -> None:
     """Terminate the supervised session and always reap the direct child."""
 
     def signal_supervised(sig: int) -> None:
-        if process.poll() is not None:
-            return
+        # Always try the GROUP first, even when the direct worker has already
+        # exited: a crashed worker can leave its `swift test` descendants
+        # alive in the supervised group, and the pgid stays valid while any
+        # member lives. Returning early on poll() would skip both the SIGTERM
+        # and the SIGKILL and orphan a live MLX benchmark.
         try:
             os.killpg(process.pid, sig)
             return
         except ProcessLookupError:
+            # The whole group is gone.
             return
         except PermissionError:
             # Sandboxed macOS sessions can deny process-group signalling even
             # though the direct child remains ours. Fall back to that child;
             # its own cleanup owns any descendants.
+            if process.poll() is not None:
+                return
             try:
                 process.send_signal(sig)
             except (ProcessLookupError, PermissionError):
@@ -760,8 +791,11 @@ def expected_coverage(report: dict[str, Any]) -> dict[str, str]:
         and effective_quantization_bits(target) == 4
         and effective_quantization_bits(assistant) == 4
     )
+    # Both official Gemma 4 target config types count: multimodal checkpoints
+    # report "gemma4" and text-only checkpoints report "gemma4_text" (mirrors
+    # MTPBenchmarkCoverage.shortContextMatrix).
     eight_bit_target = (
-        target.get("modelType") == "gemma4"
+        target.get("modelType") in ("gemma4", "gemma4_text")
         and effective_quantization_bits(target) == 8
     )
     assistant_dtype = str(assistant.get("dtype", "")).lower().replace("_", "").replace("-", "")
@@ -775,7 +809,11 @@ def expected_coverage(report: dict[str, Any]) -> dict[str, str]:
         "eightBitTargetPairing": "covered" if eight_bit_target else "not_run",
         "bf16AssistantPairing": "covered" if bf16_assistant else "not_run",
         "officialTensorFixtures": "not_implemented",
+        # The short cached-model matrix never exercises tool templates or
+        # image prefill; a report claiming either as covered must fail.
+        "toolTemplateDecodeParity": "not_in_this_report",
         "structuredOutput": "not_implemented",
+        "imagePrefill": "not_in_this_report",
         "videoPrefill": "not_implemented",
         "longSlidingAndPrefixContexts": "not_implemented",
         "opaqueTokenEvidence": "covered",
@@ -807,6 +845,20 @@ def validate_report_artifact(
     ):
         if report_artifact.get(key) != expected[key]:
             raise ValueError(f"report {label} {key} does not match launch provenance")
+    # Anchor the coverage-relevant metadata to the launch-side parse of the
+    # SAME hashed config bytes: a regressed Swift inspector must not be able
+    # to claim false QAT/8-bit/BF16 coverage while fingerprints still match.
+    metadata = expected.get("configMetadata") or {}
+    if report_artifact.get("modelType") != metadata.get("model_type"):
+        raise ValueError(f"report {label} modelType does not match launch config.json")
+    raw_dtype = metadata.get("dtype")
+    if raw_dtype is not None and report_artifact.get("dtype") != raw_dtype:
+        raise ValueError(f"report {label} dtype does not match launch config.json")
+    if not metadata.get("has_quantization") and report_artifact.get("quantization") is not None:
+        raise ValueError(f"report {label} invents quantization absent from launch config.json")
+    raw_bits = metadata.get("quantization_bits")
+    if raw_bits is not None and effective_quantization_bits(report_artifact) != raw_bits:
+        raise ValueError(f"report {label} quantization bits do not match launch config.json")
 
 
 def validate_report(
@@ -1321,6 +1373,8 @@ def self_test_output_safety() -> int:
         try:
             run.path.unlink()
         except OSError:
+            # Self-test teardown is best-effort; a failed unlink must not
+            # mask the assertion result above.
             pass
         for path in (held, outside):
             try:
@@ -1328,6 +1382,8 @@ def self_test_output_safety() -> int:
                     child.unlink()
                 path.rmdir()
             except OSError:
+                # Best-effort teardown: the directory may be non-empty or
+                # already gone after the checks above.
                 pass
 
 

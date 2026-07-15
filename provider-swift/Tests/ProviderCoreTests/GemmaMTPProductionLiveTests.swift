@@ -85,9 +85,12 @@ struct GemmaMTPProductionLiveTests {
                 $0.lastPathComponent == "config.json" || $0.pathExtension == "safetensors"
             }
         for source in assistantFiles {
-            try FileManager.default.createSymbolicLink(
-                at: localArtifactDirectory.appendingPathComponent(source.lastPathComponent),
-                withDestinationURL: source.resolvingSymlinksInPath())
+            // Copy, never symlink: SpecDecStore.inspectLocalArtifact rejects
+            // any symlinked member, which would fail the #require below
+            // before the loader-failure fallback under test ever runs.
+            try FileManager.default.copyItem(
+                at: source.resolvingSymlinksInPath(),
+                to: localArtifactDirectory.appendingPathComponent(source.lastPathComponent))
         }
         let artifact = try #require(
             SpecDecStore.inspectLocalArtifact(path: localArtifactDirectory.path))

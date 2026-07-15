@@ -557,7 +557,10 @@ public struct MTPBenchmarkCoverage: Codable, Sendable {
         let isQAT4 = targetName.contains("qat") && assistantName.contains("qat")
             && effectiveQuantizationBits(target) == 4
             && effectiveQuantizationBits(assistant) == 4
-        let isEightBitTarget = target.modelType == "gemma4"
+        // Both official Gemma 4 target config types count: multimodal
+        // checkpoints report "gemma4" and text-only checkpoints report
+        // "gemma4_text" (mirrors EngineV2SupportedModels.isGemma4Target).
+        let isEightBitTarget = (target.modelType == "gemma4" || target.modelType == "gemma4_text")
             && effectiveQuantizationBits(target) == 8
         let normalizedAssistantDType = assistant.dtype?
             .lowercased()

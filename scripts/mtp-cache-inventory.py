@@ -447,6 +447,8 @@ class SecureInventoryOutput:
             try:
                 os.unlink(temporary, dir_fd=self.directory_fd)
             except FileNotFoundError:
+                # os.replace already moved the temp file into place, so
+                # best-effort cleanup finding nothing is the success case.
                 pass
 
     def close(self) -> None:
@@ -458,6 +460,7 @@ def terminate_process_group(process: subprocess.Popen[Any]) -> None:
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
+        # The whole group already exited; nothing left to terminate.
         pass
     deadline = time.monotonic() + 2
     while process.poll() is None and time.monotonic() < deadline:
@@ -466,6 +469,7 @@ def terminate_process_group(process: subprocess.Popen[Any]) -> None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
+            # The group exited between the deadline check and the kill.
             pass
     try:
         process.wait(timeout=2)
@@ -500,6 +504,8 @@ def self_test_output_safety() -> int:
         try:
             output.path.unlink()
         except OSError:
+            # Self-test teardown is best-effort; a failed unlink must not
+            # mask the assertion result above.
             pass
         for path in (held, outside):
             try:
@@ -507,6 +513,8 @@ def self_test_output_safety() -> int:
                     child.unlink()
                 path.rmdir()
             except OSError:
+                # Best-effort teardown: the directory may be non-empty or
+                # already gone after the checks above.
                 pass
 
 

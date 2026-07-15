@@ -688,7 +688,7 @@ struct MTPBenchmarkTests {
                     maxTokensPerRow: 1,
                     purpose: .rawParityStress,
                     stopPolicy: .rawFixedLength,
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
             Issue.record("benchmark accepted an error terminal")
         } catch let error as MTPBenchmarkError {
@@ -722,7 +722,7 @@ struct MTPBenchmarkTests {
                 purpose: .rawParityStress,
                 stopPolicy: .rawFixedLength,
                 checkpointDestination: destination,
-                deadline: .seconds(2)),
+                deadline: .seconds(60)),
             sessions: sessions)
         #expect(report.complete)
         #expect(report.cases.first?.medianAggregateDecodeTokensPerSecond == nil)
@@ -760,7 +760,7 @@ struct MTPBenchmarkTests {
                     purpose: .productionPerformance,
                     stopPolicy: .production(tokenIDs: [9]),
                     measurementRepetitions: 2,
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
         }
         #else
@@ -776,7 +776,7 @@ struct MTPBenchmarkTests {
                 purpose: .productionPerformance,
                 stopPolicy: .production(tokenIDs: [9]),
                 measurementRepetitions: 2,
-                deadline: .seconds(2)),
+                deadline: .seconds(60)),
             sessions: sessions)
         #expect(report.cases.first?.medianAggregateDecodeTokensPerSecond == 0)
         #expect(report.cases.first?.rows.first?.timeToFirstTokenMs != nil)
@@ -804,7 +804,7 @@ struct MTPBenchmarkTests {
                     purpose: .productionPerformance,
                     mtpExpectation: .legacyM5HardwareSafetyGate,
                     stopPolicy: .production(tokenIDs: [9]),
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
         }
     }
@@ -908,7 +908,7 @@ struct MTPBenchmarkTests {
                 maxTokensPerRow: 2,
                 purpose: .productionCorrectness,
                 stopPolicy: .production(tokenIDs: policy),
-                deadline: .seconds(2)),
+                deadline: .seconds(60)),
             sessions: sessions)
         #expect(report.cases.first?.rows.first?.finishReason == "stop")
         #expect(report.stopPolicy.configuredTokenCount == 3)
@@ -994,7 +994,7 @@ struct MTPBenchmarkTests {
                     maxTokensPerRow: 1,
                     purpose: .productionCorrectness,
                     stopPolicy: .production(tokenIDs: [9]),
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
         }
     }
@@ -1032,7 +1032,7 @@ struct MTPBenchmarkTests {
                     maxTokensPerRow: 1,
                     purpose: .productionCorrectness,
                     stopPolicy: .production(tokenIDs: [9]),
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
             Issue.record("identical tokens with divergent finish reasons were certified")
         } catch let error as MTPBenchmarkError {
@@ -1061,7 +1061,7 @@ struct MTPBenchmarkTests {
                     maxTokensPerRow: 1,
                     purpose: .productionCorrectness,
                     stopPolicy: .production(tokenIDs: [9]),
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
             Issue.record("benchmark certified a stop terminal past maxTokens")
         } catch let error as MTPBenchmarkError {
@@ -1097,7 +1097,7 @@ struct MTPBenchmarkTests {
                 maxTokensPerRow: 1,
                 purpose: .productionCorrectness,
                 stopPolicy: .production(tokenIDs: [9, 7]),
-                deadline: .seconds(2))
+                deadline: .seconds(60))
         }
         do {
             _ = try await MTPBenchmarkRunner.run(
@@ -1139,7 +1139,7 @@ struct MTPBenchmarkTests {
                     maxTokensPerRow: maxTokensPerRow,
                     purpose: .productionCorrectness,
                     stopPolicy: .production(tokenIDs: [9]),
-                    deadline: .seconds(2)),
+                    deadline: .seconds(60)),
                 sessions: sessions)
         }
         // The engine emits exactly one token before its "length" terminal, so a

@@ -49,6 +49,30 @@ private actor GatedFunnelCatalog: SpecDecCatalogLooking {
     private func recordCancellation() { cancellations += 1 }
 }
 
+private actor StaleFunnelCatalog: SpecDecCatalogLooking {
+    private let stale: CatalogModel
+    private let fresh: CatalogModel
+    private(set) var cachedCalls = 0
+    private(set) var freshCalls = 0
+
+    init(stale: CatalogModel, fresh: CatalogModel) {
+        self.stale = stale
+        self.fresh = fresh
+    }
+
+    func cachedModel(id: String) -> CatalogModel? {
+        cachedCalls += 1
+        return stale
+    }
+
+    func model(id: String) async throws -> CatalogModel? { stale }
+
+    func freshModel(id: String) async throws -> CatalogModel? {
+        freshCalls += 1
+        return fresh
+    }
+}
+
 private actor SlowFunnelCatalog: SpecDecCatalogLooking {
     func cachedModel(id: String) -> CatalogModel? { nil }
     func model(id: String) async throws -> CatalogModel? {
@@ -211,26 +235,71 @@ struct SpecDecArtifactFunnelTests {
     @Test("missing and malformed metadata return stable fail-open reasons")
     func metadataReasons() async {
         let missingCatalog = FunnelCatalog(funnelModel())
-        let missing = await funnel(
-            catalog: missingCatalog,
-            root: FileManager.default.temporaryDirectory
-        ).prepare(
+        let missingFunnel = funnel(
+            catalog: missingCatalog, root: FileManager.default.temporaryDirectory)
+        let missing = await missingFunnel.prepare(
             .init(
                 modelId: "gemma-4-target", modelType: "gemma4", enabled: true,
                 localPath: nil, allowDownload: true, environment: [:]))
         #expect(missing.status.reason == .metadataMissing)
+        await missingFunnel.shutdown()
 
         let malformedCatalog = FunnelCatalog(funnelModel(metadata: [
             "spec_dec": .object([("r2_prefix", .string("../escape"))])
         ]))
-        let malformed = await funnel(
-            catalog: malformedCatalog,
-            root: FileManager.default.temporaryDirectory
-        ).prepare(
+        let malformedFunnel = funnel(
+            catalog: malformedCatalog, root: FileManager.default.temporaryDirectory)
+        let malformed = await malformedFunnel.prepare(
             .init(
                 modelId: "gemma-4-target", modelType: "gemma4", enabled: true,
                 localPath: nil, allowDownload: true, environment: [:]))
         #expect(malformed.status.reason == .metadataMalformed)
+        await malformedFunnel.shutdown()
+    }
+
+    @Test("stale cached entry without spec_dec triggers one cooldown-gated refresh")
+    func staleCatalogEntryRefreshes() async throws {
+        let catalog = StaleFunnelCatalog(
+            stale: funnelModel(),
+            fresh: funnelModel(metadata: [
+                "spec_dec": .object([("r2_prefix", .string("v2-specdec/gemma/v1"))])
+            ]))
+        let store = FileManager.default.temporaryDirectory
+            .appendingPathComponent("specdec-stale-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: store) }
+        let artifactFunnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(storeRoot: store, cdnBaseURL: "http://127.0.0.1:1"),
+            catalog: catalog)
+        let request = SpecDecArtifactFunnel.Request(
+            modelId: "gemma-4-target", modelType: "gemma4", enabled: true,
+            localPath: nil, allowDownload: true, environment: [:])
+
+        // The cached entry is stale (no spec_dec): the prepare itself stays
+        // fail-open, but a background catalog refresh must be scheduled so a
+        // coordinator that added spec_dec to an existing id can roll out
+        // without a provider restart.
+        let first = await artifactFunnel.prepare(request)
+        #expect(first.status.reason == .metadataMissing)
+        // An immediate second prepare must not schedule a second refresh
+        // (in-flight dedupe now, cooldown stamp afterwards).
+        _ = await artifactFunnel.prepare(request)
+        for _ in 0 ..< 200 {
+            if await catalog.freshCalls > 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(await catalog.freshCalls == 1)
+
+        // Wait for the refresh task to finish (its prefetch against the dead
+        // CDN fails fast), then verify the cooldown blocks a re-refresh.
+        for _ in 0 ..< 200 {
+            if await artifactFunnel.prefetchInFlightForTesting == 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        _ = await artifactFunnel.prepare(request)
+        await artifactFunnel.shutdown()
+        #expect(await catalog.freshCalls == 1)
+        // A local-only prepare never schedules refreshes at all.
+        #expect(await catalog.cachedCalls > 0)
     }
 
     @Test("local-only policy never constructs or queries a coordinator catalog")

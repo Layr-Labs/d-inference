@@ -150,6 +150,24 @@ extension ProviderLoop {
         var mtpPreparation = await specDecPreparation(
             modelId: modelId, modelInfo: modelInfo)
 
+        // Re-check residency and in-flight loads after the preparation await:
+        // a concurrent request for the same cold model can pass the checks
+        // above, complete its ENTIRE load (returning `isLoadingAny` to false),
+        // and install the slot while this task was suspended. Without this
+        // recheck the continuation would start a second load of a resident
+        // model — double pending-load reservation, possible eviction of the
+        // warm slot, and a leaked bridge.
+        while modelsUnloading.contains(modelId) {
+            await waitForModelUnload(modelId)
+            if isShuttingDown { throw CancellationError() }
+        }
+        if modelSlots[modelId] != nil { return }
+        if modelsLoading.contains(modelId) {
+            try await ensureModelLoaded(
+                modelId: modelId, allowEviction: allowEviction)
+            return
+        }
+
         // Serialize loads so concurrent eviction decisions don't interleave
         while isLoadingAny {
             await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
@@ -778,10 +796,13 @@ extension ProviderLoop {
         guard let modelInfo = advertisedModels[modelId] else {
             return false
         }
-        // Resolve/size the optional assistant before the load decision, but do
-        // not let it participate in a fast rejection: a target that fits must
-        // remain loadable and can fall back to plain decode.
-        _ = await specDecPreparation(modelId: modelId, modelInfo: modelInfo)
+        // The optional assistant deliberately plays NO role here: it cannot
+        // cause a fast rejection (a target that fits must remain loadable and
+        // can fall back to plain decode), and this pre-accept path must not
+        // touch the spec-dec funnel at all — admission is non-mutating and
+        // must not schedule catalog or artifact prefetch work for requests
+        // that may be rejected. The accepted load path performs the real
+        // preparation (and any prefetch) itself.
         let requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
             headroomGb: Self.loadHeadroomGb)

@@ -3,10 +3,19 @@ import Foundation
 protocol SpecDecCatalogLooking: Sendable {
     func cachedModel(id: String) async -> CatalogModel?
     func model(id: String) async throws -> CatalogModel?
+    /// Bypass the cache and refetch the catalog. Used when a CACHED entry is
+    /// suspected stale (present, but without usable `spec_dec` metadata) so a
+    /// coordinator that adds spec-dec to an existing model id can roll out
+    /// without a provider restart. New builds get new ids and refresh through
+    /// the ordinary `model(id:)` miss path.
+    func freshModel(id: String) async throws -> CatalogModel?
 }
 
 extension SpecDecCatalogLooking {
     func cachedModel(id: String) async -> CatalogModel? { nil }
+    func freshModel(id: String) async throws -> CatalogModel? {
+        try await model(id: id)
+    }
 }
 
 actor SpecDecCatalogLookup: SpecDecCatalogLooking {
@@ -25,6 +34,10 @@ actor SpecDecCatalogLookup: SpecDecCatalogLooking {
         if let model = cached?[id] { return model }
         // Refresh on a miss so a provider that stays up across a newly
         // published desired build can resolve that build's immutable pointer.
+        return try await freshModel(id: id)
+    }
+
+    func freshModel(id: String) async throws -> CatalogModel? {
         let models = try await client.fetchCatalog()
         // ModelCatalogClient rejects oversized/unbounded responses before this
         // actor can retain them.
@@ -57,6 +70,11 @@ actor SpecDecArtifactFunnel {
     private let maximumPrefetches = 2
     private var isShutdown = false
     private var shutdownTasks: [Task<Void, Never>] = []
+    /// Cooldown for stale-entry catalog refreshes so a model that is
+    /// permanently missing spec-dec metadata cannot make every load attempt
+    /// refetch the catalog. Internal-settable for tests.
+    var catalogRefreshCooldown: Duration = .seconds(600)
+    private var catalogRefreshedAt: [String: ContinuousClock.Instant] = [:]
 
     init(resolver: SpecDecResolver, catalog: (any SpecDecCatalogLooking)?) {
         self.resolver = resolver
@@ -149,6 +167,14 @@ actor SpecDecArtifactFunnel {
         let resolution = await resolver.resolve(model: model, allowDownload: false)
         if resolution.reason == .artifactNotCached, request.allowDownload {
             scheduleArtifactPrefetch(modelId: request.modelId, model: model)
+        } else if let reason = resolution.reason,
+            reason == .metadataMissing || reason == .metadataMalformed,
+            request.allowDownload
+        {
+            // The cached catalog entry exists but carries no usable spec_dec.
+            // The coordinator may have added it after this cache filled, so
+            // refresh (cooldown-gated) instead of staying stuck until restart.
+            scheduleCatalogRefresh(modelId: request.modelId, catalog: catalog)
         }
         guard let artifact = resolution.artifact else {
             return .init(
@@ -157,6 +183,9 @@ actor SpecDecArtifactFunnel {
         }
         return .init(artifact: artifact, status: .candidate(artifact))
     }
+
+    /// Number of in-flight prefetch/refresh tasks (test observability).
+    var prefetchInFlightForTesting: Int { prefetches.count }
 
     func shutdown() async {
         if isShutdown {
@@ -190,6 +219,47 @@ actor SpecDecArtifactFunnel {
             let reason: MTPFallbackReason?
             do {
                 guard let model = try await catalog.model(id: modelId) else {
+                    self.finishPrefetch(
+                        modelId: modelId, id: id, reason: .catalogModelMissing)
+                    return
+                }
+                guard self.prefetchMayContinue(modelId: modelId, id: id) else {
+                    return
+                }
+                let result = await resolver.prefetch(model: model)
+                reason = result.artifact == nil ? result.reason : nil
+            } catch {
+                reason = .catalogUnavailable
+            }
+            self.finishPrefetch(modelId: modelId, id: id, reason: reason)
+        }
+        prefetches[modelId] = Prefetch(id: id, task: task)
+    }
+
+    /// Refresh a suspected-stale cached catalog entry, then prefetch the
+    /// artifact if the refreshed metadata now resolves. Reuses the prefetch
+    /// ledger for dedupe/shutdown and is additionally cooldown-gated.
+    private func scheduleCatalogRefresh(
+        modelId: String,
+        catalog: any SpecDecCatalogLooking
+    ) {
+        guard !isShutdown,
+            prefetches[modelId] == nil,
+            prefetches.count < maximumPrefetches
+        else {
+            return
+        }
+        let now = ContinuousClock.now
+        if let last = catalogRefreshedAt[modelId], now - last < catalogRefreshCooldown {
+            return
+        }
+        catalogRefreshedAt[modelId] = now
+        let id = UUID()
+        let resolver = self.resolver
+        let task = Task {
+            let reason: MTPFallbackReason?
+            do {
+                guard let model = try await catalog.freshModel(id: modelId) else {
                     self.finishPrefetch(
                         modelId: modelId, id: id, reason: .catalogModelMissing)
                     return

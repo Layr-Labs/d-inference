@@ -213,6 +213,11 @@ struct MTPBenchmarkTests {
             MTPBenchmarkMetrics(active: false),
             MTPBenchmarkMetrics(active: false, inactiveReason: "configuration disabled"),
             MTPBenchmarkMetrics(active: false, inactiveReason: reason, rounds: 1),
+            // Target verification with zero claimed rounds is still work.
+            MTPBenchmarkMetrics(
+                active: false, rectangularVerificationRounds: 1, inactiveReason: reason),
+            MTPBenchmarkMetrics(
+                active: false, serialVerificationRounds: 1, inactiveReason: reason),
         ] {
             #expect(throws: MTPBenchmarkError.self) {
                 try MTPBenchmarkRunner.validateMetrics(
@@ -502,6 +507,67 @@ struct MTPBenchmarkTests {
             batchSize: 8,
             adaptiveDraftingExpected: true,
             allowedSkipReasons: [])
+
+        // Seed steps alone are legitimate: they are recorded at step launch
+        // and the row can terminate before its round runs.
+        try MTPBenchmarkRunner.validateMetrics(
+            MTPBenchmarkMetrics(
+                active: true,
+                verificationMode: "automatic",
+                maxAutomaticRectangularTokens: 8,
+                rectangularVerificationRounds: 0,
+                serialVerificationRounds: 0,
+                selectedDepth: 0,
+                decodeRowBucket: 8,
+                seedRows: 2,
+                depthSelections: ["0": 3, "1": 1],
+                controllerFallbacks: ["warmup": 4]),
+            mode: .adaptive,
+            batchSize: 8,
+            adaptiveDraftingExpected: true,
+            allowedSkipReasons: [])
+
+        // Zero rounds with nonzero draft counters must fail.
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(
+                    active: true,
+                    verificationMode: "automatic",
+                    maxAutomaticRectangularTokens: 8,
+                    rectangularVerificationRounds: 0,
+                    serialVerificationRounds: 0,
+                    selectedDepth: 0,
+                    decodeRowBucket: 8,
+                    proposedTokens: 3,
+                    depthSelections: ["0": 4],
+                    controllerFallbacks: ["warmup": 4]),
+                mode: .adaptive,
+                batchSize: 8,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [])
+        }
+
+        // Positive rounds without any rectangular verification evidence must
+        // fail even when cost inputs are empty.
+        #expect(throws: MTPBenchmarkError.self) {
+            try MTPBenchmarkRunner.validateMetrics(
+                MTPBenchmarkMetrics(
+                    active: true,
+                    verificationMode: "automatic",
+                    maxAutomaticRectangularTokens: 8,
+                    rectangularVerificationRounds: 0,
+                    serialVerificationRounds: 0,
+                    selectedDepth: 1,
+                    decodeRowBucket: 4,
+                    rounds: 2,
+                    proposedTokens: 4,
+                    depthSelections: ["0": 2, "1": 2],
+                    controllerFallbacks: ["automatic_rectangular_limit": 2]),
+                mode: .adaptive,
+                batchSize: 8,
+                adaptiveDraftingExpected: true,
+                allowedSkipReasons: [])
+        }
 
         // Late-drain drafting at a smaller bucket stays acceptable only while
         // rectangular and inside the cap; serial rounds must fail.
@@ -903,6 +969,47 @@ struct MTPBenchmarkTests {
         }
     }
 
+    @Test("parity requires matching finish reasons, not only tokens")
+    func parityComparesFinishReasons() async throws {
+        let artifact = testArtifact()
+        let fixedMetrics = MTPBenchmarkMetrics(
+            active: true,
+            verificationMode: "automatic",
+            maxAutomaticRectangularTokens: 8,
+            selectedDepth: 0,
+            decodeRowBucket: 1,
+            depthSelections: ["0": 1])
+        let sessions = MTPBenchmarkSessionFactory { mode, _ in
+            if mode.kind == .targetOnly {
+                return MTPBenchmarkSession(
+                    engine: ConfiguredStopEngine(stopToken: 9)) { .inactive }
+            }
+            return MTPBenchmarkSession(
+                engine: SameTokenLengthEngine(token: 9)) { fixedMetrics }
+        }
+        // Both engines emit the identical single token 9 at the budget; only
+        // the OpenAI-visible finish reason differs (stop vs length). Token
+        // parity alone would certify this divergence.
+        do {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact,
+                assistant: artifact,
+                hardware: testHardware(),
+                configuration: MTPBenchmarkConfiguration(
+                    prompts: [.init(name: "prompt", tokenIDs: [1])],
+                    batchSizes: [1],
+                    modes: [.targetOnly, try .fixed(verificationWidth: 1)],
+                    maxTokensPerRow: 1,
+                    purpose: .productionCorrectness,
+                    stopPolicy: .production(tokenIDs: [9]),
+                    deadline: .seconds(2)),
+                sessions: sessions)
+            Issue.record("identical tokens with divergent finish reasons were certified")
+        } catch let error as MTPBenchmarkError {
+            #expect(error.description.contains("finish reasons diverge"))
+        }
+    }
+
     @Test("production length terminal must reach maxTokens")
     func lengthTerminalMustReachMaxTokens() async throws {
         let artifact = testArtifact()
@@ -1130,6 +1237,32 @@ private final class SuccessfulLengthEngine: CBv2Engine, @unchecked Sendable {
             activeTokens: 0)
     }
 
+    func shutdown() async {}
+}
+
+/// Emits exactly one configurable token and finishes with `.length` — the
+/// finish-reason twin of `ConfiguredStopEngine` for parity divergence tests.
+private final class SameTokenLengthEngine: CBv2Engine, @unchecked Sendable {
+    private let token: Int
+
+    init(token: Int) {
+        self.token = token
+    }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        AsyncStream { continuation in
+            continuation.yield(.delta(text: "", tokens: [token], logprobs: nil))
+            continuation.yield(.finished(
+                reason: .length,
+                usage: CBv2Usage(
+                    promptTokens: request.promptTokens.count,
+                    completionTokens: 1)))
+            continuation.finish()
+        }
+    }
+
+    func cancel(_: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot { emptyCapacity() }
     func shutdown() async {}
 }
 

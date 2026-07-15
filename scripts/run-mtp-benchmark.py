@@ -636,6 +636,15 @@ def validate_zero_speculative_work(metrics: dict[str, Any], label: str) -> None:
     ):
         if metrics.get(field) != 0:
             raise ValueError(f"{label} reported speculative work in {field}")
+    # Target verification with zero claimed rounds is still speculative work.
+    # These counters are optional in the schema (inactive metrics omit them),
+    # so absence counts as zero.
+    for field in (
+        "rectangularVerificationRounds",
+        "serialVerificationRounds",
+    ):
+        if metrics.get(field) not in (None, 0):
+            raise ValueError(f"{label} reported speculative work in {field}")
     for field in (
         "acceptanceByPosition",
         "conditionalAcceptance",
@@ -738,14 +747,41 @@ def validate_automatic_adaptive_within_cap(
     cap = automatic_rectangular_cap(metrics)
     if cap is None or batch * 2 <= cap:
         return False
-    rounds = metrics.get("rounds", 0)
     if (
         not positive_costs_within_cap(metrics, cap)
-        or metrics.get("serialVerificationRounds", 0) != 0
-        or (rounds > 0 and metrics.get("proposedTokens", 0) <= 0)
-        or (rounds == 0 and metrics.get("rectangularVerificationRounds", 0) != 0)
+        or metrics.get("serialVerificationRounds", 0) not in (None, 0)
     ):
         raise ValueError(f"{label} escaped its automatic rectangular limit")
+    rounds = metrics.get("rounds", 0)
+    if rounds > 0:
+        # Drafting after tail rows drained inside the cap: every row-round
+        # proposes at least one token and is scored by at least one
+        # rectangular batch verification (rounds count per-row finalizes;
+        # verifier counters count per-batch passes, so equality is NOT the
+        # invariant here).
+        if (
+            metrics.get("proposedTokens", 0) <= 0
+            or (metrics.get("rectangularVerificationRounds") or 0) <= 0
+        ):
+            raise ValueError(
+                f"{label} drafted without rectangular verification evidence")
+        return True
+    # Zero rounds: nothing may have been proposed, accepted, committed, or
+    # verified. Seed steps alone remain legitimate — they are recorded at
+    # step launch and a seed's row can terminate before its round runs.
+    if (
+        metrics.get("proposedTokens", 0) != 0
+        or metrics.get("acceptedDraftTokens", 0) != 0
+        or metrics.get("committedTokens", 0) != 0
+        or metrics.get("rectangularVerificationRounds", 0) not in (None, 0)
+        or any(count != 0 for count in metrics.get("acceptanceByPosition", []))
+        or any(
+            item.get("draftDepth", 0) != 0
+            for item in metrics.get("costInputs", [])
+            if isinstance(item, dict)
+        )
+    ):
+        raise ValueError(f"{label} reported speculative counters without rounds")
     return True
 
 
@@ -1015,7 +1051,12 @@ def validate_report(
                 and token_count != max_tokens
             ):
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} length terminal is premature")
-            row_evidence.append((str(row.get("promptName", "")), token_count, digest))
+            # finishReason is part of the cross-mode evidence: identical
+            # tokens with a different terminal reason (EOS at the budget as
+            # "stop" vs "length") is an OpenAI-visible divergence.
+            row_evidence.append(
+                (str(row.get("promptName", "")), token_count, digest,
+                 str(row.get("finishReason", ""))))
         if kind == "target_only":
             baseline_rows[batch] = row_evidence
         elif baseline_rows.get(batch) != row_evidence:

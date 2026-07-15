@@ -150,6 +150,7 @@ public enum MTPBenchmarkRunner {
         let tokenEvidenceSalt = MTPBenchmarkDigest.randomSalt()
         var results: [MTPBenchmarkCaseResult] = []
         var baselineTokens: [Int: [[Int]]] = [:]
+        var baselineFinishReasons: [Int: [String]] = [:]
 
         func report(complete: Bool) -> MTPBenchmarkReport {
             MTPBenchmarkReport(
@@ -194,11 +195,15 @@ public enum MTPBenchmarkRunner {
             try validateRepetitionConsistency(samples, key: key)
 
             let sampleTokens = samples.map { $0.batch.rows.map(\.tokenIDs) }
+            let sampleReasons = samples.map { $0.batch.rows.map(\.finishReason) }
             let canonicalTokens = sampleTokens[0]
             if key.mode.kind == .targetOnly {
                 baselineTokens[key.batchSize] = canonicalTokens
+                baselineFinishReasons[key.batchSize] = sampleReasons[0]
             } else {
-                guard let baseline = baselineTokens[key.batchSize] else {
+                guard let baseline = baselineTokens[key.batchSize],
+                      let baselineReasons = baselineFinishReasons[key.batchSize]
+                else {
                     throw MTPBenchmarkError.missingTargetOnlyBaseline
                 }
                 for tokens in sampleTokens {
@@ -209,6 +214,18 @@ public enum MTPBenchmarkRunner {
                             batchSize: key.batchSize,
                             rows: mismatches)
                     }
+                }
+                // Identical tokens with a different terminal reason is still
+                // an OpenAI-visible behavior divergence (for example EOS
+                // exactly at the budget reported as "stop" by target-only but
+                // "length" by MTP). Parity certifies both.
+                for reasons in sampleReasons where reasons != baselineReasons {
+                    let rows = zip(reasons, baselineReasons).enumerated()
+                        .filter { $0.element.0 != $0.element.1 }
+                        .map(\.offset)
+                    throw MTPBenchmarkError.invalidMetrics(
+                        "\(key.mode.label), B=\(key.batchSize) finish reasons diverge "
+                            + "from the target-only baseline at rows \(rows)")
                 }
             }
 
@@ -544,12 +561,39 @@ public enum MTPBenchmarkRunner {
             $0.decodeRowBucket * ($0.draftDepth + 1) <= maxRectangularTokens
         }
         guard costsStayWithinLimit,
-              (metrics.serialVerificationRounds ?? 0) == 0,
-              metrics.rounds == 0 || metrics.proposedTokens > 0,
-              metrics.rounds > 0 || (metrics.rectangularVerificationRounds ?? 0) == 0
+              (metrics.serialVerificationRounds ?? 0) == 0
         else {
             throw MTPBenchmarkError.invalidMetrics(
                 "adaptive B=\(batchSize) escaped its automatic rectangular limit")
+        }
+        if metrics.rounds > 0 {
+            // Drafting after tail rows drained inside the cap: every row-round
+            // proposes at least one token and is scored by at least one
+            // rectangular batch verification (rounds count per-row finalizes;
+            // verifier counters count per-batch passes, so equality is NOT
+            // the invariant here).
+            guard metrics.proposedTokens > 0,
+                  (metrics.rectangularVerificationRounds ?? 0) > 0
+            else {
+                throw MTPBenchmarkError.invalidMetrics(
+                    "adaptive B=\(batchSize) drafted without rectangular verification evidence")
+            }
+            return true
+        }
+        // Zero rounds: nothing may have been proposed, accepted, committed,
+        // or verified. Seed steps alone remain legitimate — they are recorded
+        // at step launch, and a seed's own emitted token can terminate the
+        // request (production EOS) or the adaptive depth can drop before the
+        // planned round ever runs.
+        guard metrics.proposedTokens == 0,
+              metrics.acceptedDraftTokens == 0,
+              metrics.committedTokens == 0,
+              (metrics.rectangularVerificationRounds ?? 0) == 0,
+              metrics.acceptanceByPosition.allSatisfy({ $0 == 0 }),
+              metrics.costInputs.allSatisfy({ $0.draftDepth == 0 })
+        else {
+            throw MTPBenchmarkError.invalidMetrics(
+                "adaptive B=\(batchSize) reported speculative counters without rounds")
         }
         return true
     }
@@ -600,6 +644,11 @@ public enum MTPBenchmarkRunner {
               metrics.proposedTokens == 0,
               metrics.acceptedDraftTokens == 0,
               metrics.committedTokens == 0,
+              // Target verification with zero claimed rounds is still
+              // speculative work: an engine regression must not verify while
+              // reporting inactivity.
+              (metrics.rectangularVerificationRounds ?? 0) == 0,
+              (metrics.serialVerificationRounds ?? 0) == 0,
               metrics.acceptanceByPosition.isEmpty,
               metrics.conditionalAcceptance.isEmpty,
               metrics.skippedRows.isEmpty,

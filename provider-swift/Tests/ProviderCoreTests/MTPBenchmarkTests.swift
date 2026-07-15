@@ -1010,6 +1010,35 @@ struct MTPBenchmarkTests {
         }
     }
 
+    @Test("production stop terminal must not exceed maxTokens")
+    func stopTerminalMustNotOvershoot() async throws {
+        let artifact = testArtifact()
+        let sessions = MTPBenchmarkSessionFactory { _, _ in
+            MTPBenchmarkSession(engine: OvershootStopEngine(stopToken: 9)) { .inactive }
+        }
+        // The engine emits two tokens (7, then EOS 9) against a budget of 1:
+        // a valid stop membership that still violates the OpenAI-visible
+        // max-token limit and must be rejected.
+        do {
+            _ = try await MTPBenchmarkRunner.run(
+                target: artifact,
+                assistant: artifact,
+                hardware: testHardware(),
+                configuration: MTPBenchmarkConfiguration(
+                    prompts: [.init(name: "prompt", tokenIDs: [1])],
+                    batchSizes: [1],
+                    modes: [.targetOnly],
+                    maxTokensPerRow: 1,
+                    purpose: .productionCorrectness,
+                    stopPolicy: .production(tokenIDs: [9]),
+                    deadline: .seconds(2)),
+                sessions: sessions)
+            Issue.record("benchmark certified a stop terminal past maxTokens")
+        } catch let error as MTPBenchmarkError {
+            #expect(error.description.contains("production terminal within maxTokens"))
+        }
+    }
+
     @Test("production length terminal must reach maxTokens")
     func lengthTerminalMustReachMaxTokens() async throws {
         let artifact = testArtifact()
@@ -1237,6 +1266,32 @@ private final class SuccessfulLengthEngine: CBv2Engine, @unchecked Sendable {
             activeTokens: 0)
     }
 
+    func shutdown() async {}
+}
+
+/// Emits two tokens ending in the configured stop token and finishes with
+/// `.stop` — an overshoot fixture for the production budget bound.
+private final class OvershootStopEngine: CBv2Engine, @unchecked Sendable {
+    private let stopToken: Int
+
+    init(stopToken: Int) {
+        self.stopToken = stopToken
+    }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        AsyncStream { continuation in
+            continuation.yield(.delta(text: "x", tokens: [7, stopToken], logprobs: nil))
+            continuation.yield(.finished(
+                reason: .stop,
+                usage: CBv2Usage(
+                    promptTokens: request.promptTokens.count,
+                    completionTokens: 2)))
+            continuation.finish()
+        }
+    }
+
+    func cancel(_: CBv2RequestID) {}
+    func capacity() -> CBv2CapacitySnapshot { emptyCapacity() }
     func shutdown() async {}
 }
 

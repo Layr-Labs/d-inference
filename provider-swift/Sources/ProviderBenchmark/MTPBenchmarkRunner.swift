@@ -850,6 +850,14 @@ public enum MTPBenchmarkRunner {
                     row: row,
                     condition: "production terminal reason")
             }
+            // No terminal may exceed the requested budget: an engine that
+            // overshoots maxTokens before its EOS violates the OpenAI-visible
+            // limit even when both sessions overshoot identically.
+            guard tokens.count <= maxTokens else {
+                throw MTPBenchmarkError.unexpectedTerminal(
+                    row: row,
+                    condition: "production terminal within maxTokens")
+            }
             if finishReason == "stop" {
                 guard let finalToken = tokens.last,
                       stopPolicy.stopTokenIDs.contains(finalToken)

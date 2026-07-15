@@ -243,6 +243,37 @@ def append_fingerprint_field(payload: bytearray, value: str) -> None:
     payload.extend(encoded)
 
 
+def collect_nested_bit_overrides(value: Any, counts: dict[int, int]) -> None:
+    """Mirror of MTPBenchmarkModelFacts.collectNestedBitOverrides: count every
+    nested object carrying an integer `bits` anywhere under the quantization
+    dictionary's values."""
+    if isinstance(value, dict):
+        bits = value.get("bits")
+        if isinstance(bits, int) and not isinstance(bits, bool):
+            counts[bits] = counts.get(bits, 0) + 1
+        for child in value.values():
+            collect_nested_bit_overrides(child, counts)
+    elif isinstance(value, list):
+        for child in value:
+            collect_nested_bit_overrides(child, counts)
+
+
+def launch_effective_quantization_bits(raw_quantization: Any) -> int | None:
+    """Launch-side twin of `effective_quantization_bits`, computed from the
+    hashed config bytes: top-level integer `bits` wins; otherwise a UNIQUE
+    nested override value (per-layer `bits`) is the effective width."""
+    if not isinstance(raw_quantization, dict):
+        return None
+    bits = raw_quantization.get("bits")
+    if isinstance(bits, int) and not isinstance(bits, bool):
+        return bits
+    counts: dict[int, int] = {}
+    for value in raw_quantization.values():
+        collect_nested_bit_overrides(value, counts)
+    unique = {value for value, count in counts.items() if count > 0}
+    return next(iter(unique)) if len(unique) == 1 else None
+
+
 def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
     repository = snapshot.parent.parent
     config = confined_regular_file(snapshot / "config.json", repository)
@@ -264,13 +295,7 @@ def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
     config_metadata = {
         "model_type": parsed.get("model_type"),
         "dtype": parsed.get("dtype"),
-        "quantization_bits": (
-            raw_quantization.get("bits")
-            if isinstance(raw_quantization, dict)
-            and isinstance(raw_quantization.get("bits"), int)
-            and not isinstance(raw_quantization.get("bits"), bool)
-            else None
-        ),
+        "effective_quantization_bits": launch_effective_quantization_bits(raw_quantization),
         "has_quantization": isinstance(raw_quantization, dict),
     }
     entries, truncated = bounded_scandir(snapshot, MAX_SNAPSHOT_ENTRIES)
@@ -890,13 +915,15 @@ def validate_report_artifact(
     metadata = expected.get("configMetadata") or {}
     if report_artifact.get("modelType") != metadata.get("model_type"):
         raise ValueError(f"report {label} modelType does not match launch config.json")
-    raw_dtype = metadata.get("dtype")
-    if raw_dtype is not None and report_artifact.get("dtype") != raw_dtype:
+    # Strict TWO-WAY equality: a report may neither invent a dtype the hashed
+    # config lacks nor drop/alter one it has — BF16 coverage keys on this.
+    if report_artifact.get("dtype") != metadata.get("dtype"):
         raise ValueError(f"report {label} dtype does not match launch config.json")
-    if not metadata.get("has_quantization") and report_artifact.get("quantization") is not None:
-        raise ValueError(f"report {label} invents quantization absent from launch config.json")
-    raw_bits = metadata.get("quantization_bits")
-    if raw_bits is not None and effective_quantization_bits(report_artifact) != raw_bits:
+    if bool(metadata.get("has_quantization")) != (report_artifact.get("quantization") is not None):
+        raise ValueError(f"report {label} quantization presence does not match launch config.json")
+    # Compare the EFFECTIVE bits the coverage gate consumes (top-level or
+    # unique per-layer override), so override-only configs are anchored too.
+    if effective_quantization_bits(report_artifact) != metadata.get("effective_quantization_bits"):
         raise ValueError(f"report {label} quantization bits do not match launch config.json")
 
 
@@ -1051,6 +1078,12 @@ def validate_report(
                 and token_count != max_tokens
             ):
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} length terminal is premature")
+            if (
+                mode != "raw-parity"
+                and row.get("finishReason") == "stop"
+                and token_count > max_tokens
+            ):
+                raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} stop terminal exceeds maxTokens")
             # finishReason is part of the cross-mode evidence: identical
             # tokens with a different terminal reason (EOS at the budget as
             # "stop" vs "length") is an OpenAI-visible divergence.

@@ -7,6 +7,7 @@ import MLXLMCommon
 public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
     public let configured: Bool
     public let active: Bool
+    public let verificationMode: String?
     public let fallbackReason: MTPFallbackReason?
     public let assistantSource: SpecDecArtifactSource?
     public let assistantRevision: String?
@@ -27,6 +28,7 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
         let engineActive = metrics?.active == true
         self.configured = status.configured
         self.active = status.active && engineActive
+        self.verificationMode = metrics?.verificationMode.rawValue
         self.fallbackReason = status.active && !engineActive ? .engineInactive : status.reason
         self.assistantSource = status.source
         self.assistantRevision = status.revision

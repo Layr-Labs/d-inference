@@ -28,7 +28,7 @@ REPORT_SCHEMA_VERSION = 5
 REPORT_NAME = "report.json"
 LOG_NAME = "benchmark.log"
 SUPERVISOR_CONTRACT = "run-mtp-benchmark-v1"
-M5_INACTIVE_REASON_PREFIX = (
+LEGACY_M5_INACTIVE_REASON_PREFIX = (
     "rectangular MTP verification is disabled on Apple M5"
 )
 MAX_CACHE_ROOTS = 8
@@ -575,7 +575,7 @@ def expected_mtp_expectation(expect_inactive: bool) -> dict[str, Any]:
         "kind": "expected_inactive" if expect_inactive else "active",
         "allowedInactiveReasonValues": [],
         "allowedInactiveReasonPrefixes": (
-            [M5_INACTIVE_REASON_PREFIX] if expect_inactive else []
+            [LEGACY_M5_INACTIVE_REASON_PREFIX] if expect_inactive else []
         ),
     }
 
@@ -1286,8 +1286,8 @@ def parse_arguments() -> argparse.Namespace:
         "--expect-mtp-inactive",
         action="store_true",
         help=(
-            "require fixed/adaptive cases to match the stable Apple M5 hardware "
-            "safety-veto reason, perform zero speculative work, and retain target-only parity"
+            "legacy pre-serial-target regression mode: require the retired Apple M5 "
+            "hardware-veto reason and zero speculative work"
         ),
     )
     parser.add_argument("--warmup", type=int)

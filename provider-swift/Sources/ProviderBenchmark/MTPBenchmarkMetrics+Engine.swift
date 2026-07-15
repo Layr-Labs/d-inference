@@ -6,6 +6,7 @@ extension MTPBenchmarkMetrics {
     public init(engineMetrics value: CBv2MTPMetrics) {
         self.init(
             active: value.active,
+            verificationMode: value.verificationMode.rawValue,
             selectedDepth: value.selectedDepth,
             decodeRowBucket: value.decodeRowBucket,
             rounds: value.rounds,

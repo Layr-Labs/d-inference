@@ -143,7 +143,7 @@ enum MTPProductionLiveFixtures {
 
     static var benchmarkMTPExpectation: MTPBenchmarkMTPExpectation {
         truthy(environment["DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE"])
-            ? .m5HardwareSafetyGate
+            ? .legacyM5HardwareSafetyGate
             : .active
     }
 

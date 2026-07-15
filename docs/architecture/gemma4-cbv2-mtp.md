@@ -20,6 +20,9 @@ Continuous Batching V2 (CBv2).
 The production branch now includes:
 
 - Native CBv2 seed/draft/verify rounds with target-authoritative acceptance.
+- A chip-independent serial target verifier that keeps MTP active from M1
+  through M5; rectangular verification is explicit opt-in rather than a
+  hardware denylist.
 - Step-global eligibility and commit cadence for quantized MoE parity.
 - Exact full, quantized, and staged-window KV rollback.
 - Strict absolute-position assistant sliding masks.
@@ -66,6 +69,8 @@ Review-driven correctness defects found and fixed during implementation:
 | QAT target + BF16 assistant raw matrix | 40/40 parity, same matrix |
 | 8bit target + BF16 assistant raw matrix | 40/40 parity, same matrix |
 | Real provider paths | load/bind, fail-open assistant failure, tool-templated VLM, and image-prefill paths passed |
+| M4 Max serial-target QAT/QAT matrix | 40/40 parity, 36/36 requested speculative cases active, 714 rounds, 2,175 proposals, 1,179 accepted, zero mismatch rows; report records `serial_target`; SHA-256 `b90e7f6671f409d11e621ede4040e8e18060a17dfe7bbbcd555efe1e968bdd15` |
+| M5 Max serial-target QAT/QAT matrix | 40/40 parity, 36/36 requested speculative cases active, 630 rounds, 1,827 proposals, 1,189 accepted, zero mismatch rows; report records `serial_target`; SHA-256 `53d2bd99e6a21c7745d73a4ab617b2855d57c2199ec2a90357bf1c7faf2aa2a5` |
 | Products | `ProviderCore`, `ProviderBenchmark` debug/release, and `darkbloom` build passed |
 | Diff checks | parent and nested diffs clean |
 
@@ -127,7 +132,9 @@ Build the official Gemma 4 assistant path:
 - Frozen K/V from the last storage-owning full-attention and
   sliding-attention target layers.
 - Constant assistant position within a draft round.
-- Linear draft proposals followed by one rectangular target verification.
+- Linear draft proposals followed by chip-independent serial target
+  verification by default; rectangular target verification remains an
+  explicit optimization.
 - Target-authoritative greedy acceptance.
 - Exact per-row KV commit or rollback.
 - Continuous batching with ordinary decode and chunked-prefill neighbors.
@@ -213,7 +220,7 @@ flowchart LR
   Controller --> Scheduler[SchedulerV2 plan]
   Scheduler --> Seed[Seed hidden and bonus]
   Seed --> Draft[Sequential frozen-KV drafts]
-  Draft --> Verify[One rectangular target verify]
+  Draft --> Verify[Serial target-authority verify by default]
   Verify --> Accept[Target-authoritative accept walk]
   Accept --> Commit[KV commit or rollback]
   Commit --> Stream[Consumer token stream]
@@ -295,11 +302,15 @@ Full acceptance emits the target bonus token.
 The assistant may affect performance and availability, but never accepted
 content.
 
-### One Finalize Boundary
+### Evaluation Boundaries
 
-Draft IDs, target argmaxes, and target hidden state remain device-resident
-until the existing CBv2 finalize boundary. A round introduces no second host
-synchronization.
+Rectangular verification keeps draft IDs, target argmaxes, and target hidden
+state device-resident until the existing CBv2 finalize boundary. The default
+serial target mode instead materializes every `[B,1]` target column and its KV
+inner state before constructing the next column. This adds device
+synchronization but prevents lazy mutable-cache versions from crossing the
+canonical target step boundary. Token IDs still reach the host only at the
+existing finalize acceptance readback.
 
 ### Frozen Assistant State
 
@@ -316,10 +327,13 @@ not decided by comments or inherited code; tensor parity decides it.
 
 ### Speculative KV Transaction
 
-Target verification may compute `1+k` provisional positions. After acceptance:
+Target verification computes `1+k` provisional positions either through
+serial `[B,1]` target calls or an explicitly selected `[B,1+k]` call. After
+acceptance:
 
 - Full and quantized contiguous KV roll back the rejected suffix exactly.
-- Windowed rings stage writes so rejected tokens never destroy live history.
+- Windowed rings accumulate one or more staged writes so rejected tokens never
+  destroy live history.
 - Shared-KV views for the next round contain confirmed tokens only.
 - Scheduler computed-token and pending-sample counts match confirmed KV.
 - Admission refunds exactly the rejected token reservation.
@@ -340,8 +354,8 @@ sampling rows, and chunked-prefill neighbors. MTP work must not:
 - Enter compiled decode with `L > 1`.
 - Become a chained-step base.
 
-The first release uses one uniform depth for all speculating rows in a
-rectangular verification batch.
+The first release uses one uniform depth for all speculating rows in a target
+verification cohort.
 
 ### Lifecycle
 
@@ -539,9 +553,9 @@ The proposals below extend those contracts; they do not reinterpret completed
 validation as evidence for functionality that does not exist yet.
 
 The future design remains a linear Gemma 4 frozen-KV drafter. Stochastic
-sampling, paged-window transactions, and hardware certification are independent
-capabilities with independent fail-open gates. Enabling one must not imply that
-the others are ready.
+sampling, paged-window transactions, and rectangular-kernel certification are
+independent capabilities with independent fail-open gates. Enabling one must
+not imply that the others are ready.
 
 ### Current Greedy-Only Boundary
 
@@ -553,10 +567,12 @@ constructs an MTP driver only for `CBv2DefaultSampler` and
 drafter returns only greedy token IDs, not its logits or proposal
 probabilities (`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/
 MTPContractsV2.swift:126-149` and `Libraries/MLXLLM/Models/
-Gemma4CBv2MTPDrafter.swift:104-122`). Target verification similarly reduces
-`[B, 1+k, vocab]` to argmax IDs before the one finalize readback
+Gemma4CBv2MTPDrafter.swift:104-122`). Target verification reduces each target
+column to argmax IDs before the finalize acceptance readback. The default
+serial mode materializes `[B,1]` target/KV state between columns; explicit
+rectangular mode uses one `[B,1+k,vocab]` result
 (`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/
-EngineLoopV2+MTPExecution.swift:249-291`).
+EngineLoopV2+MTPTargetVerification.swift`).
 
 The exact per-row request gate is in `mtpBasicEligible`
 (`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/
@@ -829,8 +845,9 @@ Deterministic tests must include:
   residual, and bonus token; no drafter or residual-distribution logprob leaks.
 - Full, quantized, contiguous-window, and later paged-window KV equality with
   the direct target path after every accepted length `0...k`.
-- Exactly one finalize packet read and zero `.item()`/blocking `eval` calls in
-  graph construction.
+- For the accelerated rectangular stochastic path, exactly one finalize packet
+  read and zero `.item()`/blocking `eval` calls in graph construction. A future
+  serial stochastic mode must specify its separate evaluation contract.
 
 Statistical tests must use fixed synthetic `p != q` distributions and enough
 independent request keys for a chi-square goodness-of-fit test after merging
@@ -849,10 +866,11 @@ same suite runs with MTP off, fixed depths, and adaptive depth. Greedy parity
 matrices remain mandatory and separate.
 
 Rollout is blocked until all deterministic and statistical tests pass in a
-release build, no extra host sync is measured, MTP-off fallback handles every
-unsupported processor, and the content-free counters are live. Ship behind a
-new default-off stochastic kill switch, canary only on already-certified
-pre-M5 tuples, and default-enable no tuple until target-distribution tests and
+release build, no extra host sync is measured in rectangular mode, MTP-off
+fallback handles every unsupported processor, and the content-free counters
+are live. Ship behind a new default-off stochastic kill switch, canary only on
+already-certified rectangular tuples, and default-enable no tuple until
+target-distribution tests and
 workload-weighted goodput both pass. Any distribution, NaN, RNG replay,
 logprob, or state-leak failure turns stochastic MTP off without disabling
 greedy MTP or target serving.
@@ -1060,107 +1078,74 @@ target-only. Paged-window activation remains separately default-off until the
 matrix, randomized oracle, full engine suites, and release goodput measurement
 pass with zero temporary-page leaks.
 
-### M5 Rectangular Kernel Certification
+### Universal Serial Verification And Rectangular Certification
 
-#### Current Veto And Evidence
+#### Current Default And Evidence
 
-**Current.** Ordinary decode uses `[B,1]`; an MTP verification uses
-`[B,1+k]`. Remote M5 Max testing found repeatable target-argmax drift between
-those shapes in synthetic B1/B2 cases and in the real production QAT/QAT
-matrix at B8/L6. The evidence and excluded scheduler/cache/order hypotheses
-are recorded in the M5 follow-up on engine PR
+**Current.** MTP construction no longer reads a chip name or denies a hardware
+family. `CBv2MTPConfig.verificationMode` defaults to `serial_target`, and the
+engine scores every known target column through the same eager `[B,1]` target
+forward used by ordinary decode
+(`Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/MTPContractsV2.swift` and
+`EngineLoopV2+MTPTargetVerification.swift`). Each column and its KV inner state
+are materialized before the next target column is constructed. The assistant
+still drafts `k` tokens, target authority still accepts or corrects them, and
+one KV transaction commits only the confirmed prefix.
+
+Windowed storage now accumulates multiple serial speculative updates before
+one rollback/commit. KV-shared decode layers borrow the staged source view only
+while that transaction is active; ordinary decode continues using the retained
+ring. Bit-exact storage tests cover full, quantized, and windowed rows, including
+full rollback, partial rollback, repeated serial updates, and post-wrap sharing
+(`CBv2MTPKVStagingTests.swift`). Engine tests cover perfect, fully adversarial,
+and repeatedly partial rejection, mixed batches, stop/length tails,
+cancellation, request-ID reuse, and compiled/eager transitions.
+
+The earlier rectangular result remains important: remote M5 Max testing found
+repeatable target-argmax drift between serial `[B,1]` and `[B,1+k]`, including
+the production QAT pair at B8/L6. That evidence is recorded on engine PR
 [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74#issuecomment-4974224001).
-This is target-kernel evidence, not evidence against the accept-walk.
+It justifies keeping rectangular mode explicit; it no longer justifies denying
+MTP on M5.
 
-The engine now denies any chip name containing the token `M5` before it builds
-the MTP driver (`Libraries/MLXLMCommon/MLXHardwareInfo.swift:31-60` and
-`ContinuousBatchingV2/EngineV2.swift:247-287`). It exposes the stable inactive
-reason and serves target-only. The gate test proves M5/M5 Max denial and M4
-allowance (`Tests/MLXLMTests/CBv2MTPEngineParityTests.swift:365-417`). The
-provider benchmark schema has an explicit expected-inactive M5 mode and rejects
-unexpected work or reasons
-(`provider-swift/Sources/ProviderBenchmark/MTPBenchmarkReport.swift:29-75`;
-`provider-swift/Tests/ProviderCoreTests/MTPBenchmarkTests.swift:183-273`).
+The current capability table is:
 
-At parent commit `0b08e76d8`, the remote M5 Max expected-inactive QAT matrix
-completed 40/40 target parity cases, 36/36 requested MTP cases inactive, 150
-rows, zero speculative work, and the exact hardware reason. That proves the
-veto and fallback, not rectangular correctness. The report SHA-256 is
-`b197fc3aa4b27706024057ec201a9015f5dd8b392d196f6998880b5b2419391d`.
-
-The current gate is a negative M5 denylist, not a certification database. At
-the engine's pinned MLX Swift revision
-`df1fdc5f7821a1fabe921fdefbc42ac74dcfb6bc`
-(`Package.resolved:31-38`), the truthful capability table is:
-
-| Chip family | Current code gate | Evidence recorded for this branch | Proposed certified state |
+| Chip family | Default MTP mode | Current evidence | Rectangular optimization |
 |---|---|---|---|
-| M1 | allowed | No complete per-chip rectangular artifact recorded | Deny until exact tuple is certified |
-| M2 | allowed | No complete per-chip rectangular artifact recorded | Deny until exact tuple is certified |
-| M3 | allowed | No complete per-chip rectangular artifact recorded | Deny until exact tuple is certified |
-| M4 | allowed | Local bounded MTP suites and production matrices passed | Allow only listed M4/MLX/model tuples |
-| M5 | denied | Repeatable synthetic and real QAT argmax drift; fail-open matrix passed | Deny until kernel fix and full recertification |
-| Unknown/future | currently allowed | None | Deny by default |
+| M1 | Serial target | Same chip-independent `[B,1]` path as ordinary CBv2 decode; no dedicated physical MTP artifact in this branch | Explicit opt-in only after tuple certification |
+| M2 | Serial target | Same chip-independent `[B,1]` path as ordinary CBv2 decode; no dedicated physical MTP artifact in this branch | Explicit opt-in only after tuple certification |
+| M3 | Serial target | Same chip-independent `[B,1]` path as ordinary CBv2 decode; no dedicated physical MTP artifact in this branch | Explicit opt-in only after tuple certification |
+| M4 | Serial target | M4 Max real QAT matrix: 40/40 parity, all 36 speculative cases active, zero mismatch rows | Available only by explicit config; prior bounded rectangular matrices passed |
+| M5 | Serial target | M5 Max real QAT matrix: 40/40 parity, all 36 speculative cases active, zero mismatch rows | Uncertified; prior rectangular QAT B8/L6 drift remains reproducible evidence |
+| Unknown/future | Serial target | Structural authority comes from the ordinary eager decode path | Explicit opt-in only after tuple certification |
 
-This table deliberately distinguishes "the code does not veto it" from
-"certified". MTP remains default-off while the current coarse gate exists.
+The serial default makes MTP functional across Apple Silicon; it does not claim
+a speedup over target-only. The measured-goodput controller may select depth
+zero when drafter plus serial target work is unprofitable. Rectangular mode is
+the acceleration optimization and requires independent evidence.
 
-#### Investigation And Certification Plan
+#### Rectangular Optimization Plan
 
-1. Build a release diagnostic that starts from byte-identical committed KV and
-   feeds the same fixed token continuations through serial `[B,1]` target
-   calls and one `[B,L]` call. Compare raw logits, argmax, pre-norm hidden,
-   each storage-owning layer's committed K/V, and attention output before any
-   sampler or accept logic.
+1. Start from byte-identical committed KV and compare serial `[B,1]` target
+   calls with one `[B,L]` call. Compare logits, argmax, pre-norm hidden,
+   storage-owning K/V, and attention output before acceptance logic.
 2. Run B=1/2/4/8 and L=1...8 for production QAT-4bit, available 8bit, and BF16
-   targets at short context, immediately before/after SWA wrap, and long
-   context. Add L=9 diagnostic cases because the known MLX SDPA dispatch
-   boundary sits at 8/9; keep L=9 outside the production capability range.
-3. Bisect the first divergent layer and operation. Compare embedding, Q/K/V
-   projection, RoPE, SDPA/composed attention, quantized dense matmul, MoE gate
-   and expert output, residual, norm, and LM head. Force available reference
-   versus optimized MLX paths one operator at a time. Record Metal kernel
-   names and tensor shapes, not just final token IDs.
-4. Repeat every case in fresh processes and with wide-margin as well as
-   near-tie logits. Report max absolute/relative drift, argmax margin, first
-   divergent tensor, selected kernel, macOS build, exact chip identifier/GPU
-   cores, compiler, mlx-swift-lm SHA, and MLX Swift SHA.
-5. When the root cause is in MLX/Metal, land or pin the upstream fix first.
-   Re-run the complete matrix on every M5 variant intended for the fleet; an
-   M5 Max result does not certify base M5, Pro, or a later stepping.
-6. Re-run the real provider QAT/QAT raw-parity matrix, repeated rejection
-   regressions, mixed continuous batching, KV rollback, and release performance
-   on the exact fixed dependency. No synthetic-only certification is valid.
+   targets around SWA boundaries and long context. Keep L=9 as a diagnostic
+   for the known MLX SDPA dispatch boundary.
+3. Bisect the first divergent operation across projections, RoPE, attention,
+   quantized matmul, MoE, residuals, norms, and LM head. Record selected Metal
+   kernels and exact tensor geometry.
+4. Force reference and optimized paths one operation at a time. If the root
+   cause is in MLX/Metal, land or pin the narrow fix before enabling the mode.
+5. Re-run real QAT matrices, repeated rejection, mixed batching, KV rollback,
+   lifecycle, and release performance on every exact chip/OS/MLX/model tuple
+   intended for rectangular use.
 
-The load-time API becomes a positive capability lookup, for example
-`CBv2MTPKernelCertification.lookup(key:)`, keyed at minimum by exact chip
-identifier, macOS build range, MLX Swift revision, target model build/hash,
-target quantization, batch ceiling, and verification-width range. The
-provider passes the resulting immutable certificate ID through
-`CBv2MTPConfig`; `EngineV2` constructs the driver only when the requested
-`B,L` range is covered. Missing, unknown, expired, or mismatched entries select
-target-only and surface a stable `kernel_uncertified` reason.
-
-Normal model load must not self-certify by running unsafe rectangular work.
-Certification is an offline/release process that produces a reviewed table;
-load only verifies the exact tuple. The process kill switch remains a final
-override.
-
-The blanket M5 veto can be narrowed only when all of these are true:
-
-- A first-divergence root cause is understood and fixed at a pinned dependency
-  or an explicitly safe engine path.
-- Every supported M5 chip variant passes the full deterministic tensor matrix
-  repeatedly in clean release processes with zero argmax divergence.
-- Real QAT, 8bit where offered, and BF16 matrices pass B=1/2/4/8 and L=1...8,
-  including sliding boundaries and mixed batches.
-- Greedy, stochastic if enabled, KV, cancellation, and provider fail-open
-  suites pass at the exact parent and engine SHAs.
-- The capability entry, reports, and dependency pin receive independent
-  review, and a default-off owned-box canary shows no drift or kernel fault.
-
-Passing those gates adds narrow positive entries. It does not delete hardware
-certification or make unknown future chips eligible.
+Normal model load does not self-certify by running rectangular work. A future
+positive capability lookup may key on exact chip identifier, macOS range, MLX
+revision, model hash, quantization, batch ceiling, and verification width.
+Missing entries continue using serial target verification, not target-only and
+not an inactive MTP driver.
 
 ### Audited Runtime Comparison
 
@@ -1176,7 +1161,7 @@ needs its own memory, synchronization, and kernel evidence.
 | Tree/top-k | No; one proposal per position and one linear verify | Gemma 4 speculator is linear, one token per step; other speculators have separate tree/block modes | Frozen-KV reuses EAGLE tree machinery and tests top-k 1 and 3; top-k > 1 is backend-restricted |
 | Sliding-window attention | Contiguous SWA staging is exact; paged SWA speculation disabled | KV manager accounts for sliding-window block removal against processed/in-flight tokens; Gemma shares the last non-shared layer of each attention type | Frozen draft resolves typed physical target layers and participates in SWA eviction/pool resolution; page/tree backend combinations are restricted |
 | Adaptive depth | Online batch-bucketed measured-goodput controller including depth zero | Optional configured batch-size-to-k schedule; it is not online measured goodput and is disabled with data parallelism | Generic adaptive runtime exists, but `FrozenKVMTPWorkerV2` asserts that adaptive mode is unsupported |
-| Tests and limits | Greedy token parity across real QAT/8bit pairings; no stochastic CBv2 or paged-SWA proof; M5 denied | Generic chi-square rejection tests, processor/constraint tests, dynamic-depth unit tests, and Gemma E4B correctness/acceptance E2E. Gemma E2E allows partial token agreement and does not directly certify Apple kernels | Frozen-KV E4B GSM8K/acceptance E2E for top-k 1/3 and SWA-pool resolver tests. No Frozen stochastic/adaptive test; mixed chunking is disabled for speculative mode |
+| Tests and limits | Greedy token parity across real QAT/8bit pairings; serial-target M4/M5 QAT matrices active and exact; no stochastic CBv2 or paged-SWA proof; rectangular mode remains tuple-certified only | Generic chi-square rejection tests, processor/constraint tests, dynamic-depth unit tests, and Gemma E4B correctness/acceptance E2E. Gemma E2E allows partial token agreement and does not directly certify Apple kernels | Frozen-KV E4B GSM8K/acceptance E2E for top-k 1/3 and SWA-pool resolver tests. No Frozen stochastic/adaptive test; mixed chunking is disabled for speculative mode |
 
 Primary audited paths:
 
@@ -1219,18 +1204,18 @@ fallback.
 | Priority | Dependencies | Deliverable | Definition of done |
 |---|---|---|---|
 | F0: capability foundations | Current greedy PRs | Positive kernel-certificate type; sampler capability marker; explicit KV transaction protocol; no feature enabled | Current greedy matrices and full suites unchanged; every new capability defaults unsupported; no provider behavior change |
-| F1: stochastic linear MTP on current safe storage | F0; pre-M5 certified rectangular tuple | Device-only `p/q` processing, rejection/residual/bonus packet, RNG lanes, target logprobs; contiguous full/quantized/window staging only | Deterministic and chi-square matrices pass; one finalize readback; all unsupported sampler/constraint rows fall back; release goodput non-regressing where enabled |
+| F1: stochastic linear MTP on current safe storage | F0; certified rectangular tuple or separately specified serial stochastic path | Device-only `p/q` processing, rejection/residual/bonus packet, RNG lanes, target logprobs; contiguous full/quantized/window staging only | Deterministic and chi-square matrices pass; target-authoritative readback; all unsupported sampler/constraint rows fall back; release goodput non-regressing where enabled |
 | F2: paged-window greedy staging | F0 | Temporary page reservation, committed/provisional tables, remap/copy commit, full-to-SWA mapping, lifecycle/accounting | Exact matrix and 10,000-operation state model pass; real Gemma boundary parity passes; zero page/accounting leaks; stochastic remains off on paged rows |
 | F3: compose stochastic and paged staging | F1 and F2 | Same stochastic transaction over paged full/SWA rows | Cross-product sampling, KV, logprob, cancellation, prefix, and capacity tests pass; no extra sync or distribution drift |
-| F4: per-chip certification and M5 recovery | F0; upstream/root-cause fix for M5 | Reviewed positive entries for exact chip/OS/MLX/model tuples | All removal criteria above pass; unknown tuples stay target-only; M5 canary remains default-off until separately approved |
+| F4: rectangular optimization certification | F0; first-divergence root cause or invariant target kernel | Reviewed positive entries for exact chip/OS/MLX/model tuples | Exact rectangular entries pass all comparison gates; missing tuples remain on serial target MTP; optimization canaries stay default-off until separately approved |
 | F5: controlled rollout | Relevant capability phases | Independent stochastic, paged-window, and chip allowlists plus kill switches and content-free telemetry | Owned-box canaries, production-duration replay, memory/energy/TTFT/goodput gates, rollback drill, and operator documentation complete |
 
 The future engine work is complete only when every enabled tuple is positively
 certified, stochastic output matches the target distribution, paged state is
 value-exact after every lifecycle exit, no new host synchronization appears,
 provider accounting includes all temporary work, and disabling any new
-capability returns immediately to the already-validated greedy or target-only
-path.
+capability returns immediately to the already-validated serial-target greedy
+MTP or target-only path.
 
 ### Explicit Non-Goals
 
@@ -1240,8 +1225,8 @@ top-k branching, relaxed/block acceptance, online assistant training, beam
 search, or per-row variable verification depth. SGLang's tree implementation
 is comparison evidence only. They also do not move speculation into the
 coordinator, change assistant artifact trust/ownership, promise bitwise
-stochastic equality between MTP-on and MTP-off, or default-enable MTP on an
-uncertified chip. Those are separate designs and reviews.
+stochastic equality between MTP-on and MTP-off, or default-enable rectangular
+verification on an uncertified tuple. Those are separate designs and reviews.
 
 ## Rollout Gates
 

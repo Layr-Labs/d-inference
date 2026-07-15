@@ -20,6 +20,14 @@ struct MTPBenchmarkTests {
         }
     }
 
+    @Test("engine metrics preserve the target verification mode")
+    func verificationModeProjection() {
+        var engineMetrics = CBv2MTPMetrics()
+        engineMetrics.verificationMode = .rectangular
+        let projected = MTPBenchmarkMetrics(engineMetrics: engineMetrics)
+        #expect(projected.verificationMode == "rectangular")
+    }
+
     @Test("artifact inspection records immutable config and shard provenance")
     func artifactInspection() throws {
         let root = FileManager.default.temporaryDirectory
@@ -227,7 +235,7 @@ struct MTPBenchmarkTests {
             adaptiveDraftingExpected: true,
             allowedSkipReasons: [],
             expectation: exactExpectation)
-        #expect(MTPBenchmarkMTPExpectation.m5HardwareSafetyGate
+        #expect(MTPBenchmarkMTPExpectation.legacyM5HardwareSafetyGate
             .matchesInactiveReason(reason))
     }
 
@@ -235,7 +243,7 @@ struct MTPBenchmarkTests {
     func expectedInactiveReportSerialization() throws {
         let artifact = testArtifact()
         let reason = "rectangular MTP verification is disabled on Apple M5 Max: target-only and [B, 1+k] target argmax parity is not certified"
-        let expectation = MTPBenchmarkMTPExpectation.m5HardwareSafetyGate
+        let expectation = MTPBenchmarkMTPExpectation.legacyM5HardwareSafetyGate
         let report = MTPBenchmarkReport(
             runFingerprint: "inactive-unit-test",
             purpose: .rawParityStress,
@@ -531,7 +539,7 @@ struct MTPBenchmarkTests {
                     modes: [.targetOnly],
                     maxTokensPerRow: 1,
                     purpose: .productionPerformance,
-                    mtpExpectation: .m5HardwareSafetyGate,
+                    mtpExpectation: .legacyM5HardwareSafetyGate,
                     stopPolicy: .production(tokenIDs: [9]),
                     deadline: .seconds(2)),
                 sessions: sessions)

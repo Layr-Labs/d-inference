@@ -35,7 +35,9 @@ public struct MTPBenchmarkMTPExpectation: Codable, Equatable, Sendable {
         case expectedInactive = "expected_inactive"
     }
 
-    public static let m5HardwareSafetyGate = MTPBenchmarkMTPExpectation(
+    /// Backward-compatible validator for reports created before the
+    /// chip-independent serial target verifier replaced the M5 denylist.
+    public static let legacyM5HardwareSafetyGate = MTPBenchmarkMTPExpectation(
         kind: .expectedInactive,
         allowedInactiveReasonPrefixes: [
             "rectangular MTP verification is disabled on Apple M5"
@@ -331,6 +333,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     }
 
     public let active: Bool
+    public let verificationMode: String?
     public let inactiveReason: String?
     public let selectedDepth: Int?
     public let decodeRowBucket: Int?
@@ -351,6 +354,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
 
     public init(
         active: Bool,
+        verificationMode: String? = nil,
         inactiveReason: String? = nil,
         selectedDepth: Int? = nil,
         decodeRowBucket: Int? = nil,
@@ -370,6 +374,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
         targetVerifyTimeNanos: UInt64? = nil
     ) {
         self.active = active
+        self.verificationMode = verificationMode
         self.inactiveReason = inactiveReason
         self.selectedDepth = selectedDepth
         self.decodeRowBucket = decodeRowBucket
@@ -394,6 +399,7 @@ public struct MTPBenchmarkMetrics: Codable, Sendable {
     fileprivate func withoutPerformanceMeasurements() -> MTPBenchmarkMetrics {
         MTPBenchmarkMetrics(
             active: active,
+            verificationMode: verificationMode,
             inactiveReason: inactiveReason,
             selectedDepth: selectedDepth,
             decodeRowBucket: decodeRowBucket,

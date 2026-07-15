@@ -584,6 +584,34 @@ private func makeNoEvictStubContainer() -> ModelContainer {
         ))
 }
 
+/// Deterministic gate inside the funnel's catalog lookup: `cachedModel`
+/// blocks until released, giving load-lifecycle tests a controllable
+/// suspension point inside the MTP preparation await.
+private actor PreloadRaceGateCatalog: SpecDecCatalogLooking {
+    private var entered: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<CatalogModel?, Never>?
+    private(set) var cachedCalls = 0
+
+    func cachedModel(id: String) async -> CatalogModel? {
+        cachedCalls += 1
+        entered?.resume()
+        entered = nil
+        return await withCheckedContinuation { release = $0 }
+    }
+
+    func model(id: String) async throws -> CatalogModel? { nil }
+
+    func waitUntilEntered() async {
+        if cachedCalls > 0 { return }
+        await withCheckedContinuation { entered = $0 }
+    }
+
+    func releaseGate() {
+        release?.resume(returning: nil)
+        release = nil
+    }
+}
+
 /// Create a minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath`
 /// resolves `modelId` (ensureModelLoaded requires an on-disk snapshot BEFORE
 /// it reaches the admission gates under test). Returns the `models--...`
@@ -611,6 +639,37 @@ struct StartupPreloadNoEvictTests {
             tokenizer: TokenizerHandle(NoEvictStubTokenizer()),
             engineV2: makeInertStubBridge(modelId: id).bridge
         )
+    }
+
+    @Test("provider concurrent same-model load rechecks residency after MTP preparation")
+    func providerPreparationRaceRechecksResidency() async throws {
+        let fakeId = "darkbloom-tests/loop-race-\(UUID().uuidString.prefix(8))"
+        let fakeDir = try makeFakeHFSnapshot(modelId: fakeId)
+        defer { try? FileManager.default.removeItem(at: fakeDir) }
+
+        let loop = try await makePreloadLoop(
+            models: [preloadModelInfo(fakeId, memoryGb: 0.01)],
+            backend: BackendSettings(maxModelSlots: 3, mtp: true))
+        let gate = PreloadRaceGateCatalog()
+        await loop.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(), catalog: gate))
+
+        let load = Task { try await loop.ensureModelLoaded(modelId: fakeId) }
+        await gate.waitUntilEntered()
+
+        // The load task is now suspended inside the MTP preparation await,
+        // PAST the initial residency/loading checks. Install the slot exactly
+        // as a concurrent same-model load that ran to completion would.
+        await installStubSlot(loop, fakeId)
+        await gate.releaseGate()
+
+        // Without the post-preparation recheck, the continuation starts a
+        // SECOND load of the resident model and throws on the fake
+        // snapshot's unloadable weights.
+        try await load.value
+        #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+        let resident = await loop.modelSlots.keys.sorted()
+        #expect(resident == [fakeId])
     }
 
     @Test("slot-cap: no-evict load refuses instead of evicting an idle resident model")

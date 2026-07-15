@@ -399,6 +399,12 @@ public actor StandaloneServer {
     }
 
     /// Install test hooks (scripted engine + deterministic memory).
+    /// Test seam: swap the spec-dec funnel so lifecycle tests can gate the
+    /// MTP preparation await deterministically.
+    func setSpecDecFunnelForTesting(_ funnel: SpecDecArtifactFunnel) {
+        specDecFunnel = funnel
+    }
+
     func setV2TestHooksForTesting(_ hooks: V2TestHooks?) {
         v2TestHooks = hooks
     }
@@ -1097,6 +1103,21 @@ public actor StandaloneServer {
         }
         var mtpPreparation = await specDecPreparation(
             modelId: modelId, modelInfo: modelInfo)
+
+        // Re-check residency and in-flight loads after the preparation await:
+        // a concurrent request for the same cold model can pass the checks
+        // above, complete its ENTIRE load (returning `isLoadingAny` to false)
+        // and install the slot while this task was suspended. Without this
+        // recheck the continuation would skip the load gate's residency check
+        // and start a second load of an already-resident model.
+        if slots[modelId] != nil, !evictingModels.contains(modelId) {
+            touchSlot(modelId)
+            return
+        }
+        if modelsLoading.contains(modelId) {
+            try await ensureModelLoaded(modelId)
+            return
+        }
 
         // Serialize loads so concurrent requests for different models don't
         // interleave and overcommit unified memory.

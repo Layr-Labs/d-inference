@@ -7,6 +7,49 @@ import Testing
 
 @testable import ProviderCore
 
+/// Deterministic gate inside the funnel's catalog lookup: `cachedModel`
+/// blocks until released, giving load-lifecycle tests a controllable
+/// suspension point inside the MTP preparation await.
+private actor RaceGateCatalog: SpecDecCatalogLooking {
+    private var entered: CheckedContinuation<Void, Never>?
+    private var release: CheckedContinuation<CatalogModel?, Never>?
+    private(set) var cachedCalls = 0
+
+    func cachedModel(id: String) async -> CatalogModel? {
+        cachedCalls += 1
+        entered?.resume()
+        entered = nil
+        return await withCheckedContinuation { release = $0 }
+    }
+
+    func model(id: String) async throws -> CatalogModel? { nil }
+
+    func waitUntilEntered() async {
+        if cachedCalls > 0 { return }
+        await withCheckedContinuation { entered = $0 }
+    }
+
+    func releaseGate() {
+        release?.resume(returning: nil)
+        release = nil
+    }
+}
+
+/// Minimal fake HF-cache snapshot so `ModelScanner.resolveLocalPath` resolves
+/// the id before the load path reaches the preparation await under test.
+private func makeRaceFakeHFSnapshot(modelId: String) throws -> URL {
+    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
+    let modelDir = cacheDir.appendingPathComponent(
+        "models--\(modelId.replacingOccurrences(of: "/", with: "--"))", isDirectory: true)
+    let snapshot = modelDir
+        .appendingPathComponent("snapshots", isDirectory: true)
+        .appendingPathComponent("main", isDirectory: true)
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    try Data("{}".utf8).write(to: snapshot.appendingPathComponent("config.json"))
+    return modelDir
+}
+
 private let mtpFloorGiB: UInt64 = 1_073_741_824
 private let mtpFloorPhysical = 64 * mtpFloorGiB
 private let mtpFloorExistingID = "gemma-4-existing"
@@ -366,6 +409,50 @@ struct MTPResliceFallbackTests {
 
         await build.bundle.bridge.shutdown()
         build.bundle.releaseAssistant()
+        await server.stopAndWait()
+    }
+
+    @Test("standalone concurrent same-model load rechecks residency after MTP preparation")
+    func standalonePreparationRaceRechecksResidency() async throws {
+        let fakeId = "darkbloom-tests/standalone-race-\(UUID().uuidString.prefix(8))"
+        let fakeDir = try makeRaceFakeHFSnapshot(modelId: fakeId)
+        defer { try? FileManager.default.removeItem(at: fakeDir) }
+
+        let server = StandaloneServer(
+            config: .init(maxCachedModels: 3, mtp: true),
+            models: [ModelInfo(
+                id: fakeId, modelType: "gemma4", parameters: nil,
+                quantization: nil, sizeBytes: 1, estimatedMemoryGb: 0.01)])
+        let gate = RaceGateCatalog()
+        await server.setSpecDecFunnelForTesting(SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(), catalog: gate))
+
+        let load = Task { try await server.ensureModelLoaded(fakeId) }
+        await gate.waitUntilEntered()
+
+        // The load task is now suspended inside the MTP preparation await,
+        // PAST the initial residency/loading checks. Install the slot exactly
+        // as a concurrent same-model load that ran to completion would.
+        let bridge = EngineV2Bridge(
+            engine: MTPFloorEngine(capacityBytes: 1 << 20),
+            modelId: fakeId,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            eosTokenIds: [])
+        await server.installSlotForTesting(
+            modelId: fakeId,
+            bridge: bridge,
+            container: mtpFloorContainer(),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsBytes: 1),
+            modelType: "gemma4")
+        await gate.releaseGate()
+
+        // Without the post-preparation recheck, the continuation starts a
+        // SECOND load of the resident model and throws on the fake
+        // snapshot's unloadable weights.
+        try await load.value
+        #expect(await server.debugOutstandingKVReservationBytes() == 0)
+        await bridge.shutdown()
         await server.stopAndWait()
     }
 

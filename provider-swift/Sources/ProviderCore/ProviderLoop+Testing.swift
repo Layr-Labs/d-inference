@@ -300,6 +300,12 @@ extension ProviderLoop {
         return bridge
     }
 
+    /// Test seam: swap the spec-dec funnel so lifecycle tests can gate the
+    /// MTP preparation await deterministically.
+    func setSpecDecFunnelForTesting(_ funnel: SpecDecArtifactFunnel) {
+        specDecFunnel = funnel
+    }
+
     /// Test seam: install a fully-formed v2 model slot so capacity/
     /// cancellation/re-slice tests can exercise the slot-dependent paths
     /// without loading weights.

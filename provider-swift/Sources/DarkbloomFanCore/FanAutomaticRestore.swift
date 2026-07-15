@@ -139,8 +139,12 @@ public enum FanAutomaticRestore {
                 error: ftstError ?? .ftstStillSet(rawValue: 1)
             ))
         }
+        var retainedFanIndices = Set(unresolvedFans.keys)
+        if unresolvedFtst {
+            retainedFanIndices.formUnion(fans.map(\.index))
+        }
         return FanAutomaticRestoreOutcome(
-            unresolvedFanIndices: Array(unresolvedFans.keys),
+            unresolvedFanIndices: Array(retainedFanIndices),
             ownsFtst: unresolvedFtst,
             failures: failures
         )

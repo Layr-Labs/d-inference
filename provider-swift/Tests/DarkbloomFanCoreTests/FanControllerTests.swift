@@ -688,7 +688,7 @@ struct FanControllerTests {
         #expect(failures.contains(where: { $0.step == .clearFtst }))
         #expect((await controller.currentSession())?.ownsFtst == true)
         #expect(recorder.values.last == FanControlOwnership(
-            fanIndices: [],
+            fanIndices: [0],
             ownsFtst: true
         ))
 

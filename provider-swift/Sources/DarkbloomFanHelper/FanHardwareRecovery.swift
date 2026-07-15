@@ -122,6 +122,7 @@ struct FanHardwareRecovery {
                 >= requiredOverlap
         else {
             discoveryRequired = true
+            discoveryError = nil
             discoveryError = readinessMessage
             return false
         }

@@ -25,28 +25,15 @@ do {
         FanLastFailure.self,
         from: paths.lastFailure
     )
-    let sensorBaseline = FileManager.default.fileExists(
-        atPath: paths.sensorBaseline.path
-    ) ? try FanDurableFile.readJSON(
-        FanSensorBaseline.self,
-        from: paths.sensorBaseline
-    ) : nil
     let backend = try AppleSMCBackend()
     let reader = FanHardwareReader(backend: backend)
-    let recoveryInventory = try reader.discoverForRecovery()
-    if let sensorBaseline,
-       sensorBaseline.chipFamily != recoveryInventory.chipFamily
-    {
-        throw FanDurableFileError.unsafeFile(
-            "fan sensor baseline chip \(sensorBaseline.chipFamily.rawValue) does not match \(recoveryInventory.chipFamily.rawValue)"
-        )
-    }
-
-    try FanOwnershipRecovery.reconcile(
+    let startup = try FanStartupRecovery.prepare(
         backend: backend,
-        inventory: recoveryInventory,
-        journalURL: paths.sessionJournal
+        reader: reader,
+        paths: paths
     )
+    let recoveryInventory = startup.recoveryInventory
+    let sensorBaseline = startup.sensorBaseline
     let inventory: FanInventory
     let discoveryError: String?
     do {
@@ -63,12 +50,18 @@ do {
         inventory = recoveryInventory
         discoveryError = "fan hardware discovery failed: \(error); retrying in the helper"
     }
+    var persistedFailure = previousFailure?.message
     if let discoveryError {
-        try? FanDurableFile.writeJSON(
-            FanLastFailure(message: discoveryError),
-            to: paths.lastFailure,
-            permissions: 0o600
-        )
+        do {
+            try FanDurableFile.writeJSON(
+                FanLastFailure(message: discoveryError),
+                to: paths.lastFailure,
+                permissions: 0o600
+            )
+            persistedFailure = discoveryError
+        } catch {
+            persistedFailure = previousFailure?.message
+        }
     }
 
     let configuration: FanServiceConfiguration
@@ -111,6 +104,7 @@ do {
             ? sensorBaseline?.sensorKeys ?? []
             : [],
         initialLastError: discoveryError ?? previousFailure?.message,
+        initialPersistedLastError: persistedFailure,
         initialDiscoveryError: discoveryError
     )
     let xpcService = FanXPCService(

@@ -61,6 +61,7 @@ actor FanDaemon {
         controllerFactory: ControllerFactory? = nil,
         baselineSensorKeys: [SMCKey] = [],
         initialLastError: String? = nil,
+        initialPersistedLastError: String? = nil,
         initialDiscoveryError: String? = nil
     ) {
         self.configuration = configuration
@@ -100,7 +101,7 @@ actor FanDaemon {
         self.policy = FanPolicyStateMachine(configuration: configuration.policy)
         self.mode = configuration.enabled ? .waitingForProvider : .disabled
         self.lastError = initialLastError
-        self.persistedLastError = nil
+        self.persistedLastError = initialPersistedLastError
     }
 
     func start() {

@@ -289,7 +289,7 @@ struct FanDaemonTests {
 
     @Test("restart cannot lower the durable M4 sensor quorum")
     func restartPreservesSensorQuorum() async throws {
-        let reducedKeys = Array(m4MaxGPUKeys.prefix(4))
+        let reducedKeys = Array(m4MaxGPUKeys.prefix(3)) + ["Tg0j", "Tg0k"]
         let harness = try makeHarness(
             inventoryGPUKeys: reducedKeys,
             backendGPUKeys: reducedKeys,
@@ -333,6 +333,52 @@ struct FanDaemonTests {
             providerVersion: "0.7.10"
         )
         #expect(afterPersistence.ok)
+    }
+
+    @Test("startup restores journal before rejecting a corrupt sensor baseline")
+    func startupRecoveryPrecedesBaselineValidation() throws {
+        let harness = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.backend.setByte("F0Md", to: FanMode.manual.rawValue)
+        harness.backend.setByte("Ftst", to: 1)
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(fanIndices: [0], ownsFtst: true),
+            to: harness.paths.sessionJournal,
+            permissions: 0o600,
+            owner: nil
+        )
+        try FanDurableFile.writeData(
+            Data("{}".utf8),
+            to: harness.paths.sensorBaseline,
+            permissions: 0o600,
+            owner: nil
+        )
+        let reader = FanHardwareReader(backend: harness.backend)
+
+        #expect(throws: (any Error).self) {
+            _ = try FanStartupRecovery.prepare(
+                backend: harness.backend,
+                reader: reader,
+                paths: harness.paths,
+                brandString: "Apple M4 Max",
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: FanControlTiming(
+                    ftstSettleSeconds: 0,
+                    retryDelaySeconds: 0,
+                    manualModeAttempts: 1,
+                    automaticRestoreAttempts: 1,
+                    verificationAttempts: 1,
+                    sleep: { _ in }
+                )
+            )
+        }
+
+        #expect(harness.backend.byte("F0Md") == FanMode.automatic.rawValue)
+        #expect(harness.backend.byte("Ftst") == 0)
+        #expect(!FileManager.default.fileExists(
+            atPath: harness.paths.sessionJournal.path
+        ))
     }
 
     @Test("missing GPU key revokes the lease and enters rediscovery")

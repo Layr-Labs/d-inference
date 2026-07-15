@@ -241,6 +241,17 @@ private func mtpFloorSizing(weightsBytes: UInt64) -> SlotSizingSnapshot {
         defaultMaxTokens: 4096)
 }
 
+private struct MTPFloorFailingAssistantLoader: ProviderMTPAssistantLoading {
+    struct Failure: Error {}
+
+    func loadAndBind(
+        artifact: SpecDecArtifact,
+        target: any LanguageModel
+    ) async throws -> ProviderMTPAssistantHandle {
+        throw Failure()
+    }
+}
+
 private func mtpFloorLoop(
     models: [ModelInfo] = [],
     mtpDrafterPath: String? = nil
@@ -410,6 +421,50 @@ struct MTPResliceFallbackTests {
         await build.bundle.bridge.shutdown()
         build.bundle.releaseAssistant()
         await server.stopAndWait()
+    }
+
+    @Test("prepare-stage assistant fail-open drops the drafter's pending reservation")
+    func prepareFailOpenReleasesPhantomReservation() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let loop = try mtpFloorLoop()
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorFailingAssistantLoader(),
+            makeEngine: { _, grant in MTPFloorEngine(capacityBytes: grant) }))
+
+        // The load path charged the drafter's bytes at admission; the
+        // assistant then fail-opens INSIDE the bundle build (load failure).
+        await loop.reservePendingLoadForTesting(
+            requestID: "pending-load:\(mtpFloorNewID)", bytes: artifact.residentBytes)
+
+        // Small weights: the re-slice floor must NOT trigger — this test
+        // isolates the prepare-stage fail-open, whose fallback previously
+        // kept the never-resident drafter bytes reserved through the whole
+        // re-slice and engine build.
+        let newcomer = EngineV2NewcomerBox(mtpFloorContainer())
+        let build = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: newcomer,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 1),
+            specDecPreparation: .init(
+                artifact: artifact, status: .candidate(artifact)))
+
+        #expect(build.bundle.mtpStatus.reason == MTPFallbackReason.assistantLoadFailed)
+        #expect(!build.bundle.mtpStatus.active)
+        #expect(build.bundle.assistantBytes == 0)
+        #expect(build.sizing.auxiliaryWeightBytes == 0)
+        // The phantom reservation must be gone the moment the fallback is
+        // decided — not only after the caller's post-build release.
+        #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+
+        await runtime.unregister(modelId: mtpFloorNewID)
+        await build.bundle.bridge.shutdown()
+        build.bundle.releaseAssistant()
     }
 
     @Test("standalone concurrent same-model load rechecks residency after MTP preparation")

@@ -81,6 +81,15 @@ struct LaunchAgentEnvironmentTests {
             from: ["DARKBLOOM_CBV2_MTP": "0", "PATH": "/usr/bin"])
         #expect(out == ["DARKBLOOM_CBV2_MTP": "0"])
     }
+
+    @Test func forwardsMTPRectangularCapOverrideToDaemon() {
+        // The tighten-only cap override is the operator's lever to reduce
+        // rectangular verification short of disabling MTP; it must survive
+        // service install/restart.
+        let out = LaunchAgent.passthroughEnvironment(
+            from: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4", "PATH": "/usr/bin"])
+        #expect(out == ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4"])
+    }
 }
 
 @Suite("LaunchAgent service plist")

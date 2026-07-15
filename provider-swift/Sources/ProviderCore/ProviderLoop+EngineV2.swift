@@ -289,6 +289,16 @@ extension ProviderLoop {
             MLX.Memory.clearCache()
             throw error
         }
+        // Prepare-stage fail-open (artifact revalidation, assistant load, or
+        // bind failure): the drafter never became resident, so drop its share
+        // of the caller's pending-load reservation NOW instead of holding
+        // phantom bytes against co-resident admission through the re-slice
+        // and engine build. The re-slice floor fallback below already does
+        // exactly this for its own fail-open.
+        if prepared.assistant == nil, specDecPreparation.artifact != nil {
+            await kvBudget.replacePendingLoadReservation(
+                requestID: "pending-load:\(modelId)", bytes: 0)
+        }
         var sizing = targetSizing.replacingAuxiliaryWeightBytes(
             prepared.assistantBytes)
         let existing = await existingSlotGrants(excludingModelId: modelId)

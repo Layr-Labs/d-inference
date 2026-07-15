@@ -24,10 +24,18 @@ The production branch now includes:
 - Native CBv2 seed/draft/verify rounds with target-authoritative acceptance.
 - An exact automatic verifier that accelerates certified rectangular work on
   M1 through M5 and clamps to ordinary target-only decode before drafting when
-  no positive safe depth fits. Serial target verification remains explicit.
+  no positive safe depth fits
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/MTP/CBv2MTPRoundDriver.swift`
+  `maximumAutomaticDepth`/`verificationLimitedDecision`;
+  `EngineLoopV2+MTPPlanning.swift` `mtpWantsStep`). Serial target verification
+  remains explicit
+  (`EngineLoopV2+MTPTargetVerification.swift` `mtpVerifyTargets`).
 - Decode-shaped rectangular attention: projections and feed-forward work stay
   batched, while every provisional query uses canonical `L=1` attention over
-  its exact visible KV prefix.
+  its exact visible KV prefix
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/AttentionV1.swift`
+  `attendSerialQueries`; scoped per verify by
+  `CBv2LayerCache.mtpSerializesRectangularAttention` in `LayerCacheV2.swift`).
 - Step-global eligibility and commit cadence for quantized MoE parity.
 - Exact full, quantized, and staged-window KV rollback.
 - Strict absolute-position assistant sliding masks.
@@ -125,10 +133,14 @@ unchanged, but an exact post-fix performance rerun was interrupted and is not
 claimed as complete. The schema-v4 raw parity matrices were rerun after the
 final engine/config hardening.
 
-The production repair uses fixed `k=1`, not an untrained adaptive controller.
-Its automatic work cap is `batch * (1+k) <= 4` on M1/M2/unknown hardware and
-`<= 8` on M3/M4/M5. The operator override may only tighten that certified
-maximum. M5 exactness was measured across the full safe envelope: B1/L2...L8,
+The production repair uses fixed `k=1`, not an untrained adaptive controller
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift`
+`makeProductionBundle` MTP config). Its automatic work cap is
+`batch * (1+k) <= 4` on M1/M2/unknown hardware and `<= 8` on M3/M4/M5. The
+operator override (`DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`, preserved across
+service installs by `Service/LaunchAgent.swift` `passthroughEnvKeys`) may only
+tighten that certified maximum
+(`provider-swift/Sources/ProviderCore/Inference/MTPAutomaticVerificationPolicy.swift`). M5 exactness was measured across the full safe envelope: B1/L2...L8,
 B2/L2...L4, B4/L2, final logits, every decoder layer, storage-owning K/V, and
 partial rollback. M4 was checked at B1/L3, B2/L2, and B4/L2. M1 through M3
 were not physically available; their conservative limits follow the pinned

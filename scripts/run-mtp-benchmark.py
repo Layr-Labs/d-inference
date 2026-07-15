@@ -748,6 +748,10 @@ def validate_automatic_fixed_fallback(
         ):
             raise ValueError(f"{label} lacks clamped-depth evidence")
         return True
+    # Complete zero-work evidence, mirroring the Swift validator field for
+    # field: a zero-fit clamp certifies that EXACT canonical fallback
+    # occurred, so any speculative array, counter, or timing residue must
+    # reject the report.
     if (
         metrics.get("selectedDepth") != 0
         or selections.get("0", 0) <= 0
@@ -756,8 +760,14 @@ def validate_automatic_fixed_fallback(
         or metrics.get("proposedTokens", 0) != 0
         or metrics.get("acceptedDraftTokens", 0) != 0
         or metrics.get("committedTokens", 0) != 0
-        or metrics.get("rectangularVerificationRounds", 0) != 0
+        or metrics.get("rectangularVerificationRounds", 0) not in (None, 0)
+        or metrics.get("acceptanceByPosition") not in ([], None)
+        or metrics.get("conditionalAcceptance") not in ([], None)
+        or metrics.get("skippedRows") not in ({}, None)
         or metrics.get("costInputs") not in ([], None)
+        or metrics.get("totalRoundWallTimeNanos") not in (None, 0)
+        or metrics.get("assistantTimeNanos") is not None
+        or metrics.get("targetVerifyTimeNanos") is not None
     ):
         raise ValueError(f"{label} reported uncategorized work")
     return True

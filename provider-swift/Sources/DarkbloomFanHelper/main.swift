@@ -25,13 +25,22 @@ do {
         FanLastFailure.self,
         from: paths.lastFailure
     )
-    let sensorBaseline = try? FanDurableFile.readJSON(
+    let sensorBaseline = FileManager.default.fileExists(
+        atPath: paths.sensorBaseline.path
+    ) ? try FanDurableFile.readJSON(
         FanSensorBaseline.self,
         from: paths.sensorBaseline
-    )
+    ) : nil
     let backend = try AppleSMCBackend()
     let reader = FanHardwareReader(backend: backend)
     let recoveryInventory = try reader.discoverForRecovery()
+    if let sensorBaseline,
+       sensorBaseline.chipFamily != recoveryInventory.chipFamily
+    {
+        throw FanDurableFileError.unsafeFile(
+            "fan sensor baseline chip \(sensorBaseline.chipFamily.rawValue) does not match \(recoveryInventory.chipFamily.rawValue)"
+        )
+    }
 
     try FanOwnershipRecovery.reconcile(
         backend: backend,

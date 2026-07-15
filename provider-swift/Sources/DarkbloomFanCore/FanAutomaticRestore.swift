@@ -88,6 +88,7 @@ public enum FanAutomaticRestore {
             }
 
             if releasedFtstThisRound {
+                timing.sleep(timing.ftstSettleSeconds)
                 for fan in fans.sorted(by: { $0.index < $1.index }) {
                     do {
                         let raw = try backend.read(fan.modeKey).uint8()

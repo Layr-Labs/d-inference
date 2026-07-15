@@ -80,6 +80,8 @@ Review-driven correctness defects found and fixed during implementation:
 | M5 Max exact rollback | B4/L2 with one accepted and one rejected position: final logits byte-equal, `kvMismatches=0` after rollback |
 | M5 Max production k=1 TPS | B1 `139.73` vs `119.67` target-only (`+16.76%`); B2 `187.43` vs `173.97` (`+7.73%`); B4 `222.02` vs `180.77` (`+22.82%`); B8 safely performed zero draft/verification rounds and measured `306.65` vs `306.77` (`-0.04%`) |
 | M4 Max production k=1 TPS | B1 `+11.4%`; B2 `+0.3%`; B4 `+8.3%`; all measured MTP rounds used rectangular verification and zero serial rounds |
+| M4 Max automatic raw-parity matrix | 40/40 byte token parity, zero mismatch rows, 380 rounds, 537 proposed / 442 accepted (repeated partial rejections), zero serial rounds, 144 rectangular rounds, every positive cost input within the cap; report SHA-256 `27e2072c6a70cc50d1a2867f7d67a4091080dc9495fc259ff93c16adf8e1b167` |
+| M5 Max automatic raw-parity matrix | 40/40 byte token parity, zero mismatch rows, 348 rounds, 479 proposed / 438 accepted, zero serial rounds, 133 rectangular rounds, every positive cost input within the cap; report SHA-256 `0605bb9650ebbe4968fc0d909cac4b9394a7e8e2b87b6b92187234b4a0037a40` |
 | Products | `ProviderCore`, `ProviderBenchmark` debug/release, and `darkbloom` build passed |
 | Diff checks | parent and nested diffs clean |
 

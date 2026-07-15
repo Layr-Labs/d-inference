@@ -31,7 +31,44 @@ public enum FanOwnershipRecovery {
             from: journalURL,
             requireRootOwnership: requireRootOwnership
         )
-        let verifyAllFans = journal.verifyAllFans || journal.ownsFtst
+        let legacyFtstJournal = journal.ownsFtst
+            && !journal.verifyAllFans
+            && journal.verificationFanIndices.isEmpty
+            && journal.minimumVerificationFanCount == 0
+        let verifyAllFans = journal.verifyAllFans
+            || journal.ownsFtst
+            || !journal.verificationFanIndices.isEmpty
+            || journal.minimumVerificationFanCount > 0
+        var pendingVerification = Set(journal.verificationFanIndices)
+        var minimumVerificationFanCount = journal.minimumVerificationFanCount
+        if verifyAllFans {
+            if legacyFtstJournal {
+                minimumVerificationFanCount = max(
+                    minimumVerificationFanCount,
+                    2
+                )
+            }
+            let knownIndices = Set(journal.fanIndices).union(pendingVerification)
+            if let maximumIndex = knownIndices.max() {
+                minimumVerificationFanCount = max(
+                    minimumVerificationFanCount,
+                    maximumIndex + 1
+                )
+            }
+            if !inventory.fans.isEmpty {
+                minimumVerificationFanCount = max(
+                    minimumVerificationFanCount,
+                    inventory.fans.count
+                )
+            }
+            if minimumVerificationFanCount == 0 {
+                // Vulnerable v1 Ftst-only journals lost their prior fan set.
+                // Validated M3/M4 Max hardware has two fans; requiring two is
+                // conservative for unknown legacy state and never authorizes a
+                // write by itself.
+                minimumVerificationFanCount = 2
+            }
+        }
         if verifyAllFans, inventory.fans.isEmpty {
             let gateOutcome = FanAutomaticRestore.run(
                 backend: backend,
@@ -52,7 +89,9 @@ public enum FanOwnershipRecovery {
                 FanSessionJournal(
                     fanIndices: journal.fanIndices,
                     ownsFtst: gateOutcome.ownsFtst,
-                    verifyAllFans: true
+                    verifyAllFans: true,
+                    verificationFanIndices: Array(pendingVerification),
+                    minimumVerificationFanCount: minimumVerificationFanCount
                 ),
                 to: journalURL,
                 permissions: 0o600,
@@ -95,19 +134,60 @@ public enum FanOwnershipRecovery {
         failures.append(contentsOf: outcome.failures)
 
         if verifyAllFans, !outcome.ownsFtst {
+            let inventoryIndices = Set(inventory.fans.map(\.index))
+            for index in pendingVerification
+                where !inventoryIndices.contains(index)
+            {
+                failures.append(FanRollbackFailure(
+                    fanIndex: index,
+                    step: .restoreMode,
+                    error: .smc(.injectedFailure(
+                        "fan \(index) is unavailable for pending Auto verification"
+                    ))
+                ))
+            }
             let verificationFailures = FanAutomaticRestore.verifyAutomatic(
                 backend: backend,
                 fans: inventory.fans,
                 timing: timing
             )
             failures.append(contentsOf: verificationFailures)
+            let failedVerificationIndices = Set(
+                verificationFailures.compactMap(\.fanIndex)
+            )
+            pendingVerification.subtract(
+                inventoryIndices.subtracting(failedVerificationIndices)
+            )
             for failure in verificationFailures {
                 if let index = failure.fanIndex,
                    recoveryIndices.contains(index)
                 {
                     unresolvedFans.insert(index)
+                } else if let index = failure.fanIndex {
+                    pendingVerification.insert(index)
                 }
             }
+        }
+
+        if verifyAllFans,
+           inventory.fans.count < minimumVerificationFanCount
+        {
+            failures.append(FanRollbackFailure(
+                fanIndex: nil,
+                step: .restoreMode,
+                error: .smc(.injectedFailure(
+                    "fan inventory is incomplete (\(inventory.fans.count)/\(minimumVerificationFanCount))"
+                ))
+            ))
+        }
+        if failures.isEmpty, !pendingVerification.isEmpty {
+            failures.append(FanRollbackFailure(
+                fanIndex: nil,
+                step: .restoreMode,
+                error: .smc(.injectedFailure(
+                    "full fan Auto verification is still pending"
+                ))
+            ))
         }
 
         guard !failures.isEmpty else {
@@ -118,7 +198,9 @@ public enum FanOwnershipRecovery {
             FanSessionJournal(
                 fanIndices: Array(unresolvedFans),
                 ownsFtst: outcome.ownsFtst,
-                verifyAllFans: verifyAllFans
+                verifyAllFans: verifyAllFans,
+                verificationFanIndices: Array(pendingVerification),
+                minimumVerificationFanCount: minimumVerificationFanCount
             ),
             to: journalURL,
             permissions: 0o600,

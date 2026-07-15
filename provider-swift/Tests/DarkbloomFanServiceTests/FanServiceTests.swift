@@ -209,12 +209,34 @@ struct FanServiceTests {
         #expect(pending.fanIndices.isEmpty)
         #expect(!pending.ownsFtst)
         #expect(pending.verifyAllFans)
+        #expect(pending.minimumVerificationFanCount == 2)
 
+        let fullInventory = recoveryInventory()
+        let partialInventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        backend.setByte("F0Md", to: 0)
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: partialInventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+        #expect(FileManager.default.fileExists(atPath: journal.path))
+
+        backend.setByte("F0Md", to: 1)
         backend.setByte("Ftst", to: 1)
         #expect(throws: FanOwnershipRecoveryError.self) {
             try FanOwnershipRecovery.reconcile(
                 backend: backend,
-                inventory: recoveryInventory(),
+                inventory: fullInventory,
                 journalURL: journal,
                 requireRootOwnership: false,
                 journalOwner: nil,
@@ -230,7 +252,7 @@ struct FanServiceTests {
         backend.setByte("F1Md", to: 0)
         try FanOwnershipRecovery.reconcile(
             backend: backend,
-            inventory: recoveryInventory(),
+            inventory: fullInventory,
             journalURL: journal,
             requireRootOwnership: false,
             journalOwner: nil,
@@ -489,6 +511,8 @@ struct FanServiceTests {
         #expect(journal.fanIndices.isEmpty)
         #expect(journal.ownsFtst)
         #expect(!journal.verifyAllFans)
+        #expect(journal.verificationFanIndices.isEmpty)
+        #expect(journal.minimumVerificationFanCount == 0)
     }
 }
 

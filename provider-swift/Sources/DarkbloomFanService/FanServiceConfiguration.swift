@@ -116,32 +116,72 @@ public struct FanSessionJournal: Equatable, Codable, Sendable {
     public let fanIndices: [Int]
     public let ownsFtst: Bool
     public let verifyAllFans: Bool
+    public let verificationFanIndices: [Int]
+    public let minimumVerificationFanCount: Int
 
     public init(
         fanIndices: [Int],
         ownsFtst: Bool,
-        verifyAllFans: Bool = false
+        verifyAllFans: Bool = false,
+        verificationFanIndices: [Int] = [],
+        minimumVerificationFanCount: Int = 0
     ) {
         self.fanIndices = Array(Set(fanIndices)).sorted()
         self.ownsFtst = ownsFtst
         self.verifyAllFans = verifyAllFans
+        self.verificationFanIndices = Array(Set(
+            verificationFanIndices
+        )).sorted()
+        self.minimumVerificationFanCount = max(
+            0,
+            minimumVerificationFanCount
+        )
     }
 
     private enum CodingKeys: String, CodingKey {
         case fanIndices
         case ownsFtst
         case verifyAllFans
+        case verificationFanIndices
+        case minimumVerificationFanCount
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let fanIndices = try container.decode([Int].self, forKey: .fanIndices)
+        let verificationFanIndices = try container.decodeIfPresent(
+            [Int].self,
+            forKey: .verificationFanIndices
+        ) ?? []
+        let minimumVerificationFanCount = try container.decodeIfPresent(
+            Int.self,
+            forKey: .minimumVerificationFanCount
+        ) ?? 0
+        guard fanIndices.allSatisfy({
+            (0..<FanHardwareReader.maximumSupportedFans).contains($0)
+        }),
+        verificationFanIndices.allSatisfy({
+            (0..<FanHardwareReader.maximumSupportedFans).contains($0)
+        }),
+        (0...FanHardwareReader.maximumSupportedFans).contains(
+            minimumVerificationFanCount
+        )
+        else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .fanIndices,
+                in: container,
+                debugDescription: "fan ownership journal bounds are invalid"
+            )
+        }
         self.init(
-            fanIndices: try container.decode([Int].self, forKey: .fanIndices),
+            fanIndices: fanIndices,
             ownsFtst: try container.decode(Bool.self, forKey: .ownsFtst),
             verifyAllFans: try container.decodeIfPresent(
                 Bool.self,
                 forKey: .verifyAllFans
-            ) ?? false
+            ) ?? false,
+            verificationFanIndices: verificationFanIndices,
+            minimumVerificationFanCount: minimumVerificationFanCount
         )
     }
 }

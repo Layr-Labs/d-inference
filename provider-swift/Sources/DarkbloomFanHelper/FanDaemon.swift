@@ -27,7 +27,6 @@ actor FanDaemon {
     private let uptime: Uptime
     private let journalOwner: (uid: uid_t, gid: gid_t)?
     private let requireRootJournalOwnership: Bool
-    private let recordOwnership: @Sendable (FanControlOwnership) throws -> Void
     private let discoverInventory: DiscoverInventory
     private let controllerFactory: ControllerFactory
 
@@ -86,18 +85,6 @@ actor FanDaemon {
             TransactionalFanController(
                 backend: backend,
                 inventory: refreshedInventory
-            )
-        }
-        let journalURL = paths.sessionJournal
-        self.recordOwnership = { ownership in
-            try FanDurableFile.writeJSON(
-                FanSessionJournal(
-                    fanIndices: ownership.fanIndices,
-                    ownsFtst: ownership.ownsFtst
-                ),
-                to: journalURL,
-                permissions: 0o600,
-                owner: journalOwner
             )
         }
         self.policy = FanPolicyStateMachine(configuration: configuration.policy)
@@ -323,6 +310,7 @@ actor FanDaemon {
             do {
                 let lease = leaseSessionID
                 try await requireControlAuthorization(lease)
+                let recordOwnership = ownershipRecorder()
                 let session = try await controller.engage(
                     speedPercent: speedPercent,
                     recordOwnership: recordOwnership
@@ -341,6 +329,7 @@ actor FanDaemon {
             if uptime() - lastMaintenanceAt >= Self.maintenanceIntervalSeconds {
                 let lease = leaseSessionID
                 try await requireControlAuthorization(lease)
+                let recordOwnership = ownershipRecorder()
                 // Refresh the journal with current ownership. The controller
                 // widens Ftst ownership only after it observes the gate free,
                 // immediately before a possible write.
@@ -365,15 +354,10 @@ actor FanDaemon {
     }
 
     private func persistOwnership(_ session: FanControlSession) throws {
-        try FanDurableFile.writeJSON(
-            FanSessionJournal(
-                fanIndices: session.targetRPMByFan.keys.map { $0 },
-                ownsFtst: session.ownsFtst
-            ),
-            to: paths.sessionJournal,
-            permissions: 0o600,
-            owner: journalOwner
-        )
+        try ownershipRecorder()(FanControlOwnership(
+            fanIndices: session.targetRPMByFan.keys.map { $0 },
+            ownsFtst: session.ownsFtst
+        ))
     }
 
     private func restoreAutomatic(reason: String) async -> Bool {
@@ -388,6 +372,7 @@ actor FanDaemon {
         }
         do {
             if await controller.isControlling {
+                let recordOwnership = ownershipRecorder()
                 try await controller.restoreAutomatic(
                     recordOwnership: recordOwnership
                 )
@@ -411,6 +396,30 @@ actor FanDaemon {
             setLastError("automatic restore failed: \(error)")
             logger.fault("automatic fan restore failed: \(String(describing: error), privacy: .public)")
             return false
+        }
+    }
+
+    private func ownershipRecorder()
+        -> @Sendable (FanControlOwnership) throws -> Void
+    {
+        let journalURL = paths.sessionJournal
+        let owner = journalOwner
+        let expectedFanIndices = hardwareRecovery.inventory.fans
+            .map(\.index)
+            .sorted()
+        return { ownership in
+            try FanDurableFile.writeJSON(
+                FanSessionJournal(
+                    fanIndices: ownership.fanIndices,
+                    ownsFtst: ownership.ownsFtst,
+                    verifyAllFans: true,
+                    verificationFanIndices: expectedFanIndices,
+                    minimumVerificationFanCount: expectedFanIndices.count
+                ),
+                to: journalURL,
+                permissions: 0o600,
+                owner: owner
+            )
         }
     }
 

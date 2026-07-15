@@ -42,6 +42,9 @@ struct FanDaemonTests {
             requireRootOwnership: false
         )
         #expect(!journal.ownsFtst)
+        #expect(journal.verifyAllFans)
+        #expect(journal.verificationFanIndices == [0])
+        #expect(journal.minimumVerificationFanCount == 1)
 
         await harness.daemon.sessionInvalidated(session)
         #expect(harness.backend.byte("F0Md") == 0)
@@ -185,6 +188,9 @@ struct FanDaemonTests {
             requireRootOwnership: false
         )
         #expect(journal.ownsFtst)
+        #expect(journal.verifyAllFans)
+        #expect(journal.verificationFanIndices == [0])
+        #expect(journal.minimumVerificationFanCount == 1)
     }
 
     @Test("M4 Max invalid sensor restores Auto, rediscovers, and reacquires lease")

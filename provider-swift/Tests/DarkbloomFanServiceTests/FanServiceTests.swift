@@ -169,7 +169,7 @@ struct FanServiceTests {
         #expect(!FileManager.default.fileExists(atPath: journal.path))
     }
 
-    @Test("legacy one-fan Ftst journal uses its surviving fan identity")
+    @Test("legacy one-fan Ftst journal remains conservative")
     func legacyOneFanJournalRecovery() throws {
         let backend = RecoveryBackend()
         let fullInventory = recoveryInventory()
@@ -186,6 +186,50 @@ struct FanServiceTests {
         let journal = directory.appendingPathComponent("session.json")
         try FanDurableFile.writeJSON(
             FanSessionJournal(fanIndices: [0], ownsFtst: true),
+            to: journal,
+            permissions: 0o600,
+            owner: nil
+        )
+
+        #expect(throws: FanOwnershipRecoveryError.self) {
+            try FanOwnershipRecovery.reconcile(
+                backend: backend,
+                inventory: inventory,
+                journalURL: journal,
+                requireRootOwnership: false,
+                journalOwner: nil,
+                timing: recoveryTestTiming()
+            )
+        }
+
+        #expect(backend.byte(for: "F0Md") == 0)
+        #expect(backend.byte(for: "Ftst") == 0)
+        #expect(FileManager.default.fileExists(atPath: journal.path))
+    }
+
+    @Test("v2 one-fan Ftst journal records its hardware count")
+    func v2OneFanJournalRecovery() throws {
+        let backend = RecoveryBackend()
+        let fullInventory = recoveryInventory()
+        let inventory = FanInventory(
+            chipFamily: fullInventory.chipFamily,
+            fans: [fullInventory.fans[0]],
+            gpuTemperatureKeys: [],
+            ftstKey: fullInventory.ftstKey
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("fan-recovery-v2-one-fan-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let journal = directory.appendingPathComponent("session.json")
+        try FanDurableFile.writeJSON(
+            FanSessionJournal(
+                fanIndices: [0],
+                ownsFtst: true,
+                verifyAllFans: true,
+                verificationFanIndices: [0],
+                minimumVerificationFanCount: 1
+            ),
             to: journal,
             permissions: 0o600,
             owner: nil

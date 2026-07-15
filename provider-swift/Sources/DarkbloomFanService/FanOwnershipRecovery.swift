@@ -33,7 +33,6 @@ public enum FanOwnershipRecovery {
         )
         let legacyFtstJournal = journal.ownsFtst
             && !journal.verifyAllFans
-            && journal.fanIndices.isEmpty
             && journal.verificationFanIndices.isEmpty
             && journal.minimumVerificationFanCount == 0
         let verifyAllFans = journal.verifyAllFans

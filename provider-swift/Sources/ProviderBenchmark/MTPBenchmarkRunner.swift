@@ -810,6 +810,17 @@ public enum MTPBenchmarkRunner {
                         condition: "production stop membership")
                 }
             }
+            // A "length" terminal certifies the decode ran to the token budget.
+            // Fewer tokens means the engine truncated early; rejecting it here
+            // keeps identical premature truncation in both sessions from
+            // passing token parity and the gates.
+            if finishReason == "length" {
+                guard tokens.count == maxTokens else {
+                    throw MTPBenchmarkError.unexpectedTerminal(
+                        row: row,
+                        condition: "production length terminal reached maxTokens")
+                }
+            }
         }
         let timing = try MTPBenchmarkTiming.stream(
             submittedAtNanoseconds: submittedAtNanoseconds,

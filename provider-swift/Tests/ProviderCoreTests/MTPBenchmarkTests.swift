@@ -903,6 +903,41 @@ struct MTPBenchmarkTests {
         }
     }
 
+    @Test("production length terminal must reach maxTokens")
+    func lengthTerminalMustReachMaxTokens() async throws {
+        let artifact = testArtifact()
+        let sessions = MTPBenchmarkSessionFactory { _, _ in
+            MTPBenchmarkSession(engine: SuccessfulLengthEngine()) { .inactive }
+        }
+        func run(maxTokensPerRow: Int) async throws -> MTPBenchmarkReport {
+            try await MTPBenchmarkRunner.run(
+                target: artifact,
+                assistant: artifact,
+                hardware: testHardware(),
+                configuration: MTPBenchmarkConfiguration(
+                    prompts: [.init(name: "prompt", tokenIDs: [1])],
+                    batchSizes: [1],
+                    modes: [.targetOnly],
+                    maxTokensPerRow: maxTokensPerRow,
+                    purpose: .productionCorrectness,
+                    stopPolicy: .production(tokenIDs: [9]),
+                    deadline: .seconds(2)),
+                sessions: sessions)
+        }
+        // The engine emits exactly one token before its "length" terminal, so a
+        // budget of 2 is a premature truncation and must be rejected.
+        do {
+            _ = try await run(maxTokensPerRow: 2)
+            Issue.record("benchmark certified a truncated length terminal")
+        } catch let error as MTPBenchmarkError {
+            #expect(error.description.contains(
+                "production length terminal reached maxTokens"))
+        }
+        // Reaching the budget exactly is a valid production length terminal.
+        let report = try await run(maxTokensPerRow: 1)
+        #expect(report.cases.first?.rows.first?.finishReason == "length")
+    }
+
     @Test("deadline includes session construction")
     func deadlineIncludesSessionConstruction() async throws {
         let artifact = testArtifact()

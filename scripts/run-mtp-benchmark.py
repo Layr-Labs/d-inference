@@ -257,7 +257,10 @@ def artifact_facts(model_id: str, snapshot: Path) -> dict[str, Any]:
         parsed = json.loads(read_bounded(handle.fileno(), 4 * 1024 * 1024))
     if not isinstance(parsed, dict):
         raise ValueError("config.json root is not an object")
+    # Mirrors MTPBenchmarkModelFacts.swift: "quantization" falls back to the HF "quantization_config" key.
     raw_quantization = parsed.get("quantization")
+    if not isinstance(raw_quantization, dict):
+        raw_quantization = parsed.get("quantization_config")
     config_metadata = {
         "model_type": parsed.get("model_type"),
         "dtype": parsed.get("dtype"),
@@ -1006,6 +1009,12 @@ def validate_report(
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} is not fixed length")
             if mode != "raw-parity" and row.get("finishReason") not in {"stop", "length"}:
                 raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} has invalid terminal reason")
+            if (
+                mode != "raw-parity"
+                and row.get("finishReason") == "length"
+                and token_count != max_tokens
+            ):
+                raise ValueError(f"case {kind}/{width}/B{batch} row {row_index} length terminal is premature")
             row_evidence.append((str(row.get("promptName", "")), token_count, digest))
         if kind == "target_only":
             baseline_rows[batch] = row_evidence

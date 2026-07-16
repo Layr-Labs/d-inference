@@ -13,6 +13,10 @@
 //     close/continue incorrectly → `normalizeMessages` re-pairs results,
 //     rejects orphans as 400, and merges dangling assistant text
 //     (Gemma4TurnStructure).
+//   • a raw-string `tool_calls[].function.arguments` (empty / malformed /
+//     non-object JSON survives the engine decode as a String) renders as
+//     double-brace garbage the model then imitates → `normalizeMessages`
+//     parses or rejects it first (Gemma4ToolCallArguments).
 //
 // Mirrors the per-model hook pattern of `GPTOSSHarmonyTemplateFix`.
 
@@ -27,7 +31,8 @@ enum Gemma4TemplateFix {
     static func normalizeMessages(
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {
-        try Gemma4TurnStructure.normalizeMessages(messages)
+        let hardened = try Gemma4ToolCallArguments.normalizeMessages(messages)
+        return try Gemma4TurnStructure.normalizeMessages(hardened)
     }
 
     static func normalizeTools(

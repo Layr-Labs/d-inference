@@ -1,7 +1,15 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Gemma 4 currently uses the upstream/MLX template directly. Keep this explicit
-// no-op hook so future Gemma-specific template fixes stay separate from GPT-OSS.
+// Gemma 4 uses the upstream/MLX chat template directly (byte-identical to
+// mlx-community/gemma-4-26b-a4b-it-qat-4bit, sha 94899c0f…). That template has
+// request-shape landmines the fixes here defuse in code — the artifact is NOT
+// repinned (2026-07-15 platform errors deep dive, E1/E2/E3):
+//
+//   • `format_parameters` renders `{{ value['type'] | upper }}` over every
+//     tool property → `normalizeTools` enforces "every property value is a
+//     mapping with a String type" (Gemma4ToolSchemaEnforcement).
+//
+// Mirrors the per-model hook pattern of `GPTOSSHarmonyTemplateFix`.
 
 enum Gemma4TemplateFix {
     static func applies(to context: ChatTemplateFixContext) -> Bool {
@@ -20,7 +28,7 @@ enum Gemma4TemplateFix {
     static func normalizeTools(
         _ tools: [[String: any Sendable]]
     ) -> [[String: any Sendable]] {
-        tools
+        Gemma4ToolSchemaEnforcement.normalizeToolSpecs(tools)
     }
 
     static func extraEOSTokenIds(tokenToId: (String) -> Int?) -> Set<Int> {

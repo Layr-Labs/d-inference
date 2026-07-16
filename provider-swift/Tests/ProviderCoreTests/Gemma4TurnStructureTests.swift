@@ -316,4 +316,54 @@ struct Gemma4TurnStructureTests {
         let out = try Gemma4TemplateFix.normalizeMessages(input)
         #expect((out[1]["reasoning_content"] as? String) == "earlier thoughts")
     }
+
+    /// PR #548 round 3 (Codex P2): an unanswered assistant tool_call turn
+    /// MID-HISTORY leaves the served template's forward scan answerless (the
+    /// dangling tool_response shape) — fail closed as a clean 400.
+    @Test func unansweredMidHistoryCallThrows() {
+        let input: [[String: any Sendable]] = [
+            ["role": "user", "content": "hi"],
+            assistant(text: "", callIDs: ["a"]),
+            ["role": "user", "content": "and then?"],
+        ]
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try Gemma4TemplateFix.normalizeMessages(input)
+        }
+    }
+
+    /// A partially answered turn (one of two calls resolved) followed by more
+    /// history is equally broken.
+    @Test func partiallyAnsweredMidHistoryCallThrows() {
+        let input: [[String: any Sendable]] = [
+            assistant(text: "", callIDs: ["a", "b"]),
+            toolResult(id: "a"),
+            ["role": "user", "content": "next"],
+        ]
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try Gemma4TemplateFix.normalizeMessages(input)
+        }
+    }
+
+    /// TRAILING exemption: a history that ENDS on an unanswered tool_call turn
+    /// is the legitimate continuation shape and passes through unchanged.
+    @Test func trailingUnansweredCallPasses() throws {
+        let input: [[String: any Sendable]] = [
+            ["role": "user", "content": "hi"],
+            assistant(text: "", callIDs: ["a"]),
+        ]
+        let out = try Gemma4TemplateFix.normalizeMessages(input)
+        #expect(out.count == 2)
+    }
+
+    /// An id-less result covers an otherwise-unanswered call (legacy pairing
+    /// the template renders via its name fallback).
+    @Test func idlessResultCoversUnansweredCallMidHistory() throws {
+        let input: [[String: any Sendable]] = [
+            assistant(text: "", callIDs: ["a"]),
+            toolResult(id: nil),
+            ["role": "user", "content": "next"],
+        ]
+        let out = try Gemma4TemplateFix.normalizeMessages(input)
+        #expect(out.count == 3)
+    }
 }

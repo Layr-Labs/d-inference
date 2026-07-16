@@ -78,6 +78,9 @@ enum Gemma4TurnStructure {
         // the id-less tail.
         var pairedResults: [Int: [String: [[String: any Sendable]]]] = [:]
         var idlessResults: [Int: [[String: any Sendable]]] = [:]
+        // Highest ORIGINAL index observed among each owner's collected results —
+        // the boundary for the trailing-turn exemption below.
+        var lastResultIndexByOwner: [Int: Int] = [:]
 
         for (index, message) in messages.enumerated() {
             let role = message["role"] as? String
@@ -89,6 +92,7 @@ enum Gemma4TurnStructure {
                         )
                     }
                     pairedResults[owner, default: [:]][id, default: []].append(message)
+                    lastResultIndexByOwner[owner] = index
                 } else {
                     guard let owner = lastToolCallTurn else {
                         // validateGenericToolHistory already rejects this; keep
@@ -97,6 +101,7 @@ enum Gemma4TurnStructure {
                             "tool message has no preceding assistant tool_calls")
                     }
                     idlessResults[owner, default: []].append(message)
+                    lastResultIndexByOwner[owner] = index
                 }
                 continue
             }
@@ -120,6 +125,28 @@ enum Gemma4TurnStructure {
             out.append(message)
             let calls = toolCalls(of: message)
             guard !calls.isEmpty else { continue }
+
+            // A declared call id with neither a paired result nor an id-less
+            // result to cover it leaves the served template's forward scan
+            // answerless — exactly the dangling `<|tool_response>` shape this
+            // repair exists to prevent — so a MID-HISTORY unanswered turn
+            // fails closed as a clean 400. TRAILING exemption: when nothing
+            // follows the turn (and its collected results) in the original
+            // sequence, the history legitimately ends awaiting the model's
+            // continuation, and the template's own tool_call-terminal branch
+            // handles it; that shape passes through unchanged.
+            let paired = pairedResults[index] ?? [:]
+            let unanswered = calls.compactMap(callID).filter { paired[$0] == nil }
+            let uncovered = unanswered.count - (idlessResults[index] ?? []).count
+            if uncovered > 0 {
+                let boundary = max(index, lastResultIndexByOwner[index] ?? index)
+                if boundary < messages.count - 1 {
+                    throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                        "assistant tool_call ids [\(unanswered.joined(separator: ", "))] "
+                            + "have no tool results before the next message")
+                }
+            }
+
             var byID = pairedResults[index] ?? [:]
             // The template's forward scan reads results in listed order; the
             // tool_calls order is the canonical one.

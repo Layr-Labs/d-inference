@@ -8,6 +8,11 @@
 //   • `format_parameters` renders `{{ value['type'] | upper }}` over every
 //     tool property → `normalizeTools` enforces "every property value is a
 //     mapping with a String type" (Gemma4ToolSchemaEnforcement).
+//   • the tool-response forward scan only reads the CONTIGUOUS run after an
+//     assistant tool_calls message, and consecutive assistant text turns
+//     close/continue incorrectly → `normalizeMessages` re-pairs results,
+//     rejects orphans as 400, and merges dangling assistant text
+//     (Gemma4TurnStructure).
 //
 // Mirrors the per-model hook pattern of `GPTOSSHarmonyTemplateFix`.
 
@@ -22,7 +27,7 @@ enum Gemma4TemplateFix {
     static func normalizeMessages(
         _ messages: [[String: any Sendable]]
     ) throws -> [[String: any Sendable]] {
-        messages
+        try Gemma4TurnStructure.normalizeMessages(messages)
     }
 
     static func normalizeTools(

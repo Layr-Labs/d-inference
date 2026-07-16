@@ -150,6 +150,8 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        mtpDrafter: (any CBv2MTPDrafter)? = nil,
+        mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -160,6 +162,8 @@ extension EngineV2Factory {
             kvBytesCapacity: kvBytesCapacity,
             prefixCache: prefixCache,
             maxConcurrentRequests: maxConcurrentRequests,
+            mtpDrafter: mtpDrafter,
+            mtpConfig: mtpConfig,
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
             environment: environment
@@ -198,6 +202,8 @@ extension EngineV2Factory {
         kvBytesCapacity: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
         maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        mtpDrafter: (any CBv2MTPDrafter)? = nil,
+        mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -323,7 +329,9 @@ extension EngineV2Factory {
                             backend: paged, caches: caches,
                             schedulerConfig: schedulerConfig,
                             prefixCache: prefixCache,
-                            loopConfig: engineLoopConfig),
+                            loopConfig: engineLoopConfig,
+                            mtpDrafter: mtpDrafter,
+                            mtpConfig: mtpConfig),
                         kvBackendKind: .paged,
                         kvBackendFallbackReason: nil)
                 } catch let error as CBv2KVError {
@@ -347,7 +355,9 @@ extension EngineV2Factory {
                 backend: backend, caches: caches,
                 schedulerConfig: schedulerConfig,
                 prefixCache: prefixCache,
-                loopConfig: engineLoopConfig),
+                loopConfig: engineLoopConfig,
+                mtpDrafter: mtpDrafter,
+                mtpConfig: mtpConfig),
             kvBackendKind: .contiguous,
             kvBackendFallbackReason: fallbackReason)
     }
@@ -361,7 +371,9 @@ extension EngineV2Factory {
         caches: [any CBv2AttendingLayerCache],
         schedulerConfig: CBv2SchedulerConfig,
         prefixCache: (any CBv2PrefixCache)?,
-        loopConfig: CBv2EngineLoopConfig
+        loopConfig: CBv2EngineLoopConfig,
+        mtpDrafter: (any CBv2MTPDrafter)?,
+        mtpConfig: CBv2MTPConfig
     ) -> EngineV2 {
         EngineV2(
             model: CBv2SteppableLanguageModelAdapter(model),
@@ -376,7 +388,9 @@ extension EngineV2Factory {
             // default-on encrypted SSD tier or the opt-in RAM PrefixCacheV2
             // tier. Both use per-request cacheSalt scoping; selection and
             // budgets live in PrefixCachePolicy.
-            prefixCache: prefixCache
+            prefixCache: prefixCache,
+            mtpDrafter: mtpDrafter,
+            mtpConfig: mtpConfig
         )
     }
 

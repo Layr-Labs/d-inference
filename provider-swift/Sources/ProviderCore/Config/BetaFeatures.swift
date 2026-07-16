@@ -76,7 +76,23 @@ public enum BetaFeatures {
             requiresRestart: true,
             read: { $0.backend.kvQuant },
             write: { enabled, config in config.backend.kvQuant = enabled }
-        )
+        ),
+        BetaFeature(
+            id: "mtp",
+            title: "Multi-token prediction (speculative decoding)",
+            summary: "Gemma 4 drafter-assisted decode on CBv2 — faster greedy decode, token-identical output.",
+            details: """
+            Binds a small drafter model to Gemma 4 slots so greedy \
+            (temperature-0) requests decode several tokens per step. Output \
+            is token-identical to MTP-off; drafter resolution and load are \
+            fail-open (any problem falls back to plain decode). The drafter \
+            comes from the catalog's spec_dec pointer, or set \
+            mtp_drafter_path under [backend] to a local drafter directory.
+            """,
+            requiresRestart: true,
+            read: { $0.backend.mtp },
+            write: { enabled, config in config.backend.mtp = enabled }
+        ),
         // (adaptive-prefill was retired with the legacy engine, v0.7.5 —
         // CBv2 chunks prefill engine-internally.)
     ]

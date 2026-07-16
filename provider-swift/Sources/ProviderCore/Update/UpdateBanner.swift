@@ -16,6 +16,19 @@ public enum UpdateBanner: Sendable {
         currentVersion: String = ProviderCore.version,
         timeout: TimeInterval = 2.0
     ) async {
+        await run(
+            coordinatorURL: coordinatorURL,
+            currentVersion: currentVersion,
+            timeout: timeout,
+            write: { FileHandle.standardError.write($0) })
+    }
+
+    static func run(
+        coordinatorURL: String,
+        currentVersion: String,
+        timeout: TimeInterval,
+        write: @Sendable (Data) -> Void
+    ) async {
         let baseURL = coordinatorHTTPBase(coordinatorURL)
         guard let url = URL(string: "\(baseURL)/api/version") else { return }
 
@@ -40,7 +53,11 @@ public enum UpdateBanner: Sendable {
               isNewerSemver(latest, than: currentVersion)
         else { return }
 
-        printBanner(current: currentVersion, latest: latest, changelog: payload.changelog ?? "")
+        printBanner(
+            current: currentVersion,
+            latest: latest,
+            changelog: payload.changelog ?? "",
+            write: write)
     }
 
     // MARK: - Internals
@@ -73,7 +90,12 @@ public enum UpdateBanner: Sendable {
         return stripped.split(separator: ".").map { Int($0) ?? 0 }
     }
 
-    private static func printBanner(current: String, latest: String, changelog: String) {
+    private static func printBanner(
+        current: String,
+        latest: String,
+        changelog: String,
+        write: @Sendable (Data) -> Void
+    ) {
         let header = "Update available: \(current) → \(latest)"
         var lines: [String] = []
         lines.append("")
@@ -92,7 +114,7 @@ public enum UpdateBanner: Sendable {
 
         let banner = lines.joined(separator: "\n") + "\n"
         if let data = banner.data(using: .utf8) {
-            FileHandle.standardError.write(data)
+            write(data)
         }
     }
 

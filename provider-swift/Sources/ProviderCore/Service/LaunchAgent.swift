@@ -269,9 +269,14 @@ public enum LaunchAgent: Sendable {
     /// next launchd start. `DARKBLOOM_CBV2_PAGED_KV`: same rationale for
     /// the paged KV backend's fleet kill switch (default-ON for GPT-OSS
     /// slots — see `EngineV2KVBackendPolicy`).
+    /// `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`: the tighten-only automatic
+    /// rectangular cap override is the operator's lever to REDUCE speculative
+    /// verification work short of disabling MTP entirely; it must survive
+    /// install/restart like the kill switches.
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_PREFIX_CACHE_SSD",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
+        "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
     ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

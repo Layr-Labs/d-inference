@@ -100,7 +100,13 @@ extension ProviderLoop {
     /// checks run INSIDE the `isLoadingAny` critical section, so an
     /// interleaved local-endpoint load cannot make the no-evict verdict
     /// stale.
-    internal func ensureModelLoaded(modelId: String, allowEviction: Bool = true) async throws {
+    ///
+    /// When MTP is configured, the shared spec-dec funnel resolves and sizes
+    /// the assistant before admission. The target remains independently
+    /// loadable: assistant headroom failure selects target-only decode.
+    internal func ensureModelLoaded(
+        modelId: String, allowEviction: Bool = true
+    ) async throws {
         if isShuttingDown {
             throw CancellationError()
         }
@@ -125,7 +131,8 @@ extension ProviderLoop {
                 if isShuttingDown { throw CancellationError() }
             }
             if modelSlots[modelId] != nil { return }
-            try await ensureModelLoaded(modelId: modelId, allowEviction: allowEviction)
+            try await ensureModelLoaded(
+                modelId: modelId, allowEviction: allowEviction)
             return
         }
 
@@ -139,6 +146,26 @@ extension ProviderLoop {
             throw InferenceError.invalidModelDirectory(
                 "Model '\(modelId)' not in advertised model list"
             )
+        }
+        var mtpPreparation = await specDecPreparation(
+            modelId: modelId, modelInfo: modelInfo)
+
+        // Re-check residency and in-flight loads after the preparation await:
+        // a concurrent request for the same cold model can pass the checks
+        // above, complete its ENTIRE load (returning `isLoadingAny` to false),
+        // and install the slot while this task was suspended. Without this
+        // recheck the continuation would start a second load of a resident
+        // model — double pending-load reservation, possible eviction of the
+        // warm slot, and a leaked bridge.
+        while modelsUnloading.contains(modelId) {
+            await waitForModelUnload(modelId)
+            if isShuttingDown { throw CancellationError() }
+        }
+        if modelSlots[modelId] != nil { return }
+        if modelsLoading.contains(modelId) {
+            try await ensureModelLoaded(
+                modelId: modelId, allowEviction: allowEviction)
+            return
         }
 
         // Serialize loads so concurrent eviction decisions don't interleave
@@ -200,8 +227,11 @@ extension ProviderLoop {
             // load a model it could actually serve. `availableMemoryGb` now
             // clamps to real OS-available memory and subtracts in-flight KV
             // reservations, so dropping the multiplier here is still OOM-safe.
+            let targetWeightsGb = Self.loadGateWeightsGb(
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                extraWeightBytes: 0)
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
-                weightsGb: modelInfo.estimatedMemoryGb,
+                weightsGb: targetWeightsGb,
                 headroomGb: Self.loadHeadroomGb)
             do {
                 try await evictUntilAvailable(requiredGb: requiredGb, allowEviction: allowEviction)
@@ -211,6 +241,12 @@ extension ProviderLoop {
                 recordModelLoadError(model: modelId, message: message)
                 throw InferenceError.modelLoadFailed(message)
             }
+            // The assistant is optional and must never make an otherwise
+            // loadable target fail. It is charged before allocation when it
+            // fits; otherwise this load continues target-only.
+            mtpPreparation = await admitSpecDecIfMemoryAllows(
+                mtpPreparation, targetRequiredGb: requiredGb)
+            let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
@@ -218,11 +254,11 @@ extension ProviderLoop {
             // a concurrent KV reservation on an already-loaded model can't grant
             // headroom that, plus these incoming (not-yet-in-mlxUsed) weights,
             // blows the unified-memory cap. Released once the weights are resident.
-            let pendingLoadGiB = modelInfo.estimatedMemoryGb * 1_073_741_824
-            let pendingLoadBytes: UInt64 =
-                pendingLoadGiB.isFinite && pendingLoadGiB > 0
-                ? (pendingLoadGiB >= Double(UInt64.max) ? .max : UInt64(pendingLoadGiB))
-                : 0
+            // Includes `extraWeightBytes` (the drafter): those bytes land in
+            // mlxUsed during this load window just like the target's.
+            let pendingLoadBytes = Self.pendingLoadReservationBytes(
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                extraWeightBytes: extraWeightBytes)
             await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
@@ -287,10 +323,10 @@ extension ProviderLoop {
                 ))
             })
 
-            // Scheduler-free sizing snapshot (v0.7.5): weight bytes + the
-            // engine-truth fp16 KV rate + context window — everything the
-            // re-slice, bridge, heartbeat, and vision gate need.
-            let sizing = try await SlotSizingSnapshot.build(
+            // Target-only sizing snapshot. After assistant load/bind, the slot
+            // factory replaces its auxiliary component with the bytes actually
+            // retained before final re-slicing and installation.
+            let targetSizing = try await SlotSizingSnapshot.build(
                 container: newcomer.borrow(),
                 modelPath: modelPath,
                 fallbackDefaultMaxTokens: Self.schedulerDefaultMaxTokens)
@@ -299,7 +335,8 @@ extension ProviderLoop {
             // off from the pending-load reservation to the live mlxUsed view —
             // concurrent KV reservations see the weights from here on. (Also
             // released in catch for the error paths above.)
-            await kvBudget.release(requestID: pendingLoadID)
+            await kvBudget.replacePendingLoadReservation(
+                requestID: pendingLoadID, bytes: extraWeightBytes)
             if isShuttingDown || Task.isCancelled {
                 newcomer.release()
                 MLX.Memory.clearCache()
@@ -358,16 +395,17 @@ extension ProviderLoop {
             // appearing in `modelSlots` — it would recompute without the
             // newcomer and re-inflate survivors past the fleet budget.
             await acquireResliceGate()
-            let engineV2Bridge: EngineV2Bridge
+            var slotBuild: EngineV2SlotBuild
             do {
-                engineV2Bridge = try await resliceAndBuildEngineV2Slot(
+                slotBuild = try await resliceAndBuildEngineV2Bundle(
                     modelId: modelId,
                     modelType: modelInfo.modelType,
                     isVLM: slotIsVLM,
                     modelDirectory: modelPath,
                     newcomer: newcomer,
                     tokenizer: tokenizer,
-                    sizing: sizing
+                    targetSizing: targetSizing,
+                    specDecPreparation: mtpPreparation
                 )
             } catch let error as InferenceError {
                 // Already shaped (e.g. the re-slice floor refusal) — record +
@@ -389,6 +427,12 @@ extension ProviderLoop {
                 recordModelLoadError(model: modelId, message: message)
                 throw InferenceError.modelLoadFailed(message)
             }
+            // Assistant construction has completed. Its bytes are now either
+            // live and reflected in MLX, or fully released on fallback.
+            await kvBudget.release(requestID: pendingLoadID)
+            var engineBundle = slotBuild.bundle
+            var sizing = slotBuild.sizing
+            var engineV2Bridge = engineBundle.bridge
 
             // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): the
             // engine build (and, for VLM slots, the text-model extraction +
@@ -404,9 +448,50 @@ extension ProviderLoop {
             // physical-capacity policy prevents the pool from consuming the
             // full logical grant.
             MLX.Memory.clearCache()
-            let postBridgeServeable = KVHeadroomProbe.postBuildServeable(
+            var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
                 pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+            let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
+            if engineBundle.mtpStatus.active,
+                !postBridgeServeable || !runtimeMTPActive
+            {
+                let reason: MTPFallbackReason = runtimeMTPActive
+                    ? .assistantPostBuildHeadroom : .engineInactive
+                logger.warning(
+                    "mtp: model=\(modelId) fallback reason=\(reason.rawValue); rebuilding target-only")
+                await engineV2Runtime.unregister(modelId: modelId)
+                await engineV2Bridge.shutdown()
+                engineBundle.releaseAssistant()
+                MLX.Memory.clearCache()
+                do {
+                    slotBuild = try await resliceAndBuildEngineV2Bundle(
+                        modelId: modelId,
+                        modelType: modelInfo.modelType,
+                        isVLM: slotIsVLM,
+                        modelDirectory: modelPath,
+                        newcomer: newcomer,
+                        tokenizer: tokenizer,
+                        targetSizing: targetSizing,
+                        specDecPreparation: mtpPreparation.fallingBack(reason))
+                } catch {
+                    // The retry released the target on failure. Recompute from
+                    // actual survivor residency, not the first attempt's
+                    // assistant-conservative grants.
+                    await resliceGrowSurvivorsLocked()
+                    releaseResliceGate()
+                    MLX.Memory.clearCache()
+                    let message = "Model '\(modelId)' MTP fallback engine construction failed: \(error) — unloaded"
+                    recordModelLoadError(model: modelId, message: message)
+                    throw InferenceError.modelLoadFailed(message)
+                }
+                engineBundle = slotBuild.bundle
+                sizing = slotBuild.sizing
+                engineV2Bridge = engineBundle.bridge
+                MLX.Memory.clearCache()
+                postBridgeServeable = KVHeadroomProbe.postBuildServeable(
+                    kvBackendKind: engineV2Bridge.kvBackendKind,
+                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+            }
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
@@ -417,7 +502,7 @@ extension ProviderLoop {
                 // would let Σ(grants) exceed the true fleet budget. Still
                 // holding the re-slice gate; release only after.
                 await unwindBuiltSlotAndRegrow(
-                    modelId: modelId, bridge: engineV2Bridge, newcomer: newcomer)
+                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
                 releaseResliceGate()
                 let message = "Model '\(modelId)' loaded but its engine build left insufficient "
                     + "KV headroom under the memory cap (\(headroomGb) GB free) — unloaded"
@@ -435,12 +520,14 @@ extension ProviderLoop {
                 // Unreachable (the box is drained only on failure paths) —
                 // defensive so a wiring bug can never leak the re-slice gate
                 // and wedge every future load.
+                await unwindBuiltSlotAndRegrow(
+                    modelId: modelId, bundle: engineBundle, newcomer: newcomer)
                 releaseResliceGate()
                 throw InferenceError.modelLoadFailed(
                     "internal: newcomer container missing at install for '\(modelId)'")
             }
             modelSlots[modelId] = ModelSlot(
-                engineV2: engineV2Bridge,
+                engineBundle: engineBundle,
                 container: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
@@ -480,6 +567,32 @@ extension ProviderLoop {
         }
     }
 
+    // MARK: - Load-gate arithmetic (pure, unit-tested by SpecDecCapacityTests)
+
+    /// The load gate's weight figure (GB): the scan-time snapshot estimate
+    /// plus any auxiliary weight bytes the load will make resident OUTSIDE
+    /// the snapshot (the MTP drafter — plan D5: scan-time estimates never
+    /// include it, so the gate must add it explicitly).
+    internal static func loadGateWeightsGb(
+        estimatedWeightsGb: Double, extraWeightBytes: UInt64
+    ) -> Double {
+        estimatedWeightsGb + Double(extraWeightBytes) / 1_073_741_824.0
+    }
+
+    /// The pending-load reservation (bytes) for an in-flight load: the
+    /// estimated snapshot footprint plus auxiliary weight bytes, saturating.
+    /// A non-finite/non-positive estimate contributes nothing (the pre-MTP
+    /// behavior), leaving just the auxiliary bytes.
+    internal static func pendingLoadReservationBytes(
+        estimatedWeightsGb: Double, extraWeightBytes: UInt64
+    ) -> UInt64 {
+        let weightBytes = estimatedWeightsGb * 1_073_741_824
+        guard weightBytes.isFinite, weightBytes > 0 else { return extraWeightBytes }
+        if weightBytes >= Double(UInt64.max) { return .max }
+        let (sum, overflow) = UInt64(weightBytes).addingReportingOverflow(extraWeightBytes)
+        return overflow ? .max : sum
+    }
+
     internal func releaseLoadGateWaiters() {
         let waiters = loadGateWaiters
         loadGateWaiters.removeAll()
@@ -495,13 +608,23 @@ extension ProviderLoop {
     }
 
     internal func unloadModel(_ modelId: String) async {
-        guard let slot = modelSlots[modelId], !modelsUnloading.contains(modelId) else { return }
+        // Bind ONLY the bridge, never the whole slot: the slot value is the
+        // last owner of the container AND the opaque MTP drafter handle, and
+        // both must be released at `removeValue` below — BEFORE the cache
+        // purge — not kept alive by a local until this function returns.
+        guard let engineBundle = modelSlots[modelId]?.engineBundle,
+            !modelsUnloading.contains(modelId)
+        else { return }
+        let engineV2 = engineBundle.bridge
         modelsUnloading.insert(modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
         // stop fanning out to it, then drain the engine gracefully (running
         // requests finish, new submissions are rejected).
         await engineV2Runtime.unregister(modelId: modelId)
-        await slot.engineV2.shutdown()
+        await engineV2.shutdown()
+        engineBundle.releaseAssistant()
+        // Drops the slot's container and MTP drafter references with the
+        // target (the drafter is slot-owned — plan D5 teardown).
         modelSlots.removeValue(forKey: modelId)
         modelsUnloading.remove(modelId)
         // Mandatory: freed weights linger in MLX's pool (GPU.cacheMemory), which
@@ -673,6 +796,13 @@ extension ProviderLoop {
         guard let modelInfo = advertisedModels[modelId] else {
             return false
         }
+        // The optional assistant deliberately plays NO role here: it cannot
+        // cause a fast rejection (a target that fits must remain loadable and
+        // can fall back to plain decode), and this pre-accept path must not
+        // touch the spec-dec funnel at all — admission is non-mutating and
+        // must not schedule catalog or artifact prefetch work for requests
+        // that may be rejected. The accepted load path performs the real
+        // preparation (and any prefetch) itself.
         let requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
             headroomGb: Self.loadHeadroomGb)

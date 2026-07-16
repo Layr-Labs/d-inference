@@ -56,7 +56,28 @@ public actor EngineV2Bridge {
     /// bridge actor holds and calls it directly. The former
     /// `@unchecked Sendable` box workaround (CONTRACT-ISSUES-H-provider.md
     /// §1) is resolved.
-    let engine: any CBv2Engine
+    /// Mutable ownership is intentional: `shutdown()` nils the engine after
+    /// drain so its target and MTP drafter references are released before the
+    /// slot owner purges MLX cache and regrows survivor grants.
+    var ownedEngine: (any CBv2Engine)?
+    var engine: any CBv2Engine {
+        guard let ownedEngine else {
+            preconditionFailure("EngineV2Bridge engine accessed after shutdown")
+        }
+        return ownedEngine
+    }
+    func capacitySnapshot() -> CBv2CapacitySnapshot {
+        ownedEngine?.capacity()
+            ?? CBv2CapacitySnapshot(
+                activeRequests: 0,
+                waitingRequests: 0,
+                kvBytesInUse: 0,
+                kvBytesCapacity: 0,
+                kvBytesBackendCapacity: 0,
+                kvBytesReserved: 0,
+                activeTokens: 0,
+                stepsExecuted: wedgeMonitor.lastStepsSample)
+    }
     public let modelId: String
     /// Which KV backend the engine was built with. Keys the bridge's
     /// shared-gate accounting (paged pools are construction-committed —
@@ -113,6 +134,10 @@ public actor EngineV2Bridge {
     /// checkpoint-tier logger). Started by the slot factory when an active
     /// cache exists; cancelled in `shutdown()`.
     var prefixCacheStatsTask: Task<Void, Never>?
+    /// Periodic content-free MTP metrics logger, cancelled by `shutdown()`.
+    var mtpMetricsTask: Task<Void, Never>?
+    var mtpActivationStatus = MTPActivationStatus.disabled(
+        .configDisabled, configured: false)
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
     let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
 
@@ -220,7 +245,7 @@ public actor EngineV2Bridge {
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
-        self.engine = engine
+        self.ownedEngine = engine
         self.modelId = modelId
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
@@ -472,6 +497,16 @@ public actor EngineV2Bridge {
         }
 
         let events: AsyncStream<CBv2Event>
+        guard let engine = ownedEngine else {
+            if sharedKVReserved { await kvBudget?.release(requestID: id) }
+            if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+            if let readyReceiptRequestID {
+                ssdPrefixCache?.discardReadyReceipt(requestID: readyReceiptRequestID)
+            }
+            continuation.yield(.error("request queue full: engine is shutting down"))
+            continuation.finish()
+            return stream
+        }
         do {
             // `engine.submit` is an O(1) non-blocking ENQUEUE by contract
             // (`CBv2Engine.submit`: "Cancel promptly … row is dropped O(1)";
@@ -544,7 +579,7 @@ public actor EngineV2Bridge {
     /// which drives the normal bookkeeping/teardown in the pump.
     public func cancel(requestId: String) {
         guard let cbv2Id = idMap[requestId] else { return }
-        engine.cancel(cbv2Id)
+        ownedEngine?.cancel(cbv2Id)
     }
 
     // MARK: - Runtime KV re-slicing / slot bookkeeping
@@ -578,6 +613,7 @@ public actor EngineV2Bridge {
     /// Reclaiming or adding physical bytes requires an unload/rebuild.
     public func updateKVBytesCapacity(_ bytes: Int) {
         let requested = max(0, bytes - prefixCacheBudgetBytes)
+        guard let engine = ownedEngine else { return }
         if kvBackendKind == .paged {
             let physical = max(0, engine.capacity().kvBytesBackendCapacity)
             engine.updateKVBytesCapacity(min(requested, physical))
@@ -597,12 +633,12 @@ public actor EngineV2Bridge {
     /// contiguous: the admission ceiling). Input to the post-build
     /// serveable-KV guard (`KVHeadroomProbe.postBuildServeable`).
     public func kvBackendPoolBytes() -> UInt64 {
-        UInt64(max(0, engine.capacity().kvBytesBackendCapacity))
+        UInt64(max(0, capacitySnapshot().kvBytesBackendCapacity))
     }
 
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
     func cancelIfOwned(requestId: String) -> Bool {
-        guard let cbv2Id = idMap[requestId] else { return false }
+        guard let cbv2Id = idMap[requestId], let engine = ownedEngine else { return false }
         engine.cancel(cbv2Id)
         return true
     }
@@ -621,10 +657,17 @@ public actor EngineV2Bridge {
     public func shutdown() async {
         prefixCacheStatsTask?.cancel()
         prefixCacheStatsTask = nil
+        mtpMetricsTask?.cancel()
+        mtpMetricsTask = nil
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }
-        await engine.shutdown()
+        if let engine = ownedEngine {
+            await engine.shutdown()
+        }
+        // The bridge may remain in a local teardown variable; explicitly drop
+        // the concrete engine so target and assistant ownership does not.
+        ownedEngine = nil
         // SSD tier teardown AFTER the engine drain: queued donation writes
         // are dropped, staging pins/reservations released, on-disk files
         // KEPT — durable warmth across unload/restart is the feature.

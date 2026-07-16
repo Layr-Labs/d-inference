@@ -156,6 +156,87 @@ struct ModelCatalogTests {
         #expect(RegistryURLProtocol.lastPath == "/v1/models/catalog/manifest/org%2Fmodel%2Fwith%2Fslash")
     }
 
+    @Test("catalog streaming accepts the exact response-byte boundary")
+    func catalogResponseExactBoundary() async throws {
+        let base = Data(#"{"models":[]}"#.utf8)
+        var body = base
+        body.append(Data(
+            repeating: UInt8(ascii: " "),
+            count: ModelCatalogClient.maximumCatalogResponseBytes - base.count))
+        CatalogBodyURLProtocol.payload = body
+        CatalogBodyURLProtocol.includeContentLength = false
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        let models = try await client.fetchCatalog()
+        #expect(models.isEmpty)
+    }
+
+    @Test("catalog streaming rejects one byte beyond the response bound")
+    func catalogResponseOverBoundary() async {
+        let base = Data(#"{"models":[]}"#.utf8)
+        var body = base
+        body.append(Data(
+            repeating: UInt8(ascii: " "),
+            count: ModelCatalogClient.maximumCatalogResponseBytes - base.count + 1))
+        CatalogBodyURLProtocol.payload = body
+        CatalogBodyURLProtocol.includeContentLength = false
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await client.fetchCatalog()
+        }
+    }
+
+    @Test("catalog rejects excessive JSON nesting before decode")
+    func catalogNestingBound() async {
+        let nesting = String(repeating: "[", count: 33)
+            + String(repeating: "]", count: 33)
+        CatalogBodyURLProtocol.payload = Data(
+            "{\"models\":[],\"ignored\":\(nesting)}".utf8)
+        CatalogBodyURLProtocol.includeContentLength = true
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await client.fetchCatalog()
+        }
+    }
+
+    @Test("catalog rejects model arrays beyond the provider count bound")
+    func catalogModelCountBound() async {
+        let model = #"{"id":"m","s3_name":"m","display_name":"m","model_type":"text","size_gb":1}"#
+        let models = Array(
+            repeating: model,
+            count: ModelCatalogClient.maximumCatalogModelCount + 1
+        ).joined(separator: ",")
+        CatalogBodyURLProtocol.payload = Data("{\"models\":[\(models)]}".utf8)
+        CatalogBodyURLProtocol.includeContentLength = true
+
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [CatalogBodyURLProtocol.self]
+        let client = ModelCatalogClient(
+            coordinatorURL: "https://coord.example.test",
+            urlSession: URLSession(configuration: config))
+
+        await #expect(throws: ModelCatalogError.self) {
+            _ = try await client.fetchCatalog()
+        }
+    }
+
     @Test("downloader honors DARKBLOOM_R2_CDN_URL env override")
     func downloaderEnvOverride() {
         setenv("DARKBLOOM_R2_CDN_URL", "https://example.test/cdn", 1)
@@ -203,6 +284,44 @@ struct ModelCatalogTests {
         #expect(try Data(contentsOf: final) == full)
         #expect(!FileManager.default.fileExists(atPath: partial.path))
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
+    }
+
+    @Test("downloadFile discards a 206 resume whose Content-Range mismatches and re-downloads")
+    func downloadFileRejectsMismatched206Resume() async throws {
+        // A misbehaving server/proxy answers our `Range: bytes=8-` with a 206
+        // whose Content-Range starts at byte 4. Writing that suffix from
+        // byte 0 would silently corrupt the file (the legacy path passes no
+        // SHA); the delegate must discard the .part, surface a retryable
+        // failure, and the retry must fetch the whole object from byte 0.
+        let full = Data("0123456789abcdef".utf8)
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        RangeURLProtocol.mismatchNextResumeStart = 4
+        defer { RangeURLProtocol.mismatchNextResumeStart = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try full.prefix(8).write(to: partial)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        // The retry fetched the WHOLE object (no Range header) and the final
+        // bytes are exactly the object — not a suffix written from byte 0.
+        #expect(try Data(contentsOf: final) == full)
+        #expect(RangeURLProtocol.lastRangeHeader == nil)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
     }
 
     @Test("downloadFile promotes a complete .part on 416 instead of re-downloading")
@@ -412,9 +531,42 @@ private struct CatalogResponseShim: Codable {
     let models: [CatalogModel]
 }
 
+private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var payload = Data()
+    nonisolated(unsafe) static var includeContentLength = true
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        var headers: [String: String]? = nil
+        if Self.includeContentLength {
+            headers = ["Content-Length": "\(Self.payload.count)"]
+        }
+        let response = HTTPURLResponse(
+            url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1",
+            headerFields: headers)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        let chunkSize = 16 * 1024
+        var offset = 0
+        while offset < Self.payload.count {
+            let end = min(offset + chunkSize, Self.payload.count)
+            client?.urlProtocol(self, didLoad: Self.payload.subdata(in: offset..<end))
+            offset = end
+        }
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
 private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var payload = Data()
     nonisolated(unsafe) static var lastRangeHeader: String?
+    /// When set, the NEXT ranged request is answered with a 206 whose
+    /// Content-Range start is this value (a misbehaving server/proxy); the
+    /// flag then clears so retries see correct behavior again.
+    nonisolated(unsafe) static var mismatchNextResumeStart: Int?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -439,6 +591,26 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
                 headerFields: ["Content-Range": "bytes */\(Self.payload.count)"]
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        if start > 0, let liedStart = Self.mismatchNextResumeStart {
+            // Misbehaving server/proxy: a 206 whose Content-Range does not
+            // match the requested resume offset (body matches the lie).
+            Self.mismatchNextResumeStart = nil
+            let body = Self.payload.dropFirst(liedStart)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 206,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": "\(body.count)",
+                    "Content-Range":
+                        "bytes \(liedStart)-\(Self.payload.count - 1)/\(Self.payload.count)",
+                ]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body))
             client?.urlProtocolDidFinishLoading(self)
             return
         }

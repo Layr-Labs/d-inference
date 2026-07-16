@@ -1276,6 +1276,8 @@ struct EngineV2FailLoudFactoryTests {
         #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4"))        // VLM wrapper
         #expect(EngineV2SupportedModels.isSupported(modelType: "gemma4_text"))   // text config
         #expect(EngineV2SupportedModels.isSupported(modelType: "GEMMA4_TEXT"))   // case-insensitive
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "gemma4_assistant_v2"))
+        #expect(!EngineV2SupportedModels.isSupported(modelType: "gemma4_text_assistant"))
         // Everything else fails closed — including nil/empty and the
         // near-miss families that must never match by accident.
         #expect(!EngineV2SupportedModels.isSupported(modelType: nil))

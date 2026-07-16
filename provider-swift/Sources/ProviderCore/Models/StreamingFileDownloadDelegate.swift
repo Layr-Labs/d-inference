@@ -45,6 +45,7 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
     private let partial: URL
     private let existingBytes: Int64
     private let label: String
+    private let maximumTotalBytes: Int64?
     private let onChunk: (@Sendable (Int64) -> Void)?
     private let fm = FileManager.default
 
@@ -64,11 +65,13 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
         partial: URL,
         existingBytes: Int64,
         label: String,
+        maximumTotalBytes: Int64? = nil,
         onChunk: (@Sendable (Int64) -> Void)?
     ) {
         self.partial = partial
         self.existingBytes = existingBytes
         self.label = label
+        self.maximumTotalBytes = maximumTotalBytes
         self.onChunk = onChunk
         super.init()
     }
@@ -149,6 +152,14 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
             completionHandler(.cancel)
             return
         }
+        if let maximumTotalBytes, maximumTotalBytes >= 0,
+            http.expectedContentLength > maximumTotalBytes
+        {
+            setupError = ModelCatalogError.downloadFailed(
+                "\(label): response exceeds manifest size bound")
+            completionHandler(.cancel)
+            return
+        }
 
         // Append only when the server confirms it resumed at our exact offset.
         var append = false
@@ -157,6 +168,21 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
             let start = Self.parseContentRangeStart(contentRange),
             start == UInt64(existingBytes) {
             append = true
+        }
+        // Any OTHER 206 body is some partial suffix we cannot place: a
+        // mismatched or unparseable Content-Range (or a 206 we never asked
+        // for) written from byte 0 would silently corrupt the file, and only
+        // hash-checked callers would ever notice. Discard the .part and
+        // surface a RETRYABLE error so `downloadFile`'s loop re-runs from
+        // byte 0 with a full GET (same contract as the untrustworthy-416
+        // branch above; must NOT be a CancellationError).
+        if status == 206, !append {
+            try? fm.removeItem(at: partial)
+            setupError = ModelCatalogError.downloadFailed(
+                "\(label): 206 resume did not match .part offset \(existingBytes); "
+                    + "discarded for clean re-download")
+            completionHandler(.cancel)
+            return
         }
 
         do {
@@ -183,6 +209,16 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard setupError == nil, let writer else { return }
+        if let maximumTotalBytes {
+            let (received, overflow) = baseline.addingReportingOverflow(written)
+            let (next, nextOverflow) = received.addingReportingOverflow(Int64(data.count))
+            if overflow || nextOverflow || next > maximumTotalBytes {
+                setupError = ModelCatalogError.downloadFailed(
+                    "\(label): response exceeds manifest size bound")
+                dataTask.cancel()
+                return
+            }
+        }
         do {
             // Synchronous write == backpressure: the next didReceive(data:) is
             // not delivered until this returns, throttling the socket to disk.

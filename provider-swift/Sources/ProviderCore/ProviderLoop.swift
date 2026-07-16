@@ -166,6 +166,7 @@ public actor ProviderLoop {
     internal let powerAssertion: InferencePowerAssertion
     internal let preloadTaskStarted: (@Sendable (String) -> Void)?
     internal let beforeModelLoad: (@Sendable (String) async -> Void)?
+    internal var specDecFunnel: SpecDecArtifactFunnel
 
     /// Per-model inference slots. Each loaded model gets one EngineV2Bridge.
     /// Keyed by model ID.
@@ -483,6 +484,9 @@ public actor ProviderLoop {
         beforeModelLoad: (@Sendable (String) async -> Void)? = nil
     ) throws {
         self.loopConfig = config
+        self.specDecFunnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(),
+            catalog: SpecDecCatalogLookup(coordinatorURL: config.coordinatorURL))
         // Architecture-derived supported set (v0.7.5 fail-loud): the v2
         // engine is the ONLY engine, so a model whose family has no CBv2
         // adapter can never serve — advertising it would invite requests
@@ -574,7 +578,8 @@ public actor ProviderLoop {
         /// through (v0.7.5): every chat request routes here; there is no
         /// legacy scheduler on the slot anymore. Construction failure means
         /// the slot never exists (`ensureModelLoaded` unloads + 503s).
-        let engineV2: EngineV2Bridge
+        let engineBundle: ProviderEngineBundle
+        var engineV2: EngineV2Bridge { engineBundle.bridge }
         /// Retained for VLM vision preprocessing (the tower shares weights
         /// with the extracted text model) and for liveness rebuilds.
         let container: MLXLMCommon.ModelContainer
@@ -591,7 +596,67 @@ public actor ProviderLoop {
         /// drop window while the slot is still resident (a Gemma build would
         /// otherwise fall back to the qwen3 parser and leak <think> tokens).
         let modelType: String?
+        /// Opaque MTP drafter handle bound to this slot's engine, nil when
+        /// speculative decoding is off or no drafter resolved. Type-erased on
+        /// purpose: the concrete drafter type lives in MLXLLM and ProviderCore
+        /// must not depend on it (wrap a non-Sendable drafter in a small
+        /// `@unchecked Sendable` holder — the handle exists ONLY to pin
+        /// lifetime; nothing ever calls through it). Sendable-constrained so
+        /// `ModelSlot` keeps its implicit Sendable conformance. The SLOT owns
+        /// the drafter (plan D5): it is released with the target in
+        /// `unloadModel` (before the cache purge), and it is never scanned,
+        /// advertised, weight-hashed, or attested — its resident footprint is
+        /// accounted via the sizing snapshot's `auxiliaryWeightBytes` fold
+        /// instead.
+        var mtpDrafter: (any AnyObject & Sendable)? {
+            engineBundle.hasAssistant ? engineBundle : nil
+        }
         var lastInferenceAt: ContinuousClock.Instant
+
+        init(
+            engineBundle: ProviderEngineBundle,
+            container: MLXLMCommon.ModelContainer,
+            tokenizer: TokenizerHandle,
+            sizing: SlotSizingSnapshot,
+            isVLM: Bool,
+            modelType: String?,
+            lastInferenceAt: ContinuousClock.Instant
+        ) {
+            self.engineBundle = engineBundle
+            self.container = container
+            self.tokenizer = tokenizer
+            self.sizing = sizing
+            self.isVLM = isVLM
+            self.modelType = modelType
+            self.lastInferenceAt = lastInferenceAt
+        }
+
+        /// Compatibility initializer for existing target-only test seams.
+        init(
+            engineV2: EngineV2Bridge,
+            container: MLXLMCommon.ModelContainer,
+            tokenizer: TokenizerHandle,
+            sizing: SlotSizingSnapshot,
+            isVLM: Bool,
+            modelType: String?,
+            mtpDrafter: (any AnyObject & Sendable)? = nil,
+            lastInferenceAt: ContinuousClock.Instant
+        ) {
+            self.init(
+                engineBundle: ProviderEngineBundle(
+                    bridge: engineV2,
+                    assistant: nil,
+                    assistantBytes: 0,
+                    mtpArtifact: nil,
+                    mtpStatus: .disabled(.configDisabled, configured: false),
+                    pinnedAssistant: mtpDrafter),
+                container: container,
+                tokenizer: tokenizer,
+                sizing: sizing,
+                isVLM: isVLM,
+                modelType: modelType,
+                lastInferenceAt: lastInferenceAt)
+        }
 
         /// Per-slot memory gate for VLM media decode and generation KV against
         /// the shared `GlobalKVCacheBudget`.

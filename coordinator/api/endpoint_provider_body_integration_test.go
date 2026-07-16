@@ -115,15 +115,19 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 		requestBody  string
 		wantMessages []protocol.ChatMessage
 		absent       []string
+		wantResponse []string
+		absentResult []string
 	}{
 		{
-			name:        "completions",
+			name:        "completions stream",
 			path:        "/v1/completions",
 			requestBody: `{"model":"endpoint-lowering-model","prompt":"Completion endpoint","max_tokens":32,"stream":true}`,
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Completion endpoint"},
 			},
-			absent: []string{"prompt", "endpoint"},
+			absent:       []string{"prompt", "endpoint"},
+			wantResponse: []string{`"object":"text_completion"`, `"text":"ok"`, `data: [DONE]`},
+			absentResult: []string{`"delta":{"content":"ok"}`},
 		},
 		{
 			name:        "responses",
@@ -132,10 +136,11 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Responses endpoint"},
 			},
-			absent: []string{"input", "endpoint", "max_output_tokens"},
+			absent:       []string{"input", "endpoint", "max_output_tokens"},
+			wantResponse: []string{`event: response.output_text.delta`, `"delta":"ok"`},
 		},
 		{
-			name:        "messages",
+			name:        "messages stream",
 			path:        "/v1/messages",
 			requestBody: `{"model":"endpoint-lowering-model","system":"Be concise.","messages":[{"role":"user","content":"Messages endpoint"}],"max_tokens":32,"stream":true}`,
 			wantMessages: []protocol.ChatMessage{
@@ -143,6 +148,36 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 				{Role: "user", Content: "Messages endpoint"},
 			},
 			absent: []string{"system", "endpoint"},
+			wantResponse: []string{
+				`event: message_start`,
+				`event: content_block_delta`,
+				`"type":"text_delta"`,
+				`"text":"ok"`,
+				`event: message_stop`,
+			},
+			absentResult: []string{`"delta":{"content":"ok"}`},
+		},
+		{
+			name:        "completions non-streaming",
+			path:        "/v1/completions",
+			requestBody: `{"model":"endpoint-lowering-model","prompt":"Completion endpoint","max_tokens":32}`,
+			wantMessages: []protocol.ChatMessage{
+				{Role: "user", Content: "Completion endpoint"},
+			},
+			absent:       []string{"prompt", "endpoint"},
+			wantResponse: []string{`"object":"text_completion"`, `"text":"ok"`},
+			absentResult: []string{`"object":"chat.completion"`},
+		},
+		{
+			name:        "messages non-streaming",
+			path:        "/v1/messages",
+			requestBody: `{"model":"endpoint-lowering-model","messages":[{"role":"user","content":"Messages endpoint"}],"max_tokens":32}`,
+			wantMessages: []protocol.ChatMessage{
+				{Role: "user", Content: "Messages endpoint"},
+			},
+			absent:       []string{"endpoint"},
+			wantResponse: []string{`"type":"message"`, `"role":"assistant"`, `"type":"text"`, `"text":"ok"`},
+			absentResult: []string{`"object":"chat.completion"`},
 		},
 	}
 
@@ -158,13 +193,23 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, readErr := io.ReadAll(response.Body)
+			responseBody, readErr := io.ReadAll(response.Body)
 			response.Body.Close()
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
 			if response.StatusCode != http.StatusOK {
-				t.Fatalf("status = %d, want 200", response.StatusCode)
+				t.Fatalf("status = %d, want 200: %s", response.StatusCode, responseBody)
+			}
+			for _, want := range test.wantResponse {
+				if !strings.Contains(string(responseBody), want) {
+					t.Errorf("response missing %q:\n%s", want, responseBody)
+				}
+			}
+			for _, absent := range test.absentResult {
+				if strings.Contains(string(responseBody), absent) {
+					t.Errorf("response retained chat-completions field %q:\n%s", absent, responseBody)
+				}
 			}
 
 			var result providerResult

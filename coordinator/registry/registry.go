@@ -96,6 +96,10 @@ type PendingRequest struct {
 	// coordinator can translate provider chat-completions output back into
 	// Responses API objects for SDK clients.
 	IsResponsesAPI bool
+	// ConsumerEndpoint identifies a non-chat API whose request was lowered to
+	// the provider's chat-completions wire shape. Response writers translate
+	// chat output back to this endpoint's native JSON/SSE schema.
+	ConsumerEndpoint string
 	// AllowedProviderSerials optionally restricts routing to providers with
 	// one of these attested hardware serials. Empty means the request may
 	// route to any eligible provider.

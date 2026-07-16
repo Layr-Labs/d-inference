@@ -24,6 +24,7 @@ type streamToolCallDelta struct {
 
 // streamChunkChoice is a parsed choice from a chat.completion.chunk SSE line.
 type streamChunkChoice struct {
+	Index int `json:"index"`
 	Delta struct {
 		Content          string                `json:"content"`
 		Reasoning        string                `json:"reasoning"`

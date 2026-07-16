@@ -1615,6 +1615,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // before reading further chunks from the channel. This allows the dispatch
 // loop to "peek" at chunks for retry decisions without losing them.
 func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r *http.Request, pr *registry.PendingRequest, firstChunks []string, headerWritten bool) {
+	if pr.ConsumerEndpoint == completionsEndpoint || pr.ConsumerEndpoint == messagesEndpoint {
+		s.handleGenericEndpointStreamingResponse(w, r, pr, firstChunks, headerWritten)
+		return
+	}
 	if pr.IsResponsesAPI {
 		s.handleResponsesStreamingResponseWithFirstChunk(w, r, pr, firstChunks, headerWritten)
 		return
@@ -2028,6 +2032,19 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								// object didn't already carry one.
 								injectReasoningDetailIntoRawUsage(obj, completeUsage)
 								injectCacheDetailIntoRawUsage(obj, completeUsage)
+								if pr.ConsumerEndpoint == completionsEndpoint ||
+									pr.ConsumerEndpoint == messagesEndpoint {
+									encoded, err := json.Marshal(obj)
+									if err != nil {
+										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
+										return
+									}
+									msg := extractMessage([]string{"data: " + string(encoded)})
+									resp := buildGenericEndpointResponse(pr, msg, completeUsage)
+									s.noteInferenceSuccess(pr)
+									writeJSON(w, http.StatusOK, resp)
+									return
+								}
 								if pr.IsResponsesAPI {
 									var chatResp types.ChatCompletionResponse
 									b, err := json.Marshal(obj)
@@ -2079,6 +2096,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					var resp any
 					if pr.IsResponsesAPI {
 						resp = buildResponsesResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+					} else if pr.ConsumerEndpoint == completionsEndpoint ||
+						pr.ConsumerEndpoint == messagesEndpoint {
+						resp = buildGenericEndpointResponse(pr, msg, usage)
 					} else {
 						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
 					}
@@ -2343,6 +2363,16 @@ type extractedMessage struct {
 	FinishReason string           `json:"-"`
 }
 
+type extractedToolCallFragment struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
+}
+
 // extractMessage parses SSE data lines and reconstructs the full assistant
 // message from streaming chunks, including content, reasoning, and tool_calls.
 func extractMessage(chunks []string) extractedMessage {
@@ -2370,23 +2400,16 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 		var choices []struct {
 			Delta struct {
-				Content          string `json:"content"`
-				Reasoning        string `json:"reasoning"`
-				ReasoningContent string `json:"reasoning_content"`
-				ToolCalls        []struct {
-					Index    int    `json:"index"`
-					ID       string `json:"id,omitempty"`
-					Type     string `json:"type,omitempty"`
-					Function struct {
-						Name      string `json:"name,omitempty"`
-						Arguments string `json:"arguments,omitempty"`
-					} `json:"function,omitempty"`
-				} `json:"tool_calls,omitempty"`
+				Content          string                      `json:"content"`
+				Reasoning        string                      `json:"reasoning"`
+				ReasoningContent string                      `json:"reasoning_content"`
+				ToolCalls        []extractedToolCallFragment `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			Message struct {
-				Content          string `json:"content"`
-				Reasoning        string `json:"reasoning"`
-				ReasoningContent string `json:"reasoning_content"`
+				Content          string                      `json:"content"`
+				Reasoning        string                      `json:"reasoning"`
+				ReasoningContent string                      `json:"reasoning_content"`
+				ToolCalls        []extractedToolCallFragment `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
 		}
@@ -2412,7 +2435,11 @@ func extractMessage(chunks []string) extractedMessage {
 			} else if c.Message.ReasoningContent != "" {
 				reasoningBuilder.WriteString(c.Message.ReasoningContent)
 			}
-			for _, tc := range c.Delta.ToolCalls {
+			toolCalls := c.Delta.ToolCalls
+			if len(toolCalls) == 0 {
+				toolCalls = c.Message.ToolCalls
+			}
+			for _, tc := range toolCalls {
 				existing, ok := toolCallMap[tc.Index]
 				if !ok {
 					existing = map[string]any{
@@ -3419,7 +3446,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	}
 	inferenceBody, loweringErr := promptcontract.LowerProviderBody(endpointKind, endpointBody)
 	cachePlan := registry.CachePlan{}
+	consumerEndpoint := ""
 	if loweringErr == nil {
+		consumerEndpoint = endpoint
 		cachePlan = s.planCacheRoute(
 			r.Context(), consumerKey, model, inferenceBody, requiresVision)
 	} else {
@@ -3439,6 +3468,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		KeyLimitMicroUSD:       keyLimitMicroFromContext(r.Context()),
 		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
+		ConsumerEndpoint:       consumerEndpoint,
 		AllowedProviderSerials: allowedProviderSerials,
 		SelfRouteOnly:          policy.enabled,
 		PreferOwner:            policy.prefer,

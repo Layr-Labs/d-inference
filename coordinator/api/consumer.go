@@ -2318,6 +2318,29 @@ func normalizeSSEChunk(chunk string) string {
 	return "data: " + string(out)
 }
 
+// maxLogicalToolCalls caps how many logical tool calls a single stream may
+// reconstruct. Chunks come from providers, which are only semi-trusted: a
+// buggy or malicious provider could otherwise stream an unbounded number of
+// distinct-id tool-call deltas and grow the reconstruction (and its wire-index
+// tracking) without limit. Real parallel-tool-call fan-out is tiny (typically
+// <= 4 calls), so 128 is far above anything legitimate while bounding the
+// worst case. Past the cap, deltas that would START a new logical call are
+// dropped (counted + logged); argument fragments for already-kept calls still
+// accumulate, so kept calls are never truncated or corrupted.
+const maxLogicalToolCalls = 128
+
+// toolCallWireIndex reads an accumulated tool-call entry's wire index.
+// Entries are always created with an int "index", so the comma-ok is
+// defensive only: a corrupt entry cannot panic the request path — it sorts
+// last, keeping arrival order relative to other corrupt entries.
+func toolCallWireIndex(tc map[string]any) int {
+	idx, ok := tc["index"].(int)
+	if !ok {
+		return math.MaxInt
+	}
+	return idx
+}
+
 // extractedMessage holds the reconstructed assistant message from SSE chunks,
 // including text content, reasoning, and any tool calls.
 type extractedMessage struct {
@@ -2344,6 +2367,9 @@ func extractMessage(chunks []string) extractedMessage {
 	// index's current call, so well-behaved indexed streams are unchanged.
 	var toolCalls []map[string]any
 	activeCallByIndex := map[int]int{}
+	// Deltas swallowed past maxLogicalToolCalls (dropped new logical calls
+	// and their argument fragments).
+	droppedToolCallDeltas := 0
 
 	for _, chunk := range chunks {
 		line := strings.TrimPrefix(chunk, "data: ")
@@ -2416,6 +2442,20 @@ func extractMessage(chunks []string) extractedMessage {
 					}
 				}
 				if !ok {
+					if len(toolCalls) >= maxLogicalToolCalls {
+						// Cap reached: drop the new logical call. The kept
+						// call at this wire index (if any) is complete
+						// as-is — forgetting the index keeps the dropped
+						// call's later id-less fragments from accumulating
+						// onto a kept call. This also bounds
+						// activeCallByIndex: keys are only ever added
+						// alongside a kept call, so both structures stay
+						// <= maxLogicalToolCalls entries no matter how many
+						// distinct ids or sparse wire indices are streamed.
+						droppedToolCallDeltas++
+						delete(activeCallByIndex, tc.Index)
+						continue
+					}
 					entry := map[string]any{
 						"index": tc.Index,
 						"function": map[string]any{
@@ -2433,11 +2473,18 @@ func extractMessage(chunks []string) extractedMessage {
 				if tc.Type != "" {
 					existing["type"] = tc.Type
 				}
-				fn := existing["function"].(map[string]any)
+				fn, fnOK := existing["function"].(map[string]any)
+				if !fnOK {
+					// Defensive: entries are always created with a function
+					// map — never panic the request path on a corrupt entry.
+					fn = map[string]any{}
+					existing["function"] = fn
+				}
 				if tc.Function.Name != "" {
 					fn["name"] = tc.Function.Name
 				}
-				fn["arguments"] = fn["arguments"].(string) + tc.Function.Arguments
+				args, _ := fn["arguments"].(string)
+				fn["arguments"] = args + tc.Function.Arguments
 			}
 		}
 	}
@@ -2453,13 +2500,16 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 	msg := extractedMessage{Content: content, Reasoning: reasoning, FinishReason: finishReason}
+	if droppedToolCallDeltas > 0 {
+		log.Printf("WARN: extractMessage: logical tool-call cap (%d) reached; dropped %d tool-call delta(s) from excess calls", maxLogicalToolCalls, droppedToolCallDeltas)
+	}
 	if len(toolCalls) > 0 {
 		// Order by wire index for well-behaved indexed streams; the stable
 		// sort preserves ARRIVAL order among equal indices (the all-index-0
 		// shape), and — unlike the old dense 0..n-1 map walk — sparse indices
 		// are never dropped.
 		sort.SliceStable(toolCalls, func(i, j int) bool {
-			return toolCalls[i]["index"].(int) < toolCalls[j]["index"].(int)
+			return toolCallWireIndex(toolCalls[i]) < toolCallWireIndex(toolCalls[j])
 		})
 		msg.ToolCalls = make([]map[string]any, 0, len(toolCalls))
 		for _, tc := range toolCalls {

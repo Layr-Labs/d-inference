@@ -213,12 +213,14 @@ func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifa
 	if err := makeTreeReadOnly(tempRoot); err != nil {
 		return "", err
 	}
-	if err := root.Rename(tempName, contractID); err != nil {
+	if err := renameRootEntry(root, c.root, tempName, contractID); err != nil {
 		if ok, verifyErr := verifyPublished(root, contractID); ok {
 			_ = root.RemoveAll(tempName)
 			published = true
 			return path.Join(c.root, contractID), nil
-		} else if verifyErr != nil {
+		} else if verifyErr != nil &&
+			!errors.Is(verifyErr, fs.ErrNotExist) &&
+			!os.IsNotExist(verifyErr) {
 			return "", verifyErr
 		}
 		return "", fmt.Errorf("%w: %v", ErrArtifactUnavailable, err)

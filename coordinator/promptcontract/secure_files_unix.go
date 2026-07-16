@@ -42,6 +42,38 @@ func openVerifiedRoot(name string, mode fs.FileMode) (*os.Root, error) {
 	return root, nil
 }
 
+// renameRootEntry publishes one already-opened child atomically. Reopen and
+// compare the root before renameat so path replacement cannot redirect the
+// operation away from the os.Root used for all preceding writes.
+func renameRootEntry(root *os.Root, rootPath, oldName, newName string) error {
+	if !validRootEntryName(oldName) || !validRootEntryName(newName) {
+		return ErrUnsafeArtifactPath
+	}
+	directory, err := secureOpenAbsoluteDirectory(rootPath, false, 0)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	opened, err := root.Open(".")
+	if err != nil {
+		return err
+	}
+	defer opened.Close()
+	directoryInfo, directoryErr := directory.Stat()
+	openedInfo, openedErr := opened.Stat()
+	if directoryErr != nil || openedErr != nil || !os.SameFile(directoryInfo, openedInfo) {
+		return ErrUnsafeArtifactPath
+	}
+	return unix.Renameat(
+		int(directory.Fd()), oldName,
+		int(directory.Fd()), newName)
+}
+
+func validRootEntryName(name string) bool {
+	return name != "" && name != "." && name != ".." &&
+		!strings.ContainsAny(name, `/\`)
+}
+
 func secureOpenAbsoluteDirectory(name string, create bool, mode fs.FileMode) (*os.File, error) {
 	cleaned := filepath.Clean(name)
 	if !filepath.IsAbs(name) || cleaned != name {

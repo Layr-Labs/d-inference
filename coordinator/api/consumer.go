@@ -247,6 +247,35 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 	s.ddIncr("billing.reservation_extra_refunds", []string{"model:" + pr.Model})
 }
 
+// writeGenericProviderError writes the terminal HTTP body for a provider error
+// on paths WITHOUT a failover ladder or in-band SSE error framing: the generic
+// inference handlers (/v1/messages, /v1/completions) and the non-streaming
+// chat response assembly. Deterministic non-provider-fault reasons surface the
+// SAME curated bodies as the chat dispatch ladder — a jinja_* template-render
+// failure becomes the 422 model_capability invalid_request_error (the raw
+// template backtrace never reaches a client), gated by the ladder's
+// EIGENINFERENCE_JINJA_TERMINAL_REJECT kill switch; tool_noncompliance keeps
+// its provider-typed 422 message (already curated and content-free) but in the
+// invalid_request_error/model_capability envelope instead of provider_error.
+// Every other error keeps the legacy raw passthrough byte-for-byte.
+func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protocol.InferenceErrorMessage) {
+	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(errMsg.ErrorReason) {
+		writeJSON(w, http.StatusUnprocessableEntity,
+			errorResponse("invalid_request_error", jinjaTerminalRejectMessage, withCode("model_capability")))
+		return
+	}
+	if normalizeInferenceErrorReason(errMsg.ErrorReason) == errorReasonToolNoncompliance {
+		writeJSON(w, http.StatusUnprocessableEntity,
+			errorResponse("invalid_request_error", errMsg.Error, withCode("model_capability")))
+		return
+	}
+	statusCode := errMsg.StatusCode
+	if statusCode == 0 {
+		statusCode = http.StatusBadGateway
+	}
+	writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+}
+
 // noteInferenceError feeds the circuit breakers for a provider-side error
 // received on a pending request's ErrorCh (any phase, pre- or post-commit):
 //   - the shape-keyed inference-error breaker (counts only sickness-shaped
@@ -1971,11 +2000,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
 						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
-						statusCode := errMsg.StatusCode
-						if statusCode == 0 {
-							statusCode = http.StatusBadGateway
-						}
-						writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+						s.writeGenericProviderError(w, errMsg)
 						return
 					}
 				default:
@@ -2102,11 +2127,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
 			s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
-			statusCode := errMsg.StatusCode
-			if statusCode == 0 {
-				statusCode = http.StatusBadGateway
-			}
-			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+			s.writeGenericProviderError(w, errMsg)
 			return
 
 		case <-ctx.Done():
@@ -4010,11 +4031,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 				refundReservation()
 				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
 				s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-				statusCode := errMsg.StatusCode
-				if statusCode == 0 {
-					statusCode = http.StatusBadGateway
-				}
-				writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+				s.writeGenericProviderError(w, errMsg)
 				return
 			default:
 				committed = true
@@ -4029,11 +4046,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		refundReservation()
 		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
 		s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-		statusCode := errMsg.StatusCode
-		if statusCode == 0 {
-			statusCode = http.StatusBadGateway
-		}
-		writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+		s.writeGenericProviderError(w, errMsg)
 		return
 	case <-ttftTimer.C:
 		provider.RemovePending(requestID)
@@ -4085,11 +4098,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 					refundReservation()
 					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
 					s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-					statusCode := errMsg.StatusCode
-					if statusCode == 0 {
-						statusCode = http.StatusBadGateway
-					}
-					writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+					s.writeGenericProviderError(w, errMsg)
 					return
 				default:
 					committed = true
@@ -4104,11 +4113,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			refundReservation()
 			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
 			s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
-			statusCode := errMsg.StatusCode
-			if statusCode == 0 {
-				statusCode = http.StatusBadGateway
-			}
-			writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+			s.writeGenericProviderError(w, errMsg)
 			return
 		case <-chunkTimer.C:
 			provider.RemovePending(requestID)

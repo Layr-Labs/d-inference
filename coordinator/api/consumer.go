@@ -2330,15 +2330,128 @@ func normalizeSSEChunk(chunk string) string {
 const maxLogicalToolCalls = 128
 
 // toolCallWireIndex reads an accumulated tool-call entry's wire index.
-// Entries are always created with an int "index", so the comma-ok is
-// defensive only: a corrupt entry cannot panic the request path — it sorts
-// last, keeping arrival order relative to other corrupt entries.
+// Entries are always created with an int "index" (toolCallAccumulator.apply),
+// so the comma-ok is defensive only: a corrupt entry cannot panic the request
+// path — it sorts last, keeping arrival order relative to other corrupt
+// entries.
 func toolCallWireIndex(tc map[string]any) int {
 	idx, ok := tc["index"].(int)
 	if !ok {
 		return math.MaxInt
 	}
 	return idx
+}
+
+// streamedToolCallDelta is a single tool_calls entry from a streaming delta
+// frame.
+type streamedToolCallDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
+}
+
+// toolCallAccumulator reconstructs logical tool calls from streamed deltas.
+// Logical calls are kept in ARRIVAL order (calls) because a wire index is
+// NOT unique: our engine emits every parallel call with index 0 (E6), so
+// index-keyed storage alone would let a second call overwrite the first's
+// id/name and concatenate both argument streams into one corrupted call.
+// activeByIndex maps each wire index to the position (in calls) of its
+// CURRENT logical call — the one still receiving that index's id-less
+// argument fragments; a delta whose non-empty id DIFFERS from that entry's
+// non-empty id starts a NEW logical call, so well-behaved indexed streams
+// are unchanged.
+type toolCallAccumulator struct {
+	calls         []map[string]any
+	activeByIndex map[int]int
+	// droppedDeltas counts deltas swallowed past maxLogicalToolCalls
+	// (dropped new logical calls and their argument fragments).
+	droppedDeltas int
+}
+
+func newToolCallAccumulator() *toolCallAccumulator {
+	return &toolCallAccumulator{activeByIndex: map[int]int{}}
+}
+
+// apply folds one streamed delta into the accumulator. Past
+// maxLogicalToolCalls, a delta that would start a new logical call is
+// dropped and its wire index forgotten, so the dropped call's later id-less
+// fragments can never accumulate onto a kept call; kept calls keep receiving
+// their own fragments as usual.
+func (a *toolCallAccumulator) apply(tc streamedToolCallDelta) {
+	pos, ok := a.activeByIndex[tc.Index]
+	if ok && tc.ID != "" {
+		if existingID, _ := a.calls[pos]["id"].(string); existingID != "" && existingID != tc.ID {
+			// A NEW id on an already-active wire index is a new logical
+			// call, not a continuation (the all-index-0 engine shape) —
+			// never merge two calls into one.
+			ok = false
+		}
+	}
+	if !ok {
+		if len(a.calls) >= maxLogicalToolCalls {
+			// Cap reached: drop the new logical call. The kept call at
+			// this wire index (if any) is complete as-is. This also
+			// bounds activeByIndex: keys are only ever added alongside a
+			// kept call, so both structures stay <= maxLogicalToolCalls
+			// entries no matter how many distinct ids or sparse wire
+			// indices are streamed.
+			a.droppedDeltas++
+			delete(a.activeByIndex, tc.Index)
+			return
+		}
+		entry := map[string]any{
+			"index": tc.Index,
+			"function": map[string]any{
+				"arguments": "",
+			},
+		}
+		a.calls = append(a.calls, entry)
+		pos = len(a.calls) - 1
+		a.activeByIndex[tc.Index] = pos
+	}
+	entry := a.calls[pos]
+	if tc.ID != "" {
+		entry["id"] = tc.ID
+	}
+	if tc.Type != "" {
+		entry["type"] = tc.Type
+	}
+	fn, fnOK := entry["function"].(map[string]any)
+	if !fnOK {
+		// Defensive: entries are always created with a function map —
+		// never panic the request path on a corrupt entry.
+		fn = map[string]any{}
+		entry["function"] = fn
+	}
+	if tc.Function.Name != "" {
+		fn["name"] = tc.Function.Name
+	}
+	args, _ := fn["arguments"].(string)
+	fn["arguments"] = args + tc.Function.Arguments
+}
+
+// finalize returns the reconstructed calls (nil when there are none),
+// ordered by wire index for well-behaved indexed streams; the stable sort
+// preserves ARRIVAL order among equal indices (the all-index-0 shape), and —
+// unlike the old dense 0..n-1 map walk — sparse indices are never dropped.
+// The internal "index" key is stripped from the returned maps.
+func (a *toolCallAccumulator) finalize() []map[string]any {
+	if len(a.calls) == 0 {
+		return nil
+	}
+	sort.SliceStable(a.calls, func(i, j int) bool {
+		return toolCallWireIndex(a.calls[i]) < toolCallWireIndex(a.calls[j])
+	})
+	out := make([]map[string]any, 0, len(a.calls))
+	for _, tc := range a.calls {
+		delete(tc, "index")
+		out = append(out, tc)
+	}
+	return out
 }
 
 // extractedMessage holds the reconstructed assistant message from SSE chunks,
@@ -2356,20 +2469,9 @@ func extractMessage(chunks []string) extractedMessage {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	finishReason := ""
-	// Tool calls are indexed — argument fragments accumulate onto the wire
-	// index's CURRENT logical call. Logical calls are kept in arrival order
-	// (toolCalls) because a wire index is NOT unique: our engine emits every
-	// parallel call with index 0 (E6), so index-keyed storage alone would let
-	// a second call overwrite the first's id/name and concatenate both
-	// argument streams into one corrupted call. A delta whose non-empty id
-	// DIFFERS from the current entry's non-empty id starts a NEW logical
-	// call; id-less deltas (argument fragments) keep accumulating onto the
-	// index's current call, so well-behaved indexed streams are unchanged.
-	var toolCalls []map[string]any
-	activeCallByIndex := map[int]int{}
-	// Deltas swallowed past maxLogicalToolCalls (dropped new logical calls
-	// and their argument fragments).
-	droppedToolCallDeltas := 0
+	// See toolCallAccumulator for the logical-call model (arrival order,
+	// non-unique wire indices, the maxLogicalToolCalls cap).
+	acc := newToolCallAccumulator()
 
 	for _, chunk := range chunks {
 		line := strings.TrimPrefix(chunk, "data: ")
@@ -2389,18 +2491,10 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 		var choices []struct {
 			Delta struct {
-				Content          string `json:"content"`
-				Reasoning        string `json:"reasoning"`
-				ReasoningContent string `json:"reasoning_content"`
-				ToolCalls        []struct {
-					Index    int    `json:"index"`
-					ID       string `json:"id,omitempty"`
-					Type     string `json:"type,omitempty"`
-					Function struct {
-						Name      string `json:"name,omitempty"`
-						Arguments string `json:"arguments,omitempty"`
-					} `json:"function,omitempty"`
-				} `json:"tool_calls,omitempty"`
+				Content          string                  `json:"content"`
+				Reasoning        string                  `json:"reasoning"`
+				ReasoningContent string                  `json:"reasoning_content"`
+				ToolCalls        []streamedToolCallDelta `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			Message struct {
 				Content          string `json:"content"`
@@ -2432,59 +2526,7 @@ func extractMessage(chunks []string) extractedMessage {
 				reasoningBuilder.WriteString(c.Message.ReasoningContent)
 			}
 			for _, tc := range c.Delta.ToolCalls {
-				pos, ok := activeCallByIndex[tc.Index]
-				if ok && tc.ID != "" {
-					if existingID, _ := toolCalls[pos]["id"].(string); existingID != "" && existingID != tc.ID {
-						// A NEW id on an already-active wire index is a new
-						// logical call, not a continuation (the all-index-0
-						// engine shape) — never merge two calls into one.
-						ok = false
-					}
-				}
-				if !ok {
-					if len(toolCalls) >= maxLogicalToolCalls {
-						// Cap reached: drop the new logical call. The kept
-						// call at this wire index (if any) is complete
-						// as-is — forgetting the index keeps the dropped
-						// call's later id-less fragments from accumulating
-						// onto a kept call. This also bounds
-						// activeCallByIndex: keys are only ever added
-						// alongside a kept call, so both structures stay
-						// <= maxLogicalToolCalls entries no matter how many
-						// distinct ids or sparse wire indices are streamed.
-						droppedToolCallDeltas++
-						delete(activeCallByIndex, tc.Index)
-						continue
-					}
-					entry := map[string]any{
-						"index": tc.Index,
-						"function": map[string]any{
-							"arguments": "",
-						},
-					}
-					toolCalls = append(toolCalls, entry)
-					pos = len(toolCalls) - 1
-					activeCallByIndex[tc.Index] = pos
-				}
-				existing := toolCalls[pos]
-				if tc.ID != "" {
-					existing["id"] = tc.ID
-				}
-				if tc.Type != "" {
-					existing["type"] = tc.Type
-				}
-				fn, fnOK := existing["function"].(map[string]any)
-				if !fnOK {
-					// Defensive: entries are always created with a function
-					// map — never panic the request path on a corrupt entry.
-					fn = map[string]any{}
-					existing["function"] = fn
-				}
-				if tc.Function.Name != "" {
-					fn["name"] = tc.Function.Name
-				}
-				args, _ := fn["arguments"].(string)
-				fn["arguments"] = args + tc.Function.Arguments
+				acc.apply(tc)
 			}
 		}
 	}
@@ -2500,23 +2542,10 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 	msg := extractedMessage{Content: content, Reasoning: reasoning, FinishReason: finishReason}
-	if droppedToolCallDeltas > 0 {
-		log.Printf("WARN: extractMessage: logical tool-call cap (%d) reached; dropped %d tool-call delta(s) from excess calls", maxLogicalToolCalls, droppedToolCallDeltas)
+	if acc.droppedDeltas > 0 {
+		log.Printf("WARN: extractMessage: logical tool-call cap (%d) reached; dropped %d tool-call delta(s) from excess calls", maxLogicalToolCalls, acc.droppedDeltas)
 	}
-	if len(toolCalls) > 0 {
-		// Order by wire index for well-behaved indexed streams; the stable
-		// sort preserves ARRIVAL order among equal indices (the all-index-0
-		// shape), and — unlike the old dense 0..n-1 map walk — sparse indices
-		// are never dropped.
-		sort.SliceStable(toolCalls, func(i, j int) bool {
-			return toolCallWireIndex(toolCalls[i]) < toolCallWireIndex(toolCalls[j])
-		})
-		msg.ToolCalls = make([]map[string]any, 0, len(toolCalls))
-		for _, tc := range toolCalls {
-			delete(tc, "index")
-			msg.ToolCalls = append(msg.ToolCalls, tc)
-		}
-	}
+	msg.ToolCalls = acc.finalize()
 	return msg
 }
 

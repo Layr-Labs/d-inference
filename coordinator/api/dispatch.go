@@ -1170,8 +1170,7 @@ func (d *dispatchState) shouldStopFailover() bool {
 	// template renders the same request body identically on every provider,
 	// so the ladder stops on the first occurrence and surfaces one 422
 	// model_capability rejection. Kill switch: EIGENINFERENCE_JINJA_TERMINAL_REJECT.
-	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(d.lastErrReason) {
-		d.latchJinjaTerminalReject(d.lastErrReason, "")
+	if d.latchJinjaTerminalReject(d.lastErrReason, "") {
 		return true
 	}
 	switch classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext) {
@@ -1195,12 +1194,19 @@ func (d *dispatchState) shouldStopFailover() bool {
 }
 
 // latchJinjaTerminalReject latches the terminal 422 for a deterministic
-// template-render failure (see envJinjaTerminalReject). The latched code is
-// OUR classification (422 Unprocessable Entity — the request is well-formed
-// but unrenderable by this model), not the provider's raw 500. src tags the
-// metric emission site ("" = the shouldStopFailover survivor path,
-// "race_loser" = latchDeterministicLoser).
-func (d *dispatchState) latchJinjaTerminalReject(reason, src string) {
+// template-render failure and reports whether it latched — a no-op returning
+// false when the kill switch (envJinjaTerminalReject) is off or reason is not
+// jinja_*. It is the SINGLE jinja-stop point shared by shouldStopFailover
+// (survivor path) and latchDeterministicLoser (race-loser mirror), so the
+// enable+reason guard and the latched fields cannot drift between the two
+// sites. The latched code is OUR classification (422 Unprocessable Entity —
+// the request is well-formed but unrenderable by this model), not the
+// provider's raw 500. src tags the metric emission site ("" = the
+// shouldStopFailover survivor path, "race_loser" = latchDeterministicLoser).
+func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bool) {
+	if !jinjaTerminalRejectEnabled() || !isJinjaTemplateErrorReason(reason) {
+		return false
+	}
 	tags := []string{"model:" + d.model, "code:422", "reason:" + normalizeInferenceErrorReason(reason)}
 	if src != "" {
 		tags = append(tags, "src:"+src)
@@ -1210,6 +1216,7 @@ func (d *dispatchState) latchJinjaTerminalReject(reason, src string) {
 	d.terminalClientErrorCode = http.StatusUnprocessableEntity
 	d.terminalClientErrorReason = rejectionReasonTemplateRenderFailed
 	d.terminalClientErrorMessage = jinjaTerminalRejectMessage
+	return true
 }
 
 // latchDeterministicLoser preserves a DETERMINISTIC-unservable rejection observed
@@ -1239,8 +1246,7 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 	// Mirror the jinja_* reason stop (E4) at the race-loser site for the same
 	// masking reason: a deterministic template-render failure from the loser
 	// must not be storm-resumed through the survivor's transient error.
-	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(msg.ErrorReason) {
-		d.latchJinjaTerminalReject(msg.ErrorReason, "race_loser")
+	if d.latchJinjaTerminalReject(msg.ErrorReason, "race_loser") {
 		return
 	}
 	budget := providerReportedBudget(provider, d.model)

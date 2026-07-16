@@ -267,6 +267,19 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	if providerID == "" || pr == nil {
 		return
 	}
+	// Deterministic request/model-capability faults (isNonProviderFaultErrorReason:
+	// jinja_* template-render failures, tool_noncompliance) never feed the
+	// provider-health breakers — the provider executed faithfully; the request
+	// shape or the model's sampled output is what failed. Gating HERE (the single
+	// breaker chokepoint) mirrors the dispatch-funnel gate
+	// (dispatchState.noteProviderError) and the reputation exemption
+	// (handleInferenceError), and closes the generic-inference path
+	// (/v1/messages, /v1/completions), which calls noteInferenceError directly on
+	// pre-commit provider errors. Capacity-class rejections never carry these
+	// reasons, so the capacity-reject cooldown feed below is unaffected.
+	if isNonProviderFaultErrorReason(errReason) {
+		return
+	}
 	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape()) {
 		s.ddIncr("routing.cooldown_entered", []string{"model:" + pr.Model})
 	}

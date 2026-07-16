@@ -243,14 +243,17 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
-	if isTerminalClientErrorCode(msg.StatusCode) || isJinjaTemplateErrorReason(msg.ErrorReason) {
-		// Deterministic client-shape rejection: a 4xx status the provider maps
-		// for malformed bodies, OR a jinja_* template-render reason (arrives as
-		// a provider 500 but is a request-shape fault — the template renders
-		// the same body identically on every provider). Record as client_error
-		// WITHOUT AdmittedButFailed so it never pollutes the admission-mismatch
-		// gauge; msg.ErrorReason is threaded through so jinja rows keep their
-		// jinja_* reason.
+	if isTerminalClientErrorCode(msg.StatusCode) || isNonProviderFaultErrorReason(msg.ErrorReason) {
+		// Deterministic non-provider fault: a 4xx status the provider maps for
+		// malformed bodies, OR a structured non-provider-fault reason — jinja_*
+		// template-render failures (arrive as provider 500s but are
+		// request-shape faults, identical fleet-wide) and tool_noncompliance
+		// (model-output-dependent 422s; the provider executed faithfully).
+		// Record as client_error WITHOUT AdmittedButFailed so neither pollutes
+		// the provider-fault or admission-mismatch telemetry, keyed on the SAME
+		// vocabulary as the reputation and breaker exemptions
+		// (isNonProviderFaultErrorReason) so the lists cannot drift.
+		// msg.ErrorReason is threaded through so rows keep their reason.
 		return pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
 	}
 	class := "provider_error"

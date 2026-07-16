@@ -551,13 +551,14 @@ func providerReportedBudget(provider *registry.Provider, model string) int64 {
 // pre-dispatch failures (queue reservation DB error, invalid key, keygen, send
 // failure) and coordinator-side timeouts are NOT flagged.
 func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutcome {
-	if isTerminalClientErrorCode(d.lastErrCode) || isJinjaTemplateErrorReason(d.lastErrReason) {
-		// Deterministic client-shape rejection: a 4xx status the provider maps
-		// for malformed bodies, OR a jinja_* template-render reason (a provider
-		// 500 by status, but a request-shape fault — the template renders the
-		// same body identically fleet-wide). Record as client_error WITHOUT
-		// AdmittedButFailed so it stays out of the admission-mismatch gauge;
-		// the jinja_* reason itself survives on the row (see
+	if isTerminalClientErrorCode(d.lastErrCode) || isNonProviderFaultErrorReason(d.lastErrReason) {
+		// Deterministic non-provider fault: a 4xx status the provider maps for
+		// malformed bodies, OR a structured non-provider-fault reason (jinja_*
+		// template-render failures, tool_noncompliance model-output 422s).
+		// Record as client_error WITHOUT AdmittedButFailed so neither pollutes
+		// the admission-mismatch gauge — keyed on the SAME vocabulary as the
+		// reputation and breaker exemptions (isNonProviderFaultErrorReason).
+		// The structured reason survives on the row (see
 		// routeOutcomeUsesProviderErrorText).
 		return d.errorRoutingOutcome("error", errorClassClientError, d.lastErrCode)
 	}

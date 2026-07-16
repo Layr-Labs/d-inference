@@ -286,6 +286,44 @@ struct ModelCatalogTests {
         #expect(RangeURLProtocol.lastRangeHeader == "bytes=8-")
     }
 
+    @Test("downloadFile discards a 206 resume whose Content-Range mismatches and re-downloads")
+    func downloadFileRejectsMismatched206Resume() async throws {
+        // A misbehaving server/proxy answers our `Range: bytes=8-` with a 206
+        // whose Content-Range starts at byte 4. Writing that suffix from
+        // byte 0 would silently corrupt the file (the legacy path passes no
+        // SHA); the delegate must discard the .part, surface a retryable
+        // failure, and the retry must fetch the whole object from byte 0.
+        let full = Data("0123456789abcdef".utf8)
+        RangeURLProtocol.payload = full
+        RangeURLProtocol.lastRangeHeader = nil
+        RangeURLProtocol.mismatchNextResumeStart = 4
+        defer { RangeURLProtocol.mismatchNextResumeStart = nil }
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [RangeURLProtocol.self]
+        let session = URLSession(configuration: config)
+        let downloader = ModelDownloader(r2CDNURL: "https://cdn.example.test", urlSession: session)
+
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("model-download-test-\(UUID().uuidString)", isDirectory: true)
+        let final = dir.appendingPathComponent("model.safetensors")
+        let partial = final.appendingPathExtension("part")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try full.prefix(8).write(to: partial)
+
+        let ok = try await downloader.downloadFileForTesting(
+            from: "https://cdn.example.test/model.safetensors",
+            to: final
+        )
+
+        #expect(ok)
+        // The retry fetched the WHOLE object (no Range header) and the final
+        // bytes are exactly the object — not a suffix written from byte 0.
+        #expect(try Data(contentsOf: final) == full)
+        #expect(RangeURLProtocol.lastRangeHeader == nil)
+        #expect(!FileManager.default.fileExists(atPath: partial.path))
+    }
+
     @Test("downloadFile promotes a complete .part on 416 instead of re-downloading")
     func downloadFilePromotesCompletePartOn416() async throws {
         // A prior run received every byte into `.part` but died before promoting
@@ -525,6 +563,10 @@ private final class CatalogBodyURLProtocol: URLProtocol, @unchecked Sendable {
 private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var payload = Data()
     nonisolated(unsafe) static var lastRangeHeader: String?
+    /// When set, the NEXT ranged request is answered with a 206 whose
+    /// Content-Range start is this value (a misbehaving server/proxy); the
+    /// flag then clears so retries see correct behavior again.
+    nonisolated(unsafe) static var mismatchNextResumeStart: Int?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
@@ -549,6 +591,26 @@ private final class RangeURLProtocol: URLProtocol, @unchecked Sendable {
                 headerFields: ["Content-Range": "bytes */\(Self.payload.count)"]
             )!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        if start > 0, let liedStart = Self.mismatchNextResumeStart {
+            // Misbehaving server/proxy: a 206 whose Content-Range does not
+            // match the requested resume offset (body matches the lie).
+            Self.mismatchNextResumeStart = nil
+            let body = Self.payload.dropFirst(liedStart)
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 206,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Length": "\(body.count)",
+                    "Content-Range":
+                        "bytes \(liedStart)-\(Self.payload.count - 1)/\(Self.payload.count)",
+                ]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(body))
             client?.urlProtocolDidFinishLoading(self)
             return
         }

@@ -169,6 +169,21 @@ final class StreamingFileDownloadDelegate: NSObject, URLSessionDataDelegate, @un
             start == UInt64(existingBytes) {
             append = true
         }
+        // Any OTHER 206 body is some partial suffix we cannot place: a
+        // mismatched or unparseable Content-Range (or a 206 we never asked
+        // for) written from byte 0 would silently corrupt the file, and only
+        // hash-checked callers would ever notice. Discard the .part and
+        // surface a RETRYABLE error so `downloadFile`'s loop re-runs from
+        // byte 0 with a full GET (same contract as the untrustworthy-416
+        // branch above; must NOT be a CancellationError).
+        if status == 206, !append {
+            try? fm.removeItem(at: partial)
+            setupError = ModelCatalogError.downloadFailed(
+                "\(label): 206 resume did not match .part offset \(existingBytes); "
+                    + "discarded for clean re-download")
+            completionHandler(.cancel)
+            return
+        }
 
         do {
             if !append { try? fm.removeItem(at: partial) }

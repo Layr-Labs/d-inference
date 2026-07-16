@@ -58,6 +58,30 @@ func isJinjaTemplateErrorReason(reason string) bool {
 	}
 }
 
+// isNonProviderFaultErrorReason reports whether a provider-supplied
+// error_reason identifies a failure that is NOT the provider's fault:
+//
+//   - jinja_* template-render failures (isJinjaTemplateErrorReason, E4): the
+//     REQUEST's tool schemas or message history cannot be rendered by the
+//     model's chat template — deterministic for the request and identical on
+//     every provider;
+//   - tool_noncompliance (E5): the MODEL's sampled output broke a forced
+//     tool_choice contract (did not emit the required call / emitted one
+//     outside the allowed set / exceeded the deferred content limit) —
+//     output-dependent, a re-sample can comply.
+//
+// This is the single reason vocabulary shared by the reputation exemption
+// (handleInferenceError: no RecordJobFailure) and the dispatch-path breaker
+// exemption (dispatchState.noteProviderError: no inference-error /
+// node-health / stable-identity / capacity-cooldown feeds): a malformed tool
+// history or an unlucky sample must never quarantine a healthy provider.
+// Capacity and cancel exemptions are status/string-driven and stay with
+// their call sites — this helper is strictly the structured-REASON list.
+func isNonProviderFaultErrorReason(reason string) bool {
+	return isJinjaTemplateErrorReason(reason) ||
+		normalizeInferenceErrorReason(reason) == errorReasonToolNoncompliance
+}
+
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
 // .FinalStatus). Centralized so status comparisons/constructions don't drift on a
 // bare string literal.

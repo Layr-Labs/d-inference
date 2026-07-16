@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"encoding/base64"
+	"math"
 	"testing"
 	"time"
 
@@ -94,7 +96,7 @@ func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
 	if err := base.Check(); err != nil {
 		t.Fatalf("off mode required a key: %v", err)
 	}
-	for _, mode := range []string{CacheRoutingObserve, CacheRoutingExact, CacheRoutingConversation} {
+	for _, mode := range []string{CacheRoutingOn} {
 		cfg := base
 		cfg.Mode = mode
 		if err := cfg.Check(); err == nil {
@@ -104,7 +106,8 @@ func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
 		if err := cfg.Check(); err == nil {
 			t.Fatalf("mode %q accepted malformed key", mode)
 		}
-		cfg.MasterKey = testCacheRoutingConfig(mode).MasterKey
+		cfg.MasterKey = base64.RawURLEncoding.EncodeToString(
+			[]byte("0123456789abcdef0123456789abcdef"))
 		if err := cfg.Check(); err != nil {
 			t.Fatalf("mode %q rejected valid key: %v", mode, err)
 		}
@@ -112,7 +115,7 @@ func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
 }
 
 func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
-	for _, suffix := range []string{"MODE", "TTL", "MAX_HOLDERS", "MAX_DISCOUNT_MS", "MAX_COST_FRACTION", "DEDICATED", "CACHE_MASTER_KEY"} {
+	for _, suffix := range []string{"MODE", "TTL", "MAX_HOLDERS", "MAX_DISCOUNT_MS", "MAX_COST_FRACTION", "CACHE_MASTER_KEY"} {
 		key := env.EnvPrefix + "_CACHE_ROUTING_" + suffix
 		if suffix == "CACHE_MASTER_KEY" {
 			key = env.EnvPrefix + "_CACHE_MASTER_KEY"
@@ -120,7 +123,35 @@ func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	cfg := ReadConfig().CacheRouting
-	if cfg.Mode != "" || cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 || cfg.MaxDiscountMs != 1000 || cfg.MaxCostFraction != .35 || cfg.Dedicated {
+	if cfg.Mode != "" || cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 || cfg.MaxDiscountMs != 1000 || cfg.MaxCostFraction != .35 {
 		t.Fatalf("cache routing defaults = %+v", cfg)
+	}
+}
+
+func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
+	base := CacheRoutingConfig{
+		Mode: CacheRoutingOff, TTL: time.Minute, MaxHolders: 4,
+		MaxDiscountMs: 1000, MaxCostFraction: .35,
+	}
+	for _, tc := range []struct {
+		name       string
+		discountMs float64
+		fraction   float64
+	}{
+		{name: "discount_nan", discountMs: math.NaN(), fraction: .35},
+		{name: "discount_pos_inf", discountMs: math.Inf(1), fraction: .35},
+		{name: "discount_neg_inf", discountMs: math.Inf(-1), fraction: .35},
+		{name: "fraction_nan", discountMs: 1000, fraction: math.NaN()},
+		{name: "fraction_pos_inf", discountMs: 1000, fraction: math.Inf(1)},
+		{name: "fraction_neg_inf", discountMs: 1000, fraction: math.Inf(-1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.MaxDiscountMs = tc.discountMs
+			cfg.MaxCostFraction = tc.fraction
+			if err := cfg.Check(); err == nil {
+				t.Fatalf("accepted non-finite cache routing config: %+v", cfg)
+			}
+		})
 	}
 }

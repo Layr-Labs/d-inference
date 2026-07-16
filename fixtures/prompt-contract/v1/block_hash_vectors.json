@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "block_hash_version": "darkbloom-block-chain-v1",
+  "vectors": [
+    {
+      "name": "first-full-block",
+      "contract_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "scope_id": "scope-fixture",
+      "block_index": 0,
+      "parent_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "token_start": 0,
+      "token_count": 256,
+      "expected_hash": "894a8814bbf72461b5d58716020e3f487162a4e6b81928f7ddbe134b6051b050"
+    }
+  ]
+}

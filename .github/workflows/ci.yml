@@ -54,6 +54,25 @@ jobs:
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
           golangci-lint run
 
+  test-prompt-sidecar:
+    name: Prompt Sidecar Tests
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.88.0
+      - name: Check formatting, lint, and tests
+        working-directory: coordinator/promptsidecar
+        run: |
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+      - name: Verify static Linux container build
+        run: docker build --platform=linux/amd64 --target prompt-sidecar-builder -f coordinator/Dockerfile .
+
   test-provider:
     name: Provider Tests
     runs-on: blacksmith-12vcpu-macos-latest
@@ -72,6 +91,10 @@ jobs:
           key: spm-v2-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v2-${{ runner.os }}-
+      - name: Install pinned Rust toolchain for production prompt parity
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup override set 1.88.0
       - name: Build provider-swift (incl. tests)
         working-directory: provider-swift
         # Build the TEST bundle too, so the .xctest bundle exists before we
@@ -108,6 +131,8 @@ jobs:
         # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
         # built above, so `swift test` reuses it (and our colocated metallib).
         run: swift test
+      - name: Verify production prompt parity
+        run: ./scripts/verify-prompt-parity.sh
       - name: Build nested paged safety tests
         working-directory: libs/mlx-swift-lm
         # Cold builds compile the full Cmlx C++/Metal tree (~20 min on the
@@ -115,7 +140,7 @@ jobs:
         # the SwiftPM cache and finish in ~1 min.
         timeout-minutes: 35
         run: swift build --build-tests
-      - name: Run nested paged safety tests directly
+      - name: Run nested paged and prompt-hash tests directly
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 10
         run: |
@@ -128,6 +153,7 @@ jobs:
             fi
           done
           swift test --skip-build --filter CBv2PagedSafetyTests
+          swift test --skip-build --filter CBv2PrefixCacheHasherTests
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

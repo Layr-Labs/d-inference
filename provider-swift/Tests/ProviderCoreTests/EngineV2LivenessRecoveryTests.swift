@@ -460,16 +460,8 @@ struct EngineV2LivenessRecoveryTests {
         #expect(sawChunk)
     }
 
-    @Test("regression: recovery of a CARVED slot reproduces grant + carve (Σ engine+cache ≤ budget)")
-    func recoveryReproducesPrefixCarve() async throws {
-        // T-041 × liveness: an opted-in slot's grant was split engine/cache
-        // at load (`EngineV2SlotFactory.resolvePrefixCarve`). Recovery reads
-        // the slot's TOTAL claim (`slotKVBytesClaim`) and the factory
-        // re-runs the SAME deterministic carve — so the rebuilt engine gets
-        // exactly the pre-wedge engine ceiling, the rebuilt bridge carries
-        // exactly the pre-wedge cache budget, and Σ(engine + cache) over
-        // the box never grows across a recovery.
-        let gib = Int(livenessGiB)
+    @Test("regression: SSD-only recovery preserves the full live KV grant")
+    func recoveryPreservesSSDOnlyGrant() async throws {
         let (loop, runtime, factory, telemetry) = try makeHarness(
             scripts: [
                 .hang,  // load-time engine (wedges)
@@ -481,14 +473,7 @@ struct EngineV2LivenessRecoveryTests {
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
-                environment: [
-                    "DARKBLOOM_PREFIX_CACHE": "1",
-                    "DARKBLOOM_PREFIX_CACHE_MAX_GB": "1",
-                    // The RAM carve only engages in `.ram` mode — the SSD
-                    // tier (default-on, v0.7.5) carves nothing and would
-                    // win tier selection, so kill it for this scenario.
-                    "DARKBLOOM_PREFIX_CACHE_SSD": "0",
-                ],
+                environment: [:],
                 eosTokenIds: [2],
                 emitTelemetry: telemetry.callback(),
                 physicalMemoryBytes: livenessPhysicalBytes,
@@ -498,11 +483,9 @@ struct EngineV2LivenessRecoveryTests {
         let oldBridge = try await loadSlot(
             loop, modelId: Self.modelB, modelType: "gpt_oss", sizing: sizing)
 
-        // Carved at load: total claim = engine + 1 GiB budget.
         let engineBefore = await oldBridge.engineKVBytesCapacity()
         let claimBefore = await oldBridge.slotKVBytesClaim()
-        #expect(oldBridge.prefixCacheBudgetBytes == 1 * gib)
-        #expect(claimBefore == engineBefore + 1 * gib)
+        #expect(claimBefore == engineBefore)
         let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: livenessPhysicalBytes,
             residentWeightBytes: UInt64(sizing.weightsBytes),
@@ -513,14 +496,11 @@ struct EngineV2LivenessRecoveryTests {
         await injectWedge(bridge: oldBridge, modelId: Self.modelB, at: t0)
         await loop.recoverWedgedEngineV2SlotsForTesting(now: t0.advanced(by: .seconds(130)))
 
-        // Rebuilt: the factory re-carved the SAME total — the second build's
-        // engine grant is the pre-wedge ENGINE ceiling (not the total; that
-        // would leak the cache budget into live KV).
+        // Rebuilt over exactly the same live KV grant.
         #expect(factory.built.count == 2)
         #expect(factory.built[1].grant == engineBefore)
         let newBridge = try #require(await loop.slotBridgeForTesting(modelId: Self.modelB))
         #expect(newBridge !== oldBridge)
-        #expect(newBridge.prefixCacheBudgetBytes == 1 * gib)
         #expect(await newBridge.engineKVBytesCapacity() == engineBefore)
         #expect(await newBridge.slotKVBytesClaim() == claimBefore)
         #expect(UInt64(await newBridge.slotKVBytesClaim()) <= fleetBudget)

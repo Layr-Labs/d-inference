@@ -62,6 +62,73 @@ private actor Latch {
     }
 }
 
+private actor ConsumptionCounter {
+    private var value = 0
+
+    func increment() {
+        value += 1
+    }
+
+    var snapshot: Int { value }
+}
+
+private actor ConsumedValues {
+    private var values: [Int] = []
+
+    func append(_ value: Int) {
+        values.append(value)
+    }
+
+    var snapshot: [Int] { values }
+}
+
+@Test
+func pipelineWaitUntilDrainedKeepsConsumerReusable() async {
+    let consumed = ConsumptionCounter()
+    let pipeline = BoundedSingleConsumerPipeline<Int>(capacity: 4) { _ in
+        await consumed.increment()
+    }
+
+    for value in 0..<4 {
+        #expect(pipeline.submit(value))
+    }
+    await pipeline.waitUntilDrained()
+    #expect(await consumed.snapshot == 4)
+
+    #expect(pipeline.submit(4))
+    await pipeline.waitUntilDrained()
+    #expect(await consumed.snapshot == 5)
+
+    pipeline.shutdown()
+    await pipeline.waitUntilDrained()
+}
+
+@Test
+func pipelineOverflowDropsSubmittingPayloadWithoutEvictingAcceptedWork() async {
+    let firstEntered = Latch()
+    let releaseFirst = Latch()
+    let consumed = ConsumedValues()
+    let pipeline = BoundedSingleConsumerPipeline<Int>(capacity: 1) { value in
+        await consumed.append(value)
+        if value == 1 {
+            await firstEntered.release()
+            await releaseFirst.wait()
+        }
+    }
+
+    #expect(pipeline.submit(1))
+    await firstEntered.wait()
+    #expect(pipeline.submit(2))
+    #expect(!pipeline.submit(3))
+
+    await releaseFirst.release()
+    await pipeline.waitUntilDrained()
+    #expect(await consumed.snapshot == [1, 2])
+
+    pipeline.shutdown()
+    await pipeline.waitUntilDrained()
+}
+
 @Test
 func pipelineBoundsInFlightPayloads() async {
     let cap = 2

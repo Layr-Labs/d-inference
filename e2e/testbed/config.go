@@ -68,11 +68,12 @@ const (
 )
 
 type ProviderConfig struct {
-	TrustLevel          TrustLevel
-	ModelID             string
-	ModelIDs            []string
-	AttestationInterval time.Duration
-	AuthTokenPath       string
+	TrustLevel                 TrustLevel
+	ModelID                    string
+	ModelIDs                   []string
+	AttestationInterval        time.Duration
+	AuthTokenPath              string
+	EnableEphemeralPrefixCache bool
 }
 
 func DefaultProviderConfig() ProviderConfig {
@@ -138,12 +139,13 @@ type UserAccount struct {
 }
 
 type SuiteConfig struct {
-	ModelSpecs     []ModelSpec
-	NumUsers       int
-	QueueCapacity  int
-	QueueTimeout   time.Duration
-	SeedBalance    int64
-	UseMemoryStore bool
+	ModelSpecs                 []ModelSpec
+	NumUsers                   int
+	QueueCapacity              int
+	QueueTimeout               time.Duration
+	SeedBalance                int64
+	UseMemoryStore             bool
+	EnableEphemeralPrefixCache bool
 }
 
 func DefaultSuiteConfig() SuiteConfig {

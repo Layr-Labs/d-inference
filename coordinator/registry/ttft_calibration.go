@@ -197,6 +197,18 @@ func (c *ttftCalibrator) notePrediction(requestID string, attempt int, model, ch
 	}
 }
 
+// discardPrediction removes a reserve-time prediction when provider-specific
+// preparation confirms that the concrete attempt will participate in reusable
+// cache lookup. It is safe when no warm-slot prediction was recorded.
+func (c *ttftCalibrator) discardPrediction(requestID string, attempt int) {
+	if requestID == "" {
+		return
+	}
+	c.mu.Lock()
+	delete(c.pending, ttftPendingKey(requestID, attempt))
+	c.mu.Unlock()
+}
+
 // sweepPendingLocked drops expired predictions; if the map is still at
 // capacity afterwards (pathological reserve flood with no commits), arbitrary
 // entries are dropped so the map stays bounded. Caller holds c.mu.

@@ -43,6 +43,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -167,24 +168,27 @@ func (s *Server) latestReleasedVersion() string {
 // Server is the main HTTP/WS server for the coordinator. It ties together
 // the provider registry, key store, payment ledger, billing service, and HTTP routing.
 type Server struct {
-	registry           *registry.Registry
-	store              store.Store
-	ledger             *payments.Ledger
-	billing            *billing.Service
-	baseRewards        *baserewards.Engine
-	logger             *slog.Logger
-	mux                *http.ServeMux
-	challengeInterval  time.Duration             // 0 means use DefaultChallengeInterval
-	skipChallenge      bool                      // if true, skip attestation challenges entirely (testing only)
-	privyAuth          *auth.PrivyAuth           // Privy JWT authentication (nil if not configured)
-	adminEmails        map[string]bool           // emails that have admin access
-	adminKey           string                    // EIGENINFERENCE_ADMIN_KEY for admin endpoints
-	mdmClient          *mdm.Client               // MicroMDM client for provider security verification
-	mdmWebhookSecret   string                    // optional shared secret MicroMDM must present on the webhook
-	profileSigner      *profilesign.Signer       // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
-	codeAttestor       apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
-	codeAttestThrottle *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
-	trustReuseCache    *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
+	registry                      *registry.Registry
+	store                         store.Store
+	ledger                        *payments.Ledger
+	billing                       *billing.Service
+	baseRewards                   *baserewards.Engine
+	logger                        *slog.Logger
+	mux                           *http.ServeMux
+	challengeInterval             time.Duration       // 0 means use DefaultChallengeInterval
+	skipChallenge                 bool                // if true, skip attestation challenges entirely (testing only)
+	allowDuplicateProviderSerials bool                // in-process multi-provider testbed only
+	privyAuth                     *auth.PrivyAuth     // Privy JWT authentication (nil if not configured)
+	adminEmails                   map[string]bool     // emails that have admin access
+	adminKey                      string              // EIGENINFERENCE_ADMIN_KEY for admin endpoints
+	mdmClient                     *mdm.Client         // MicroMDM client for provider security verification
+	mdmWebhookSecret              string              // optional shared secret MicroMDM must present on the webhook
+	profileSigner                 *profilesign.Signer // CMS signer for the /v1/enroll .mobileconfig (nil = serve unsigned)
+	promptArtifacts               *promptcontract.Provisioner
+	promptContract                *promptcontract.Client
+	codeAttestor                  apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
+	codeAttestThrottle            *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
+	trustReuseCache               *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
 
 	// Graceful-drain state (DAR-327 Phase 1, zero-downtime upgrades). Set
 	// coordinatorDraining=true before a restart/swap so the drain gate rejects
@@ -742,10 +746,11 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 	saferun.Go(s.logger, name, fn)
 }
 
-// Close releases background resources owned by the Server. Currently it stops
-// the routing-telemetry sink's worker pool. It is idempotent and never blocks on
-// in-flight telemetry writes, so it is safe to defer from main's shutdown path.
+// Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.promptArtifacts != nil {
+		s.promptArtifacts.Close()
+	}
 	if s.routeTelemetry != nil {
 		s.routeTelemetry.close()
 	}
@@ -903,6 +908,12 @@ func (s *Server) SetSkipChallenge(skip bool) {
 	s.skipChallenge = skip
 }
 
+// SetAllowDuplicateProviderSerialsForTesting lets the in-process E2E testbed
+// emulate multiple physical providers on one Mac. Production never calls it.
+func (s *Server) SetAllowDuplicateProviderSerialsForTesting(allow bool) {
+	s.allowDuplicateProviderSerials = allow
+}
+
 // SetPrivyAuth configures Privy JWT authentication for consumer endpoints.
 func (s *Server) SetPrivyAuth(pa *auth.PrivyAuth) {
 	s.privyAuth = pa
@@ -974,6 +985,7 @@ func (s *Server) SyncModelCatalog() {
 	}
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
+	s.reconcilePromptArtifacts(registryRows)
 
 	s.syncModelAliases()
 	s.invalidateCatalogCache()

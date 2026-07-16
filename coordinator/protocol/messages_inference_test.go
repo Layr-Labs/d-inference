@@ -180,7 +180,7 @@ func TestPrefixCacheReceiptsDecode(t *testing.T) {
 		want any
 	}{
 		{`{"type":"prefix_cache_lookup","request_id":"r","cache_receipt_nonce":"n","outcome":"hit","tier":"ssd","cached_tokens":256,"prefill_tokens_saved":240,"stage_ms":3.5}`, &PrefixCacheLookupMessage{}},
-		{`{"type":"prefix_cache_ready","request_id":"r","cache_receipt_nonce":"n","ready_tokens":512,"required_recompute_tokens":16,"expected_prefill_tokens_saved":496,"tier":"memory"}`, &PrefixCacheReadyMessage{}},
+		{`{"type":"prefix_cache_ready","request_id":"r","cache_receipt_nonce":"n","ready_tokens":512,"required_recompute_tokens":16,"expected_prefill_tokens_saved":496,"tier":"ssd","stage_ms":12.25}`, &PrefixCacheReadyMessage{}},
 	} {
 		var decoded ProviderMessage
 		if err := json.Unmarshal([]byte(tc.wire), &decoded); err != nil {
@@ -194,7 +194,7 @@ func TestPrefixCacheReceiptsDecode(t *testing.T) {
 			}
 		case *PrefixCacheReadyMessage:
 			msg, ok := decoded.Payload.(*PrefixCacheReadyMessage)
-			if !ok || msg.CacheReceiptNonce != "n" || msg.ReadyTokens != 512 {
+			if !ok || msg.CacheReceiptNonce != "n" || msg.ReadyTokens != 512 || msg.StageMs != 12.25 {
 				t.Fatalf("ready payload = %#v", decoded.Payload)
 			}
 		}

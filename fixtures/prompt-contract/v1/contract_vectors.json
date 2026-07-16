@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "vectors": [
+    {
+      "name": "sorted-manifest-artifacts",
+      "artifacts": [
+        {
+          "path": "tokenizer.json",
+          "role": "tokenizer",
+          "size_bytes": 1,
+          "sha256": "0101010101010101010101010101010101010101010101010101010101010101"
+        },
+        {
+          "path": "config.json",
+          "role": "config",
+          "size_bytes": 1,
+          "sha256": "0202020202020202020202020202020202020202020202020202020202020202"
+        },
+        {
+          "path": "chat_template.jinja",
+          "role": "template",
+          "size_bytes": 1,
+          "sha256": "0303030303030303030303030303030303030303030303030303030303030303"
+        }
+      ],
+      "expected_prompt_contract_id": "d05157df36ccc695927745b813423431e114e34f3006b3c8bf2404ed29d7d8aa"
+    }
+  ]
+}

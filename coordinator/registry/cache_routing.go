@@ -3,13 +3,13 @@ package registry
 import (
 	"sync"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 const (
-	CacheRoutingOff          = "off"
-	CacheRoutingObserve      = "observe"
-	CacheRoutingExact        = "exact"
-	CacheRoutingConversation = "conversation"
+	CacheRoutingOff = "off"
+	CacheRoutingOn  = "on"
 
 	defaultCacheRoutingTTL             = 10 * time.Minute
 	defaultCacheRoutingMaxHolders      = 4
@@ -17,7 +17,6 @@ const (
 	defaultCacheRoutingMaxCostFraction = 0.35
 	cacheRoutingAttemptTTL             = 2 * time.Minute
 	cacheRoutingInFlightAttemptTTL     = 2 * time.Hour
-	cacheRoutingCapacitySuppression    = 15 * time.Second
 	cacheRoutingSweepInterval          = 30 * time.Second
 	cacheRoutingMaxEntries             = 10_000
 	cacheRoutingMaxAttempts            = 50_000
@@ -25,11 +24,43 @@ const (
 	cacheRoutingMaxStageMs             = 10 * 60 * 1000.0
 )
 
-type CacheRoute struct {
-	ExactKey         string
-	ConversationKey  string
-	ConversationKind string
-	ScopeNamespace   string
+type CachePlan struct {
+	ModelAggregateHash string
+	PromptContractID   string
+	CacheScope         string
+	PromptTokenCount   int
+	Boundaries         []protocol.PrefixCacheAnchor
+}
+
+func (p CachePlan) present() bool {
+	return p.ModelAggregateHash != "" &&
+		p.PromptContractID != "" &&
+		p.CacheScope != "" &&
+		p.PromptTokenCount > 0 &&
+		len(p.Boundaries) > 0
+}
+
+// CacheRoutingParticipates reports whether this concrete provider attempt
+// received an authenticated reusable-cache scope and receipt nonce. Route
+// derivation alone is insufficient: off mode, legacy protocol, a missing catalog
+// hash, or a provider/catalog hash mismatch all dispatch uncached and must keep
+// contributing ordinary TTFT/reputation feedback.
+func (pr *PendingRequest) CacheRoutingParticipates() bool {
+	return pr != nil && pr.cacheRoutingParticipates.Load()
+}
+
+func (pr *PendingRequest) setCacheRoutingParticipates(participates bool) {
+	if pr != nil {
+		pr.cacheRoutingParticipates.Store(participates)
+	}
+}
+
+// CacheRoutingTelemetryEligible preserves the cache-selection denominator for
+// route-derived and selected attempts, independent of whether the selected
+// provider could actually participate. This is telemetry-only and never
+// suppresses baseline feedback.
+func (pr *PendingRequest) CacheRoutingTelemetryEligible() bool {
+	return pr != nil && pr.CachePlan.present()
 }
 
 type cacheRouteKeys struct {
@@ -39,42 +70,54 @@ type cacheRouteKeys struct {
 
 type cacheHolder struct {
 	ProviderID              string
-	EvidenceSequence        uint64
-	ReadyTokens             int
+	Provider                *Provider
+	ModelID                 string
+	ModelAggregateHash      string
+	PromptContractID        string
+	CacheEpoch              string
+	Anchor                  protocol.PrefixCacheAnchor
 	RequiredRecomputeTokens int
-	PrefillTokensSaved      int
-	CachedTokens            int
 	StageMs                 float64
-	Tier                    string
-	Outcome                 string
-	Confirmed               bool
-	SuppressedUntil         time.Time
 	UpdatedAt               time.Time
 	ExpiresAt               time.Time
 }
 
 type cacheAttempt struct {
-	RequestID       string
-	ProviderID      string
-	Model           string
-	Sequence        uint64
-	ExactKey        string
-	ConversationKey string
-	ExpiresAt       time.Time
-	CreatedAt       time.Time
-	LookupSeen      bool
-	ReadyTokens     int
+	RequestID          string
+	ProviderID         string
+	Provider           *Provider
+	Model              string
+	ExpiresAt          time.Time
+	CreatedAt          time.Time
+	LookupSeen         bool
+	V2                 bool
+	Plan               CachePlan
+	V2Capability       protocol.PrefixCacheV2Capability
+	ExpectedPrompt     protocol.PrefixCacheAnchor
+	ExpectedBoundaries map[int]string
+	LastReadyAnchor    protocol.PrefixCacheAnchor
+}
+
+type cacheV2SequenceKey struct {
+	ProviderID string
+	ModelID    string
+	CacheEpoch string
+}
+
+type cacheV2ProviderModelKey struct {
+	ProviderID string
+	ModelID    string
 }
 
 type cacheRoutingHint struct {
-	Kind               string
-	Confidence         float64
 	PrefillTokensSaved int
 	CachedTokens       int
-	ReadyTokens        int
-	RecomputeTokens    int
 	StageMs            float64
-	Tier               string
+}
+
+type cacheRoutingCapability struct {
+	Provider   *Provider
+	Capability protocol.PrefixCacheV2Capability
 }
 
 type cacheAttemptOrderEntry struct {
@@ -177,7 +220,8 @@ type cacheRoutingTracker struct {
 	holderOrderByRef    map[cacheHolderRef]*cacheHolderOrderEntry
 	attemptOrder        cacheAttemptOrderHeap
 	attemptOrderByNonce map[string]*cacheAttemptOrderEntry
-	nextAttemptSequence uint64
+	v2Sequences         map[cacheV2SequenceKey]uint64
+	rejectedV2          map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability
 }
 
 func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTracker {
@@ -191,5 +235,25 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		ttl: ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
+		v2Sequences: make(map[cacheV2SequenceKey]uint64),
+		rejectedV2:  make(map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability),
 	}
+}
+
+// CacheRoutingStateCounts exposes aggregate optimizer health without route
+// keys, accounts, models, prompts, or provider identities.
+func (r *Registry) CacheRoutingStateCounts() (holders, attempts int) {
+	if r == nil {
+		return 0, 0
+	}
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	if tracker == nil {
+		return 0, 0
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	tracker.sweepIfDueLocked(time.Now())
+	return tracker.holderCount, len(tracker.attempts)
 }

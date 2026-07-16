@@ -49,7 +49,7 @@ func TestEdge_ProviderEmptyModels(t *testing.T) {
 	}
 }
 
-func TestEdge_ProviderDuplicateModels(t *testing.T) {
+func TestEdge_ProviderDuplicateModelsRejected(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
 	reg := registry.New(logger)
@@ -71,9 +71,10 @@ func TestEdge_ProviderDuplicateModels(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	time.Sleep(200 * time.Millisecond)
-	// Should register successfully without panicking
-	if reg.ProviderCount() != 1 {
-		t.Errorf("expected 1 provider, got %d", reg.ProviderCount())
+	// Ambiguous per-model capabilities are invalid: reject the entire
+	// registration instead of silently choosing one duplicate.
+	if reg.ProviderCount() != 0 {
+		t.Errorf("expected duplicate registration rejection, got %d providers", reg.ProviderCount())
 	}
 }
 

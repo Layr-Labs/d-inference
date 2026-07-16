@@ -1,14 +1,14 @@
 // Copyright © 2026 Eigen Labs.
 //
 // SSDPrefixCache — the encrypted SSD KV-offload prefix cache (v0.7.5).
-// Conforms to the engine's frozen `CBv2PrefixCache` protocol and is handed
-// to `EngineV2` in place of the (opt-in) RAM `PrefixCacheV2`:
+// Conforms to the engine's frozen `CBv2PrefixCache` protocol and is the only
+// reusable prefix-cache implementation wired into production `EngineV2`:
 //
 //   * DONATION (engine donation queue → write-behind): `donate` chain-hashes
 //     the finished request's tokens, dedupes against the index + in-flight
 //     set, extracts ONLY the new blocks' KV to compact host buffers
 //     (device slice → eval → asData(.copy), ~1–30 ms), returns — and a
-//     bounded serial pipeline (`SSDWriteBehind`) encrypts and writes DBK2
+//     bounded serial pipeline (`SSDWriteBehind`) encrypts and writes DBK3
 //     per-block files whose names are HMAC tags (`SSDLookupKeys`). The
 //     device arrays are dropped immediately: steady-state resident prefix
 //     KV is ZERO — RAM stays entirely with live serving.
@@ -103,28 +103,70 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
     struct Config: Sendable {
         let modelId: String
-        /// Weight root hash (MB-1 binding); falls back to the model id
-        /// when no hash is known — same degradation as the legacy tier.
+        let promptContractID: String
+        /// Verified live weight root hash (MB-1 binding). Production
+        /// construction refuses to create this reusable tier without it.
         let weightHash: String
         let blockSize: Int
         /// `windowCount × maxWindow` — the engine's recompute bound; the
         /// staging benefit gate subtracts it from `matched`.
         let adoptionBoundTokens: Int
         let layoutEpoch: String
-        /// `…/darkbloom/kv2/<modelKey>` — files live here, per-model, in
+        let epochStore: SSDCacheEpochStore?
+        /// `…/darkbloom/kv3/<modelKey>` — files live here, per-model, in
         /// the SSD tier's OWN root (never under the legacy `kv/` root the
         /// upgrade sweeper sheds).
         let root: URL
+        /// Canonical `…/darkbloom/kv3` parent. Production construction pins
+        /// the model directory as a direct child; direct test construction
+        /// defaults to `root`'s parent.
+        let dedicatedRoot: URL
         let ttlSeconds: Int64
         let minEffectiveTokens: Int
         let maxStageBytes: Int
         let maxStageMillis: Int
         let nowSeconds: @Sendable () -> Int64
+
+        init(
+            modelId: String,
+            promptContractID: String,
+            weightHash: String,
+            blockSize: Int,
+            adoptionBoundTokens: Int,
+            layoutEpoch: String,
+            epochStore: SSDCacheEpochStore? = nil,
+            root: URL,
+            dedicatedRoot: URL? = nil,
+            ttlSeconds: Int64,
+            minEffectiveTokens: Int,
+            maxStageBytes: Int,
+            maxStageMillis: Int,
+            nowSeconds: @escaping @Sendable () -> Int64
+        ) {
+            self.modelId = modelId
+            self.promptContractID = promptContractID
+            self.weightHash = weightHash
+            self.blockSize = blockSize
+            self.adoptionBoundTokens = adoptionBoundTokens
+            self.layoutEpoch = layoutEpoch
+            self.epochStore = epochStore
+            self.root = root
+            self.dedicatedRoot = dedicatedRoot ?? root.deletingLastPathComponent()
+            self.ttlSeconds = ttlSeconds
+            self.minEffectiveTokens = minEffectiveTokens
+            self.maxStageBytes = maxStageBytes
+            self.maxStageMillis = maxStageMillis
+            self.nowSeconds = nowSeconds
+        }
     }
 
     let config: Config
     private let kekKey: SymmetricKey
     private let lookupKeys: SSDLookupKeys
+    /// Process-unique namespace for staging tickets and the process-global KV
+    /// reservation ledger. Per-bridge receipt counters intentionally restart at
+    /// one, so their raw values are not globally unique.
+    private let cacheInstanceNamespace: String
     let index: SSDBlockIndex
     private let kvBudget: GlobalKVCacheBudget?
     private let diskBudget: SSDDiskBudget
@@ -136,16 +178,17 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let matched: Int
         let prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?]
         let deviceBytes: Int
-        /// Requests attached to this entry that have not yet been balanced
-        /// (endAdoption drops one per balanced hit; the bridge backstop
-        /// closes stragglers). PURE residency accounting — the shared-KV
+        let cacheEpoch: String?
+        /// Requests attached to this entry that have not yet been balanced.
+        /// PURE residency accounting — the shared-KV
         /// reservation is per-ENTRY (`reservationKey`), not per-ticket, so
         /// dropping an arbitrary ticket here can never strand another
         /// request's reservation.
         var openTickets: Set<String>
-        /// Lookup hits not yet balanced by endAdoption — the entry's
-        /// arrays stay parked while an adoption is in flight.
-        var pinsInUse = 0
+        /// Exact request tickets whose lookup hit has not yet been balanced by
+        /// endAdoption. A peer can never consume or retire another request's
+        /// ticket while its adoption is in flight.
+        var pinnedTickets: Set<String> = []
         /// The ONE shared-KV-budget reservation covering this entry's
         /// `deviceBytes` (the CREATING request's key). Attaching requests
         /// release their redundant provisional reservation; this one is
@@ -156,11 +199,12 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
         init(
             matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?],
-            deviceBytes: Int, firstTicket: String, reservationKey: String
+            deviceBytes: Int, cacheEpoch: String?, firstTicket: String, reservationKey: String
         ) {
             self.matched = matched
             self.prefix = prefix
             self.deviceBytes = deviceBytes
+            self.cacheEpoch = cacheEpoch
             self.openTickets = [firstTicket]
             self.reservationKey = reservationKey
         }
@@ -168,6 +212,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
     private let lock = NSLock()
     private var closed = false
+    private var scanReady = false
+    private var destructiveChangeInProgress = false
     /// tag16 of the run's TERMINAL block → staged entry.
     private var stagedEntries: [Data: StagedEntry] = [:]
     /// requestID → terminal tag16 (the bridge-backstop handle).
@@ -185,6 +231,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     private var readyReceipts: [CBv2RequestID: ReadyReceiptState] = [:]
     private var sweepTask: Task<Void, Never>?
     private var scanTask: Task<Void, Never>?
+    private var closeReleaseTask: Task<Void, Never>?
 
     #if canImport(os)
     private static let logger = Logger(
@@ -204,11 +251,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         maxWriteBytesPerDay: Int = SSDPrefixCachePolicy.defaultMaxWriteBytesPerDay,
         strictFsync: Bool = false,
         diskBudgetBytes: @escaping @Sendable () -> Int,
-        maintainWholeRoot: (@Sendable () -> Void)? = nil
+        maintainWholeRoot: (@Sendable () -> Void)? = nil,
+        cacheInstanceNamespace: String = UUID().uuidString
     ) {
         self.config = config
         self.kekKey = kekKey
         self.lookupKeys = SSDLookupKeys(kek: kekKey)
+        self.cacheInstanceNamespace = cacheInstanceNamespace
         self.index = SSDBlockIndex()
         self.kvBudget = kvBudget
         self.diskBudget = diskBudget
@@ -251,6 +300,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     /// Start the startup directory scan (async — lookups before it
     /// finishes just miss) and the low-frequency periodic TTL sweep.
     func startBackgroundTasks(sweepIntervalSeconds: Int = 60) {
+        guard hasSafeRoot else { return }
         scanTask = Task.detached(priority: .utility) { [weak self] in
             self?.scanOnDisk()
         }
@@ -266,34 +316,88 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
     var isClosed: Bool { lock.withLock { closed } }
 
+    func prefixCacheV2Capability() -> PrefixCacheV2Capability? {
+        lock.withLock {
+            guard !closed,
+                scanReady,
+                !destructiveChangeInProgress,
+                let epoch = config.epochStore?.current,
+                config.blockSize > 0,
+                config.blockSize <= Int(UInt32.max)
+            else { return nil }
+            return PrefixCacheV2Capability(
+                modelId: config.modelId,
+                modelAggregateHash: config.weightHash,
+                promptContractId: config.promptContractID,
+                blockHashVersion: CBv2BlockHasher.version,
+                blockSize: UInt32(config.blockSize),
+                cacheEpoch: epoch,
+                enabled: true,
+                ready: true)
+        }
+    }
+
+    func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {
+        lock.withLock {
+            guard !closed, !destructiveChangeInProgress else { return nil }
+            return config.epochStore?.takeNextSequence(expectedEpoch: expectedEpoch)
+        }
+    }
+
     /// Shutdown for model unload / bridge teardown: stop background work,
     /// drain staging pins (releasing their budget reservations), keep the
     /// files — durable warmth across unloads and restarts is the feature.
     public func close() {
-        var releaseKeys: [String] = []
-        lock.withLock {
-            guard !closed else { return }
+        let shouldClose = lock.withLock { () -> Bool in
+            guard !closed else { return false }
             closed = true
+            scanReady = false
             // Release the PER-ENTRY reservations (each resident entry holds
             // exactly one, keyed by its creator). Attaching requests already
             // released their redundant provisional reservation at attach
             // time; any request still mid-`stage()` releases its own on the
             // `closed`-guarded false return.
-            releaseKeys = stagedEntries.values.map(\.reservationKey)
+            let releaseKeys = stagedEntries.values.map(\.reservationKey)
             let stagedBytes = stagedEntries.values.reduce(0) { $0 + $1.deviceBytes }
             statsBox.add(stagedBytesDelta: -stagedBytes)
             tickets.removeAll()
             stagedEntries.removeAll()
             inFlightWrites.removeAll()
             readyReceipts.removeAll()
+            if let kvBudget, !releaseKeys.isEmpty {
+                closeReleaseTask = Task {
+                    for key in releaseKeys {
+                        await kvBudget.release(requestID: key)
+                    }
+                }
+            }
+            return true
         }
+        guard shouldClose else { return }
         sweepTask?.cancel()
         scanTask?.cancel()
         writeBehind.close()
         diskBudget.deregister(self)
-        if let kvBudget, !releaseKeys.isEmpty {
-            Task { for key in releaseKeys { await kvBudget.release(requestID: key) } }
+    }
+
+    /// Fully awaited shutdown used by serving-engine teardown. The synchronous
+    /// `close()` remains safe for deinit/defer-style callers, while production
+    /// lifecycle owners can wait until background scans, writes, and reservation
+    /// releases have actually finished.
+    func closeAndWait() async {
+        close()
+        let tasks = lock.withLock {
+            (scan: scanTask, sweep: sweepTask, release: closeReleaseTask)
         }
+        _ = await tasks.scan?.value
+        _ = await tasks.sweep?.value
+        await writeBehind.waitUntilDrained()
+        _ = await tasks.release?.value
+    }
+
+    /// Deterministic write-behind barrier for cache integration tests.
+    func waitForWritesForTesting() async {
+        await writeBehind.waitUntilDrained()
     }
 
     // MARK: - CBv2PrefixCache: lookup (RAM-only staging probe)
@@ -301,18 +405,45 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     public func lookup(
         tokens: [Int], layerKinds: [CBv2LayerKind]
     ) -> (matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?])? {
-        lookup(tokens: tokens, layerKinds: layerKinds, cacheSalt: nil)
+        lookup(ticket: nil, tokens: tokens, layerKinds: layerKinds, cacheSalt: nil)
     }
 
     public func lookup(
         tokens: [Int], layerKinds: [CBv2LayerKind], cacheSalt: String?
     ) -> (matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?])? {
+        lookup(ticket: nil, tokens: tokens, layerKinds: layerKinds, cacheSalt: cacheSalt)
+    }
+
+    public func lookup(
+        requestID: CBv2RequestID,
+        tokens: [Int],
+        layerKinds: [CBv2LayerKind],
+        cacheSalt: String?
+    ) -> (matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?])? {
+        lookup(
+            ticket: ticketKey(requestID),
+            tokens: tokens,
+            layerKinds: layerKinds,
+            cacheSalt: cacheSalt)
+    }
+
+    private func lookup(
+        ticket: String?,
+        tokens: [Int],
+        layerKinds: [CBv2LayerKind],
+        cacheSalt: String?
+    ) -> (matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?])? {
         // SYNCHRONOUS + RAM-ONLY by contract: the engine calls this on the
         // submit thread — never any disk I/O here. All I/O happened in the
         // pre-submit `stage`.
         let maxStagedBlocks = lock.withLock { () -> Int in
-            guard !closed, !stagedEntries.isEmpty else { return 0 }
-            return stagedEntries.values.map { $0.matched / config.blockSize }.max() ?? 0
+            guard !closed, !destructiveChangeInProgress, !stagedEntries.isEmpty else { return 0 }
+            let epoch = config.epochStore?.current
+            guard config.epochStore == nil || epoch != nil else { return 0 }
+            return stagedEntries.values
+                .filter { $0.cacheEpoch == epoch }
+                .map { $0.matched / config.blockSize }
+                .max() ?? 0
         }
         guard maxStagedBlocks > 0 else {
             statsBox.add(misses: 1)
@@ -329,7 +460,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         for k in stride(from: hashes.count, through: 1, by: -1) {
             let tag16 = lookupKeys.tag16(chainHash: hashes[k - 1], cacheSalt: salt)
             let hit: (Int, [(keys: MLXArray, values: MLXArray, offset: Int)?])? = lock.withLock {
+                let epoch = config.epochStore?.current
+                guard !closed,
+                    !destructiveChangeInProgress,
+                    config.epochStore == nil || epoch != nil
+                else { return nil }
                 guard let staged = stagedEntries[tag16],
+                    staged.cacheEpoch == epoch,
                     staged.matched == k * config.blockSize,
                     staged.prefix.count == layerKinds.count
                 else { return nil }
@@ -339,7 +476,22 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     let cacheable = Self.isCacheable(kind)
                     guard (staged.prefix[i] != nil) == cacheable else { return nil }
                 }
-                staged.pinsInUse += 1
+                let claimedTicket: String
+                if let ticket {
+                    guard tickets[ticket] == tag16,
+                        staged.openTickets.contains(ticket),
+                        !staged.pinnedTickets.contains(ticket)
+                    else { return nil }
+                    claimedTicket = ticket
+                } else {
+                    // Backwards-compatible uncorrelated callers are safe only
+                    // when there is exactly one possible ticket. Never choose
+                    // arbitrarily between concurrent same-prefix requests.
+                    let available = staged.openTickets.subtracting(staged.pinnedTickets)
+                    guard available.count == 1, let only = available.first else { return nil }
+                    claimedTicket = only
+                }
+                staged.pinnedTickets.insert(claimedTicket)
                 return (staged.matched, staged.prefix)
             }
             if let (matched, prefix) = hit {
@@ -354,10 +506,32 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     // MARK: - CBv2PrefixCache: endAdoption (the staging release hook)
 
     public func endAdoption(tokens: [Int], matched: Int) {
-        endAdoption(tokens: tokens, matched: matched, cacheSalt: nil)
+        endAdoption(ticket: nil, tokens: tokens, matched: matched, cacheSalt: nil)
     }
 
     public func endAdoption(tokens: [Int], matched: Int, cacheSalt: String?) {
+        endAdoption(ticket: nil, tokens: tokens, matched: matched, cacheSalt: cacheSalt)
+    }
+
+    public func endAdoption(
+        requestID: CBv2RequestID,
+        tokens: [Int],
+        matched: Int,
+        cacheSalt: String?
+    ) {
+        endAdoption(
+            ticket: ticketKey(requestID),
+            tokens: tokens,
+            matched: matched,
+            cacheSalt: cacheSalt)
+    }
+
+    private func endAdoption(
+        ticket: String?,
+        tokens: [Int],
+        matched: Int,
+        cacheSalt: String?
+    ) {
         guard matched > 0, matched % config.blockSize == 0 else { return }
         let blocks = matched / config.blockSize
         guard blocks * config.blockSize <= tokens.count else { return }
@@ -369,16 +543,20 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         var releaseKey: String?
         lock.withLock {
             guard let staged = stagedEntries[tag16] else { return }
-            staged.pinsInUse = max(0, staged.pinsInUse - 1)
-            // Drop ONE residency ticket per balanced hit. Tickets no longer
-            // map 1:1 to reservations (the entry carries a single per-entry
-            // reservation), so popping an arbitrary one is pure attached-
-            // request accounting — it can't release a still-pinned
-            // concurrent request's budget. The entry's reservation is
-            // released only when the entry itself retires (below).
-            if let ticket = staged.openTickets.popFirst() {
-                tickets.removeValue(forKey: ticket)
+            let claimedTicket: String
+            if let ticket {
+                guard tickets[ticket] == tag16, staged.pinnedTickets.contains(ticket)
+                else { return }
+                claimedTicket = ticket
+            } else {
+                guard staged.pinnedTickets.count == 1,
+                    let only = staged.pinnedTickets.first
+                else { return }
+                claimedTicket = only
             }
+            staged.pinnedTickets.remove(claimedTicket)
+            staged.openTickets.remove(claimedTicket)
+            tickets.removeValue(forKey: claimedTicket)
             releaseKey = removeStagedEntryIfDoneLocked(tag16)
         }
         if let releaseKey, let kvBudget {
@@ -557,13 +735,15 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let maxPersistBlocks = config.maxStageBytes / perBlockBytes
         let durableTags = Array(tags16.prefix(maxPersistBlocks))
         let durableFullTags = Array(fullTags.prefix(maxPersistBlocks))
+        let durableChainHashes = Array(hashes.prefix(maxPersistBlocks))
         let onDurable: (@Sendable () -> Void)?
         if let receiptRequestID, !durableTags.isEmpty {
             onDurable = { [weak self] in
                 self?.settleDurableDonation(
                     requestID: receiptRequestID,
                     tags16: durableTags,
-                    fullTags: durableFullTags)
+                    fullTags: durableFullTags,
+                    chainHashes: durableChainHashes)
             }
         } else {
             onDurable = nil
@@ -590,8 +770,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             guard index.contains(tag16: tag16) else { continue }
             let url = SSDBlockStore.fileURL(
                 root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            try? FileManager.default.setAttributes(
-                [.modificationDate: touchDate], ofItemAtPath: url.path)
+            SSDBlockStore.setAttributesIfSafe(
+                [.modificationDate: touchDate], at: url, under: config.root)
         }
         guard !newBlockIndices.isEmpty else {
             // An all-deduped donation is already durable, but still pass it
@@ -715,19 +895,32 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         requestID: String, promptTokens: [Int], cacheScope: String
     ) async -> SSDPrefixCacheStageResult {
         let started = ContinuousClock.now
+        let hasher = hasher(cacheSalt: cacheScope)
+        let maxBlocks = hasher.maxLookupBlocks(tokenCount: promptTokens.count)
+        let evidenceHashes = maxBlocks > 0
+            ? hasher.chainHashes(tokens: promptTokens, maxBlocks: maxBlocks)
+            : []
         func finish(_ disposition: SSDPrefixCacheStageDisposition) -> SSDPrefixCacheStageResult {
             let elapsed = started.duration(to: .now).components
             let milliseconds =
                 Double(elapsed.seconds) * 1_000
                 + Double(elapsed.attoseconds) / 1_000_000_000_000_000
             return SSDPrefixCacheStageResult(
-                disposition: disposition, stageMs: max(0, milliseconds))
+                disposition: disposition,
+                stageMs: max(0, milliseconds),
+                chainHashes: evidenceHashes,
+                blockSize: config.blockSize)
         }
-        guard !isClosed else { return finish(.skippedPolicy) }
+        let stageEpoch: String?
+        if let epochStore = config.epochStore {
+            guard let current = epochStore.current else { return finish(.skippedPolicy) }
+            stageEpoch = current
+        } else {
+            stageEpoch = nil
+        }
+        guard !isClosed, hasSafeRoot else { return finish(.skippedPolicy) }
         guard index.count > 0 else { return finish(.missAbsent) }
         let salt = cacheScope
-        let hasher = hasher(cacheSalt: salt)
-        let maxBlocks = hasher.maxLookupBlocks(tokenCount: promptTokens.count)
         guard maxBlocks > 0 else { return finish(.skippedCost) }
         // Cheap pre-floor: a run can only clear the benefit gate when even
         // a FULL match would (matched − bound ≥ minEffective). Overflow-safe
@@ -740,7 +933,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         guard !preFloorOverflow, maxBlocks * config.blockSize >= preFloor
         else { return finish(.skippedCost) }
 
-        let hashes = hasher.chainHashes(tokens: promptTokens, maxBlocks: maxBlocks)
+        let hashes = evidenceHashes
         var fullTags: [Data] = []
         var tags16: [Data] = []
         for hash in hashes {
@@ -782,14 +975,19 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // build the entry — on attach it is redundant with the entry's own
         // reservation and released immediately.
         let terminalTag = tags16[k - 1]
-        let reservationKey = Self.reservationKey(forRequestID: requestID)
+        let reservationKey = reservationKey(forRequestID: requestID)
         if let kvBudget {
             guard await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(runBytes))
             else { return finish(.skippedCapacity) }
         }
         let attached = lock.withLock { () -> Bool in
-            guard !closed else { return false }
-            guard let existing = stagedEntries[terminalTag], existing.matched == k * config.blockSize
+            guard !closed,
+                !destructiveChangeInProgress,
+                cacheEpochMatches(stageEpoch)
+            else { return false }
+            guard let existing = stagedEntries[terminalTag],
+                existing.cacheEpoch == stageEpoch,
+                existing.matched == k * config.blockSize
             else { return false }
             existing.openTickets.insert(requestID)
             tickets[requestID] = terminalTag
@@ -833,8 +1031,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 // Corrupt / torn / stale-binding block: delete, drop from
                 // the index, fall back to the shorter run (or recompute).
                 statsBox.add(corruptDropped: 1)
-                try? FileManager.default.removeItem(at: url)
-                index.remove(tag16: tags16[i])
+                _ = performDestructiveChange {
+                    _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
+                    index.remove(tag16: tags16[i])
+                }
                 #if canImport(os)
                 Self.logger.warning(
                     "ssd prefix cache (\(self.config.modelId, privacy: .public)): dropped unreadable block (\(String(describing: error), privacy: .public)) — recompute fallback")
@@ -895,21 +1095,30 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // entry's per-entry reservation.
         enum StageResolution { case created, attached, failed }
         let resolution: StageResolution = lock.withLock {
-            guard !closed else { return .failed }
-            if let existing = stagedEntries[terminalTag], existing.matched == matched {
+            guard !closed,
+                !destructiveChangeInProgress,
+                cacheEpochMatches(stageEpoch)
+            else { return .failed }
+            if let existing = stagedEntries[terminalTag],
+                existing.cacheEpoch == stageEpoch,
+                existing.matched == matched
+            {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = terminalTag
                 return .attached
             }
             let usedTag = tags16[usableBlocks - 1]
-            if let existing = stagedEntries[usedTag], existing.matched == matched {
+            if let existing = stagedEntries[usedTag],
+                existing.cacheEpoch == stageEpoch,
+                existing.matched == matched
+            {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = usedTag
                 return .attached
             }
             stagedEntries[usedTag] = StagedEntry(
                 matched: matched, prefix: prefix, deviceBytes: stagedRunBytes,
-                firstTicket: requestID, reservationKey: reservationKey)
+                cacheEpoch: stageEpoch, firstTicket: requestID, reservationKey: reservationKey)
             tickets[requestID] = usedTag
             statsBox.add(stages: 1, stagedBytesDelta: stagedRunBytes)
             return .created
@@ -936,8 +1145,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         for i in 0 ..< usableBlocks {
             let url = SSDBlockStore.fileURL(
                 root: config.root, tag16Hex: SSDLookupKeys.hex(tags16[i]))
-            try? FileManager.default.setAttributes(
-                [.modificationDate: touchDate], ofItemAtPath: url.path)
+            SSDBlockStore.setAttributesIfSafe(
+                [.modificationDate: touchDate], at: url, under: config.root)
         }
         return finish(.staged(
             matchedTokens: matched,
@@ -945,27 +1154,55 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             shortenedByCorruption: shortenedByCorruption))
     }
 
+    func stage(
+        requestID: CBv2RequestID, promptTokens: [Int], cacheScope: String
+    ) async -> SSDPrefixCacheStageResult {
+        await stage(
+            requestID: ticketKey(requestID),
+            promptTokens: promptTokens,
+            cacheScope: cacheScope)
+    }
+
     /// Bridge backstop: release a request's staging ticket on every
     /// terminal path the engine's `endAdoption` did not already balance
     /// (submit failure before lookup, teardown, defensive). Idempotent.
     func completeStaging(requestID: String) {
-        var releaseKey: String?
-        lock.withLock {
-            guard let tag = tickets.removeValue(forKey: requestID) else { return }
-            guard let staged = stagedEntries[tag] else { return }
-            staged.openTickets.remove(requestID)
-            // Only the entry's own (per-entry) reservation is released, and
-            // only when this was the last user — a request terminating while
-            // a concurrent same-prefix request still pins the shared entry
-            // leaves the reservation in place (residency stays covered).
-            releaseKey = removeStagedEntryIfDoneLocked(tag)
-        }
+        let releaseKey = detachStagingTicket(requestID)
         if let releaseKey, let kvBudget {
             Task { await kvBudget.release(requestID: releaseKey) }
         }
     }
 
+
+    func completeStaging(requestID: CBv2RequestID) {
+        completeStaging(requestID: ticketKey(requestID))
+    }
+
+    /// Pre-submit abandonment used by the shared-budget fallback. The release
+    /// is awaited before admission is retried, so optional staging can never
+    /// consume the headroom needed by a request that fits cold.
+    func abandonStaging(requestID: CBv2RequestID) async {
+        guard let releaseKey = detachStagingTicket(ticketKey(requestID)) else { return }
+        await releaseReservation(releaseKey)
+    }
+
+    private func detachStagingTicket(_ requestID: String) -> String? {
+        lock.withLock {
+            guard let tag = tickets.removeValue(forKey: requestID),
+                let staged = stagedEntries[tag]
+            else { return nil }
+            staged.openTickets.remove(requestID)
+            staged.pinnedTickets.remove(requestID)
+            // Only the entry's own (per-entry) reservation is released, and
+            // only when this was the last user. A concurrent peer keeps the
+            // shared entry resident and reservation-accounted.
+            return removeStagedEntryIfDoneLocked(tag)
+        }
+    }
+
     // MARK: - TTL sweep + eviction (SSDEvictableStore)
+
+    var evictionRoot: URL { config.root }
 
     var diskBytesOnDisk: Int { index.totalBytes }
 
@@ -973,22 +1210,66 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
     /// Unlink the LRU entry (box-wide budget enforcement).
     func evictOldestEntry() -> Int {
-        guard let victim = index.oldest() else { return 0 }
-        let url = SSDBlockStore.fileURL(
-            root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
-        try? FileManager.default.removeItem(at: url)
-        let bytes = index.remove(tag16: victim.tag16)
-        statsBox.add(evictions: 1)
-        return bytes
+        guard hasSafeRoot else { return 0 }
+        // Bounded by the index snapshot. Invalid/missing entries are dropped
+        // without touching their pathname; a valid-but-undeletable entry is
+        // skipped so a newer victim can still satisfy the box-wide budget.
+        let victims = index.oldestEntries()
+        guard !victims.isEmpty else { return 0 }
+        return performDestructiveChange {
+            for victim in victims {
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(victim.tag16))
+                switch SSDBlockStore.indexedBlockFileStatus(at: url, under: config.root) {
+                case .missing, .invalid:
+                    index.remove(tag16: victim.tag16)
+                case .regular:
+                    if SSDBlockStore.removeItemIfSafe(at: url, under: config.root) {
+                        let bytes = index.remove(tag16: victim.tag16)
+                        statsBox.add(evictions: 1)
+                        return bytes
+                    }
+                    // The entry may have changed between classification and unlink.
+                    // Drop only when a second no-follow check proves it is no longer
+                    // an owned regular file.
+                    if SSDBlockStore.indexedBlockFileStatus(
+                        at: url, under: config.root) != .regular
+                    {
+                        index.remove(tag16: victim.tag16)
+                    }
+                }
+            }
+            return 0
+        } ?? 0
     }
 
     func reconcileExternalRemovals() {
-        for tag16 in index.allTags() {
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            if !FileManager.default.fileExists(atPath: url.path) {
+        guard hasSafeRoot else { return }
+        let removed = externallyRemovedTags()
+        guard !removed.isEmpty else { return }
+        _ = performDestructiveChange {
+            for tag16 in removed {
                 index.remove(tag16: tag16)
             }
+        }
+    }
+
+    func performExternalDestructiveChange(_ body: () -> Void) -> Bool {
+        let completed: Void? = performDestructiveChange {
+            body()
+            for tag16 in externallyRemovedTags() {
+                index.remove(tag16: tag16)
+            }
+        }
+        return completed != nil
+    }
+
+    private func externallyRemovedTags() -> [Data] {
+        index.allTags().filter { tag16 in
+            let url = SSDBlockStore.fileURL(
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+            return SSDBlockStore.indexedBlockFileStatus(
+                at: url, under: config.root) != .regular
         }
     }
 
@@ -996,24 +1277,44 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     /// the periodic low-frequency task): unlink entries whose last hit is
     /// older than the sliding TTL.
     func sweepExpiredEntries() {
+        guard hasSafeRoot else { return }
         let expired = index.expired(now: config.nowSeconds(), ttlSeconds: config.ttlSeconds)
         guard !expired.isEmpty else { return }
-        for tag16 in expired {
-            let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
-            try? FileManager.default.removeItem(at: url)
-            index.remove(tag16: tag16)
+        _ = performDestructiveChange {
+            var removed = 0
+            for tag16 in expired {
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                let status = SSDBlockStore.indexedBlockFileStatus(
+                    at: url, under: config.root)
+                if status == .regular,
+                    SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
+                {
+                    index.remove(tag16: tag16)
+                    removed += 1
+                } else if status != .regular {
+                    // Missing/replaced paths are no longer owned cache bytes. Drop
+                    // the stale RAM entry, but do not report a durable TTL removal.
+                    index.remove(tag16: tag16)
+                }
+            }
+            if removed > 0 {
+                statsBox.add(ttlExpired: removed)
+            }
         }
-        statsBox.add(ttlExpired: expired.count)
     }
 
     // MARK: - Startup scan (the recovery protocol — no index sidecar)
 
     /// Rebuild the RAM index from the on-disk tree: temp-sweep, then a
-    /// header-only pass over every `.dbk2` file. Stale bindings
+    /// header-only pass over every `.dbk3` file. Stale bindings
     /// (weightHash / layoutEpoch / blockSize) and TTL-expired files are
     /// deleted; everything else is indexed with mtime as lastAccess.
     func scanOnDisk() {
+        guard hasSafeRoot else {
+            index.removeAll()
+            return
+        }
         SSDBlockStore.sweepStaleTempFiles(under: config.root)
         let fm = FileManager.default
         let now = config.nowSeconds()
@@ -1024,13 +1325,36 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         var indexed = 0
         var dropped = 0
         var expired = 0
-        for dir in fanouts where (try? dir.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+        // A recognized fanout symlink invalidates the whole scan. Skipping it
+        // would leave active cache I/O able to follow the same path later.
+        for dir in fanouts where SSDBlockStore.isLowerHex(dir.lastPathComponent, count: 2) {
+            guard let dirValues = try? dir.resourceValues(
+                forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+                dirValues.isDirectory == true, dirValues.isSymbolicLink != true,
+                dir.standardizedFileURL.path
+                    == dir.resolvingSymlinksInPath().standardizedFileURL.path
+            else {
+                index.removeAll()
+                return
+            }
             guard let files = try? fm.contentsOfDirectory(
-                at: dir, includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+                at: dir,
+                includingPropertiesForKeys: [
+                    .fileSizeKey, .contentModificationDateKey, .isRegularFileKey,
+                    .isSymbolicLinkKey,
+                ],
                 options: [.skipsHiddenFiles])
             else { continue }
             for url in files where url.pathExtension == SSDBlockStore.fileExtension {
                 if isClosed { return }
+                guard let fileValues = try? url.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+                    fileValues.isRegularFile == true, fileValues.isSymbolicLink != true,
+                    SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root)
+                else {
+                    index.removeAll()
+                    return
+                }
                 let name = url.deletingPathExtension().lastPathComponent
                 guard let tag16 = Self.hexDecode(name),
                     tag16.count == SSDLookupKeys.truncatedTagLength,
@@ -1040,7 +1364,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     metadata.blockSize == config.blockSize,
                     metadata.lookupTag.hasPrefix(name)
                 else {
-                    try? fm.removeItem(at: url)
+                    _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
                     dropped += 1
                     continue
                 }
@@ -1048,8 +1372,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     forKeys: [.fileSizeKey, .contentModificationDateKey])
                 let mtime = Int64(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)
                 if config.ttlSeconds > 0, now - mtime >= config.ttlSeconds {
-                    try? fm.removeItem(at: url)
-                    expired += 1
+                    if SSDBlockStore.removeItemIfSafe(at: url, under: config.root) {
+                        expired += 1
+                    }
                     continue
                 }
                 index.insert(
@@ -1058,6 +1383,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             }
         }
         if expired > 0 { statsBox.add(ttlExpired: expired) }
+        lock.withLock {
+            if !closed {
+                scanReady = true
+            }
+        }
         #if canImport(os)
         Self.logger.info(
             "ssd prefix cache (\(self.config.modelId, privacy: .public)): startup scan indexed \(indexed) blocks (\(self.index.totalBytes) B), dropped \(dropped) stale, \(expired) expired")
@@ -1077,10 +1407,62 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
     private func hasher(cacheSalt: String) -> CBv2BlockHasher {
         CBv2BlockHasher(
-            blockSize: config.blockSize, modelName: config.modelId, cacheSalt: cacheSalt)
+            blockSize: config.blockSize,
+            promptContractID: config.promptContractID,
+            scopeID: cacheSalt)
     }
 
-    static func reservationKey(forRequestID id: String) -> String { "ssd-stage-\(id)" }
+    private var hasSafeRoot: Bool {
+        SSDBlockStore.isSafeModelRoot(config.root, dedicatedRoot: config.dedicatedRoot)
+    }
+
+    /// Persist a fresh generation before deleting or forgetting durable
+    /// blocks, and suppress capability publication until the mutation ends.
+    private func performDestructiveChange<T>(_ body: () -> T) -> T? {
+        guard beginDestructiveChange() else { return nil }
+        defer { endDestructiveChange() }
+        guard let epochStore = config.epochStore else { return body() }
+        guard let result = epochStore.performOwnedDestructiveChange(body) else {
+            lock.withLock { scanReady = false }
+            return nil
+        }
+        return result
+    }
+
+    private func beginDestructiveChange() -> Bool {
+        lock.withLock {
+            guard !closed, !destructiveChangeInProgress else { return false }
+            destructiveChangeInProgress = true
+            return true
+        }
+    }
+
+    private func endDestructiveChange() {
+        lock.withLock {
+            precondition(destructiveChangeInProgress)
+            destructiveChangeInProgress = false
+        }
+    }
+
+    private func cacheEpochMatches(_ expected: String?) -> Bool {
+        guard let epochStore = config.epochStore else { return expected == nil }
+        guard let expected else { return false }
+        return epochStore.current == expected
+    }
+
+    #if DEBUG
+    func holdDestructiveEpochForTesting(_ body: () -> Void) -> Bool {
+        performDestructiveChange(body) != nil
+    }
+    #endif
+
+    private func reservationKey(forRequestID id: String) -> String {
+        "ssd-stage:\(cacheInstanceNamespace):\(id)"
+    }
+
+    private func ticketKey(_ requestID: CBv2RequestID) -> String {
+        "\(cacheInstanceNamespace):\(requestID.raw)"
+    }
 
     private func releaseReservation(_ key: String) async {
         guard let kvBudget else { return }
@@ -1095,9 +1477,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     private func settleDurableDonation(
         requestID: CBv2RequestID,
         tags16: [Data],
-        fullTags: [Data]
+        fullTags: [Data],
+        chainHashes: [Data]
     ) {
-        guard tags16.count == fullTags.count, !tags16.isEmpty, !isClosed else { return }
+        guard tags16.count == fullTags.count,
+            tags16.count == chainHashes.count,
+            !tags16.isEmpty,
+            !isClosed
+        else { return }
         var readableBlocks = 0
         for i in tags16.indices {
             guard index.contains(tag16: tags16[i]) else { break }
@@ -1122,6 +1509,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let recompute = min(config.adoptionBoundTokens, readyTokens)
         let expectedSaved = max(0, readyTokens - recompute)
         guard expectedSaved >= config.minEffectiveTokens else { return }
+        guard let durableSizes = index.fileBytes(tags16: tags16.prefix(readableBlocks))
+        else { return }
+        let durableBytes = durableSizes.reduce(0) { total, next in
+            let (sum, overflow) = total.addingReportingOverflow(max(0, next))
+            return overflow ? Int.max : sum
+        }
+        let stageMs = SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: durableBytes)
 
         let delivery: ((@Sendable (PrefixCacheReadyResult) -> Void), PrefixCacheReadyResult)? =
             lock.withLock {
@@ -1135,7 +1529,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                         readyTokens: readyTokens,
                         requiredRecomputeTokens: recompute,
                         expectedPrefillTokensSaved: expectedSaved,
-                        tier: .ssd))
+                        tier: .ssd,
+                        stageMs: stageMs,
+                        finalAnchor: PrefixCacheAnchor(
+                            chainHash: chainHashes[readableBlocks - 1].map {
+                                String(format: "%02x", $0)
+                            }.joined(),
+                            tokenCount: UInt64(readyTokens))))
             }
         if let delivery { delivery.0(delivery.1) }
     }
@@ -1147,7 +1547,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     @discardableResult
     private func removeStagedEntryIfDoneLocked(_ tag16: Data) -> String? {
         guard let staged = stagedEntries[tag16],
-            staged.openTickets.isEmpty, staged.pinsInUse <= 0
+            staged.openTickets.isEmpty, staged.pinnedTickets.isEmpty
         else { return nil }
         stagedEntries.removeValue(forKey: tag16)
         statsBox.add(stagedBytesDelta: -staged.deviceBytes)

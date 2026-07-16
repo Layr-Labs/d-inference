@@ -12,7 +12,10 @@ jobs:
     timeout-minutes: 30
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
+      DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
       TESTBED_PROVIDER_CONFIG: debug
+      GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
+      EXACT_CACHE_MODEL_REVISION: 2c3e507453b4f218d05fe3cc97bea5c5a654257e
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -30,6 +33,9 @@ jobs:
           cd provider-swift
           swift build -c debug
 
+      - name: Build prompt-contract sidecar
+        run: cargo build --manifest-path coordinator/promptsidecar/Cargo.toml --release
+
       - name: Extract mlx.metallib
         run: |
           python3 -m venv /tmp/mlxvenv
@@ -37,19 +43,34 @@ jobs:
           cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
              provider-swift/.build/debug/mlx.metallib
 
-      - name: Download model
+      - name: Install Hugging Face client
         # v0.7.5 one-engine: the testbed default is the smallest
         # CBv2-servable checkpoint (gpt-oss-20b, ~12 GB — the old tiny
         # Qwen/gemma-3 fixtures have no CBv2 adapter and can no longer
-        # register). A warm HF cache makes this a no-op; a cold runner
-        # pays the download once.
+        # register). Exact-cache routing additionally uses the small Gemma 4
+        # checkpoint because GPT-OSS's dynamic-date template is cold-only.
+        # A warm HF cache makes these downloads no-ops.
+        run: /tmp/mlxvenv/bin/pip install huggingface_hub
+
+      - name: Download model (protected read-only auth)
+        if: github.event_name == 'push'
+        env:
+          HF_TOKEN: ${{ secrets.HF_READ_TOKEN }}
         run: |
-          /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8')"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=os.environ.get('HF_TOKEN') or None)"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e2b-it-4bit', revision=os.environ['EXACT_CACHE_MODEL_REVISION'], token=os.environ.get('HF_TOKEN') or None)"
+
+      - name: Download public model (pull request)
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "Pull request: downloading public model without Hugging Face authentication"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e2b-it-4bit', revision=os.environ['EXACT_CACHE_MODEL_REVISION'], token=False)"
 
       - name: Run integration + profile tests
         run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
             -run 'TestIntegration|TestProfile'
 
@@ -64,6 +85,8 @@ jobs:
       TESTBED_PROVIDER_CONFIG: debug
       BENCHMARK_MD_PATH: /tmp/benchmark-results.md
       RUNNER_DESC: macos-15 (M1 Virtual)
+      GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
+      GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -88,18 +111,22 @@ jobs:
           cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
              provider-swift/.build/debug/mlx.metallib
 
-      - name: Download models
+      - name: Install Hugging Face client
         # Benchmarks serve the CBv2 default (gpt-oss-20b, ~12 GB) plus the
         # secondary multi-model checkpoint (gemma-4-26B QAT, ~14.5 GB) for
         # TestBenchmark_MultiModelMultiProvider. Warm HF cache ⇒ no-op.
+        run: /tmp/mlxvenv/bin/pip install huggingface_hub
+
+      - name: Download public models (pull request)
         run: |
-          /tmp/mlxvenv/bin/pip install huggingface_hub
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8')"
-          /tmp/mlxvenv/bin/python -c "from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit')"
+          echo "Pull request: downloading public models without Hugging Face authentication"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit', revision=os.environ['GEMMA_REVISION'], token=False)"
 
       - name: Run benchmarks
         run: |
-          export PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
             -run 'TestBenchmark'
 

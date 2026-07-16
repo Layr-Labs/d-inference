@@ -532,7 +532,7 @@ public actor ProviderLoop {
         self.kvBudget = GlobalKVCacheBudget(
             configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // The v0.7.5 EngineV2 SSD tier uses the separate `darkbloom/kv2` root,
+        // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
         LegacyKVCacheSweeper.sweep()
         self.powerAssertion = InferencePowerAssertion(reason: "Darkbloom inference job active")
@@ -587,6 +587,9 @@ public actor ProviderLoop {
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —
         /// feeds re-slicing, heartbeat fleet context, and the vision gate.
         let sizing: SlotSizingSnapshot
+        /// Hash verified for the exact bytes bracketed around this slot's load.
+        /// Reused only when rebuilding the engine over the retained container.
+        let cacheEligibleWeightHash: String?
         /// Vision-language model (config has `vision_config`). The container
         /// supplies vision preprocessing before multimodal EngineV2 prefill.
         let isVLM: Bool
@@ -618,6 +621,7 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             lastInferenceAt: ContinuousClock.Instant
@@ -626,6 +630,7 @@ public actor ProviderLoop {
             self.container = container
             self.tokenizer = tokenizer
             self.sizing = sizing
+            self.cacheEligibleWeightHash = cacheEligibleWeightHash
             self.isVLM = isVLM
             self.modelType = modelType
             self.lastInferenceAt = lastInferenceAt
@@ -637,6 +642,7 @@ public actor ProviderLoop {
             container: MLXLMCommon.ModelContainer,
             tokenizer: TokenizerHandle,
             sizing: SlotSizingSnapshot,
+            cacheEligibleWeightHash: String? = nil,
             isVLM: Bool,
             modelType: String?,
             mtpDrafter: (any AnyObject & Sendable)? = nil,
@@ -653,6 +659,7 @@ public actor ProviderLoop {
                 container: container,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: isVLM,
                 modelType: modelType,
                 lastInferenceAt: lastInferenceAt)

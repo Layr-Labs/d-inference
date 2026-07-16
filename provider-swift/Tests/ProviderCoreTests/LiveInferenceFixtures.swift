@@ -280,7 +280,7 @@ enum LiveInferenceFixtures {
             // Hermetic tests: master-kill EVERY prefix-cache tier. An empty
             // environment is no longer dormant — the SSD tier (v0.7.5) is
             // default-on and would write real files under the user's
-            // ~/Library/Caches/darkbloom/kv2. Dedicated suites opt in with
+            // ~/Library/Caches/darkbloom/kv3. Dedicated suites opt in with
             // their own roots/keys.
             environment: ["DARKBLOOM_PREFIX_CACHE": "0"])
 

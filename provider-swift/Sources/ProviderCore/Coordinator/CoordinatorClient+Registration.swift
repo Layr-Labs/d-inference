@@ -24,12 +24,16 @@ extension CoordinatorClient {
         // Read the live advertised list (startup ∪ prefetched builds) rather
         // than the immutable `config.models`, so a re-registration after a
         // verified prefetch carries the updated set.
+        let prefixCache = state.prefixCacheV2Advertisement()
         let jsonData = try CoordinatorClientCodec.encodeRegistration(
             from: config,
             models: advertisedModelStore.models,
             privacyCapabilities: privacyCapabilities,
             apnsDeviceTokenOverride: apnsTokenOverride,
-            modelWeightHashOverrides: modelWeightHashOverrides
+            modelWeightHashOverrides: modelWeightHashOverrides,
+            prefixCacheProtocol: prefixCache.protocolVersion,
+            prefixCacheV2Models: prefixCache.protocolVersion == 2
+                ? prefixCache.models : nil
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
@@ -64,6 +68,7 @@ extension CoordinatorClient {
         let activeModel = state.currentModel
         let warmModels = state.warmModels
         let capacity = state.backendCapacity
+        let prefixCache = state.prefixCacheV2Advertisement()
         let metrics = SystemMetricsCollector.collect(cpuCores: config.hardware.cpuCores.total)
 
         // Carry the APNs device token in every heartbeat (W5 Fix 2) so the
@@ -94,7 +99,10 @@ extension CoordinatorClient {
             systemMetrics: metrics,
             backendCapacity: capacity,
             apnsDeviceToken: effectiveToken,
-            apnsEnvironment: effectiveEnv
+            apnsEnvironment: effectiveEnv,
+            prefixCacheProtocol: prefixCache.protocolVersion,
+            prefixCacheV2Models: prefixCache.protocolVersion == 2
+                ? prefixCache.models : nil
         )
 
         do {

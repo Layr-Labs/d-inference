@@ -140,6 +140,7 @@ public final class ProviderState: @unchecked Sendable {
     private var _warmModels: [String] = []
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
+    private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
 
     public init() {}
 
@@ -166,6 +167,20 @@ public final class ProviderState: @unchecked Sendable {
     public var backendCapacity: BackendCapacity? {
         get { lock.withLock { _backendCapacity } }
         set { lock.withLock { _backendCapacity = newValue } }
+    }
+
+    func setPrefixCacheV2Sources(_ sources: [String: SSDPrefixCache]) {
+        lock.withLock { _prefixCacheV2Sources = sources }
+    }
+
+    func prefixCacheV2Advertisement() -> (
+        protocolVersion: Int,
+        models: [PrefixCacheV2Capability]
+    ) {
+        let sources = lock.withLock { _prefixCacheV2Sources }
+        let models = sources.values.compactMap { $0.prefixCacheV2Capability() }
+            .sorted { $0.modelId < $1.modelId }
+        return (models.isEmpty ? 1 : 2, models)
     }
 }
 

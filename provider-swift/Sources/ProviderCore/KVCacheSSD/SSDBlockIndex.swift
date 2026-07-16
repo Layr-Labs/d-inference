@@ -1,6 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// In-RAM index over one model's on-disk DBK2 block files, plus the
+// In-RAM index over one model's on-disk DBK3 block files, plus the
 // process-wide disk-budget coordinator.
 //
 // The index maps truncated 16-byte HMAC tags → (fileBytes, lastAccess).
@@ -114,10 +114,21 @@ final class SSDBlockIndex: @unchecked Sendable {
 
     /// Globally-oldest entry (LRU eviction candidate).
     func oldest() -> (tag16: Data, lastAccess: Int64, fileBytes: Int)? {
+        oldestEntries().first
+    }
+
+    /// Stable oldest-first snapshot. Eviction walks this bounded list so one
+    /// stale or temporarily undeletable index entry cannot pin every newer
+    /// victim behind it.
+    func oldestEntries() -> [(tag16: Data, lastAccess: Int64, fileBytes: Int)] {
         lock.withLock {
-            guard let (key, entry) = entries.min(by: { $0.value.lastAccess < $1.value.lastAccess })
-            else { return nil }
-            return (key, entry.lastAccess, entry.fileBytes)
+            entries.map { (tag16: $0.key, lastAccess: $0.value.lastAccess, fileBytes: $0.value.fileBytes) }
+                .sorted {
+                    if $0.lastAccess != $1.lastAccess {
+                        return $0.lastAccess < $1.lastAccess
+                    }
+                    return $0.tag16.lexicographicallyPrecedes($1.tag16)
+                }
         }
     }
 
@@ -139,6 +150,7 @@ final class SSDBlockIndex: @unchecked Sendable {
 /// bytes, the age of its oldest entry, and the ability to evict it
 /// (unlink + index removal).
 protocol SSDEvictableStore: AnyObject, Sendable {
+    var evictionRoot: URL { get }
     var diskBytesOnDisk: Int { get }
     /// lastAccess of the store's LRU entry, or nil when empty.
     func oldestEntryAccess() -> Int64?
@@ -148,6 +160,9 @@ protocol SSDEvictableStore: AnyObject, Sendable {
     /// Drop RAM-index entries whose files were removed by whole-root
     /// maintenance (including unloaded-model accounting).
     func reconcileExternalRemovals()
+    /// Bracket whole-root deletion through an active store so it owns the
+    /// replacement epoch and can resume advertising after the mutation.
+    func performExternalDestructiveChange(_ body: () -> Void) -> Bool
 }
 
 /// Process-wide, BOX-WIDE disk budget (Gaj, 2026-07-07: 20 GiB default
@@ -174,12 +189,23 @@ final class SSDDiskBudget: @unchecked Sendable {
     }
 
     func deregister(_ store: SSDEvictableStore) {
-        lock.withLock { stores.removeValue(forKey: ObjectIdentifier(store)) }
+        lock.withLock { _ = stores.removeValue(forKey: ObjectIdentifier(store)) }
     }
 
     func reconcileAll() {
         lock.withLock {
             for store in stores.values { store.reconcileExternalRemovals() }
+        }
+    }
+
+    /// Returns nil when no active store owns this model root.
+    func performActiveDestructiveChange(root: URL, _ body: () -> Void) -> Bool? {
+        let key = root.standardizedFileURL.resolvingSymlinksInPath().path
+        return lock.withLock {
+            guard let store = stores.values.first(where: {
+                $0.evictionRoot.standardizedFileURL.resolvingSymlinksInPath().path == key
+            }) else { return nil }
+            return store.performExternalDestructiveChange(body)
         }
     }
 
@@ -193,17 +219,28 @@ final class SSDDiskBudget: @unchecked Sendable {
     func enforce(budgetBytes: Int) -> Int {
         lock.withLock {
             var evicted = 0
-            // Bounded: each pass frees at least one entry or stops.
-            while stores.values.reduce(0, { $0 + $1.diskBytesOnDisk }) > budgetBytes {
+            var blockedStores: Set<ObjectIdentifier> = []
+            let limit = max(0, budgetBytes)
+            // Bounded: a pass either frees one entry or permanently excludes
+            // one store for this enforcement call. One undeletable oldest
+            // entry therefore cannot stop eviction in another store.
+            while stores.values.reduce(0, { $0 + $1.diskBytesOnDisk }) > limit {
                 var victim: SSDEvictableStore?
                 var victimAccess = Int64.max
                 for store in stores.values {
+                    guard !blockedStores.contains(ObjectIdentifier(store)) else {
+                        continue
+                    }
                     if let access = store.oldestEntryAccess(), access < victimAccess {
                         victimAccess = access
                         victim = store
                     }
                 }
-                guard let victim, victim.evictOldestEntry() > 0 else { return evicted }
+                guard let victim else { return evicted }
+                guard victim.evictOldestEntry() > 0 else {
+                    blockedStores.insert(ObjectIdentifier(victim))
+                    continue
+                }
                 evicted += 1
                 _evictions += 1
             }

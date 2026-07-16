@@ -133,7 +133,6 @@ public enum EngineV2Factory {
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
-        prefixCacheBudgetBytes: Int = 0,
         ssdPrefixCache: SSDPrefixCache? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
@@ -155,11 +154,6 @@ public enum EngineV2Factory {
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
                 kvBudget: kvBudget,
-                // Fleet-sizing bookkeeping only (the cache itself was carved
-                // out of the engine's kvBytesCapacity by the caller): the
-                // bridge exposes it via `slotKVBytesClaim()` so later loads
-                // subtract the cache's bytes too (T-041 budget accounting).
-                prefixCacheBudgetBytes: prefixCacheBudgetBytes,
                 // SSD offload tier handle (v0.7.5): the bridge drives the
                 // pre-submit staging hook + release backstops + shutdown
                 // over the SAME instance the engine holds as its cache.

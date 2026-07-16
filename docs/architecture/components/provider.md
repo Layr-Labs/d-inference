@@ -35,7 +35,7 @@ The provider is the decryption endpoint for prompts. Its hardened process and Se
 - **Inference** (`Inference/`): `MultiModelBatchSchedulerEngine` translates OpenAI requests and routes them to an `EngineV2Bridge`. Each loaded model gets one EngineV2 slot with continuous batching and prefix caching; `EngineV2Runtime` coordinates capacity and cancellation across slots.
 - **Security** (`Security/`): Secure Enclave key generation, attestation blob construction, code-identity response handling, and runtime hardening checks.
 - **Crypto** (`Crypto/`): X25519 keypair for E2E encryption and ChaCha20-Poly1305 helpers used in some local paths. The coordinator↔provider wire uses NaCl Box via `swift-sodium` for cross-language compatibility with Go `nacl/box`.
-- **KV cache** (`KVCache/`, `KVCacheSSD/`): a default-on encrypted SSD prefix-cache tier, an experimental opt-in RAM tier, and the global live-KV budget.
+- **KV cache** (`KVCache/`, `KVCacheSSD/`): the default-on encrypted SSD production prefix cache and the global live-KV budget. Production does not carve memory for a resident-RAM prefix tier.
 
 ### Attestation and identity
 

@@ -138,6 +138,15 @@ extension ProviderLoop {
             freeForLoadGb: freeForLoadGb
         )
         state.inferenceActive = totalActive > 0
+        if binaryHash?.isEmpty == false {
+            state.setPrefixCacheV2Sources(
+                Dictionary(uniqueKeysWithValues: modelSlots.compactMap { modelId, slot in
+                    guard advertisedModels[modelId] != nil else { return nil }
+                    return slot.engineV2.ssdPrefixCache.map { (modelId, $0) }
+                }))
+        } else {
+            state.setPrefixCacheV2Sources([:])
+        }
     }
 
 }

@@ -144,7 +144,7 @@ func (s *Server) claimSettlement(requestID string) *registry.PendingRequest {
 // pending prediction (cold dispatches, providers without BackendCapacity,
 // retries whose prediction expired) are ignored by the calibrator itself.
 func (s *Server) observeTTFTCalibration(pr *registry.PendingRequest) {
-	if pr == nil || pr.Timing == nil || pr.UsedBackup {
+	if pr == nil || pr.Timing == nil || pr.UsedBackup || pr.CacheRoutingParticipates() {
 		return
 	}
 	firstContent := pr.FirstContentAtSafe()

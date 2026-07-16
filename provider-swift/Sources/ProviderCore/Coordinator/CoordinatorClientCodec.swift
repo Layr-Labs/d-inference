@@ -10,7 +10,9 @@ public enum CoordinatorClientCodec {
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
-        modelWeightHashOverrides: [String: String] = [:]
+        modelWeightHashOverrides: [String: String] = [:],
+        prefixCacheProtocol: Int = 1,
+        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -54,7 +56,8 @@ public enum CoordinatorClientCodec {
             privateOnly: config.privateOnly,
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv,
-            prefixCacheProtocol: 1
+            prefixCacheProtocol: prefixCacheProtocol,
+            prefixCacheV2Models: prefixCacheV2Models
         ))
     }
 
@@ -64,7 +67,9 @@ public enum CoordinatorClientCodec {
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
-        modelWeightHashOverrides: [String: String] = [:]
+        modelWeightHashOverrides: [String: String] = [:],
+        prefixCacheProtocol: Int = 1,
+        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -73,7 +78,9 @@ public enum CoordinatorClientCodec {
                 version: version,
                 privacyCapabilities: privacyCapabilities,
                 apnsDeviceTokenOverride: apnsDeviceTokenOverride,
-                modelWeightHashOverrides: modelWeightHashOverrides
+                modelWeightHashOverrides: modelWeightHashOverrides,
+                prefixCacheProtocol: prefixCacheProtocol,
+                prefixCacheV2Models: prefixCacheV2Models
             )
         )
     }
@@ -86,7 +93,9 @@ public enum CoordinatorClientCodec {
         systemMetrics: SystemMetrics,
         backendCapacity: BackendCapacity?,
         apnsDeviceToken: String? = nil,
-        apnsEnvironment: String? = nil
+        apnsEnvironment: String? = nil,
+        prefixCacheProtocol: Int? = nil,
+        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -96,7 +105,9 @@ public enum CoordinatorClientCodec {
             systemMetrics: systemMetrics,
             backendCapacity: backendCapacity,
             apnsDeviceToken: apnsDeviceToken,
-            apnsEnvironment: apnsEnvironment
+            apnsEnvironment: apnsEnvironment,
+            prefixCacheProtocol: prefixCacheProtocol,
+            prefixCacheV2Models: prefixCacheV2Models
         ))
     }
 
@@ -186,7 +197,7 @@ public enum CoordinatorClientCodec {
 
         case .prefixCacheReady(
             let requestId, let nonce, let readyTokens,
-            let requiredRecomputeTokens, let expectedPrefillTokensSaved, let tier
+            let requiredRecomputeTokens, let expectedPrefillTokensSaved, let tier, let stageMs
         ):
             return .prefixCacheReady(ProviderMessage.PrefixCacheReady(
                 requestId: requestId,
@@ -194,8 +205,15 @@ public enum CoordinatorClientCodec {
                 readyTokens: readyTokens,
                 requiredRecomputeTokens: requiredRecomputeTokens,
                 expectedPrefillTokensSaved: expectedPrefillTokensSaved,
-                tier: tier
+                tier: tier,
+                stageMs: stageMs
             ))
+
+        case .prefixCacheLookupV2(let message):
+            return .prefixCacheLookupV2(message)
+
+        case .prefixCacheReadyV2(let message):
+            return .prefixCacheReadyV2(message)
         }
     }
 

@@ -302,7 +302,7 @@ func TestCapacityCooldownGenericStreamAcceptPreventsFalseTrip(t *testing.T) {
 	var chatServe atomic.Bool
 
 	script := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
-		if bytes.Contains(body, []byte(`"prompt"`)) {
+		if bytes.Contains(body, []byte("long generic stream")) {
 			// The long generic stream: first content immediately (the ACCEPT),
 			// then hold the stream open while the shed storm runs. In a
 			// goroutine — the script runs on the provider read loop, which must

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Unloaded-model maintenance for the dedicated `darkbloom/kv2` root.
+/// Unloaded-model maintenance for the dedicated `darkbloom/kv3` root.
 /// It inspects only the exact hierarchy produced by `SSDBlockStore` and never
 /// loads model weights or KV arrays.
 final class SSDWholeRootMaintainer: @unchecked Sendable {
@@ -16,6 +16,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
 
     private struct OwnedFile {
         let url: URL
+        let modelRoot: URL
         let bytes: Int
         let modifiedAt: Int64
         let metadataReadable: Bool
@@ -76,7 +77,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             for file in contents.tempFiles {
                 if SSDBlockStore.isStaleTempFile(
                     modifiedAt: file.modifiedAt, nowSeconds: nowSeconds),
-                    (try? FileManager.default.removeItem(at: file.url)) != nil
+                    SSDBlockStore.removeItemIfSafe(at: file.url, under: root)
                 {
                     result.tempFilesRemoved += 1
                 } else {
@@ -88,35 +89,72 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
             var files = contents.blocks.filter(\.metadataReadable)
             result.filesSeen = files.count
 
-            if ttlSeconds > 0 {
-                var survivors: [OwnedFile] = []
-                survivors.reserveCapacity(files.count)
-                for file in files {
-                    if nowSeconds - file.modifiedAt >= ttlSeconds
-                    {
-                        if (try? FileManager.default.removeItem(at: file.url)) != nil {
-                            result.ttlExpired += 1
-                        } else {
-                            survivors.append(file)
+            func removeOwned(_ candidates: [OwnedFile]) -> Set<String> {
+                var removed = Set<String>()
+                let groups = Dictionary(grouping: candidates) {
+                    $0.modelRoot.standardizedFileURL.resolvingSymlinksInPath().path
+                }
+                for group in groups.values {
+                    guard let modelRoot = group.first?.modelRoot else { continue }
+                    let mutation = {
+                        for file in group where
+                            SSDBlockStore.removeItemIfSafe(at: file.url, under: root)
+                        {
+                            removed.insert(file.url.standardizedFileURL.path)
                         }
-                    } else {
-                        survivors.append(file)
+                    }
+                    let completed =
+                        SSDDiskBudget.shared.performActiveDestructiveChange(
+                            root: modelRoot, mutation)
+                        ?? SSDCacheEpochStore.performUnloadedDestructiveChange(
+                            root: modelRoot, mutation)
+                    if !completed {
+                        // The body never runs unless its epoch barrier succeeds.
+                        continue
                     }
                 }
-                files = survivors
+                return removed
+            }
+
+            if ttlSeconds > 0 {
+                let expired = files.filter {
+                    nowSeconds - $0.modifiedAt >= ttlSeconds
+                }
+                let removed = removeOwned(expired)
+                result.ttlExpired = removed.count
+                files.removeAll {
+                    removed.contains($0.url.standardizedFileURL.path)
+                }
             }
 
             var total = files.reduce(tempBytes) { $0 + $1.bytes }
             let limit = max(0, budgetBytes)
-            if total > limit {
-                files.sort {
+            var attempted = Set<String>()
+            while total > limit {
+                let candidates = files.filter {
+                    !attempted.contains($0.url.standardizedFileURL.path)
+                }.sorted {
                     if $0.modifiedAt != $1.modifiedAt { return $0.modifiedAt < $1.modifiedAt }
                     return $0.url.path < $1.url.path
                 }
-                for file in files where total > limit {
-                    guard (try? FileManager.default.removeItem(at: file.url)) != nil else { continue }
-                    total = max(0, total - file.bytes)
-                    result.budgetEvicted += 1
+                guard !candidates.isEmpty else { break }
+                var planned: [OwnedFile] = []
+                var projected = total
+                for file in candidates where projected > limit {
+                    planned.append(file)
+                    projected = max(0, projected - file.bytes)
+                    attempted.insert(file.url.standardizedFileURL.path)
+                }
+                let removed = removeOwned(planned)
+                guard !removed.isEmpty else { continue }
+                let freed = files.reduce(0) { bytes, file in
+                    removed.contains(file.url.standardizedFileURL.path)
+                        ? bytes + file.bytes : bytes
+                }
+                result.budgetEvicted += removed.count
+                total = max(0, total - freed)
+                files.removeAll {
+                    removed.contains($0.url.standardizedFileURL.path)
                 }
             }
             result.bytesAfter = total
@@ -193,6 +231,7 @@ final class SSDWholeRootMaintainer: @unchecked Sendable {
                     else { continue }
                     contents.blocks.append(OwnedFile(
                         url: url,
+                        modelRoot: modelDir,
                         bytes: max(0, values.fileSize ?? 0),
                         modifiedAt: Int64(values.contentModificationDate?.timeIntervalSince1970 ?? 0),
                         metadataReadable: (try? SSDBlockStore.readMetadataOnly(from: url)) != nil))

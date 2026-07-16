@@ -213,7 +213,8 @@ extension ProviderLoop {
                 sizing: rebuiltSizing,
                 kvBytesCapacity: grant,
                 specDecPreparation: rebuildPreparation,
-                preparedModel: prepared)
+                preparedModel: prepared,
+                cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
             // The replacement bundle now owns the moved handle.
             recoveryAssistant = nil
             var newBridge = newBundle.bridge
@@ -257,7 +258,8 @@ extension ProviderLoop {
                     sizing: rebuiltSizing,
                     kvBytesCapacity: grant,
                     specDecPreparation: rebuildPreparation,
-                    preparedModel: prepared)
+                    preparedModel: prepared,
+                    cacheEligibleWeightHash: slot.cacheEligibleWeightHash)
                 newBridge = newBundle.bridge
                 MLX.Memory.clearCache()
                 postBuildServeable = KVHeadroomProbe.postBuildServeable(
@@ -302,6 +304,7 @@ extension ProviderLoop {
                 container: slot.container,
                 tokenizer: slot.tokenizer,
                 sizing: rebuiltSizing,
+                cacheEligibleWeightHash: slot.cacheEligibleWeightHash,
                 isVLM: slot.isVLM,
                 modelType: slot.modelType,
                 lastInferenceAt: .now

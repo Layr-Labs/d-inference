@@ -293,6 +293,13 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
+			if err := registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
+				s.logger.Warn("rejecting malformed provider cache capabilities",
+					"provider_id", providerID, "error", err)
+				s.ddIncr("routing.cache_capability_rejected", []string{"source:register"})
+				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
+				return
+			}
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
@@ -460,6 +467,21 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
+			if hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil {
+				capabilities := []protocol.PrefixCacheV2Capability(nil)
+				if hbMsg.PrefixCacheV2Models != nil {
+					capabilities = *hbMsg.PrefixCacheV2Models
+				}
+				if err := s.registry.UpdatePrefixCacheCapabilities(
+					providerID, hbMsg.PrefixCacheProtocol, capabilities,
+				); err != nil {
+					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
+						"provider_id", providerID, "error", err)
+					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
+					// Malformed refreshes cannot leave stale v2 evidence live.
+					_ = s.registry.UpdatePrefixCacheCapabilities(providerID, 1, nil)
+				}
+			}
 			s.registry.Heartbeat(providerID, hbMsg)
 			// First-token-wedge observability (measurement only): surface the
 			// provider-reported engine-health signal as a Datadog counter so a
@@ -506,6 +528,29 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				s.ddIncr("routing.cache_ready_receipt", []string{"tier:" + lowCardinalityCacheTier(readyMsg.Tier)})
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready"})
+			}
+
+		case protocol.TypePrefixCacheLookupV2:
+			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupV2Message)
+			if s.registry.ApplyPrefixCacheLookupV2(providerID, lookupMsg) {
+				s.ddIncr("routing.cache_lookup_receipt", []string{
+					"protocol:v2",
+					"outcome:" + lookupMsg.Outcome,
+					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
+				})
+			} else {
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2"})
+			}
+
+		case protocol.TypePrefixCacheReadyV2:
+			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyV2Message)
+			if s.registry.ApplyPrefixCacheReadyV2(providerID, readyMsg) {
+				s.ddIncr("routing.cache_ready_receipt", []string{
+					"protocol:v2",
+					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
+				})
+			} else {
+				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2"})
 			}
 
 		case protocol.TypeAttestationResponse:
@@ -609,50 +654,69 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 	}
 }
 
-func lowCardinalityCacheTier(tier string) string {
-	if tier == "memory" || tier == "ssd" {
-		return tier
+func cacheSelectionTerminalTags(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid, usagePresent bool) []string {
+	mode := "none"
+	if pr != nil && pr.CacheSelectionMode == "active" {
+		mode = pr.CacheSelectionMode
 	}
-	return "none"
+	result := "unreported"
+	if usagePresent && !usageValid {
+		result = "invalid"
+	} else if usageValid {
+		if usage.CacheOutcome == "hit" {
+			result = "hit"
+		} else {
+			result = "non_hit"
+		}
+	}
+	tier := "none"
+	selected := false
+	if pr != nil {
+		tier = lowCardinalityCacheTier(pr.CacheSelectionTier)
+		selected = pr.CacheSelectionSelected
+	}
+	return []string{
+		"mode:" + mode,
+		"tier:" + tier,
+		"selected:" + strconv.FormatBool(selected),
+		"result:" + result,
+	}
 }
 
-func validCacheUsage(usage protocol.UsageInfo) bool {
-	switch usage.CacheOutcome {
-	case "":
-		return false
-	case "hit", "miss_absent", "miss_corrupt", "skipped_capacity", "skipped_cost", "skipped_policy":
-	default:
+func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid, usagePresent bool) bool {
+	if pr == nil || !pr.CacheRoutingTelemetryEligible() {
 		return false
 	}
-	if usage.CacheTier != "" && usage.CacheTier != "memory" && usage.CacheTier != "ssd" {
+	if !pr.MarkCacheTerminalTelemetryEmitted() {
 		return false
 	}
-	const maxCacheUsageTokens = 1_000_000
-	if usage.CachedTokens < 0 || usage.CachedTokens > maxCacheUsageTokens || usage.CachedTokens > usage.PromptTokens ||
-		usage.PrefillTokensSaved < 0 || usage.PrefillTokensSaved > usage.CachedTokens ||
-		usage.CacheStageMs < 0 || usage.CacheStageMs > 10*60*1000 || math.IsNaN(usage.CacheStageMs) || math.IsInf(usage.CacheStageMs, 0) {
-		return false
+	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
+	s.ddIncr("routing.cache_selection_terminal", tags)
+	if pr.CacheSelectionDiscountMs > 0 {
+		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags[:len(tags)-1])
+		if pr.CacheSelectionMode == "active" && pr.CacheSelectionSelected {
+			s.ddIncr("routing.cache_selection_precision", tags)
+		}
 	}
-	if usage.CacheOutcome == "hit" {
-		return usage.CacheTier != "" && usage.CachedTokens > 0 && usage.PrefillTokensSaved > 0
-	}
-	return usage.CachedTokens == 0 && usage.PrefillTokensSaved == 0
+	return true
 }
 
-func clearCacheUsage(usage *protocol.UsageInfo) {
-	if usage == nil {
+func cacheSelectionTTFTSample(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid bool, actualTTFTMs float64) (float64, []string, bool) {
+	if pr == nil || !usageValid || actualTTFTMs <= 0 || math.IsNaN(actualTTFTMs) || math.IsInf(actualTTFTMs, 0) {
+		return 0, nil, false
+	}
+	if pr.CacheSelectionMode != "active" {
+		return 0, nil, false
+	}
+	return actualTTFTMs, cacheSelectionTerminalTags(pr, usage, true, true), true
+}
+
+func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage protocol.UsageInfo, usageValid bool, actualTTFTMs float64) {
+	value, tags, ok := cacheSelectionTTFTSample(pr, usage, usageValid, actualTTFTMs)
+	if !ok {
 		return
 	}
-	usage.CacheOutcome = ""
-	usage.CacheTier = ""
-	usage.CachedTokens = 0
-	usage.PrefillTokensSaved = 0
-	usage.CacheStageMs = 0
-}
-
-func hasCacheUsage(usage protocol.UsageInfo) bool {
-	return usage.CacheOutcome != "" || usage.CacheTier != "" || usage.CachedTokens != 0 ||
-		usage.PrefillTokensSaved != 0 || usage.CacheStageMs != 0
+	s.ddHistogram("routing.cache_selection_ttft_ms", value, tags)
 }
 
 // CodeAttestResponseTimeout bounds how long the coordinator will accept a
@@ -1683,8 +1747,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 			"prompt_tokens", msg.Usage.PromptTokens,
 		)
 	}
+	cacheUsagePresent := hasCacheUsage(msg.Usage)
 	cacheUsageValid := validCacheUsage(msg.Usage)
-	if hasCacheUsage(msg.Usage) && !cacheUsageValid {
+	if cacheUsagePresent && !cacheUsageValid {
 		s.ddIncr("routing.cache_usage_rejected", nil)
 		clearCacheUsage(&msg.Usage)
 	}
@@ -1695,6 +1760,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddCount("routing.cache_prefill_tokens_saved", int64(msg.Usage.PrefillTokensSaved), tags)
 		s.ddHistogram("routing.cache_stage_ms", msg.Usage.CacheStageMs, tags)
 	}
+	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)
 
 	// Record job success and usage BEFORE closing ChunkCh. Closing
@@ -1985,6 +2051,13 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// the provider completed and billing settled, but the client did not receive
 		// the full response.
 		outcome := completeRouteOutcome(pr, msg.Usage, totalCost, consumerGone)
+		// Join only after both inputs are authoritative: cacheUsageValid was
+		// established from the terminal usage above, and completeRouteOutcome read
+		// the committed attempt's mutex-guarded first-content timestamp after the
+		// fallback stamp. No request, provider, route, or scope identifier is tagged.
+		if cacheTerminalClaimed {
+			s.emitCacheSelectionTTFT(pr, msg.Usage, cacheUsageValid, outcome.ActualTTFTMs)
+		}
 		if pr.Timing != nil {
 			// completeRouteOutcome already applied the per-attempt timing via
 			// applyPendingRouteTelemetry — actual_ttft_ms (from FirstContentAt),
@@ -2161,6 +2234,9 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
+	// Provider errors carry no validated cache usage, but still close the
+	// selection/outcome correlation denominator as an unreported result.
+	s.emitCacheSelectionTerminal(pr, protocol.UsageInfo{}, false, false)
 
 	// Record a job failure, but not for capacity rejections or consumer
 	// cancellations — neither is a provider fault. Capacity = load shedding the
@@ -2435,7 +2511,7 @@ func (s *Server) verifyProviderAttestation(providerID string, provider *registry
 	// device (same serial number), disconnect it. This prevents multiple
 	// provider processes on the same machine from registering independently
 	// and competing for a single shared vllm-mlx backend.
-	if result.SerialNumber != "" {
+	if result.SerialNumber != "" && !s.allowDuplicateProviderSerials {
 		s.registry.DisconnectDuplicatesBySerial(providerID, result.SerialNumber)
 	}
 

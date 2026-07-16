@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -24,7 +25,6 @@ type CacheRoutingConfig struct {
 	MaxHolders      int
 	MaxDiscountMs   float64
 	MaxCostFraction float64
-	Dedicated       bool
 	MasterKey       string
 }
 
@@ -147,7 +147,6 @@ func ReadConfig() Config {
 			MaxHolders:      env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
 			MaxDiscountMs:   env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_DISCOUNT_MS", defaultCacheRoutingMaxDiscountMs),
 			MaxCostFraction: env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_COST_FRACTION", defaultCacheRoutingMaxCostFraction),
-			Dedicated:       env.EnvBool(env.EnvPrefix+"_CACHE_ROUTING_DEDICATED", false),
 			MasterKey:       strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_MASTER_KEY")),
 		},
 		QualityCap: QualityCapConfig{
@@ -191,7 +190,7 @@ func (c CacheRoutingConfig) Check() error {
 		mode = CacheRoutingOff
 	}
 	switch mode {
-	case CacheRoutingOff, CacheRoutingObserve, CacheRoutingExact, CacheRoutingConversation:
+	case CacheRoutingOff, CacheRoutingOn:
 	default:
 		return fmt.Errorf("registry: invalid cache routing mode %q", c.Mode)
 	}
@@ -201,10 +200,10 @@ func (c CacheRoutingConfig) Check() error {
 	if c.MaxHolders < 1 || c.MaxHolders > 32 {
 		return fmt.Errorf("registry: cache routing max holders must be between 1 and 32")
 	}
-	if c.MaxDiscountMs < 0 || c.MaxDiscountMs > 10_000 {
+	if math.IsNaN(c.MaxDiscountMs) || math.IsInf(c.MaxDiscountMs, 0) || c.MaxDiscountMs < 0 || c.MaxDiscountMs > 10_000 {
 		return fmt.Errorf("registry: cache routing max discount must be between 0 and 10000ms")
 	}
-	if c.MaxCostFraction < 0 || c.MaxCostFraction > 1 {
+	if math.IsNaN(c.MaxCostFraction) || math.IsInf(c.MaxCostFraction, 0) || c.MaxCostFraction < 0 || c.MaxCostFraction > 1 {
 		return fmt.Errorf("registry: cache routing max cost fraction must be between 0 and 1")
 	}
 	if mode != CacheRoutingOff {

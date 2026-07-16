@@ -1,9 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Pure-policy tests for `PrefixCachePolicy` — the scheduler-free gate /
-// budget / carve helper that funds the v2 engine's RAM-only
-// `PrefixCacheV2` (T-041). No engines, no weights, no environment
-// mutation: env + physical memory are injected.
+// Pure-policy tests for the encrypted SSD production cache.
 
 import Foundation
 import MLXLMCommon
@@ -14,67 +11,22 @@ import Testing
 @Suite("PrefixCachePolicy")
 struct PrefixCachePolicyTests {
 
-    private static let gib = 1_073_741_824
-
     // MARK: - Env gate
 
-    @Test("isEnabled: DORMANT by default; only an explicit opt-in enables (v0.7.5 ship decision)")
+    @Test("isEnabled: SSD defaults on and one explicit kill switch disables it")
     func envGate() {
-        // Unset ⇒ DORMANT (RAM is for live serving; the cache returns
-        // default-on with the encrypted SSD tier).
-        #expect(!PrefixCachePolicy.isEnabled(environment: [:]))
-        // Explicit opt-ins, incl. case/whitespace normalization.
+        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
         for on in ["1", "true", "yes", "on", " 1 ", "TRUE", "Yes", "ON"] {
             #expect(
                 PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": on]),
                 "\(on) must enable")
         }
-        // Everything else — explicit offs, garbage, empty — stays dormant
-        // (fail-safe direction is OFF: a typo can never opt a box into the
-        // SEC-035 channel by accident).
-        for off in ["0", "false", "off", "no", "junk", ""] {
+        for off in ["0", "false", "off", "no", "junk"] {
             #expect(
                 !PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": off]),
-                "\(off) must keep the cache dormant")
+                "\(off) must disable the cache")
         }
-    }
-
-    // MARK: - Budget
-
-    @Test("budgetBytes: MAX_GB override wins; invalid falls back to physical/8")
-    func budget() {
-        let physical = 128 * Self.gib
-        // Valid override (integer and fractional GB).
-        #expect(PrefixCachePolicy.budgetBytes(
-            environment: ["DARKBLOOM_PREFIX_CACHE_MAX_GB": "2"],
-            physicalMemory: physical) == 2 * Self.gib)
-        #expect(PrefixCachePolicy.budgetBytes(
-            environment: ["DARKBLOOM_PREFIX_CACHE_MAX_GB": "0.5"],
-            physicalMemory: physical) == Self.gib / 2)
-        // Unset / malformed / non-positive / non-finite / overflowing ⇒
-        // physical/8 (the legacy default policy, verbatim).
-        for bad in [nil, "abc", "-1", "0", "inf", "nan", "1e30"] as [String?] {
-            var env: [String: String] = [:]
-            if let bad { env["DARKBLOOM_PREFIX_CACHE_MAX_GB"] = bad }
-            #expect(
-                PrefixCachePolicy.budgetBytes(environment: env, physicalMemory: physical)
-                    == physical / 8,
-                "\(bad ?? "unset") must fall back to physical/8")
-        }
-        // Degenerate physical memory keeps the ≥1 floor.
-        #expect(PrefixCachePolicy.budgetBytes(environment: [:], physicalMemory: 4) == 1)
-    }
-
-    @Test("resolveMemoryBudget: valid env override wins; unset/invalid falls back to physical/8")
-    func resolveMemoryBudgetPolicy() {
-        // The Double?-based entry point (what `budgetBytes` rides) applies the
-        // same policy: nil ⇒ physical/8, positive ⇒ GB→bytes, invalid ⇒ default.
-        #expect(PrefixCachePolicy.resolveMemoryBudget(envGB: nil, physicalMemory: 64 * Self.gib)
-            == 8 * Self.gib)
-        #expect(PrefixCachePolicy.resolveMemoryBudget(envGB: 2.0, physicalMemory: 64 * Self.gib)
-            == 2 * Self.gib)
-        #expect(PrefixCachePolicy.resolveMemoryBudget(envGB: -3.0, physicalMemory: 8 * Self.gib)
-            == Self.gib)
+        #expect(PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": ""]))
     }
 
     // MARK: - Stats cadence
@@ -92,7 +44,7 @@ struct PrefixCachePolicyTests {
         }
     }
 
-    // MARK: - Per-model funding gate (adoption bound)
+    // MARK: - SSD adoption bound
 
     /// Layer-kind fixture: `sliding` windowed layers of `window` tokens plus
     /// `full` full-attention layers (head shape irrelevant to the bound).
@@ -123,124 +75,4 @@ struct PrefixCachePolicyTests {
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: []) == 0)
     }
 
-    @Test("maxAdoptionBoundTokens: default 4096 / 0 never funds / override / malformed")
-    func adoptionBoundThreshold() {
-        #expect(PrefixCachePolicy.maxAdoptionBoundTokens(environment: [:]) == 4096)
-        #expect(PrefixCachePolicy.maxAdoptionBoundTokens(
-            environment: ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "0"]) == 0)
-        #expect(PrefixCachePolicy.maxAdoptionBoundTokens(
-            environment: ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "30000"]) == 30000)
-        for bad in ["junk", "-5", ""] {
-            #expect(PrefixCachePolicy.maxAdoptionBoundTokens(
-                environment: ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": bad]) == 4096,
-                "\(bad) must fall back to the default")
-        }
-    }
-
-    @Test("shouldFund: gpt-oss funded, gemma unfunded at the default; override + never-fund")
-    func fundingGate() {
-        // Default threshold: gpt-oss (1,536) funds, gemma (25,600) does not.
-        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 1536, environment: [:]))
-        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 25600, environment: [:]))
-        // Boundary: exactly at the cap funds.
-        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 4096, environment: [:]))
-        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 4097, environment: [:]))
-        // Bound 0 / unknown-treated-as-0 (pure full attention) funds.
-        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 0, environment: [:]))
-        // Override raises the cap: gemma becomes fundable.
-        let raised = ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "26000"]
-        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: 25600, environment: raised))
-        // 0 ⇒ never fund ANY model, including bound-0 ones.
-        let never = ["DARKBLOOM_PREFIX_CACHE_MAX_ADOPTION_BOUND_TOKENS": "0"]
-        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 0, environment: never))
-        #expect(!PrefixCachePolicy.shouldFund(adoptionBoundTokens: 1536, environment: never))
-    }
-
-    // MARK: - Carve
-
-    @Test("carve: normal split conserves bytes (engine + prefix == slot)")
-    func carveNormal() {
-        let carve = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: 10 * Self.gib,
-            requestedBudgetBytes: 2 * Self.gib,
-            kvBytesPerToken: 4096)
-        #expect(carve.engineKVBytesCapacity == 8 * Self.gib)
-        #expect(carve.prefixCacheBudgetBytes == 2 * Self.gib)
-        #expect(carve.engineKVBytesCapacity + carve.prefixCacheBudgetBytes == 10 * Self.gib)
-    }
-
-    @Test("carve: requested 0 (gate off) is a passthrough")
-    func carveDisabled() {
-        let carve = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: 10 * Self.gib, requestedBudgetBytes: 0, kvBytesPerToken: 4096)
-        #expect(carve == PrefixCachePolicy.Carve(
-            engineKVBytesCapacity: 10 * Self.gib, prefixCacheBudgetBytes: 0))
-    }
-
-    @Test("carve: floor guard shrinks the PREFIX budget, never live KV")
-    func carveFloorGuard() {
-        // Requested budget would leave the engine under the 1 GiB
-        // serviceable floor ⇒ the prefix shrinks to slot − floor and the
-        // engine keeps EXACTLY the floor (live serving wins).
-        let carve = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: 3 * Self.gib,
-            requestedBudgetBytes: 16 * Self.gib,
-            kvBytesPerToken: 4096)
-        #expect(carve.engineKVBytesCapacity == 1 * Self.gib)
-        #expect(carve.prefixCacheBudgetBytes == 2 * Self.gib)
-    }
-
-    @Test("carve: a grant at/below the floor funds no cache at all")
-    func carveTinyGrant() {
-        for slot in [Self.gib, Self.gib / 2, 0, -5] {
-            let carve = PrefixCachePolicy.carve(
-                slotKVBytesCapacity: slot,
-                requestedBudgetBytes: 4 * Self.gib,
-                kvBytesPerToken: 4096)
-            #expect(carve.prefixCacheBudgetBytes == 0, "slot \(slot) must not fund a cache")
-            #expect(carve.engineKVBytesCapacity == max(0, slot), "engine keeps everything")
-        }
-    }
-
-    @Test("carve: a budget below one hash block degrades to off")
-    func carveOneBlockViability() {
-        // 4 MiB/token × 256-token block = 1 GiB per block; a 512 MiB budget
-        // could never retain a single donation ⇒ off (legacy maxBlocks ≥ 1
-        // guard, reproduced).
-        let carve = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: 64 * Self.gib,
-            requestedBudgetBytes: Self.gib / 2,
-            kvBytesPerToken: 4 * 1024 * 1024)
-        #expect(carve.prefixCacheBudgetBytes == 0)
-        #expect(carve.engineKVBytesCapacity == 64 * Self.gib)
-        // Unknown rate (0) skips the block check — the byte budget stands.
-        let unknownRate = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: 64 * Self.gib,
-            requestedBudgetBytes: Self.gib / 2,
-            kvBytesPerToken: 0)
-        #expect(unknownRate.prefixCacheBudgetBytes == Self.gib / 2)
-        #expect(unknownRate.engineKVBytesCapacity + unknownRate.prefixCacheBudgetBytes
-            == 64 * Self.gib)
-    }
-
-    // MARK: - Construction
-
-    @Test("makePrefixCache: funded ⇒ blockSize 256 + model namespace + byte budget; 0 ⇒ nil")
-    func makeCache() throws {
-        #expect(PrefixCachePolicy.makePrefixCache(modelId: "m", budgetBytes: 0) == nil)
-        #expect(PrefixCachePolicy.makePrefixCache(modelId: "m", budgetBytes: -1) == nil)
-        let cache = PrefixCachePolicy.makePrefixCache(
-            modelId: "gpt-oss-20b", budgetBytes: 2 * Self.gib)
-        let config = try #require(cache).config
-        #expect(config.blockSize == 256)
-        #expect(config.blockSize == CBv2BlockHasher.defaultBlockSize)
-        #expect(config.modelName == "gpt-oss-20b")
-        #expect(config.maxBytes == 2 * Self.gib)
-        // Default materializeOnDonate stays true (required pairing for any
-        // backend with recyclable snapshot storage — engine precondition).
-        #expect(config.materializeOnDonate)
-        // Cache-level salt stays empty: tenant scoping is PER REQUEST
-        // (CBv2Request.cacheSalt), not cache-level.
-        #expect(config.cacheSalt.isEmpty)
-    }
 }

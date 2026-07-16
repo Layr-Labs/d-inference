@@ -18,6 +18,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -41,6 +42,7 @@ type AppConfig struct {
 	RegistryCfg     registry.Config
 	MDMConfig       mdm.Config
 	DatadogConfig   datadog.Config
+	PromptSidecar   promptcontract.SupervisorConfig
 	AdminKey        string
 	AdminEmails     []string
 	ReleaseKey      string
@@ -72,6 +74,9 @@ func (c AppConfig) Check() error {
 	if err := c.DatadogConfig.Check(); err != nil {
 		return fmt.Errorf("datadog: %w", err)
 	}
+	if err := c.PromptSidecar.Check(); err != nil {
+		return fmt.Errorf("prompt_sidecar: %w", err)
+	}
 	return nil
 }
 
@@ -92,6 +97,7 @@ func ReadAppConfig() AppConfig {
 		RegistryCfg:     registry.ReadConfig(),
 		MDMConfig:       mdm.ReadConfig(),
 		DatadogConfig:   datadog.ConfigFromEnv(),
+		PromptSidecar:   promptcontract.ReadSupervisorConfig(),
 		AdminKey:        env.EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
 		AdminEmails:     api.ParseCommaList(env.EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:      env.EnvOr(EnvPrefix+"_RELEASE_KEY", ""),

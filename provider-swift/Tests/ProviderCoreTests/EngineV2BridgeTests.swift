@@ -268,6 +268,58 @@ private func makeRequest(
     )
 }
 
+private func makeBridgeStagedCache(
+    parent: URL,
+    budget: GlobalKVCacheBudget
+) async throws -> (cache: SSDPrefixCache, prompt: [Int]) {
+    _ = LiveInferenceFixtures.ensureMetallibColocated()
+    let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+    try SSDBlockStore.prepareModelRoot(dedicatedRoot: parent, modelRoot: root)
+    let layerKinds = [
+        CBv2LayerKind(attention: .full, headDim: 4, kvHeads: 1, queryHeads: 1)
+    ]
+    let cache = SSDPrefixCache(
+        config: .init(
+            modelId: "bridge-stage-model",
+            promptContractID: "bridge-stage-contract",
+            weightHash: "bridge-stage-weight",
+            blockSize: 8,
+            adoptionBoundTokens: 0,
+            layoutEpoch: SSDBlockStore.layoutEpoch(blockSize: 8, layerKinds: layerKinds),
+            root: root,
+            dedicatedRoot: parent,
+            ttlSeconds: 900,
+            minEffectiveTokens: 8,
+            maxStageBytes: 1 << 20,
+            maxStageMillis: 10_000,
+            nowSeconds: { 10_000 }),
+        kekKey: SymmetricKey(size: .bits256),
+        kvBudget: budget,
+        diskBudget: SSDDiskBudget(),
+        maxWriteBytesPerDay: 0,
+        diskBudgetBytes: { 1 << 20 })
+    let tokenCount = 64
+    let shape = [1, 1, tokenCount, 4]
+    let keys = MLXArray(0 ..< shape.reduce(1, *)).reshaped(shape).asType(.float16)
+    let values = keys + 1
+    eval(keys, values)
+    cache.donate(
+        tokens: Array(0 ..< tokenCount),
+        snapshots: [(keys: keys, values: values, offset: tokenCount)],
+        layerKinds: layerKinds,
+        cacheSalt: "scope")
+    await cache.waitForWritesForTesting()
+    guard cache.index.count == 8 else {
+        cache.close()
+        throw BridgeFixtureError.cacheDidNotPersist
+    }
+    return (cache, Array(0 ..< tokenCount) + [999])
+}
+
+private enum BridgeFixtureError: Error {
+    case cacheDidNotPersist
+}
+
 // MARK: - Translation
 
 @Suite("EngineV2 translation: ChatCompletionRequest → CBv2Request")
@@ -452,12 +504,10 @@ struct EngineV2TranslationTests {
         _ = await record(await bridge.submitTokenized(
             promptTokens: [1, 2], request: makeRequest(), requestId: "req-salt-1",
             cacheScope: "tenant-scope"))
-        // Internal-shape path: scope derived from the request's own
-        // prompt_cache_key via `ChatCompletionRequest.cacheScope`.
+        // Caller-controlled body fields never become cache identity.
         _ = await record(await bridge.submit(
             request: makeRequest(promptCacheKey: "consumer-key"),
             requestId: "req-salt-2"))
-        // `user` is the fallback identity when prompt_cache_key is absent.
         _ = await record(await bridge.submit(
             request: makeRequest(user: "user-77"), requestId: "req-salt-3"))
         // No tenant identity at all → nil (engine cache-level salt fallback).
@@ -465,8 +515,8 @@ struct EngineV2TranslationTests {
             request: makeRequest(), requestId: "req-salt-4"))
         #expect(engine.submitted.count == 4)
         #expect(engine.submitted[0].cacheSalt == "tenant-scope")
-        #expect(engine.submitted[1].cacheSalt == ChatCompletionRequest.scopeHash("consumer-key"))
-        #expect(engine.submitted[2].cacheSalt == ChatCompletionRequest.scopeHash("user-77"))
+        #expect(engine.submitted[1].cacheSalt == nil)
+        #expect(engine.submitted[2].cacheSalt == nil)
         #expect(engine.submitted[3].cacheSalt == nil)
     }
 }
@@ -1541,6 +1591,8 @@ struct EngineV2SharedBudgetTests {
             Issue.record("expected a capacity error, got \(events)")
         }
         withExtendedLifetime((first, second)) {}
+        await bridge.shutdown()
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 
     @Test("degenerate maxTokens <= 0 skips the gate (engine finishes it without KV)")
@@ -1580,6 +1632,151 @@ struct EngineV2SharedBudgetTests {
         // …and the shared reservation taken by the gate was rolled back, so
         // a rejected request can never pin shared headroom.
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("SSD staging never false-rejects a request that fits cold at the exact boundary")
+    func stagingFallsBackToColdReservation() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-stage-boundary-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        let kvBytesPerToken = 1_000_000
+        let worstCaseTokens = 66  // 65 prompt + 1 completion
+        let coldBytes = UInt64(kvBytesPerToken * worstCaseTokens)
+        let gib: UInt64 = 1_073_741_824
+        let budget = GlobalKVCacheBudget(
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(
+                    total: 3 * gib,
+                    active: gib - coldBytes,
+                    cache: 0,
+                    systemAvailable: coldBytes)
+            })
+        let fixture = try await makeBridgeStagedCache(parent: parent, budget: budget)
+        defer { fixture.cache.close() }
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: kvBytesPerToken,
+            kvBudget: budget,
+            ssdPrefixCache: fixture.cache)
+        let signal = EngineV2RequestUsageSignal()
+
+        let stream = await bridge.submitTokenized(
+            promptTokens: fixture.prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-stage-boundary",
+            cacheScope: "scope",
+            usageSignal: signal)
+
+        #expect(engine.submitted.count == 1, "cold-fit request must reach the engine")
+        #expect(engine.submitted.first?.prefixCacheReceiptID != nil)
+        #expect(fixture.cache.bytesInUse == 0, "optional staging must be abandoned before retry")
+        #expect(await budget.outstandingReservedBytes() == coldBytes)
+
+        let consumer = Task { await record(stream) }
+        engine.manualContinuation?.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(
+                promptTokens: fixture.prompt.count,
+                completionTokens: 0,
+                prefixCacheOutcome: .miss)))
+        engine.manualContinuation?.finish()
+        _ = await consumer.value
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+}
+
+@Suite("EngineV2 lookup receipt terminal coverage")
+struct EngineV2LookupReceiptCoverageTests {
+    private final class Box: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [PrefixCacheLookupResult] = []
+
+        func append(_ value: PrefixCacheLookupResult) {
+            lock.withLock { values.append(value) }
+        }
+
+        var snapshot: [PrefixCacheLookupResult] { lock.withLock { values } }
+    }
+
+    private func signal(_ box: Box) -> EngineV2RequestUsageSignal {
+        EngineV2RequestUsageSignal(onLookupResolved: box.append)
+    }
+
+    @Test("shared-budget rejection emits exactly one final lookup receipt")
+    func sharedBudgetRejection() async {
+        let box = Box()
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: 4_000,
+            kvBudget: TestBudgets.exhausted())
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: makeRequest(maxTokens: 8),
+            requestId: "receipt-shared-reject",
+            cacheEnabled: true,
+            usageSignal: signal(box)))
+        #expect(box.snapshot.count == 1)
+        #expect(box.snapshot.first?.outcome == .skippedCapacity)
+        #expect(box.snapshot.first?.tier == .memory)
+        #expect(engine.submitted.isEmpty)
+    }
+
+    @Test("engine submit rejection emits exactly one final lookup receipt")
+    func engineSubmitRejection() async {
+        let box = Box()
+        let engine = ScriptedCBv2Engine(script: .throwOnSubmit(
+            CBv2KVError.capacityExhausted(needed: 10, available: 1)))
+        let bridge = makeBridge(engine: engine)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: makeRequest(maxTokens: 8),
+            requestId: "receipt-engine-reject",
+            cacheEnabled: true,
+            usageSignal: signal(box)))
+        #expect(box.snapshot.count == 1)
+        #expect(box.snapshot.first?.outcome == .skippedCapacity)
+    }
+
+    @Test("teardown without finished emits exactly one final lookup receipt")
+    func teardownWithoutFinished() async {
+        let box = Box()
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .delta(text: "partial", tokens: [1], logprobs: nil)
+        ]))
+        let bridge = makeBridge(engine: engine)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: makeRequest(maxTokens: 8),
+            requestId: "receipt-teardown",
+            cacheEnabled: true,
+            usageSignal: signal(box)))
+        #expect(box.snapshot.count == 1)
+        #expect(box.snapshot.first?.outcome == .skippedPolicy)
+    }
+
+    @Test("cache-disabled path emits once even when terminal usage follows")
+    func cacheDisabled() async {
+        let box = Box()
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(promptTokens: 3, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: makeRequest(maxTokens: 8),
+            requestId: "receipt-disabled",
+            cacheEnabled: false,
+            usageSignal: signal(box)))
+        #expect(box.snapshot.count == 1)
+        #expect(box.snapshot.first?.outcome == .skippedPolicy)
     }
 }
 
@@ -1791,6 +1988,7 @@ struct EngineV2SeededSamplingTests {
         let cache = SSDPrefixCache(
             config: .init(
                 modelId: "receipt-model",
+                promptContractID: "receipt-contract",
                 weightHash: "receipt-weight",
                 blockSize: 8,
                 adoptionBoundTokens: 0,

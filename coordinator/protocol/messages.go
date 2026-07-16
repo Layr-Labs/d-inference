@@ -45,6 +45,8 @@ const (
 	TypeModelsUpdate            = "models_update"
 	TypePrefixCacheLookup       = "prefix_cache_lookup"
 	TypePrefixCacheReady        = "prefix_cache_ready"
+	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
+	TypePrefixCacheReadyV2      = "prefix_cache_ready_v2"
 
 	// Coordinator → Provider.
 	TypeInferenceRequest     = "inference_request"
@@ -136,25 +138,39 @@ type ModelInfo struct {
 	TemplateRenderOK *bool `json:"template_render_ok,omitempty"`
 }
 
+// PrefixCacheV2Capability binds one live model slot to the exact artifacts and
+// SSD cache generation for which protocol-v2 evidence is valid.
+type PrefixCacheV2Capability struct {
+	ModelID            string `json:"model_id"`
+	ModelAggregateHash string `json:"model_aggregate_hash"`
+	PromptContractID   string `json:"prompt_contract_id"`
+	BlockHashVersion   string `json:"block_hash_version"`
+	BlockSize          uint32 `json:"block_size"`
+	CacheEpoch         string `json:"cache_epoch"`
+	Enabled            bool   `json:"enabled"`
+	Ready              bool   `json:"ready"`
+}
+
 // ---------------------------------------------------------------------------
 // Provider → Coordinator messages
 // ---------------------------------------------------------------------------
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	Type                    string          `json:"type"`
-	Hardware                Hardware        `json:"hardware"`
-	Models                  []ModelInfo     `json:"models"`
-	Backend                 string          `json:"backend"`
-	Version                 string          `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
-	PublicKey               string          `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
-	EncryptedResponseChunks bool            `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
-	Attestation             json.RawMessage `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
-	PrefillTPS              float64         `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
-	DecodeTPS               float64         `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
-	AuthToken               string          `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
-	PrivateOnly             bool            `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
-	PrefixCacheProtocol     int             `json:"prefix_cache_protocol,omitempty"`     // provider-confirmed prefix-cache protocol version
+	Type                    string                    `json:"type"`
+	Hardware                Hardware                  `json:"hardware"`
+	Models                  []ModelInfo               `json:"models"`
+	Backend                 string                    `json:"backend"`
+	Version                 string                    `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	PublicKey               string                    `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
+	EncryptedResponseChunks bool                      `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
+	Attestation             json.RawMessage           `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
+	PrefillTPS              float64                   `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
+	DecodeTPS               float64                   `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
+	AuthToken               string                    `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
+	PrivateOnly             bool                      `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
+	PrefixCacheProtocol     int                       `json:"prefix_cache_protocol,omitempty"`     // provider-confirmed prefix-cache protocol version
+	PrefixCacheV2Models     []PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator
 	// pushes the E_K(nonce) code-identity challenge to, and which APNs environment
@@ -195,6 +211,10 @@ type HeartbeatMessage struct {
 	WarmModels      []string         `json:"warm_models,omitempty"`      // models currently loaded in memory
 	SystemMetrics   SystemMetrics    `json:"system_metrics"`             // live resource utilization
 	BackendCapacity *BackendCapacity `json:"backend_capacity,omitempty"` // live backend capacity (nil for old providers)
+	// Pointer preserves the distinction between an old provider that omitted
+	// v2 capabilities and a v2 provider authoritatively clearing its live set.
+	PrefixCacheProtocol int                        `json:"prefix_cache_protocol,omitempty"`
+	PrefixCacheV2Models *[]PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
 
 	// APNs code-identity attestation (W5 Fix 2): a provider that only obtained
 	// its APNs device token AFTER registration (headless/late-token Mac) — or
@@ -339,13 +359,60 @@ type PrefixCacheLookupMessage struct {
 // PrefixCacheReadyMessage confirms that reusable prefix state is ready after
 // an inference attempt. Ready receipts may arrive after inference_complete.
 type PrefixCacheReadyMessage struct {
-	Type                       string `json:"type"`
-	RequestID                  string `json:"request_id"`
-	CacheReceiptNonce          string `json:"cache_receipt_nonce"`
-	ReadyTokens                int    `json:"ready_tokens"`
-	RequiredRecomputeTokens    int    `json:"required_recompute_tokens,omitempty"`
-	ExpectedPrefillTokensSaved int    `json:"expected_prefill_tokens_saved,omitempty"`
-	Tier                       string `json:"tier,omitempty"`
+	Type                       string  `json:"type"`
+	RequestID                  string  `json:"request_id"`
+	CacheReceiptNonce          string  `json:"cache_receipt_nonce"`
+	ReadyTokens                int     `json:"ready_tokens"`
+	RequiredRecomputeTokens    int     `json:"required_recompute_tokens,omitempty"`
+	ExpectedPrefillTokensSaved int     `json:"expected_prefill_tokens_saved,omitempty"`
+	Tier                       string  `json:"tier,omitempty"`
+	StageMs                    float64 `json:"stage_ms,omitempty"`
+}
+
+// PrefixCacheAnchor is a bounded, provider-computed DBK3 block-chain
+// boundary. ChainHash is lowercase SHA-256 hex and TokenCount is block-aligned.
+type PrefixCacheAnchor struct {
+	ChainHash  string `json:"chain_hash"`
+	TokenCount int    `json:"token_count"`
+}
+
+// PrefixCacheLookupV2Message proves the exact prompt boundary and actual
+// provider lookup result for one nonce-bound attempt.
+type PrefixCacheLookupV2Message struct {
+	Type                       string             `json:"type"`
+	RequestID                  string             `json:"request_id"`
+	CacheReceiptNonce          string             `json:"cache_receipt_nonce"`
+	ModelID                    string             `json:"model_id"`
+	ModelAggregateHash         string             `json:"model_aggregate_hash"`
+	PromptContractID           string             `json:"prompt_contract_id"`
+	CacheEpoch                 string             `json:"cache_epoch"`
+	CacheSeq                   uint64             `json:"cache_seq"`
+	PromptAnchor               PrefixCacheAnchor  `json:"prompt_anchor"`
+	MatchedAnchor              *PrefixCacheAnchor `json:"matched_anchor,omitempty"`
+	Outcome                    string             `json:"outcome"`
+	Tier                       string             `json:"tier,omitempty"`
+	RequiredRecomputeTokens    int                `json:"required_recompute_tokens,omitempty"`
+	ExpectedPrefillTokensSaved int                `json:"expected_prefill_tokens_saved,omitempty"`
+	StageMs                    float64            `json:"stage_ms,omitempty"`
+}
+
+// PrefixCacheReadyV2Message is emitted only after durable SSD settlement.
+// ReadyAnchors is bounded to the input prompt anchor and final continuation.
+type PrefixCacheReadyV2Message struct {
+	Type                       string              `json:"type"`
+	RequestID                  string              `json:"request_id"`
+	CacheReceiptNonce          string              `json:"cache_receipt_nonce"`
+	ModelID                    string              `json:"model_id"`
+	ModelAggregateHash         string              `json:"model_aggregate_hash"`
+	PromptContractID           string              `json:"prompt_contract_id"`
+	CacheEpoch                 string              `json:"cache_epoch"`
+	CacheSeq                   uint64              `json:"cache_seq"`
+	Outcome                    string              `json:"outcome"`
+	Tier                       string              `json:"tier"`
+	ReadyAnchors               []PrefixCacheAnchor `json:"ready_anchors"`
+	RequiredRecomputeTokens    int                 `json:"required_recompute_tokens,omitempty"`
+	ExpectedPrefillTokensSaved int                 `json:"expected_prefill_tokens_saved,omitempty"`
+	StageMs                    float64             `json:"stage_ms,omitempty"`
 }
 
 // InferenceCompleteMessage signals the provider finished generating.
@@ -398,9 +465,10 @@ type InferenceRequestMessage struct {
 	RequestID string               `json:"request_id"`
 	Body      InferenceRequestBody `json:"body,omitempty"`
 	// E2E encrypted request body (set when provider has a public key)
-	EncryptedBody     *EncryptedPayload `json:"encrypted_body,omitempty"`
-	CacheReceiptNonce string            `json:"cache_receipt_nonce,omitempty"`
-	CacheScope        string            `json:"cache_scope,omitempty"`
+	EncryptedBody       *EncryptedPayload `json:"encrypted_body,omitempty"`
+	CacheReceiptNonce   string            `json:"cache_receipt_nonce,omitempty"`
+	CacheScope          string            `json:"cache_scope,omitempty"`
+	PrefixCacheProtocol int               `json:"prefix_cache_protocol,omitempty"`
 }
 
 // EncryptedPayload carries a NaCl Box encrypted message.
@@ -724,6 +792,20 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg PrefixCacheReadyMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal prefix_cache_ready: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePrefixCacheLookupV2:
+		var msg PrefixCacheLookupV2Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal prefix_cache_lookup_v2: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypePrefixCacheReadyV2:
+		var msg PrefixCacheReadyV2Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal prefix_cache_ready_v2: %w", err)
 		}
 		pm.Payload = &msg
 

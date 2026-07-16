@@ -154,8 +154,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         acquire: @escaping @Sendable (String) async throws -> AcquiredModel,
         tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
         availableModels: @escaping @Sendable () async -> [String],
-        defaultMaxTokens: Int = 4096,
-        cacheScope: String = ""
+        defaultMaxTokens: Int = 4096
     ) {
         self.acquire = acquire
         self.tokenizerProvider = tokenizerProvider
@@ -166,11 +165,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = nil
-        // Fixed per-server scope for the standalone (--local) path, which can't
-        // carry a per-request prompt_cache_key through the upstream router. ""
-        // ⇒ unscoped (default). Set via DARKBLOOM_PREFIX_CACHE_SCOPE; used to
-        // exercise/validate cross-tenant isolation on a single box.
-        self.cacheScope = cacheScope
+        self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
         // there is no provider seam to decorate frames with logprobs on this
@@ -466,29 +461,15 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             throw MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(modelId)
         }
 
-        // Tokenize the full OpenAI request (including tools, tool_call_id,
-        // reasoning_content, etc.) ourselves rather than going through the
-        // lossy `translate()` → `ChatMessage` path that drops tool fields.
-        let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
-        let additionalContext = Self.templateAdditionalContext(
-            for: request, reasoningEffort: reasoningEffort)
         let promptTokens: [Int]
         do {
-            // Strip JSON `null` / `Optional` leaves (NSNull, the
-            // private JSONNull from tool-parameter schemas, boxed Optionals)
-            // that `Jinja.Value(any:)` cannot represent. Sanitize the copies
-            // handed to the template only — `toolSpecs` keeps its raw shape
-            // for the tool-call output parser below.
-            let fixContext = ChatTemplateFixContext(
-                modelId: request.model,
-                modelType: modelType
-            )
-            promptTokens = try tokenizer.inner.applyChatTemplate(
-                messages: ChatTemplateFixes.normalizeMessages(messages, context: fixContext),
-                tools: ChatTemplateFixes.normalizeTools(toolSpecs, context: fixContext),
-                additionalContext: additionalContext
-            )
+            promptTokens = try ProviderPromptContractPipeline.tokenize(
+                prepared: prepared,
+                request: request,
+                tokenizer: tokenizer.inner,
+                modelType: modelType,
+                reasoningEffort: reasoningEffort)
         } catch {
             await releaseBox.fire()
             throw error

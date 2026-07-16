@@ -116,14 +116,12 @@ public enum ProviderCore {
     //   * Media: image + video prefill through CBv2 multimodal
     //     (EngineV2VisionPrefill spans per image / per sampled video frame),
     //     media_kind-tagged telemetry.
-    //   * Prefix cache: encrypted SSD offload ships default-on with no serving
-    //     memory carve; the RAM PrefixCacheV2 tier remains experimental and
-    //     opt-in. Both are salt-scoped; RAM uses the per-model funding gate,
-    //     while SSD applies the adoption bound and effective-token floor to
-    //     each donation. DARKBLOOM_PREFIX_CACHE=0 is the master kill switch and
-    //     DARKBLOOM_PREFIX_CACHE_SSD=0 disables only SSD.
+    //   * Prefix cache: encrypted SSD offload is the only production tier,
+    //     ships default-on with no serving-memory carve, and applies the
+    //     adoption bound plus effective-token floor to each donation.
+    //     DARKBLOOM_PREFIX_CACHE=0 is the single local kill switch.
     //   * Liveness: wedge self-recovery rebuilds the engine over the
-    //     retained container with the same grant+carve (drain → rebuild →
+    //     retained container with the same grant (drain → rebuild →
     //     swap; 120s cooldown), replacing the legacy self-restart.
     //   * Standalone `darkbloom start --local` serves through the same v2
     //     slot factory; local chat body ceiling raised to 32 MiB.

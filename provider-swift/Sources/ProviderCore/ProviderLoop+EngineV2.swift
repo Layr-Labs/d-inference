@@ -241,7 +241,8 @@ extension ProviderLoop {
         modelDirectory: URL?,
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let build = try await resliceAndBuildEngineV2Bundle(
             modelId: modelId,
@@ -253,7 +254,8 @@ extension ProviderLoop {
             targetSizing: sizing,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
-                status: .disabled(.configDisabled, configured: false)))
+                status: .disabled(.configDisabled, configured: false)),
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
         return build.bundle.bridge
     }
 
@@ -268,7 +270,8 @@ extension ProviderLoop {
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         targetSizing: SlotSizingSnapshot,
-        specDecPreparation: SpecDecPreparation
+        specDecPreparation: SpecDecPreparation,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2SlotBuild {
         var prepared: EngineV2PreparedModel
         do {
@@ -316,17 +319,8 @@ extension ProviderLoop {
         // slot below the minimum serveable grant is refused outright —
         // thrashing every co-resident model below serviceability serves
         // no one. ERROR telemetry + 503 (the coordinator reroutes).
-        // Existing slots' prefix-cache budgets are construction-FIXED
-        // (T-041): the floor applies to what would remain for their
-        // ENGINE (target − cache budget), never to the raw total. The
-        // newcomer needs only the plain floor — its carve is elastic
-        // (`PrefixCachePolicy.carve` shrinks the cache before the engine).
-        var fixedCarveBytes: [String: Int] = [:]
-        for entry in existing where entry.bridge.prefixCacheBudgetBytes > 0 {
-            fixedCarveBytes[entry.slot.modelId] = entry.bridge.prefixCacheBudgetBytes
-        }
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
+            targets, fixedCarveBytes: [:]), prepared.assistant != nil
         {
             logger.warning(
                 "mtp: model=\(modelId) fallback reason="
@@ -345,7 +339,7 @@ extension ProviderLoop {
                 fleetKVBudgetBytes: fleetBudget)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: fixedCarveBytes)
+            targets, fixedCarveBytes: [:])
         else {
             let floorGb = String(
                 format: "%.1f",
@@ -397,7 +391,8 @@ extension ProviderLoop {
                 sizing: sizing,
                 kvBytesCapacity: targets[modelId] ?? 0,
                 specDecPreparation: specDecPreparation,
-                preparedModel: prepared)
+                preparedModel: prepared,
+                cacheEligibleWeightHash: cacheEligibleWeightHash)
         } catch {
             prepared.assistant?.release()
             newcomerBox.release()
@@ -510,7 +505,8 @@ extension ProviderLoop {
         container: ModelContainer,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
-        kvBytesCapacity: Int
+        kvBytesCapacity: Int,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         try await makeEngineV2BundleForSlot(
             modelId: modelId,
@@ -538,40 +534,21 @@ extension ProviderLoop {
         sizing: SlotSizingSnapshot,
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
-        preparedModel: EngineV2PreparedModel?
+        preparedModel: EngineV2PreparedModel?,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
         // Assembly is shared with the standalone server via
         // `EngineV2SlotFactory` (one construction path, no drift) —
-        // including THE single prefix-cache carve point (T-041, v0.7.5)
-        // AND the SSD offload tier's construction: the slot's re-slice
-        // grant is split between the engine's admission ceiling and the
-        // opt-in RAM v2 prefix cache INSIDE the factory (order: re-slice
-        // grant → RAM-tier funding-gated carve (SSD/default ⇒ passthrough)
-        // → SSD tier construction (default-on, own kv2/
-        // root, per-donation gate, NO memory carve) → engine construction
-        // with the (possibly carved) grant), so everything downstream
-        // reads engine truth and the coordinator is never told about bytes
-        // the cache will consume. The test hooks, when installed, replace
+        // including encrypted SSD offload construction. SSD caching does
+        // not carve the slot's live KV grant. The test hooks, when installed, replace
         // the container-derived EOS snapshot and the production engine
         // builder so unit tests can drive the wiring with a scripted
         // `CBv2Engine` — no weights, no container reads; the hooks path
-        // runs the SAME carve policy (hooks' environment, adoption bound 0)
-        // and hands the builder the REDUCED capacity, and the bridge the
-        // budget bookkeeping, so the claim/heartbeat math is testable
-        // without a real engine (no cache INSTANCE exists under hooks).
+        // has no reusable SSD cache instance.
         let bundle: ProviderEngineBundle
         if let hooks = engineV2SlotHooks {
-            let carve = EngineV2SlotFactory.resolvePrefixCarve(
-                modelId: modelId,
-                isVLM: isVLM,
-                modelDirectory: modelDirectory,
-                model: nil,
-                slotKVBytesCapacity: kvBytesCapacity,
-                kvBytesPerToken: sizing.fp16KVBytesPerToken,
-                environment: hooks.environment
-            ).carve
             let hookBuilder = hooks.makeEngine
             let bridge = try EngineV2Factory.makeBridge(
                 modelId: modelId,
@@ -582,7 +559,6 @@ extension ProviderLoop {
                 maxConcurrentRequests: maxConcurrent,
                 kvBytesPerToken: sizing.fp16KVBytesPerToken,
                 kvBudget: kvBudget,
-                prefixCacheBudgetBytes: carve.prefixCacheBudgetBytes,
                 emitTelemetry: hooks.emitTelemetry,
                 makeEngine: {
                     // Scripted hook engines default to contiguous semantics
@@ -591,7 +567,7 @@ extension ProviderLoop {
                     // production paged bridge semantics for mixed-backend
                     // re-slice tests.
                     EngineV2Factory.ProductionBuild(
-                        engine: try hookBuilder(modelId, carve.engineKVBytesCapacity),
+                        engine: try hookBuilder(modelId, kvBytesCapacity),
                         kvBackendKind: hooks.kvBackendKindByModel[modelId] ?? .contiguous,
                         kvBackendFallbackReason: nil)
                 })
@@ -626,8 +602,8 @@ extension ProviderLoop {
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 // SSD-tier metadata binding: the verified hash for the bytes
-                // this slot loaded (nil ⇒ model-id binding degradation).
-                weightHash: liveModelHashes[modelId],
+                // this slot loaded (nil/blank disables reusable SSD caching).
+                weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,
                 logInfo: { slotLogger.info($0) },

@@ -3,7 +3,7 @@
 // Bounded write-behind pipeline for the SSD prefix cache: donations are
 // extracted to host buffers on the engine's donation queue (inside
 // `SSDPrefixCache.donate`), then handed here for the slow work —
-// endurance/rate accounting, low-disk guard, DBK2 encrypt, atomic write,
+// endurance/rate accounting, low-disk guard, DBK3 encrypt, atomic write,
 // index insert, box-wide budget enforcement, opportunistic TTL sweep.
 //
 // Bounding model = `BoundedSingleConsumerPipeline` (né the legacy
@@ -125,7 +125,7 @@ final class SSDWriteBehind: @unchecked Sendable {
         /// Production whole-root maintenance. nil keeps the legacy registered-
         /// store budget seam used by isolated tests.
         let maintainWholeRoot: (@Sendable () -> Void)?
-        /// Failure-injection seam. nil uses the real encrypted DBK2 writer.
+        /// Failure-injection seam. nil uses the real encrypted DBK3 writer.
         let writeBlock: (@Sendable (SSDBlockWrite, URL) throws -> Int)?
     }
 
@@ -275,15 +275,20 @@ final class SSDWriteBehind: @unchecked Sendable {
                 continue
             }
             let url = SSDBlockStore.fileURL(root: config.root, tag16Hex: block.tag16Hex)
+            guard SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root) else {
+                stats.add(donationsDropped: 1)
+                continue
+            }
+            let fileBytes: Int
             do {
                 if let writeBlock = config.writeBlock {
-                    let fileBytes = try writeBlock(block, url)
+                    fileBytes = try writeBlock(block, url)
                     index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
                     stats.add(blocksWritten: 1, bytesWritten: fileBytes)
                     maySettleDurable = true
                     continue
                 }
-                try SSDBlockStore.write(
+                fileBytes = try SSDBlockStore.write(
                     to: url, metadata: block.metadata, chunks: block.chunks,
                     kekKey: config.kekKey, strictFsync: config.strictFsync)
             } catch {
@@ -299,8 +304,6 @@ final class SSDWriteBehind: @unchecked Sendable {
                 }
                 continue
             }
-            let fileBytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize)
-                ?? block.plaintextBytes
             // Index LAST, after the durable rename (spec §3.2 step 7).
             index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
             stats.add(blocksWritten: 1, bytesWritten: fileBytes)

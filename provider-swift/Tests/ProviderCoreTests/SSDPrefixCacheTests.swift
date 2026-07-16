@@ -1,7 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
 // Unit suite for the encrypted SSD KV-offload prefix cache (v0.7.5):
-// HMAC name derivation (keyed + salt-scoped), DBK2 round-trip + AAD
+// HMAC name derivation (keyed + salt-scoped), DBK3 round-trip + AAD
 // binding, TTL expiry sweep, box-wide LRU eviction, endurance write cap,
 // corrupt-block → recompute fallback, tier mode-selection matrix,
 // NO-memory-carve invariant, and staging reservation hygiene on
@@ -97,15 +97,18 @@ private func makeCache(
     diskBudgetBytes: Int = 1 << 40,
     kvBudget: GlobalKVCacheBudget? = nil,
     diskBudget: SSDDiskBudget = SSDDiskBudget(),
+    epochStore: SSDCacheEpochStore? = nil,
     maintainWholeRoot: (@Sendable () -> Void)? = nil
 ) -> SSDPrefixCache {
     let config = SSDPrefixCache.Config(
         modelId: "test-model",
+        promptContractID: "test-prompt-contract",
         weightHash: "test-weight-hash",
         blockSize: blockSize,
         adoptionBoundTokens: adoptionBound,
         layoutEpoch: SSDBlockStore.layoutEpoch(
             blockSize: blockSize, layerKinds: fixtureLayerKinds),
+        epochStore: epochStore,
         root: dir,
         ttlSeconds: ttlSeconds,
         minEffectiveTokens: minEffectiveTokens,
@@ -132,10 +135,10 @@ private func waitForIndexCount(
     return cache.index.count >= count
 }
 
-private func dbk2Files(under root: URL) -> [URL] {
+private func dbk3Files(under root: URL) -> [URL] {
     guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
     else { return [] }
-    return e.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk2" }
+    return e.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk3" }
 }
 
 private func waitForSemaphore(
@@ -184,16 +187,16 @@ struct SSDLookupKeysTests {
     }
 }
 
-// MARK: - DBK2 codec
+// MARK: - DBK3 codec
 
-@Suite("SSD prefix cache: DBK2 block store")
+@Suite("SSD prefix cache: DBK3 block store")
 struct SSDBlockStoreTests {
 
     private func fixtureMetadata(sizes: [Int]) -> SSDBlockMetadata {
         SSDBlockMetadata(
             lookupTag: String(repeating: "ab", count: 32),
             weightHash: "w-hash",
-            layoutEpoch: "cbv2-snap-1|f16|8|deadbeef",
+            layoutEpoch: "cbv2-snap-2|f16|8|deadbeef",
             blockSize: 8,
             layerCount: 2,
             chunks: sizes.enumerated().map { i, _ in
@@ -225,9 +228,67 @@ struct SSDBlockStoreTests {
         }
     }
 
+    @Test("legacy DBK2 bytes and snap-1 epochs are rejected by the DBK3 tier")
+    func legacyArtifactsFailClosed() throws {
+        let dir = tempDir("legacy-store")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let tagHex = "aabbccdd00112233445566778899eeff"
+        let url = SSDBlockStore.fileURL(root: dir, tag16Hex: tagHex)
+        let chunks = [Data(repeating: 7, count: 32)]
+        let metadata = SSDBlockMetadata(
+            lookupTag: tagHex + String(repeating: "0", count: 32),
+            weightHash: "test-weight-hash",
+            layoutEpoch: "cbv2-snap-1|f16|\(fixtureBlockSize)|legacy",
+            blockSize: fixtureBlockSize,
+            layerCount: fixtureLayerKinds.count,
+            chunks: [
+                SSDBlockChunkDescriptor(
+                    layerIndex: 0, tensor: 0,
+                    shape: [1, fixtureKVHeads, fixtureBlockSize, fixtureHeadDim],
+                    dtype: "float16")
+            ],
+            chunkPlaintextSizes: chunks.map(\.count),
+            createdAt: 1_000)
+        try SSDBlockStore.write(to: url, metadata: metadata, chunks: chunks, kekKey: kek)
+        #expect(try SSDBlockStore.readMetadataOnly(from: url).layoutEpoch.hasPrefix("cbv2-snap-1|"))
+
+        let cache = makeCache(
+            dir: dir, kek: kek, clock: ClockBox(1_001), ttlSeconds: 0)
+        defer { cache.close() }
+        cache.scanOnDisk()
+        #expect(cache.index.count == 0)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+
+        try SSDBlockStore.write(to: url, metadata: metadata, chunks: chunks, kekKey: kek)
+        var dbk2 = try Data(contentsOf: url)
+        dbk2[4] = 2
+        dbk2[5] = 0
+        try dbk2.write(to: url)
+        do {
+            _ = try SSDBlockStore.readMetadataOnly(from: url)
+            Issue.record("DBK2 metadata unexpectedly loaded")
+        } catch SSDBlockStoreError.unsupportedVersion(let version) {
+            #expect(version == 2)
+        } catch {
+            Issue.record("DBK2 metadata failed with the wrong error: \(error)")
+        }
+        do {
+            _ = try SSDBlockStore.read(from: url, kekKey: kek)
+            Issue.record("DBK2 block unexpectedly loaded")
+        } catch SSDBlockStoreError.unsupportedVersion(let version) {
+            #expect(version == 2)
+        } catch {
+            Issue.record("DBK2 block failed with the wrong error: \(error)")
+        }
+        cache.scanOnDisk()
+        #expect(cache.index.count == 0)
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test("header length fields decode correctly across sizes (unaligned-safe byte decode)")
     func headerLengthFieldsDecode() throws {
-        // Regression (Codex, v0.7.5 SSD review — SSDBlockStore DBK2 header
+        // Regression (Codex, v0.7.5 SSD review — SSDBlockStore DBK3 header
         // parsing): the wrapped-DEK / metadata / chunk-length fields are
         // parsed from sliced `Data` with no alignment guarantee. The decode
         // must be alignment-agnostic AND correct for values that exercise
@@ -280,7 +341,7 @@ struct SSDBlockStoreTests {
         // still parses). Locate a metadata byte: header prefix is 24 bytes
         // + wrapped DEK; the metadata JSON contains the schema string.
         var meta = original
-        if let range = meta.range(of: Data("darkbloom.kv.v2".utf8)) {
+        if let range = meta.range(of: Data("darkbloom.kv.v3".utf8)) {
             meta[range.lowerBound] ^= 0x01
             try meta.write(to: url)
             #expect(throws: (any Error).self) { _ = try SSDBlockStore.read(from: url, kekKey: kek) }
@@ -300,23 +361,23 @@ struct SSDBlockStoreTests {
         let c = SSDBlockStore.layoutEpoch(blockSize: 16, layerKinds: fixtureLayerKinds)
         #expect(a != b)
         #expect(a != c)
-        #expect(a.hasPrefix("cbv2-snap-1|f16|8|"))
+        #expect(a.hasPrefix("cbv2-snap-2|f16|8|"))
     }
 
     @Test("atomic writer uses the exact Darkbloom-owned crash-temp grammar")
     func exactTempName() throws {
         let uuid = try #require(UUID(uuidString: "01234567-89ab-cdef-0123-456789abcdef"))
-        let destination = URL(fileURLWithPath: "/tmp/ab/ab00112233445566778899aabbccddee.dbk2")
+        let destination = URL(fileURLWithPath: "/tmp/ab/ab00112233445566778899aabbccddee.dbk3")
         let temp = SSDBlockStore.temporaryFileURL(for: destination, uuid: uuid)
         #expect(
             temp.lastPathComponent
-                == "ab00112233445566778899aabbccddee.dbk2.darkbloom-tmp.01234567-89AB-CDEF-0123-456789ABCDEF")
+                == "ab00112233445566778899aabbccddee.dbk3.darkbloom-tmp.01234567-89AB-CDEF-0123-456789ABCDEF")
         #expect(SSDBlockStore.isOwnedTempFileName(temp.lastPathComponent, fanout: "ab"))
         #expect(!SSDBlockStore.isOwnedTempFileName(
-            "ab00112233445566778899aabbccddee.dbk2.darkbloom-tmp.11234567-89ab-cdef-0123-456789abcdef",
+            "ab00112233445566778899aabbccddee.dbk3.darkbloom-tmp.11234567-89ab-cdef-0123-456789abcdef",
             fanout: "ab"))
         #expect(!SSDBlockStore.isOwnedTempFileName(
-            "ab00112233445566778899aabbccddee.dbk2.darkbloom-tmp.21234567-89AB-cDEF-0123-456789ABCDef",
+            "ab00112233445566778899aabbccddee.dbk3.darkbloom-tmp.21234567-89AB-cDEF-0123-456789ABCDef",
             fanout: "ab"))
     }
 
@@ -351,59 +412,223 @@ struct SSDBlockStoreTests {
         #expect(!FileManager.default.fileExists(atPath: stale.path))
         #expect(FileManager.default.fileExists(atPath: young.path))
     }
-}
 
-// MARK: - Mode selection + no-carve
+    @Test("active cache I/O rejects symlinked root, model, and fanout paths")
+    func activeSymlinkIOFailsClosed() throws {
+        let parent = tempDir("active-symlinks")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let fm = FileManager.default
 
-@Suite("SSD prefix cache: tier mode selection")
-struct SSDPrefixCacheModeTests {
+        let realDedicated = parent.appendingPathComponent("real", isDirectory: true)
+        let linkedDedicated = parent.appendingPathComponent("linked", isDirectory: true)
+        try fm.createDirectory(at: realDedicated, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: linkedDedicated, withDestinationURL: realDedicated)
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: linkedDedicated,
+                modelRoot: linkedDedicated.appendingPathComponent("aaaaaaaaaaaa"))
+        }
 
-    @Test("matrix: SSD default-on; kill switches; RAM opt-in; both ⇒ SSD wins")
-    func modeMatrix() {
-        // Fleet default: nothing set ⇒ SSD tier, no both-tiers warn.
-        #expect(PrefixCachePolicy.mode(environment: [:]) == .ssd(warnBothTiers: false))
-        // RAM opt-in alone (SSD default still on) ⇒ SSD wins + WARN.
-        #expect(
-            PrefixCachePolicy.mode(environment: ["DARKBLOOM_PREFIX_CACHE": "1"])
-                == .ssd(warnBothTiers: true))
-        // RAM opt-in + SSD killed ⇒ the opt-in RAM tier (unchanged semantics).
-        #expect(
-            PrefixCachePolicy.mode(environment: [
-                "DARKBLOOM_PREFIX_CACHE": "1", "DARKBLOOM_PREFIX_CACHE_SSD": "0",
-            ]) == .ram)
-        // SSD killed alone ⇒ off.
-        #expect(
-            PrefixCachePolicy.mode(environment: ["DARKBLOOM_PREFIX_CACHE_SSD": "0"]) == .off)
-        // Master kill kills EVERYTHING, even with SSD affirmatively set.
-        #expect(
-            PrefixCachePolicy.mode(environment: [
-                "DARKBLOOM_PREFIX_CACHE": "0", "DARKBLOOM_PREFIX_CACHE_SSD": "1",
-            ]) == .off)
-        // Fail-safe: a typo'd master value can only ever leave a box uncached.
-        #expect(PrefixCachePolicy.mode(environment: ["DARKBLOOM_PREFIX_CACHE": "banana"]) == .off)
-        // A typo'd SSD value kills the SSD tier only.
-        #expect(
-            PrefixCachePolicy.mode(environment: ["DARKBLOOM_PREFIX_CACHE_SSD": "banana"]) == .off)
-        #expect(
-            PrefixCachePolicy.mode(environment: [
-                "DARKBLOOM_PREFIX_CACHE": "1", "DARKBLOOM_PREFIX_CACHE_SSD": "banana",
-            ]) == .ram)
-        // Explicit SSD affirmative is idempotent with the default.
-        #expect(
-            PrefixCachePolicy.mode(environment: ["DARKBLOOM_PREFIX_CACHE_SSD": "1"])
-                == .ssd(warnBothTiers: false))
+        let outsideModel = parent.appendingPathComponent("outside-model", isDirectory: true)
+        try fm.createDirectory(at: outsideModel, withIntermediateDirectories: true)
+        let modelLink = realDedicated.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+        try fm.createSymbolicLink(at: modelLink, withDestinationURL: outsideModel)
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: realDedicated,
+                modelRoot: modelLink)
+        }
+        try fm.removeItem(at: modelLink)
+
+        let modelRoot = realDedicated.appendingPathComponent("bbbbbbbbbbbb", isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(
+            dedicatedRoot: realDedicated,
+            modelRoot: modelRoot)
+        let outsideFanout = parent.appendingPathComponent("outside-fanout", isDirectory: true)
+        try fm.createDirectory(at: outsideFanout, withIntermediateDirectories: true)
+        let fanoutLink = modelRoot.appendingPathComponent("aa", isDirectory: true)
+        try fm.createSymbolicLink(at: fanoutLink, withDestinationURL: outsideFanout)
+        let url = SSDBlockStore.fileURL(
+            root: modelRoot,
+            tag16Hex: "aabbccdd00112233445566778899eeff")
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.write(
+                to: url,
+                metadata: fixtureMetadata(sizes: [32]),
+                chunks: [Data(repeating: 1, count: 32)],
+                kekKey: SymmetricKey(size: .bits256))
+        }
+        #expect((try fm.contentsOfDirectory(atPath: outsideFanout.path)).isEmpty)
+
+        let cache = makeCache(
+            dir: modelRoot,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000))
+        defer { cache.close() }
+        cache.scanOnDisk()
+        #expect(cache.index.count == 0)
+        let escapedFile = outsideFanout.appendingPathComponent(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.dbk3")
+        try Data("must-survive".utf8).write(to: escapedFile)
+        cache.index.insert(
+            tag16: Data(repeating: 0xaa, count: 16),
+            fileBytes: 32,
+            lastAccess: 0)
+        cache.sweepExpiredEntries()
+        #expect(cache.index.count == 0, "unsafe fanout must be dropped from the RAM index")
+        #expect(cache.stats().ttlExpired == 0, "an invalid path is not a successful TTL deletion")
+        #expect(fm.fileExists(atPath: escapedFile.path))
     }
 
-    @Test("NO memory carve in SSD mode: the engine keeps the full slot grant")
-    func noCarveInSSDMode() {
-        // SSD mode requests a ZERO memory budget — the carve must hand the
-        // engine the entire grant (the invariant the wiring enforces via
-        // `requestedPrefixBudget = 0` for every non-.ram mode).
-        let slot = 8 * 1_073_741_824
-        let carve = PrefixCachePolicy.carve(
-            slotKVBytesCapacity: slot, requestedBudgetBytes: 0, kvBytesPerToken: 24_576)
-        #expect(carve.engineKVBytesCapacity == slot)
-        #expect(carve.prefixCacheBudgetBytes == 0)
+    @Test("descriptor-relative root creation rejects a concurrent symlink replacement")
+    func modelRootCreationRejectsRootSwap() throws {
+        let parent = tempDir("root-create-swap")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let fm = FileManager.default
+        let dedicated = parent.appendingPathComponent("cache", isDirectory: true)
+        let detached = parent.appendingPathComponent("detached-cache", isDirectory: true)
+        let outside = parent.appendingPathComponent("outside", isDirectory: true)
+        let model = dedicated.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+
+        #expect(throws: (any Error).self) {
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: dedicated,
+                modelRoot: model,
+                beforeModelCreation: {
+                    try! FileManager.default.moveItem(at: dedicated, to: detached)
+                    try! FileManager.default.createSymbolicLink(
+                        at: dedicated,
+                        withDestinationURL: outside)
+                })
+        }
+        #expect(!fm.fileExists(
+            atPath: outside.appendingPathComponent("aaaaaaaaaaaa").path))
+        #expect(fm.fileExists(
+            atPath: detached.appendingPathComponent("aaaaaaaaaaaa").path))
+    }
+
+    @Test("descriptor-relative active I/O cannot be redirected by a fanout symlink race")
+    func activeIORenameToSymlinkRace() throws {
+        struct Fixture {
+            let parent: URL
+            let modelRoot: URL
+            let file: URL
+            let outsideFile: URL
+            let hook: @Sendable (SSDActiveIOOperation) -> Void
+        }
+        var parents: [URL] = []
+        defer { for parent in parents { try? FileManager.default.removeItem(at: parent) } }
+        let kek = SymmetricKey(size: .bits256)
+        let tag = "aabbccdd00112233445566778899eeff"
+        let originalChunk = Data(repeating: 3, count: 32)
+        let outsideSentinel = Data("outside-must-remain-untouched".utf8)
+
+        func makeFixture(_ label: String) throws -> Fixture {
+            let parent = tempDir("nofollow-\(label)")
+            parents.append(parent)
+            let dedicated = parent.appendingPathComponent("cache", isDirectory: true)
+            let modelRoot = dedicated.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+            try SSDBlockStore.prepareModelRoot(
+                dedicatedRoot: dedicated, modelRoot: modelRoot)
+            let file = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: tag)
+            _ = try SSDBlockStore.write(
+                to: file,
+                metadata: fixtureMetadata(sizes: [originalChunk.count]),
+                chunks: [originalChunk],
+                kekKey: kek)
+
+            let fanout = file.deletingLastPathComponent()
+            let detachedFanout = modelRoot.appendingPathComponent("detached-aa")
+            let outsideFanout = parent.appendingPathComponent("outside-aa", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: outsideFanout, withIntermediateDirectories: true)
+            let outsideFile = outsideFanout.appendingPathComponent(file.lastPathComponent)
+            try outsideSentinel.write(to: outsideFile)
+            let hook: @Sendable (SSDActiveIOOperation) -> Void = { _ in
+                try! FileManager.default.moveItem(at: fanout, to: detachedFanout)
+                try! FileManager.default.createSymbolicLink(
+                    at: fanout, withDestinationURL: outsideFanout)
+            }
+            return Fixture(
+                parent: parent,
+                modelRoot: modelRoot,
+                file: file,
+                outsideFile: outsideFile,
+                hook: hook)
+        }
+
+        let readFixture = try makeFixture("read")
+        let (readMetadata, readChunks) = try SSDBlockStore.read(
+            from: readFixture.file,
+            kekKey: kek,
+            beforeOperation: readFixture.hook)
+        #expect(readMetadata.weightHash == "w-hash")
+        #expect(readChunks == [originalChunk])
+        #expect(try Data(contentsOf: readFixture.outsideFile) == outsideSentinel)
+
+        let writeFixture = try makeFixture("write")
+        _ = try SSDBlockStore.write(
+            to: writeFixture.file,
+            metadata: fixtureMetadata(sizes: [48]),
+            chunks: [Data(repeating: 9, count: 48)],
+            kekKey: kek,
+            beforeOperation: writeFixture.hook)
+        #expect(try Data(contentsOf: writeFixture.outsideFile) == outsideSentinel)
+
+        let touchFixture = try makeFixture("touch")
+        let outsideDate = Date(timeIntervalSince1970: 1_000)
+        try FileManager.default.setAttributes(
+            [.modificationDate: outsideDate],
+            ofItemAtPath: touchFixture.outsideFile.path)
+        SSDBlockStore.setAttributesIfSafe(
+            [.modificationDate: Date(timeIntervalSince1970: 9_000)],
+            at: touchFixture.file,
+            under: touchFixture.modelRoot,
+            beforeOperation: touchFixture.hook)
+        let untouchedDate = try touchFixture.outsideFile.resourceValues(
+            forKeys: [.contentModificationDateKey]).contentModificationDate
+        #expect(untouchedDate == outsideDate)
+
+        let deleteFixture = try makeFixture("delete")
+        #expect(SSDBlockStore.removeItemIfSafe(
+            at: deleteFixture.file,
+            under: deleteFixture.modelRoot,
+            beforeOperation: deleteFixture.hook))
+        #expect(try Data(contentsOf: deleteFixture.outsideFile) == outsideSentinel)
+    }
+}
+
+// MARK: - Production gate
+
+@Suite("SSD prefix cache: production gate")
+struct SSDPrefixCacheModeTests {
+
+    @Test("SSD defaults on and the single local kill switch disables it")
+    func gateMatrix() {
+        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
+        #expect(PrefixCachePolicy.isEnabled(
+            environment: ["DARKBLOOM_PREFIX_CACHE": "1"]))
+        #expect(!PrefixCachePolicy.isEnabled(
+            environment: ["DARKBLOOM_PREFIX_CACHE": "0"]))
+        #expect(!PrefixCachePolicy.isEnabled(
+            environment: ["DARKBLOOM_PREFIX_CACHE": "banana"]))
+    }
+
+    @Test("reusable SSD cache requires a verified non-empty live weight hash")
+    func verifiedWeightBindingRequired() {
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash(nil) == nil)
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash("") == nil)
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash(" \n\t ") == nil)
+        #expect(SSDPrefixCacheFactory.verifiedWeightHash("  abcd1234  ") == "abcd1234")
+    }
+
+    @Test("durable-byte stage estimate is positive, conservative, and wire-bounded")
+    func durableStageEstimate() {
+        #expect(SSDPrefixCachePolicy.estimatedStageMillis(bytes: 1) == 1)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: 1) > 0)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillisDouble(bytes: Int.max)
+            == PrefixCacheReadyResult.maxStageMs)
     }
 
     @Test("box-wide disk budget: env override wins; default = min(20 GiB, free/2)")
@@ -488,13 +713,14 @@ struct SSDPrefixCacheLifecycleTests {
         donateFixture(cache, tokens: tokens)
         #expect(await waitForIndexCount(cache, atLeast: 8), "write-behind never landed")
         #expect(cache.index.count == 8)
-        let files = dbk2Files(under: dir)
+        let files = dbk3Files(under: dir)
         #expect(files.count == 8)
         // RAM discipline: nothing resident after donation.
         #expect(cache.bytesInUse == 0)
 
         // No raw chain hashes anywhere on disk (filenames are HMAC tags).
-        let hasher = CBv2BlockHasher(blockSize: fixtureBlockSize, modelName: "test-model")
+        let hasher = CBv2BlockHasher(
+            blockSize: fixtureBlockSize, promptContractID: "test-prompt-contract")
         let chainHexes = hasher.chainHashes(tokens: tokens).map { SSDLookupKeys.hex($0) }
         for file in files {
             for hex in chainHexes {
@@ -507,12 +733,12 @@ struct SSDPrefixCacheLifecycleTests {
         donateFixture(cache, tokens: tokens)
         try? await Task.sleep(for: .milliseconds(300))
         #expect(cache.stats().blocksWritten == written)
-        #expect(dbk2Files(under: dir).count == 8)
+        #expect(dbk3Files(under: dir).count == 8)
 
         // A one-block extension writes ONLY the tail block.
         donateFixture(cache, tokens: Array(0 ..< (tokenCount + fixtureBlockSize)))
         #expect(await waitForIndexCount(cache, atLeast: 9))
-        #expect(dbk2Files(under: dir).count == 9)
+        #expect(dbk3Files(under: dir).count == 9)
     }
 
     @Test("restart warmth: a FRESH cache over the same dir scans, stages, and adopts byte-exactly")
@@ -619,7 +845,7 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(await waitForIndexCount(cache, atLeast: 8))
 
         // Flip a byte in every block file (deterministic total corruption).
-        for file in dbk2Files(under: dir) {
+        for file in dbk3Files(under: dir) {
             var bytes = try Data(contentsOf: file)
             bytes[bytes.count - 10] ^= 0xFF
             try bytes.write(to: file)
@@ -652,7 +878,7 @@ struct SSDPrefixCacheLifecycleTests {
         clock.advance(901)
         cache.sweepExpiredEntries()
         #expect(cache.index.count == 0)
-        #expect(dbk2Files(under: dir).isEmpty)
+        #expect(dbk3Files(under: dir).isEmpty)
         #expect(cache.stats().ttlExpired == 8)
         // Nothing left to adopt.
         let prompt = tokens + [1]
@@ -726,6 +952,200 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(!(await cache.stage(requestID: "r-old", promptTokens: old + [1], cacheScope: "")).staged)
     }
 
+    @Test("active capacity eviction persists a new epoch before unlink")
+    func activeEvictionRotatesEpoch() async throws {
+        let dir = tempDir("active-epoch-eviction")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let layoutEpoch = SSDBlockStore.layoutEpoch(
+            blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds)
+        let binding = SSDCacheEpochStore.Binding(
+            modelId: "test-model",
+            modelAggregateHash: "test-weight-hash",
+            promptContractId: "test-prompt-contract",
+            blockHashVersion: CBv2BlockHasher.version,
+            blockSize: fixtureBlockSize,
+            layoutEpoch: layoutEpoch,
+            keyFingerprint: String(repeating: "e", count: 64))
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let originalEpoch = try #require(epochStore.current)
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            epochStore: epochStore)
+        defer { cache.close() }
+
+        donateFixture(cache, tokens: Array(0 ..< tokenCount), seed: 1)
+        #expect(await waitForIndexCount(cache, atLeast: 1))
+        #expect(cache.evictOldestEntry() > 0)
+        let rotatedEpoch = try #require(epochStore.current)
+        #expect(rotatedEpoch != originalEpoch)
+        #expect(try SSDCacheEpochStore(root: dir, binding: binding).current == rotatedEpoch)
+    }
+
+    @Test("capability publication waits for destructive mutation completion")
+    func destructiveMutationBracketsCapabilityPublication() async throws {
+        let dir = tempDir("epoch-publication-bracket")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let binding = SSDCacheEpochStore.Binding(
+            modelId: "test-model",
+            modelAggregateHash: "test-weight-hash",
+            promptContractId: "test-prompt-contract",
+            blockHashVersion: CBv2BlockHasher.version,
+            blockSize: fixtureBlockSize,
+            layoutEpoch: SSDBlockStore.layoutEpoch(
+                blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
+            keyFingerprint: String(repeating: "e", count: 64))
+        let epochStore = try SSDCacheEpochStore(root: dir, binding: binding)
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            epochStore: epochStore)
+        defer { cache.close() }
+
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        var advertised: PrefixCacheV2Capability?
+        for _ in 0 ..< 100 {
+            advertised = cache.prefixCacheV2Capability()
+            if advertised != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let original = try #require(advertised)
+        let (entered, enteredContinuation) = AsyncStream.makeStream(
+            of: Void.self, bufferingPolicy: .bufferingNewest(1))
+        let release = DispatchSemaphore(value: 0)
+        let mutation = Task.detached {
+            cache.holdDestructiveEpochForTesting {
+                enteredContinuation.yield(())
+                release.wait()
+            }
+        }
+        var enteredIterator = entered.makeAsyncIterator()
+        _ = await enteredIterator.next()
+
+        #expect(cache.prefixCacheV2Capability() == nil)
+        #expect(
+            cache.takeNextPrefixCacheV2Sequence(expectedEpoch: original.cacheEpoch) == nil)
+
+        release.signal()
+        #expect(await mutation.value)
+        let current = try #require(cache.prefixCacheV2Capability())
+        #expect(current.cacheEpoch != original.cacheEpoch)
+    }
+
+    @Test("reconciliation drops a symlink-replaced indexed file without following it")
+    func reconciliationDropsSymlinkReplacement() throws {
+        let dir = tempDir("reconcile-symlink")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000))
+        defer { cache.close() }
+
+        let tag = Data(repeating: 0xaa, count: 16)
+        let url = SSDBlockStore.fileURL(
+            root: dir, tag16Hex: SSDLookupKeys.hex(tag))
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let outside = dir.deletingLastPathComponent().appendingPathComponent(
+            "ssd-reconcile-outside-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try Data("outside-must-survive".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: url, withDestinationURL: outside)
+        cache.index.insert(tag16: tag, fileBytes: 32, lastAccess: 1)
+
+        cache.reconcileExternalRemovals()
+
+        #expect(cache.index.count == 0)
+        #expect(try Data(contentsOf: outside) == Data("outside-must-survive".utf8))
+        #expect(SSDBlockStore.indexedBlockFileStatus(at: url, under: dir) == .invalid)
+    }
+
+    @Test("budget eviction skips an undeletable oldest file and removes another victim")
+    func budgetEvictionContinuesPastUndeletableOldest() throws {
+        let dir = tempDir("lru-undeletable")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let budget = SSDDiskBudget()
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            diskBudget: budget)
+        defer { cache.close() }
+
+        let oldTag = Data(repeating: 0xaa, count: 16)
+        let newerTag = Data(repeating: 0xbb, count: 16)
+        let oldURL = SSDBlockStore.fileURL(
+            root: dir, tag16Hex: SSDLookupKeys.hex(oldTag))
+        let newerURL = SSDBlockStore.fileURL(
+            root: dir, tag16Hex: SSDLookupKeys.hex(newerTag))
+        try FileManager.default.createDirectory(
+            at: oldURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: newerURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(repeating: 1, count: 64).write(to: oldURL)
+        try Data(repeating: 2, count: 64).write(to: newerURL)
+        cache.index.insert(tag16: oldTag, fileBytes: 64, lastAccess: 1)
+        cache.index.insert(tag16: newerTag, fileBytes: 64, lastAccess: 2)
+
+        let oldFanout = oldURL.deletingLastPathComponent()
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500], ofItemAtPath: oldFanout.path)
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700], ofItemAtPath: oldFanout.path)
+        }
+
+        #expect(budget.enforce(budgetBytes: 64) == 1)
+        #expect(cache.stats().evictions == 1)
+        #expect(cache.index.count == 1)
+        #expect(cache.index.contains(tag16: oldTag))
+        #expect(FileManager.default.fileExists(atPath: oldURL.path))
+        #expect(!FileManager.default.fileExists(atPath: newerURL.path))
+    }
+
+    @Test("TTL telemetry counts only successful owned-file removals")
+    func ttlTelemetryExcludesInvalidIndexDrops() throws {
+        let dir = tempDir("ttl-success-count")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            ttlSeconds: 1)
+        defer { cache.close() }
+
+        let symlinkTag = Data(repeating: 0xaa, count: 16)
+        let regularTag = Data(repeating: 0xbb, count: 16)
+        let symlinkURL = SSDBlockStore.fileURL(
+            root: dir, tag16Hex: SSDLookupKeys.hex(symlinkTag))
+        let regularURL = SSDBlockStore.fileURL(
+            root: dir, tag16Hex: SSDLookupKeys.hex(regularTag))
+        try FileManager.default.createDirectory(
+            at: symlinkURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: regularURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let outside = dir.deletingLastPathComponent().appendingPathComponent(
+            "ssd-ttl-outside-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: outside) }
+        try Data("outside-must-survive".utf8).write(to: outside)
+        try FileManager.default.createSymbolicLink(
+            at: symlinkURL, withDestinationURL: outside)
+        try Data(repeating: 3, count: 64).write(to: regularURL)
+        cache.index.insert(tag16: symlinkTag, fileBytes: 64, lastAccess: 1)
+        cache.index.insert(tag16: regularTag, fileBytes: 64, lastAccess: 1)
+
+        cache.sweepExpiredEntries()
+
+        #expect(cache.index.count == 0)
+        #expect(cache.stats().ttlExpired == 1)
+        #expect(!FileManager.default.fileExists(atPath: regularURL.path))
+        #expect(try Data(contentsOf: outside) == Data("outside-must-survive".utf8))
+    }
+
     @Test("endurance write cap: an exhausted token bucket drops donations, engine unaffected")
     func writeCapDropsDonations() async throws {
         let dir = tempDir("cap")
@@ -745,7 +1165,7 @@ struct SSDPrefixCacheLifecycleTests {
         }
         #expect(cache.stats().donationsDropped >= 1)
         #expect(cache.stats().blocksWritten == 0)
-        #expect(dbk2Files(under: dir).isEmpty)
+        #expect(dbk3Files(under: dir).isEmpty)
     }
 
     @Test("exhausted write cap: donation dropped BEFORE extraction (synchronous), tags settled for retry")
@@ -767,7 +1187,7 @@ struct SSDPrefixCacheLifecycleTests {
         // consumer's per-block tryConsume, after full extraction.)
         #expect(cache.stats().donationsDropped == 8)
         #expect(cache.stats().blocksWritten == 0)
-        #expect(dbk2Files(under: dir).isEmpty)
+        #expect(dbk3Files(under: dir).isEmpty)
 
         // The skip settles the in-flight dedupe tags: the SAME prefix can
         // be re-donated later (counted as dropped again) instead of being
@@ -824,7 +1244,7 @@ struct SSDPrefixCacheReadyReceiptTests {
             cacheSalt: "scope")
     }
 
-    @Test("ready is durable/readable and monotonically increases across early + terminal donations")
+    @Test("ready is durable/readable and increases across successive donations")
     func monotonicReady() async throws {
         let dir = tempDir("ready-monotonic")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -840,10 +1260,11 @@ struct SSDPrefixCacheReadyReceiptTests {
 
         correlatedDonate(cache, requestID: requestID, tokenCount: 64)
         #expect(await box.waitForCount(1))
-        #expect(box.snapshot[0] == PrefixCacheReadyResult(
-            readyTokens: 64,
-            requiredRecomputeTokens: 0,
-            expectedPrefillTokensSaved: 64))
+        #expect(box.snapshot[0].readyTokens == 64)
+        #expect(box.snapshot[0].requiredRecomputeTokens == 0)
+        #expect(box.snapshot[0].expectedPrefillTokensSaved == 64)
+        #expect(try #require(box.snapshot[0].stageMs) > 0)
+        #expect(try #require(box.snapshot[0].stageMs) <= PrefixCacheReadyResult.maxStageMs)
 
         correlatedDonate(cache, requestID: requestID, tokenCount: 72)
         #expect(await box.waitForCount(2))
@@ -922,7 +1343,7 @@ struct SSDPrefixCacheReadyReceiptTests {
             clock: ClockBox(10_000),
             minEffectiveTokens: fixtureBlockSize,
             maintainWholeRoot: {
-                for file in dbk2Files(under: corruptDir) {
+                for file in dbk3Files(under: corruptDir) {
                     guard var bytes = try? Data(contentsOf: file), bytes.count > 16 else { continue }
                     bytes[bytes.count - 8] ^= 0xff
                     try? bytes.write(to: file)
@@ -1195,7 +1616,8 @@ struct SSDPrefixCacheReservationTests {
         // derivation (chain hash -> HMAC tag under K_lookup) and corrupt it,
         // so stage() reads 7 good blocks and then hits the auth failure.
         let tokens = Array(0 ..< tokenCount)
-        let hasher = CBv2BlockHasher(blockSize: fixtureBlockSize, modelName: "test-model")
+        let hasher = CBv2BlockHasher(
+            blockSize: fixtureBlockSize, promptContractID: "test-prompt-contract")
         let chain = hasher.chainHashes(tokens: tokens)
         let keys = SSDLookupKeys(kek: kek)
         let fileURL: (Int) -> URL = { i in
@@ -1327,10 +1749,10 @@ struct SSDPrefixCacheReservationTests {
         #expect(await waitForZeroOutstanding(budget))
         #expect(cache.bytesInUse == 0)
         // On-disk files SURVIVE close — durable warmth is the feature.
-        #expect(!dbk2Files(under: dir).isEmpty)
+        #expect(!dbk3Files(under: dir).isEmpty)
     }
 
-    @Test("two same-prefix requests share ONE entry reservation — no double-charge, no orphaned residency")
+    @Test("concurrent same-prefix requests bind exact tickets to one reserved entry")
     func sharedEntryReservedExactlyOnce() async throws {
         // Regression (Codex, v0.7.5 SSD review — SSDPrefixCache staging
         // ticket accounting): when two concurrent same-prefix requests
@@ -1352,38 +1774,106 @@ struct SSDPrefixCacheReservationTests {
         defer { cache.close() }
 
         let prompt = Array(0 ..< tokenCount) + [1]
-        // A creates the staged entry; B attaches to the SAME entry.
-        #expect((await cache.stage(requestID: "req-A", promptTokens: prompt, cacheScope: "")).staged)
-        let afterA = await budget.outstandingReservedBytes()
-        #expect(afterA > 0)
-        #expect((await cache.stage(requestID: "req-B", promptTokens: prompt, cacheScope: "")).staged)
+        let requestA = CBv2RequestID(101)
+        let requestB = CBv2RequestID(102)
+        // Race both stages. One creates the entry and the other attaches,
+        // regardless of which disk read wins.
+        async let stageA = cache.stage(
+            requestID: requestA, promptTokens: prompt, cacheScope: "")
+        async let stageB = cache.stage(
+            requestID: requestB, promptTokens: prompt, cacheScope: "")
+        let (resultA, resultB) = await (stageA, stageB)
+        #expect(resultA.staged)
+        #expect(resultB.staged)
+        let sharedReservation = await budget.outstandingReservedBytes()
+        #expect(sharedReservation > 0)
         // Charged ONCE: attaching adds a residency ticket, not a reservation.
         // (Pre-fix this was 2 × afterA.)
         #expect(
-            await budget.outstandingReservedBytes() == afterA,
+            sharedReservation == UInt64(cache.bytesInUse),
             "attaching to a staged entry must not add a second reservation")
-        #expect(cache.bytesInUse == Int(afterA))
+        #expect(cache.bytesInUse == Int(sharedReservation))
 
-        // Both engines look up the shared arrays (two live pins).
-        let hit = try #require(
-            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
-        _ = try #require(
-            cache.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
-        // A fully completes (adoption + terminal backstop) while B is STILL
-        // pinned and the entry is STILL resident. Its reservation must NOT
-        // be released here — residency stays covered.
-        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
-        cache.completeStaging(requestID: "req-A")
+        // An unrelated request cannot consume either staged ticket. B can
+        // finish while A's lookup is still delayed without stealing A's pin.
+        #expect(cache.lookup(
+            requestID: CBv2RequestID(999),
+            tokens: prompt,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil) == nil)
+        let hitB = try #require(cache.lookup(
+            requestID: requestB,
+            tokens: prompt,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil))
+        cache.endAdoption(
+            requestID: requestB,
+            tokens: prompt,
+            matched: hitB.matched,
+            cacheSalt: nil)
+        cache.completeStaging(requestID: requestB)
         #expect(
-            await budget.outstandingReservedBytes() == afterA,
+            await budget.outstandingReservedBytes() == sharedReservation,
             "a resident shared entry must stay reserved until its LAST user leaves")
-        #expect(cache.bytesInUse == Int(afterA))
+        #expect(cache.bytesInUse == Int(sharedReservation))
 
-        // B finishes; the entry retires and the single reservation drains.
-        cache.endAdoption(tokens: prompt, matched: hit.matched, cacheSalt: nil)
-        cache.completeStaging(requestID: "req-B")
+        // A's slower lookup remains valid after B's terminal backstop. Only
+        // A can balance A's ticket; then the shared reservation drains.
+        let hitA = try #require(cache.lookup(
+            requestID: requestA,
+            tokens: prompt,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil))
+        cache.endAdoption(
+            requestID: requestA,
+            tokens: prompt,
+            matched: hitA.matched,
+            cacheSalt: nil)
+        cache.completeStaging(requestID: requestA)
         #expect(await waitForZeroOutstanding(budget), "the last user must drain the entry reservation")
         #expect(cache.bytesInUse == 0)
+    }
+
+    @Test("two cache instances may reserve the same raw receipt id independently")
+    func instanceNamespacesPreventGlobalReservationCollisions() async throws {
+        let parent = tempDir("res-instance-namespace")
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let budget = makeBudget()
+        let clock = ClockBox(10_000)
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent("aaaaaaaaaaaa"),
+            withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(
+            at: parent.appendingPathComponent("bbbbbbbbbbbb"),
+            withIntermediateDirectories: false)
+        let cacheA = await makeStagedCache(
+            dir: parent.appendingPathComponent("aaaaaaaaaaaa"),
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            kvBudget: budget)
+        let cacheB = await makeStagedCache(
+            dir: parent.appendingPathComponent("bbbbbbbbbbbb"),
+            kek: SymmetricKey(size: .bits256),
+            clock: clock,
+            kvBudget: budget)
+        defer { cacheA.close(); cacheB.close() }
+
+        let requestID = CBv2RequestID(1)
+        let prompt = Array(0 ..< tokenCount) + [1]
+        let resultA = await cacheA.stage(
+            requestID: requestID, promptTokens: prompt, cacheScope: "")
+        let resultB = await cacheB.stage(
+            requestID: requestID, promptTokens: prompt, cacheScope: "")
+
+        #expect(resultA.staged)
+        #expect(resultB.staged)
+        #expect(await budget.outstandingReservedBytes()
+            == UInt64(cacheA.bytesInUse + cacheB.bytesInUse))
+        #expect((await budget.reservationIDsForTesting()).count == 2)
+
+        await cacheA.abandonStaging(requestID: requestID)
+        await cacheB.abandonStaging(requestID: requestID)
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 }
 
@@ -1392,14 +1882,14 @@ struct SSDPrefixCacheReservationTests {
 @Suite("SSD prefix cache: own root survives the legacy kv sweep")
 struct SSDRootIsolationTests {
 
-    @Test("cacheDirectory lives under darkbloom/kv2, never under the legacy darkbloom/kv root")
+    @Test("cacheDirectory lives under darkbloom/kv3, never under the legacy darkbloom/kv root")
     func rootIsOutsideLegacyTree() {
         let dir = SSDPrefixCacheFactory.cacheDirectory(modelId: "gpt-oss-20b")
         let path = dir.path
-        #expect(path.contains("/darkbloom/kv2/"),
+        #expect(path.contains("/darkbloom/kv3/"),
             "SSD tier must use its own root: \(path)")
         // The critical invariant: NOT inside the legacy root the upgrade
-        // sweeper sheds (kv2 is a SIBLING of kv, not a subtree).
+        // sweeper sheds (kv3 is a SIBLING of kv, not a subtree).
         #expect(!path.contains("/darkbloom/kv/"),
             "SSD tier must never live under the legacy kv root: \(path)")
         // Stable modelKey derivation (12-hex prefix of SHA256(modelId)).
@@ -1409,12 +1899,12 @@ struct SSDRootIsolationTests {
     @Test("the REAL legacy sweeper (LegacyKVCacheSweeper.sweep) leaves SSD entries intact and adoptable")
     func legacySweepSurvival() async throws {
         // Layout mirroring production: <caches>/darkbloom/kv (legacy) and
-        // <caches>/darkbloom/kv2/<modelKey> (SSD) as SIBLINGS.
+        // <caches>/darkbloom/kv3/<modelKey> (SSD) as SIBLINGS.
         let caches = tempDir("sweep-survival")
         defer { try? FileManager.default.removeItem(at: caches) }
         let legacyRoot = caches.appendingPathComponent("darkbloom/kv", isDirectory: true)
         let ssdDir = caches.appendingPathComponent(
-            "darkbloom/kv2/aaaa11112222", isDirectory: true)
+            "darkbloom/kv3/aaaa11112222", isDirectory: true)
         let fm = FileManager.default
         try fm.createDirectory(
             at: legacyRoot.appendingPathComponent("aaaa11112222"),
@@ -1438,13 +1928,13 @@ struct SSDRootIsolationTests {
         // THE LEGACY SWEEP — the REAL production sweeper (the exact code
         // `ProviderLoop.run()` / the standalone server invoke at startup),
         // pointed at this layout's kv/ root: it sheds the retired tier's
-        // ciphertext wholesale. kv2/ (a SIBLING, not a subtree) must be
+        // ciphertext wholesale. kv3/ (a SIBLING, not a subtree) must be
         // untouched.
         let sweptBytes = LegacyKVCacheSweeper.sweep(kvRoot: legacyRoot)
         #expect(sweptBytes > 0, "the sweeper must have removed the legacy tier's bytes")
         #expect(!fm.fileExists(atPath: legacyRoot.path), "the legacy kv/ root must be gone")
 
-        #expect(dbk2Files(under: ssdDir).count == 8, "SSD entries must survive the legacy sweep")
+        #expect(dbk3Files(under: ssdDir).count == 8, "SSD entries must survive the legacy sweep")
         // And they remain fully adoptable: fresh cache, scan, stage.
         let reader = makeCache(dir: ssdDir, kek: kek, clock: clock)
         defer { reader.close() }
@@ -1466,6 +1956,9 @@ struct SSDWholeRootMaintenanceTests {
         payloadBytes: Int = 128
     ) throws -> URL {
         let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
+        try SSDBlockStore.prepareModelRoot(
+            dedicatedRoot: root,
+            modelRoot: modelRoot)
         let url = SSDBlockStore.fileURL(root: modelRoot, tag16Hex: tagHex)
         let chunk = Data(repeating: 7, count: payloadBytes)
         let metadata = SSDBlockMetadata(
@@ -1567,6 +2060,98 @@ struct SSDWholeRootMaintenanceTests {
         #expect(result.bytesAfter <= freshBytes)
     }
 
+    @Test("whole-root eviction durably rotates the model epoch before unlink")
+    func evictionRotatesEpoch() throws {
+        let root = tempDir("whole-root-epoch")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelKey = "333333333333"
+        let modelRoot = root.appendingPathComponent(modelKey, isDirectory: true)
+        let block = try writeOwnedFile(
+            root: root,
+            modelKey: modelKey,
+            tagHex: "3300112233445566778899aabbccddee",
+            modifiedAt: 1_000,
+            payloadBytes: 256)
+        let binding = SSDCacheEpochStore.Binding(
+            modelId: "model",
+            modelAggregateHash: String(repeating: "a", count: 64),
+            promptContractId: String(repeating: "b", count: 64),
+            blockHashVersion: CBv2BlockHasher.version,
+            blockSize: 256,
+            layoutEpoch: "layout",
+            keyFingerprint: String(repeating: "c", count: 64))
+        let active = try SSDCacheEpochStore(root: modelRoot, binding: binding)
+        let original = try #require(active.current)
+
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root,
+            ttlSeconds: 10_000,
+            nowSeconds: 2_000,
+            budgetBytes: 0)
+        #expect(result.budgetEvicted == 1)
+        #expect(!FileManager.default.fileExists(atPath: block.path))
+        #expect(active.current == nil, "the previously advertised epoch must be disabled")
+
+        let reopened = try SSDCacheEpochStore(root: modelRoot, binding: binding)
+        let rotated = try #require(reopened.current)
+        #expect(rotated != original)
+    }
+
+    @Test("whole-root eviction keeps an active cache on the rotated epoch")
+    func activeWholeRootEvictionKeepsCapabilityReady() async throws {
+        let root = tempDir("whole-root-active-epoch")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let modelRoot = root.appendingPathComponent("444444444444", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: modelRoot, withIntermediateDirectories: true)
+        let binding = SSDCacheEpochStore.Binding(
+            modelId: "test-model",
+            modelAggregateHash: "test-weight-hash",
+            promptContractId: "test-prompt-contract",
+            blockHashVersion: CBv2BlockHasher.version,
+            blockSize: fixtureBlockSize,
+            layoutEpoch: SSDBlockStore.layoutEpoch(
+                blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
+            keyFingerprint: String(repeating: "d", count: 64))
+        let epochStore = try SSDCacheEpochStore(root: modelRoot, binding: binding)
+        let cache = makeCache(
+            dir: modelRoot,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            diskBudget: .shared,
+            epochStore: epochStore)
+        defer { cache.close() }
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+
+        var advertised: PrefixCacheV2Capability?
+        for _ in 0 ..< 100 {
+            advertised = cache.prefixCacheV2Capability()
+            if advertised != nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let original = try #require(advertised)
+        let tokens = Array(0 ..< 64)
+        cache.donate(
+            tokens: tokens,
+            snapshots: fixtureSnapshots(tokenCount: tokens.count),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 1))
+        await cache.waitForWritesForTesting()
+
+        let result = SSDWholeRootMaintainer.shared.maintain(
+            root: root,
+            ttlSeconds: 10_000,
+            nowSeconds: 10_000,
+            budgetBytes: 0)
+        #expect(result.budgetEvicted > 0)
+        SSDDiskBudget.shared.reconcileAll()
+
+        let rotated = try #require(cache.prefixCacheV2Capability())
+        #expect(rotated.cacheEpoch != original.cacheEpoch)
+        #expect(cache.index.count == 0)
+    }
+
     @Test("young temp bytes consume global budget without making the active temp evictable")
     func youngTempBudgetAccounting() throws {
         let root = tempDir("whole-root-temp-budget")
@@ -1608,7 +2193,7 @@ struct SSDWholeRootMaintenanceTests {
         #expect(FileManager.default.fileExists(atPath: temp.path))
     }
 
-    @Test("malformed exact-looking files remain untouched without DBK2 ownership proof")
+    @Test("malformed exact-looking files remain untouched without DBK3 ownership proof")
     func malformedLookalikePreserved() throws {
         let root = tempDir("whole-root-lookalike")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1616,7 +2201,7 @@ struct SSDWholeRootMaintenanceTests {
         let fanout = model.appendingPathComponent("ab", isDirectory: true)
         try FileManager.default.createDirectory(at: fanout, withIntermediateDirectories: true)
         let lookalike = fanout.appendingPathComponent(
-            "ab00112233445566778899aabbccddee.dbk2")
+            "ab00112233445566778899aabbccddee.dbk3")
         try Data("not-a-darkbloom-block".utf8).write(to: lookalike)
         try FileManager.default.setAttributes(
             [.modificationDate: Date(timeIntervalSince1970: 1_000)],
@@ -1634,7 +2219,7 @@ struct SSDWholeRootMaintenanceTests {
     @Test("maintenance rejects roots reached through a symlinked ancestor")
     func symlinkedRootIsNeverTraversed() throws {
         let container = tempDir("whole-root-symlink-container")
-        let root = container.appendingPathComponent("kv2", isDirectory: true)
+        let root = container.appendingPathComponent("kv3", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         let stale = try writeOwnedTemp(
             root: root,
@@ -1651,7 +2236,7 @@ struct SSDWholeRootMaintenanceTests {
             try? FileManager.default.removeItem(at: alias)
             try? FileManager.default.removeItem(at: container)
         }
-        let aliasedRoot = alias.appendingPathComponent("kv2", isDirectory: true)
+        let aliasedRoot = alias.appendingPathComponent("kv3", isDirectory: true)
 
         let result = SSDWholeRootMaintainer.shared.maintain(
             root: aliasedRoot,
@@ -1672,7 +2257,7 @@ struct SSDWholeRootMaintenanceTests {
         let now: Int64 = 10_000
         let uuid = "01234567-89AB-CDEF-0123-456789ABCDEF"
         let tag = "ab00112233445566778899aabbccddee"
-        let exactName = "\(tag).dbk2.darkbloom-tmp.\(uuid)"
+        let exactName = "\(tag).dbk3.darkbloom-tmp.\(uuid)"
 
         func create(
             _ relativeDirectory: String,
@@ -1695,18 +2280,18 @@ struct SSDWholeRootMaintenanceTests {
             modifiedAt: now - SSDBlockStore.crashTempTTLSeconds)
         let young = try create(
             "abcdefabcdef/ab",
-            "\(tag).dbk2.darkbloom-tmp.31234567-89AB-CDEF-0123-456789ABCDEF",
+            "\(tag).dbk3.darkbloom-tmp.31234567-89AB-CDEF-0123-456789ABCDEF",
             modifiedAt: now - SSDBlockStore.crashTempTTLSeconds + 1)
         let preserved = try [
             young,
             // UUID values differ so case-only near-matches remain distinct on
             // the default case-insensitive macOS filesystem.
-            create("abcdefabcdef/ab", "\(tag).dbk2.darkbloom-tmp.11234567-89ab-cdef-0123-456789abcdef"),
-            create("abcdefabcdef/ab", "\(tag).dbk2.darkbloom-tmp.21234567-89AB-cDEF-0123-456789ABCDef"),
-            create("abcdefabcdef/ab", "AB00112233445566778899aabbccddee.dbk2.darkbloom-tmp.11234567-89AB-CDEF-0123-456789ABCDEF"),
-            create("abcdefabcdef/ab", "\(tag).dbk2.darkbloom-tmp.not-a-uuid"),
-            create("abcdefabcdef/ab", "\(tag).dbk2.darkbloom-tmp-\(uuid)"),
-            create("abcdefabcdef/ab", "\(tag).dbk2.darkbloom-tmp.\(uuid).extra"),
+            create("abcdefabcdef/ab", "\(tag).dbk3.darkbloom-tmp.11234567-89ab-cdef-0123-456789abcdef"),
+            create("abcdefabcdef/ab", "\(tag).dbk3.darkbloom-tmp.21234567-89AB-cDEF-0123-456789ABCDef"),
+            create("abcdefabcdef/ab", "AB00112233445566778899aabbccddee.dbk3.darkbloom-tmp.11234567-89AB-CDEF-0123-456789ABCDEF"),
+            create("abcdefabcdef/ab", "\(tag).dbk3.darkbloom-tmp.not-a-uuid"),
+            create("abcdefabcdef/ab", "\(tag).dbk3.darkbloom-tmp-\(uuid)"),
+            create("abcdefabcdef/ab", "\(tag).dbk3.darkbloom-tmp.\(uuid).extra"),
             create("abcdefabcdef/cd", exactName),
             create("not-a-model/ab", exactName),
             create("abcdefabcdef/not-fanout", exactName),
@@ -1794,7 +2379,7 @@ struct SSDPrefixCacheDonationGateTests {
         try? await Task.sleep(for: .milliseconds(300))
         #expect(cache.stats().blocksWritten == 0)
         #expect(cache.index.count == 0)
-        #expect(dbk2Files(under: dir).isEmpty)
+        #expect(dbk3Files(under: dir).isEmpty)
     }
 
     private func donate(_ cache: SSDPrefixCache, tokenCount: Int) {
@@ -1830,7 +2415,7 @@ struct SSDPrefixCacheDonationGateTests {
             try? await Task.sleep(for: .milliseconds(25))
         }
         #expect(cache.index.count == 11)
-        #expect(dbk2Files(under: dir).count == 11)
+        #expect(dbk3Files(under: dir).count == 11)
     }
 
     @Test("gemma constants: the >26.6k long-context tail caches; anything shorter writes nothing")
@@ -1894,12 +2479,12 @@ struct SSDPrefixCacheDonationGateTests {
         #expect(await waitForIndexCount(writer, atLeast: 3))
         try? await Task.sleep(for: .milliseconds(200))
         #expect(writer.index.count == 3)
-        #expect(dbk2Files(under: dir).count == 3)
+        #expect(dbk3Files(under: dir).count == 3)
         writer.close()
 
         // The persisted run is the LEADING prefix (contiguous from block 1):
         // a reader with an uncapped STAGE budget (the stage cap counts
-        // on-disk bytes, which include DBK2 overhead) adopts exactly the
+        // on-disk bytes, which include DBK3 overhead) adopts exactly the
         // 3 persisted blocks.
         let reader = makeCache(
             dir: dir, kek: kek, clock: clock, minEffectiveTokens: fixtureBlockSize)

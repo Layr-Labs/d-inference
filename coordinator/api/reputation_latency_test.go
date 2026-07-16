@@ -1,9 +1,12 @@
 package api
 
 import (
+	"encoding/base64"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
@@ -93,5 +96,73 @@ func TestAdjustLatencyForPrefill(t *testing.T) {
 		if got := adjustLatencyForPrefill(c.raw, c.promptTokens, c.prefillTPS); got != c.want {
 			t.Errorf("%s: adjustLatencyForPrefill = %v, want %v", c.name, got, c.want)
 		}
+	}
+}
+
+func TestOnlyActualCacheParticipationSuppressesReputationLatency(t *testing.T) {
+	plain := &registry.PendingRequest{Timing: &registry.RequestTiming{}}
+	if !shouldRecordReputationLatency(plain, "data: content") {
+		t.Fatal("ordinary content attempt should record reputation latency")
+	}
+	cacheDisabled := &registry.PendingRequest{
+		Timing: &registry.RequestTiming{},
+		CachePlan: registry.CachePlan{
+			ModelAggregateHash: "expected",
+			PromptContractID:   "contract",
+			CacheScope:         "scope",
+			PromptTokenCount:   64,
+			Boundaries:         []protocol.PrefixCacheAnchor{{TokenCount: 64, ChainHash: strings.Repeat("a", 64)}},
+		},
+	}
+	if !shouldRecordReputationLatency(cacheDisabled, "data: content") {
+		t.Fatal("route-derived but cache-disabled attempt lost reputation latency")
+	}
+
+	reg := registry.New(quietLogger())
+	if err := reg.ConfigureCacheRouting(registry.CacheRoutingConfig{
+		Mode:            registry.CacheRoutingOn,
+		TTL:             time.Minute,
+		MaxHolders:      4,
+		MaxDiscountMs:   1000,
+		MaxCostFraction: .35,
+		MasterKey: base64.RawURLEncoding.EncodeToString(
+			[]byte("0123456789abcdef0123456789abcdef")),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "model", WeightHash: "expected"}})
+	provider := &registry.Provider{
+		ID:                  "provider",
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: map[string]protocol.PrefixCacheV2Capability{
+			"model": {
+				ModelID: "model", ModelAggregateHash: "expected",
+				PromptContractID: "contract", BlockSize: 64,
+				CacheEpoch: "epoch", Enabled: true, Ready: true,
+			},
+		},
+		Models: []protocol.ModelInfo{{ID: "model", WeightHash: "expected"}},
+	}
+	cached := &registry.PendingRequest{
+		RequestID:   "cached-attempt",
+		Model:       "model",
+		ConsumerKey: "account",
+		Timing:      &registry.RequestTiming{},
+		CachePlan: registry.CachePlan{
+			ModelAggregateHash: "expected",
+			PromptContractID:   "contract",
+			CacheScope:         "scope",
+			PromptTokenCount:   64,
+			Boundaries:         []protocol.PrefixCacheAnchor{{TokenCount: 64, ChainHash: strings.Repeat("a", 64)}},
+		},
+	}
+	if err := reg.PrepareCacheAttempt(cached, provider); err != nil {
+		t.Fatal(err)
+	}
+	if !cached.CacheRoutingParticipates() {
+		t.Fatal("verified cache attempt was not marked participating")
+	}
+	if shouldRecordReputationLatency(cached, "data: content") {
+		t.Fatal("cache-participating attempt recorded full-prefill reputation latency")
 	}
 }

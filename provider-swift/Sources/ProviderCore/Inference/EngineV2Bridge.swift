@@ -110,16 +110,6 @@ public actor EngineV2Bridge {
     /// model-load gate subtracts. nil in unit
     /// tests ⇒ no shared gating/accounting.
     let kvBudget: GlobalKVCacheBudget?
-    /// Byte budget carved out of this slot's KV grant for the opt-in RAM
-    /// prefix cache (`PrefixCachePolicy.carve`). Zero means no RAM carve and
-    /// includes both cache-off and the default SSD mode. The engine's
-    /// `kvBytesCapacity` was REDUCED by this amount at construction, so the
-    /// engine ledger, the heartbeat budget, and the cache jointly never
-    /// exceed the slot's grant. Fleet sizing reads it back via
-    /// `slotKVBytesClaim()` — the bytes are claimed even though the engine's
-    /// own capacity no longer shows them (T-041). `nonisolated`: immutable
-    /// and Sendable, so heartbeat/test readers need no actor hop.
-    public nonisolated let prefixCacheBudgetBytes: Int
     /// Encrypted SSD offload tier (v0.7.5, default for CBv2-supported models
     /// when Secure Enclave KEK construction succeeds):
     /// the SAME instance handed to the engine as its `CBv2PrefixCache`.
@@ -127,9 +117,10 @@ public actor EngineV2Bridge {
     /// adoption: probe index → reserve staging bytes → read+decrypt off
     /// the engine threads → seed the staging map so the engine's
     /// synchronous `lookup()` hits), the per-request release backstop
-    /// (`completeStaging`), and shutdown. nil means the slot selected RAM,
-    /// caching is off, or SSD initialization was unavailable.
-    let ssdPrefixCache: SSDPrefixCache?
+    /// (`completeStaging`), and shutdown. nil means caching is disabled or
+    /// SSD initialization was unavailable.
+    nonisolated let ssdPrefixCache: SSDPrefixCache?
+    nonisolated let prefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
     /// Periodic prefix-cache stats logger (v2 analog of the legacy
     /// checkpoint-tier logger). Started by the slot factory when an active
     /// cache exists; cancelled in `shutdown()`.
@@ -147,7 +138,7 @@ public actor EngineV2Bridge {
         let promptTokens: Int
         let maxTokens: Int
         var completionTokens: Int = 0
-        let submittedAt: ContinuousClock.Instant
+        var submittedAt: ContinuousClock.Instant
         var firstTokenAt: ContinuousClock.Instant?
     }
 
@@ -205,9 +196,10 @@ public actor EngineV2Bridge {
     var wedgeMonitor = WedgeMonitor()
     var observedDecodeTpsEwma: Double = 0
     var ewmaInitialized = false
-    /// Cold-prefill EWMA (`observed_prefill_tps` heartbeat field), fed per
-    /// successful finish from the bridge's own timing: prefill window =
-    /// first-token time − submit; rate = prompt tokens / window. Absorbs
+    /// Cold-prefill EWMA (`observed_prefill_tps` heartbeat field), fed only by
+    /// successful requests whose terminal usage confirms that no prefix KV was
+    /// adopted. The bridge's timing window is first-token time − submit and
+    /// the rate is prompt tokens / window. Absorbs
     /// PR #454's measurement approach for the v2 engine (that PR added an
     /// engine prefill-start marker for the LEGACY engine; the v2 bridge
     /// already owns both timestamps, so no engine change is needed) with
@@ -240,7 +232,6 @@ public actor EngineV2Bridge {
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
-        prefixCacheBudgetBytes: Int = 0,
         ssdPrefixCache: SSDPrefixCache? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
@@ -259,8 +250,10 @@ public actor EngineV2Bridge {
         self.maxConcurrentRequests = maxConcurrentRequests
         self.kvBytesPerToken = kvBytesPerToken
         self.kvBudget = kvBudget
-        self.prefixCacheBudgetBytes = max(0, prefixCacheBudgetBytes)
         self.ssdPrefixCache = ssdPrefixCache
+        self.prefixCacheEvidenceSequencer = ssdPrefixCache.map {
+            PrefixCacheEvidenceSequencer(cache: $0)
+        }
         self.emitTelemetry = emitTelemetry
     }
 
@@ -270,10 +263,8 @@ public actor EngineV2Bridge {
     /// `BatchScheduler.submit(request:)` tokenization path (role/content
     /// dict + Harmony channel-tag stripping for assistant turns).
     ///
-    /// The per-tenant prefix-cache scope is derived from the request itself
-    /// (`prompt_cache_key`/`user` → `ChatCompletionRequest.cacheScope`);
-    /// callers that decode the scope out-of-band (the coordinator path)
-    /// use `submitTokenized(..., cacheScope:)` directly.
+    /// Local callers are intentionally unscoped. Remote callers pass the
+    /// authenticated coordinator-authored scope through `submitTokenized`.
     public func submit(
         request: ChatCompletionRequest,
         requestId: String? = nil,
@@ -300,7 +291,7 @@ public actor EngineV2Bridge {
         }
         return await submitTokenized(
             promptTokens: promptTokens, request: request, requestId: requestId,
-            cacheScope: request.cacheScope, logprobsChannel: logprobsChannel
+            cacheScope: "", logprobsChannel: logprobsChannel
         )
     }
 
@@ -309,13 +300,10 @@ public actor EngineV2Bridge {
     /// itself). Sampling/stop/max-token translation still comes from the
     /// request so both entry points share one translation source.
     ///
-    /// `cacheScope` is the authenticated coordinator-authored scope for
-    /// remote requests, or the fixed/local caller scope for standalone use.
-    /// It maps onto `CBv2Request.cacheSalt` (TB-007/T-041): non-empty scopes
-    /// can never share cached KV across tenants; `cacheEnabled=false` is the
-    /// legacy-remote fail-closed path. LIVE as of v0.7.5 — the
-    /// production engine runs with `PrefixCacheV2` when
-    /// `PrefixCachePolicy` funds it.
+    /// `cacheScope` is authenticated and coordinator-authored for remote
+    /// requests; standalone callers remain unscoped. It maps onto
+    /// `CBv2Request.cacheSalt`: non-empty scopes cannot share encrypted SSD
+    /// blocks across tenants, and `cacheEnabled=false` fails cold.
     ///
     /// `usageSignal`, when non-nil, receives the engine's terminal usage
     /// detail (matched and actually-saved prefix tokens) so the frames loop can
@@ -361,9 +349,30 @@ public actor EngineV2Bridge {
         // the two pumps would corrupt each other's teardown. Same canonical
         // message → `.requestRejected` (a deterministic client fault).
         guard active[id] == nil else {
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
             continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
             continuation.finish()
             return stream
+        }
+
+        // The SSD staging ticket must be submission-unique even when seeded
+        // sampling intentionally reuses a deterministic engine request id.
+        // Mint it before staging and pass the same identity through
+        // CBv2Request.prefixCacheReceiptID so the engine's request-aware
+        // lookup/endAdoption calls balance this exact ticket.
+        let prefixCacheReceiptID: CBv2RequestID?
+        var readyReceiptRegistered = false
+        if cacheEnabled, multimodal == nil, let ssd = ssdPrefixCache {
+            let receiptID = mintPrefixCacheReceiptID()
+            prefixCacheReceiptID = receiptID
+            if let callback = usageSignal?.onCacheReady {
+                ssd.registerReadyReceipt(requestID: receiptID, callback: callback)
+                readyReceiptRegistered = true
+            }
+        } else {
+            prefixCacheReceiptID = nil
         }
 
         // PRE-SUBMIT SSD STAGING (v0.7.5 read-through adoption): probe the
@@ -381,15 +390,25 @@ public actor EngineV2Bridge {
         var ssdStaged = false
         if !cacheEnabled {
             usageSignal?.recordCacheDisabled(tier: ssdPrefixCache == nil ? .memory : .ssd)
-        } else if let ssd = ssdPrefixCache, multimodal == nil {
+        } else if multimodal != nil {
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+        } else if let ssd = ssdPrefixCache, let prefixCacheReceiptID {
             let stageResult = await ssd.stage(
-                requestID: id, promptTokens: promptTokens, cacheScope: cacheScope)
+                requestID: prefixCacheReceiptID,
+                promptTokens: promptTokens,
+                cacheScope: cacheScope)
             usageSignal?.record(stageResult: stageResult)
             ssdStaged = stageResult.staged
             // `stage` suspended this actor — re-check the duplicate guard
             // (same discipline as the shared-budget gate below).
             guard active[id] == nil else {
-                if ssdStaged { ssd.completeStaging(requestID: id) }
+                if ssdStaged { await ssd.abandonStaging(requestID: prefixCacheReceiptID) }
+                if readyReceiptRegistered {
+                    ssd.discardReadyReceipt(requestID: prefixCacheReceiptID)
+                }
+                usageSignal?.finalizeLookup(failure: .policy, fallbackTier: .ssd)
                 continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
                 continuation.finish()
                 return stream
@@ -412,6 +431,7 @@ public actor EngineV2Bridge {
             cacheEnabled: cacheEnabled,
             multimodal: multimodal
         )
+        cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
         // footprint (prompt + maxTokens at the fp16 rate — the caches v2
@@ -449,8 +469,28 @@ public actor EngineV2Bridge {
         {
             sharedKVReserved = await kvBudget.reserve(
                 requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
+            if !sharedKVReserved, ssdStaged, let prefixCacheReceiptID {
+                // Optional adoption may be the only reason R no longer fits:
+                // retire S synchronously, then retry the full cold request R.
+                await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
+                ssdStaged = false
+                sharedKVReserved = await kvBudget.reserve(
+                    requestID: id,
+                    kvBytesPerToken: kvBytesPerToken,
+                    tokenCount: worstCaseTokens)
+            }
             guard sharedKVReserved else {
-                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+                if let prefixCacheReceiptID {
+                    if ssdStaged {
+                        await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
+                    }
+                    if readyReceiptRegistered {
+                        ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
+                    }
+                }
+                usageSignal?.finalizeLookup(
+                    failure: .capacity,
+                    fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
                 continuation.yield(.error(
                     "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
                         + "but the shared KV budget has no headroom"))
@@ -466,7 +506,17 @@ public actor EngineV2Bridge {
             // on this id's existing entry.)
             guard active[id] == nil else {
                 await kvBudget.release(requestID: id)
-                if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
+                if let prefixCacheReceiptID {
+                    if ssdStaged {
+                        await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
+                    }
+                    if readyReceiptRegistered {
+                        ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
+                    }
+                }
+                usageSignal?.finalizeLookup(
+                    failure: .policy,
+                    fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
                 continuation.yield(.error("token_budget_exhausted: duplicate request ID"))
                 continuation.finish()
                 return stream
@@ -483,26 +533,21 @@ public actor EngineV2Bridge {
         let cbv2Id = mintEngineRequestId(
             seed: cbv2Request.sampling.seed, promptTokens: promptTokens)
         cbv2Request.id = cbv2Id
-        let readyReceiptRequestID: CBv2RequestID?
-        if cacheEnabled, multimodal == nil,
-            let ssd = ssdPrefixCache,
-            let callback = usageSignal?.onCacheReady
-        {
-            let receiptID = mintPrefixCacheReceiptID()
-            cbv2Request.prefixCacheReceiptID = receiptID
-            ssd.registerReadyReceipt(requestID: receiptID, callback: callback)
-            readyReceiptRequestID = receiptID
-        } else {
-            readyReceiptRequestID = nil
-        }
 
         let events: AsyncStream<CBv2Event>
         guard let engine = ownedEngine else {
             if sharedKVReserved { await kvBudget?.release(requestID: id) }
-            if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
-            if let readyReceiptRequestID {
-                ssdPrefixCache?.discardReadyReceipt(requestID: readyReceiptRequestID)
+            if let prefixCacheReceiptID {
+                if ssdStaged {
+                    await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
+                }
+                if readyReceiptRegistered {
+                    ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
+                }
             }
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
             continuation.yield(.error("request queue full: engine is shutting down"))
             continuation.finish()
             return stream
@@ -523,10 +568,17 @@ public actor EngineV2Bridge {
             // A rejected submit also never ran the prefix-cache lookup, so
             // the engine can never balance the staging ticket — backstop it.
             if sharedKVReserved { await kvBudget?.release(requestID: id) }
-            if ssdStaged { ssdPrefixCache?.completeStaging(requestID: id) }
-            if let readyReceiptRequestID {
-                ssdPrefixCache?.discardReadyReceipt(requestID: readyReceiptRequestID)
+            if let prefixCacheReceiptID {
+                if ssdStaged {
+                    await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
+                }
+                if readyReceiptRegistered {
+                    ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
+                }
             }
+            usageSignal?.finalizeLookup(
+                failure: Self.prefixCacheFailureClass(for: error),
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
             // Admission failure. The message keeps the canonical
             // `token_budget_exhausted:` prefix contract so
             // `fromSchedulerMessage` classifies it as a retryable capacity
@@ -559,7 +611,8 @@ public actor EngineV2Bridge {
             holdsSharedReservation: sharedKVReserved,
             logprobsChannel: logprobsChannel,
             usageSignal: usageSignal,
-            readyReceiptRequestID: readyReceiptRequestID
+            prefixCacheReceiptID: prefixCacheReceiptID,
+            readyReceiptRegistered: readyReceiptRegistered
         )
 
         let bridge = self
@@ -612,7 +665,7 @@ public actor EngineV2Bridge {
     /// freed. A later GROW can restore admission only up to the same pool.
     /// Reclaiming or adding physical bytes requires an unload/rebuild.
     public func updateKVBytesCapacity(_ bytes: Int) {
-        let requested = max(0, bytes - prefixCacheBudgetBytes)
+        let requested = max(0, bytes)
         guard let engine = ownedEngine else { return }
         if kvBackendKind == .paged {
             let physical = max(0, engine.capacity().kvBytesBackendCapacity)
@@ -655,8 +708,9 @@ public actor EngineV2Bridge {
     /// can't keep a pump (and its KV reservation) alive past shutdown, then
     /// await the engine drain.
     public func shutdown() async {
-        prefixCacheStatsTask?.cancel()
+        let statsTask = prefixCacheStatsTask
         prefixCacheStatsTask = nil
+        statsTask?.cancel()
         mtpMetricsTask?.cancel()
         mtpMetricsTask = nil
         let live = pumpTasks
@@ -665,13 +719,25 @@ public actor EngineV2Bridge {
         if let engine = ownedEngine {
             await engine.shutdown()
         }
+        for task in live.values {
+            await task.value
+        }
+        _ = await statsTask?.value
         // The bridge may remain in a local teardown variable; explicitly drop
         // the concrete engine so target and assistant ownership does not.
         ownedEngine = nil
+        prefixCacheEvidenceSequencer?.shutdown()
         // SSD tier teardown AFTER the engine drain: queued donation writes
         // are dropped, staging pins/reservations released, on-disk files
         // KEPT — durable warmth across unload/restart is the feature.
-        ssdPrefixCache?.close()
+        await ssdPrefixCache?.closeAndWait()
+    }
+
+    /// Deterministic timing seam for prefill-sampling tests.
+    func backdateSubmissionForTesting(requestId: String, byMilliseconds milliseconds: Int64) {
+        guard var state = active[requestId] else { return }
+        state.submittedAt = state.submittedAt.advanced(by: .milliseconds(-milliseconds))
+        active[requestId] = state
     }
 
     // MARK: - Event pump (CBv2Event → GenerationEvent)
@@ -683,7 +749,8 @@ public actor EngineV2Bridge {
         holdsSharedReservation: Bool,
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
-        readyReceiptRequestID: CBv2RequestID? = nil
+        prefixCacheReceiptID: CBv2RequestID? = nil,
+        readyReceiptRegistered: Bool = false
     ) {
         let bridge = self
         let task = Task {
@@ -692,7 +759,8 @@ public actor EngineV2Bridge {
                 holdsSharedReservation: holdsSharedReservation,
                 logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
-                readyReceiptRequestID: readyReceiptRequestID
+                prefixCacheReceiptID: prefixCacheReceiptID,
+                readyReceiptRegistered: readyReceiptRegistered
             )
             await bridge.clearPumpTask(id: id)
         }
@@ -712,7 +780,8 @@ public actor EngineV2Bridge {
         holdsSharedReservation: Bool,
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
-        readyReceiptRequestID: CBv2RequestID? = nil
+        prefixCacheReceiptID: CBv2RequestID? = nil,
+        readyReceiptRegistered: Bool = false
     ) async {
         // NOTE: the shared-budget KV reservation is taken in `submitTokenized`
         // (the pre-engine admission gate), NOT here — the pump only RELEASES
@@ -776,10 +845,12 @@ public actor EngineV2Bridge {
                 // SSD staging backstop: usually a no-op (the engine's
                 // endAdoption already balanced the ticket at adoption
                 // time); covers the lookup-missed corner. Idempotent.
-                ssdPrefixCache?.completeStaging(requestID: id)
-                if let readyReceiptRequestID {
+                if let prefixCacheReceiptID {
+                    ssdPrefixCache?.completeStaging(requestID: prefixCacheReceiptID)
+                }
+                if readyReceiptRegistered, let prefixCacheReceiptID {
                     ssdPrefixCache?.markReadyReceiptTerminal(
-                        requestID: readyReceiptRequestID)
+                        requestID: prefixCacheReceiptID)
                 }
                 continuation.finish()
                 return
@@ -797,13 +868,24 @@ public actor EngineV2Bridge {
             if holdsSharedReservation {
                 await kvBudget?.release(requestID: id)
             }
-            ssdPrefixCache?.completeStaging(requestID: id)
-            if let readyReceiptRequestID {
+            if let prefixCacheReceiptID {
+                ssdPrefixCache?.completeStaging(requestID: prefixCacheReceiptID)
+            }
+            usageSignal?.finalizeLookup(
+                failure: .policy,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+            if readyReceiptRegistered, let prefixCacheReceiptID {
                 ssdPrefixCache?.markReadyReceiptTerminal(
-                    requestID: readyReceiptRequestID)
+                    requestID: prefixCacheReceiptID)
             }
             continuation.finish()
         }
+    }
+
+    private static func prefixCacheFailureClass(
+        for error: Error
+    ) -> PrefixCacheLookupFailureClass {
+        error is CBv2KVError ? .capacity : .policy
     }
 
     /// Terminal framing — mirrors `BatchScheduler+EngineBridge` exactly.
@@ -912,6 +994,7 @@ public actor EngineV2Bridge {
         if success {
             recordPrefillSample(
                 promptTokens: prompt,
+                usage: usage,
                 submittedAt: state.submittedAt,
                 firstTokenAt: state.firstTokenAt)
         }
@@ -950,14 +1033,16 @@ public actor EngineV2Bridge {
     }
 
     /// Feed the prefill EWMA (α = 0.3, mirroring the decode EWMA) from a
-    /// successful request's timing. The v2 production engine runs with the
-    /// prefix cache OFF, so every sample is a genuine cold prefill; the
-    /// bounds above still reject degenerate windows.
+    /// successful request's timing only when terminal engine usage proves the
+    /// request performed a cold prefill. Cache hits have a different latency
+    /// distribution and must never calibrate the coordinator's cold TTFT model.
     private func recordPrefillSample(
         promptTokens: Int,
+        usage: CBv2Usage,
         submittedAt: ContinuousClock.Instant,
         firstTokenAt: ContinuousClock.Instant?
     ) {
+        guard Self.isColdPrefillSample(usage: usage) else { return }
         guard let firstTokenAt else { return }
         let prefillSeconds = WedgeMonitor.seconds(firstTokenAt - submittedAt)
         guard
@@ -971,6 +1056,15 @@ public actor EngineV2Bridge {
             observedPrefillTpsEwma = tps
             prefillEwmaInitialized = true
         }
+    }
+
+    static func isColdPrefillSample(usage: CBv2Usage) -> Bool {
+        guard usage.prefixCacheOutcome != .hit else { return false }
+        return max(
+            usage.prefixCacheHitTokens,
+            usage.prefixCacheMatchedTokens,
+            usage.prefixCachePrefillTokensSaved
+        ) <= 0
     }
 
     /// Stream torn down without a terminal event — drop local state.

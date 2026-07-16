@@ -209,6 +209,7 @@ let package = Package(
             dependencies: [
                 "ProviderCore",
                 "ProviderBenchmark",
+                .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
             ],

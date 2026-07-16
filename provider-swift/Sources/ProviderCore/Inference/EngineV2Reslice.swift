@@ -157,9 +157,7 @@ extension EngineV2KVSizing {
     /// claim, so the floor must hold for what would remain for its ENGINE
     /// (`grant − carve`) — a total that only covers the cache would leave
     /// the slot rejecting every request. Slots absent from the map (the
-    /// newcomer, uncarved slots) are floored on the raw grant; the
-    /// newcomer's own carve is elastic (`PrefixCachePolicy.carve` shrinks
-    /// the cache budget before the engine share).
+    /// newcomer and existing slots are floored on the live-KV grant.
     static func resliceMeetsServiceabilityFloor(
         _ grants: [String: Int],
         fixedCarveBytes: [String: Int] = [:]

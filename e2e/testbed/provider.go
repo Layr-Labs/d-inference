@@ -20,9 +20,16 @@ func providerBuildConfig() string {
 func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 	repoRoot := os.Getenv("DARKBLOOM_REPO_ROOT")
 	if repoRoot == "" {
-		repoRoot = "."
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve repository root: %w", err)
+		}
+		repoRoot, err = findRepositoryRoot(cwd)
+		if err != nil {
+			return "", err
+		}
 	}
-	providerDir := repoRoot + "/provider-swift"
+	providerDir := filepath.Join(repoRoot, "provider-swift")
 	cfg := providerBuildConfig()
 
 	binaryPath := providerDir + "/.build/" + cfg + "/darkbloom"
@@ -54,6 +61,25 @@ func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 
 	logger.Info("provider binary built", "path", binaryPath)
 	return binaryPath, nil
+}
+
+func findRepositoryRoot(start string) (string, error) {
+	current, err := filepath.Abs(start)
+	if err != nil {
+		return "", fmt.Errorf("resolve repository root from %q: %w", start, err)
+	}
+	for {
+		goMod, goModErr := os.Stat(filepath.Join(current, "go.mod"))
+		provider, providerErr := os.Stat(filepath.Join(current, "provider-swift"))
+		if goModErr == nil && !goMod.IsDir() && providerErr == nil && provider.IsDir() {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("repository root not found above %q", start)
+		}
+		current = parent
+	}
 }
 
 func ensureMetallib(providerDir string, logger *slog.Logger) error {

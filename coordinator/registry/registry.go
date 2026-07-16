@@ -154,13 +154,25 @@ type PendingRequest struct {
 	// meets the floor, the full pool is kept so the request is still served
 	// (cold-dispatch/queue spill is a separate concern). 0 disables it.
 	MinDecodeTPS float64
-	// CacheRoute contains coordinator-only HMAC route keys. They are never sent
-	// to providers, logged, or persisted.
-	CacheRoute          CacheRoute
-	CacheReceiptNonce   string
-	CacheScope          string
-	cacheRoutingHints   map[string]cacheRoutingHint
-	cacheRoutingObserve bool
+	// CachePlan contains exact sidecar block boundaries and opaque build scope.
+	// It is never logged or persisted.
+	CachePlan         CachePlan
+	CacheReceiptNonce string
+	CacheScope        string
+	// PrefixCacheProtocol is the receipt version explicitly requested for this
+	// attempt. Zero means an old coordinator request; providers then use v1.
+	PrefixCacheProtocol int
+	// LegacyCacheBustKey is injected only into the encrypted provider-bound
+	// request body for protocol-0 providers. It is never reflected to the caller.
+	LegacyCacheBustKey string
+	// Cache selection fields are low-cardinality terminal-correlation metadata.
+	// They contain no route keys, scopes, account identifiers, or provider IDs.
+	CacheSelectionMode       string
+	CacheSelectionTier       string
+	CacheSelectionDiscountMs float64
+	CacheSelectionSelected   bool
+	cacheRoutingHints        map[string]cacheRoutingHint
+	cacheRoutingParticipates atomic.Bool
 	// TokenAdmission records the output-token charge admitted at request time so
 	// successful completion can reconcile any positive actual-output delta.
 	TokenAdmission TokenAdmission
@@ -194,6 +206,7 @@ type PendingRequest struct {
 	reservationFinalized  bool
 	routeOutcomeMu        sync.Mutex
 	routeOutcomeFinalized bool
+	cacheTerminalEmitted  bool
 
 	// Timing fields for latency decomposition. Written and read by the
 	// consumer/dispatch goroutine that owns the request. The reputation latency
@@ -227,6 +240,22 @@ type PendingRequest struct {
 	// the first reject so event ordering cannot distort the five-minute rate.
 	// Guarded by timingMu like contentCommitted (same writer/reader goroutines).
 	rateOutcomeCounted bool
+}
+
+// MarkCacheTerminalTelemetryEmitted claims the single terminal cache-selection
+// metric for this attempt. Provider terminals and consumer-side synthetic
+// disconnect/timeout paths can race; only the first terminal seam emits.
+func (pr *PendingRequest) MarkCacheTerminalTelemetryEmitted() bool {
+	if pr == nil {
+		return false
+	}
+	pr.routeOutcomeMu.Lock()
+	defer pr.routeOutcomeMu.Unlock()
+	if pr.cacheTerminalEmitted {
+		return false
+	}
+	pr.cacheTerminalEmitted = true
+	return true
 }
 
 // MarkFirstChunkArrived stamps Timing.FirstChunkAt to now exactly once, under
@@ -481,6 +510,9 @@ type Provider struct {
 	// PrefixCacheProtocol is the provider-confirmed cache receipt protocol
 	// version. Zero means the provider receives no cache fields.
 	PrefixCacheProtocol int
+	// PrefixCacheV2Models is the validated, connection-scoped capability set
+	// keyed by concrete model ID. It is authoritative for v2 receipt identity.
+	PrefixCacheV2Models map[string]protocol.PrefixCacheV2Capability
 
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory
@@ -1432,7 +1464,6 @@ type Registry struct {
 	cacheRouteKeys              cacheRouteKeys
 	cacheRoutingMaxDiscountMs   float64
 	cacheRoutingMaxCostFraction float64
-	cacheRoutingDedicated       bool
 	warmPool                    *warmPoolController
 	// loadModelSender is a test seam for SendLoadModel. Nil uses the provider WebSocket.
 	loadModelSender func(providerID, modelID string) error
@@ -1551,7 +1582,6 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 	r.cacheRouteKeys = keys
 	r.cacheRoutingMaxDiscountMs = cfg.MaxDiscountMs
 	r.cacheRoutingMaxCostFraction = cfg.MaxCostFraction
-	r.cacheRoutingDedicated = cfg.Dedicated
 	r.mu.Unlock()
 	return nil
 }
@@ -1565,7 +1595,6 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 		MaxHolders:      r.cacheRouting.maxHolders,
 		MaxDiscountMs:   r.cacheRoutingMaxDiscountMs,
 		MaxCostFraction: r.cacheRoutingMaxCostFraction,
-		Dedicated:       r.cacheRoutingDedicated,
 	}
 }
 
@@ -2589,6 +2618,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefillTPS:              msg.PrefillTPS,
 		DecodeTPS:               msg.DecodeTPS,
 		PrefixCacheProtocol:     msg.PrefixCacheProtocol,
+		PrefixCacheV2Models:     prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models),
 		TrustLevel:              TrustNone,
 		RuntimeVerified:         true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured

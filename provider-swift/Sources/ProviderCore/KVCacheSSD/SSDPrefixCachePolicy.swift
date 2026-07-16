@@ -6,9 +6,8 @@
 // matching prefixes are loaded back instead of recomputed).
 //
 // Everything here is PURE and unit-testable: environment, capacity, and
-// clock are parameters with production defaults. Mode selection (which
-// tier a slot runs) lives in `PrefixCachePolicy.mode` next to the master
-// gate; this file owns the SSD-tier-specific knobs.
+// clock are parameters with production defaults. The single production
+// gate lives in `PrefixCachePolicy`; this file owns SSD-specific knobs.
 //
 // Threat model: T-041 (the SSD tier reintroduces an at-rest artifact —
 // leak #2 is closed by HMAC-keyed names, `SSDLookupKeys`; the 15-minute
@@ -114,8 +113,17 @@ enum SSDPrefixCachePolicy {
 
     /// Estimated stage time for `bytes` at the conservative rate.
     static func estimatedStageMillis(bytes: Int) -> Int {
+        Int(estimatedStageMillisDouble(bytes: bytes))
+    }
+
+    /// Wire/scoring estimate for a future read of the durable leading run.
+    /// Positive durable bytes always carry a positive cost, and hostile sizes
+    /// are bounded to the protocol's ten-minute ceiling.
+    static func estimatedStageMillisDouble(bytes: Int) -> Double {
         guard bytes > 0 else { return 0 }
-        return Int((Double(bytes) / conservativeStageBytesPerSecond) * 1000.0)
+        let estimate = (Double(bytes) / conservativeStageBytesPerSecond) * 1000.0
+        guard estimate.isFinite else { return PrefixCacheReadyResult.maxStageMs }
+        return min(PrefixCacheReadyResult.maxStageMs, max(1, estimate.rounded(.up)))
     }
 
     // MARK: - Low-disk guard

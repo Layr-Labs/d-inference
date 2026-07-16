@@ -116,7 +116,9 @@ public enum TemplateRenderCheck {
             // (swift-transformers `compiledTemplate(for:)`).
             let template: Template
             do {
-                template = try Template(source, with: .init(lstripBlocks: true, trimBlocks: true))
+                template = try Template(
+                    normalizeSwiftJinjaTemplate(source),
+                    with: .init(lstripBlocks: true, trimBlocks: true))
             } catch {
                 // A template that doesn't compile can't render at request time.
                 return false

@@ -8,6 +8,7 @@ target/
 
 # Rust
 Cargo.lock
+!coordinator/promptsidecar/Cargo.lock
 
 # Go
 coordinator/bin/

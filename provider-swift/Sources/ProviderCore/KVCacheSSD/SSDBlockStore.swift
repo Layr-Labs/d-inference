@@ -1,15 +1,15 @@
 // Copyright © 2026 Eigen Labs.
 //
-// DBK2 — per-block content-addressed encrypted file codec for the SSD
+// DBK3 — per-block content-addressed encrypted file codec for the SSD
 // prefix cache. One file per 256-token KV block; eviction is `unlink(2)`
 // (zero write amplification — the endurance-correct choice, spec §4.1).
 //
 // The crypto core is the reviewed legacy `EncryptedKVStore` scheme,
-// verbatim in structure with a format-version bump to 2:
+// verbatim in structure with a format-version bump to 3:
 //
 // ```
 // 0       4       magic = "DBKV"
-// 4       2       uint16 LE  format_version (= 2)
+// 4       2       uint16 LE  format_version (= 3)
 // 6       2       uint16 LE  flags (reserved, must be 0)
 // 8      12       file_IV       random per-file; folded into HKDF info
 // 20      4       uint32 LE  wrapped_DEK length (N)
@@ -21,7 +21,7 @@
 // ```
 //
 // Per-chunk nonces: HKDF-Expand only (the DEK is already uniform),
-//   info = "dbkv-chunk-v2" ‖ file_IV ‖ uint32_be(chunk_index), L = 12.
+//   info = "dbkv-chunk-v3" ‖ file_IV ‖ uint32_be(chunk_index), L = 12.
 // AAD on every chunk seal AND on the DEK wrap is the canonical
 // (sorted-keys) metadata JSON — tampering any metadata field breaks every
 // auth tag and the reader deletes the file (fail-closed to recompute).
@@ -79,7 +79,7 @@ struct SSDBlockChunkDescriptor: Codable, Equatable, Sendable {
     let dtype: String
 }
 
-/// Plaintext-but-authenticated DBK2 metadata (the GCM AAD). Reviewed
+/// Plaintext-but-authenticated DBK3 metadata (the GCM AAD). Reviewed
 /// leak-by-leak in the design spec §4.2 — nothing prefix-derived beyond
 /// the keyed `lookupTag`.
 struct SSDBlockMetadata: Codable, Equatable, Sendable {
@@ -105,7 +105,7 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         layerCount: Int, chunks: [SSDBlockChunkDescriptor], chunkPlaintextSizes: [Int],
         createdAt: Int64 = Int64(Date().timeIntervalSince1970)
     ) {
-        self.schema = "darkbloom.kv.v2"
+        self.schema = "darkbloom.kv.v3"
         self.lookupTag = lookupTag
         self.weightHash = weightHash
         self.layoutEpoch = layoutEpoch
@@ -122,12 +122,12 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
 enum SSDBlockStore {
 
     static let magic: [UInt8] = [0x44, 0x42, 0x4B, 0x56]  // "DBKV"
-    static let formatVersion: UInt16 = 2
+    static let formatVersion: UInt16 = 3
     static let fileIVLength = 12
     static let nonceLength = 12
     static let gcmTagLength = 16
-    static let chunkInfoPrefix = "dbkv-chunk-v2"
-    static let fileExtension = "dbk2"
+    static let chunkInfoPrefix = "dbkv-chunk-v3"
+    static let fileExtension = "dbk3"
     /// Same hostile-length bound as the v1 parser.
     static let maxHeaderFieldBytes = 64 * 1024 * 1024
     static let tempMarker = "darkbloom-tmp"
@@ -142,7 +142,7 @@ enum SSDBlockStore {
 
     // MARK: Layout epoch
 
-    /// `"cbv2-snap-1|f16|<blockSize>|<layerKindsDigest[:8]>"` — bumps
+    /// `"cbv2-snap-2|f16|<blockSize>|<layerKindsDigest[:8]>"` — bumps
     /// whenever the engine's snapshot semantics, KV dtype policy, block
     /// size, or the model's layer-kind derivation change, so old files
     /// fail closed. The provider binary version is deliberately NOT in
@@ -160,12 +160,12 @@ enum SSDBlockStore {
         }
         let digest = SHA256.hash(data: Data(canonical.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
-        return "cbv2-snap-1|f16|\(blockSize)|\(hex)"
+        return "cbv2-snap-2|f16|\(blockSize)|\(hex)"
     }
 
     // MARK: Paths
 
-    /// `<root>/<tagHex[0..2]>/<tagHex>.dbk2` — 2-hex-char fan-out keeps
+    /// `<root>/<tagHex[0..2]>/<tagHex>.dbk3` — 2-hex-char fan-out keeps
     /// directories small at the default budget (~41 files/dir at 10k
     /// entries).
     static func fileURL(root: URL, tag16Hex: String) -> URL {
@@ -183,8 +183,13 @@ enum SSDBlockStore {
         metadata: SSDBlockMetadata,
         chunks: [Data],
         kekKey: SymmetricKey,
-        strictFsync: Bool = false
-    ) throws {
+        strictFsync: Bool = false,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
+    ) throws -> Int {
+        let modelRoot = url.deletingLastPathComponent().deletingLastPathComponent()
+        guard isSafeBlockURL(url, modelRoot: modelRoot) else {
+            throw SSDBlockStoreError.ioFailure("unsafe block path")
+        }
         guard chunks.count == metadata.chunkPlaintextSizes.count,
             chunks.count == metadata.chunks.count
         else {
@@ -202,33 +207,17 @@ enum SSDBlockStore {
         let header = try assembleHeader(
             fileIV: fileIV, wrappedDEK: wrappedDEK, metadataJSON: metadataJSON)
 
-        let dir = url.deletingLastPathComponent()
-        try ensureDirectory(dir)
-        let tmpURL = temporaryFileURL(for: url)
         do {
-            FileManager.default.createFile(atPath: tmpURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: tmpURL)
-            defer { try? handle.close() }
+            return try SSDNoFollowIO.writeAtomically(
+                to: url,
+                strictFsync: strictFsync,
+                beforeOperation: beforeOperation
+            ) { handle in
             try handle.write(contentsOf: header)
             try writeEncryptedBody(handle, chunks: chunks, dek: dek, fileIV: fileIV, aad: metadataJSON)
-            if strictFsync { try handle.synchronize() }
-        } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
-            throw SSDBlockStoreError.ioFailure("write tmp: \(error)")
-        }
-        do {
-            if FileManager.default.fileExists(atPath: url.path) {
-                _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
-            } else {
-                do {
-                    try FileManager.default.moveItem(at: tmpURL, to: url)
-                } catch {
-                    _ = try FileManager.default.replaceItemAt(url, withItemAt: tmpURL)
-                }
             }
         } catch {
-            try? FileManager.default.removeItem(at: tmpURL)
-            throw SSDBlockStoreError.ioFailure("atomic rename: \(error)")
+            throw SSDBlockStoreError.ioFailure("descriptor-relative write: \(error)")
         }
     }
 
@@ -237,12 +226,20 @@ enum SSDBlockStore {
     /// Read + authenticate one block file. Any auth/binding failure throws;
     /// the caller deletes the file and falls back to recompute.
     static func read(
-        from url: URL, kekKey: SymmetricKey
+        from url: URL,
+        kekKey: SymmetricKey,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
     ) throws -> (SSDBlockMetadata, [Data]) {
-        let header = try readHeader(at: url)
+        guard isSafeBlockURL(url), isRealRegularFile(url) else {
+            throw SSDBlockStoreError.ioFailure("unsafe block path")
+        }
+        let handle = try SSDNoFollowIO.openRegularFileForReading(
+            at: url, beforeOperation: beforeOperation)
+        defer { try? handle.close() }
+        let header = try readHeader(from: handle)
         let dek = try unwrapDEK(
             wrapped: header.wrappedDEK, kekKey: kekKey, aad: header.metadataBytes)
-        let plaintexts = try decryptChunks(at: url, header: header, dek: dek)
+        let plaintexts = try decryptChunks(from: handle, header: header, dek: dek)
         return (header.metadata, plaintexts)
     }
 
@@ -250,14 +247,23 @@ enum SSDBlockStore {
     /// chunk decrypt. NOTE: an unauthenticated read (the AAD is only
     /// verified when chunks are opened); scan decisions made on it are
     /// re-verified at adoption time by the full authenticated `read`.
-    static func readMetadataOnly(from url: URL) throws -> SSDBlockMetadata {
-        try readHeader(at: url).metadata
+    static func readMetadataOnly(
+        from url: URL,
+        beforeOperation: (@Sendable (SSDActiveIOOperation) -> Void)? = nil
+    ) throws -> SSDBlockMetadata {
+        guard isSafeBlockURL(url), isRealRegularFile(url) else {
+            throw SSDBlockStoreError.ioFailure("unsafe block path")
+        }
+        let handle = try SSDNoFollowIO.openRegularFileForReading(
+            at: url, beforeOperation: beforeOperation)
+        defer { try? handle.close() }
+        return try readHeader(from: handle).metadata
     }
 
     // MARK: Temp sweep
 
-    /// `<tag>.dbk2.darkbloom-tmp.<UUID>`. The product-specific marker lets
-    /// maintenance prove ownership without opening an incomplete DBK2 file.
+    /// `<tag>.dbk3.darkbloom-tmp.<UUID>`. The product-specific marker lets
+    /// maintenance prove ownership without opening an incomplete DBK3 file.
     static func temporaryFileURL(for url: URL, uuid: UUID = UUID()) -> URL {
         url.deletingLastPathComponent().appendingPathComponent(
             "\(url.lastPathComponent).\(tempMarker).\(uuid.uuidString)")
@@ -290,9 +296,7 @@ enum SSDBlockStore {
     /// Maintenance performs deletion, so following a caller-controlled root
     /// outside the dedicated cache hierarchy is never acceptable.
     static func isSafeMaintenanceRoot(_ root: URL) -> Bool {
-        let standardized = root.standardizedFileURL
-        return standardized.path
-            == standardized.resolvingSymlinksInPath().standardizedFileURL.path
+        pathResolvesToItself(root)
     }
 
     static func isStaleTempFile(modifiedAt: Int64?, nowSeconds: Int64) -> Bool {
@@ -342,7 +346,7 @@ enum SSDBlockStore {
                         },
                         nowSeconds: nowSeconds)
                 else { continue }
-                if (try? fm.removeItem(at: url)) != nil {
+                if removeItemIfSafe(at: url, under: root) {
                     removed += 1
                 }
             }
@@ -406,16 +410,13 @@ enum SSDBlockStore {
     }
 
     private static func decryptChunks(
-        at url: URL, header: ParsedHeader, dek: SymmetricKey
+        from handle: FileHandle, header: ParsedHeader, dek: SymmetricKey
     ) throws -> [Data] {
-        let handle: FileHandle
         do {
-            handle = try FileHandle(forReadingFrom: url)
             try handle.seek(toOffset: header.bodyOffset)
         } catch {
-            throw SSDBlockStoreError.ioFailure("open/seek \(url.lastPathComponent): \(error)")
+            throw SSDBlockStoreError.ioFailure("seek encrypted body: \(error)")
         }
-        defer { try? handle.close() }
 
         let countBytes = try readExactly(4, from: handle, what: "chunk count")
         let chunkCount = readUInt32LE(countBytes, at: 0)
@@ -466,15 +467,8 @@ enum SSDBlockStore {
         let bodyOffset: UInt64
     }
 
-    private static func readHeader(at url: URL) throws -> ParsedHeader {
-        let handle: FileHandle
-        do {
-            handle = try FileHandle(forReadingFrom: url)
-        } catch {
-            throw SSDBlockStoreError.ioFailure("open \(url.lastPathComponent): \(error)")
-        }
-        defer { try? handle.close() }
-
+    private static func readHeader(from handle: FileHandle) throws -> ParsedHeader {
+        try handle.seek(toOffset: 0)
         let prefix = try readExactly(24, from: handle, what: "header prefix")
         guard Array(prefix.prefix(4)) == magic else {
             throw SSDBlockStoreError.malformedHeader("magic mismatch")
@@ -484,7 +478,7 @@ enum SSDBlockStore {
             throw SSDBlockStoreError.unsupportedVersion(version)
         }
         guard readUInt16LE(prefix, at: 6) == 0 else {
-            throw SSDBlockStoreError.malformedHeader("flags ≠ 0 in v2")
+            throw SSDBlockStoreError.malformedHeader("flags ≠ 0 in v3")
         }
         let fileIV = prefix.subdata(in: 8..<20)
         let wrappedLen = Int(readUInt32LE(prefix, at: 20))
@@ -504,7 +498,7 @@ enum SSDBlockStore {
         } catch {
             throw SSDBlockStoreError.malformedHeader("metadata JSON: \(error)")
         }
-        guard metadata.schema == "darkbloom.kv.v2" else {
+        guard metadata.schema == "darkbloom.kv.v3" else {
             throw SSDBlockStoreError.malformedHeader("schema \(metadata.schema)")
         }
         return ParsedHeader(
@@ -592,7 +586,7 @@ enum SSDBlockStore {
     // backing storage carries no alignment guarantee, so the previous
     // `UnsafeRawBufferPointer.load(as: UInt16/UInt32)` could trap on a
     // misaligned pointer while scanning/reading an otherwise-valid on-disk
-    // DBK2 entry (a cache miss must never crash the provider). Byte shifts
+    // DBK3 entry (a cache miss must never crash the provider). Byte shifts
     // are alignment-agnostic and pin the on-disk endianness explicitly.
     private static func readUInt16LE(_ data: Data, at offset: Int) -> UInt16 {
         let b = data.subdata(in: offset..<(offset + 2))
@@ -616,14 +610,4 @@ enum SSDBlockStore {
         return Data(buf)
     }
 
-    private static func ensureDirectory(_ url: URL) throws {
-        if !FileManager.default.fileExists(atPath: url.path) {
-            do {
-                try FileManager.default.createDirectory(
-                    at: url, withIntermediateDirectories: true)
-            } catch {
-                throw SSDBlockStoreError.ioFailure("mkdir \(url.path): \(error)")
-            }
-        }
-    }
 }

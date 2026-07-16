@@ -64,15 +64,13 @@ func makeLocalInferenceApplication(
     acquire: @escaping @Sendable (String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel,
     tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
     availableModels: @escaping @Sendable () async -> [String],
-    cacheScope: String = "",
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     let engine = MultiModelBatchSchedulerEngine(
         acquire: acquire,
         tokenizerProvider: tokenizerProvider,
         availableModels: availableModels,
-        defaultMaxTokens: defaultMaxTokens,
-        cacheScope: cacheScope
+        defaultMaxTokens: defaultMaxTokens
     )
     let service = MLXOpenAIService(engine: engine)
     let router = MLXServerApplication.buildRouter(service: service)

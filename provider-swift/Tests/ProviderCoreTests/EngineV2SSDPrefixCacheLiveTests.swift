@@ -7,7 +7,7 @@
 // wires for a funded model with the SSD tier at its default):
 //
 //   (a) OFFLOAD PROOF — turn 1 (≥2.5k-token prompt, past gpt-oss's
-//       adoption floor) donates on completion: encrypted `.dbk2` block
+//       adoption floor) donates on completion: encrypted `.dbk3` block
 //       files appear on disk under HMAC-tag names, and the cache retains
 //       ZERO resident bytes (RAM stays with live serving).
 //   (b) FROM-DISK ADOPTION — turn 2 stages the blocks back from disk
@@ -32,6 +32,7 @@ import MLX
 import MLXLLM
 import MLXLMCommon
 import MLXVLM
+import ProviderCoreFoundation
 import Testing
 
 @testable import ProviderCore
@@ -51,6 +52,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let tokenizer: TokenizerHandle
         let eosTokenIds: Set<Int>
         let layerKinds: [CBv2LayerKind]
+        let modelDirectory: URL
     }
 
     private func loadGptOss() async throws -> LiveModel {
@@ -85,7 +87,8 @@ struct EngineV2SSDPrefixCacheLiveTests {
             model: gptoss,
             tokenizer: tokenizer,
             eosTokenIds: eos,
-            layerKinds: gptoss.cbv2LayerKinds)
+            layerKinds: gptoss.cbv2LayerKinds,
+            modelDirectory: directory)
     }
 
     static let gemmaQatModelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
@@ -128,7 +131,8 @@ struct EngineV2SSDPrefixCacheLiveTests {
             model: extraction.model,
             tokenizer: tokenizer,
             eosTokenIds: snapshot.eosTokenIds,
-            layerKinds: extraction.model.cbv2LayerKinds)
+            layerKinds: extraction.model.cbv2LayerKinds,
+            modelDirectory: directory)
     }
 
     // MARK: - SSD cache + bridge construction (the production seam)
@@ -143,7 +147,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
 
     /// Direct construction with an injected KEK + directory (the factory's
     /// production body minus Keychain/Secure-Enclave, which a test host
-    /// cannot reach) — everything downstream (HMAC names, DBK2 crypto,
+    /// cannot reach) — everything downstream (HMAC names, DBK3 crypto,
     /// TTL, staging) is the production code path.
     private func makeSSDCache(
         live: LiveModel, dir: URL, kek: SymmetricKey, clock: ClockBox,
@@ -152,6 +156,8 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let blockSize = PrefixCachePolicy.blockSize
         let config = SSDPrefixCache.Config(
             modelId: live.modelID,
+            promptContractID: try! PromptContractIdentity.compute(
+                modelDirectory: live.modelDirectory),
             weightHash: "live-test-weights",
             blockSize: blockSize,
             adoptionBoundTokens: PrefixCachePolicy.adoptionBoundTokens(
@@ -181,7 +187,6 @@ struct EngineV2SSDPrefixCacheLiveTests {
             modelId: live.modelID,
             tokenizer: live.tokenizer,
             eosTokenIds: live.eosTokenIds,
-            prefixCacheBudgetBytes: 0,  // SSD mode: NO memory carve
             ssdPrefixCache: ssdCache)
     }
 
@@ -303,10 +308,10 @@ struct EngineV2SSDPrefixCacheLiveTests {
         return cache.index.count >= blocks
     }
 
-    private func dbk2Files(under root: URL) -> [URL] {
+    private func dbk3Files(under root: URL) -> [URL] {
         guard let e = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
         else { return [] }
-        return e.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk2" }
+        return e.compactMap { $0 as? URL }.filter { $0.pathExtension == "dbk3" }
     }
 
     // MARK: - The scenario
@@ -322,10 +327,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let blockSize = PrefixCachePolicy.blockSize
         let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
         #expect(bound == 1536, "gpt-oss-20b adoption bound drifted: \(bound)")
-        // The mode default this scenario models: SSD tier on for funded
-        // models, no memory carve.
-        #expect(PrefixCachePolicy.mode(environment: [:]) == .ssd(warnBothTiers: false))
-        #expect(PrefixCachePolicy.shouldFund(adoptionBoundTokens: bound, environment: [:]))
+        #expect(PrefixCachePolicy.isEnabled(environment: [:]))
 
         // Turn-1 prefix past bound + benefit floor, with whole-block margin
         // (≥ 2.5k tokens — the adoption floor the win concentrates past).
@@ -362,9 +364,9 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let turn1Blocks = conversation.turn1Tokens.count / blockSize
         #expect(await waitForBlocksOnDisk(cacheA, atLeast: turn1Blocks),
             "turn-1 donation never landed on disk (\(cacheA.index.count)/\(turn1Blocks))")
-        let files = dbk2Files(under: dir)
+        let files = dbk3Files(under: dir)
         #expect(files.count >= turn1Blocks)
-        // …files really are DBK2-encrypted (magic parses, wrong key fails)…
+        // …files really are DBK3-encrypted (magic parses, wrong key fails)…
         let sample = try #require(files.first)
         #expect(throws: (any Error).self) {
             _ = try SSDBlockStore.read(from: sample, kekKey: SymmetricKey(size: .bits256))
@@ -436,7 +438,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let cacheC = makeSSDCache(live: live, dir: dir, kek: kek, clock: expiredClock)
         cacheC.scanOnDisk()
         #expect(cacheC.index.count == 0, "TTL-expired entries must be dropped at scan")
-        #expect(dbk2Files(under: dir).isEmpty, "TTL-expired files must be unlinked")
+        #expect(dbk3Files(under: dir).isEmpty, "TTL-expired files must be unlinked")
         let bridgeC = try makeBridge(live, ssdCache: cacheC)
         let turn2Expired = try await runTurn(
             bridge: bridgeC, live: live, promptTokens: conversation.turn2Tokens,
@@ -476,8 +478,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
 
         // Typical prompt (~1.5k tokens) — WAY under the 26,624-token
         // donation floor: the request serves normally and the tier writes
-        // NOTHING (the negative Gaj asked for; the engine keeps its full
-        // grant structurally — prefixCacheBudgetBytes is 0 in SSD mode).
+        // NOTHING; the engine keeps its full live KV grant.
         let conversation = try buildConversation(live, minTurn1Tokens: 1500)
         let turn = try await runTurn(
             bridge: bridge, live: live, promptTokens: conversation.turn1Tokens,
@@ -487,9 +488,8 @@ struct EngineV2SSDPrefixCacheLiveTests {
         try? await Task.sleep(for: .seconds(2))  // settle any (wrong) write-behind
         let stats = cache.stats()
         #expect(stats.blocksWritten == 0, "sub-floor gemma donation must write nothing")
-        #expect(dbk2Files(under: dir).isEmpty)
+        #expect(dbk3Files(under: dir).isEmpty)
         #expect(cache.bytesInUse == 0)
-        #expect(bridge.prefixCacheBudgetBytes == 0)
         print("[ssd-live] gemma typical (\(conversation.turn1Tokens.count) tok): "
             + "writes=\(stats.blocksWritten) files=0 ttft=\(turn.ttft)")
         await bridge.shutdown()

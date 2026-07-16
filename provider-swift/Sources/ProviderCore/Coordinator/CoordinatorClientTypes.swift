@@ -22,7 +22,8 @@ public enum CoordinatorEvent: Sendable {
         ciphertext: Data,
         senderPublicKey: Data?,
         cacheReceiptNonce: String?,
-        cacheScope: String?
+        cacheScope: String?,
+        prefixCacheProtocol: Int?
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)
@@ -159,8 +160,11 @@ public enum OutboundMessage: Sendable {
         readyTokens: UInt64,
         requiredRecomputeTokens: UInt64,
         expectedPrefillTokensSaved: UInt64,
-        tier: PrefixCacheTier
+        tier: PrefixCacheTier,
+        stageMs: Double?
     )
+    case prefixCacheLookupV2(ProviderMessage.PrefixCacheLookupV2)
+    case prefixCacheReadyV2(ProviderMessage.PrefixCacheReadyV2)
 }
 
 public struct AttestationResponsePayload: Sendable {

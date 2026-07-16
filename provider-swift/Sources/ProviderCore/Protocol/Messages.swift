@@ -1,5 +1,61 @@
 import Foundation
 
+public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
+    public let modelId: String
+    public let modelAggregateHash: String
+    public let promptContractId: String
+    public let blockHashVersion: String
+    public let blockSize: UInt32
+    public let cacheEpoch: String
+    public let enabled: Bool
+    public let ready: Bool
+
+    public init(
+        modelId: String,
+        modelAggregateHash: String,
+        promptContractId: String,
+        blockHashVersion: String,
+        blockSize: UInt32,
+        cacheEpoch: String,
+        enabled: Bool,
+        ready: Bool
+    ) {
+        self.modelId = modelId
+        self.modelAggregateHash = modelAggregateHash
+        self.promptContractId = promptContractId
+        self.blockHashVersion = blockHashVersion
+        self.blockSize = blockSize
+        self.cacheEpoch = cacheEpoch
+        self.enabled = enabled
+        self.ready = ready
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelId = "model_id"
+        case modelAggregateHash = "model_aggregate_hash"
+        case promptContractId = "prompt_contract_id"
+        case blockHashVersion = "block_hash_version"
+        case blockSize = "block_size"
+        case cacheEpoch = "cache_epoch"
+        case enabled, ready
+    }
+}
+
+public struct PrefixCacheAnchor: Codable, Sendable, Equatable {
+    public let chainHash: String
+    public let tokenCount: UInt64
+
+    public init(chainHash: String, tokenCount: UInt64) {
+        self.chainHash = chainHash
+        self.tokenCount = tokenCount
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case chainHash = "chain_hash"
+        case tokenCount = "token_count"
+    }
+}
+
 // MARK: - Provider -> Coordinator
 
 public enum ProviderMessage: Sendable, Equatable {
@@ -16,6 +72,8 @@ public enum ProviderMessage: Sendable, Equatable {
     case modelsUpdate(ModelsUpdate)
     case prefixCacheLookup(PrefixCacheLookup)
     case prefixCacheReady(PrefixCacheReady)
+    case prefixCacheLookupV2(PrefixCacheLookupV2)
+    case prefixCacheReadyV2(PrefixCacheReadyV2)
 
     public struct Register: Sendable, Equatable {
         public var hardware: HardwareInfo
@@ -42,8 +100,9 @@ public enum ProviderMessage: Sendable, Equatable {
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
         /// Provider-confirmed prefix-cache protocol version. Omitted by legacy
-        /// providers; version 1 enables authenticated scope + receipt routing.
+        /// providers; only version 2 carries exact, provider-proven ownership.
         public var prefixCacheProtocol: Int?
+        public var prefixCacheV2Models: [PrefixCacheV2Capability]?
 
         public init(
             hardware: HardwareInfo,
@@ -64,7 +123,8 @@ public enum ProviderMessage: Sendable, Equatable {
             privateOnly: Bool = false,
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil,
-            prefixCacheProtocol: Int? = nil
+            prefixCacheProtocol: Int? = nil,
+            prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
         ) {
             self.hardware = hardware
             self.models = models
@@ -85,6 +145,7 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
             self.prefixCacheProtocol = prefixCacheProtocol
+            self.prefixCacheV2Models = prefixCacheV2Models
         }
     }
 
@@ -104,6 +165,8 @@ public enum ProviderMessage: Sendable, Equatable {
         /// only lets the coordinator send a challenge.
         public var apnsDeviceToken: String?
         public var apnsEnvironment: String?
+        public var prefixCacheProtocol: Int?
+        public var prefixCacheV2Models: [PrefixCacheV2Capability]?
 
         public init(
             status: ProviderStatus,
@@ -113,7 +176,9 @@ public enum ProviderMessage: Sendable, Equatable {
             systemMetrics: SystemMetrics,
             backendCapacity: BackendCapacity? = nil,
             apnsDeviceToken: String? = nil,
-            apnsEnvironment: String? = nil
+            apnsEnvironment: String? = nil,
+            prefixCacheProtocol: Int? = nil,
+            prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -123,6 +188,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.backendCapacity = backendCapacity
             self.apnsDeviceToken = apnsDeviceToken
             self.apnsEnvironment = apnsEnvironment
+            self.prefixCacheProtocol = prefixCacheProtocol
+            self.prefixCacheV2Models = prefixCacheV2Models
         }
     }
 
@@ -211,6 +278,7 @@ public enum ProviderMessage: Sendable, Equatable {
         public var requiredRecomputeTokens: UInt64
         public var expectedPrefillTokensSaved: UInt64
         public var tier: PrefixCacheTier
+        public var stageMs: Double?
 
         public init(
             requestId: String,
@@ -218,7 +286,8 @@ public enum ProviderMessage: Sendable, Equatable {
             readyTokens: UInt64,
             requiredRecomputeTokens: UInt64,
             expectedPrefillTokensSaved: UInt64,
-            tier: PrefixCacheTier
+            tier: PrefixCacheTier,
+            stageMs: Double? = nil
         ) {
             self.requestId = requestId
             self.cacheReceiptNonce = cacheReceiptNonce
@@ -226,6 +295,106 @@ public enum ProviderMessage: Sendable, Equatable {
             self.requiredRecomputeTokens = requiredRecomputeTokens
             self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
             self.tier = tier
+            if let stageMs, stageMs.isFinite {
+                self.stageMs = min(PrefixCacheReadyResult.maxStageMs, max(0, stageMs))
+            } else {
+                self.stageMs = nil
+            }
+        }
+    }
+
+    public struct PrefixCacheLookupV2: Sendable, Equatable {
+        public let requestId: String
+        public let cacheReceiptNonce: String
+        public let modelId: String
+        public let modelAggregateHash: String
+        public let promptContractId: String
+        public let cacheEpoch: String
+        public let cacheSeq: UInt64
+        public let promptAnchor: PrefixCacheAnchor
+        public let matchedAnchor: PrefixCacheAnchor?
+        public let outcome: PrefixCacheLookupOutcome
+        public let tier: PrefixCacheTier?
+        public let requiredRecomputeTokens: UInt64
+        public let expectedPrefillTokensSaved: UInt64
+        public let stageMs: Double?
+
+        public init(
+            requestId: String,
+            cacheReceiptNonce: String,
+            modelId: String,
+            modelAggregateHash: String,
+            promptContractId: String,
+            cacheEpoch: String,
+            cacheSeq: UInt64,
+            promptAnchor: PrefixCacheAnchor,
+            matchedAnchor: PrefixCacheAnchor?,
+            outcome: PrefixCacheLookupOutcome,
+            tier: PrefixCacheTier?,
+            requiredRecomputeTokens: UInt64,
+            expectedPrefillTokensSaved: UInt64,
+            stageMs: Double?
+        ) {
+            self.requestId = requestId
+            self.cacheReceiptNonce = cacheReceiptNonce
+            self.modelId = modelId
+            self.modelAggregateHash = modelAggregateHash
+            self.promptContractId = promptContractId
+            self.cacheEpoch = cacheEpoch
+            self.cacheSeq = cacheSeq
+            self.promptAnchor = promptAnchor
+            self.matchedAnchor = matchedAnchor
+            self.outcome = outcome
+            self.tier = tier
+            self.requiredRecomputeTokens = requiredRecomputeTokens
+            self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
+            self.stageMs = stageMs
+        }
+    }
+
+    public struct PrefixCacheReadyV2: Sendable, Equatable {
+        public let requestId: String
+        public let cacheReceiptNonce: String
+        public let modelId: String
+        public let modelAggregateHash: String
+        public let promptContractId: String
+        public let cacheEpoch: String
+        public let cacheSeq: UInt64
+        public let outcome: String
+        public let tier: PrefixCacheTier
+        public let readyAnchors: [PrefixCacheAnchor]
+        public let requiredRecomputeTokens: UInt64
+        public let expectedPrefillTokensSaved: UInt64
+        public let stageMs: Double?
+
+        public init(
+            requestId: String,
+            cacheReceiptNonce: String,
+            modelId: String,
+            modelAggregateHash: String,
+            promptContractId: String,
+            cacheEpoch: String,
+            cacheSeq: UInt64,
+            outcome: String = "ready",
+            tier: PrefixCacheTier,
+            readyAnchors: [PrefixCacheAnchor],
+            requiredRecomputeTokens: UInt64,
+            expectedPrefillTokensSaved: UInt64,
+            stageMs: Double?
+        ) {
+            self.requestId = requestId
+            self.cacheReceiptNonce = cacheReceiptNonce
+            self.modelId = modelId
+            self.modelAggregateHash = modelAggregateHash
+            self.promptContractId = promptContractId
+            self.cacheEpoch = cacheEpoch
+            self.cacheSeq = cacheSeq
+            self.outcome = outcome
+            self.tier = tier
+            self.readyAnchors = Array(readyAnchors.prefix(2))
+            self.requiredRecomputeTokens = requiredRecomputeTokens
+            self.expectedPrefillTokensSaved = expectedPrefillTokensSaved
+            self.stageMs = stageMs
         }
     }
 
@@ -380,6 +549,8 @@ extension ProviderMessage: Codable {
         case modelsUpdate = "models_update"
         case prefixCacheLookup = "prefix_cache_lookup"
         case prefixCacheReady = "prefix_cache_ready"
+        case prefixCacheLookupV2 = "prefix_cache_lookup_v2"
+        case prefixCacheReadyV2 = "prefix_cache_ready_v2"
     }
 
     enum CodingKeys: String, CodingKey {
@@ -401,6 +572,7 @@ extension ProviderMessage: Codable {
         case apnsDeviceToken = "apns_device_token"
         case apnsEnvironment = "apns_environment"
         case prefixCacheProtocol = "prefix_cache_protocol"
+        case prefixCacheV2Models = "prefix_cache_v2_models"
         // Heartbeat
         case status
         case activeModel = "active_model"
@@ -444,6 +616,13 @@ extension ProviderMessage: Codable {
         case readyTokens = "ready_tokens"
         case requiredRecomputeTokens = "required_recompute_tokens"
         case expectedPrefillTokensSaved = "expected_prefill_tokens_saved"
+        case modelAggregateHash = "model_aggregate_hash"
+        case promptContractId = "prompt_contract_id"
+        case cacheEpoch = "cache_epoch"
+        case cacheSeq = "cache_seq"
+        case promptAnchor = "prompt_anchor"
+        case matchedAnchor = "matched_anchor"
+        case readyAnchors = "ready_anchors"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -479,6 +658,7 @@ extension ProviderMessage: Codable {
             if let version = r.prefixCacheProtocol, version != 0 {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
+            try container.encodeIfPresent(r.prefixCacheV2Models, forKey: .prefixCacheV2Models)
 
         case .heartbeat(let h):
             try container.encode(TypeValue.heartbeat, forKey: .type)
@@ -493,6 +673,10 @@ extension ProviderMessage: Codable {
             // omitempty parity with Go: nil token/env emit nothing (steady state).
             try container.encodeIfPresent(h.apnsDeviceToken, forKey: .apnsDeviceToken)
             try container.encodeIfPresent(h.apnsEnvironment, forKey: .apnsEnvironment)
+            if let version = h.prefixCacheProtocol, version != 0 {
+                try container.encode(version, forKey: .prefixCacheProtocol)
+            }
+            try container.encodeIfPresent(h.prefixCacheV2Models, forKey: .prefixCacheV2Models)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -587,6 +771,44 @@ extension ProviderMessage: Codable {
             try container.encode(receipt.requiredRecomputeTokens, forKey: .requiredRecomputeTokens)
             try container.encode(receipt.expectedPrefillTokensSaved, forKey: .expectedPrefillTokensSaved)
             try container.encode(receipt.tier, forKey: .tier)
+            try container.encodeIfPresent(receipt.stageMs, forKey: .stageMs)
+
+        case .prefixCacheLookupV2(let receipt):
+            try container.encode(TypeValue.prefixCacheLookupV2, forKey: .type)
+            try container.encode(receipt.requestId, forKey: .requestId)
+            try container.encode(receipt.cacheReceiptNonce, forKey: .cacheReceiptNonce)
+            try container.encode(receipt.modelId, forKey: .modelId)
+            try container.encode(receipt.modelAggregateHash, forKey: .modelAggregateHash)
+            try container.encode(receipt.promptContractId, forKey: .promptContractId)
+            try container.encode(receipt.cacheEpoch, forKey: .cacheEpoch)
+            try container.encode(receipt.cacheSeq, forKey: .cacheSeq)
+            try container.encode(receipt.promptAnchor, forKey: .promptAnchor)
+            try container.encodeIfPresent(receipt.matchedAnchor, forKey: .matchedAnchor)
+            try container.encode(receipt.outcome, forKey: .outcome)
+            try container.encodeIfPresent(receipt.tier, forKey: .tier)
+            try container.encode(
+                receipt.requiredRecomputeTokens, forKey: .requiredRecomputeTokens)
+            try container.encode(
+                receipt.expectedPrefillTokensSaved, forKey: .expectedPrefillTokensSaved)
+            try container.encodeIfPresent(receipt.stageMs, forKey: .stageMs)
+
+        case .prefixCacheReadyV2(let receipt):
+            try container.encode(TypeValue.prefixCacheReadyV2, forKey: .type)
+            try container.encode(receipt.requestId, forKey: .requestId)
+            try container.encode(receipt.cacheReceiptNonce, forKey: .cacheReceiptNonce)
+            try container.encode(receipt.modelId, forKey: .modelId)
+            try container.encode(receipt.modelAggregateHash, forKey: .modelAggregateHash)
+            try container.encode(receipt.promptContractId, forKey: .promptContractId)
+            try container.encode(receipt.cacheEpoch, forKey: .cacheEpoch)
+            try container.encode(receipt.cacheSeq, forKey: .cacheSeq)
+            try container.encode(receipt.outcome, forKey: .outcome)
+            try container.encode(receipt.tier, forKey: .tier)
+            try container.encode(receipt.readyAnchors, forKey: .readyAnchors)
+            try container.encode(
+                receipt.requiredRecomputeTokens, forKey: .requiredRecomputeTokens)
+            try container.encode(
+                receipt.expectedPrefillTokensSaved, forKey: .expectedPrefillTokensSaved)
+            try container.encodeIfPresent(receipt.stageMs, forKey: .stageMs)
         }
     }
 
@@ -615,7 +837,9 @@ extension ProviderMessage: Codable {
                 privateOnly: try container.decodeIfPresent(Bool.self, forKey: .privateOnly) ?? false,
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
                 apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment),
-                prefixCacheProtocol: try container.decodeIfPresent(Int.self, forKey: .prefixCacheProtocol)
+                prefixCacheProtocol: try container.decodeIfPresent(Int.self, forKey: .prefixCacheProtocol),
+                prefixCacheV2Models: try container.decodeIfPresent(
+                    [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models)
             ))
 
         case .heartbeat:
@@ -627,7 +851,11 @@ extension ProviderMessage: Codable {
                 systemMetrics: try container.decode(SystemMetrics.self, forKey: .systemMetrics),
                 backendCapacity: try container.decodeIfPresent(BackendCapacity.self, forKey: .backendCapacity),
                 apnsDeviceToken: try container.decodeIfPresent(String.self, forKey: .apnsDeviceToken),
-                apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment)
+                apnsEnvironment: try container.decodeIfPresent(String.self, forKey: .apnsEnvironment),
+                prefixCacheProtocol: try container.decodeIfPresent(
+                    Int.self, forKey: .prefixCacheProtocol),
+                prefixCacheV2Models: try container.decodeIfPresent(
+                    [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models)
             ))
 
         case .inferenceAccepted:
@@ -736,7 +964,51 @@ extension ProviderMessage: Codable {
                 readyTokens: try container.decode(UInt64.self, forKey: .readyTokens),
                 requiredRecomputeTokens: try container.decode(UInt64.self, forKey: .requiredRecomputeTokens),
                 expectedPrefillTokensSaved: try container.decode(UInt64.self, forKey: .expectedPrefillTokensSaved),
-                tier: try container.decode(PrefixCacheTier.self, forKey: .tier)
+                tier: try container.decode(PrefixCacheTier.self, forKey: .tier),
+                stageMs: try container.decodeIfPresent(Double.self, forKey: .stageMs)
+            ))
+
+        case .prefixCacheLookupV2:
+            self = .prefixCacheLookupV2(PrefixCacheLookupV2(
+                requestId: try container.decode(String.self, forKey: .requestId),
+                cacheReceiptNonce: try container.decode(String.self, forKey: .cacheReceiptNonce),
+                modelId: try container.decode(String.self, forKey: .modelId),
+                modelAggregateHash: try container.decode(
+                    String.self, forKey: .modelAggregateHash),
+                promptContractId: try container.decode(String.self, forKey: .promptContractId),
+                cacheEpoch: try container.decode(String.self, forKey: .cacheEpoch),
+                cacheSeq: try container.decode(UInt64.self, forKey: .cacheSeq),
+                promptAnchor: try container.decode(PrefixCacheAnchor.self, forKey: .promptAnchor),
+                matchedAnchor: try container.decodeIfPresent(
+                    PrefixCacheAnchor.self, forKey: .matchedAnchor),
+                outcome: try container.decode(PrefixCacheLookupOutcome.self, forKey: .outcome),
+                tier: try container.decodeIfPresent(PrefixCacheTier.self, forKey: .tier),
+                requiredRecomputeTokens: try container.decode(
+                    UInt64.self, forKey: .requiredRecomputeTokens),
+                expectedPrefillTokensSaved: try container.decode(
+                    UInt64.self, forKey: .expectedPrefillTokensSaved),
+                stageMs: try container.decodeIfPresent(Double.self, forKey: .stageMs)
+            ))
+
+        case .prefixCacheReadyV2:
+            self = .prefixCacheReadyV2(PrefixCacheReadyV2(
+                requestId: try container.decode(String.self, forKey: .requestId),
+                cacheReceiptNonce: try container.decode(String.self, forKey: .cacheReceiptNonce),
+                modelId: try container.decode(String.self, forKey: .modelId),
+                modelAggregateHash: try container.decode(
+                    String.self, forKey: .modelAggregateHash),
+                promptContractId: try container.decode(String.self, forKey: .promptContractId),
+                cacheEpoch: try container.decode(String.self, forKey: .cacheEpoch),
+                cacheSeq: try container.decode(UInt64.self, forKey: .cacheSeq),
+                outcome: try container.decode(String.self, forKey: .outcome),
+                tier: try container.decode(PrefixCacheTier.self, forKey: .tier),
+                readyAnchors: try container.decode(
+                    [PrefixCacheAnchor].self, forKey: .readyAnchors),
+                requiredRecomputeTokens: try container.decode(
+                    UInt64.self, forKey: .requiredRecomputeTokens),
+                expectedPrefillTokensSaved: try container.decode(
+                    UInt64.self, forKey: .expectedPrefillTokensSaved),
+                stageMs: try container.decodeIfPresent(Double.self, forKey: .stageMs)
             ))
         }
     }
@@ -760,19 +1032,22 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var encryptedBody: EncryptedPayload?
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
+        public var prefixCacheProtocol: Int?
 
         public init(
             requestId: String,
             body: JSONValue = .null,
             encryptedBody: EncryptedPayload? = nil,
             cacheReceiptNonce: String? = nil,
-            cacheScope: String? = nil
+            cacheScope: String? = nil,
+            prefixCacheProtocol: Int? = nil
         ) {
             self.requestId = requestId
             self.body = body
             self.encryptedBody = encryptedBody
             self.cacheReceiptNonce = cacheReceiptNonce
             self.cacheScope = cacheScope
+            self.prefixCacheProtocol = prefixCacheProtocol
         }
     }
 
@@ -886,6 +1161,7 @@ extension CoordinatorMessage: Codable {
         case encryptedBody = "encrypted_body"
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
+        case prefixCacheProtocol = "prefix_cache_protocol"
         case nonce, timestamp
         case verified, mismatches
         case modelId = "model_id"
@@ -906,6 +1182,7 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.encryptedBody, forKey: .encryptedBody)
             try container.encodeIfPresent(r.cacheReceiptNonce, forKey: .cacheReceiptNonce)
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
+            try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -960,7 +1237,9 @@ extension CoordinatorMessage: Codable {
                 body: try container.decodeIfPresent(JSONValue.self, forKey: .body) ?? .null,
                 encryptedBody: try container.decodeIfPresent(EncryptedPayload.self, forKey: .encryptedBody),
                 cacheReceiptNonce: try container.decodeIfPresent(String.self, forKey: .cacheReceiptNonce),
-                cacheScope: try container.decodeIfPresent(String.self, forKey: .cacheScope)
+                cacheScope: try container.decodeIfPresent(String.self, forKey: .cacheScope),
+                prefixCacheProtocol: try container.decodeIfPresent(
+                    Int.self, forKey: .prefixCacheProtocol)
             ))
 
         case .cancel:

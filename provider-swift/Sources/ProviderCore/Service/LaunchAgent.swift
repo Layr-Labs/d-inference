@@ -263,10 +263,7 @@ public enum LaunchAgent: Sendable {
     /// Env vars passed through from the installing shell into the launchd plist's
     /// `EnvironmentVariables`. Kept to a small allowlist so the daemon's
     /// environment stays predictable; only non-empty values are forwarded.
-    /// `DARKBLOOM_PREFIX_CACHE_SSD` (v0.7.5): the SSD tier's kill switch
-    /// must survive install/restart like the master gate — an operator who
-    /// killed the default-on tier must not have it silently revive on the
-    /// next launchd start. `DARKBLOOM_CBV2_PAGED_KV`: same rationale for
+    /// `DARKBLOOM_CBV2_PAGED_KV`: same rationale for
     /// the paged KV backend's fleet kill switch (default-ON for GPT-OSS
     /// slots — see `EngineV2KVBackendPolicy`).
     /// `DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS`: the tighten-only automatic
@@ -274,7 +271,7 @@ public enum LaunchAgent: Sendable {
     /// verification work short of disabling MTP entirely; it must survive
     /// install/restart like the kill switches.
     static let passthroughEnvKeys = [
-        "DARKBLOOM_PREFIX_CACHE", "DARKBLOOM_PREFIX_CACHE_SSD",
+        "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
     ]

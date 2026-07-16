@@ -1,0 +1,13 @@
+.git
+.worktrees
+.external
+JOURNAL.md
+
+**/.build
+**/target
+**/node_modules
+**/.next
+**/*.dSYM
+
+coordinator/coordinator
+coordinator/coordinator-linux

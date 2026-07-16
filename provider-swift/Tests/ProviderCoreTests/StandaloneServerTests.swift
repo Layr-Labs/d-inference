@@ -1,7 +1,9 @@
+import CryptoKit
 import Foundation
 import Hummingbird
 import HummingbirdTesting
 import Logging
+import MLX
 import MLXLMCommon
 import MLXNN
 import NIOCore
@@ -153,31 +155,154 @@ import Testing
     #expect(StandaloneServer.schedulerErrorStatus(for: "unexpected backend failure") == .internalServerError)
 }
 
-@Test func standaloneServerWaitTracksServiceLifetime() async throws {
+@Test func standaloneServerStopAndWaitReleaseResidentBridgeAndSSDResources() async throws {
+    let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("standalone-stop-\(UUID().uuidString)", isDirectory: true)
+    let dedicatedRoot = parent.appendingPathComponent("kv2", isDirectory: true)
+    let modelRoot = dedicatedRoot.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: parent) }
+    try SSDBlockStore.prepareModelRoot(
+        dedicatedRoot: dedicatedRoot, modelRoot: modelRoot)
+
+    let cache = SSDPrefixCache(
+        config: SSDPrefixCache.Config(
+            modelId: "gpt-oss-20b",
+            promptContractID: "standalone-test-contract",
+            weightHash: "verified-test-hash",
+            blockSize: 8,
+            adoptionBoundTokens: 0,
+            layoutEpoch: "standalone-stop-test",
+            root: modelRoot,
+            dedicatedRoot: dedicatedRoot,
+            ttlSeconds: 900,
+            minEffectiveTokens: 8,
+            maxStageBytes: 1 << 20,
+            maxStageMillis: 1_000,
+            nowSeconds: { 10_000 }),
+        kekKey: SymmetricKey(size: .bits256),
+        kvBudget: nil,
+        diskBudget: SSDDiskBudget(),
+        diskBudgetBytes: { 1 << 20 })
+    let shutdownGate = StandaloneShutdownGate()
+    let engine = StandaloneGatedShutdownEngine(gate: shutdownGate)
+    let bridge = EngineV2Bridge(
+        engine: engine,
+        modelId: "gpt-oss-20b",
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        eosTokenIds: [],
+        ssdPrefixCache: cache)
+
     let server = StandaloneServer(config: StandaloneServerConfig(port: 0))
+    let weakContainer: StandaloneWeakContainerRef
+    do {
+        let container = makeStandaloneStubContainer()
+        weakContainer = StandaloneWeakContainerRef(container)
+        await server.installSlotForTesting(
+            modelId: "gpt-oss-20b",
+            bridge: bridge,
+            container: container,
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            sizing: standaloneSizing(weightsGiB: 1),
+            modelType: "gpt_oss")
+    }
+    #expect(weakContainer.isAlive)
+    let cacheClearProbe = StandaloneShutdownCacheClearProbe()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            clearMemoryCache: {
+                cacheClearProbe.record(containerAlive: weakContainer.isAlive)
+                MLX.Memory.clearCache()
+            },
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
     try await server.start()
-    // The full Swift suite runs more than a thousand tests concurrently on CI;
-    // allow scheduler contention without weakening the lifetime assertion.
     #expect(await server.waitUntilBound(timeoutSeconds: 10))
 
-    let completion = StandaloneServerCompletion()
+    let stopper = Task { await server.stop() }
+
+    // The bridge has entered shutdown, but its engine has not released the
+    // barrier. This proves teardown is in flight without relying on a delay.
+    await shutdownGate.waitUntilEntered()
     let waiter = Task {
         await server.waitUntilStopped()
-        await completion.markComplete()
+        return (
+            cacheClosed: cache.isClosed,
+            noResidentModels: await server.loadedModelIds().isEmpty
+        )
     }
-    try await Task.sleep(nanoseconds: 100_000_000)
-    #expect(!(await completion.isComplete))
+    #expect(!cache.isClosed)
+    #expect(engine.shutdownCalls == 0)
 
-    await server.stop()
-    await waiter.value
-    #expect(await completion.isComplete)
+    await shutdownGate.release()
+    await stopper.value
+    let waitResult = await waiter.value
+    #expect(engine.shutdownCalls == 1)
+    #expect(waitResult.cacheClosed)
+    #expect(waitResult.noResidentModels)
+    #expect(cache.isClosed)
+    #expect(!weakContainer.isAlive)
+    #expect(cacheClearProbe.containerAliveness == [false],
+        "MLX cache must be cleared once, after the resident model container is released")
 }
 
-private actor StandaloneServerCompletion {
-    private(set) var isComplete = false
+private actor StandaloneShutdownGate {
+    private var entered = false
+    private var released = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func markComplete() {
-        isComplete = true
+    func enterAndWait() async {
+        entered = true
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        guard !released else { return }
+        await withCheckedContinuation { releaseWaiters.append($0) }
+    }
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func release() {
+        released = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+    }
+}
+
+private final class StandaloneGatedShutdownEngine: CBv2Engine, @unchecked Sendable {
+    private let gate: StandaloneShutdownGate
+    private let lock = NSLock()
+    private var _shutdownCalls = 0
+
+    init(gate: StandaloneShutdownGate) {
+        self.gate = gate
+    }
+
+    var shutdownCalls: Int { lock.withLock { _shutdownCalls } }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        continuation.finish()
+        return stream
+    }
+
+    func cancel(_ id: CBv2RequestID) {}
+
+    func capacity() -> CBv2CapacitySnapshot {
+        CBv2CapacitySnapshot(
+            activeRequests: 0,
+            waitingRequests: 0,
+            kvBytesInUse: 0,
+            kvBytesCapacity: 0,
+            activeTokens: 0)
+    }
+
+    func shutdown() async {
+        await gate.enterAndWait()
+        lock.withLock { _shutdownCalls += 1 }
     }
 }
 
@@ -535,6 +660,13 @@ private struct StandalonePendingLoadObservation: Error {
     let reservedBytes: UInt64
 }
 
+private final class StandaloneHashRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String?] = []
+    func record(_ value: String?) { lock.withLock { values.append(value) } }
+    var snapshot: [String?] { lock.withLock { values } }
+}
+
 private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
     let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".cache/huggingface/hub", isDirectory: true)
@@ -620,6 +752,27 @@ private func makeStandaloneFakeHFSnapshot(modelId: String) throws -> URL {
         residentWeightBytes: UInt64(standaloneSizing(weightsGiB: 15).weightsBytes),
         configReserveBytes: 0)
     #expect(recorder.entries.map(\.grant) == [Int(expected)])
+}
+
+@Test func standaloneFactoryReceivesVerifiedCacheWeightHash() async throws {
+    let server = standaloneTestServer()
+    let hashes = StandaloneHashRecorder()
+    await server.setV2TestHooksForTesting(
+        StandaloneServer.V2TestHooks(
+            physicalMemoryBytes: standalonePhysicalBytes,
+            onCacheEligibleWeightHash: hashes.record,
+            makeEngine: { _, grant in InertStubEngine(kvBytesCapacity: grant) }))
+
+    _ = try await server.buildSlotForTesting(
+        modelId: "gpt-oss-20b",
+        modelType: "gpt_oss",
+        container: makeStandaloneStubContainer(),
+        tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+        sizing: standaloneSizing(weightsGiB: 15),
+        cacheEligibleWeightHash: "verified-standalone-hash")
+
+    #expect(hashes.snapshot == ["verified-standalone-hash"])
+    #expect(SSDPrefixCacheFactory.verifiedWeightHash(hashes.snapshot[0]) != nil)
 }
 
 @Test func standaloneSecondLoadReslicesAndEvictionRegrows() async throws {
@@ -766,6 +919,15 @@ private final class StandaloneWeakContainerRef: @unchecked Sendable {
     private weak var _value: AnyObject?
     init(_ value: AnyObject) { self._value = value }
     var isAlive: Bool { lock.withLock { _value != nil } }
+}
+
+private final class StandaloneShutdownCacheClearProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _containerAliveness: [Bool] = []
+    func record(containerAlive: Bool) {
+        lock.withLock { _containerAliveness.append(containerAlive) }
+    }
+    var containerAliveness: [Bool] { lock.withLock { _containerAliveness } }
 }
 
 /// Thread-safe trail of (grantBytes, newcomerAliveAtThatInstant).

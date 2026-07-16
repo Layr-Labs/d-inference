@@ -2,6 +2,10 @@
 # Coordinator (Go control plane). Source of truth: go.mod `go 1.25.0`.
 go = "1.25.0"
 
+# Prompt-contract sidecar. CI and the coordinator container use the same
+# release so Cargo.lock resolution and language semantics stay reproducible.
+rust = "1.88.0"
+
 # Console UI (Next.js 16 / React 19). Matches `node-version: '22'` in
 # .github/workflows/ci.yml.
 node = "22"

@@ -217,6 +217,12 @@ jobs:
           restore-keys: |
             spm-v2-${{ runner.os }}-
 
+      - name: Verify production prompt parity
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup override set 1.88.0
+          ./scripts/verify-prompt-parity.sh
+
       # ----------------------------------------------------------------------
       # Build mlx.metallib (compiled Metal GPU kernels) FROM SOURCE.
       #

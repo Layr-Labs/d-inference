@@ -169,8 +169,7 @@ extension EngineV2Bridge {
         active.count
     }
 
-    /// This engine's KV admission ceiling in bytes (construction-fixed;
-    /// already NET of any prefix-cache budget — `PrefixCachePolicy.carve`).
+    /// This engine's live-KV admission ceiling in bytes.
     /// The heartbeat (`EngineV2Runtime.capacitySummary`) uses it as the
     /// grant input to the live budget clamp
     /// (`EngineV2KVSizing.liveEngineKVBytesBudget`); the slot factory sizes

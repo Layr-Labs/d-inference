@@ -181,6 +181,9 @@ public actor StandaloneServer {
         let emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
         let beforeWeightLoad: (@Sendable (String) async throws -> Void)?
         let assistantLoader: (any ProviderMTPAssistantLoading)?
+        let computeWeightHash: (@Sendable (URL, String) -> String?)?
+        let onCacheEligibleWeightHash: (@Sendable (String?) -> Void)?
+        let clearMemoryCache: (@Sendable () -> Void)?
         let makeEngine: @Sendable (String, Int) throws -> any CBv2Engine
 
         init(
@@ -188,12 +191,18 @@ public actor StandaloneServer {
             emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
             beforeWeightLoad: (@Sendable (String) async throws -> Void)? = nil,
             assistantLoader: (any ProviderMTPAssistantLoading)? = nil,
+            computeWeightHash: (@Sendable (URL, String) -> String?)? = nil,
+            onCacheEligibleWeightHash: (@Sendable (String?) -> Void)? = nil,
+            clearMemoryCache: (@Sendable () -> Void)? = nil,
             makeEngine: @escaping @Sendable (String, Int) throws -> any CBv2Engine
         ) {
             self.physicalMemoryBytes = physicalMemoryBytes
             self.emitTelemetry = emitTelemetry
             self.beforeWeightLoad = beforeWeightLoad
             self.assistantLoader = assistantLoader
+            self.computeWeightHash = computeWeightHash
+            self.onCacheEligibleWeightHash = onCacheEligibleWeightHash
+            self.clearMemoryCache = clearMemoryCache
             self.makeEngine = makeEngine
         }
     }
@@ -210,6 +219,13 @@ public actor StandaloneServer {
     private var evictingModels: Set<String> = []
     private var models: [ModelInfo]
     private var serverTask: Task<Void, Never>?
+    private var shutdownTask: Task<Void, Never>?
+    private enum LifecycleState {
+        case stopped
+        case running
+        case stopping
+    }
+    private var lifecycleState: LifecycleState = .stopped
     private let kvBudget: GlobalKVCacheBudget
     var specDecFunnel: SpecDecArtifactFunnel
     /// Phase 3: global disk accountant (process-wide, shared across models).
@@ -241,7 +257,7 @@ public actor StandaloneServer {
             resolver: SpecDecResolver(),
             catalog: nil)
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
-        // EngineV2 SSD data lives under the separate `darkbloom/kv2` root.
+        // EngineV2 SSD data lives under the separate `darkbloom/kv3` root.
         LegacyKVCacheSweeper.sweep()
         // Pin the MLX memory ceiling before any model weights load on this path
         // (the coordinator path does this in ProviderLoop.startMemoryProtection).
@@ -297,8 +313,10 @@ public actor StandaloneServer {
 
     /// Start listening for HTTP connections. The server runs in a child task.
     public func start() throws {
-        guard serverTask == nil else { return }
+        guard lifecycleState == .stopped else { return }
 
+        didBind = false
+        bindFailed = false
         let app = makeApplication()
         serverTask = Task {
             do {
@@ -307,9 +325,10 @@ public actor StandaloneServer {
                 standaloneLogger.info("Standalone server cancelled")
             } catch {
                 standaloneLogger.error("Standalone server failed to bind \(self.config.host):\(self.config.port): \(error.localizedDescription)")
-                await self.markBindFailed()
+                self.markBindFailed()
             }
         }
+        lifecycleState = .running
     }
 
     /// Called by Hummingbird's onServerRunning once the socket is actually bound.
@@ -337,37 +356,77 @@ public actor StandaloneServer {
     }
 
     /// Wait for the Hummingbird service task to exit. Local mode uses this as
-    /// its serving lifetime so optional fan control ends with the HTTP server.
+    /// its serving lifetime so optional fan control ends only after the HTTP
+    /// listener and every resident engine/cache resource have shut down.
     public func waitUntilStopped() async {
-        let task = serverTask
-        _ = await task?.value
-    }
-
-    /// Stop the server.
-    public func stop() async {
-        serverTask?.cancel()
-        serverTask = nil
-        await specDecFunnel.shutdown()
-        // Phase 3: shutdown the global disk accountant.
-    }
-
-    /// Test helper: wait for the Hummingbird service task to finish after
-    /// cancellation so socket-level tests don't leak listeners across cases.
-    func stopAndWait() async {
-        let task = serverTask
-        serverTask = nil
-        task?.cancel()
-        _ = await task?.value
-        await specDecFunnel.shutdown()
-        for slot in slots.values {
-            await slot.bridge.shutdown()
-            slot.bundle.releaseAssistant()
+        switch lifecycleState {
+        case .stopped:
+            return
+        case .stopping:
+            _ = await shutdownTask?.value
+        case .running:
+            // A bind failure or other natural service exit must use the same
+            // teardown path as an explicit stop.
+            _ = await serverTask?.value
+            await stop()
         }
-        // Return the freed weights to the OS so a later StandaloneServer in the
-        // same process (e.g. across tests) sees real free memory.
-        MLX.Memory.clearCache()
+    }
+
+    /// Stop the server and fully release resident serving resources. Concurrent
+    /// callers and `waitUntilStopped()` join one teardown task.
+    public func stop() async {
+        switch lifecycleState {
+        case .stopped:
+            return
+        case .stopping:
+            _ = await shutdownTask?.value
+            return
+        case .running:
+            break
+        }
+
+        let serviceTask = serverTask
+        lifecycleState = .stopping
+        let task = Task {
+            await finishShutdown(serviceTask: serviceTask)
+        }
+        shutdownTask = task
+        await task.value
+    }
+
+    /// Test helper retained for existing lifecycle tests.
+    func stopAndWait() async {
+        await stop()
+    }
+
+    private func finishShutdown(serviceTask: Task<Void, Never>?) async {
+        serviceTask?.cancel()
+        _ = await serviceTask?.value
+        await specDecFunnel.shutdown()
+
+        // Retain only the bridges needed for their asynchronous drain. Keeping a
+        // CachedSlot snapshot here would keep every model container alive until
+        // after clearCache and leave its subsequently-freed buffers pooled.
+        var residentBridges = slots.values.map(\.bridge)
+        for bridge in residentBridges {
+            await bridge.shutdown()
+        }
+        residentBridges.removeAll()
+
+        // Match ProviderLoop.unloadModel: drain first, then release every slot
+        // and its model container, and only then clear MLX's allocator cache.
         slots.removeAll()
         slotReservations.removeAll()
+        if let clearMemoryCache = v2TestHooks?.clearMemoryCache {
+            clearMemoryCache()
+        } else {
+            MLX.Memory.clearCache()
+        }
+        serverTask = nil
+        didBind = false
+        bindFailed = false
+        lifecycleState = .stopped
+        shutdownTask = nil
     }
 
     // MARK: - Test/debug surface
@@ -438,7 +497,8 @@ public actor StandaloneServer {
         container: MLXLMCommon.ModelContainer,
         tokenizer: TokenizerHandle,
         sizing: SlotSizingSnapshot,
-        isVLM: Bool = false
+        isVLM: Bool = false,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         // Convenience shape: box the container the way loadModel does (the
         // caller also holds its own reference, so unwind-ordering assertions
@@ -451,7 +511,8 @@ public actor StandaloneServer {
             modelDirectory: nil,
             newcomer: newcomer,
             tokenizer: tokenizer,
-            sizing: sizing)
+            sizing: sizing,
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
         guard let installContainer = newcomer.container else {
             throw StandaloneServerError.capacityUnavailable(
                 "internal: newcomer container missing at install for '\(modelId)'")
@@ -478,7 +539,8 @@ public actor StandaloneServer {
         modelDirectory: URL? = nil,
         newcomer: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         try await resliceAndBuildSlot(
             modelId: modelId,
@@ -487,7 +549,8 @@ public actor StandaloneServer {
             modelDirectory: modelDirectory,
             newcomer: newcomer,
             tokenizer: tokenizer,
-            sizing: sizing)
+            sizing: sizing,
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
     }
 
     /// MTP-aware variant of the standalone re-slice seam. It drives the same
@@ -579,7 +642,7 @@ public actor StandaloneServer {
         var existing: [ExistingSlotGrant] = []
         for (modelId, slot) in slots
         where modelId != excludingModelId && !evictingModels.contains(modelId) {
-            // Exact logical admission target + prefix carve for rollback.
+            // Exact logical admission target for rollback.
             // A paged slot's larger immutable physical claim is tracked by
             // slotKVBytesClaim(), but must not replace a previously-shrunk
             // logical restore point.
@@ -618,7 +681,8 @@ public actor StandaloneServer {
         modelDirectory: URL?,
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
-        sizing: SlotSizingSnapshot
+        sizing: SlotSizingSnapshot,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> EngineV2Bridge {
         let build = try await resliceAndBuildBundle(
             modelId: modelId,
@@ -630,7 +694,8 @@ public actor StandaloneServer {
             targetSizing: sizing,
             specDecPreparation: SpecDecPreparation(
                 artifact: nil,
-                status: .disabled(.configDisabled, configured: false)))
+                status: .disabled(.configDisabled, configured: false)),
+            cacheEligibleWeightHash: cacheEligibleWeightHash)
         return build.bundle.bridge
     }
 
@@ -642,7 +707,8 @@ public actor StandaloneServer {
         newcomer newcomerBox: EngineV2NewcomerBox,
         tokenizer: TokenizerHandle,
         targetSizing: SlotSizingSnapshot,
-        specDecPreparation: SpecDecPreparation
+        specDecPreparation: SpecDecPreparation,
+        cacheEligibleWeightHash: String? = nil
     ) async throws -> SlotBuild {
         var prepared: EngineV2PreparedModel
         do {
@@ -684,16 +750,9 @@ public actor StandaloneServer {
             fleetKVBudgetBytes: fleetBudget)
 
         // Serviceability floor (fail loud): refuse a load that would leave
-        // ANY slot below the minimum serveable grant. Existing slots'
-        // prefix-cache budgets are construction-fixed (T-041), so the
-        // floor applies to their would-be ENGINE share (target − budget);
-        // the newcomer's carve is elastic (plain floor suffices).
-        var fixedCarveBytes: [String: Int] = [:]
-        for entry in existing where entry.bridge.prefixCacheBudgetBytes > 0 {
-            fixedCarveBytes[entry.slot.modelId] = entry.bridge.prefixCacheBudgetBytes
-        }
+        // any slot below the minimum serveable live-KV grant.
         if !EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: fixedCarveBytes), prepared.assistant != nil
+            targets, fixedCarveBytes: [:]), prepared.assistant != nil
         {
             standaloneLogger.warning(
                 "mtp: model=\(modelId) fallback reason=\(MTPFallbackReason.assistantResliceFloor.rawValue); retrying target-only before refusing the load")
@@ -710,7 +769,7 @@ public actor StandaloneServer {
                 fleetKVBudgetBytes: fleetBudget)
         }
         guard EngineV2KVSizing.resliceMeetsServiceabilityFloor(
-            targets, fixedCarveBytes: fixedCarveBytes)
+            targets, fixedCarveBytes: [:])
         else {
             let floorGb = String(
                 format: "%.1f",
@@ -749,6 +808,7 @@ public actor StandaloneServer {
         // last strong reference and `release()` frees the weights.
         let bundle: ProviderEngineBundle
         do {
+            v2TestHooks?.onCacheEligibleWeightHash?(cacheEligibleWeightHash)
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: modelId,
                 modelType: modelType,
@@ -763,6 +823,7 @@ public actor StandaloneServer {
                 kvQuantConfigured: config.kvQuant,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
+                weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
                 emitTelemetry: v2TestHooks?.emitTelemetry,
@@ -1070,6 +1131,18 @@ public actor StandaloneServer {
         models.map { $0.id }.sorted()
     }
 
+    private func computeStandaloneWeightHash(
+        modelPath: URL, modelId: String
+    ) async -> String? {
+        let override = v2TestHooks?.computeWeightHash
+        return await Task.detached(priority: .utility) {
+            let hash = override != nil
+                ? override!(modelPath, modelId)
+                : WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)
+            return SSDPrefixCacheFactory.verifiedWeightHash(hash)
+        }.value
+    }
+
     /// Lazy-load a model if it isn't already resident. Serializes loads and
     /// applies LRU + memory-headroom eviction, then builds the v2 slot
     /// through the shared sizing → re-slice → bridge path.
@@ -1177,6 +1250,10 @@ public actor StandaloneServer {
                 requestID: pendingLoadID, bytes: pendingLoadBytes)
 
             try await v2TestHooks?.beforeWeightLoad?(modelId)
+            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let preLoadCacheHash = reusableSSDRequested
+                ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
+                : nil
             // Hard-fail without Metal: CPU inference is not acceptable, and
             // with no legacy engine left this is a load failure, not a log
             // line (mirrors ProviderLoop.ensureModelLoaded).
@@ -1191,6 +1268,24 @@ public actor StandaloneServer {
             let newcomer = EngineV2NewcomerBox(
                 try await ModelContainerLoading.loadContainer(from: modelPath))
             try Task.checkCancellation()
+            let postLoadCacheHash = reusableSSDRequested
+                ? await computeStandaloneWeightHash(modelPath: modelPath, modelId: modelId)
+                : nil
+            let cacheEligibleWeightHash: String?
+            if reusableSSDRequested {
+                guard let bracketed = ProviderLoop.cryptographicallyBracketedCacheHash(
+                    preLoadHash: preLoadCacheHash,
+                    postLoadHash: postLoadCacheHash)
+                else {
+                    newcomer.release()
+                    MLX.Memory.clearCache()
+                    throw StandaloneServerError.capacityUnavailable(
+                        "Model '\(modelId)' changed or could not be cryptographically verified while loading reusable SSD cache state — unloaded")
+                }
+                cacheEligibleWeightHash = bracketed
+            } else {
+                cacheEligibleWeightHash = nil
+            }
 
             // Scheduler-free sizing snapshot: weight bytes + the engine-truth
             // fp16 KV rate + context window — everything the re-slice and
@@ -1253,7 +1348,8 @@ public actor StandaloneServer {
                     newcomer: newcomer,
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
-                    specDecPreparation: mtpPreparation)
+                    specDecPreparation: mtpPreparation,
+                    cacheEligibleWeightHash: cacheEligibleWeightHash)
             } catch let error as StandaloneServerError {
                 MLX.Memory.clearCache()
                 throw error

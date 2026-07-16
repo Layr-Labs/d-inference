@@ -16,7 +16,7 @@
 // v0.7.5 consumer: `SSDWriteBehind` (the SSD prefix-cache tier's
 // write-behind queue of extracted host-buffer donations).
 //
-// A small `AsyncStream` (buffering policy `.bufferingNewest(capacity)`)
+// A small `AsyncStream` (buffering policy `.bufferingOldest(capacity)`)
 // feeds a single long-lived consumer Task. `submit(_:)` is synchronous,
 // non-blocking, and `@Sendable`, so it is safe to call from an engine
 // queue. At most `capacity` payloads sit in the buffer and the consumer
@@ -31,16 +31,64 @@ import Foundation
 /// Bounded, single-consumer pipeline: `submit` never blocks, overflow is
 /// dropped (returned `false`), the consumer runs payloads serially.
 final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendable {
+    private final class State: @unchecked Sendable {
+        private let lock = NSLock()
+        private var accepted = 0
+        private var dropped = 0
+        private var pending = 0
+        private var drainWaiters: [CheckedContinuation<Void, Never>] = []
+
+        var acceptedCount: Int { lock.withLock { accepted } }
+        var droppedCount: Int { lock.withLock { dropped } }
+
+        func beginSubmit() {
+            lock.withLock { pending += 1 }
+        }
+
+        func markAccepted() {
+            lock.withLock { accepted += 1 }
+        }
+
+        func markDropped() {
+            lock.withLock { dropped += 1 }
+        }
+
+        func completeOne() {
+            let waiters = lock.withLock {
+                precondition(pending > 0)
+                pending -= 1
+                guard pending == 0 else {
+                    return [CheckedContinuation<Void, Never>]()
+                }
+                let waiters = drainWaiters
+                drainWaiters.removeAll(keepingCapacity: true)
+                return waiters
+            }
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+
+        func waitUntilDrained() async {
+            await withCheckedContinuation { continuation in
+                let resumeImmediately = lock.withLock {
+                    guard pending > 0 else { return true }
+                    drainWaiters.append(continuation)
+                    return false
+                }
+                if resumeImmediately {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     /// Maximum number of payloads buffered before the surplus is dropped.
     let capacity: Int
 
     private let continuation: AsyncStream<Payload>.Continuation
     private let consumer: Task<Void, Never>
-
-    // Lightweight counters (lock-guarded; read from tests / future telemetry).
-    private let statsLock = NSLock()
-    private var _accepted = 0
-    private var _dropped = 0
+    private let state: State
 
     /// - Parameters:
     ///   - capacity: max buffered payloads (clamped to ≥ 1). Small by
@@ -55,9 +103,11 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
         self.capacity = cap
         let (stream, continuation) = AsyncStream.makeStream(
             of: Payload.self,
-            bufferingPolicy: .bufferingNewest(cap)
+            bufferingPolicy: .bufferingOldest(cap)
         )
+        let state = State()
         self.continuation = continuation
+        self.state = state
         self.consumer = Task {
             for await payload in stream {
                 // Honor shutdown before consuming. `shutdown()` calls
@@ -74,8 +124,10 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
                 // Skipping `consume` drops the payloads (best-effort); the
                 // finished stream then terminates the loop once its buffer
                 // empties.
-                if Task.isCancelled { continue }
-                await consume(payload)
+                if !Task.isCancelled {
+                    await consume(payload)
+                }
+                state.completeOne()
             }
         }
     }
@@ -88,27 +140,31 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
     /// shut down.
     @discardableResult
     func submit(_ payload: Payload) -> Bool {
+        state.beginSubmit()
         switch continuation.yield(payload) {
         case .enqueued:
-            statsLock.lock(); _accepted += 1; statsLock.unlock()
+            state.markAccepted()
             return true
         case .dropped:
-            // `.bufferingNewest` keeps the newest `capacity` payloads and
-            // returns the evicted (oldest) one here; letting it go out of
-            // scope releases it immediately.
-            statsLock.lock(); _dropped += 1; statsLock.unlock()
+            // `.bufferingOldest` preserves accepted FIFO work and drops this
+            // surplus payload. This is required by callers that settle the
+            // returned payload's ownership when submit returns false.
+            state.markDropped()
+            state.completeOne()
             return false
         case .terminated:
+            state.completeOne()
             return false
         @unknown default:
+            state.completeOne()
             return false
         }
     }
 
     /// Count of `submit` calls that buffered without eviction.
-    var acceptedCount: Int { statsLock.lock(); defer { statsLock.unlock() }; return _accepted }
+    var acceptedCount: Int { state.acceptedCount }
     /// Count of `submit` calls that overflowed the buffer (a payload dropped).
-    var droppedCount: Int { statsLock.lock(); defer { statsLock.unlock() }; return _dropped }
+    var droppedCount: Int { state.droppedCount }
 
     /// Stop accepting, end the consumer loop, and cancel it so an in-flight
     /// `consume` is not awaited indefinitely across teardown. Idempotent.
@@ -118,11 +174,10 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
         consumer.cancel()
     }
 
-    /// Test seam: await the consumer Task draining to completion. Production
-    /// teardown does not need to await this (ARC + `finish()` reclaim the
-    /// buffered payloads); tests use it to assert no payloads leak.
+    /// Await all work accepted before this call without shutting down the
+    /// long-lived consumer. Teardown can call this after `shutdown()` too.
     func waitUntilDrained() async {
-        await consumer.value
+        await state.waitUntilDrained()
     }
 
     deinit {

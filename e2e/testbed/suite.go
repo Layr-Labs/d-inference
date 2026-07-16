@@ -84,6 +84,7 @@ type Provider struct {
 
 	cmd    *os.Process
 	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {
@@ -91,7 +92,9 @@ func NewSuite(cfg SuiteConfig) *Suite {
 
 	if os.Getenv("DARKBLOOM_REPO_ROOT") == "" {
 		if cwd, err := os.Getwd(); err == nil {
-			os.Setenv("DARKBLOOM_REPO_ROOT", cwd+"/../..")
+			if root, rootErr := findRepositoryRoot(cwd); rootErr == nil {
+				_ = os.Setenv("DARKBLOOM_REPO_ROOT", root)
+			}
 		}
 	}
 
@@ -146,22 +149,28 @@ func (s *Suite) PrimaryModelID() string {
 	return s.Config.PrimaryModelID()
 }
 
-func (s *Suite) Start(ctx context.Context) error {
+func (s *Suite) Start(ctx context.Context) (err error) {
 	s.Ctx = ctx
+	defer func() {
+		if err != nil {
+			s.Stop()
+		}
+	}()
 
-	if err := s.startPostgres(); err != nil {
+	if err = s.startPostgres(); err != nil {
 		return err
 	}
-	if err := s.createUserPool(); err != nil {
+	if err = s.createUserPool(); err != nil {
 		return err
 	}
-	if err := s.startCoordinator(); err != nil {
+	if err = s.startCoordinator(); err != nil {
 		return err
 	}
-	if err := s.startProviders(); err != nil {
+	if err = s.startProviders(); err != nil {
 		return err
 	}
-	return s.waitForProviderRegistration(3 * time.Minute)
+	err = s.waitForProviderRegistration(3 * time.Minute)
+	return err
 }
 
 func (s *Suite) Stop() {
@@ -237,6 +246,7 @@ func (s *Suite) startCoordinator() error {
 	srv.SetRuntimeManifest(&api.RuntimeManifest{})
 	srv.SetChallengeInterval(1 * time.Hour)
 	srv.SetSkipChallenge(true)
+	srv.SetAllowDuplicateProviderSerialsForTesting(true)
 
 	ledger := payments.NewLedger(s.PgStore)
 	billingSvc := billing.NewService(s.PgStore, ledger, s.Logger, billing.Config{MockMode: true})
@@ -276,9 +286,10 @@ func (s *Suite) startProviders() error {
 			}
 			p.AuthDir = authDir
 			if err := p.Start(s.Ctx, s.Coordinator.BaseURL(), ProviderConfig{
-				ModelIDs:      modelIDs,
-				TrustLevel:    TrustNone,
-				AuthTokenPath: authTokenPath,
+				ModelIDs:                   modelIDs,
+				TrustLevel:                 TrustNone,
+				AuthTokenPath:              authTokenPath,
+				EnableEphemeralPrefixCache: s.Config.EnableEphemeralPrefixCache,
 			}); err != nil {
 				_ = os.RemoveAll(authDir)
 				return fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err)
@@ -461,7 +472,7 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
 	cmd.Env = append(os.Environ(),
-		"DARKBLOOM_PID_FILE=/tmp/darkbloom-testbed-"+strconv.Itoa(p.ProviderIndex)+".pid",
+		"DARKBLOOM_PID_FILE="+filepath.Join(p.StateDir, "provider.pid"),
 		"DARKBLOOM_NO_UPDATE_CHECK=1",
 		"DARKBLOOM_STATE_FILE="+filepath.Join(p.StateDir, "daemon-state.json"),
 		"DARKBLOOM_LOADED_MODELS_FILE="+filepath.Join(p.StateDir, "loaded-models.json"),
@@ -469,42 +480,51 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	if cfg.AuthTokenPath != "" {
 		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)
 	}
+	if cfg.EnableEphemeralPrefixCache {
+		cmd.Env = append(cmd.Env, "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1")
+	}
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start provider: %w", err)
 	}
 
 	p.cmd = cmd.Process
+	p.done = make(chan struct{})
 	p.Logger.Info("provider started", "binary", p.BinaryPath, "pid", p.cmd.Pid)
 
-	go func() {
-		state, _ := cmd.Process.Wait()
+	go func(done chan struct{}) {
+		defer close(done)
+		state, err := cmd.Process.Wait()
+		if err != nil {
+			p.Logger.Warn("provider process wait failed", "error", err)
+			return
+		}
 		if state != nil && state.ExitCode() >= 0 {
 			p.Logger.Warn("provider process exited", "exit_code", state.ExitCode())
 		}
-	}()
+	}(p.done)
 
 	return nil
 }
 
 func (p *Provider) Stop() {
+	if p.cmd != nil {
+		_ = p.cmd.Signal(os.Interrupt)
+		select {
+		case <-p.done:
+		case <-time.After(10 * time.Second):
+			_ = p.cmd.Kill()
+			select {
+			case <-p.done:
+			case <-time.After(time.Second):
+			}
+		}
+		p.cmd = nil
+		p.done = nil
+	}
 	if p.cancel != nil {
 		p.cancel()
-	}
-	if p.cmd != nil {
-		if err := p.cmd.Signal(os.Interrupt); err != nil {
-			p.cmd.Kill()
-		}
-		done := make(chan error, 1)
-		go func() {
-			_, _ = p.cmd.Wait()
-			done <- nil
-		}()
-		select {
-		case <-done:
-		case <-time.After(10 * time.Second):
-			p.cmd.Kill()
-		}
+		p.cancel = nil
 	}
 	if p.AuthDir != "" {
 		_ = os.RemoveAll(p.AuthDir)

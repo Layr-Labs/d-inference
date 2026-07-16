@@ -76,7 +76,8 @@ extension CoordinatorClient {
                 ciphertext: cipherBytes,
                 senderPublicKey: senderKeyBytes,
                 cacheReceiptNonce: request.cacheReceiptNonce,
-                cacheScope: request.cacheScope
+                cacheScope: request.cacheScope,
+                prefixCacheProtocol: request.prefixCacheProtocol
             ))
 
         case .cancel(let cancel):

@@ -58,15 +58,6 @@ struct LaunchAgentEnvironmentTests {
         #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
     }
 
-    @Test func forwardsSSDTierKillSwitchToDaemon() {
-        // The SSD prefix-cache tier (v0.7.5) is DEFAULT-ON; its kill switch
-        // (DARKBLOOM_PREFIX_CACHE_SSD=0) must survive into the launchd plist
-        // or the tier silently revives on the next service start.
-        let out = LaunchAgent.passthroughEnvironment(
-            from: ["DARKBLOOM_PREFIX_CACHE_SSD": "0", "PATH": "/usr/bin"])
-        #expect(out == ["DARKBLOOM_PREFIX_CACHE_SSD": "0"])
-    }
-
     @Test func forwardsResourceDebugOptOutToDaemon() {
         // The MLX resource telemetry is default-on; its documented opt-out
         // (DARKBLOOM_MLX_RESOURCE_DEBUG=0) only works on the launchd service if it

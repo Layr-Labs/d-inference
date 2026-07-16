@@ -1,5 +1,4 @@
 import Foundation
-import Crypto
 
 // MARK: - Request Types
 
@@ -26,11 +25,9 @@ public struct ChatCompletionRequest: Codable, Sendable {
     public let response_format: ResponseFormat?
     /// User identifier for rate-limit / abuse tracking.
     public let user: String?
-    /// OpenAI-compatible opaque per-consumer cache key. When present, scopes
-    /// the prefix cache so a cached prefix for one consumer can't be hit by
-    /// another (closes the TB-007 cross-tenant prefix-sharing channel for the
-    /// checkpoint tier). Rides INSIDE the E2E-sealed body, so the coordinator
-    /// never sees it; the provider reads it after decryption.
+    /// Accepted for OpenAI wire compatibility. Cache partitioning uses only
+    /// authenticated coordinator metadata; this caller-controlled value is
+    /// never used as cache identity.
     public let prompt_cache_key: String?
     /// OpenAI `logit_bias`: token-id (STRING keys on the wire) → additive
     /// bias. Consumed by the v2 engine path (`EngineV2Translation`); the
@@ -84,22 +81,6 @@ public struct ChatCompletionRequest: Codable, Sendable {
         self.logit_bias = logit_bias
         self.logprobs = logprobs
         self.top_logprobs = top_logprobs
-    }
-
-    /// Per-tenant prefix-cache scope for this request. Policy (provider-only):
-    /// `SHA256(prompt_cache_key)` when present, else `SHA256(user)` when
-    /// present, else "" (unscoped — shared cache, current behavior). Hashing
-    /// keeps the on-disk/in-memory scope opaque and fixed-width regardless of
-    /// the raw key. Empty inputs (`""`) are treated as absent.
-    public var cacheScope: String {
-        if let k = prompt_cache_key, !k.isEmpty { return Self.scopeHash(k) }
-        if let u = user, !u.isEmpty { return Self.scopeHash(u) }
-        return ""
-    }
-
-    static func scopeHash(_ s: String) -> String {
-        let d = SHA256.hash(data: Data(s.utf8))
-        return d.map { String(format: "%02x", $0) }.joined()
     }
 }
 

@@ -33,12 +33,9 @@ snapshot run to EngineV2. The engine applies the same recompute rule before
 resuming prefill. Any missing block, binding mismatch, decryption failure, or
 staging-budget refusal becomes a cold miss.
 
-## RAM tier
-
-The experimental RAM `PrefixCacheV2` tier is selected only when SSD is disabled
-and `DARKBLOOM_PREFIX_CACHE=1`. Because RAM retention reduces live concurrency,
-its per-model funding gate defaults to an adoption-bound limit of 4,096 tokens.
-This gate does not apply to SSD; SSD uses its per-donation benefit test instead.
+Production does not construct the upstream resident-RAM `PrefixCacheV2` tier.
+Encrypted SSD uses the per-donation benefit test above and leaves the engine's
+full live-KV memory grant intact.
 
 ## Code locations
 

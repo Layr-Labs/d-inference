@@ -43,6 +43,8 @@ public struct CapturedMessages: Sendable {
     public var modelsUpdates: [ProviderMessage.ModelsUpdate] = []
     public var prefixCacheLookups: [ProviderMessage.PrefixCacheLookup] = []
     public var prefixCacheReady: [ProviderMessage.PrefixCacheReady] = []
+    public var prefixCacheLookupsV2: [ProviderMessage.PrefixCacheLookupV2] = []
+    public var prefixCacheReadyV2: [ProviderMessage.PrefixCacheReadyV2] = []
     public var telemetryBatches: [TelemetryBatch] = []
 
     public init() {}
@@ -607,6 +609,8 @@ public final class MockCoordinator: @unchecked Sendable {
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
             case .prefixCacheLookup(let r):  captured.prefixCacheLookups.append(r)
             case .prefixCacheReady(let r):   captured.prefixCacheReady.append(r)
+            case .prefixCacheLookupV2(let r): captured.prefixCacheLookupsV2.append(r)
+            case .prefixCacheReadyV2(let r): captured.prefixCacheReadyV2.append(r)
             }
         }
         eventContinuation.yield(.providerMessage(parsed))

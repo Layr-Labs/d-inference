@@ -12,6 +12,7 @@
 
 import Foundation
 import MLXLMCommon
+import ProviderCoreFoundation
 import Tokenizers
 
 public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
@@ -19,7 +20,14 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
 
     public func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
         let upstream = try await AutoTokenizer.from(modelFolder: directory)
-        return LocalTokenizerBridge(upstream)
+        let templateURL = directory.appendingPathComponent("chat_template.jinja")
+        let chatTemplate: String?
+        if FileManager.default.fileExists(atPath: templateURL.path) {
+            chatTemplate = try String(contentsOf: templateURL, encoding: .utf8)
+        } else {
+            chatTemplate = nil
+        }
+        return LocalTokenizerBridge(upstream, chatTemplate: chatTemplate)
     }
 }
 
@@ -30,9 +38,11 @@ public struct LocalTokenizerLoader: TokenizerLoader, Sendable {
 /// library is internally thread-safe (read-only after construction).
 private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer {
     private let upstream: any Tokenizers.Tokenizer
+    private let chatTemplate: String?
 
-    init(_ upstream: any Tokenizers.Tokenizer) {
+    init(_ upstream: any Tokenizers.Tokenizer, chatTemplate: String?) {
         self.upstream = upstream
+        self.chatTemplate = chatTemplate.map(normalizeSwiftJinjaTemplate)
     }
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
@@ -61,6 +71,17 @@ private struct LocalTokenizerBridge: @unchecked Sendable, MLXLMCommon.Tokenizer 
         additionalContext: [String: any Sendable]?
     ) throws -> [Int] {
         do {
+            if let chatTemplate {
+                return try upstream.applyChatTemplate(
+                    messages: messages,
+                    chatTemplate: .literal(chatTemplate),
+                    addGenerationPrompt: true,
+                    truncation: false,
+                    maxLength: nil,
+                    tools: tools,
+                    additionalContext: additionalContext
+                )
+            }
             return try upstream.applyChatTemplate(
                 messages: messages,
                 tools: tools,

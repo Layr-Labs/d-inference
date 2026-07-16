@@ -148,7 +148,7 @@ struct InferenceLiveTests {
             #expect((grantA ?? 0) > 0)
             #expect((grantB ?? 0) > 0)
         }
-        await server.stopAndWait()
+        await server.stop()
     }
 
     @Test(
@@ -192,10 +192,10 @@ struct InferenceLiveTests {
             try await assertStandaloneDisconnectCleanup(
                 server: server, port: port, modelID: modelID, stream: false)
         } catch {
-            await server.stopAndWait()
+            await server.stop()
             throw error
         }
-        await server.stopAndWait()
+        await server.stop()
     }
 
     // MARK: 2. Gemma 26B

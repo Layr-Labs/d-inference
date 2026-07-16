@@ -37,6 +37,7 @@ public struct ModelScanner: Sendable {
         "tokenizer.model",
         "generation_config.json",
         "chat_template.jinja",
+        "chat_template.json",
         "quantize_config.json",
         // Added in the Phase 1 model-registry rearchitecture so the manifest
         // covers every file a HuggingFace snapshot ships with:
@@ -203,7 +204,7 @@ public struct ModelScanner: Sendable {
         if filename == "config.json" || filename == "generation_config.json" || filename == "quantize_config.json" {
             return "config"
         }
-        if filename == "chat_template.jinja" {
+        if filename == "chat_template.jinja" || filename == "chat_template.json" {
             return "template"
         }
         if filename == "preprocessor_config.json" || filename == "processor_config.json" {

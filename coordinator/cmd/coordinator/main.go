@@ -27,6 +27,7 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -46,6 +47,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
@@ -212,7 +214,6 @@ func main() {
 		"max_holders", cacheRoutingCfg.MaxHolders,
 		"max_discount_ms", cacheRoutingCfg.MaxDiscountMs,
 		"max_cost_fraction", cacheRoutingCfg.MaxCostFraction,
-		"dedicated", cacheRoutingCfg.Dedicated,
 	)
 	stopWarmPool := reg.StartWarmPoolController(ctx, cfg.RegistryCfg.WarmPool)
 	defer stopWarmPool()
@@ -229,6 +230,35 @@ func main() {
 	//     https://pro.ip-api.com endpoint; unset falls back to the free, 45 req/min
 	//     http://ip-api.com endpoint (graceful, so dev without a key still works).
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
+	if cfg.PromptSidecar.Enabled {
+		artifactBaseURL, err := url.Parse(cfg.PromptSidecar.ArtifactBaseURL)
+		if err != nil {
+			logger.Error("prompt artifact URL rejected", "error", err)
+		} else {
+			artifactCache, cacheErr := promptcontract.NewArtifactCache(promptcontract.ArtifactCacheConfig{
+				Root:            cfg.PromptSidecar.ArtifactRoot,
+				BaseURL:         artifactBaseURL,
+				DownloadTimeout: cfg.PromptSidecar.ArtifactTimeout,
+			})
+			if cacheErr != nil {
+				logger.Error("prompt artifact cache disabled", "error", cacheErr)
+			} else {
+				provisioner, provisionErr := promptcontract.NewProvisioner(
+					ctx,
+					artifactCache,
+					promptcontract.ProvisionerConfig{
+						MaxConcurrent: cfg.PromptSidecar.ProvisionWorkers,
+						MaxModels:     cfg.PromptSidecar.ProvisionMaxModels,
+					},
+				)
+				if provisionErr != nil {
+					logger.Error("prompt artifact provisioner disabled", "error", provisionErr)
+				} else {
+					srv.SetPromptArtifactProvisioner(provisioner)
+				}
+			}
+		}
+	}
 	// Stop the routing-telemetry sink's worker pool on shutdown. Deferred so it
 	// runs after the HTTP server has drained (no in-flight request can still be
 	// submitting telemetry); Close is idempotent and never blocks on in-flight
@@ -823,6 +853,11 @@ func main() {
 		// headers and rejecting abusive oversized-header requests early.
 		MaxHeaderBytes: 64 << 10,
 	}
+	promptSidecar := promptcontract.NewSupervisor(cfg.PromptSidecar)
+	if cfg.PromptSidecar.Enabled {
+		srv.SetPromptContractClient(promptSidecar.Client())
+	}
+	promptSidecar.Start(ctx)
 
 	// Start listening.
 	go func() {
@@ -850,6 +885,7 @@ func main() {
 	// for in-flight HTTP to finish. The canonical combined shutdown order is:
 	// SetDraining → BroadcastGoingAway → cancel → WaitForInflightZero → Shutdown.
 	cancel() // Stop the eviction loop.
+	promptSidecar.Close()
 
 	// Wait for already-admitted in-flight requests to finish before shutting the
 	// HTTP server down. Streaming responses can run well past the 15s Shutdown

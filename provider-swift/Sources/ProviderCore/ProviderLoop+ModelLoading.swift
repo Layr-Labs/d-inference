@@ -18,76 +18,131 @@ import os
 extension ProviderLoop {
     // MARK: - Model Loading
 
-    /// Outcome of one weight-hash refresh: the snapshot fingerprint the recorded
-    /// hash corresponds to (nil if the dir couldn't be stat'd), and whether the
-    /// `liveModelHashes` entry now reflects bytes on disk. `effectiveFingerprint`
-    /// is what the after-load TOCTOU check compares against to decide whether the
-    /// bytes drifted between hashing and loading.
-    private struct WeightHashRefreshResult {
-        /// Fingerprint that `liveModelHashes[modelId]` now corresponds to, or nil
-        /// if we have no trustworthy fingerprint (stat failed / recompute failed).
-        let effectiveFingerprint: String?
+    /// One immutable observation of the model artifacts on disk. Capture and
+    /// publication are deliberately separate: reusable SSD loads take two fresh
+    /// cryptographic observations around container loading, then publish only
+    /// after both hashes match.
+    struct WeightHashSnapshot: Sendable {
+        let fingerprint: String?
+        let hash: String?
+        let recomputed: Bool
     }
 
-    /// Re-hash the weights for `modelId` and update `liveModelHashes` /
-    /// `modelHashFingerprints` to match the bytes on disk, pushing any change into
-    /// the coordinator client. The expensive SHA-256 read runs off-actor (hashing
-    /// a large model takes seconds and must not block heartbeats or challenge
-    /// handling). A snapshot fingerprint (paths + sizes + mtimes) skips the full
-    /// re-read when nothing changed since the last hash, so routine idle-reload
-    /// cycles stay cheap.
-    ///
-    /// The model may have been re-published and re-downloaded since the last hash;
-    /// a stale hash would make the coordinator hard-untrust this provider for a
-    /// "model swap" even though the disk is correct. Returns the fingerprint the
-    /// recorded hash now corresponds to so the caller can detect a post-load drift.
-    private func refreshWeightHash(modelId: String, modelPath: URL) async throws -> WeightHashRefreshResult {
+    /// Capture a hash observation without mutating provider-visible state. The
+    /// expensive SHA-256 read runs off-actor so heartbeats and challenges remain
+    /// responsive. Non-SSD loads may reuse an unchanged fingerprint/hash pair;
+    /// reusable SSD loads always request a fresh cryptographic read.
+    func captureWeightHash(
+        modelId: String,
+        modelPath: URL,
+        requireFreshCryptographicHash: Bool = false
+    ) async throws -> WeightHashSnapshot {
+        if requireFreshCryptographicHash {
+            return try await captureFreshCryptographicWeightHash(
+                modelId: modelId,
+                modelPath: modelPath)
+        }
         let priorFingerprint = modelHashFingerprints[modelId]
-        let hasPriorHash = liveModelHashes[modelId] != nil
+        let priorHash = SSDPrefixCacheFactory.verifiedWeightHash(liveModelHashes[modelId])
         let refresh = await Task.detached(priority: .utility) {
-            () -> (fingerprint: String?, hash: String?, skipped: Bool) in
+            () -> WeightHashSnapshot in
             let fingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-            if let fingerprint, fingerprint == priorFingerprint, hasPriorHash {
-                return (fingerprint, nil, true)  // unchanged — keep cached hash
+            if let fingerprint, fingerprint == priorFingerprint, priorHash != nil
+            {
+                return WeightHashSnapshot(
+                    fingerprint: fingerprint,
+                    hash: priorHash,
+                    recomputed: false)
             }
-            return (fingerprint, WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId), false)
+            return WeightHashSnapshot(
+                fingerprint: fingerprint,
+                hash: SSDPrefixCacheFactory.verifiedWeightHash(
+                    WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId)),
+                recomputed: true)
         }.value
         try Task.checkCancellation()
         if isShuttingDown { throw CancellationError() }
+        return refresh
+    }
 
-        // Record the fingerprint ONLY when we have a hash that corresponds to it
-        // (fresh or skip-confirmed). Caching it after a FAILED re-hash would make
-        // the next reload fingerprint-match against the stale hash and silently
-        // skip the retry — turning a transient read failure into a persistently
-        // stale report.
-        let haveTrustworthyHash = refresh.hash != nil || refresh.skipped
-        if let fingerprint = refresh.fingerprint, haveTrustworthyHash {
+    /// Read the full cryptographic hash without a redundant metadata-fingerprint
+    /// walk. Callers that already observed a post-load fingerprint can attach it
+    /// so publication keeps the cheap non-SSD reload cache coherent.
+    private func captureFreshCryptographicWeightHash(
+        modelId: String,
+        modelPath: URL,
+        fingerprint: String? = nil
+    ) async throws -> WeightHashSnapshot {
+        let hash = await Task.detached(priority: .utility) {
+            SSDPrefixCacheFactory.verifiedWeightHash(
+                WeightHasher.computeHash(snapshotDir: modelPath, modelID: modelId))
+        }.value
+        try Task.checkCancellation()
+        if isShuttingDown { throw CancellationError() }
+        return WeightHashSnapshot(
+            fingerprint: fingerprint,
+            hash: hash,
+            recomputed: true)
+    }
+
+    /// Publish a trustworthy observation to attestation/registration state.
+    /// Failed observations never replace the last known hash or fingerprint.
+    func publishWeightHash(modelId: String, snapshot: WeightHashSnapshot) async {
+        guard let hash = snapshot.hash else {
+            if snapshot.recomputed {
+                logger.warning("Weight hash recompute failed for \(modelId) — keeping previous value")
+            }
+            return
+        }
+        if let fingerprint = snapshot.fingerprint {
             modelHashFingerprints[modelId] = fingerprint
         }
-        if let freshHash = refresh.hash {
-            if liveModelHashes[modelId] != freshHash {
-                let previous = liveModelHashes[modelId]?.prefix(16) ?? "unset"
-                logger.info("Weight hash refreshed for \(modelId): \(freshHash.prefix(16))... (was \(previous))")
-                liveModelHashes[modelId] = freshHash
-                // Push into the client so a later reconnect re-registers with
-                // current models[].weight_hash (the coordinator's per-model
-                // catalog filter uses the register-time value).
-                if let client = coordinatorClient {
-                    await client.updateModelWeightHashes(liveModelHashes)
-                }
+        if liveModelHashes[modelId] != hash {
+            let previous = liveModelHashes[modelId]?.prefix(16) ?? "unset"
+            logger.info("Weight hash refreshed for \(modelId): \(hash.prefix(16))... (was \(previous))")
+            liveModelHashes[modelId] = hash
+            // Push into the client so a later reconnect re-registers with
+            // current models[].weight_hash (the coordinator's per-model
+            // catalog filter uses the register-time value).
+            if let client = coordinatorClient {
+                await client.updateModelWeightHashes(liveModelHashes)
             }
-        } else if !refresh.skipped {
-            // Recompute failed: keep the previous value but say so — a stale hash
-            // here is operator-visible as a model-swap untrust.
-            logger.warning("Weight hash recompute failed for \(modelId) — keeping previous value")
         }
+    }
 
-        // The effective fingerprint is the one the recorded hash corresponds to.
-        // nil when we couldn't establish a trustworthy hash/fingerprint pair, in
-        // which case the after-load check should re-hash (safe direction).
-        return WeightHashRefreshResult(
-            effectiveFingerprint: haveTrustworthyHash ? refresh.fingerprint : nil
-        )
+    static func cryptographicallyBracketedCacheHash(
+        preLoadHash: String?, postLoadHash: String?
+    ) -> String? {
+        guard let preLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(preLoadHash),
+            let postLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(postLoadHash),
+            preLoadHash == postLoadHash
+        else { return nil }
+        return preLoadHash
+    }
+
+    /// Complete a reusable SSD load as one fail-closed lifecycle transition.
+    /// A missing or changed post-load hash makes the loaded bytes ambiguous:
+    /// release the container immediately, clear MLX residency, leave the last
+    /// published hash untouched, and fail the load before engine/slot install.
+    func finalizeReusableSSDLoad(
+        modelId: String,
+        preLoad: WeightHashSnapshot,
+        postLoad: WeightHashSnapshot,
+        newcomer: EngineV2NewcomerBox
+    ) async throws -> String {
+        guard let cacheHash = Self.cryptographicallyBracketedCacheHash(
+            preLoadHash: preLoad.hash,
+            postLoadHash: postLoad.hash)
+        else {
+            newcomer.release()
+            MLX.Memory.clearCache()
+            let message =
+                "Model '\(modelId)' changed or could not be cryptographically verified while loading reusable SSD cache state — unloaded"
+            recordModelLoadError(model: modelId, message: message)
+            throw InferenceError.modelLoadFailed(message)
+        }
+        await publishWeightHash(modelId: modelId, snapshot: postLoad)
+        return cacheHash
     }
 
     /// Load `modelId` if it is not already resident.
@@ -270,8 +325,15 @@ extension ProviderLoop {
             // Re-hash the weights about to be loaded. Refreshing BEFORE the slot
             // goes active guarantees a challenge arriving mid-serve reports the
             // hash of the bytes actually loaded — not the disk state at daemon
-            // start. (See `refreshWeightHash` for the full rationale.)
-            let preLoadRefresh = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+            // start. (See `captureWeightHash` for the full rationale.)
+            let reusableSSDRequested = PrefixCachePolicy.isEnabled()
+            let preLoadHash = try await captureWeightHash(
+                modelId: modelId,
+                modelPath: modelPath,
+                requireFreshCryptographicHash: reusableSSDRequested)
+            if !reusableSSDRequested {
+                await publishWeightHash(modelId: modelId, snapshot: preLoadHash)
+            }
 
             if let beforeModelLoad {
                 await beforeModelLoad(modelId)
@@ -288,22 +350,39 @@ extension ProviderLoop {
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
 
-            // TOCTOU guard: the hash above was computed BEFORE loadModelContainer
-            // read the weights. If a re-download landed in that window,
-            // liveModelHashes would describe different bytes than what was
-            // actually loaded. Re-stat the snapshot fingerprint (cheap) and, only
-            // if it drifted from what the recorded hash corresponds to, recompute
-            // so liveModelHashes/modelHashFingerprints reflect the loaded bytes.
-            // The common case (fingerprint unchanged) costs one stat-based
-            // fingerprint and no re-read. A nil pre-load fingerprint also forces a
-            // re-hash here — we never recorded a trustworthy hash, so re-deriving
-            // it post-load is the safe direction.
-            let postLoadFingerprint = WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
-            if preLoadRefresh.effectiveFingerprint == nil
-                || postLoadFingerprint != preLoadRefresh.effectiveFingerprint {
-                logger.warning(
-                    "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
-                _ = try await refreshWeightHash(modelId: modelId, modelPath: modelPath)
+            // TOCTOU guard: reusable SSD cache participation requires two fresh
+            // cryptographic reads bracketing the container load. Unlike the old
+            // refresh path, neither observation is published until equality is
+            // established; mismatch/unavailability releases the container and
+            // fails before engine construction or slot installation.
+            let cacheEligibleWeightHash: String?
+            if reusableSSDRequested {
+                let postLoadHash = try await captureWeightHash(
+                    modelId: modelId,
+                    modelPath: modelPath,
+                    requireFreshCryptographicHash: true)
+                cacheEligibleWeightHash = try await finalizeReusableSSDLoad(
+                    modelId: modelId,
+                    preLoad: preLoadHash,
+                    postLoad: postLoadHash,
+                    newcomer: newcomer)
+            } else {
+                let postLoadFingerprint = await Task.detached(priority: .utility) {
+                    WeightHasher.snapshotFingerprint(snapshotDir: modelPath)
+                }.value
+                try Task.checkCancellation()
+                if preLoadHash.fingerprint == nil
+                    || postLoadFingerprint != preLoadHash.fingerprint
+                {
+                    logger.warning(
+                        "Snapshot fingerprint drifted between hash and load for \(modelId) — recomputing weight hash for the bytes actually loaded")
+                    let postLoadHash = try await captureFreshCryptographicWeightHash(
+                        modelId: modelId,
+                        modelPath: modelPath,
+                        fingerprint: postLoadFingerprint)
+                    await publishWeightHash(modelId: modelId, snapshot: postLoadHash)
+                }
+                cacheEligibleWeightHash = nil
             }
             // Hard-fail without Metal (moved from the legacy scheduler's
             // loadModel): CPU inference is not acceptable, and with no
@@ -405,7 +484,8 @@ extension ProviderLoop {
                     newcomer: newcomer,
                     tokenizer: tokenizer,
                     targetSizing: targetSizing,
-                    specDecPreparation: mtpPreparation
+                    specDecPreparation: mtpPreparation,
+                    cacheEligibleWeightHash: cacheEligibleWeightHash
                 )
             } catch let error as InferenceError {
                 // Already shaped (e.g. the re-slice floor refusal) — record +
@@ -472,7 +552,8 @@ extension ProviderLoop {
                         newcomer: newcomer,
                         tokenizer: tokenizer,
                         targetSizing: targetSizing,
-                        specDecPreparation: mtpPreparation.fallingBack(reason))
+                        specDecPreparation: mtpPreparation.fallingBack(reason),
+                        cacheEligibleWeightHash: cacheEligibleWeightHash)
                 } catch {
                     // The retry released the target on failure. Recompute from
                     // actual survivor residency, not the first attempt's
@@ -531,6 +612,7 @@ extension ProviderLoop {
                 container: installContainer,
                 tokenizer: tokenizer,
                 sizing: sizing,
+                cacheEligibleWeightHash: cacheEligibleWeightHash,
                 isVLM: slotIsVLM,
                 modelType: modelInfo.modelType,
                 lastInferenceAt: .now

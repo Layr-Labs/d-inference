@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type PostgresLifecycle struct {
@@ -151,7 +153,7 @@ func (p *PostgresLifecycle) waitForReadyDocker(ctx context.Context) error {
 	for i := 0; i < 30; i++ {
 		cmd := exec.CommandContext(ctx, "docker", "exec", p.ContainerID,
 			"pg_isready", "-U", "testbed", "-d", "testbed")
-		if err := cmd.Run(); err == nil {
+		if err := cmd.Run(); err == nil && p.hostDatabaseReady(ctx) {
 			return nil
 		}
 		select {
@@ -161,6 +163,17 @@ func (p *PostgresLifecycle) waitForReadyDocker(ctx context.Context) error {
 		}
 	}
 	return fmt.Errorf("testbed/deps: postgres did not become ready within 15s")
+}
+
+func (p *PostgresLifecycle) hostDatabaseReady(ctx context.Context) bool {
+	probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	connection, err := pgx.Connect(probeCtx, p.DatabaseURL)
+	if err != nil {
+		return false
+	}
+	defer connection.Close(probeCtx)
+	return connection.Ping(probeCtx) == nil
 }
 
 func (p *PostgresLifecycle) waitForReadyNative(ctx context.Context) error {

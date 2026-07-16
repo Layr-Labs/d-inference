@@ -116,21 +116,14 @@ extension EngineV2Factory {
     ///   - model: the loaded language module (the SAME instance the legacy
     ///     engine serves — weights are shared, never duplicated).
     ///   - tokenizer: the model's tokenizer, for incremental detokenization.
-    ///   - kvBytesCapacity: admission ceiling for sequence KV, in bytes
-    ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`). When a prefix
-    ///     cache is supplied, the caller has ALREADY carved that cache's
-    ///     byte budget out of this figure (`PrefixCachePolicy.carve`) so
-    ///     cached KV + live-request KV can never jointly exceed the slot's
-    ///     grant under the unified-memory cap.
-    ///   - prefixCache: v2 prefix cache — either the RAM `PrefixCacheV2`
-    ///     (`PrefixCachePolicy.makePrefixCache`, opt-in-experimental) or
-    ///     the provider's `SSDPrefixCache` (the v0.7.5 encrypted SSD
-    ///     offload tier, default for supported models with per-donation
-    ///     benefit gating and zero memory carve).
+    ///   - kvBytesCapacity: admission ceiling for live sequence KV, in bytes
+    ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`).
+    ///   - prefixCache: the provider's encrypted `SSDPrefixCache`, with
+    ///     per-donation benefit gating and zero serving-memory carve.
     ///     Widened to the existential (`any CBv2PrefixCache`) so
     ///     provider-side conformers plug in with ZERO mlx-swift-lm
     ///     changes (the engine already stores the cache existentially).
-    ///     Gate + budget + carve + tier selection are the caller's job.
+    ///     The local kill switch and construction are the caller's job.
     ///     Non-nil ⇒ the engine runs with `enablePrefixCache: true`
     ///     (lookup/adopt on submit, donate on finish, per-request
     ///     `cacheSalt` tenant scoping live). nil means cache unavailable or
@@ -262,7 +255,7 @@ extension EngineV2Factory {
         let schedulerConfig = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests),
             enablePrefixCache: prefixCache != nil)
-        let engineLoopConfig = productionLoopConfig(environment: environment)
+        let engineLoopConfig = CBv2EngineLoopConfig()
 
         func contiguousAssembly() -> (CBv2KVBackend, [any CBv2AttendingLayerCache]) {
             let backend = CBv2ContiguousKVBackend(
@@ -384,28 +377,12 @@ extension EngineV2Factory {
             detokenizerFactory: CBv2TextDetokenizerFactory(tokenizer: tokenizer),
             schedulerConfig: schedulerConfig,
             loopConfig: loopConfig,
-            // TB-007 / T-041 (v0.7.5): this CBv2 cache is either the
-            // default-on encrypted SSD tier or the opt-in RAM PrefixCacheV2
-            // tier. Both use per-request cacheSalt scoping; selection and
-            // budgets live in PrefixCachePolicy.
+            // Production reusable prefixes use only the encrypted SSD tier.
+            // The coordinator-authored cache scope isolates accounts.
             prefixCache: prefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig
         )
     }
 
-    static func earlyPrefixDonationEnabled(environment: [String: String]) -> Bool {
-        guard let raw = environment["DARKBLOOM_EARLY_PROMPT_DONATION"]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        else { return false }
-        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
-    }
-
-    static func productionLoopConfig(
-        environment: [String: String]
-    ) -> CBv2EngineLoopConfig {
-        CBv2EngineLoopConfig(
-            enableEarlyPrefixDonation: earlyPrefixDonationEnabled(environment: environment))
-    }
 }

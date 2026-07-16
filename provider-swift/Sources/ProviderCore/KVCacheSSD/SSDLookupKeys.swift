@@ -4,9 +4,9 @@
 // closes T-041 leak #2 (the legacy tier's plaintext on-disk
 // tokenPrefixHash confirmation oracle).
 //
-//     K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv2-lookup-v1", L=32)
+//     K_lookup = HKDF-SHA256-Expand(PRK: KEK, info: "dbkv3-lookup-v1", L=32)
 //     tag_i    = HMAC-SHA256(K_lookup,
-//                    "dbkv2-name-v1" ‖ u64le(len(saltUTF8)) ‖ saltUTF8
+//                    "dbkv3-name-v1" ‖ u64le(len(saltUTF8)) ‖ saltUTF8
 //                                    ‖ chainHash_i)
 //
 // * K_lookup is derived from the existing Secure-Enclave-rooted KEK
@@ -33,8 +33,8 @@ import Foundation
 
 struct SSDLookupKeys: Sendable {
 
-    static let hkdfInfo = Data("dbkv2-lookup-v1".utf8)
-    static let nameDomainTag = Data("dbkv2-name-v1".utf8)
+    static let hkdfInfo = Data("dbkv3-lookup-v1".utf8)
+    static let nameDomainTag = Data("dbkv3-name-v1".utf8)
     /// Truncated-tag length used for filenames and the RAM index (128-bit;
     /// the full 256-bit tag rides inside the authenticated file metadata).
     static let truncatedTagLength = 16

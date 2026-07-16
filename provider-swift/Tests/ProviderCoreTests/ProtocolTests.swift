@@ -2,6 +2,98 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
+@Test func prefixCacheV2CapabilityIsExplicitAndLegacyOmissionIsStable() throws {
+    let legacy = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        prefixCacheProtocol: 1))
+    let legacyObject = try jsonObject(
+        try ProviderProtocolCodec.encodeProviderMessage(legacy))
+    #expect(legacyObject["prefix_cache_v2_models"] == nil)
+
+    let capability = PrefixCacheV2Capability(
+        modelId: "model",
+        modelAggregateHash: String(repeating: "a", count: 64),
+        promptContractId: String(repeating: "b", count: 64),
+        blockHashVersion: "dbk3",
+        blockSize: 256,
+        cacheEpoch: "11111111-1111-1111-1111-111111111111",
+        enabled: true,
+        ready: true)
+    let v2 = ProviderMessage.register(ProviderMessage.Register(
+        hardware: sampleHardware(),
+        models: [sampleModel()],
+        backend: "mlx_swift_lm",
+        prefixCacheProtocol: 2,
+        prefixCacheV2Models: [capability]))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(v2)
+    let object = try jsonObject(data)
+    #expect(object["prefix_cache_protocol"] as? Int == 2)
+    #expect((object["prefix_cache_v2_models"] as? [[String: Any]])?.count == 1)
+    guard case .register(let decoded) =
+        try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decoded.prefixCacheV2Models == [capability])
+}
+
+@Test func prefixCacheV2MessagesRemainDistinctAndBoundReadyAnchors() throws {
+    let prompt = PrefixCacheAnchor(
+        chainHash: String(repeating: "c", count: 64), tokenCount: 256)
+    let continuation = PrefixCacheAnchor(
+        chainHash: String(repeating: "d", count: 64), tokenCount: 512)
+    let excess = PrefixCacheAnchor(
+        chainHash: String(repeating: "e", count: 64), tokenCount: 768)
+    let lookup = ProviderMessage.prefixCacheLookupV2(
+        ProviderMessage.PrefixCacheLookupV2(
+            requestId: "request",
+            cacheReceiptNonce: "nonce",
+            modelId: "model",
+            modelAggregateHash: String(repeating: "a", count: 64),
+            promptContractId: String(repeating: "b", count: 64),
+            cacheEpoch: "11111111-1111-1111-1111-111111111111",
+            cacheSeq: 1,
+            promptAnchor: prompt,
+            matchedAnchor: nil,
+            outcome: .missAbsent,
+            tier: .ssd,
+            requiredRecomputeTokens: 0,
+            expectedPrefillTokensSaved: 0,
+            stageMs: 1))
+    let lookupData = try ProviderProtocolCodec.encodeProviderMessage(lookup)
+    #expect(try jsonObject(lookupData)["type"] as? String == "prefix_cache_lookup_v2")
+    guard case .prefixCacheLookupV2(let decodedLookup) =
+        try ProviderProtocolCodec.decodeProviderMessage(from: lookupData)
+    else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decodedLookup.promptAnchor == prompt)
+
+    let ready = ProviderMessage.prefixCacheReadyV2(
+        ProviderMessage.PrefixCacheReadyV2(
+            requestId: "request",
+            cacheReceiptNonce: "nonce",
+            modelId: "model",
+            modelAggregateHash: String(repeating: "a", count: 64),
+            promptContractId: String(repeating: "b", count: 64),
+            cacheEpoch: "11111111-1111-1111-1111-111111111111",
+            cacheSeq: 2,
+            tier: .ssd,
+            readyAnchors: [prompt, continuation, excess],
+            requiredRecomputeTokens: 256,
+            expectedPrefillTokensSaved: 256,
+            stageMs: 2))
+    let readyData = try ProviderProtocolCodec.encodeProviderMessage(ready)
+    guard case .prefixCacheReadyV2(let decodedReady) =
+        try ProviderProtocolCodec.decodeProviderMessage(from: readyData)
+    else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decodedReady.readyAnchors == [prompt, continuation])
+}
+
 @Test func registerEncodingUsesSnakeCaseAndPreservesRawAttestation() throws {
     let rawAttestation = #"{"signature":"sig","attestation":{"z":1,"a":[true,false],"path":"a/b"}}"#
     let rawData = Data(rawAttestation.utf8)
@@ -899,11 +991,13 @@ import Testing
         requestId: "req-cache",
         encryptedBody: EncryptedPayload(ephemeralPublicKey: "a", ciphertext: "b"),
         cacheReceiptNonce: "nonce-1",
-        cacheScope: "account-route-key"))
+        cacheScope: "account-route-key",
+        prefixCacheProtocol: 2))
     let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
     let object = try jsonObject(data)
     #expect(object["cache_receipt_nonce"] as? String == "nonce-1")
     #expect(object["cache_scope"] as? String == "account-route-key")
+    #expect(object["prefix_cache_protocol"] as? Int == 2)
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
 
     let legacy = #"{"type":"inference_request","request_id":"r","body":null}"#
@@ -912,6 +1006,7 @@ import Testing
     else { throw TestFailure.unexpectedMessage }
     #expect(decoded.cacheReceiptNonce == nil)
     #expect(decoded.cacheScope == nil)
+    #expect(decoded.prefixCacheProtocol == nil)
 }
 
 @Test func prefixCacheReceiptMessagesMatchWireContract() throws {
@@ -929,7 +1024,8 @@ import Testing
         readyTokens: 8192,
         requiredRecomputeTokens: 1536,
         expectedPrefillTokensSaved: 6656,
-        tier: .ssd))
+        tier: .ssd,
+        stageMs: 18.75))
     for message in [lookup, ready] {
         let data = try ProviderProtocolCodec.encodeProviderMessage(message)
         #expect(try ProviderProtocolCodec.decodeProviderMessage(from: data) == message)
@@ -944,6 +1040,13 @@ import Testing
     #expect(readyObject["type"] as? String == "prefix_cache_ready")
     #expect(readyObject["ready_tokens"] as? Int == 8192)
     #expect(readyObject["required_recompute_tokens"] as? Int == 1536)
+    #expect(readyObject["stage_ms"] as? Double == 18.75)
+
+    let legacyReadyJSON = #"{"type":"prefix_cache_ready","request_id":"r","cache_receipt_nonce":"n","ready_tokens":8,"required_recompute_tokens":0,"expected_prefill_tokens_saved":8,"tier":"ssd"}"#
+    guard case .prefixCacheReady(let legacyReady) = try ProviderProtocolCodec.decodeProviderMessage(
+        from: Data(legacyReadyJSON.utf8))
+    else { throw TestFailure.unexpectedMessage }
+    #expect(legacyReady.stageMs == nil)
 }
 
 @Test func usageInfoCacheFieldsAreOptionalAndBackwardCompatible() throws {

@@ -162,9 +162,7 @@ type routingCandidate struct {
 	// (capacity_rate.go), captured at candidate build so the winning
 	// RoutingDecision can expose it. 0 when no rejects are in the window.
 	capacityRejectRate float64
-	cacheKind          string
 	cacheTier          string
-	cacheWouldChange   bool
 }
 
 // candidateRejection enumerates why a provider that passed structural
@@ -291,11 +289,9 @@ type RoutingDecision struct {
 	// candidates are too slow.
 	BestTTFTMs float64
 	// TTFTMs is the estimated time-to-first-token of the selected provider.
-	TTFTMs           float64
-	CacheKind        string
-	CacheTier        string
-	CacheDiscountMs  float64
-	CacheWouldChange bool
+	TTFTMs          float64
+	CacheTier       string
+	CacheDiscountMs float64
 
 	// Phase-0 shadow TTFT admission/spread evaluation (see ttft_shadow.go).
 	// Populated ONLY when EIGENINFERENCE_TTFT_ADMISSION_MODE != off and a
@@ -340,14 +336,33 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	// The tracker has its own mutex and must never be nested under r.mu.
 	r.mu.RLock()
 	cacheTracker, cacheMode := r.cacheRouting, r.cacheRoutingMode
+	cacheRouteKey := append([]byte(nil), r.cacheRouteKeys.route...)
 	r.mu.RUnlock()
+	cacheCapabilities := r.prefixCacheV2CapabilitiesForModel(model)
+	pr.cacheRoutingHints = nil
 	if cacheTracker != nil {
-		pr.cacheRoutingHints = cacheTracker.hints(pr.CacheRoute, cacheMode, time.Now())
-		pr.cacheRoutingObserve = cacheMode == CacheRoutingObserve
+		pr.cacheRoutingHints = cacheTracker.hints(
+			pr.CachePlan, cacheCapabilities, cacheRouteKey, cacheMode, time.Now())
+	}
+	pr.CacheSelectionMode = ""
+	pr.CacheSelectionTier = ""
+	pr.CacheSelectionDiscountMs = 0
+	pr.CacheSelectionSelected = false
+	if pr.CachePlan.present() && cacheMode == CacheRoutingOn {
+		pr.CacheSelectionMode = "active"
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Configuration can change while tracker hints are computed outside r.mu.
+	// Revalidate under the selection lock so an off transition is linearizable:
+	// once ConfigureCacheRouting(off) returns, no stale hint can receive a
+	// discount or publish active-selection metadata.
+	if cacheMode == CacheRoutingOff || r.cacheRoutingMode != cacheMode ||
+		r.cacheRouting != cacheTracker {
+		pr.cacheRoutingHints = nil
+		pr.CacheSelectionMode = ""
+	}
 
 	selected, candidateCount, capacityRejections, tooLargeRejections, visionRejections, ttftRejections, bestTTFTMs := r.selectBestCandidateLockedFull(model, pr, excludeIDs...)
 	if selected == nil {
@@ -421,6 +436,13 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		}
 	}
 
+	bd := selected.breakdown
+	if bd.CacheDiscountMs > 0 {
+		pr.CacheSelectionMode = "active"
+		pr.CacheSelectionTier = selected.cacheTier
+		pr.CacheSelectionDiscountMs = bd.CacheDiscountMs
+		pr.CacheSelectionSelected = pr.CacheSelectionMode == "active"
+	}
 	pr.ProviderID = p.ID
 	p.addPendingLocked(pr)
 	// If this pair's capacity-reject cooldown just EXPIRED, this reservation is
@@ -437,7 +459,6 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		r.RecordWarmPoolColdDispatch(model)
 	}
 
-	bd := selected.breakdown
 	// Register the RAW estimate with the calibrator so the first-content
 	// observation (API layer, RecordTTFTObservation) can be joined to it.
 	// Warm-slot winners only (StateMs == 0): a cold dispatch's actual includes
@@ -466,10 +487,8 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		TTFTRejections:          ttftRejections,
 		BestTTFTMs:              bestTTFTMs,
 		TTFTMs:                  bd.TTFTMs,
-		CacheKind:               selected.cacheKind,
 		CacheTier:               selected.cacheTier,
 		CacheDiscountMs:         bd.CacheDiscountMs,
-		CacheWouldChange:        selected.cacheWouldChange,
 		EffectiveTPS:            selected.effectiveTPS,
 		StaticTPS:               selected.snapshot.decodeTPS,
 	}
@@ -583,7 +602,6 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 	breakerRejected := 0
 	now := time.Now()
 	enforceTTFT := pr.MaxTTFTMs > 0
-	_, dedicatedModel := r.dedicatedPatternForLocked(model)
 	for _, p := range r.providers {
 		owned := providerOwnedBy(p, pr.OwnerAccountID)
 		// Exclusive self-route: restrict to the caller's own machines and never
@@ -695,34 +713,19 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			continue
 		}
 
-		if hint, ok := pr.cacheRoutingHints[p.ID]; ok && (!dedicatedModel || r.cacheRoutingDedicated) {
-			prefillTPS := snap.prefillTPS
+		if hint, ok := pr.cacheRoutingHints[p.ID]; ok {
+			prefillTPS := resolvePrefillTPS(snap)
 			if prefillTPS > 0 && !math.IsNaN(prefillTPS) && !math.IsInf(prefillTPS, 0) {
-				matchedTokens := hint.ReadyTokens
-				if hint.CachedTokens > matchedTokens {
-					matchedTokens = hint.CachedTokens
-				}
-				if matchedTokens <= 0 || matchedTokens > pr.EstimatedPromptTokens {
-					matchedTokens = pr.EstimatedPromptTokens
-				}
-				savedTokens := matchedTokens - hint.RecomputeTokens
-				if hint.PrefillTokensSaved > 0 && hint.PrefillTokensSaved < savedTokens {
-					savedTokens = hint.PrefillTokensSaved
-				}
+				savedTokens := hint.PrefillTokensSaved
 				netSavedMs := float64(savedTokens)/prefillTPS*1000 - hint.StageMs
 				if netSavedMs > 0 {
 					capMs := math.Min(r.cacheRoutingMaxDiscountMs, candidate.costMs*r.cacheRoutingMaxCostFraction)
-					discount := hint.Confidence * math.Min(netSavedMs, capMs)
+					discount := math.Min(netSavedMs, capMs)
 					if discount > 0 {
 						candidate.breakdown.CacheDiscountMs = discount
-						candidate.cacheKind = hint.Kind
-						candidate.cacheTier = hint.Tier
-						if pr.cacheRoutingObserve {
-							candidate.cacheKind = "observe_" + hint.Kind
-						} else {
-							candidate.costMs -= discount
-							candidate.breakdown.Total = candidate.costMs
-						}
+						candidate.cacheTier = "ssd"
+						candidate.costMs -= discount
+						candidate.breakdown.Total = candidate.costMs
 					}
 				}
 			}
@@ -814,37 +817,17 @@ func (r *Registry) selectBestCandidateScanLocked(model string, pr *PendingReques
 
 	winner := selectRoutingCandidate(pool, func(candidate *routingCandidate) float64 {
 		return candidate.costMs
-	}, nil)
-	if pr.cacheRoutingObserve {
-		observed := selectCacheObservationCandidate(pool, winner)
-		if observed != nil {
-			observedWinner := *winner
-			observedWinner.cacheKind = observed.cacheKind
-			observedWinner.cacheTier = observed.cacheTier
-			observedWinner.breakdown.CacheDiscountMs = observed.breakdown.CacheDiscountMs
-			observedWinner.cacheWouldChange = observed.provider.ID != winner.provider.ID
-			winner = &observedWinner
-		}
-	}
+	})
 	r.logRoutingDecision(model, pr, winner, candidateCount)
 	return winner, candidateCount, scan.capacityRejections, scan.tooLargeRejections, scan.visionRejections, scan.ttftRejections, scan.bestTTFTMs, scan.breakerRejected
 }
 
-// selectCacheObservationCandidate applies the normal cost-window and queue
-// tie-break policy to every eligible candidate using its hypothetical cache
-// discount. Prefer the actual winner when it remains equivalent so random
-// load spreading alone is never reported as a cache-caused routing change.
-func selectCacheObservationCandidate(pool []*routingCandidate, actual *routingCandidate) *routingCandidate {
-	return selectRoutingCandidate(pool, func(candidate *routingCandidate) float64 {
-		return candidate.costMs - candidate.breakdown.CacheDiscountMs
-	}, actual)
-}
-
 // selectRoutingCandidate centralizes cost ranking, near-tie admission, and
-// queue-depth tie-breaking. preferredEquivalent makes observe mode stable: if
-// the actual winner remains one of the normally randomized equivalent choices,
-// retaining it is not reported as a cache-caused routing change.
-func selectRoutingCandidate(pool []*routingCandidate, cost func(*routingCandidate) float64, preferredEquivalent *routingCandidate) *routingCandidate {
+// queue-depth tie-breaking.
+func selectRoutingCandidate(
+	pool []*routingCandidate,
+	cost func(*routingCandidate) float64,
+) *routingCandidate {
 	if len(pool) == 0 {
 		return nil
 	}
@@ -875,10 +858,35 @@ func selectRoutingCandidate(pool []*routingCandidate, cost func(*routingCandidat
 			equivalent = append(equivalent, candidate)
 		}
 	}
+	// Normal near-tie spreading must not erase a bounded exact-cache discount
+	// (the default 1s cap is intentionally smaller than the 3s spread window).
+	// Once queue/backlog equivalence is established, exact evidence resolves the
+	// tie by adjusted cost. A busier holder never reaches this set, and a holder
+	// whose adjusted cost is still worse loses to the lower-cost cold provider.
+	hasCacheDiscount := false
 	for _, candidate := range equivalent {
-		if candidate == preferredEquivalent {
-			return preferredEquivalent
+		if candidate.breakdown.CacheDiscountMs > 0 {
+			hasCacheDiscount = true
+			break
 		}
+	}
+	if hasCacheDiscount {
+		bestCost := cost(equivalent[0])
+		best := equivalent[:1]
+		for _, candidate := range equivalent[1:] {
+			candidateCost := cost(candidate)
+			switch {
+			case candidateCost < bestCost:
+				bestCost = candidateCost
+				best = []*routingCandidate{candidate}
+			case candidateCost == bestCost:
+				best = append(best, candidate)
+			}
+		}
+		if len(best) > 1 {
+			return best[rand.Intn(len(best))]
+		}
+		return best[0]
 	}
 	if len(equivalent) > 1 {
 		return equivalent[rand.Intn(len(equivalent))]
@@ -1002,10 +1010,8 @@ func (r *Registry) logRoutingDecision(model string, pr *PendingRequest, winner *
 		"backlog_ms", bd.BacklogMs,
 		"this_req_ms", bd.ThisReqMs,
 		"health_ms", bd.HealthMs,
-		"cache_kind", winner.cacheKind,
 		"cache_tier", winner.cacheTier,
 		"cache_discount_ms", bd.CacheDiscountMs,
-		"cache_would_change", winner.cacheWouldChange,
 		"effective_tps", winner.effectiveTPS,
 		"effective_queue", winner.effectiveQueue,
 		"candidates", candidates,

@@ -257,9 +257,15 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertEqual(function?["description"] as? String, "")
     }
 
-    func testMissingToolDescriptionIsNotFilledForNonHarmonyTemplates() throws {
+    /// Models with NO model-specific template fix (neither Harmony nor
+    /// Gemma 4) must not have a missing tool description invented for them.
+    /// Gemma 4 now fills it too (its template interpolates the description
+    /// unconditionally) — that behavior is pinned in
+    /// `Gemma4ToolSchemaEnforcementTests`, so the fixture here is a model
+    /// outside both families.
+    func testMissingToolDescriptionIsNotFilledForModelsWithoutTemplateFix() throws {
         let request = try ProviderLoop.decodeOpenAIRequest(Data(#"""
-        {"model":"gemma-4-26b","messages":[{"role":"user","content":"x"}],
+        {"model":"qwen3-30b","messages":[{"role":"user","content":"x"}],
          "tools":[{"type":"function","function":{"name":"add","parameters":{"type":"object"}}}]}
         """#.utf8))
 
@@ -267,7 +273,7 @@ final class JinjaSanitizationTests: XCTestCase {
         let sanitized = try XCTUnwrap(
             ChatTemplateFixes.normalizeTools(
                 [rawSpec],
-                context: .init(modelId: "gemma-4-26b")
+                context: .init(modelId: "qwen3-30b")
             )?.first)
         let function = sanitized["function"] as? [String: any Sendable]
         XCTAssertNil(function?["description"])
@@ -457,7 +463,12 @@ final class JinjaSanitizationTests: XCTestCase {
         XCTAssertNil(bad["properties"])
     }
 
-    func testToolSchemaConcatCleanupDoesNotRunForNonHarmonyTemplates() throws {
+    /// Models with NO model-specific template fix keep malformed tool specs
+    /// byte-for-byte (only null/Optional leaves are sanitized). Gemma 4 now
+    /// repairs these shapes as well — its coercions are pinned in
+    /// `Gemma4ToolSchemaEnforcementTests` — so the fixture here is a model
+    /// outside both the Harmony and Gemma 4 families.
+    func testToolSchemaConcatCleanupDoesNotRunForModelsWithoutTemplateFix() throws {
         let rawSpec: [String: any Sendable] = [
             "type": "function",
             "function": [
@@ -478,7 +489,7 @@ final class JinjaSanitizationTests: XCTestCase {
         let sanitized = try XCTUnwrap(
             ChatTemplateFixes.normalizeTools(
                 [rawSpec],
-                context: .init(modelId: "gemma-4-26b")
+                context: .init(modelId: "qwen3-30b")
             )?.first)
         let function = try XCTUnwrap(sanitized["function"] as? [String: any Sendable])
         XCTAssertEqual(function["description"] as? Int, 42)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 )
 
 // Tool-schema normalization (DAR-130), a Go port of the Swift provider's
@@ -313,6 +314,25 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 	if _, present := dict["type"]; !present && (positional || looksLikeSchemaNode(dict)) {
 		dict["type"] = inferredType(dict)
 		*changed = true
+	}
+
+	// An OBJECT-typed schema node must carry a mapping `properties`. The served
+	// Gemma template's OBJECT branch otherwise falls into its
+	// `{%- elif value is mapping -%}` fallback (filter_keys=true), which
+	// iterates the node's OWN keys — `patternProperties`, `$defs`, any junk —
+	// as if each were a property schema; those containers carry no `type`, so
+	// `value['type'] | upper` throws the exact render error this normalizer
+	// exists to prevent. Mirrors the Swift twin (ToolSchemaNormalization) and
+	// gemma4 enforcement invariant 4: a missing OR non-mapping `properties` on
+	// an object-typed node becomes an empty map. Render-neutral for templates
+	// that guard on `properties` truthiness (an empty dict is falsy in Jinja),
+	// and runs AFTER type resolution so inferred-object nodes (e.g. a typeless
+	// patternProperties-only schema) are covered too.
+	if t, _ := dict["type"].(string); strings.EqualFold(t, "object") {
+		if _, isMap := dict["properties"].(map[string]any); !isMap {
+			dict["properties"] = map[string]any{}
+			*changed = true
+		}
 	}
 	return dict
 }

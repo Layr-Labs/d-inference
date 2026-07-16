@@ -130,6 +130,19 @@ enum ToolSchemaNormalization {
         if dict["type"] == nil, positional || looksLikeSchemaNode(dict) {
             dict["type"] = inferredType(for: dict)
         }
+
+        // An OBJECT-typed schema node must carry a mapping `properties` —
+        // otherwise the served Gemma template's OBJECT branch falls back to
+        // iterating the node's OWN keys (`filter_keys=true`) as property
+        // schemas; containers like `patternProperties` carry no `type`, so
+        // `value['type'] | upper` throws. Mirrors coordinator toolschema.go
+        // and gemma4 enforcement invariant 4; runs AFTER type resolution so
+        // inferred-object nodes are covered, and is render-neutral elsewhere
+        // (an empty dict is falsy in Jinja truthiness guards).
+        if let t = dict["type"] as? String, t.uppercased() == "OBJECT",
+            !(dict["properties"] is [String: Any]) {
+            dict["properties"] = [String: Any]()
+        }
         return dict
     }
 

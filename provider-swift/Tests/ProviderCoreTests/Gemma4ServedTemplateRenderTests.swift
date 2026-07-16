@@ -358,4 +358,27 @@ struct Gemma4ServedTemplateRenderTests {
     private func sha256Hex(_ text: String) -> String {
         SHA256.hash(data: Data(text.utf8)).map { String(format: "%02x", $0) }.joined()
     }
+
+    /// Post-push Codex P2 shape: an object property carrying ONLY
+    /// `patternProperties` crashes the served macros un-normalized (the
+    /// OBJECT fallback iterates the node's own keys; the patternProperties
+    /// container has no `type`) and must render after the production
+    /// pipeline injects the empty `properties` map.
+    @Test func patternPropertiesOnlyObjectRendersAfterNormalization() throws {
+        let parameters: [String: any Sendable] = [
+            "type": "object",
+            "properties": [
+                "env": [
+                    "type": "object",
+                    "patternProperties":
+                        ["^ENV_": ["type": "string"] as [String: any Sendable]]
+                        as [String: any Sendable],
+                ] as [String: any Sendable],
+            ] as [String: any Sendable],
+        ]
+        #expect(throws: (any Error).self, "un-normalized patternProperties-only object must throw") {
+            _ = try renderUnnormalized(parameters)
+        }
+        _ = try renderNormalized(parameters)
+    }
 }

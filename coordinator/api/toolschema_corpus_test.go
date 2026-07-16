@@ -266,3 +266,43 @@ func TestNormalizeToolSchemas_Corpus_DepthCeilingStillHolds(t *testing.T) {
 		t.Fatal("outer levels above the ceiling should still normalize")
 	}
 }
+
+// The served Gemma template's OBJECT branch falls back to iterating a node's
+// OWN keys (`filter_keys=true`) when `properties` is missing or not a mapping;
+// containers like patternProperties carry no `type`, so `| upper` throws.
+// Every object-typed node must therefore end with a mapping `properties`
+// (Swift twin parity: ToolSchemaNormalization + gemma4 enforcement inv. 4).
+func TestNormalizeToolSchemas_Corpus_ObjectNodesAlwaysCarryProperties(t *testing.T) {
+	// Codex P2 shape: explicit object with patternProperties but no properties.
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "env":{"type":"object","patternProperties":{"^ENV_":{"type":"string"}}}}}}}]}`)
+	env := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["env"], "env")
+	injected, ok := env["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("object node with patternProperties must gain a properties map, got %T", env["properties"])
+	}
+	if len(injected) != 0 {
+		t.Errorf("injected properties = %v, want empty", injected)
+	}
+
+	// A typeless patternProperties-only node infers "object" and must gain it too.
+	body2 := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{"env":{"patternProperties":{"^X_":{"type":"string"}}}}}}}]}`)
+	env2 := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body2))["env"], "env2")
+	if got := tsnType(t, env2, "env2"); got != "object" {
+		t.Fatalf("inferred type = %q, want object", got)
+	}
+	if _, ok := env2["properties"].(map[string]any); !ok {
+		t.Fatalf("inferred-object node must gain a properties map, got %T", env2["properties"])
+	}
+
+	// Non-mapping properties on an object node is replaced with an empty map
+	// (the template's `is mapping` guard would otherwise re-expose the fallback).
+	body3 := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{"o":{"type":"object","properties":"junk"}}}}}]}`)
+	o := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body3))["o"], "o")
+	if _, ok := o["properties"].(map[string]any); !ok {
+		t.Fatalf("non-mapping properties must become an empty map, got %T", o["properties"])
+	}
+}

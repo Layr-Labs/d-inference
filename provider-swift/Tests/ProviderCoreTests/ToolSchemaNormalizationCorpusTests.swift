@@ -177,4 +177,31 @@ struct ToolSchemaNormalizationCorpusTests {
         #expect(props["one"] as? Int == 1)
         #expect(props["zero"] as? Int == 0)
     }
+
+    /// Post-push Codex P2: an OBJECT-typed node without a mapping
+    /// `properties` re-exposes the served template's `filter_keys=true`
+    /// fallback, which iterates the node's OWN keys (patternProperties has
+    /// no `type` -> `| upper` throws). The shared normalizer must inject an
+    /// empty `properties` map — mirror of coordinator toolschema.go and
+    /// gemma4 enforcement invariant 4.
+    @Test func objectNodesAlwaysCarryPropertiesMap() throws {
+        let props = try normalizedProps(
+            #"{"type":"object","properties":{"env":{"type":"object","patternProperties":{"^ENV_":{"type":"string"}}}}}"#)
+        let env = try #require(props["env"] as? [String: Any])
+        let injected = try #require(env["properties"] as? [String: Any], "object node must gain properties")
+        #expect(injected.isEmpty)
+
+        // Typeless patternProperties-only node: inferred object gains it too.
+        let props2 = try normalizedProps(
+            #"{"type":"object","properties":{"env":{"patternProperties":{"^X_":{"type":"string"}}}}}"#)
+        let env2 = try #require(props2["env"] as? [String: Any])
+        #expect(env2["type"] as? String == "object")
+        #expect(env2["properties"] is [String: Any])
+
+        // Non-mapping properties on an object node becomes an empty map.
+        let props3 = try normalizedProps(
+            #"{"type":"object","properties":{"o":{"type":"object","properties":"junk"}}}"#)
+        let o = try #require(props3["o"] as? [String: Any])
+        #expect(o["properties"] is [String: Any])
+    }
 }

@@ -290,4 +290,30 @@ struct Gemma4TurnStructureTests {
         #expect(roleAndIDs(out) == ["system", "user", "assistant", "user"])
         #expect((out[2]["content"] as? String) == "a")
     }
+
+    /// Post-push Codex P2: when BOTH merged assistant turns carry reasoning,
+    /// the earlier turn's reasoning must be concatenated ahead of the later
+    /// one (same "\n\n" join as content) — never silently dropped.
+    @Test func mergeConcatenatesBothTurnsReasoning() throws {
+        let input: [[String: any Sendable]] = [
+            ["role": "user", "content": "hi"],
+            assistant(text: "part one", reasoning: "earlier thoughts"),
+            assistant(text: "part two", reasoning: "later thoughts"),
+        ]
+        let out = try Gemma4TemplateFix.normalizeMessages(input)
+        #expect(out.count == 2)
+        #expect((out[1]["content"] as? String) == "part one\n\npart two")
+        #expect((out[1]["reasoning_content"] as? String) == "earlier thoughts\n\nlater thoughts")
+    }
+
+    /// Carry (not concatenate) when only the earlier turn has reasoning.
+    @Test func mergeCarriesEarlierReasoningWhenLaterHasNone() throws {
+        let input: [[String: any Sendable]] = [
+            ["role": "user", "content": "hi"],
+            assistant(text: "part one", reasoning: "earlier thoughts"),
+            assistant(text: "part two"),
+        ]
+        let out = try Gemma4TemplateFix.normalizeMessages(input)
+        #expect((out[1]["reasoning_content"] as? String) == "earlier thoughts")
+    }
 }

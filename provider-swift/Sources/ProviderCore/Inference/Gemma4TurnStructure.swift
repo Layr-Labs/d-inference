@@ -197,10 +197,19 @@ enum Gemma4TurnStructure {
                 output["content"] = prefix
             }
         }
-        // Don't silently lose the earlier turn's reasoning when the later one
-        // has none of its own.
+        // Never lose the earlier turn's reasoning: carry it when the later
+        // turn has none, and concatenate (earlier first, the same "\n\n" join
+        // the content path uses) when both turns carry the same key. The
+        // served template only renders reasoning on tool_call-bearing turns,
+        // so this is render-neutral today — but the repair contract is that
+        // normalization never drops history data.
         for key in ["thinking", "reasoning", "reasoning_content"] {
-            if output[key] == nil, let carried = earlier[key] as? String, !carried.isEmpty {
+            guard let carried = earlier[key] as? String,
+                !carried.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { continue }
+            if let existing = output[key] as? String, !existing.isEmpty {
+                output[key] = carried + "\n\n" + existing
+            } else {
                 output[key] = carried
             }
         }

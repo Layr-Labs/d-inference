@@ -1069,11 +1069,42 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 // noteDispatchRetry feeds the inference-error breaker + refund for a pre-commit
 // provider error and, unless held boilerplate was discarded (which emits its own
 // pre-content failover counter), emits the generic retry counter. This is the
-// exact `if !s.noteDispatchProviderError(...) { s.ddIncr(retry) }` pattern.
+// exact `if !d.noteProviderError(...) { s.ddIncr(retry) }` pattern.
 func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason string, held *[]string) {
-	if !d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, errReason, held) {
+	if !d.noteProviderError(provider, pr, statusCode, errStr, errReason, held) {
 		d.s.ddIncr("inference.dispatches", []string{"status:retry"})
 	}
+}
+
+// noteProviderError is the dispatch loop's single funnel into
+// noteDispatchProviderError. When the structured error_reason proves a
+// NON-provider fault (isNonProviderFaultErrorReason: jinja_* template-render
+// failures, tool_noncompliance), the provider is withheld from the call so
+// none of the provider-fault trackers fed by noteInferenceError — the
+// shape-keyed inference-error breaker, the per-provider node-health breaker,
+// the stable-identity ejection breaker, and the capacity-reject cooldown —
+// records the terminal. A jinja_* failure arrives as a raw provider 500,
+// exactly the sickness shape all three breakers count, so without this gate
+// a few malformed tool histories could quarantine healthy providers/pairs
+// before the E4 relabel ever runs (the relabel happens later, in
+// shouldStopFailover / the route-outcome writers); tool_noncompliance 422s
+// are code-neutral in every breaker today, but gating them here keeps the
+// reason vocabulary in lockstep with the reputation exemption in
+// handleInferenceError.
+//
+// The skip keys on the structured REASON only — never on the status code —
+// so capacity rejections (token_budget_exhausted / queue_full / cold "not
+// loaded" misses, with or without a structured reason) flow through
+// unchanged and the capacity-reject cooldown still sees every legitimate
+// 503/404. The attempt's reservation-top-up refund and held-chunk discard
+// (with its retry_precontent counter) run for EVERY reason:
+// noteDispatchProviderError only feeds noteInferenceError for a non-nil
+// provider, while the refund + held handling are unconditional.
+func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason string, held *[]string) (discardedHeld bool) {
+	if isNonProviderFaultErrorReason(errReason) {
+		provider = nil
+	}
+	return d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, errReason, held)
 }
 
 // rejectionReasonOversized is the rejection-ledger reason_code for a request the
@@ -1647,7 +1678,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.excludeProviders[backupProvider.ID] = struct{}{}
 					d.lastFailedVersion = failedProviderVersion(backupProvider)
 					d.updateSpeculativeFailure(backupPR, errMsg)
-					s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &backupHeld)
+					d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &backupHeld)
 					// Preserve a deterministic-unservable verdict from this loser so the
 					// surviving primary's error can't mask it (see latchDeterministicLoser).
 					d.latchDeterministicLoser(backupProvider, errMsg)
@@ -1695,7 +1726,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(provider, pr)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg)
-			s.noteDispatchProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
+			d.noteProviderError(provider, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &d.heldChunks)
 			// Preserve a deterministic-unservable verdict from this loser so the
 			// surviving backup's error can't mask it (see latchDeterministicLoser).
 			d.latchDeterministicLoser(provider, errMsg)
@@ -1711,7 +1742,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			s.cancelDispatch(backupProvider, backupPR)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg)
-			s.noteDispatchProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &backupHeld)
+			d.noteProviderError(backupProvider, backupPR, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, &backupHeld)
 			// Preserve a deterministic-unservable verdict from this loser so the
 			// surviving primary's error can't mask it (see latchDeterministicLoser).
 			d.latchDeterministicLoser(backupProvider, errMsg)
@@ -1921,7 +1952,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.setLastInferenceError(backupProvider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(backupProvider)
 			d.updateSpeculativeFailure(backupPR, errMsg2)
-			s.noteDispatchProviderError(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &backupHeld)
+			d.noteProviderError(backupProvider, backupPR, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &backupHeld)
 			d.provider = nil
 			d.pr = nil
 			return outcomeRetry
@@ -2006,7 +2037,7 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.setLastInferenceError(provider, errMsg2)
 			d.lastFailedVersion = failedProviderVersion(provider)
 			d.updateSpeculativeFailure(pr, errMsg2)
-			s.noteDispatchProviderError(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &d.heldChunks)
+			d.noteProviderError(provider, pr, errMsg2.StatusCode, errMsg2.Error, errMsg2.ErrorReason, &d.heldChunks)
 			d.provider = nil
 			d.pr = nil
 			d.requestID = ""

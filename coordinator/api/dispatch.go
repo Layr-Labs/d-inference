@@ -2425,6 +2425,23 @@ exhausted:
 			// HTTP 200 was already sent by a prefill keepalive; the status code is
 			// frozen, so surface the terminal failure in-band. Responses streams use
 			// a different error shape (event: error, no [DONE]) than chat completions.
+			//
+			// A latched terminal client error with a curated message (today: only
+			// the jinja_* template-render stop, which latches
+			// terminalClientErrorMessage) surfaces the same invalid_request_error /
+			// model_capability body the status-coded writer below returns — NOT a
+			// provider_error wrapping d.lastErr, which would leak the provider's
+			// raw template backtrace mid-stream. Non-jinja terminals (plain 4xx
+			// latches leave the message empty) keep the exact legacy in-band
+			// shapes below.
+			if d.terminalClientError && d.terminalClientErrorMessage != "" {
+				if d.isResponsesAPI {
+					writeResponsesSSEErrorEvent(w, "invalid_request_error", d.terminalClientErrorMessage)
+				} else {
+					writeSSEErrorEvent(w, errorResponse("invalid_request_error", d.terminalClientErrorMessage, withCode("model_capability")))
+				}
+				return
+			}
 			rateLimited := statusCode == http.StatusTooManyRequests
 			capMsg := fmt.Sprintf("all providers at capacity after %d attempt(s): %s", d.attempt+1, d.lastErr)
 			errMsg := fmt.Sprintf("inference failed after %d attempt(s): %s", d.attempt+1, d.lastErr)

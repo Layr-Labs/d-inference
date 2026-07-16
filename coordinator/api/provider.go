@@ -2169,6 +2169,12 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// pr==nil with zero reputation effect, and the old fleet emits one for
 	// every mid-stream disconnect — penalizing them would erode the whole
 	// fleet's reputation for consumer behavior.
+	//
+	// A jinja_* error_reason (template render failure) is exempt too (E4): the
+	// model's chat template could not render the REQUEST's tool schemas or
+	// message history — a request-shape fault that fails identically on every
+	// provider (prod: jinja requests averaged 1.57 dispatch rows, each one
+	// erasing reputation fleet-wide for a body the provider never controlled).
 	loweredErr := strings.ToLower(msg.Error)
 	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
 		msg.StatusCode == http.StatusTooManyRequests ||
@@ -2176,7 +2182,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		strings.Contains(loweredErr, "insufficient memory")
 	cancelTerminal := msg.StatusCode == 499 ||
 		strings.Contains(loweredErr, "request cancelled")
-	if !capacityRejection && !cancelTerminal {
+	templateRenderFault := isJinjaTemplateErrorReason(msg.ErrorReason)
+	if !capacityRejection && !cancelTerminal && !templateRenderFault {
 		s.registry.RecordJobFailure(providerID)
 	}
 

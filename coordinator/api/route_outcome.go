@@ -32,6 +32,25 @@ const (
 // every provider — so it is NOT a provider fault and NOT an admission mismatch.
 const errorClassClientError = "client_error"
 
+// isJinjaTemplateErrorReason reports whether a provider-supplied error_reason
+// identifies a DETERMINISTIC chat-template render failure (the DAR-329/341
+// provider vocabulary). The template renders the request's tool schemas and
+// message history the same way on every provider, so these are request-shape /
+// model-capability faults: the dispatch ladder stops on the first occurrence
+// (E4, see dispatch.go), the provider takes no reputation hit
+// (handleInferenceError), and route rows record class client_error — while the
+// jinja_* reason itself is PRESERVED on the row, so the
+// inference.error{reason:jinja_template} series keeps measuring real render
+// failures rather than being silenced by reclassification.
+func isJinjaTemplateErrorReason(reason string) bool {
+	switch normalizeInferenceErrorReason(reason) {
+	case errorReasonJinjaChannelTags, errorReasonJinjaNullBridge, errorReasonJinjaTemplate:
+		return true
+	default:
+		return false
+	}
+}
+
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
 // .FinalStatus). Centralized so status comparisons/constructions don't drift on a
 // bare string literal.
@@ -192,11 +211,14 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
-	if isTerminalClientErrorCode(msg.StatusCode) {
-		// Deterministic client-shape 4xx: the request body is malformed/unservable
-		// by shape (fails identically on every provider), not a provider fault.
-		// Record as client_error WITHOUT AdmittedButFailed so it never pollutes the
-		// admission-mismatch gauge.
+	if isTerminalClientErrorCode(msg.StatusCode) || isJinjaTemplateErrorReason(msg.ErrorReason) {
+		// Deterministic client-shape rejection: a 4xx status the provider maps
+		// for malformed bodies, OR a jinja_* template-render reason (arrives as
+		// a provider 500 but is a request-shape fault — the template renders
+		// the same body identically on every provider). Record as client_error
+		// WITHOUT AdmittedButFailed so it never pollutes the admission-mismatch
+		// gauge; msg.ErrorReason is threaded through so jinja rows keep their
+		// jinja_* reason.
 		return pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
 	}
 	class := "provider_error"

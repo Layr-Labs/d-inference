@@ -159,6 +159,15 @@ type dispatchState struct {
 	// code is ground truth; the human-readable provider string drifts across versions.
 	terminalClientError     bool
 	terminalClientErrorCode int
+	// terminalClientErrorReason, when non-empty, overrides the exhausted
+	// ladder's rejection-ledger reason_code for a latched terminal client
+	// error ("template_render_failed" for the jinja_* stop — distinguishable
+	// from the StatusCode-driven stop's generic "client_error").
+	terminalClientErrorReason string
+	// terminalClientErrorMessage, when non-empty, overrides the surfaced
+	// error-body message (the jinja_* stop surfaces the curated
+	// model_capability text, not the provider's raw template backtrace).
+	terminalClientErrorMessage string
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -196,6 +205,32 @@ const envTTFTTerminalReject = "EIGENINFERENCE_TTFT_TERMINAL_REJECT"
 func ttftTerminalRejectEnabled() bool {
 	return envEnabledDefaultTrue(envTTFTTerminalReject)
 }
+
+// envJinjaTerminalReject is the kill switch for the deterministic
+// template-render rejection stop (E4, 2026-07-15 platform errors deep dive).
+// A provider error_reason of jinja_channel_tags / jinja_null_bridge /
+// jinja_template means the model's chat template could not render the
+// request's tool schemas or message history — the same body renders the same
+// way on every provider, so failing over is pure waste (prod: 1.57 dispatch
+// rows per jinja request, observed up to 17 attempts, 0% eventual success).
+// Default true: the ladder stops on the FIRST jinja_* rejection at any
+// attempt and surfaces one 422 model_capability invalid_request_error. Set
+// =false to restore the legacy fail-over-on-500 behavior. Read live (not a
+// Server field) following the envTTFTTerminalReject pattern, so it stays
+// confined to this file and is overridable in tests via t.Setenv.
+const envJinjaTerminalReject = "EIGENINFERENCE_JINJA_TERMINAL_REJECT"
+
+// jinjaTerminalRejectEnabled reports whether a jinja_* provider rejection
+// terminates the dispatch ladder. Default true.
+func jinjaTerminalRejectEnabled() bool {
+	return envEnabledDefaultTrue(envJinjaTerminalReject)
+}
+
+// jinjaTerminalRejectMessage is the OpenAI-style error body surfaced for a
+// latched template-render failure — a curated model_capability message
+// instead of the provider's raw Jinja backtrace (which names filters and
+// template internals no API consumer can act on).
+const jinjaTerminalRejectMessage = "the request's tool schemas or message history cannot be rendered by this model's chat template; simplify the tool parameter schemas or message structure, or use a different model"
 
 // queueMaxTTFTMs returns the TTFT ceiling for queued requests. Public routes
 // inherit the prompt-scaled admission threshold; self-route / prefer-owner paths
@@ -463,6 +498,13 @@ func (d *dispatchState) errorRoutingOutcome(status, class string, code int) *sto
 func routeOutcomeUsesProviderErrorText(class string) bool {
 	class = strings.ToLower(strings.TrimSpace(class))
 	return class == errorReasonProviderError ||
+		// client_error rows keep the provider-supplied reason too: a jinja_*
+		// template-render failure is recorded as class client_error (not a
+		// provider fault) but its reason must stay jinja_* on the row, so the
+		// inference.error{reason:jinja_*} series measures real render failures
+		// instead of being silenced by the reclassification. The reason is
+		// still whitelisted downstream (normalizeInferenceErrorReason).
+		class == errorClassClientError ||
 		strings.HasPrefix(class, "provider_error") ||
 		strings.HasPrefix(class, "provider_disconnect") ||
 		strings.Contains(class, "provider_incomplete")
@@ -509,10 +551,14 @@ func providerReportedBudget(provider *registry.Provider, model string) int64 {
 // pre-dispatch failures (queue reservation DB error, invalid key, keygen, send
 // failure) and coordinator-side timeouts are NOT flagged.
 func (d *dispatchState) providerFailedRoutingOutcome() *store.InferenceRouteOutcome {
-	if isTerminalClientErrorCode(d.lastErrCode) {
-		// Deterministic client-shape 4xx: a malformed/unservable-by-shape request,
-		// not a provider fault. Record as client_error WITHOUT AdmittedButFailed so
-		// it stays out of the admission-mismatch gauge.
+	if isTerminalClientErrorCode(d.lastErrCode) || isJinjaTemplateErrorReason(d.lastErrReason) {
+		// Deterministic client-shape rejection: a 4xx status the provider maps
+		// for malformed bodies, OR a jinja_* template-render reason (a provider
+		// 500 by status, but a request-shape fault — the template renders the
+		// same body identically fleet-wide). Record as client_error WITHOUT
+		// AdmittedButFailed so it stays out of the admission-mismatch gauge;
+		// the jinja_* reason itself survives on the row (see
+		// routeOutcomeUsesProviderErrorText).
 		return d.errorRoutingOutcome("error", errorClassClientError, d.lastErrCode)
 	}
 	class := "provider_error"
@@ -1037,6 +1083,13 @@ func (d *dispatchState) noteDispatchRetry(provider *registry.Provider, pr *regis
 // "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
 const rejectionReasonOversized = "oversized_request"
 
+// rejectionReasonTemplateRenderFailed is the rejection-ledger reason_code for
+// a request the dispatch loop stopped because the model's chat template
+// cannot render it (provider error_reason jinja_channel_tags /
+// jinja_null_bridge / jinja_template — see envJinjaTerminalReject).
+// Distinguishable from the StatusCode-driven stop's generic "client_error".
+const rejectionReasonTemplateRenderFailed = "template_render_failed"
+
 // shouldStopFailover is the single choke point that decides, after a dispatched
 // attempt failed with outcomeRetry, whether the dispatch loop should STOP failing
 // over because the request is unservable — rather than walk all 64 providers and
@@ -1080,6 +1133,16 @@ func (d *dispatchState) shouldStopFailover() bool {
 		d.terminalClientErrorCode = d.lastErrCode
 		return true
 	}
+	// Reason-driven stop (E4): a jinja_* error_reason is a DETERMINISTIC
+	// template-render failure. It arrives as a provider 500 — which the
+	// code-driven stop above deliberately ignores — but the model's chat
+	// template renders the same request body identically on every provider,
+	// so the ladder stops on the first occurrence and surfaces one 422
+	// model_capability rejection. Kill switch: EIGENINFERENCE_JINJA_TERMINAL_REJECT.
+	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(d.lastErrReason) {
+		d.latchJinjaTerminalReject(d.lastErrReason, "")
+		return true
+	}
 	switch classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext) {
 	case rejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
@@ -1098,6 +1161,24 @@ func (d *dispatchState) shouldStopFailover() bool {
 	default:
 		return false
 	}
+}
+
+// latchJinjaTerminalReject latches the terminal 422 for a deterministic
+// template-render failure (see envJinjaTerminalReject). The latched code is
+// OUR classification (422 Unprocessable Entity — the request is well-formed
+// but unrenderable by this model), not the provider's raw 500. src tags the
+// metric emission site ("" = the shouldStopFailover survivor path,
+// "race_loser" = latchDeterministicLoser).
+func (d *dispatchState) latchJinjaTerminalReject(reason, src string) {
+	tags := []string{"model:" + d.model, "code:422", "reason:" + normalizeInferenceErrorReason(reason)}
+	if src != "" {
+		tags = append(tags, "src:"+src)
+	}
+	d.s.ddIncr("routing.dispatch_client_error_stop", tags)
+	d.terminalClientError = true
+	d.terminalClientErrorCode = http.StatusUnprocessableEntity
+	d.terminalClientErrorReason = rejectionReasonTemplateRenderFailed
+	d.terminalClientErrorMessage = jinjaTerminalRejectMessage
 }
 
 // latchDeterministicLoser preserves a DETERMINISTIC-unservable rejection observed
@@ -1122,6 +1203,13 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.s.ddIncr("routing.dispatch_client_error_stop", []string{"model:" + d.model, "code:" + strconv.Itoa(msg.StatusCode), "src:race_loser"})
 		d.terminalClientError = true
 		d.terminalClientErrorCode = msg.StatusCode
+		return
+	}
+	// Mirror the jinja_* reason stop (E4) at the race-loser site for the same
+	// masking reason: a deterministic template-render failure from the loser
+	// must not be storm-resumed through the survivor's transient error.
+	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(msg.ErrorReason) {
+		d.latchJinjaTerminalReject(msg.ErrorReason, "race_loser")
 		return
 	}
 	budget := providerReportedBudget(provider, d.model)
@@ -2228,6 +2316,12 @@ exhausted:
 			// never be reclassified to 429/503 — this is a client fault, not capacity.
 			statusCode = d.terminalClientErrorCode
 			reason = "client_error"
+			if d.terminalClientErrorReason != "" {
+				// The jinja_* stop records its own ledger reason
+				// (template_render_failed) so template-render rejections stay
+				// distinguishable from generic client-shape 4xxs.
+				reason = d.terminalClientErrorReason
+			}
 			s.ddIncr("routing.client_error_passthrough", []string{"model:" + d.model, "code:" + strconv.Itoa(statusCode)})
 		} else if d.unservable {
 			// The loop stopped early because no provider can serve this request
@@ -2323,8 +2417,14 @@ exhausted:
 		} else if d.terminalClientError {
 			// Surface the provider's client-shape error verbatim as an
 			// invalid_request_error, with no misleading "after N attempt(s)" framing
-			// (it was returned once, deterministically).
-			writeJSON(w, statusCode, errorResponse("invalid_request_error", d.lastErr))
+			// (it was returned once, deterministically). A jinja_* latch surfaces
+			// the curated model_capability message instead of the provider's raw
+			// template backtrace.
+			if d.terminalClientErrorMessage != "" {
+				writeJSON(w, statusCode, errorResponse("invalid_request_error", d.terminalClientErrorMessage, withCode("model_capability")))
+			} else {
+				writeJSON(w, statusCode, errorResponse("invalid_request_error", d.lastErr))
+			}
 		} else {
 			writeJSON(w, statusCode, errorResponse("provider_error",
 				fmt.Sprintf("inference failed after %d attempt(s): %s", d.attempt+1, d.lastErr)))

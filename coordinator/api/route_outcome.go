@@ -23,7 +23,14 @@ const (
 	errorReasonCancelled          = "cancelled"
 	errorReasonProviderError      = "provider_error"
 	errorReasonClientError        = "client_error"
-	errorReasonUnknown            = "unknown"
+	// errorReasonToolNoncompliance (E5): the provider's typed 422 for a model
+	// that failed a forced tool_choice contract (did not emit the required
+	// call / emitted one outside the allowed set / exceeded the deferred
+	// content limit). Output-dependent — a re-sample can comply — so 422 stays
+	// on the normal bounded-failover path, NEVER in the terminal client-error
+	// stop set (see isTerminalClientErrorCode).
+	errorReasonToolNoncompliance = "tool_noncompliance"
+	errorReasonUnknown           = "unknown"
 )
 
 // errorClassClientError is the route-outcome error_class for a DETERMINISTIC
@@ -73,6 +80,7 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonCancelled:          {},
 	errorReasonProviderError:      {},
 	errorReasonClientError:        {},
+	errorReasonToolNoncompliance:  {},
 	errorReasonUnknown:            {},
 }
 

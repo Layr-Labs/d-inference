@@ -16,17 +16,38 @@ import Foundation
 // logged (E2E privacy).
 //
 // The emitted vocabulary MUST stay in lockstep with the coordinator's Go
-// `error_reason` field: "jinja_channel_tags", "jinja_null_bridge",
-// "jinja_template", "model_load". nil ⇒ unclassifiable (coordinator falls back
-// to deriving a reason from status/class). Do NOT invent other provider-side
-// values.
+// `error_reason` field (`coordinator/api/route_outcome.go`
+// validInferenceErrorReasons): "jinja_channel_tags", "jinja_null_bridge",
+// "jinja_template", "model_load", "tool_noncompliance". nil ⇒ unclassifiable
+// (coordinator falls back to deriving a reason from status/class). Do NOT
+// invent other provider-side values.
+
+/// Classify a TYPED engine error into the shared `error_reason` vocabulary,
+/// or nil. Type-driven only (no string scans), so it is safe at catch sites
+/// where haystack matching could misfire — e.g. the mid-stream generation
+/// catch, whose engine error text must never accidentally classify as a
+/// template failure (the coordinator terminally rejects jinja_* reasons, E4).
+func classifyTypedInferenceErrorReason(_ error: Error) -> String? {
+    if let engineError = error as? MultiModelBatchSchedulerEngineError,
+        case .toolChoiceViolation = engineError {
+        // E5: the model failed the forced tool_choice contract (missing /
+        // disallowed call, or over-limit deferred prose) — output-dependent,
+        // never a provider fault.
+        return "tool_noncompliance"
+    }
+    return nil
+}
 
 /// Classify an inference `Error` into the shared normalized `error_reason`
 /// vocabulary, or nil when it cannot be confidently classified.
 ///
-/// Pure + side-effect-free: inspects only the error's textual descriptions and
-/// concrete type name, never any request/message content.
+/// Pure + side-effect-free: inspects only the error's concrete type and
+/// textual descriptions, never any request/message content.
 func classifyInferenceErrorReason(_ error: Error) -> String? {
+    // Typed classifications win before any string scan.
+    if let typed = classifyTypedInferenceErrorReason(error) {
+        return typed
+    }
     // `String(describing:)` carries the RICH template text (e.g. the Harmony
     // "...passed a message containing <|channel|> tags in the content field..."
     // message) that `localizedDescription` collapses to the lossy

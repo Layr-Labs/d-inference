@@ -113,11 +113,15 @@ type cacheRoutingHint struct {
 	PrefillTokensSaved int
 	CachedTokens       int
 	StageMs            float64
+	Provider           *Provider
+	Capability         protocol.PrefixCacheV2Capability
+	CapabilityRevision uint64
 }
 
 type cacheRoutingCapability struct {
-	Provider   *Provider
-	Capability protocol.PrefixCacheV2Capability
+	Provider           *Provider
+	Capability         protocol.PrefixCacheV2Capability
+	CapabilityRevision uint64
 }
 
 type cacheAttemptOrderEntry struct {

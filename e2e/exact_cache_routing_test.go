@@ -53,7 +53,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	providers[0].Status = registry.StatusUntrusted
 	providers[0].Mu().Unlock()
 	require.NoError(t, suite.Coordinator.Registry.SendLoadModel(providers[1].ID, model))
-	secondCapability := waitForV2Capability(t, providers[1], model, 3*time.Minute)
+	secondModel := waitForLoadedModel(t, providers[1], model, 3*time.Minute)
 	providers[1].Mu().Lock()
 	providers[1].Status = registry.StatusUntrusted
 	providers[1].Mu().Unlock()
@@ -61,18 +61,22 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	providers[0].Status = registry.StatusOnline
 	providers[0].Mu().Unlock()
 	require.NoError(t, suite.Coordinator.Registry.SendLoadModel(providers[0].ID, model))
-	capability := waitForV2Capability(t, providers[0], model, 3*time.Minute)
-	require.Equal(t, capability.ModelAggregateHash, secondCapability.ModelAggregateHash)
-	require.Equal(t, capability.PromptContractID, secondCapability.PromptContractID)
+	firstModel := waitForLoadedModel(t, providers[0], model, 3*time.Minute)
+	require.Equal(t, firstModel.WeightHash, secondModel.WeightHash)
+	for _, provider := range providers {
+		provider.Mu().Lock()
+		_, advertised := provider.PrefixCacheV2Models[model]
+		provider.Mu().Unlock()
+		require.False(t, advertised,
+			"unsafe hybrid attention layout advertised reusable cache evidence")
+	}
 
-	fixture := loadExactCacheArtifacts(t, model, capability.ModelAggregateHash)
+	fixture := loadExactCacheArtifacts(t, model, firstModel.WeightHash)
 	contractArtifacts, err := promptcontract.PromptArtifacts(fixture.manifest.Files)
 	require.NoError(t, err)
 	contractID, err := promptcontract.ContractID(
 		contractArtifacts, promptcontract.CurrentVersions())
 	require.NoError(t, err)
-	require.Equal(t, capability.PromptContractID, contractID,
-		"Swift and Go prompt-contract identities diverged")
 
 	artifactServer := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, request *http.Request,
@@ -137,7 +141,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	suite.Coordinator.Server.SetPromptArtifactProvisioner(provisioner)
 	suite.Coordinator.Server.SetPromptContractClient(supervisor.Client())
 	suite.Coordinator.Registry.SetModelCatalog([]registry.CatalogEntry{{
-		ID: model, WeightHash: capability.ModelAggregateHash,
+		ID: model, WeightHash: firstModel.WeightHash,
 	}})
 	require.NoError(t, suite.Coordinator.Registry.ConfigureCacheRouting(
 		registry.CacheRoutingConfig{
@@ -151,19 +155,22 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 
 	prompt := longExactCachePrompt()
 	first := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
-	require.Zero(t, first.cachedTokens, "seed request unexpectedly hit reusable SSD")
-	waitForCacheHolders(t, suite.Coordinator.Registry, 1, 45*time.Second)
+	require.Zero(t, first.cachedTokens, "unsafe hybrid model reported a cache hit")
+	holders, attempts := suite.Coordinator.Registry.CacheRoutingStateCounts()
+	require.Zero(t, holders, "unsafe hybrid model published a reusable cache holder")
+	require.Zero(t, attempts, "unsafe hybrid model entered the v2 receipt protocol")
 
-	// Bring the second, equally capable provider into the candidate set. It has
-	// no coordinator holder; the second request must return to the proven owner.
+	// Bring the second provider into the candidate set. Current production
+	// models interleave sliding and storage-owning full attention, so exact
+	// replay requires a full prefill and both providers must remain cold.
 	stabilizeExactCacheRoutingCosts(providers, model)
 	providers[1].Mu().Lock()
 	providers[1].Status = registry.StatusOnline
 	providers[1].Mu().Unlock()
 
 	second := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
-	require.Positive(t, second.cachedTokens,
-		"exact repeat was not staged from the provider-confirmed SSD holder")
+	require.Zero(t, second.cachedTokens,
+		"hybrid full-replay policy was misreported as reusable prefix work")
 
 	isolated := postExactCacheChat(t, suite, suite.Users[1].APIKey, model, prompt)
 	require.Zero(t, isolated.cachedTokens,
@@ -183,15 +190,8 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	waitForSidecar(t, restartedSupervisor, 15*time.Second)
 	suite.Coordinator.Server.SetPromptContractClient(restartedSupervisor.Client())
 
-	// A live disconnect removes connection-scoped ownership. The remaining
-	// provider continues to serve normally; cache routing is never availability.
-	holdersBeforeDisconnect, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
-	require.Positive(t, holdersBeforeDisconnect)
+	// A live disconnect still leaves ordinary cold serving available.
 	suite.Coordinator.Registry.Disconnect(providers[0].ID)
-	require.Eventually(t, func() bool {
-		holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
-		return holders < holdersBeforeDisconnect
-	}, 10*time.Second, 100*time.Millisecond)
 	require.Eventually(t, func() bool {
 		return len(liveProviders(suite.Coordinator.Registry)) >= 2
 	}, 20*time.Second, 100*time.Millisecond,
@@ -301,24 +301,36 @@ func stabilizeExactCacheRoutingCosts(providers []*registry.Provider, model strin
 	}
 }
 
-func waitForV2Capability(
+func waitForLoadedModel(
 	t *testing.T,
 	provider *registry.Provider,
 	model string,
 	timeout time.Duration,
-) protocol.PrefixCacheV2Capability {
+) protocol.ModelInfo {
 	t.Helper()
-	var capability protocol.PrefixCacheV2Capability
+	var modelInfo protocol.ModelInfo
 	require.Eventually(t, func() bool {
 		provider.Mu().Lock()
 		defer provider.Mu().Unlock()
-		candidate, ok := provider.PrefixCacheV2Models[model]
-		if ok {
-			capability = candidate
+		found := false
+		for _, candidate := range provider.Models {
+			if candidate.ID == model {
+				modelInfo = candidate
+				found = true
+				break
+			}
 		}
-		return ok && candidate.Enabled && candidate.Ready
+		if !found || provider.BackendCapacity == nil {
+			return false
+		}
+		for _, slot := range provider.BackendCapacity.Slots {
+			if slot.Model == model && (slot.State == "running" || slot.State == "idle") {
+				return true
+			}
+		}
+		return false
 	}, timeout, 500*time.Millisecond)
-	return capability
+	return modelInfo
 }
 
 func waitForProvisionedContract(
@@ -343,19 +355,6 @@ func waitForSidecar(
 	require.Eventually(t, func() bool {
 		status := supervisor.Status()
 		return status.Running && status.Ready
-	}, timeout, 100*time.Millisecond)
-}
-
-func waitForCacheHolders(
-	t *testing.T,
-	r *registry.Registry,
-	minimum int,
-	timeout time.Duration,
-) {
-	t.Helper()
-	require.Eventually(t, func() bool {
-		holders, _ := r.CacheRoutingStateCounts()
-		return holders >= minimum
 	}, timeout, 100*time.Millisecond)
 }
 

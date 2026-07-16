@@ -35,10 +35,11 @@ is for unsigned tests only and does not preserve cache data across restarts.
 5. Completed requests donate eligible block snapshots to a bounded write-behind
    queue. Admission, write-rate, low-disk, TTL, and box-wide LRU guards apply.
 
-Pure-attention and supported hybrid sliding-window models share this layer-aware
-CBv2 block path. Hybrid reuse is useful only after the engine's recompute bound;
-the SSD tier therefore persists a donation only when it also clears the
-configured effective-token floor. See
+Structurally safe layouts share this layer-aware CBv2 block path. Interleaved
+hybrids with a storage-owning full-attention layer after sliding attention are
+cold-only because exactness requires full replay; they advertise no reusable
+cache capability. Eligible layouts persist a donation only when it also clears
+the configured effective-token floor. See
 [`ssd-kv-cache-hybrid-models.md`](./ssd-kv-cache-hybrid-models.md).
 
 ## Environment variables

@@ -69,6 +69,55 @@ func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCache
 	return r, provider, capability
 }
 
+func TestExactRoutingHintRevalidatesCapabilityBeforeDiscount(t *testing.T) {
+	r, provider, capability := exactTestRegistry(t)
+	provider.mu.Lock()
+	provider.Models = []protocol.ModelInfo{{
+		ID: "model", WeightHash: capability.ModelAggregateHash,
+	}}
+	revision := provider.prefixCacheRevision
+	provider.mu.Unlock()
+	hint := cacheRoutingHint{
+		Provider: provider, Capability: capability, CapabilityRevision: revision,
+		PrefillTokensSaved: int(promptcontract.BlockSize),
+		CachedTokens:       int(promptcontract.BlockSize),
+		StageMs:            1,
+	}
+	if !hint.currentForProvider(provider, "model") {
+		t.Fatal("fresh exact hint was rejected")
+	}
+
+	rotated := capability
+	rotated.CacheEpoch = "22222222-2222-2222-2222-222222222222"
+	if err := r.UpdatePrefixCacheCapabilities(
+		provider.ID, 2, []protocol.PrefixCacheV2Capability{rotated}); err != nil {
+		t.Fatal(err)
+	}
+	if hint.currentForProvider(provider, "model") {
+		t.Fatal("pre-heartbeat hint survived a capability epoch rotation")
+	}
+
+	provider.mu.Lock()
+	rotatedRevision := provider.prefixCacheRevision
+	provider.mu.Unlock()
+	rotatedHint := cacheRoutingHint{
+		Provider: provider, Capability: rotated, CapabilityRevision: rotatedRevision,
+		PrefillTokensSaved: int(promptcontract.BlockSize),
+		CachedTokens:       int(promptcontract.BlockSize),
+		StageMs:            1,
+	}
+	if !rotatedHint.currentForProvider(provider, "model") {
+		t.Fatal("rotated capability did not admit a fresh hint")
+	}
+	r.disablePrefixCacheV2Model(provider.ID, "model")
+	if rotatedHint.currentForProvider(provider, "model") {
+		t.Fatal("pre-quarantine hint survived a proof failure")
+	}
+	if capabilities := r.prefixCacheV2CapabilitiesForModel("model"); len(capabilities) != 0 {
+		t.Fatal("proof failure allowed a fresh capability snapshot during quarantine")
+	}
+}
+
 func TestExactV2ReadyCreatesLongestPrefixHolderAndMissInvalidates(t *testing.T) {
 	r, provider, capability := exactTestRegistry(t)
 	a1 := exactTestAnchor(1, "c")

@@ -57,6 +57,27 @@ struct PrefixCachePolicyTests {
         }
     }
 
+    @Test("reusable prefixes reject a storage-owning full layer after sliding attention")
+    func reusableLayoutSafety() {
+        let full = CBv2LayerKind(
+            attention: .full, headDim: 64, kvHeads: 4, queryHeads: 8)
+        let windowed = CBv2LayerKind(
+            attention: .slidingWindow(128), headDim: 64, kvHeads: 4, queryHeads: 8)
+        let sharedFull = CBv2LayerKind(
+            attention: .full, sharesKVWithLayer: 0,
+            headDim: 64, kvHeads: 4, queryHeads: 8)
+
+        #expect(PrefixCachePolicy.supportsReusablePrefixes(layerKinds: [full, full]))
+        #expect(PrefixCachePolicy.supportsReusablePrefixes(layerKinds: [full, windowed]))
+        #expect(PrefixCachePolicy.supportsReusablePrefixes(layerKinds: [windowed, windowed]))
+        #expect(PrefixCachePolicy.supportsReusablePrefixes(
+            layerKinds: [windowed, sharedFull]))
+        #expect(!PrefixCachePolicy.supportsReusablePrefixes(
+            layerKinds: [windowed, full]))
+        #expect(!PrefixCachePolicy.supportsReusablePrefixes(
+            layerKinds: [full, windowed, full]))
+    }
+
     @Test("adoptionBoundTokens: windowCount × maxWindow; 0 for pure full attention")
     func adoptionBound() {
         // The two production shapes, exactly.

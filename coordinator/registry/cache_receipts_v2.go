@@ -174,11 +174,14 @@ func (r *Registry) disablePrefixCacheV2Model(providerID, modelID string) {
 	}
 	provider.mu.Lock()
 	capability, ok := provider.PrefixCacheV2Models[modelID]
-	provider.mu.Unlock()
-	if tracker != nil && ok {
-		tracker.rejectCapability(providerID, modelID, capability)
-		tracker.invalidateProviderModel(providerID, modelID)
+	if ok {
+		if tracker != nil {
+			tracker.rejectCapability(providerID, modelID, capability)
+			tracker.invalidateProviderModel(providerID, modelID)
+		}
+		provider.prefixCacheRevision++
 	}
+	provider.mu.Unlock()
 }
 
 func (t *cacheRoutingTracker) capabilityRejected(

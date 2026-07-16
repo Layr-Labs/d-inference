@@ -194,6 +194,7 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 	if changed {
 		provider.PrefixCacheProtocol = version
 		provider.PrefixCacheV2Models = validated
+		provider.prefixCacheRevision++
 	}
 	provider.mu.Unlock()
 

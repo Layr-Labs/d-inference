@@ -157,7 +157,7 @@ func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifa
 	defer root.Close()
 	if ok, err := verifyPublished(root, contractID); ok {
 		return path.Join(c.root, contractID), nil
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) && !os.IsNotExist(err) {
 		return "", err
 	}
 

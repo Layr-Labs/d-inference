@@ -513,6 +513,10 @@ type Provider struct {
 	// PrefixCacheV2Models is the validated, connection-scoped capability set
 	// keyed by concrete model ID. It is authoritative for v2 receipt identity.
 	PrefixCacheV2Models map[string]protocol.PrefixCacheV2Capability
+	// prefixCacheRevision changes whenever capability identity or quarantine
+	// state changes. Scheduler hints snapshot it and revalidate under p.mu so a
+	// concurrent heartbeat/proof failure cannot apply a stale cache discount.
+	prefixCacheRevision uint64
 
 	// Warm model cache tracking
 	WarmModels   []string // models currently loaded in provider's memory

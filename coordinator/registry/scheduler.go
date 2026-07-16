@@ -713,7 +713,8 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			continue
 		}
 
-		if hint, ok := pr.cacheRoutingHints[p.ID]; ok {
+		if hint, ok := pr.cacheRoutingHints[p.ID]; ok &&
+			hint.currentForProvider(p, model) {
 			prefillTPS := resolvePrefillTPS(snap)
 			if prefillTPS > 0 && !math.IsNaN(prefillTPS) && !math.IsInf(prefillTPS, 0) {
 				savedTokens := hint.PrefillTokensSaved

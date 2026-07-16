@@ -107,11 +107,27 @@ enum PrefixCachePolicy {
 
     // MARK: - SSD adoption bound
 
+    /// Whether the engine can resume from a partial layer snapshot without
+    /// changing model outputs. A storage-owning full-attention layer after any
+    /// sliding-window layer permanently caches activations computed from an
+    /// incomplete replay window, so `cbv2RequiredRecompute` correctly requires
+    /// full replay for that layout. Advertising reusable SSD evidence for such
+    /// a model would be false: staging can match bytes but save zero prefill.
+    static func supportsReusablePrefixes(layerKinds: [CBv2LayerKind]) -> Bool {
+        var sawWindowedLayer = false
+        for kind in layerKinds {
+            if case .slidingWindow = kind.attention {
+                sawWindowedLayer = true
+            } else if sawWindowedLayer, kind.sharesKVWithLayer == nil {
+                return false
+            }
+        }
+        return true
+    }
+
     /// The model's adoption bound: `windowCount × maxWindow` over its layer
-    /// kinds — the exact bound term of the engine's `cbv2RequiredRecompute`
-    /// (`EngineV2.makeAdoption` declines any hit whose matched prefix does
-    /// not exceed it). 0 for pure full-attention models (every whole-block
-    /// hit is adoptable).
+    /// kinds for layouts that pass `supportsReusablePrefixes`. 0 for pure
+    /// full-attention models (every whole-block hit is adoptable).
     static func adoptionBoundTokens(layerKinds: [CBv2LayerKind]) -> Int {
         var maxWindow = 0
         var windowCount = 0

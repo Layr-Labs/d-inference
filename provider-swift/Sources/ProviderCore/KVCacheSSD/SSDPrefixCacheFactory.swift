@@ -96,6 +96,13 @@ enum SSDPrefixCacheFactory {
             #endif
             return nil
         }
+        guard PrefixCachePolicy.supportsReusablePrefixes(layerKinds: layerKinds) else {
+            #if canImport(os)
+            logger.info(
+                "ssd prefix cache disabled for \(modelId, privacy: .public): hybrid attention layout requires full replay")
+            #endif
+            return nil
+        }
         let wholeRoot = cacheRootDirectory()
         let dir = cacheDirectory(modelId: modelId)
         do {

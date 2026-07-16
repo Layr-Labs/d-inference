@@ -20,11 +20,13 @@ func (r *Registry) prefixCacheV2CapabilitiesForModel(
 		capability, ok := provider.PrefixCacheV2Models[model]
 		providerID := provider.ID
 		version := provider.PrefixCacheProtocol
+		revision := provider.prefixCacheRevision
 		provider.mu.Unlock()
 		if ok && version >= 2 &&
 			(tracker == nil || !tracker.capabilityRejected(providerID, model, capability)) {
 			out[providerID] = cacheRoutingCapability{
 				Provider: provider, Capability: capability,
+				CapabilityRevision: revision,
 			}
 		}
 	}
@@ -76,9 +78,31 @@ func (t *cacheRoutingTracker) hints(
 				PrefillTokensSaved: saved,
 				CachedTokens:       anchor.TokenCount,
 				StageMs:            holder.StageMs,
+				Provider:           candidate.Provider,
+				Capability:         capability,
+				CapabilityRevision: candidate.CapabilityRevision,
 			}
 			break
 		}
 	}
 	return out
+}
+
+// currentForProvider closes the gap between the unlocked tracker snapshot and
+// the locked scheduler scan. Capability heartbeats and proof quarantine mutate
+// the revision under the same provider lock, so stale hints fail cold before
+// they can influence provider selection.
+func (hint cacheRoutingHint) currentForProvider(provider *Provider, model string) bool {
+	if provider == nil || hint.Provider != provider {
+		return false
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	capability, ok := provider.PrefixCacheV2Models[model]
+	return ok &&
+		provider.PrefixCacheProtocol >= 2 &&
+		provider.prefixCacheRevision == hint.CapabilityRevision &&
+		capability == hint.Capability &&
+		capability.Enabled &&
+		capability.Ready
 }

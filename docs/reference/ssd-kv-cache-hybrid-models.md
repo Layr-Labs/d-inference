@@ -1,48 +1,42 @@
 # SSD KV Cache for Hybrid Models
 
-The v0.7.5 EngineV2 cache uses one layer-aware block format for both
-pure-attention and supported hybrid sliding-window models. The retired
-`PrefixCacheManager` exact-checkpoint tier is no longer part of the provider.
+Hybrid sliding-window models are deliberately cold-only in the production SSD
+cache. The retired `PrefixCacheManager` exact-checkpoint tier is no longer part
+of the provider.
 
-## Why hybrid adoption is different
+## Why partial hybrid adoption is unsafe
 
-A full-attention layer can reuse every matched prefix token. A sliding-window
-layer needs a suffix recomputed so its rotating state is correct at the resume
-point. ContinuousBatchingV2 derives that recompute amount from the model's
-`CBv2LayerKind` values:
+A sliding-window layer needs prior tokens at a replay boundary. If a
+storage-owning full-attention layer follows it, that full layer permanently
+caches keys and values derived from the incomplete sliding context. Replaying a
+larger suffix does not repair those polluted full-attention entries because
+later decode continues to attend them.
 
-```text
-recompute bound = sliding-window layer count * largest window
-effective reuse = matched prefix - recompute bound
-```
+`cbv2RequiredRecompute` therefore requires the entire matched prefix to be
+recomputed whenever a storage-owning full layer follows sliding attention.
+Such a match saves zero prefill tokens.
 
-The product saturates on overflow. A cache hit is adopted only when effective
-reuse is positive; otherwise inference performs a cold prefill.
+## Production behavior
 
-## SSD donation and adoption
+`PrefixCachePolicy.supportsReusablePrefixes` mirrors the engine rule before an
+SSD cache is constructed. Unsafe hybrid layouts advertise no reusable cache
+capability, create no receipt-confirmed routing holder, and serve through the
+ordinary cold path. This includes the currently supported Gemma 4 and GPT-OSS
+layouts.
 
-The default SSD tier is constructed for each CBv2-supported model. At request
-completion it donates 256-token, layer-aware snapshots only when the matched
-prefix clears both the model's recompute bound and the 1,024-token default
-benefit floor. This lets a large-bound model keep only prefixes that can pay
-back their staging cost without taking RAM from live serving.
+Pure full-attention layouts, all-windowed layouts, and layouts whose windowed
+layers trail every storage-owning full layer remain structurally eligible. They
+still pass the weight binding, prompt-contract, disk, staging, and effective
+token gates described in `ssd-kv-cache.md`.
 
-On lookup, `SSDPrefixCache` requires a contiguous chain of blocks, reserves the
-staging bytes in `GlobalKVCacheBudget`, authenticates every block, and hands the
-snapshot run to EngineV2. The engine applies the same recompute rule before
-resuming prefill. Any missing block, binding mismatch, decryption failure, or
-staging-budget refusal becomes a cold miss.
-
-Production does not construct the upstream resident-RAM `PrefixCacheV2` tier.
-Encrypted SSD uses the per-donation benefit test above and leaves the engine's
-full live-KV memory grant intact.
+Supporting interleaved hybrids in the future requires an exact prompt-boundary
+snapshot that restores every storage-owning row, including the retained
+sliding-window state. Relaxing the replay rule without that state would change
+model outputs and is prohibited.
 
 ## Code locations
 
-| Concern | File |
-|---|---|
-| Recompute rule | `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift` |
-| Adoption-bound policy | `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift` |
-| Layer-kind derivation and wiring | `provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift` |
-| SSD donation and staging | `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift` |
-| Regression tests | `provider-swift/Tests/ProviderCoreTests/EngineV2SSDPrefixCacheLiveTests.swift` |
+- Recompute rule: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/CBv2Contracts.swift`
+- Layout gate: `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`
+- SSD construction: `provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCacheFactory.swift`
+- Regression tests: `provider-swift/Tests/ProviderCoreTests/PrefixCachePolicyTests.swift`

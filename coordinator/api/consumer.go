@@ -23,6 +23,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2332,8 +2333,17 @@ func extractMessage(chunks []string) extractedMessage {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	finishReason := ""
-	// Tool calls are indexed — accumulate argument fragments by index.
-	toolCallMap := map[int]map[string]any{}
+	// Tool calls are indexed — argument fragments accumulate onto the wire
+	// index's CURRENT logical call. Logical calls are kept in arrival order
+	// (toolCalls) because a wire index is NOT unique: our engine emits every
+	// parallel call with index 0 (E6), so index-keyed storage alone would let
+	// a second call overwrite the first's id/name and concatenate both
+	// argument streams into one corrupted call. A delta whose non-empty id
+	// DIFFERS from the current entry's non-empty id starts a NEW logical
+	// call; id-less deltas (argument fragments) keep accumulating onto the
+	// index's current call, so well-behaved indexed streams are unchanged.
+	var toolCalls []map[string]any
+	activeCallByIndex := map[int]int{}
 
 	for _, chunk := range chunks {
 		line := strings.TrimPrefix(chunk, "data: ")
@@ -2396,16 +2406,27 @@ func extractMessage(chunks []string) extractedMessage {
 				reasoningBuilder.WriteString(c.Message.ReasoningContent)
 			}
 			for _, tc := range c.Delta.ToolCalls {
-				existing, ok := toolCallMap[tc.Index]
+				pos, ok := activeCallByIndex[tc.Index]
+				if ok && tc.ID != "" {
+					if existingID, _ := toolCalls[pos]["id"].(string); existingID != "" && existingID != tc.ID {
+						// A NEW id on an already-active wire index is a new
+						// logical call, not a continuation (the all-index-0
+						// engine shape) — never merge two calls into one.
+						ok = false
+					}
+				}
 				if !ok {
-					existing = map[string]any{
+					entry := map[string]any{
 						"index": tc.Index,
 						"function": map[string]any{
 							"arguments": "",
 						},
 					}
-					toolCallMap[tc.Index] = existing
+					toolCalls = append(toolCalls, entry)
+					pos = len(toolCalls) - 1
+					activeCallByIndex[tc.Index] = pos
 				}
+				existing := toolCalls[pos]
 				if tc.ID != "" {
 					existing["id"] = tc.ID
 				}
@@ -2432,13 +2453,18 @@ func extractMessage(chunks []string) extractedMessage {
 		}
 	}
 	msg := extractedMessage{Content: content, Reasoning: reasoning, FinishReason: finishReason}
-	if len(toolCallMap) > 0 {
-		msg.ToolCalls = make([]map[string]any, 0, len(toolCallMap))
-		for i := range len(toolCallMap) {
-			if tc, ok := toolCallMap[i]; ok {
-				delete(tc, "index")
-				msg.ToolCalls = append(msg.ToolCalls, tc)
-			}
+	if len(toolCalls) > 0 {
+		// Order by wire index for well-behaved indexed streams; the stable
+		// sort preserves ARRIVAL order among equal indices (the all-index-0
+		// shape), and — unlike the old dense 0..n-1 map walk — sparse indices
+		// are never dropped.
+		sort.SliceStable(toolCalls, func(i, j int) bool {
+			return toolCalls[i]["index"].(int) < toolCalls[j]["index"].(int)
+		})
+		msg.ToolCalls = make([]map[string]any, 0, len(toolCalls))
+		for _, tc := range toolCalls {
+			delete(tc, "index")
+			msg.ToolCalls = append(msg.ToolCalls, tc)
 		}
 	}
 	return msg

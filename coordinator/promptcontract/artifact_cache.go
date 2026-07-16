@@ -175,10 +175,11 @@ func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifa
 	}
 	defer tempRoot.Close()
 	published := false
+	cleanupName := tempName
 	defer func() {
 		if !published {
 			_ = makeTreeWritable(tempRoot)
-			_ = root.RemoveAll(tempName)
+			_ = root.RemoveAll(cleanupName)
 		}
 	}()
 
@@ -210,7 +211,7 @@ func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifa
 	if err := syncRoot(tempRoot); err != nil {
 		return "", err
 	}
-	if err := makeTreeReadOnly(tempRoot); err != nil {
+	if err := makeTreeContentsReadOnly(tempRoot); err != nil {
 		return "", err
 	}
 	if err := renameRootEntry(root, c.root, tempName, contractID); err != nil {
@@ -225,10 +226,17 @@ func (c *ArtifactCache) ensureOne(ctx context.Context, manifest Manifest, artifa
 		}
 		return "", fmt.Errorf("%w: %v", ErrArtifactUnavailable, err)
 	}
-	published = true
+	cleanupName = contractID
+	if err := tempRoot.Chmod(".", 0o500); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrArtifactUnavailable, err)
+	}
+	if err := syncRoot(tempRoot); err != nil {
+		return "", err
+	}
 	if err := syncRoot(root); err != nil {
 		return "", err
 	}
+	published = true
 	return path.Join(c.root, contractID), nil
 }
 
@@ -430,7 +438,7 @@ func verifyManifestAggregate(manifest Manifest) error {
 	return nil
 }
 
-func makeTreeReadOnly(root *os.Root) error {
+func makeTreeContentsReadOnly(root *os.Root) error {
 	var directories []string
 	if err := fs.WalkDir(root.FS(), ".", func(name string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -448,6 +456,9 @@ func makeTreeReadOnly(root *os.Root) error {
 	}
 	slices.Reverse(directories)
 	for _, name := range directories {
+		if name == "." {
+			continue
+		}
 		directory, err := secureOpenDirectory(root, name, false, 0)
 		if err != nil {
 			return fmt.Errorf("%w: %v", ErrArtifactUnavailable, err)

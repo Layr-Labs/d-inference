@@ -2,6 +2,7 @@ pub mod api;
 pub mod artifacts;
 pub mod contract;
 pub mod endpoint;
+mod gemma4;
 pub mod hash;
 pub mod normalize;
 pub mod planner;

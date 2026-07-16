@@ -4,7 +4,7 @@
     {
       "model_id": "gemma-4-26b",
       "model_type": null,
-      "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+      "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -39,7 +39,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -88,7 +88,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -158,7 +158,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -177,6 +177,310 @@
             107,
             32630,
             31466,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "endpoint_messages_tool_turn",
+          "endpoint": "messages",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b",
+            "system": "Use the available tool.",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Checking."
+                  },
+                  {
+                    "type": "tool_use",
+                    "id": "call_weather",
+                    "name": "weather",
+                    "input": {
+                      "city": "Paris",
+                      "unit": null
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "tool_result",
+                    "tool_use_id": "call_weather",
+                    "content": "sunny"
+                  },
+                  {
+                    "type": "text",
+                    "text": "Summarize."
+                  }
+                ]
+              }
+            ],
+            "tools": [
+              {
+                "name": "weather",
+                "description": "Fetch weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {},
+                    "unit": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "max_tokens": 32
+          },
+          "provider_body": {
+            "model": "gemma-4-26b",
+            "max_tokens": 32,
+            "messages": [
+              {
+                "role": "system",
+                "content": "Use the available tool."
+              },
+              {
+                "role": "assistant",
+                "content": "Checking.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": "{\"city\":\"Paris\",\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny"
+              },
+              {
+                "role": "user",
+                "content": "Summarize."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch weather",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "city": {},
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Use the available tool."
+              },
+              {
+                "role": "assistant",
+                "content": "Checking.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": {
+                        "city": "Paris"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "sunny",
+                "tool_call_id": "call_weather"
+              },
+              {
+                "role": "user",
+                "content": "Summarize."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch weather",
+                  "name": "weather",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
+            "prompt_token_count": 102,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            10896,
+            506,
+            2487,
+            5904,
+            236761,
+            46,
+            163688,
+            236787,
+            19323,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            7606,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            13319,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            1263,
+            6805,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            13319,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            19323,
+            236782,
+            13319,
+            236787,
+            52,
+            50429,
+            52,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            19323,
+            236782,
+            2394,
+            236787,
+            52,
+            185060,
+            52,
+            236783,
+            51,
+            71430,
+            236761,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            160773,
+            969,
+            236761,
             106,
             107,
             105,
@@ -227,7 +531,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -281,7 +585,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -588,7 +892,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -608,6 +912,921 @@
             118904,
             21485,
             236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "gemma_tool_turn",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": " "
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": "{\"days\":2,\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_forecast",
+                "content": "warm tomorrow"
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny now"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch current weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {}
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "description": "Fetch a forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {},
+                          false
+                        ]
+                      }
+                    },
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": " "
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": "{\"days\":2,\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_forecast",
+                "content": "warm tomorrow"
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny now"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch current weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {}
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "description": "Fetch a forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {},
+                          false
+                        ]
+                      }
+                    },
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": {}
+                    }
+                  }
+                ],
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "tool",
+                "content": "sunny now",
+                "tool_call_id": "call_weather"
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": {
+                        "days": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "warm tomorrow",
+                "tool_call_id": "call_forecast"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch current weather",
+                  "name": "weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {
+                        "type": "string"
+                      }
+                    },
+                    "properties": {},
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch a forecast",
+                  "name": "forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    },
+                    "type": "object",
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
+            "prompt_token_count": 600,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "1f49305b566b499bae5a7e655b347fd4c6df07cbab2f8d926ed0f3e821db63e4"
+              },
+              {
+                "token_count": 512,
+                "chain_hash": "a5d112714e583dfaf5359dda74ed46350cde663800f177ff1a3327e579c3bede"
+              }
+            ],
+            "last_complete_block_hash": "a5d112714e583dfaf5359dda74ed46350cde663800f177ff1a3327e579c3bede"
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            19323,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            1873,
+            7606,
+            52,
+            236764,
+            19031,
+            29616,
+            15979,
+            24845,
+            52,
+            13319,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            46,
+            163688,
+            236787,
+            52511,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            496,
+            14415,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            14356,
+            29616,
+            35951,
+            236787,
+            3397,
+            236764,
+            2084,
+            236787,
+            52,
+            86752,
+            52,
+            1263,
+            8194,
+            29616,
+            2084,
+            236787,
+            52,
+            48832,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            14356,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            19323,
+            16454,
+            49,
+            50,
+            6275,
+            236787,
+            19323,
+            236782,
+            2394,
+            236787,
+            52,
+            185060,
+            1492,
+            52,
+            236783,
+            51,
+            236777,
+            795,
+            2426,
+            1800,
+            7021,
+            236761,
+            106,
+            107,
+            48,
+            6639,
+            236787,
+            52511,
+            236782,
+            14356,
+            236787,
+            236778,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            52511,
+            236782,
+            2394,
+            236787,
+            52,
+            75951,
+            16922,
+            52,
+            236783,
+            51,
+            105,
+            2364,
+            107,
+            114687,
+            969,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
             106,
             107,
             105,
@@ -742,7 +1961,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 61,
             "block_boundaries": []
           },
@@ -842,27 +2061,27 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "393f7451cd4e1031cfbbe21e120daeb3bc972d6beda4f2ce12096e30a09246bb"
+                "chain_hash": "eb06dc43c2431d9c39e5e5e55e04e811eaff9d1c6992054bfe3403c868b76e04"
               },
               {
                 "token_count": 512,
-                "chain_hash": "7989752a92ea3e2a3f2a1cabc34471b014e6a3c5fd72b23c3857235d2faee70d"
+                "chain_hash": "d21dc41e55820ac73214defbf93887e89f6e7efe7daacaaaf97119ce29784ec2"
               },
               {
                 "token_count": 768,
-                "chain_hash": "9139db3dab74bf58438115b13a448d1c5ab7f91eab22bce6015026b7f064fbae"
+                "chain_hash": "1a1a5f8601278a61326dfa7bdc83f341aca611d712d99938a00e38d9f576c6cc"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "0396a2683def8dab25cacffc1e5c156b1a507fde48848cfcf792b98dec61e50a"
+                "chain_hash": "a77f0222b69baa8af99cbd2f40bdf7e7c94719dcc3e01ba8445cd75cdba5280d"
               }
             ],
-            "last_complete_block_hash": "0396a2683def8dab25cacffc1e5c156b1a507fde48848cfcf792b98dec61e50a"
+            "last_complete_block_hash": "a77f0222b69baa8af99cbd2f40bdf7e7c94719dcc3e01ba8445cd75cdba5280d"
           },
           "token_ids": [
             2,
@@ -1930,7 +3149,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -1991,7 +3210,7 @@
             }
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -2104,8 +3323,8 @@
               {
                 "type": "function",
                 "function": {
-                  "name": "weather",
                   "description": "Fetch weather",
+                  "name": "weather",
                   "parameters": {
                     "properties": {
                       "city": {
@@ -2113,17 +3332,17 @@
                         "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "city"
-                    ],
-                    "type": "object"
+                    ]
                   }
                 }
               }
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 201,
             "block_boundaries": []
           },
@@ -2363,7 +3582,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -2399,7 +3618,7 @@
     {
       "model_id": "gemma-4-26b-8bit",
       "model_type": null,
-      "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+      "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -2434,7 +3653,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -2483,7 +3702,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -2553,7 +3772,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -2572,6 +3791,310 @@
             107,
             32630,
             31466,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "endpoint_messages_tool_turn",
+          "endpoint": "messages",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-8bit",
+            "system": "Use the available tool.",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Checking."
+                  },
+                  {
+                    "type": "tool_use",
+                    "id": "call_weather",
+                    "name": "weather",
+                    "input": {
+                      "city": "Paris",
+                      "unit": null
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "tool_result",
+                    "tool_use_id": "call_weather",
+                    "content": "sunny"
+                  },
+                  {
+                    "type": "text",
+                    "text": "Summarize."
+                  }
+                ]
+              }
+            ],
+            "tools": [
+              {
+                "name": "weather",
+                "description": "Fetch weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {},
+                    "unit": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "max_tokens": 32
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-8bit",
+            "max_tokens": 32,
+            "messages": [
+              {
+                "role": "system",
+                "content": "Use the available tool."
+              },
+              {
+                "role": "assistant",
+                "content": "Checking.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": "{\"city\":\"Paris\",\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny"
+              },
+              {
+                "role": "user",
+                "content": "Summarize."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch weather",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "city": {},
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Use the available tool."
+              },
+              {
+                "role": "assistant",
+                "content": "Checking.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": {
+                        "city": "Paris"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "sunny",
+                "tool_call_id": "call_weather"
+              },
+              {
+                "role": "user",
+                "content": "Summarize."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch weather",
+                  "name": "weather",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
+            "prompt_token_count": 102,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            10896,
+            506,
+            2487,
+            5904,
+            236761,
+            46,
+            163688,
+            236787,
+            19323,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            7606,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            13319,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            1263,
+            6805,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            13319,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            19323,
+            236782,
+            13319,
+            236787,
+            52,
+            50429,
+            52,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            19323,
+            236782,
+            2394,
+            236787,
+            52,
+            185060,
+            52,
+            236783,
+            51,
+            71430,
+            236761,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            160773,
+            969,
+            236761,
             106,
             107,
             105,
@@ -2622,7 +4145,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -2676,7 +4199,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -2983,7 +4506,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -3003,6 +4526,921 @@
             118904,
             21485,
             236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "gemma_tool_turn",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": " "
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": "{\"days\":2,\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_forecast",
+                "content": "warm tomorrow"
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny now"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch current weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {}
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "description": "Fetch a forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {},
+                          false
+                        ]
+                      }
+                    },
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": " "
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": "{\"days\":2,\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_forecast",
+                "content": "warm tomorrow"
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny now"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch current weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {}
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "description": "Fetch a forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {},
+                          false
+                        ]
+                      }
+                    },
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-8bit",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": {}
+                    }
+                  }
+                ],
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "tool",
+                "content": "sunny now",
+                "tool_call_id": "call_weather"
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": {
+                        "days": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "warm tomorrow",
+                "tool_call_id": "call_forecast"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch current weather",
+                  "name": "weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {
+                        "type": "string"
+                      }
+                    },
+                    "properties": {},
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch a forecast",
+                  "name": "forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    },
+                    "type": "object",
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
+            "prompt_token_count": 600,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "1f49305b566b499bae5a7e655b347fd4c6df07cbab2f8d926ed0f3e821db63e4"
+              },
+              {
+                "token_count": 512,
+                "chain_hash": "a5d112714e583dfaf5359dda74ed46350cde663800f177ff1a3327e579c3bede"
+              }
+            ],
+            "last_complete_block_hash": "a5d112714e583dfaf5359dda74ed46350cde663800f177ff1a3327e579c3bede"
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            19323,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            1873,
+            7606,
+            52,
+            236764,
+            19031,
+            29616,
+            15979,
+            24845,
+            52,
+            13319,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            46,
+            163688,
+            236787,
+            52511,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            496,
+            14415,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            14356,
+            29616,
+            35951,
+            236787,
+            3397,
+            236764,
+            2084,
+            236787,
+            52,
+            86752,
+            52,
+            1263,
+            8194,
+            29616,
+            2084,
+            236787,
+            52,
+            48832,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            14356,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            19323,
+            16454,
+            49,
+            50,
+            6275,
+            236787,
+            19323,
+            236782,
+            2394,
+            236787,
+            52,
+            185060,
+            1492,
+            52,
+            236783,
+            51,
+            236777,
+            795,
+            2426,
+            1800,
+            7021,
+            236761,
+            106,
+            107,
+            48,
+            6639,
+            236787,
+            52511,
+            236782,
+            14356,
+            236787,
+            236778,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            52511,
+            236782,
+            2394,
+            236787,
+            52,
+            75951,
+            16922,
+            52,
+            236783,
+            51,
+            105,
+            2364,
+            107,
+            114687,
+            969,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
             106,
             107,
             105,
@@ -3137,7 +5575,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 61,
             "block_boundaries": []
           },
@@ -3237,27 +5675,27 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "393f7451cd4e1031cfbbe21e120daeb3bc972d6beda4f2ce12096e30a09246bb"
+                "chain_hash": "eb06dc43c2431d9c39e5e5e55e04e811eaff9d1c6992054bfe3403c868b76e04"
               },
               {
                 "token_count": 512,
-                "chain_hash": "7989752a92ea3e2a3f2a1cabc34471b014e6a3c5fd72b23c3857235d2faee70d"
+                "chain_hash": "d21dc41e55820ac73214defbf93887e89f6e7efe7daacaaaf97119ce29784ec2"
               },
               {
                 "token_count": 768,
-                "chain_hash": "9139db3dab74bf58438115b13a448d1c5ab7f91eab22bce6015026b7f064fbae"
+                "chain_hash": "1a1a5f8601278a61326dfa7bdc83f341aca611d712d99938a00e38d9f576c6cc"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "0396a2683def8dab25cacffc1e5c156b1a507fde48848cfcf792b98dec61e50a"
+                "chain_hash": "a77f0222b69baa8af99cbd2f40bdf7e7c94719dcc3e01ba8445cd75cdba5280d"
               }
             ],
-            "last_complete_block_hash": "0396a2683def8dab25cacffc1e5c156b1a507fde48848cfcf792b98dec61e50a"
+            "last_complete_block_hash": "a77f0222b69baa8af99cbd2f40bdf7e7c94719dcc3e01ba8445cd75cdba5280d"
           },
           "token_ids": [
             2,
@@ -4325,7 +6763,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -4386,7 +6824,7 @@
             }
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -4499,8 +6937,8 @@
               {
                 "type": "function",
                 "function": {
-                  "name": "weather",
                   "description": "Fetch weather",
+                  "name": "weather",
                   "parameters": {
                     "properties": {
                       "city": {
@@ -4508,17 +6946,17 @@
                         "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "city"
-                    ],
-                    "type": "object"
+                    ]
                   }
                 }
               }
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 201,
             "block_boundaries": []
           },
@@ -4758,7 +7196,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "af3b01677da11231a32a362041276eab6e6b7f69267c6560d7f3f0a8a5ba65ce",
+            "prompt_contract_id": "775df5693a45b12a900f16bfd8775d14c080f2321fd3fef8e27ebd93bee276cf",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -4794,7 +7232,7 @@
     {
       "model_id": "gemma-4-26b-qat-4bit",
       "model_type": null,
-      "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+      "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
       "cache_routing_eligible": true,
       "cases": [
         {
@@ -4829,7 +7267,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -4878,7 +7316,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -4948,7 +7386,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 23,
             "block_boundaries": []
           },
@@ -4967,6 +7405,310 @@
             107,
             32630,
             31466,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "endpoint_messages_tool_turn",
+          "endpoint": "messages",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "system": "Use the available tool.",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "Checking."
+                  },
+                  {
+                    "type": "tool_use",
+                    "id": "call_weather",
+                    "name": "weather",
+                    "input": {
+                      "city": "Paris",
+                      "unit": null
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "tool_result",
+                    "tool_use_id": "call_weather",
+                    "content": "sunny"
+                  },
+                  {
+                    "type": "text",
+                    "text": "Summarize."
+                  }
+                ]
+              }
+            ],
+            "tools": [
+              {
+                "name": "weather",
+                "description": "Fetch weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {},
+                    "unit": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "max_tokens": 32
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "max_tokens": 32,
+            "messages": [
+              {
+                "role": "system",
+                "content": "Use the available tool."
+              },
+              {
+                "role": "assistant",
+                "content": "Checking.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": "{\"city\":\"Paris\",\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny"
+              },
+              {
+                "role": "user",
+                "content": "Summarize."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch weather",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "city": {},
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Use the available tool."
+              },
+              {
+                "role": "assistant",
+                "content": "Checking.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": {
+                        "city": "Paris"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "sunny",
+                "tool_call_id": "call_weather"
+              },
+              {
+                "role": "user",
+                "content": "Summarize."
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch weather",
+                  "name": "weather",
+                  "parameters": {
+                    "type": "object",
+                    "properties": {
+                      "city": {
+                        "type": "string"
+                      },
+                      "unit": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
+            "prompt_token_count": 102,
+            "block_boundaries": []
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            10896,
+            506,
+            2487,
+            5904,
+            236761,
+            46,
+            163688,
+            236787,
+            19323,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            7606,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            13319,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            1263,
+            6805,
+            29616,
+            2084,
+            236787,
+            52,
+            35410,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            13319,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            19323,
+            236782,
+            13319,
+            236787,
+            52,
+            50429,
+            52,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            19323,
+            236782,
+            2394,
+            236787,
+            52,
+            185060,
+            52,
+            236783,
+            51,
+            71430,
+            236761,
+            106,
+            107,
+            105,
+            2364,
+            107,
+            160773,
+            969,
+            236761,
             106,
             107,
             105,
@@ -5017,7 +7759,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 15,
             "block_boundaries": []
           },
@@ -5071,7 +7813,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 256,
             "block_boundaries": []
           },
@@ -5378,7 +8120,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -5398,6 +8140,921 @@
             118904,
             21485,
             236761,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            100,
+            45518,
+            107,
+            101
+          ]
+        },
+        {
+          "id": "gemma_tool_turn",
+          "endpoint": "chat_completions",
+          "scope_id": "fixture-scope",
+          "request_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": " "
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": "{\"days\":2,\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_forecast",
+                "content": "warm tomorrow"
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny now"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch current weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {}
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "description": "Fetch a forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {},
+                          false
+                        ]
+                      }
+                    },
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "provider_body": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": " "
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": "{\"days\":2,\"unit\":null}"
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_forecast",
+                "content": "warm tomorrow"
+              },
+              {
+                "role": "tool",
+                "tool_call_id": "call_weather",
+                "content": "sunny now"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "description": "Fetch current weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {}
+                    },
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "description": "Fetch a forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {},
+                          false
+                        ]
+                      }
+                    },
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "template_input": {
+            "model": "gemma-4-26b-qat-4bit",
+            "messages": [
+              {
+                "role": "assistant",
+                "content": "I will check both sources.",
+                "tool_calls": [
+                  {
+                    "id": "call_weather",
+                    "type": "function",
+                    "function": {
+                      "name": "weather",
+                      "arguments": {}
+                    }
+                  }
+                ],
+                "reasoning_content": "Need two calls."
+              },
+              {
+                "role": "tool",
+                "content": "sunny now",
+                "tool_call_id": "call_weather"
+              },
+              {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                  {
+                    "id": "call_forecast",
+                    "type": "function",
+                    "function": {
+                      "name": "forecast",
+                      "arguments": {
+                        "days": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "role": "tool",
+                "content": "warm tomorrow",
+                "tool_call_id": "call_forecast"
+              },
+              {
+                "role": "user",
+                "content": " summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize summarize"
+              }
+            ],
+            "tools": [
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch current weather",
+                  "name": "weather",
+                  "parameters": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^city$": {
+                        "type": "string"
+                      }
+                    },
+                    "properties": {},
+                    "required": [
+                      "city"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "function",
+                "function": {
+                  "description": "Fetch a forecast",
+                  "name": "forecast",
+                  "parameters": {
+                    "properties": {
+                      "days": {
+                        "type": "integer",
+                        "nullable": true
+                      },
+                      "options": {
+                        "prefixItems": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ],
+                        "type": "array"
+                      }
+                    },
+                    "type": "object",
+                    "required": [
+                      "days"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "plan": {
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
+            "prompt_token_count": 600,
+            "block_boundaries": [
+              {
+                "token_count": 256,
+                "chain_hash": "601645a2f56cd313b459214c3d0d1662dfe6c750cd6a976e31058b1ca8a91052"
+              },
+              {
+                "token_count": 512,
+                "chain_hash": "7b7e75b8024ef4f492b007b77c22688d1f6281df5bf0d2b20ede1dcea0576118"
+              }
+            ],
+            "last_complete_block_hash": "7b7e75b8024ef4f492b007b77c22688d1f6281df5bf0d2b20ede1dcea0576118"
+          },
+          "token_ids": [
+            2,
+            105,
+            9731,
+            107,
+            46,
+            163688,
+            236787,
+            19323,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            1873,
+            7606,
+            52,
+            236764,
+            19031,
+            29616,
+            15979,
+            24845,
+            52,
+            13319,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            46,
+            163688,
+            236787,
+            52511,
+            236782,
+            7777,
+            236787,
+            52,
+            30764,
+            496,
+            14415,
+            52,
+            236764,
+            19031,
+            29616,
+            15921,
+            29616,
+            14356,
+            29616,
+            35951,
+            236787,
+            3397,
+            236764,
+            2084,
+            236787,
+            52,
+            86752,
+            52,
+            1263,
+            8194,
+            29616,
+            2084,
+            236787,
+            52,
+            48832,
+            52,
+            5237,
+            15979,
+            24845,
+            52,
+            14356,
+            52,
+            1604,
+            2084,
+            236787,
+            52,
+            60688,
+            52,
+            1807,
+            47,
+            106,
+            107,
+            105,
+            4368,
+            107,
+            48,
+            6639,
+            236787,
+            19323,
+            16454,
+            49,
+            50,
+            6275,
+            236787,
+            19323,
+            236782,
+            2394,
+            236787,
+            52,
+            185060,
+            1492,
+            52,
+            236783,
+            51,
+            236777,
+            795,
+            2426,
+            1800,
+            7021,
+            236761,
+            106,
+            107,
+            48,
+            6639,
+            236787,
+            52511,
+            236782,
+            14356,
+            236787,
+            236778,
+            236783,
+            49,
+            50,
+            6275,
+            236787,
+            52511,
+            236782,
+            2394,
+            236787,
+            52,
+            75951,
+            16922,
+            52,
+            236783,
+            51,
+            105,
+            2364,
+            107,
+            114687,
+            969,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
+            49573,
             106,
             107,
             105,
@@ -5532,7 +9189,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 61,
             "block_boundaries": []
           },
@@ -5632,27 +9289,27 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 1025,
             "block_boundaries": [
               {
                 "token_count": 256,
-                "chain_hash": "470e053bc4340cd6c8b71877c2162aa0cf5482b83300c69a044f64dbb2648018"
+                "chain_hash": "a2a20bc9fa9e816c3435f0970955f04e154e03760505b34fffd0d0bc5ecfb6f2"
               },
               {
                 "token_count": 512,
-                "chain_hash": "cfc18abebec8d8d3273fc01629875b42580d621ed75cb9c807125f962ccb7b8a"
+                "chain_hash": "b464926d5a6e8e7ed277e7be8063ee1b1ffe2f10ad6d65c64ef4433d492de915"
               },
               {
                 "token_count": 768,
-                "chain_hash": "95542a5bf7a7cb6b2eeab14c73b7c1c2839af90721840fdd1762cdf8c9949253"
+                "chain_hash": "c9acba9ffe1fbff9d6633b9383384c35398ef2495afa3e078f5f5f3c09a0ec74"
               },
               {
                 "token_count": 1024,
-                "chain_hash": "411a4fc0c21538adcda1d9091d95b134e75da7972e19d01de2eb5cae1d03f203"
+                "chain_hash": "78c1cbfee8d1f31e336a485cc86ec510ce6404938ffcc0a6ce28f2902fc4e1bb"
               }
             ],
-            "last_complete_block_hash": "411a4fc0c21538adcda1d9091d95b134e75da7972e19d01de2eb5cae1d03f203"
+            "last_complete_block_hash": "78c1cbfee8d1f31e336a485cc86ec510ce6404938ffcc0a6ce28f2902fc4e1bb"
           },
           "token_ids": [
             2,
@@ -6720,7 +10377,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 17,
             "block_boundaries": []
           },
@@ -6781,7 +10438,7 @@
             }
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 16,
             "block_boundaries": []
           },
@@ -6894,8 +10551,8 @@
               {
                 "type": "function",
                 "function": {
-                  "name": "weather",
                   "description": "Fetch weather",
+                  "name": "weather",
                   "parameters": {
                     "properties": {
                       "city": {
@@ -6903,17 +10560,17 @@
                         "type": "string"
                       }
                     },
+                    "type": "object",
                     "required": [
                       "city"
-                    ],
-                    "type": "object"
+                    ]
                   }
                 }
               }
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 201,
             "block_boundaries": []
           },
@@ -7153,7 +10810,7 @@
             ]
           },
           "plan": {
-            "prompt_contract_id": "f7dd7eb26ea1e475a2e252d2249d8547c360e934179a6ee6b72c4fb7772a7022",
+            "prompt_contract_id": "260d5e73e744fb4bd023bc282702d507a7babca715ca1f6ebf5504fc9c010c55",
             "prompt_token_count": 24,
             "block_boundaries": []
           },
@@ -7189,7 +10846,7 @@
     {
       "model_id": "gpt-oss-20b",
       "model_type": null,
-      "prompt_contract_id": "fcbb1bd24a246e5040d8179ab311b8f626c2ad50d118cf7a3d1646cb2c4dc6ad",
+      "prompt_contract_id": "02e93079f388c803c4480d7ee5d12d02fae9b3df6c6fef65152695ba10b3ef2a",
       "cache_routing_eligible": false,
       "ineligibility_reason": "dynamic_time",
       "cases": []

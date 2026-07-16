@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 pub const CONTRACT_DOMAIN: &[u8] = b"darkbloom.prompt-contract.v1";
-pub const NORMALIZATION_VERSION: &str = "darkbloom-request-normalization-v1";
+pub const NORMALIZATION_VERSION: &str = "darkbloom-request-normalization-v2";
 pub const RENDERER_VERSION: &str = "swift-jinja-compatible-v1";
 pub const TOKENIZER_VERSION: &str = "huggingface-tokenizer-json-v1";
 pub const BLOCK_HASH_VERSION: &str = "darkbloom-block-chain-v1";

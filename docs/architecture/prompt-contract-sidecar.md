@@ -58,7 +58,7 @@ that emits token IDs.
 
 The semantic versions are:
 
-- normalization: `darkbloom-request-normalization-v1`
+- normalization: `darkbloom-request-normalization-v2` (includes Gemma 4 tool-schema, argument, and turn-structure compatibility)
 - renderer: `swift-jinja-compatible-v1`
 - tokenizer: `huggingface-tokenizer-json-v1`
 - block hash: `darkbloom-block-chain-v1`

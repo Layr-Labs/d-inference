@@ -614,7 +614,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                             await releaseBox.fire()
                                             continuation.finish(
                                                 throwing: MultiModelBatchSchedulerEngineError
-                                                    .generationFailed(
+                                                    .toolChoiceViolation(
                                                         "required tool call response exceeded deferred content limit"))
                                             return
                                         }
@@ -627,7 +627,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                     await cancelUpstream()
                                     await releaseBox.fire()
                                     continuation.finish(
-                                        throwing: MultiModelBatchSchedulerEngineError.generationFailed(
+                                        throwing: MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                                             "required tool call response exceeded deferred content limit"))
                                     return
                                 }
@@ -668,17 +668,21 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // choices hold text until a call is proven, so a non-compliant
                 // model can never return a normal text answer with `stop`.
                 let toolCalls = toolHandler?.finish() ?? []
+                // Forced tool_choice noncompliance is a typed 422
+                // (`tool_noncompliance`), not a generic 500: it depends on
+                // what the model GENERATED, so a re-sample can comply, and
+                // it must not read as a provider fault (E5).
                 if toolCalls.contains(where: { !allowedToolNames.contains($0.function.name) }) {
                     await releaseBox.fire()
                     continuation.finish(
-                        throwing: MultiModelBatchSchedulerEngineError.generationFailed(
+                        throwing: MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                             "model emitted a tool call outside tool_choice"))
                     return
                 }
                 if requiresToolCall && toolCalls.isEmpty {
                     await releaseBox.fire()
                     continuation.finish(
-                        throwing: MultiModelBatchSchedulerEngineError.generationFailed(
+                        throwing: MultiModelBatchSchedulerEngineError.toolChoiceViolation(
                             "model did not emit the required tool call"))
                     return
                 }

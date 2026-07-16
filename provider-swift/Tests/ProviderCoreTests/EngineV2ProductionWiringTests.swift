@@ -1082,7 +1082,8 @@ struct EngineV2RequestRoutingTests {
             for try await event in stream { events.append(event) }
             Issue.record("expected required tool call failure")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .generationFailed("model did not emit the required tool call"))
+            // E5: tool-choice noncompliance is the typed 422 case, not a 500.
+            #expect(error == .toolChoiceViolation("model did not emit the required tool call"))
         }
         #expect(events.isEmpty, "text must stay suppressed when no required call is emitted")
     }
@@ -1115,7 +1116,8 @@ struct EngineV2RequestRoutingTests {
             for try await event in stream { events.append(event) }
             Issue.record("expected deferred content limit failure")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .generationFailed(
+            // E5: tool-choice noncompliance is the typed 422 case, not a 500.
+            #expect(error == .toolChoiceViolation(
                 "required tool call response exceeded deferred content limit"))
         }
         #expect(events.isEmpty)
@@ -1189,7 +1191,8 @@ struct EngineV2RequestRoutingTests {
             for try await _ in stream {}
             Issue.record("expected named tool_choice mismatch")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .generationFailed("model emitted a tool call outside tool_choice"))
+            // E5: tool-choice noncompliance is the typed 422 case, not a 500.
+            #expect(error == .toolChoiceViolation("model emitted a tool call outside tool_choice"))
         }
     }
 

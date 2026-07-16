@@ -212,6 +212,11 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "HummingbirdTesting", package: "hummingbird"),
                 .product(name: "HummingbirdWebSocket", package: "hummingbird-websocket"),
+                // Direct Jinja access for the served-template render
+                // regression (Gemma4ServedTemplateRenderTests) — the
+                // normalizers under test live in ProviderCore, which
+                // ProviderCoreFoundationTests cannot link.
+                .product(name: "Jinja", package: "swift-jinja"),
             ],
             path: "Tests/ProviderCoreTests"
         ),

@@ -47,6 +47,39 @@ func TestBuildMessagesResponseConvertsToolCalls(t *testing.T) {
 	}
 }
 
+func TestBuildMessagesResponsePreservesParallelNonStreamingToolCalls(t *testing.T) {
+	message := extractMessage([]string{`data: {"choices":[{"message":{"tool_calls":[` +
+		`{"index":0,"id":"call-weather","type":"function","function":{"name":"weather","arguments":"{\"city\":\"SF\"}"}},` +
+		`{"index":0,"id":"call-time","type":"function","function":{"name":"time","arguments":"{\"zone\":\"UTC\"}"}}` +
+		`]},"finish_reason":"tool_calls"}]}`})
+	if len(message.ToolCalls) != 2 {
+		t.Fatalf("reconstructed tool calls = %#v, want two logical calls", message.ToolCalls)
+	}
+	response := buildMessagesResponse(&registry.PendingRequest{
+		RequestID:        "request-id",
+		PublicModel:      "gemma-4-26b",
+		ConsumerEndpoint: messagesEndpoint,
+	}, message, protocol.UsageInfo{})
+	content, ok := response["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("content = %#v, want two Anthropic tool_use blocks", response["content"])
+	}
+	for index, want := range []struct {
+		id   string
+		name string
+	}{
+		{id: "call-weather", name: "weather"},
+		{id: "call-time", name: "time"},
+	} {
+		block, ok := content[index].(map[string]any)
+		if !ok || block["type"] != "tool_use" || block["id"] != want.id ||
+			block["name"] != want.name {
+			t.Fatalf("tool block %d = %#v, want id=%q name=%q",
+				index, content[index], want.id, want.name)
+		}
+	}
+}
+
 func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 	t.Run("completions corrects max token finish", func(t *testing.T) {
 		recorder := httptest.NewRecorder()
@@ -101,6 +134,35 @@ func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 		} {
 			if !strings.Contains(body, want) {
 				t.Errorf("stream missing %q:\n%s", want, body)
+			}
+		}
+	})
+
+	t.Run("messages preserves parallel all-index-zero calls", func(t *testing.T) {
+		recorder := httptest.NewRecorder()
+		pr := &registry.PendingRequest{
+			RequestID:        "request-id",
+			PublicModel:      "gemma-4-26b",
+			ConsumerEndpoint: messagesEndpoint,
+		}
+		emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+		emitter.start()
+		emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"tool_calls":[` +
+			`{"index":0,"id":"call-weather","function":{"name":"weather","arguments":"{\"city\":\"SF\"}"}},` +
+			`{"index":0,"id":"call-time","function":{"name":"time","arguments":"{\"zone\":\"UTC\"}"}}` +
+			`]},"finish_reason":"tool_calls"}]}`)
+		emitter.finish(protocol.UsageInfo{})
+
+		body := recorder.Body.String()
+		if strings.Count(body, `"type":"tool_use"`) != 2 {
+			t.Fatalf("stream did not preserve both logical tool calls:\n%s", body)
+		}
+		for _, want := range []string{
+			`"id":"call-weather"`, `"name":"weather"`,
+			`"id":"call-time"`, `"name":"time"`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Fatalf("stream missing %q:\n%s", want, body)
 			}
 		}
 	})

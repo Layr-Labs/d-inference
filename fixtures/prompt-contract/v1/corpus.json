@@ -121,6 +121,112 @@
       }
     },
     {
+      "id": "gemma_tool_turn",
+      "endpoint": "chat_completions",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": "I will check both sources.",
+            "reasoning_content": "Need two calls."
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_weather",
+                "type": "function",
+                "function": {
+                  "name": "weather",
+                  "arguments": " "
+                }
+              }
+            ]
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "id": "call_forecast",
+                "type": "function",
+                "function": {
+                  "name": "forecast",
+                  "arguments": "{\"days\":2,\"unit\":null}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_forecast",
+            "content": "warm tomorrow"
+          },
+          {
+            "role": "tool",
+            "tool_call_id": "call_weather",
+            "content": "sunny now"
+          },
+          {
+            "role": "user",
+            "content": "{{REPEAT}}"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "weather",
+              "description": "Fetch current weather",
+              "parameters": {
+                "type": "object",
+                "patternProperties": {
+                  "^city$": {}
+                },
+                "required": [
+                  "city"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "forecast",
+              "description": "Fetch a forecast",
+              "parameters": {
+                "properties": {
+                  "days": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "options": {
+                    "prefixItems": [
+                      {},
+                      false
+                    ]
+                  }
+                },
+                "required": [
+                  "days"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "repeat": {
+        "text": " summarize",
+        "minimum_tokens": 600,
+        "max_repetitions": 2048
+      }
+    },
+    {
       "id": "reasoning_effort",
       "endpoint": "chat_completions",
       "scope_id": "fixture-scope",
@@ -208,6 +314,75 @@
                 "text": "Messages endpoint"
               }
             ]
+          }
+        ],
+        "max_tokens": 32
+      }
+    },
+    {
+      "id": "endpoint_messages_tool_turn",
+      "endpoint": "messages",
+      "scope_id": "fixture-scope",
+      "body": {
+        "model": "{{MODEL_ID}}",
+        "system": "Use the available tool.",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "text",
+                "text": "Checking."
+              },
+              {
+                "type": "tool_use",
+                "id": "call_weather",
+                "name": "weather",
+                "input": {
+                  "city": "Paris",
+                  "unit": null
+                }
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "call_weather",
+                "content": "sunny"
+              },
+              {
+                "type": "text",
+                "text": "Summarize."
+              }
+            ]
+          }
+        ],
+        "tools": [
+          {
+            "name": "weather",
+            "description": "Fetch weather",
+            "input_schema": {
+              "type": "object",
+              "properties": {
+                "city": {},
+                "unit": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "city"
+              ]
+            }
           }
         ],
         "max_tokens": 32

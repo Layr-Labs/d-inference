@@ -44,6 +44,9 @@ pub fn normalize(
     if is_harmony(Some(&model_id), model_type) {
         messages = harmony_messages(messages)?;
         tools = tools.map(harmony_tools);
+    } else if crate::gemma4::applies(&model_id, model_type) {
+        messages = crate::gemma4::normalize_messages(messages)?;
+        tools = tools.map(crate::gemma4::normalize_tools);
     }
 
     let mut additional_context = Map::new();
@@ -330,39 +333,50 @@ fn normalize_tool_parameter_types(body: &mut Map<String, Value>) {
             continue;
         };
         if let Some(parameters) = function.get_mut("parameters") {
-            inject_schema_types(parameters);
+            inject_schema_types(parameters, false);
         }
     }
 }
 
-fn inject_schema_types(node: &mut Value) {
+fn inject_schema_types(node: &mut Value, positional: bool) {
+    if positional && node.is_boolean() {
+        *node = json!({"type": "string"});
+        return;
+    }
     if let Some(array) = node.as_array_mut() {
         for child in array {
-            inject_schema_types(child);
+            inject_schema_types(child, positional);
         }
         return;
     }
     let Some(object) = node.as_object_mut() else {
         return;
     };
-    if let Some(properties) = object.get_mut("properties").and_then(Value::as_object_mut) {
-        for child in properties.values_mut() {
-            inject_schema_types(child);
+    for key in ["properties", "patternProperties"] {
+        if let Some(properties) = object.get_mut(key).and_then(Value::as_object_mut) {
+            for child in properties.values_mut() {
+                inject_schema_types(child, true);
+            }
         }
     }
     if let Some(items) = object.get_mut("items") {
-        inject_schema_types(items);
+        inject_schema_types(items, true);
+    }
+    if let Some(prefix_items) = object.get_mut("prefixItems").and_then(Value::as_array_mut) {
+        for child in prefix_items {
+            inject_schema_types(child, true);
+        }
     }
     if let Some(additional) = object
         .get_mut("additionalProperties")
         .filter(|value| value.is_object())
     {
-        inject_schema_types(additional);
+        inject_schema_types(additional, true);
     }
     for key in ["anyOf", "oneOf", "allOf"] {
         if let Some(variants) = object.get_mut(key).and_then(Value::as_array_mut) {
             for variant in variants {
-                inject_schema_types(variant);
+                inject_schema_types(variant, true);
             }
         }
     }
@@ -395,7 +409,9 @@ fn inject_schema_types(node: &mut Value) {
     }
     let looks_like_schema = [
         "properties",
+        "patternProperties",
         "items",
+        "prefixItems",
         "additionalProperties",
         "enum",
         "description",
@@ -405,17 +421,28 @@ fn inject_schema_types(node: &mut Value) {
     ]
     .iter()
     .any(|key| object.contains_key(*key));
-    if !object.contains_key("type") && looks_like_schema {
+    if !object.contains_key("type") && (positional || looks_like_schema) {
         let inferred = inferred_schema_type(object);
         object.insert("type".into(), Value::String(inferred));
+    }
+    if object
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("object"))
+        && !object.get("properties").is_some_and(Value::is_object)
+    {
+        object.insert("properties".into(), Value::Object(Map::new()));
     }
 }
 
 fn inferred_schema_type(object: &Map<String, Value>) -> String {
-    if object.contains_key("properties") || object.contains_key("additionalProperties") {
+    if object.contains_key("properties")
+        || object.contains_key("patternProperties")
+        || object.contains_key("additionalProperties")
+    {
         return "object".into();
     }
-    if object.contains_key("items") {
+    if object.contains_key("items") || object.contains_key("prefixItems") {
         return "array".into();
     }
     for key in ["anyOf", "oneOf", "allOf"] {

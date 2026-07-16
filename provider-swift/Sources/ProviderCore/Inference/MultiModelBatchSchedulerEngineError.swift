@@ -39,6 +39,15 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// histories do not trip model-specific Jinja assertions as provider
     /// 500s.
     case invalidToolPayload(String)
+    /// The MODEL failed to satisfy the request's forced `tool_choice`
+    /// contract: it did not emit the required tool call, emitted a call
+    /// outside the allowed set, or produced more deferred prose than the
+    /// enforcement buffer holds. This depends on what the model GENERATED —
+    /// a re-sample (or another provider) can comply — so it surfaces as 422
+    /// with error_reason "tool_noncompliance" (E5), which stays on the
+    /// coordinator's normal bounded-failover path, NOT as a generic 500
+    /// that burns provider reputation.
+    case toolChoiceViolation(String)
     /// Admission rejection caused by the batch token budget / global
     /// KV-cache headroom / pending-queue timeout. Surfaces as 503 so
     /// clients back off and retry once capacity frees up.
@@ -75,6 +84,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         case .invalidRole(let role):
             return "Unsupported chat message role: '\(role)'"
         case .invalidToolPayload(let message):
+            return message
+        case .toolChoiceViolation(let message):
             return message
         case .tokenBudgetExhausted(let message):
             return message

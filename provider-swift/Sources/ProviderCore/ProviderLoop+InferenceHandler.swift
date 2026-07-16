@@ -790,15 +790,17 @@ extension ProviderLoop {
                         providerStats.incrementStreamClosedWithoutTerminal()
                     }
                     let statusCode = Self.mapInferenceErrorToStatus(error)
-                    // Mid-stream generation error. Left unclassified (nil): the
-                    // Harmony channel-tags / null-bridge template failures surface
-                    // at stream START (see the catch below), not here.
+                    // Mid-stream generation errors use typed classification only:
+                    // tool-choice violations are request/model-output faults, while
+                    // string-based Jinja classification remains confined to stream
+                    // startup. Finalize the lookup receipt first so the cache attempt
+                    // cannot survive this terminal path.
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
                             error: error.localizedDescription,
                             statusCode: statusCode,
-                            errorReason: nil),
+                            errorReason: classifyTypedInferenceErrorReason(error)),
                         fallbackFailure: statusCode == 503 ? .capacity : .policy,
                         send: send)
                     return

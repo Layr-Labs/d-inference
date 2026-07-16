@@ -3,8 +3,8 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -190,13 +190,7 @@ type messagesStreamEmitter struct {
 	openIndex    int
 	contentOpen  bool
 	finishReason string
-	toolCalls    map[int]*messagesStreamToolCall
-}
-
-type messagesStreamToolCall struct {
-	id        string
-	name      string
-	arguments strings.Builder
+	toolCalls    *toolCallAccumulator
 }
 
 func newMessagesStreamEmitter(
@@ -209,7 +203,7 @@ func newMessagesStreamEmitter(
 		flusher:   flusher,
 		pr:        pr,
 		messageID: "msg_" + strings.ReplaceAll(pr.RequestID, "-", ""),
-		toolCalls: map[int]*messagesStreamToolCall{},
+		toolCalls: newToolCallAccumulator(),
 	}
 }
 
@@ -240,18 +234,7 @@ func (e *messagesStreamEmitter) handleChunk(chunk string) {
 			e.appendContent(choice.Delta.Content)
 		}
 		for _, fragment := range choice.Delta.ToolCalls {
-			call := e.toolCalls[fragment.Index]
-			if call == nil {
-				call = &messagesStreamToolCall{}
-				e.toolCalls[fragment.Index] = call
-			}
-			if fragment.ID != "" {
-				call.id = fragment.ID
-			}
-			if fragment.Function.Name != "" {
-				call.name = fragment.Function.Name
-			}
-			call.arguments.WriteString(fragment.Function.Arguments)
+			e.toolCalls.apply(fragment)
 		}
 	}
 }
@@ -274,30 +257,32 @@ func (e *messagesStreamEmitter) appendContent(value string) {
 
 func (e *messagesStreamEmitter) finish(usage protocol.UsageInfo) {
 	e.closeOpenBlock()
-	indices := make([]int, 0, len(e.toolCalls))
-	for index := range e.toolCalls {
-		indices = append(indices, index)
+	if e.toolCalls.droppedDeltas > 0 {
+		log.Printf("WARN: messages stream: logical tool-call cap (%d) reached; dropped %d tool-call delta(s) from excess calls",
+			maxLogicalToolCalls, e.toolCalls.droppedDeltas)
 	}
-	sort.Ints(indices)
-	for _, index := range indices {
-		call := e.toolCalls[index]
+	for _, call := range e.toolCalls.finalize() {
+		id, _ := call["id"].(string)
+		function, _ := call["function"].(map[string]any)
+		name, _ := function["name"].(string)
+		arguments, _ := function["arguments"].(string)
 		contentIndex := e.nextIndex
 		e.nextIndex++
 		e.emit("content_block_start", map[string]any{
 			"index": contentIndex,
 			"content_block": map[string]any{
 				"type":  "tool_use",
-				"id":    call.id,
-				"name":  call.name,
+				"id":    id,
+				"name":  name,
 				"input": map[string]any{},
 			},
 		})
-		if call.arguments.Len() > 0 {
+		if arguments != "" {
 			e.emit("content_block_delta", map[string]any{
 				"index": contentIndex,
 				"delta": map[string]any{
 					"type":         "input_json_delta",
-					"partial_json": call.arguments.String(),
+					"partial_json": arguments,
 				},
 			})
 		}

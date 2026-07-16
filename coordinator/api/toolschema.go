@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"slices"
+	"strings"
 )
 
 // Tool-schema normalization (DAR-130), a Go port of the Swift provider's
@@ -178,66 +179,108 @@ func normalizeToolEntry(tool any, changed *bool) any {
 	return toolDict
 }
 
-// injectDefaultTypes recursively default-fills `type` on JSON-Schema nodes. A
-// node gets a type only when it looks like a schema node (has properties /
-// items / additionalProperties / enum / description / anyOf / oneOf / allOf)
-// — we never invent types on arbitrary maps. The inferred default favours
-// structure: object when it has properties, array when it has items,
-// otherwise string.
+// injectDefaultTypes recursively default-fills `type` on JSON-Schema nodes,
+// starting from a tool's schema home (a NON-positional root: a bare `{}`
+// parameters object stays `{}`, and a type is only invented when the map
+// carries a schema marker key — see looksLikeSchemaNode). The inferred
+// default favours structure: object when it has properties, array when it
+// has items, otherwise string.
 //
 // depth is the current nesting level (0 at each tool schema home); *changed is
 // set to true if any descendant node is repaired. At maxToolSchemaDepth we
 // stop descending and return the node UNCHANGED — the only depth-bounded path,
 // keeping unbounded recursion off the request hot path (see maxToolSchemaDepth).
 func injectDefaultTypes(node any, depth int, changed *bool) any {
+	return injectTypes(node, depth, changed, false)
+}
+
+// injectTypes is the traversal core behind injectDefaultTypes. positional
+// reports whether node sits in a SCHEMA-POSITIONAL slot — a value under
+// `properties`/`patternProperties`, `items` (including tuple-form members),
+// `prefixItems`, a map-valued `additionalProperties`, or a member of
+// `anyOf`/`oneOf`/`allOf`. JSON Schema defines every value in those slots to
+// BE a schema, so a positional value needs no marker-key evidence:
+//
+//   - a boolean (the valid JSON-Schema allow/deny-all shorthand, e.g.
+//     `"x": true` under properties) is replaced with {"type":"string"} —
+//     Gemma-style templates subscript every property value
+//     (`value['type'] | upper`), which throws on a bool;
+//   - a map is guaranteed a string `type` after recursion (missing →
+//     inferredType; present-but-non-string → collapsed, see the schema arm),
+//     with NO looksLikeSchemaNode gate — that heuristic previously let valid
+//     marker-less schemas (`{}`, const-/default-/$ref-/format-only nodes)
+//     through to crash the template's `| upper`;
+//   - arrays keep positionality for their members (tuple-form `items`,
+//     `prefixItems`, union member lists).
+//
+// Non-positional maps (the tool schema roots) keep the marker-key heuristic:
+// we still never invent types on arbitrary caller maps.
+func injectTypes(node any, depth int, changed *bool, positional bool) any {
 	if depth >= maxToolSchemaDepth {
 		return node
 	}
 	switch n := node.(type) {
+	case bool:
+		if positional {
+			*changed = true
+			return map[string]any{"type": "string"}
+		}
+		return node
 	case []any:
 		for i, v := range n {
-			n[i] = injectDefaultTypes(v, depth+1, changed)
+			n[i] = injectTypes(v, depth+1, changed, positional)
 		}
 		return n
 	case map[string]any:
-		return injectDefaultTypesIntoSchema(n, depth, changed)
+		return injectDefaultTypesIntoSchema(n, depth, changed, positional)
 	default:
 		return node
 	}
 }
 
-// injectDefaultTypesIntoSchema is the map-shaped arm of injectDefaultTypes.
+// injectDefaultTypesIntoSchema is the map-shaped arm of injectTypes.
 // Children are normalized BEFORE this node's own type is repaired — ordering
 // is load-bearing: a union member declaring `"type": ["string","null"]` must
 // collapse first so the parent's union inference sees a concrete string.
 //
-// depth/changed are threaded exactly as in injectDefaultTypes: children recurse
-// at depth+1 (through injectDefaultTypes, which re-checks the depth ceiling), and
+// depth/changed are threaded exactly as in injectTypes: children recurse at
+// depth+1 (through injectTypes, which re-checks the depth ceiling), and
 // *changed is set true the moment any node here is actually repaired (a type
-// collapsed, a missing type inferred, or nullable set), so the caller can skip
-// the re-encode when nothing moved.
-func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool) map[string]any {
-	if props, ok := dict["properties"].(map[string]any); ok {
-		for k, v := range props {
-			props[k] = injectDefaultTypes(v, depth+1, changed)
+// collapsed, a missing type inferred, nullable set, or a boolean/typeless
+// positional child rewritten), so the caller can skip the re-encode when
+// nothing moved. positional is this NODE's own slot kind (see injectTypes);
+// values under the schema-container keys below are always positional.
+func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool, positional bool) map[string]any {
+	for _, key := range []string{"properties", "patternProperties"} {
+		if props, ok := dict[key].(map[string]any); ok {
+			for k, v := range props {
+				props[k] = injectTypes(v, depth+1, changed, true)
+			}
 		}
 	}
 	if items, ok := dict["items"]; ok {
-		dict["items"] = injectDefaultTypes(items, depth+1, changed)
+		dict["items"] = injectTypes(items, depth+1, changed, true)
+	}
+	if prefix, ok := dict["prefixItems"].([]any); ok {
+		for i, v := range prefix {
+			prefix[i] = injectTypes(v, depth+1, changed, true)
+		}
 	}
 	// additionalProperties may itself be a schema (map-shaped params, e.g.
 	// {"additionalProperties":{"type":"string"}}) — recurse so its inner schema
-	// gets a default type too. A bare `true`/`false` is left untouched. Routed
-	// through injectDefaultTypes (not the schema arm directly) so the depth
-	// ceiling bounds an additionalProperties chain too; for an in-budget map the
-	// result is identical to processing it as a schema node.
+	// gets a default type too. A bare `true`/`false` is left untouched here (it
+	// is the standard allow/deny-all switch, is never subscripted by the
+	// templates, and rewriting it would change validation semantics for no
+	// render gain) — only the MAP-valued form is schema-positional. Routed
+	// through injectTypes so the depth ceiling bounds an additionalProperties
+	// chain too.
 	if addl, ok := dict["additionalProperties"].(map[string]any); ok {
-		dict["additionalProperties"] = injectDefaultTypes(addl, depth+1, changed)
+		dict["additionalProperties"] = injectTypes(addl, depth+1, changed, true)
 	}
 	for _, key := range schemaUnionKeys {
 		if variants, ok := dict[key].([]any); ok {
 			for i, v := range variants {
-				variants[i] = injectDefaultTypes(v, depth+1, changed)
+				variants[i] = injectTypes(v, depth+1, changed, true)
 			}
 		}
 	}
@@ -265,9 +308,31 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool)
 		}
 	}
 
-	if _, present := dict["type"]; !present && looksLikeSchemaNode(dict) {
+	// A positional node IS a schema by definition, so a missing type is always
+	// filled; a non-positional map (a tool schema root) still needs marker-key
+	// evidence before we invent one.
+	if _, present := dict["type"]; !present && (positional || looksLikeSchemaNode(dict)) {
 		dict["type"] = inferredType(dict)
 		*changed = true
+	}
+
+	// An OBJECT-typed schema node must carry a mapping `properties`. The served
+	// Gemma template's OBJECT branch otherwise falls into its
+	// `{%- elif value is mapping -%}` fallback (filter_keys=true), which
+	// iterates the node's OWN keys — `patternProperties`, `$defs`, any junk —
+	// as if each were a property schema; those containers carry no `type`, so
+	// `value['type'] | upper` throws the exact render error this normalizer
+	// exists to prevent. Mirrors the Swift twin (ToolSchemaNormalization) and
+	// gemma4 enforcement invariant 4: a missing OR non-mapping `properties` on
+	// an object-typed node becomes an empty map. Render-neutral for templates
+	// that guard on `properties` truthiness (an empty dict is falsy in Jinja),
+	// and runs AFTER type resolution so inferred-object nodes (e.g. a typeless
+	// patternProperties-only schema) are covered too.
+	if t, _ := dict["type"].(string); strings.EqualFold(t, "object") {
+		if _, isMap := dict["properties"].(map[string]any); !isMap {
+			dict["properties"] = map[string]any{}
+			*changed = true
+		}
 	}
 	return dict
 }
@@ -306,11 +371,13 @@ func collapsedType(members []string, dict map[string]any) string {
 }
 
 // looksLikeSchemaNode reports whether the map carries any JSON-Schema marker
-// key. Only such nodes receive a defaulted `type`.
+// key. Only NON-positional nodes (the tool schema roots) need this evidence
+// to receive a defaulted `type` — schema-positional values are schemas by
+// definition (see injectTypes).
 func looksLikeSchemaNode(dict map[string]any) bool {
 	for _, key := range []string{
-		"properties", "items", "additionalProperties",
-		"enum", "description", "anyOf", "oneOf", "allOf",
+		"properties", "patternProperties", "items", "prefixItems",
+		"additionalProperties", "enum", "description", "anyOf", "oneOf", "allOf",
 	} {
 		if _, ok := dict[key]; ok {
 			return true
@@ -320,17 +387,20 @@ func looksLikeSchemaNode(dict map[string]any) bool {
 }
 
 // inferredType is the structural default for a schema node's `type`: object
-// when it has properties (or additionalProperties), array when it has items,
-// a union member's type when it is an anyOf/oneOf/allOf (skipping "null" —
-// mislabelling a union as a string would be wrong), otherwise string.
+// when it has properties / patternProperties / additionalProperties, array
+// when it has items / prefixItems, a union member's type when it is an
+// anyOf/oneOf/allOf (skipping "null" — mislabelling a union as a string would
+// be wrong), otherwise string.
 func inferredType(dict map[string]any) string {
-	_, hasProps := dict["properties"]
-	_, hasAddl := dict["additionalProperties"]
-	if hasProps || hasAddl {
-		return "object"
+	for _, key := range []string{"properties", "patternProperties", "additionalProperties"} {
+		if _, ok := dict[key]; ok {
+			return "object"
+		}
 	}
-	if _, ok := dict["items"]; ok {
-		return "array"
+	for _, key := range []string{"items", "prefixItems"} {
+		if _, ok := dict[key]; ok {
+			return "array"
+		}
 	}
 	if t, ok := unionMemberType(dict); ok {
 		return t

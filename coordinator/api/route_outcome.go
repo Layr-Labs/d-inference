@@ -23,7 +23,14 @@ const (
 	errorReasonCancelled          = "cancelled"
 	errorReasonProviderError      = "provider_error"
 	errorReasonClientError        = "client_error"
-	errorReasonUnknown            = "unknown"
+	// errorReasonToolNoncompliance (E5): the provider's typed 422 for a model
+	// that failed a forced tool_choice contract (did not emit the required
+	// call / emitted one outside the allowed set / exceeded the deferred
+	// content limit). Output-dependent — a re-sample can comply — so 422 stays
+	// on the normal bounded-failover path, NEVER in the terminal client-error
+	// stop set (see isTerminalClientErrorCode).
+	errorReasonToolNoncompliance = "tool_noncompliance"
+	errorReasonUnknown           = "unknown"
 )
 
 // errorClassClientError is the route-outcome error_class for a DETERMINISTIC
@@ -31,6 +38,49 @@ const (
 // format / unsupported media). The request is malformed by shape — identical on
 // every provider — so it is NOT a provider fault and NOT an admission mismatch.
 const errorClassClientError = "client_error"
+
+// isJinjaTemplateErrorReason reports whether a provider-supplied error_reason
+// identifies a DETERMINISTIC chat-template render failure (the DAR-329/341
+// provider vocabulary). The template renders the request's tool schemas and
+// message history the same way on every provider, so these are request-shape /
+// model-capability faults: the dispatch ladder stops on the first occurrence
+// (E4, see dispatch.go), the provider takes no reputation hit
+// (handleInferenceError), and route rows record class client_error — while the
+// jinja_* reason itself is PRESERVED on the row, so the
+// inference.error{reason:jinja_template} series keeps measuring real render
+// failures rather than being silenced by reclassification.
+func isJinjaTemplateErrorReason(reason string) bool {
+	switch normalizeInferenceErrorReason(reason) {
+	case errorReasonJinjaChannelTags, errorReasonJinjaNullBridge, errorReasonJinjaTemplate:
+		return true
+	default:
+		return false
+	}
+}
+
+// isNonProviderFaultErrorReason reports whether a provider-supplied
+// error_reason identifies a failure that is NOT the provider's fault:
+//
+//   - jinja_* template-render failures (isJinjaTemplateErrorReason, E4): the
+//     REQUEST's tool schemas or message history cannot be rendered by the
+//     model's chat template — deterministic for the request and identical on
+//     every provider;
+//   - tool_noncompliance (E5): the MODEL's sampled output broke a forced
+//     tool_choice contract (did not emit the required call / emitted one
+//     outside the allowed set / exceeded the deferred content limit) —
+//     output-dependent, a re-sample can comply.
+//
+// This is the single reason vocabulary shared by the reputation exemption
+// (handleInferenceError: no RecordJobFailure) and the dispatch-path breaker
+// exemption (dispatchState.noteProviderError: no inference-error /
+// node-health / stable-identity / capacity-cooldown feeds): a malformed tool
+// history or an unlucky sample must never quarantine a healthy provider.
+// Capacity and cancel exemptions are status/string-driven and stay with
+// their call sites — this helper is strictly the structured-REASON list.
+func isNonProviderFaultErrorReason(reason string) bool {
+	return isJinjaTemplateErrorReason(reason) ||
+		normalizeInferenceErrorReason(reason) == errorReasonToolNoncompliance
+}
 
 // Final-status values persisted on inference_routes (store.InferenceRouteOutcome
 // .FinalStatus). Centralized so status comparisons/constructions don't drift on a
@@ -54,6 +104,7 @@ var validInferenceErrorReasons = map[string]struct{}{
 	errorReasonCancelled:          {},
 	errorReasonProviderError:      {},
 	errorReasonClientError:        {},
+	errorReasonToolNoncompliance:  {},
 	errorReasonUnknown:            {},
 }
 
@@ -203,11 +254,17 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
-	if isTerminalClientErrorCode(msg.StatusCode) {
-		// Deterministic client-shape 4xx: the request body is malformed/unservable
-		// by shape (fails identically on every provider), not a provider fault.
-		// Record as client_error WITHOUT AdmittedButFailed so it never pollutes the
-		// admission-mismatch gauge.
+	if isTerminalClientErrorCode(msg.StatusCode) || isNonProviderFaultErrorReason(msg.ErrorReason) {
+		// Deterministic non-provider fault: a 4xx status the provider maps for
+		// malformed bodies, OR a structured non-provider-fault reason — jinja_*
+		// template-render failures (arrive as provider 500s but are
+		// request-shape faults, identical fleet-wide) and tool_noncompliance
+		// (model-output-dependent 422s; the provider executed faithfully).
+		// Record as client_error WITHOUT AdmittedButFailed so neither pollutes
+		// the provider-fault or admission-mismatch telemetry, keyed on the SAME
+		// vocabulary as the reputation and breaker exemptions
+		// (isNonProviderFaultErrorReason) so the lists cannot drift.
+		// msg.ErrorReason is threaded through so rows keep their reason.
 		return pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
 	}
 	class := "provider_error"

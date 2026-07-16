@@ -48,32 +48,59 @@ enum ToolSchemaNormalization {
         return out
     }
 
-    /// Recursively default-fill `type` on JSON-Schema nodes. A node gets a type
-    /// only when it looks like a schema node (has properties / items / enum /
-    /// description / anyOf / oneOf / allOf) — we never invent types on arbitrary
-    /// maps. The inferred default favours structure: object when it has
+    /// Recursively default-fill `type` on JSON-Schema nodes, starting from a
+    /// tool's schema home (a NON-positional root: a bare `{}` parameters object
+    /// stays `{}`, and a type is only invented when the map carries a schema
+    /// marker key). The inferred default favours structure: object when it has
     /// properties, array when it has items, otherwise string.
+    ///
+    /// Semantically mirrors the coordinator's Go `injectDefaultTypes`
+    /// (`coordinator/api/toolschema.go`) including its POSITIONAL rule: any
+    /// value in a schema-positional slot — under `properties` /
+    /// `patternProperties`, `items` (including tuple-form members),
+    /// `prefixItems`, a map-valued `additionalProperties`, or a member of
+    /// `anyOf`/`oneOf`/`allOf` — IS a schema by definition, so it needs no
+    /// marker-key evidence: booleans (the valid allow/deny-all shorthand)
+    /// become `{"type":"string"}` and maps are guaranteed a string `type`.
     static func injectDefaultTypes(_ node: Any) -> Any {
+        injectTypes(node, positional: false)
+    }
+
+    /// Traversal core behind ``injectDefaultTypes(_:)``; `positional` reports
+    /// whether `node` sits in a schema-positional slot (see the mirror note
+    /// above). Arrays keep positionality for their members (tuple-form
+    /// `items`, `prefixItems`, union member lists).
+    private static func injectTypes(_ node: Any, positional: Bool) -> Any {
+        if positional, isJSONBoolean(node) {
+            return ["type": "string"] as [String: Any]
+        }
         if let arr = node as? [Any] {
-            return arr.map(injectDefaultTypes)
+            return arr.map { injectTypes($0, positional: positional) }
         }
         guard var dict = node as? [String: Any] else { return node }
 
-        if let props = dict["properties"] as? [String: Any] {
-            dict["properties"] = props.mapValues(injectDefaultTypes)
+        for key in ["properties", "patternProperties"] {
+            if let props = dict[key] as? [String: Any] {
+                dict[key] = props.mapValues { injectTypes($0, positional: true) }
+            }
         }
         if let items = dict["items"] {
-            dict["items"] = injectDefaultTypes(items)
+            dict["items"] = injectTypes(items, positional: true)
+        }
+        if let prefix = dict["prefixItems"] as? [Any] {
+            dict["prefixItems"] = prefix.map { injectTypes($0, positional: true) }
         }
         // additionalProperties may itself be a schema (map-shaped params, e.g.
         // {"additionalProperties":{"type":"string"}}) — recurse so its inner schema
-        // gets a default type too. A bare `true`/`false` is left untouched.
+        // gets a default type too. A bare `true`/`false` is left untouched (the
+        // standard allow/deny-all switch; templates never subscript it) — only
+        // the MAP-valued form is schema-positional.
         if let addl = dict["additionalProperties"], addl is [String: Any] {
-            dict["additionalProperties"] = injectDefaultTypes(addl)
+            dict["additionalProperties"] = injectTypes(addl, positional: true)
         }
         for key in ["anyOf", "oneOf", "allOf"] {
             if let variants = dict[key] as? [Any] {
-                dict[key] = variants.map(injectDefaultTypes)
+                dict[key] = variants.map { injectTypes($0, positional: true) }
             }
         }
 
@@ -82,10 +109,12 @@ enum ToolSchemaNormalization {
         // for nullable fields — `"type": ["string","null"]` — which Pydantic
         // emits for every Optional[...] tool parameter. Collapse it to a single
         // representative string (never delete the key: a node whose only content
-        // is its type would not be refilled below and would crash anyway).
-        // Nullability is preserved losslessly: the gemma template natively
-        // renders the standard `nullable` key, so collapsing away a "null"
-        // member sets it (without clobbering an explicit value).
+        // is its type would not be refilled below and would crash anyway). A
+        // scalar non-string `type` (e.g. `"type": 123`) collapses the same way,
+        // to the structural inference. Nullability is preserved losslessly: the
+        // gemma template natively renders the standard `nullable` key, so
+        // collapsing away a "null" member sets it (without clobbering an
+        // explicit value).
         if let t = dict["type"], !(t is String) {
             let members = (t as? [Any])?.compactMap { $0 as? String } ?? []
             if members.contains("null"), members.contains(where: { $0 != "null" }),
@@ -95,15 +124,49 @@ enum ToolSchemaNormalization {
             dict["type"] = collapsedType(members: members, in: dict)
         }
 
-        let looksLikeSchemaNode =
-            dict["properties"] != nil || dict["items"] != nil ||
-            dict["additionalProperties"] != nil ||
-            dict["enum"] != nil || dict["description"] != nil ||
-            dict["anyOf"] != nil || dict["oneOf"] != nil || dict["allOf"] != nil
-        if dict["type"] == nil, looksLikeSchemaNode {
+        // A positional node IS a schema by definition, so a missing type is
+        // always filled; a non-positional map (a tool schema root) still needs
+        // marker-key evidence before we invent one.
+        if dict["type"] == nil, positional || looksLikeSchemaNode(dict) {
             dict["type"] = inferredType(for: dict)
         }
+
+        // An OBJECT-typed schema node must carry a mapping `properties` —
+        // otherwise the served Gemma template's OBJECT branch falls back to
+        // iterating the node's OWN keys (`filter_keys=true`) as property
+        // schemas; containers like `patternProperties` carry no `type`, so
+        // `value['type'] | upper` throws. Mirrors coordinator toolschema.go
+        // and gemma4 enforcement invariant 4; runs AFTER type resolution so
+        // inferred-object nodes are covered, and is render-neutral elsewhere
+        // (an empty dict is falsy in Jinja truthiness guards).
+        if let t = dict["type"] as? String, t.uppercased() == "OBJECT",
+            !(dict["properties"] is [String: Any]) {
+            dict["properties"] = [String: Any]()
+        }
         return dict
+    }
+
+    /// Marker-key evidence gate for NON-positional nodes (the tool schema
+    /// roots): only maps carrying a JSON-Schema marker key receive a defaulted
+    /// `type` there.
+    private static func looksLikeSchemaNode(_ dict: [String: Any]) -> Bool {
+        for key in [
+            "properties", "patternProperties", "items", "prefixItems",
+            "additionalProperties", "enum", "description", "anyOf", "oneOf", "allOf",
+        ] where dict[key] != nil {
+            return true
+        }
+        return false
+    }
+
+    /// True only for a REAL boolean. JSONSerialization delivers JSON booleans
+    /// as `NSNumber` (CFBoolean), and `as? Bool` alone would also match numeric
+    /// 0/1 NSNumbers — a schema value of `0`/`1` must NOT be mistaken for a
+    /// boolean schema, so the underlying CF type is checked.
+    private static func isJSONBoolean(_ node: Any) -> Bool {
+        if type(of: node) == Bool.self { return true }
+        guard let number = node as? NSNumber else { return false }
+        return CFGetTypeID(number) == CFBooleanGetTypeID()
     }
 
     /// Collapse a non-string `type` value (pre-extracted string members of the
@@ -121,14 +184,16 @@ enum ToolSchemaNormalization {
     }
 
     /// Structural default for a schema node's `type`: object when it has
-    /// properties, array when it has items, a union member's type when it is an
+    /// properties / patternProperties / additionalProperties, array when it has
+    /// items / prefixItems, a union member's type when it is an
     /// anyOf/oneOf/allOf (skipping "null" — mislabelling a union as a string
     /// would be wrong), otherwise string.
     private static func inferredType(for dict: [String: Any]) -> String {
-        if dict["properties"] != nil || dict["additionalProperties"] != nil {
+        if dict["properties"] != nil || dict["patternProperties"] != nil
+            || dict["additionalProperties"] != nil {
             return "object"
         }
-        if dict["items"] != nil {
+        if dict["items"] != nil || dict["prefixItems"] != nil {
             return "array"
         }
         if let unionType = unionMemberType(dict) {

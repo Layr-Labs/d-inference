@@ -2,7 +2,7 @@ import Crypto
 import Foundation
 
 public enum PromptContractIdentity {
-    public static let normalizationVersion = "darkbloom-request-normalization-v1"
+    public static let normalizationVersion = "darkbloom-request-normalization-v2"
     public static let rendererVersion = "swift-jinja-compatible-v1"
     public static let tokenizerVersion = "huggingface-tokenizer-json-v1"
     public static let blockHashVersion = "darkbloom-block-chain-v1"

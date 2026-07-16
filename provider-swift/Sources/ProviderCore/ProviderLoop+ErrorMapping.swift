@@ -60,6 +60,13 @@ extension ProviderLoop {
                 return 400
             case .invalidToolPayload:
                 return 400
+            case .toolChoiceViolation:
+                // The MODEL failed the forced tool_choice contract — output-
+                // dependent, so a re-sample / another provider can comply.
+                // 422 keeps it on the coordinator's normal bounded-failover
+                // path (never the terminal client-error stop set) and out of
+                // the 5xx provider-fault classes (E5).
+                return 422
             case .queueFull:
                 return 429
             case .tokenBudgetExhausted:

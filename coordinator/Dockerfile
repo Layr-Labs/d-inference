@@ -3,7 +3,18 @@ WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /app/coordinator-bin ./coordinator/cmd/coordinator
+
+# Build metadata stamped into the binary so /health is traceable to a commit.
+# Cloud Build passes GIT_COMMIT/GIT_VERSION=$SHORT_SHA (deploy/gcp/cloudbuild.yaml);
+# they default to dev/unknown for plain `docker build` so local images still work.
+ARG GIT_COMMIT=unknown
+ARG GIT_VERSION=dev
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a \
+    -ldflags="-X github.com/eigeninference/d-inference/coordinator/api.BuildVersion=${GIT_VERSION} \
+              -X github.com/eigeninference/d-inference/coordinator/api.BuildCommit=${GIT_COMMIT} \
+              -X github.com/eigeninference/d-inference/coordinator/api.BuildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+              -X github.com/eigeninference/d-inference/coordinator/telemetry.CoordinatorVersion=${GIT_VERSION}" \
+    -o /app/coordinator-bin ./coordinator/cmd/coordinator
 
 # Pre-built base with MicroMDM v1.13.1 (also carries step-ca/step CLI, unused
 # since the dormant ACME device-attest leg was removed).

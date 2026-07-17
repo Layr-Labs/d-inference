@@ -119,6 +119,18 @@ func TestLowerProviderBodyMatchesRustEdgeSemantics(t *testing.T) {
 			wantErr:  ErrEndpointBodyInvalid,
 		},
 		{
+			name:     "messages stop sequences become provider stop",
+			endpoint: EndpointMessages,
+			body:     `{"model":"test","messages":[],"stop_sequences":["DONE","END"]}`,
+			want:     `{"messages":[],"model":"test","stop":["DONE","END"]}`,
+		},
+		{
+			name:     "messages non-string stop sequence is invalid",
+			endpoint: EndpointMessages,
+			body:     `{"messages":[],"stop_sequences":["DONE",1]}`,
+			wantErr:  ErrEndpointBodyInvalid,
+		},
+		{
 			name:     "serialized response content does not HTML escape",
 			endpoint: EndpointResponses,
 			body:     `{"input":[{"role":"user","content":{"value":"<tag>&"}}]}`,

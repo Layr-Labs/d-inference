@@ -79,15 +79,13 @@ public actor CoordinatorClient {
     /// reconnect. Injectable so unit tests drive rotation deterministically.
     internal let liveAPNsToken: @Sendable () -> String?
 
-    /// Live per-model weight hashes pushed by the provider loop when a model
-    /// (re)load discovers the on-disk weights changed (model re-published while
-    /// the daemon runs). Once set, every (re)registration patches
-    /// models[].weight_hash so the coordinator's per-model catalog filter sees
-    /// current values instead of the daemon-start snapshot. Unlike
-    /// refreshAPNsToken this does NOT force a reconnect — challenge responses
-    /// already carry the fresh hashes live; this only keeps future
-    /// registrations consistent.
-    internal var modelWeightHashOverrides: [String: String] = [:]
+    /// Authoritative live per-model weight hashes pushed by the provider loop.
+    /// Nil means the loop has not supplied a snapshot, so registration uses the
+    /// daemon-start values. Once supplied, an omitted model hash deliberately
+    /// clears the startup value rather than re-advertising stale attestation
+    /// state. This does not force a reconnect; challenge responses already use
+    /// the live map, and this keeps future registrations consistent.
+    internal var modelWeightHashOverrides: [String: String]?
 
     private let shutdownFlag = ShutdownFlag()
 
@@ -268,9 +266,8 @@ public actor CoordinatorClient {
         closeCurrentConnection()
     }
 
-    /// Record refreshed per-model weight hashes for use in future
-    /// (re)registrations. Called by the provider loop after a model (re)load
-    /// recomputes the on-disk weight hash. See `modelWeightHashOverrides`.
+    /// Replace the authoritative per-model weight-hash snapshot used by future
+    /// (re)registrations. Omitted entries clear daemon-start hashes.
     public func updateModelWeightHashes(_ hashes: [String: String]) {
         modelWeightHashOverrides = hashes
     }

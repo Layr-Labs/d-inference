@@ -144,8 +144,8 @@ struct WeightHashCacheEligibilityTests {
         #expect(await loop.liveModelHashForTesting(modelID) == "stale-observable-hash")
     }
 
-    @Test("unavailable real post-load hash aborts without publishing")
-    func unavailablePostHashAbortsLoad() async throws {
+    @Test("unavailable real post-load hash serves cold without publishing")
+    func unavailablePostHashServesCold() async throws {
         let modelID = "test/cache-hash-model"
         let path = try makeSnapshot("missing")
         defer { try? FileManager.default.removeItem(at: path) }
@@ -162,14 +162,54 @@ struct WeightHashCacheEligibilityTests {
         #expect(post.hash == nil)
         let newcomer = makeNewcomer()
 
-        await #expect(throws: InferenceError.self) {
-            _ = try await loop.finalizeReusableSSDLoadForTesting(
-                modelId: modelID,
-                preLoad: pre,
-                postLoad: post,
-                newcomer: newcomer)
-        }
-        #expect(newcomer.container == nil)
-        #expect(await loop.liveModelHashForTesting(modelID) == "stale-observable-hash")
+        let accepted = try await loop.finalizeReusableSSDLoadForTesting(
+            modelId: modelID,
+            preLoad: pre,
+            postLoad: post,
+            newcomer: newcomer)
+
+        #expect(accepted == nil)
+        #expect(newcomer.container != nil)
+        #expect(await loop.liveModelHashForTesting(modelID) == nil)
+        #expect(await loop.modelHashForTesting(modelID) == nil)
+        #expect(await loop.isModelAdvertised(modelID))
+        #expect(await loop.advertisedModelWeightHashForTesting(modelID) == nil)
+        #expect(await loop.loadedModelHashesSnapshotForTesting()[modelID] == nil)
+
+        await loop.installModelSlotForTesting(
+            modelId: modelID,
+            container: try #require(newcomer.container),
+            tokenizer: TokenizerHandle(StubBridgeTokenizer()),
+            engineV2: makeInertStubBridge(modelId: modelID).bridge)
+        #expect(await loop.loadedModelHashesSnapshotForTesting()[modelID] == "")
+    }
+
+    @Test("unavailable real pre-load hash serves cold without publishing")
+    func unavailablePreHashServesCold() async throws {
+        let modelID = "test/cache-hash-model"
+        let path = try makeSnapshot("missing-pre")
+        defer { try? FileManager.default.removeItem(at: path) }
+        let loop = try makeLoop()
+        let pre = ProviderLoop.WeightHashSnapshot(
+            fingerprint: nil, hash: nil, recomputed: true)
+        let post = try await loop.captureWeightHashForTesting(
+            modelId: modelID,
+            modelPath: path,
+            requireFreshCryptographicHash: true)
+        #expect(post.hash != nil)
+        let newcomer = makeNewcomer()
+
+        let accepted = try await loop.finalizeReusableSSDLoadForTesting(
+            modelId: modelID,
+            preLoad: pre,
+            postLoad: post,
+            newcomer: newcomer)
+
+        #expect(accepted == nil)
+        #expect(newcomer.container != nil)
+        #expect(await loop.liveModelHashForTesting(modelID) == nil)
+        #expect(await loop.modelHashForTesting(modelID) == nil)
+        #expect(await loop.isModelAdvertised(modelID))
+        #expect(await loop.advertisedModelWeightHashForTesting(modelID) == nil)
     }
 }

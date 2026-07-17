@@ -80,7 +80,7 @@ import Testing
     #expect(withTok["apns_environment"] as? String == "production")
 }
 
-@Test func registrationHonorsModelWeightHashOverrides() throws {
+@Test func registrationHonorsAuthoritativeModelWeightHashSnapshots() throws {
     // The daemon-start weight hash goes stale when a model is re-published and
     // re-downloaded while the daemon runs. After the loop refreshes the hash at
     // model (re)load, reconnect registrations must carry the FRESH hash in
@@ -96,7 +96,7 @@ import Testing
         publicKey: "cHVibGlj"
     )
 
-    func registeredModels(_ overrides: [String: String]) throws -> [[String: Any]] {
+    func registeredModels(_ overrides: [String: String]?) throws -> [[String: Any]] {
         let data = try CoordinatorClientCodec.encodeRegistration(
             from: config,
             modelWeightHashOverrides: overrides
@@ -105,20 +105,20 @@ import Testing
         return object["models"] as? [[String: Any]] ?? []
     }
 
-    // No overrides → the config (daemon-start) hash goes out unchanged.
-    let base = try registeredModels([:])
+    // No live snapshot yet → the config (daemon-start) hash goes out unchanged.
+    let base = try registeredModels(nil)
     #expect(base.count == 1)
     #expect(base[0]["weight_hash"] as? String == "stale-hash-from-daemon-start")
 
-    // Override for this model → registration carries the refreshed hash.
+    // A live entry replaces the daemon-start hash.
     let refreshed = try registeredModels([staleModel.id: "fresh-hash-after-reload"])
     #expect(refreshed.count == 1)
     #expect(refreshed[0]["weight_hash"] as? String == "fresh-hash-after-reload")
 
-    // Override for a DIFFERENT model → this model's hash is untouched.
-    let unrelated = try registeredModels(["some-other-model": "other-hash"])
-    #expect(unrelated.count == 1)
-    #expect(unrelated[0]["weight_hash"] as? String == "stale-hash-from-daemon-start")
+    // An authoritative snapshot that omits the model clears its stale hash.
+    let unavailable = try registeredModels([:])
+    #expect(unavailable.count == 1)
+    #expect(unavailable[0]["weight_hash"] == nil)
 }
 
 @Test func coordinatorOutboundMessagesUseProviderEnvelope() throws {

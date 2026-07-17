@@ -50,7 +50,14 @@ func lowerMessages(input map[string]any) (map[string]any, error) {
 	output := cloneObject(input)
 	delete(output, "system")
 	delete(output, "endpoint")
+	delete(output, "stop_sequences")
 	output["messages"] = messages
+	rawStops, hasStops := input["stop_sequences"]
+	if stops, present, err := lowerAnthropicStopSequences(rawStops, hasStops); err != nil {
+		return nil, err
+	} else if present {
+		output["stop"] = stops
+	}
 	rawTools, hasTools := input["tools"]
 	if tools, present, err := lowerAnthropicTools(rawTools, hasTools); err != nil {
 		return nil, err
@@ -64,6 +71,22 @@ func lowerMessages(input map[string]any) (map[string]any, error) {
 		output["tool_choice"] = choice
 	}
 	return output, nil
+}
+
+func lowerAnthropicStopSequences(raw any, exists bool) ([]any, bool, error) {
+	if !exists {
+		return nil, false, nil
+	}
+	stops, ok := raw.([]any)
+	if !ok {
+		return nil, false, ErrEndpointBodyInvalid
+	}
+	for _, stop := range stops {
+		if _, ok := stop.(string); !ok {
+			return nil, false, ErrEndpointBodyInvalid
+		}
+	}
+	return stops, true, nil
 }
 
 func lowerAnthropicAssistant(parts []any) (any, error) {

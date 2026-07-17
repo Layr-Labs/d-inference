@@ -110,39 +110,74 @@ extension ProviderLoop {
         }
     }
 
-    static func cryptographicallyBracketedCacheHash(
+    /// Remove an unverifiable hash from every live attestation/registration
+    /// view. Cold serving remains available, but neither cache identity nor a
+    /// future reconnect may reuse the daemon-start hash.
+    func markWeightHashUnavailable(modelId: String) async {
+        let previous = liveModelHashes.removeValue(forKey: modelId)
+        modelHashes.removeValue(forKey: modelId)
+        modelHashFingerprints.removeValue(forKey: modelId)
+        if var model = advertisedModels[modelId] {
+            model.weightHash = nil
+            advertisedModels[modelId] = model
+        }
+        if let previous {
+            logger.warning(
+                "Weight hash unavailable for \(modelId) — removed stale value \(previous.prefix(16))... and disabled reusable SSD cache")
+        } else {
+            logger.warning(
+                "Weight hash unavailable for \(modelId) — reusable SSD cache disabled")
+        }
+        if let client = coordinatorClient {
+            await client.updateModelWeightHashes(liveModelHashes)
+        }
+    }
+
+    enum ReusableSSDWeightHashDecision: Equatable {
+        case eligible(String)
+        case unavailable
+        case changed
+    }
+
+    static func reusableSSDWeightHashDecision(
         preLoadHash: String?, postLoadHash: String?
-    ) -> String? {
+    ) -> ReusableSSDWeightHashDecision {
         guard let preLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(preLoadHash),
-            let postLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(postLoadHash),
-            preLoadHash == postLoadHash
-        else { return nil }
-        return preLoadHash
+            let postLoadHash = SSDPrefixCacheFactory.verifiedWeightHash(postLoadHash)
+        else { return .unavailable }
+        return preLoadHash == postLoadHash
+            ? .eligible(preLoadHash)
+            : .changed
     }
 
     /// Complete a reusable SSD load as one fail-closed lifecycle transition.
-    /// A missing or changed post-load hash makes the loaded bytes ambiguous:
-    /// release the container immediately, clear MLX residency, leave the last
-    /// published hash untouched, and fail the load before engine/slot install.
+    /// A missing observation disables SSD reuse for this load while preserving
+    /// ordinary cold serving. Two available but different hashes prove artifact
+    /// mutation during the load and abort before engine/slot installation.
     func finalizeReusableSSDLoad(
         modelId: String,
         preLoad: WeightHashSnapshot,
         postLoad: WeightHashSnapshot,
         newcomer: EngineV2NewcomerBox
-    ) async throws -> String {
-        guard let cacheHash = Self.cryptographicallyBracketedCacheHash(
+    ) async throws -> String? {
+        switch Self.reusableSSDWeightHashDecision(
             preLoadHash: preLoad.hash,
-            postLoadHash: postLoad.hash)
-        else {
+            postLoadHash: postLoad.hash
+        ) {
+        case .eligible(let cacheHash):
+            await publishWeightHash(modelId: modelId, snapshot: postLoad)
+            return cacheHash
+        case .unavailable:
+            await markWeightHashUnavailable(modelId: modelId)
+            return nil
+        case .changed:
             newcomer.release()
             MLX.Memory.clearCache()
             let message =
-                "Model '\(modelId)' changed or could not be cryptographically verified while loading reusable SSD cache state — unloaded"
+                "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
             recordModelLoadError(model: modelId, message: message)
             throw InferenceError.modelLoadFailed(message)
         }
-        await publishWeightHash(modelId: modelId, snapshot: postLoad)
-        return cacheHash
     }
 
     /// Load `modelId` if it is not already resident.
@@ -353,8 +388,9 @@ extension ProviderLoop {
             // TOCTOU guard: reusable SSD cache participation requires two fresh
             // cryptographic reads bracketing the container load. Unlike the old
             // refresh path, neither observation is published until equality is
-            // established; mismatch/unavailability releases the container and
-            // fails before engine construction or slot installation.
+            // established. A missing observation serves cold; an actual mismatch
+            // proves artifact mutation and fails before engine construction or
+            // slot installation.
             let cacheEligibleWeightHash: String?
             if reusableSSDRequested {
                 let postLoadHash = try await captureWeightHash(
@@ -731,18 +767,14 @@ extension ProviderLoop {
         logger.info("Unloaded model: \(modelId) (\(modelSlots.count) model(s) remaining)")
     }
 
-    /// Weight hashes for ONLY the models currently loaded in memory this session.
-    /// A model is "currently loaded" iff it has a live slot (and isn't tearing
-    /// down) AND we have a known live hash for it. Used by the attestation
-    /// challenge response so the coordinator's model-swap hard-untrust check only
-    /// ever sees hashes for weights we are actually serving — idle/unloaded
-    /// advertised models drop out because they have no slot.
+    /// Weight-hash observations for only the models currently loaded in memory.
+    /// An unavailable hash is represented by an explicit empty value so the
+    /// coordinator clears any registration-time hash instead of retaining stale
+    /// state. Idle/unloaded advertised models remain absent.
     internal func loadedModelHashesSnapshot() -> [String: String] {
         var result: [String: String] = [:]
         for modelId in modelSlots.keys where !modelsUnloading.contains(modelId) {
-            if let hash = liveModelHashes[modelId] {
-                result[modelId] = hash
-            }
+            result[modelId] = liveModelHashes[modelId] ?? ""
         }
         return result
     }

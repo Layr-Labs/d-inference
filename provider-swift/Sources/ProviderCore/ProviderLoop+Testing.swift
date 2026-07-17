@@ -22,6 +22,14 @@ extension ProviderLoop {
     /// Test seam: whether a model id is currently advertised.
     func isModelAdvertised(_ id: String) -> Bool { advertisedModels[id] != nil }
 
+    func advertisedModelWeightHashForTesting(_ id: String) -> String? {
+        advertisedModels[id]?.weightHash
+    }
+
+    func loadedModelHashesSnapshotForTesting() -> [String: String] {
+        loadedModelHashesSnapshot()
+    }
+
     /// Test seam: recorded weight hash for a model (nil when unknown).
     func modelHashForTesting(_ id: String) -> String? { modelHashes[id] }
 
@@ -43,7 +51,7 @@ extension ProviderLoop {
         preLoad: WeightHashSnapshot,
         postLoad: WeightHashSnapshot,
         newcomer: EngineV2NewcomerBox
-    ) async throws -> String {
+    ) async throws -> String? {
         try await finalizeReusableSSDLoad(
             modelId: modelId,
             preLoad: preLoad,

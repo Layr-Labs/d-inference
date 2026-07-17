@@ -2135,13 +2135,11 @@ func (r *Registry) IsModelInCatalog(model string) bool {
 	return ok
 }
 
-// UpdateModelWeightHashes refreshes the stored per-model weight hashes for a
-// provider from a verified attestation challenge response. Providers recompute
-// weight hashes when a model is (re)loaded from disk — e.g. after a model was
-// re-published and re-downloaded while the daemon kept running. Without this,
-// the registry would keep the registration-time snapshot and the per-model
-// catalog filter (modelAllowedByCatalogLocked) would silently stop routing the
-// model to this provider until its next reconnect.
+// UpdateModelWeightHashes replaces stored per-model weight hashes from a
+// verified attestation challenge response. A present empty value deliberately
+// clears a registration-time hash that the provider could not re-verify; an
+// omitted model remains unchanged because unloaded advertised models are absent
+// from the challenge snapshot.
 //
 // Concurrency: the p.Models slice header is replaced (copy-on-write, never
 // mutated in place) under p.mu — NOT under the registry-wide r.mu, which is held
@@ -2165,7 +2163,7 @@ func (r *Registry) UpdateModelWeightHashes(providerID string, hashes map[string]
 	models := make([]protocol.ModelInfo, len(p.Models))
 	copy(models, p.Models)
 	for i := range models {
-		if h, ok := hashes[models[i].ID]; ok && h != "" && models[i].WeightHash != h {
+		if h, ok := hashes[models[i].ID]; ok && models[i].WeightHash != h {
 			models[i].WeightHash = h
 			changed = true
 		}

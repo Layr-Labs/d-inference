@@ -10,7 +10,7 @@ public enum CoordinatorClientCodec {
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
-        modelWeightHashOverrides: [String: String] = [:],
+        modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
     ) -> ProviderMessage {
@@ -20,24 +20,20 @@ public enum CoordinatorClientCodec {
         let effectiveEnv = apnsDeviceTokenOverride != nil
             ? (config.apnsEnvironment ?? "production")
             : config.apnsEnvironment
-        // Weight hashes refreshed after a model (re)load override the
-        // daemon-start values so a reconnect registers with the hashes of the
-        // weights actually on disk (the coordinator's per-model catalog filter
-        // keys off models[].weight_hash).
-        // The advertised set may be overridden on a reconnect (prefetch re-advertise);
-        // weight-hash overrides are then patched on top of whichever set we send.
+        // Once the provider loop supplies a live hash snapshot, it is
+        // authoritative: missing entries clear daemon-start hashes that could
+        // no longer be verified. The advertised set may still be overridden on
+        // reconnect; the live snapshot is applied to whichever set we send.
         let baseModels = models ?? config.models
         let effectiveModels: [ModelInfo]
-        if modelWeightHashOverrides.isEmpty {
-            effectiveModels = baseModels
-        } else {
+        if let modelWeightHashOverrides {
             effectiveModels = baseModels.map { model in
                 var patched = model
-                if let fresh = modelWeightHashOverrides[model.id] {
-                    patched.weightHash = fresh
-                }
+                patched.weightHash = modelWeightHashOverrides[model.id]
                 return patched
             }
+        } else {
+            effectiveModels = baseModels
         }
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
@@ -67,7 +63,7 @@ public enum CoordinatorClientCodec {
         version: String = ProviderCore.version,
         privacyCapabilities: PrivacyCapabilities? = nil,
         apnsDeviceTokenOverride: String? = nil,
-        modelWeightHashOverrides: [String: String] = [:],
+        modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
         prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
     ) throws -> Data {

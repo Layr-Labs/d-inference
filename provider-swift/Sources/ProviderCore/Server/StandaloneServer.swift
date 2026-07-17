@@ -1273,16 +1273,22 @@ public actor StandaloneServer {
                 : nil
             let cacheEligibleWeightHash: String?
             if reusableSSDRequested {
-                guard let bracketed = ProviderLoop.cryptographicallyBracketedCacheHash(
+                switch ProviderLoop.reusableSSDWeightHashDecision(
                     preLoadHash: preLoadCacheHash,
-                    postLoadHash: postLoadCacheHash)
-                else {
+                    postLoadHash: postLoadCacheHash
+                ) {
+                case .eligible(let bracketed):
+                    cacheEligibleWeightHash = bracketed
+                case .unavailable:
+                    standaloneLogger.warning(
+                        "Reusable SSD cache disabled for \(modelId) on this load — cryptographic weight hash unavailable")
+                    cacheEligibleWeightHash = nil
+                case .changed:
                     newcomer.release()
                     MLX.Memory.clearCache()
                     throw StandaloneServerError.capacityUnavailable(
-                        "Model '\(modelId)' changed or could not be cryptographically verified while loading reusable SSD cache state — unloaded")
+                        "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded")
                 }
-                cacheEligibleWeightHash = bracketed
             } else {
                 cacheEligibleWeightHash = nil
             }

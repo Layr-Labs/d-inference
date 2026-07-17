@@ -301,7 +301,15 @@ fn lower_messages(input: &Map<String, Value>) -> Result<Map<String, Value>, Endp
     let mut out = input.clone();
     out.remove("system");
     out.remove("endpoint");
+    out.remove("stop_sequences");
     out.insert("messages".into(), Value::Array(messages));
+    if let Some(raw_stops) = input.get("stop_sequences") {
+        let stops = raw_stops.as_array().ok_or(EndpointError::Invalid)?;
+        if stops.iter().any(|stop| !stop.is_string()) {
+            return Err(EndpointError::Invalid);
+        }
+        out.insert("stop".into(), Value::Array(stops.clone()));
+    }
     if let Some(tools) = anthropic_tools(input.get("tools"))? {
         out.insert("tools".into(), Value::Array(tools));
     }
@@ -571,5 +579,23 @@ mod tests {
             lowered["tool_choice"],
             json!({"type":"function","function":{"name":"weather"}})
         );
+    }
+
+    #[test]
+    fn lowers_anthropic_stop_sequences_to_provider_stop() {
+        let body = json!({
+            "model": "m",
+            "messages": [],
+            "stop_sequences": ["DONE", "END"]
+        });
+        let lowered = lower(Endpoint::Messages, body).unwrap();
+        assert_eq!(lowered["stop"], json!(["DONE", "END"]));
+        assert!(lowered.get("stop_sequences").is_none());
+
+        let invalid = json!({"messages": [], "stop_sequences": ["DONE", 1]});
+        assert!(matches!(
+            lower(Endpoint::Messages, invalid),
+            Err(EndpointError::Invalid)
+        ));
     }
 }

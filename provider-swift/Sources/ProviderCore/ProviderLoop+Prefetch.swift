@@ -215,9 +215,11 @@ extension ProviderLoop {
         // cap (`configuredMaxModelSlots`).
         advertisedModels[modelId] = info
         modelHashes[modelId] = hash
+        liveModelHashes[modelId] = hash
         syncWarmModelState()
         logger.info("Prefetch verified \(modelId) (weight_hash=\(hash.prefix(16))); advertising (\(advertisedModels.count) model(s) total)")
         if let coordinatorClient {
+            await coordinatorClient.updateModelWeightHashes(liveModelHashes)
             await coordinatorClient.advertiseModel(info)
         }
         // Push the authoritative ModelInfo (incl. the just-computed weight hash)

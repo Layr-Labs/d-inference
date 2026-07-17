@@ -40,7 +40,7 @@ func TestUpdateModelWeightHashesRefreshesStoredHash(t *testing.T) {
 	}
 }
 
-func TestUpdateModelWeightHashesIgnoresUnknownModelAndEmptyHash(t *testing.T) {
+func TestUpdateModelWeightHashesIgnoresUnknownModelAndClearsUnavailableHash(t *testing.T) {
 	reg := New(testLogger())
 	registerWithWeightHash(reg, "p1", "gemma-test", "stale-hash")
 
@@ -51,10 +51,11 @@ func TestUpdateModelWeightHashesIgnoresUnknownModelAndEmptyHash(t *testing.T) {
 		t.Errorf("unknown model must not change stored models: %+v", p.Models)
 	}
 
-	// Empty hash: ignored, stored value kept.
+	// Explicit empty hash: the loaded model could not be re-verified, so clear
+	// the stale registration value while retaining ordinary cold eligibility.
 	reg.UpdateModelWeightHashes("p1", map[string]string{"gemma-test": ""})
-	if got := reg.GetProvider("p1").Models[0].WeightHash; got != "stale-hash" {
-		t.Errorf("empty hash must be ignored, got %q", got)
+	if got := reg.GetProvider("p1").Models[0].WeightHash; got != "" {
+		t.Errorf("unavailable hash must clear stale value, got %q", got)
 	}
 
 	// Unknown provider / empty map: must not panic.

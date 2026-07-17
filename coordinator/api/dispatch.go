@@ -662,6 +662,15 @@ func routingAttempt(provider *registry.Provider, pr *registry.PendingRequest, re
 
 func (d *dispatchState) currentOrCapturedRoutingAttempt(captured dispatchRoutingAttempt) dispatchRoutingAttempt {
 	if d.pr == nil {
+		// A cleared request ID is an intentional no-op sentinel: speculative
+		// sub-waits clear all three fields after recording each racer's terminal
+		// outcome themselves. Restoring captured here would attribute the
+		// surviving racer's later failure or timeout to the already-finalized
+		// primary. Ordinary single-attempt fallbacks retain requestID and still
+		// use captured below.
+		if d.requestID == "" {
+			return dispatchRoutingAttempt{}
+		}
 		return captured
 	}
 	return routingAttempt(d.provider, d.pr, d.routingOutcomeKey(), d.attempt)

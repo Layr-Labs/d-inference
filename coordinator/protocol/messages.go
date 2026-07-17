@@ -420,6 +420,7 @@ type InferenceCompleteMessage struct {
 	Type         string    `json:"type"`
 	RequestID    string    `json:"request_id"`
 	Usage        UsageInfo `json:"usage"`
+	StopSequence string    `json:"stop_sequence,omitempty"` // Exact caller-authored stop string matched by the engine
 	SESignature  string    `json:"se_signature,omitempty"`  // SE-signed response hash
 	ResponseHash string    `json:"response_hash,omitempty"` // SHA-256 of response data
 }

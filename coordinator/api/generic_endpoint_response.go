@@ -58,6 +58,8 @@ func buildMessagesResponse(
 	message extractedMessage,
 	usage protocol.UsageInfo,
 ) map[string]any {
+	stopReason, stopSequence := messagesStopOutcome(
+		message.FinishReason, usage, pr.RequestedMaxTokens, pr.MatchedStopSequence)
 	content := make([]any, 0, 1+len(message.ToolCalls))
 	if message.Content != "" {
 		content = append(content, map[string]any{
@@ -74,8 +76,8 @@ func buildMessagesResponse(
 		"role":          "assistant",
 		"model":         consumerModel(pr),
 		"content":       content,
-		"stop_reason":   messagesStopReason(message.FinishReason, usage, pr.RequestedMaxTokens),
-		"stop_sequence": nil,
+		"stop_reason":   stopReason,
+		"stop_sequence": stopSequence,
 		"usage": map[string]any{
 			"input_tokens":  usage.PromptTokens,
 			"output_tokens": usage.CompletionTokens,
@@ -110,17 +112,6 @@ func genericFinishReason(reason string, usage protocol.UsageInfo, maxTokens int)
 		return "stop"
 	}
 	return reason
-}
-
-func messagesStopReason(reason string, usage protocol.UsageInfo, maxTokens int) string {
-	switch genericFinishReason(reason, usage, maxTokens) {
-	case "length":
-		return "max_tokens"
-	case "tool_calls":
-		return "tool_use"
-	default:
-		return "end_turn"
-	}
 }
 
 func addResponseProof(response map[string]any, pr *registry.PendingRequest) {

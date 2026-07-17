@@ -288,10 +288,12 @@ func (e *messagesStreamEmitter) finish(usage protocol.UsageInfo) {
 		}
 		e.emit("content_block_stop", map[string]any{"index": contentIndex})
 	}
+	stopReason, stopSequence := messagesStopOutcome(
+		e.finishReason, usage, e.pr.RequestedMaxTokens, e.pr.MatchedStopSequence)
 	delta := map[string]any{
 		"delta": map[string]any{
-			"stop_reason":   messagesStopReason(e.finishReason, usage, e.pr.RequestedMaxTokens),
-			"stop_sequence": nil,
+			"stop_reason":   stopReason,
+			"stop_sequence": stopSequence,
 		},
 		"usage": map[string]any{"output_tokens": usage.CompletionTokens},
 	}

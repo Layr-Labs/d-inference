@@ -609,6 +609,7 @@ public actor EngineV2Bridge {
         runPump(
             id: id, events: events, continuation: continuation,
             holdsSharedReservation: sharedKVReserved,
+            stopSequences: cbv2Request.stopStrings,
             logprobsChannel: logprobsChannel,
             usageSignal: usageSignal,
             prefixCacheReceiptID: prefixCacheReceiptID,
@@ -747,6 +748,7 @@ public actor EngineV2Bridge {
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
+        stopSequences: [String] = [],
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
@@ -757,6 +759,7 @@ public actor EngineV2Bridge {
             await bridge.pump(
                 id: id, events: events, continuation: continuation,
                 holdsSharedReservation: holdsSharedReservation,
+                stopSequences: stopSequences,
                 logprobsChannel: logprobsChannel,
                 usageSignal: usageSignal,
                 prefixCacheReceiptID: prefixCacheReceiptID,
@@ -778,6 +781,7 @@ public actor EngineV2Bridge {
         events: AsyncStream<CBv2Event>,
         continuation: AsyncStream<GenerationEvent>.Continuation,
         holdsSharedReservation: Bool,
+        stopSequences: [String] = [],
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         prefixCacheReceiptID: CBv2RequestID? = nil,
@@ -791,6 +795,7 @@ public actor EngineV2Bridge {
         // the pathological duplicate-id corner.
         var sawFirstToken = false
         var sawTerminal = false
+        var generatedTokens: [Int] = []
         for await event in events {
             switch event {
             case .delta(let text, let tokens, let logprobs):
@@ -802,6 +807,14 @@ public actor EngineV2Bridge {
                     recordFirstToken(id: id)
                 }
                 recordProgress(id: id, newTokens: tokens.count)
+                if !stopSequences.isEmpty {
+                    // EngineLoopV2 suppresses stop-token text before the
+                    // stop-string holdback sees it. Exclude those raw tokens
+                    // from replay too, or an EOS token whose debug rendering
+                    // equals a caller sequence would become a false match.
+                    generatedTokens.append(
+                        contentsOf: tokens.filter { !stopTokenIds.contains($0) })
+                }
                 // Logprobs passthrough: convert to the OpenAI streaming
                 // entry shape and publish to the per-request channel BEFORE
                 // yielding the chunk, so by the time the SSE frame carrying
@@ -822,6 +835,12 @@ public actor EngineV2Bridge {
                 }
             case .finished(let reason, let usage):
                 sawTerminal = true
+                if reason == .stop || reason == .length {
+                    usageSignal?.record(matchedStopSequence: matchedStopSequence(
+                        candidates: stopSequences,
+                        generatedTokens: generatedTokens
+                    ))
+                }
                 // Out-of-band usage detail (logprobs-channel pattern): the
                 // engine's prefix-cache detail has no seat in the shared
                 // `GenerationEvent.info` shape, so the frames loop reads it

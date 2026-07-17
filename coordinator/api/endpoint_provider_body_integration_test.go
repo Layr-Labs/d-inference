@@ -91,17 +91,26 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 				Ciphertext:         request.EncryptedBody.Ciphertext,
 			}
 			decrypted, err := e2e.DecryptWithPrivateKey(payload, keypair.private)
+			var stopSequences struct {
+				Stop []string `json:"stop"`
+			}
+			_ = json.Unmarshal(decrypted, &stopSequences)
+			matchedStopSequence := ""
+			if len(stopSequences.Stop) > 0 {
+				matchedStopSequence = stopSequences.Stop[0]
+			}
 			results <- providerResult{body: decrypted, err: err}
 			if err != nil {
 				return
 			}
 
 			writeEncryptedTestChunk(t, ctx, conn, request, publicKey,
-				`data: {"id":"chatcmpl-endpoint","choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
+				`data: {"id":"chatcmpl-endpoint","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}`+"\n\n")
 			complete, _ := json.Marshal(protocol.InferenceCompleteMessage{
-				Type:      protocol.TypeInferenceComplete,
-				RequestID: request.RequestID,
-				Usage:     protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1},
+				Type:         protocol.TypeInferenceComplete,
+				RequestID:    request.RequestID,
+				Usage:        protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 1},
+				StopSequence: matchedStopSequence,
 			})
 			if err := conn.Write(ctx, websocket.MessageText, complete); err != nil {
 				return
@@ -171,12 +180,15 @@ func TestEndpointProviderBodiesAreLoweredBeforeSealing(t *testing.T) {
 		{
 			name:        "messages non-streaming",
 			path:        "/v1/messages",
-			requestBody: `{"model":"endpoint-lowering-model","messages":[{"role":"user","content":"Messages endpoint"}],"max_tokens":32}`,
+			requestBody: `{"model":"endpoint-lowering-model","messages":[{"role":"user","content":"Messages endpoint"}],"max_tokens":32,"stop_sequences":["<END>"]}`,
 			wantMessages: []protocol.ChatMessage{
 				{Role: "user", Content: "Messages endpoint"},
 			},
-			absent:       []string{"endpoint"},
-			wantResponse: []string{`"type":"message"`, `"role":"assistant"`, `"type":"text"`, `"text":"ok"`},
+			absent: []string{"endpoint", "stop_sequences"},
+			wantResponse: []string{
+				`"type":"message"`, `"role":"assistant"`, `"type":"text"`, `"text":"ok"`,
+				`"stop_reason":"stop_sequence"`, `"stop_sequence":"\u003cEND\u003e"`,
+			},
 			absentResult: []string{`"object":"chat.completion"`},
 		},
 	}

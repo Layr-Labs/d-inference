@@ -24,6 +24,11 @@ type RequestTraits struct {
 	// never fails closed — when no other version can serve, selection falls
 	// back to the full pool.
 	AvoidVersion string
+	// MinPrefixCacheProtocol is a hard wire-compatibility floor. It is raised
+	// to 1 only when adding protocol-0's cache-bust field would exceed the
+	// provider frame cap; queued and retried routing must then stay on providers
+	// that send the unchanged, already-valid body.
+	MinPrefixCacheProtocol int
 }
 
 // CooldownShape returns the inference-error circuit-breaker dimension for the
@@ -158,6 +163,9 @@ func providerTemplateRenderBrokenLocked(p *Provider, model string) bool {
 //
 // Caller holds r.mu and p.mu (same discipline as providerServesVisionModelLocked).
 func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t RequestTraits) bool {
+	if p.PrefixCacheProtocol < t.MinPrefixCacheProtocol {
+		return false
+	}
 	// Render-broken: applies to ALL requests for the model.
 	if providerTemplateRenderBrokenLocked(p, model) {
 		return false

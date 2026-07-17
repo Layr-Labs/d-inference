@@ -116,25 +116,28 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 // preflight needs. model is the resolved build id; the preflight may swap it to
 // a Previous build via an alias fallback and returns the final value.
 type inferenceAdmissionParams struct {
-	model                  string
-	publicModel            string
-	stream                 bool
-	estimatedPromptTokens  int
-	requestedMaxTokens     int
-	requiresVision         bool
-	hasTools               bool
-	modelMaxContext        int
-	allowedProviderSerials []string
-	deadline               time.Duration
-	policy                 selfRoutePolicy
+	model                     string
+	publicModel               string
+	stream                    bool
+	estimatedPromptTokens     int
+	requestedMaxTokens        int
+	requiresVision            bool
+	hasTools                  bool
+	traits                    *registry.RequestTraits
+	traitsForModel            func(string) registry.RequestTraits
+	providerBodyErrorForModel func(string) error
+	modelMaxContext           int
+	allowedProviderSerials    []string
+	deadline                  time.Duration
+	policy                    selfRoutePolicy
 	// refundReservation releases any pre-flight balance reservation before a
 	// terminal rejection. Must be non-nil (a no-op closure on the free paths).
 	refundReservation func()
 	// onModelFallback refreshes the forward body after an alias fallback rewrote
 	// parsed["model"] to a Previous build. It returns ok=false when it wrote a
 	// terminal error itself (e.g. the Responses→chat lowering failed), in which
-	// case the preflight reports handled=true. Generic paths that rebuild the
-	// body from parsed at dispatch pass nil (no refresh needed).
+	// case the preflight reports handled=true. Generic paths refresh their
+	// lowered body and cache-protocol trait after the alias rewrite.
 	onModelFallback func(newModel string) (ok bool)
 }
 
@@ -147,17 +150,114 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	model := p.model
 	publicModel := p.publicModel
 	refundReservation := p.refundReservation
+	requestTraits := func() registry.RequestTraits {
+		if p.traits != nil {
+			return *p.traits
+		}
+		return registry.RequestTraits{HasTools: p.hasTools}
+	}
+	modelTraits := func(candidateModel string) registry.RequestTraits {
+		if p.traitsForModel != nil {
+			return p.traitsForModel(candidateModel)
+		}
+		return requestTraits()
+	}
+	fallbackTraits := func(currentModel string) registry.RequestTraits {
+		target, ok := s.registry.AliasTarget(publicModel)
+		if ok && target.Desired == currentModel && target.Previous != "" {
+			return modelTraits(target.Previous)
+		}
+		return modelTraits(currentModel)
+	}
+	rejectProviderBodyTooLarge := func(providerBodyErr error) bool {
+		if !errors.Is(providerBodyErr, errProviderBodyTooLarge) {
+			return false
+		}
+		refundReservation()
+		s.recordRejection(rejectionInfo{
+			r:                     r,
+			stage:                 "validation",
+			reasonCode:            "payload_too_large",
+			httpStatus:            http.StatusRequestEntityTooLarge,
+			keyID:                 keyIDFromContext(r.Context()),
+			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			requestedModel:        publicModel,
+			resolvedModel:         model,
+			stream:                p.stream,
+			estimatedPromptTokens: p.estimatedPromptTokens,
+			requestedMaxTokens:    p.requestedMaxTokens,
+			requiresVision:        p.requiresVision,
+			hasTools:              p.hasTools,
+			requestBodyBytes:      oversizedProviderBodyBytes(providerBodyErr),
+			params:                rejectionSamplingParams(parsed),
+			servabilityComputed:   true,
+		})
+		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse(
+			"invalid_request_error", providerBodyErr.Error(),
+			withCode("payload_too_large")))
+		return true
+	}
 
 	// Self-route pre-flight: confirm the caller owns an online machine that can
 	// serve this model, with precise errors and no fallback to the paid fleet.
 	if p.policy.enabled {
-		if s.selfRouteUnavailable(w, r, p.policy.ownerAccountID, model, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision) {
+		traits := modelTraits(model)
+		if traits.MinPrefixCacheProtocol > 0 && p.providerBodyErrorForModel != nil {
+			_, servesWithFloor := s.registry.OwnedProviderSummary(
+				p.policy.ownerAccountID, model, traits, p.requiresVision)
+			withoutProtocolFloor := traits
+			withoutProtocolFloor.MinPrefixCacheProtocol = 0
+			_, servesWithoutFloor := s.registry.OwnedProviderSummary(
+				p.policy.ownerAccountID, model, withoutProtocolFloor, p.requiresVision)
+			if servesWithFloor == 0 &&
+				servesWithoutFloor > 0 &&
+				rejectProviderBodyTooLarge(p.providerBodyErrorForModel(model)) {
+				return model, true
+			}
+		}
+		if s.selfRouteUnavailable(w, r, p.policy.ownerAccountID, model, traits, p.requiresVision) {
 			refundReservation()
 			return model, true
 		}
 		return model, false
 	}
 	if p.policy.prefer {
+		traits := modelTraits(model)
+		if traits.MinPrefixCacheProtocol > 0 && p.providerBodyErrorForModel != nil {
+			_, ownedWithFloor := s.registry.OwnedProviderSummary(
+				p.policy.ownerAccountID, model, traits, p.requiresVision)
+			publicWithFloor, publicCapacityWithFloor, _ :=
+				s.registry.QuickCapacityCheckForRequest(
+					model,
+					p.estimatedPromptTokens,
+					p.requestedMaxTokens,
+					traits,
+					p.requiresVision,
+					p.allowedProviderSerials...,
+				)
+			withoutProtocolFloor := traits
+			withoutProtocolFloor.MinPrefixCacheProtocol = 0
+			_, ownedWithoutFloor := s.registry.OwnedProviderSummary(
+				p.policy.ownerAccountID, model, withoutProtocolFloor, p.requiresVision)
+			publicWithoutFloor, publicCapacityWithoutFloor, _ :=
+				s.registry.QuickCapacityCheckForRequest(
+					model,
+					p.estimatedPromptTokens,
+					p.requestedMaxTokens,
+					withoutProtocolFloor,
+					p.requiresVision,
+					p.allowedProviderSerials...,
+				)
+			hasCompatibleProvider := ownedWithFloor > 0 ||
+				publicWithFloor > 0 || publicCapacityWithFloor > 0
+			hadProtocolZeroProvider := ownedWithoutFloor > 0 ||
+				publicWithoutFloor > 0 || publicCapacityWithoutFloor > 0
+			if !hasCompatibleProvider &&
+				hadProtocolZeroProvider &&
+				rejectProviderBodyTooLarge(p.providerBodyErrorForModel(model)) {
+				return model, true
+			}
+		}
 		// Prefer mode: SKIP the public fleet pre-flight. QuickCapacityCheck has
 		// no owner-trust relaxation, so it would spuriously 429/503 a request
 		// whose own (idle, possibly un-enrolled / private-only) machine could
@@ -174,9 +274,9 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// 503 which counts as downtime. Fast 429s also preserve our TTFT
 	// metrics. Self-route skips this fleet-wide gate — it queues on the
 	// owner's machine instead (handled below).
-	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, p.estimatedPromptTokens, p.requestedMaxTokens, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials...)
+	candidateCount, capacityRejections, modelTooLarge, bestTTFT, hasTTFT := s.registry.QuickCapacityCheckWithTTFTForRequest(model, p.estimatedPromptTokens, p.requestedMaxTokens, modelTraits(model), p.requiresVision, p.allowedProviderSerials...)
 	if candidateCount == 0 && capacityRejections > 0 {
-		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials); switched {
+		if fallbackModel, fallbackCandidates, fallbackRejections, fallbackTooLarge, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackCapacity, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, 0, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel
 			candidateCount, capacityRejections, modelTooLarge = fallbackCandidates, fallbackRejections, fallbackTooLarge
 			bestTTFT, hasTTFT = fallbackTTFT, fallbackHasTTFT
@@ -224,6 +324,33 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 			withCode("model_unavailable")))
 		return model, true
+	}
+	var providerBodyErr error
+	if p.providerBodyErrorForModel != nil {
+		providerBodyErr = p.providerBodyErrorForModel(model)
+	}
+	bodyIncompatibilityCausedNoCandidates := false
+	if errors.Is(providerBodyErr, errProviderBodyTooLarge) {
+		withoutProtocolFloor := modelTraits(model)
+		withoutProtocolFloor.MinPrefixCacheProtocol = 0
+		baselineCandidates, baselineCapacity, _ := s.registry.QuickCapacityCheckForRequest(
+			model,
+			p.estimatedPromptTokens,
+			p.requestedMaxTokens,
+			withoutProtocolFloor,
+			p.requiresVision,
+			p.allowedProviderSerials...,
+		)
+		bodyIncompatibilityCausedNoCandidates =
+			baselineCandidates > 0 || baselineCapacity > 0
+	}
+	if bodyIncompatibilityCausedNoCandidates &&
+		candidateCount == 0 &&
+		capacityRejections == 0 &&
+		modelTooLarge == 0 {
+		if rejectProviderBodyTooLarge(providerBodyErr) {
+			return model, true
+		}
 	}
 	if candidateCount == 0 && capacityRejections > 0 {
 		// Routing v2 W3: feed the autoscaler the demand the preflight sees.
@@ -302,7 +429,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 		// Feed the autoscaler the demand regardless of outcome.
 		s.registry.RecordWarmPoolCapacityReject(model)
 		s.triggerWarmPool()
-		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials) {
+		if s.coldDispatchEnabled() && s.coldSpillAvailable(model, modelTraits(model), p.requiresVision, p.allowedProviderSerials) {
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:cold_dispatch_spill"})
 			// Fall through to dispatch+queue; reservation kept.
 		} else if s.registry.IsDedicatedModel(model) && s.registry.HasProviderForModel(model, p.allowedProviderSerials...) {
@@ -394,7 +521,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 			s.registry.RecordWarmPoolTTFTMiss(model, ttftThreshold)
 			s.triggerWarmPool()
 			s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_soft_served"})
-		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, registry.RequestTraits{HasTools: p.hasTools}, p.requiresVision, p.allowedProviderSerials); switched {
+		} else if fallbackModel, _, _, _, fallbackTTFT, fallbackHasTTFT, switched := s.maybeFallbackAlias(parsed, aliasFallbackTTFT, publicModel, model, p.estimatedPromptTokens, p.requestedMaxTokens, ttftThreshold, fallbackTraits(model), p.requiresVision, p.allowedProviderSerials); switched {
 			model = fallbackModel
 			if p.onModelFallback != nil && !p.onModelFallback(model) {
 				return model, true

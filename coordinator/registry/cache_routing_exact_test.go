@@ -451,6 +451,21 @@ func TestExactRoutingV1ProviderRemainsColdBaseline(t *testing.T) {
 	}
 }
 
+func TestLegacyCacheBustKeyLengthMatchesSizingContract(t *testing.T) {
+	r, provider, _ := exactTestRegistry(t)
+	provider.mu.Lock()
+	provider.PrefixCacheProtocol = 0
+	provider.mu.Unlock()
+	pr := &PendingRequest{RequestID: "v0-sizing", Model: "model"}
+	if err := r.PrepareCacheAttempt(pr, provider); err != nil {
+		t.Fatal(err)
+	}
+	if len(pr.LegacyCacheBustKey) != LegacyCacheBustKeyLength {
+		t.Fatalf("legacy cache-bust key length = %d, want %d",
+			len(pr.LegacyCacheBustKey), LegacyCacheBustKeyLength)
+	}
+}
+
 func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 	r, _, capability := exactTestRegistry(t)
 	r.mu.Lock()

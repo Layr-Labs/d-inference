@@ -134,6 +134,59 @@ func TestProviderEligibleForTraitsTemplateRenderGate(t *testing.T) {
 	}
 }
 
+func TestProviderEligibleForTraitsPrefixCacheProtocolFloor(t *testing.T) {
+	r := New(testLogger())
+	for _, test := range []struct {
+		name     string
+		protocol int
+		floor    int
+		want     bool
+	}{
+		{name: "no floor accepts protocol zero", protocol: 0, floor: 0, want: true},
+		{name: "floor rejects protocol zero", protocol: 0, floor: 1, want: false},
+		{name: "floor accepts protocol one", protocol: 1, floor: 1, want: true},
+		{name: "floor accepts protocol two", protocol: 2, floor: 1, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			p := &Provider{
+				ID:                  "p",
+				PrefixCacheProtocol: test.protocol,
+				Models:              []protocol.ModelInfo{{ID: "model"}},
+			}
+			r.mu.RLock()
+			p.mu.Lock()
+			got := r.providerEligibleForTraitsLocked(
+				p, "model", RequestTraits{MinPrefixCacheProtocol: test.floor})
+			p.mu.Unlock()
+			r.mu.RUnlock()
+			if got != test.want {
+				t.Fatalf("providerEligibleForTraitsLocked(protocol=%d, floor=%d) = %v, want %v",
+					test.protocol, test.floor, got, test.want)
+			}
+		})
+	}
+}
+
+func TestReserveProviderExHonorsPendingProviderExclusions(t *testing.T) {
+	reg := New(testLogger())
+	model := "pending-exclusion-model"
+	excluded := makeSchedulerProvider(t, reg, "excluded", model, 200)
+	fallback := makeSchedulerProvider(t, reg, "fallback", model, 50)
+	req := &PendingRequest{
+		RequestID:           "r-excluded",
+		Model:               model,
+		RequestedMaxTokens:  128,
+		ExcludedProviderIDs: []string{excluded.ID},
+	}
+	selected, decision := reg.ReserveProviderEx(model, req)
+	if selected == nil || selected.ID != fallback.ID {
+		t.Fatalf("selected %v, want fallback %q", selected, fallback.ID)
+	}
+	if decision.CandidateCount != 1 {
+		t.Fatalf("CandidateCount=%d, want 1", decision.CandidateCount)
+	}
+}
+
 // The render verdict is per-model: a broken template on one build must not
 // exclude the provider's other builds from tool requests.
 func TestTemplateRenderGateScopedToModel(t *testing.T) {

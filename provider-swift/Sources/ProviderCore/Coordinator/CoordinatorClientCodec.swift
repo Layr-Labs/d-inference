@@ -119,10 +119,17 @@ public enum CoordinatorClientCodec {
                 encryptedData: encryptedData
             ))
 
-        case .inferenceComplete(let requestId, let usage, let seSignature, let responseHash):
+        case .inferenceComplete(
+            let requestId,
+            let usage,
+            let stopSequence,
+            let seSignature,
+            let responseHash
+        ):
             return .inferenceComplete(ProviderMessage.InferenceComplete(
                 requestId: requestId,
                 usage: usage,
+                stopSequence: stopSequence,
                 seSignature: seSignature,
                 responseHash: responseHash
             ))

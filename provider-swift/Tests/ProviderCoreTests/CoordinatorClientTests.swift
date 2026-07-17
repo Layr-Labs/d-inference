@@ -143,6 +143,7 @@ import Testing
         from: try CoordinatorClientCodec.encodeOutboundMessage(.inferenceComplete(
             requestId: "req-3",
             usage: UsageInfo(promptTokens: 10, completionTokens: 20),
+            stopSequence: "<END>",
             seSignature: "sig",
             responseHash: "hash"
         ))
@@ -150,6 +151,7 @@ import Testing
     #expect(complete == .inferenceComplete(ProviderMessage.InferenceComplete(
         requestId: "req-3",
         usage: UsageInfo(promptTokens: 10, completionTokens: 20),
+        stopSequence: "<END>",
         seSignature: "sig",
         responseHash: "hash"
     )))

@@ -34,9 +34,10 @@ func TestInferenceResponseChunkMarshal(t *testing.T) {
 
 func TestInferenceCompleteMarshal(t *testing.T) {
 	msg := InferenceCompleteMessage{
-		Type:      TypeInferenceComplete,
-		RequestID: "req-456",
-		Usage:     UsageInfo{PromptTokens: 50, CompletionTokens: 100},
+		Type:         TypeInferenceComplete,
+		RequestID:    "req-456",
+		Usage:        UsageInfo{PromptTokens: 50, CompletionTokens: 100},
+		StopSequence: "<END>",
 	}
 
 	data, err := json.Marshal(msg)
@@ -54,6 +55,9 @@ func TestInferenceCompleteMarshal(t *testing.T) {
 	}
 	if decoded.Usage.CompletionTokens != 100 {
 		t.Errorf("completion_tokens = %d, want 100", decoded.Usage.CompletionTokens)
+	}
+	if decoded.StopSequence != "<END>" {
+		t.Errorf("stop_sequence = %q, want <END>", decoded.StopSequence)
 	}
 }
 

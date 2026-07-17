@@ -16,14 +16,15 @@ import MLXLMCommon
 
 // MARK: - Per-request usage signal
 
-/// Thread-safe, set-once-read-late box for a request's terminal usage
-/// detail and final lookup receipt. One instance per inference request
+/// Thread-safe, set-once-read-late box for a request's terminal usage detail,
+/// exact matched stop sequence, and final lookup receipt. One instance per request
 /// (created by the coordinator inference handler only when the slot serves
 /// via the v2 engine); finalized by terminal usage or by the precise
 /// pre-terminal failure path. On success the pump records BEFORE yielding
 /// terminal events, so the trailing usage frame always observes the write.
 public final class EngineV2RequestUsageSignal: @unchecked Sendable {
     private let lock = NSLock()
+    private var _matchedStopSequence: String?
     private var _prefixCacheHitTokens: Int?
     private var _prefixCachePrefillTokensSaved: Int?
     private var _stageResult: SSDPrefixCacheStageResult?
@@ -139,6 +140,15 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
             return result
         }
         if let resolved { onLookupResolved?(resolved) }
+    }
+
+    func record(matchedStopSequence: String?) {
+        guard let matchedStopSequence, !matchedStopSequence.isEmpty else { return }
+        lock.withLock { _matchedStopSequence = matchedStopSequence }
+    }
+
+    public var matchedStopSequence: String? {
+        lock.withLock { _matchedStopSequence }
     }
 
     /// Engine-reported prompt tokens whose KV was adopted from the prefix

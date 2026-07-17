@@ -1733,6 +1733,15 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	// Store SE signature for the consumer response headers.
 	pr.SESignature = msg.SESignature
 	pr.ResponseHash = msg.ResponseHash
+	pr.MatchedStopSequence = allowedMatchedStopSequence(
+		pr.RequestedStopSequences, msg.StopSequence)
+	if msg.StopSequence != "" && pr.MatchedStopSequence == "" {
+		s.logger.Warn("provider reported an unrequested stop sequence",
+			"provider_id", providerID,
+			"request_id", msg.RequestID,
+		)
+		s.ddIncr("inference.invalid_stop_sequence", nil)
+	}
 
 	// Billing-zero observability: a COMPLETED request that reports zero tokens
 	// is billed $0 (and fully refunded). The provider-side fix (EngineBridge

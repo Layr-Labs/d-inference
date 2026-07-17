@@ -192,6 +192,7 @@ struct ChunkSenderTests {
         handle.send(.inferenceComplete(
             requestId: "r",
             usage: UsageInfo(promptTokens: 0, completionTokens: 0),
+            stopSequence: nil,
             seSignature: nil,
             responseHash: nil))
 

@@ -80,6 +80,47 @@ func TestBuildMessagesResponsePreservesParallelNonStreamingToolCalls(t *testing.
 	}
 }
 
+func TestMessagesResponsesPreserveExactMatchedStopSequence(t *testing.T) {
+	pr := &registry.PendingRequest{
+		RequestID:              "request-id",
+		PublicModel:            "public-model",
+		ConsumerEndpoint:       messagesEndpoint,
+		RequestedStopSequences: []string{"<END>", "<ALT>"},
+		MatchedStopSequence:    "<ALT>",
+		RequestedMaxTokens:     1,
+	}
+
+	response := buildMessagesResponse(
+		pr,
+		extractedMessage{Content: "answer", FinishReason: "length"},
+		protocol.UsageInfo{CompletionTokens: 1},
+	)
+	if response["stop_reason"] != "stop_sequence" || response["stop_sequence"] != "<ALT>" {
+		t.Fatalf("non-streaming stop outcome = %#v", response)
+	}
+
+	recorder := httptest.NewRecorder()
+	emitter := newGenericEndpointStreamEmitter(recorder, recorder, pr)
+	emitter.start()
+	emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"content":"answer"},"finish_reason":"length"}]}`)
+	emitter.finish(protocol.UsageInfo{CompletionTokens: 1})
+	body := recorder.Body.String()
+	if !strings.Contains(body, `"stop_reason":"stop_sequence"`) ||
+		!strings.Contains(body, `"stop_sequence":"\u003cALT\u003e"`) {
+		t.Fatalf("streaming response lost matched stop sequence:\n%s", body)
+	}
+}
+
+func TestMessagesStopSequenceRequiresCallerAllowlist(t *testing.T) {
+	requested := []string{"<END>"}
+	if got := allowedMatchedStopSequence(requested, "<FORGED>"); got != "" {
+		t.Fatalf("accepted unrequested provider stop sequence %q", got)
+	}
+	if got := allowedMatchedStopSequence(requested, "<END>"); got != "<END>" {
+		t.Fatalf("rejected requested provider stop sequence: %q", got)
+	}
+}
+
 func TestGenericEndpointStreamEmittersUseNativeSchemas(t *testing.T) {
 	t.Run("completions corrects max token finish", func(t *testing.T) {
 		recorder := httptest.NewRecorder()

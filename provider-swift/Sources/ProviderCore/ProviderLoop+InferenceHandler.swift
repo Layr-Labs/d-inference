@@ -965,6 +965,7 @@ extension ProviderLoop {
                 .inferenceComplete(
                     requestId: requestId,
                     usage: usageInfo,
+                    stopSequence: v2UsageSignal.matchedStopSequence,
                     seSignature: attestation.signature,
                     responseHash: attestation.hash),
                 fallbackFailure: .policy,

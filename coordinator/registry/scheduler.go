@@ -577,8 +577,11 @@ type candidateScan struct {
 // breaker gate is skipped (every other gate still applies); breakerRejected is
 // always 0 in that mode. Caller holds r.mu and no provider lock.
 func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignoreProviderBreaker bool, excludeIDs ...string) candidateScan {
-	excludeSet := make(map[string]struct{}, len(excludeIDs))
+	excludeSet := make(map[string]struct{}, len(excludeIDs)+len(pr.ExcludedProviderIDs))
 	for _, id := range excludeIDs {
+		excludeSet[id] = struct{}{}
+	}
+	for _, id := range pr.ExcludedProviderIDs {
 		excludeSet[id] = struct{}{}
 	}
 	allowedSerials := make(map[string]struct{}, len(pr.AllowedProviderSerials))

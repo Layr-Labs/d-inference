@@ -129,7 +129,13 @@ public struct RuntimeHashes: Sendable {
 public enum OutboundMessage: Sendable {
     case inferenceAccepted(requestId: String)
     case inferenceChunk(requestId: String, data: String, encryptedData: EncryptedPayload?)
-    case inferenceComplete(requestId: String, usage: UsageInfo, seSignature: String?, responseHash: String?)
+    case inferenceComplete(
+        requestId: String,
+        usage: UsageInfo,
+        stopSequence: String?,
+        seSignature: String?,
+        responseHash: String?
+    )
     case inferenceError(requestId: String, error: String, statusCode: UInt16, errorReason: String?)
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)

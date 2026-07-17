@@ -284,6 +284,7 @@ import Testing
         .inferenceComplete(ProviderMessage.InferenceComplete(
             requestId: "req-complete",
             usage: UsageInfo(promptTokens: 12, completionTokens: 34),
+            stopSequence: "<END>",
             seSignature: "c2ln",
             responseHash: "aGFzaA=="
         )),

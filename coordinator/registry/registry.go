@@ -100,10 +100,19 @@ type PendingRequest struct {
 	// the provider's chat-completions wire shape. Response writers translate
 	// chat output back to this endpoint's native JSON/SSE schema.
 	ConsumerEndpoint string
+	// RequestedStopSequences is the caller-authored Anthropic stop allowlist.
+	// MatchedStopSequence is accepted from the provider only when it is a member
+	// of this list, then translated back into native /v1/messages responses.
+	// Both fields are in-memory only and must never enter routing telemetry.
+	RequestedStopSequences []string
+	MatchedStopSequence    string
 	// AllowedProviderSerials optionally restricts routing to providers with
 	// one of these attested hardware serials. Empty means the request may
 	// route to any eligible provider.
 	AllowedProviderSerials []string
+	// ExcludedProviderIDs carries pre-dispatch incompatibilities across queue
+	// drains after the dispatcher has released the rejected provider.
+	ExcludedProviderIDs []string
 	// SelfRouteOnly restricts routing to providers owned by OwnerAccountID
 	// (the "use my own machine" path). When set, the scheduler skips every
 	// provider whose AccountID != OwnerAccountID and never falls back to the

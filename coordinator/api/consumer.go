@@ -924,6 +924,10 @@ func (s *Server) dispatchOneProvider(
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
+		if errors.Is(err, errProviderBodyTooLarge) {
+			excludeProviders[provider.ID] = struct{}{}
+			return nil, nil, decision, err.Error(), http.StatusRequestEntityTooLarge
+		}
 		return nil, nil, decision, "failed to prepare provider request", http.StatusInternalServerError
 	}
 	encrypted, err := e2e.Encrypt(sealedBody, providerPubKey, sessionKeys)
@@ -1007,9 +1011,116 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 	return rawBody
 }
 
+var errProviderBodyTooLarge = errors.New("provider request body too large")
+
+type providerBodyTooLargeError struct {
+	size int
+}
+
+func (e *providerBodyTooLargeError) Error() string {
+	return fmt.Sprintf("%s: %d bytes exceeds the %d-byte limit after cache isolation",
+		errProviderBodyTooLarge, e.size, maxInferenceBodyBytes)
+}
+
+func (e *providerBodyTooLargeError) Unwrap() error {
+	return errProviderBodyTooLarge
+}
+
+func oversizedProviderBodyBytes(err error) int {
+	var sizeErr *providerBodyTooLargeError
+	if errors.As(err, &sizeErr) {
+		return sizeErr.size
+	}
+	return 0
+}
+
+func legacyCacheBustBodyBytes(
+	rawBody []byte,
+	requiresVision bool,
+	provider *registry.Provider,
+) (int, error) {
+	if provider == nil {
+		return 0, nil
+	}
+	sizingPR := &registry.PendingRequest{
+		LegacyCacheBustKey: strings.Repeat("x", registry.LegacyCacheBustKeyLength),
+	}
+	_, err := bodyForCacheAttempt(rawBody, requiresVision, provider, sizingPR)
+	if err == nil {
+		return 0, nil
+	}
+	if errors.Is(err, errProviderBodyTooLarge) {
+		return oversizedProviderBodyBytes(err), err
+	}
+	return 0, err
+}
+
+func providerBodySizeError(
+	rawBody []byte,
+	requiresVision bool,
+	provider *registry.Provider,
+) (int, error) {
+	if provider == nil {
+		return 0, nil
+	}
+	sizingPR := &registry.PendingRequest{}
+	provider.Mu().Lock()
+	usesLegacyCacheBust := provider.PrefixCacheProtocol < 1
+	provider.Mu().Unlock()
+	if usesLegacyCacheBust {
+		sizingPR.LegacyCacheBustKey = strings.Repeat(
+			"x", registry.LegacyCacheBustKeyLength)
+	}
+	_, err := bodyForCacheAttempt(rawBody, requiresVision, provider, sizingPR)
+	if err == nil {
+		return 0, nil
+	}
+	if errors.Is(err, errProviderBodyTooLarge) {
+		return oversizedProviderBodyBytes(err), err
+	}
+	return 0, err
+}
+
+func minimumLegacyCacheBustOverflow(rawBody []byte, requiresVision bool) (int, error) {
+	// An empty-version provider exercises the only provider-specific shrinking
+	// transform: legacy vision penalty removal. Raise a fleet-wide protocol floor
+	// only when even that smallest valid protocol-0 body exceeds the cap.
+	return legacyCacheBustBodyBytes(rawBody, requiresVision, &registry.Provider{})
+}
+
+func routingTraitsForProviderBody(
+	hasTools bool,
+	providerBody []byte,
+	requiresVision bool,
+) (registry.RequestTraits, error) {
+	traits := registry.RequestTraits{HasTools: hasTools}
+	_, err := minimumLegacyCacheBustOverflow(providerBody, requiresVision)
+	if errors.Is(err, errProviderBodyTooLarge) {
+		traits.MinPrefixCacheProtocol = 1
+	}
+	return traits, err
+}
+
+func exhaustedProviderPreparationError(
+	decision registry.RoutingDecision,
+	reservationErr error,
+	providerBodyOverflowErr error,
+) error {
+	if decision.CapacityRejections > 0 {
+		return nil
+	}
+	if reservationErr != nil {
+		return reservationErr
+	}
+	return providerBodyOverflowErr
+}
+
 func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry.Provider, pr *registry.PendingRequest) ([]byte, error) {
 	body := bodyForProvider(rawBody, requiresVision, provider)
 	if pr == nil || pr.LegacyCacheBustKey == "" {
+		if len(body) > maxInferenceBodyBytes {
+			return nil, &providerBodyTooLargeError{size: len(body)}
+		}
 		return body, nil
 	}
 	var parsed map[string]json.RawMessage
@@ -1026,7 +1137,7 @@ func bodyForCacheAttempt(rawBody []byte, requiresVision bool, provider *registry
 		return nil, err
 	}
 	if len(sealed) > maxInferenceBodyBytes {
-		return nil, fmt.Errorf("provider request body exceeds the %d-byte limit after cache isolation", maxInferenceBodyBytes)
+		return nil, &providerBodyTooLargeError{size: len(sealed)}
 	}
 	return sealed, nil
 }
@@ -1440,6 +1551,38 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	providerBodyForModel := func(candidateModel string) ([]byte, error) {
+		candidateParsed := make(map[string]any, len(parsed))
+		for key, value := range parsed {
+			candidateParsed[key] = value
+		}
+		candidateParsed["model"] = candidateModel
+		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
+		if marshalErr == nil && isResponsesAPI {
+			candidateBody, marshalErr = promptcontract.LowerProviderBody(
+				promptcontract.EndpointResponses, candidateBody)
+		}
+		return candidateBody, marshalErr
+	}
+	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
+		candidateBody, bodyErr := providerBodyForModel(candidateModel)
+		if bodyErr != nil {
+			return registry.RequestTraits{HasTools: hasTools}
+		}
+		traits, _ := routingTraitsForProviderBody(
+			hasTools, candidateBody, requiresVision)
+		return traits
+	}
+	providerBodyErrorForModel := func(candidateModel string) error {
+		candidateBody, bodyErr := providerBodyForModel(candidateModel)
+		if bodyErr != nil {
+			return nil
+		}
+		_, sizeErr := routingTraitsForProviderBody(
+			hasTools, candidateBody, requiresVision)
+		return sizeErr
+	}
+	routingTraits := routingTraitsForModel(model)
 
 	// Per-account token rate limiting (ITPM/OTPM) — the industry-standard
 	// token throttle alongside RPM. Charged upfront from the input estimate
@@ -1509,6 +1652,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		rawBody, _ = marshalForwardBody(parsed)
 		if !isResponsesAPI {
 			providerBody = rawBody
+			routingTraits = routingTraitsForModel(newModel)
 			return true
 		}
 		var err error
@@ -1534,23 +1678,27 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return false
 		}
+		routingTraits = routingTraitsForModel(newModel)
 		return true
 	}
 	var preflightHandled bool
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
-		model:                  model,
-		publicModel:            publicModel,
-		stream:                 stream,
-		estimatedPromptTokens:  estimatedPromptTokens,
-		requestedMaxTokens:     requestedMaxTokens,
-		requiresVision:         requiresVision,
-		hasTools:               hasTools,
-		modelMaxContext:        modelMaxContext,
-		allowedProviderSerials: allowedProviderSerials,
-		deadline:               deadline,
-		policy:                 policy,
-		refundReservation:      refundReservation,
-		onModelFallback:        onModelFallback,
+		model:                     model,
+		publicModel:               publicModel,
+		stream:                    stream,
+		estimatedPromptTokens:     estimatedPromptTokens,
+		requestedMaxTokens:        requestedMaxTokens,
+		requiresVision:            requiresVision,
+		hasTools:                  hasTools,
+		traits:                    &routingTraits,
+		traitsForModel:            routingTraitsForModel,
+		providerBodyErrorForModel: providerBodyErrorForModel,
+		modelMaxContext:           modelMaxContext,
+		allowedProviderSerials:    allowedProviderSerials,
+		deadline:                  deadline,
+		policy:                    policy,
+		refundReservation:         refundReservation,
+		onModelFallback:           onModelFallback,
 	})
 	if preflightHandled {
 		return
@@ -1572,41 +1720,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// commits exactly once, then writes attestation/timing headers and streams.
 	consumerKey := consumerKeyFromContext(r.Context())
 	consumerLocation := s.requestLocation(r)
-	// Final cap on the body we'll seal. The read cap (parseInferencePrelude)
-	// bounded the request as received, but the provider body may be re-marshaled at
-	// several points — alias resolution, allowlist/routing-field stripping,
-	// reasoning_parser + max_tokens injection, Responses→chat lowering, and the
-	// alias-capacity fallback above. The coordinator seals this body and sends it
-	// as ONE WebSocket frame; a body over the cap produces a frame the provider
-	// rejects by tearing down its session and cancelling every unrelated in-flight
-	// request (see maxInferenceBodyBytes / CoordinatorClient.maxInboundMessageBytes).
-	// This is the single point where providerBody is frozen into dispatchState, so the
-	// check here covers every upstream mutation; an oversized request gets a clean
-	// 413 instead of disconnecting a provider mid-flight. The reservation is held
-	// at this point, so refund before returning.
-	if len(providerBody) > maxInferenceBodyBytes {
-		refundReservation()
-		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "validation",
-			reasonCode:            "payload_too_large",
-			httpStatus:            http.StatusRequestEntityTooLarge,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                stream,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			requestBodyBytes:      len(providerBody),
-			params:                rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
-			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
-		return
-	}
 
 	// model may have been rewritten by a capacity- or TTFT-fallback above
 	// (maybeFallbackAlias), so refresh the context
@@ -3541,39 +3654,80 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return info
 	}
 
-	// Shared routing/capacity admission preflight (self-route / prefer / public
-	// capacity+TTFT gate — see runInferenceAdmission). This handler rebuilds the
-	// provider body from parsed at dispatch (maybeFallbackAlias already rewrote
-	// parsed["model"]), so no body-refresh callback is needed.
-	var preflightHandled bool
-	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
-		model:                  model,
-		publicModel:            publicModel,
-		stream:                 stream,
-		estimatedPromptTokens:  estimatedPromptTokens,
-		requestedMaxTokens:     requestedMaxTokens,
-		requiresVision:         requiresVision,
-		hasTools:               hasTools,
-		modelMaxContext:        modelMaxContext,
-		allowedProviderSerials: allowedProviderSerials,
-		deadline:               genericDeadline,
-		policy:                 policy,
-		refundReservation:      refundReservation,
-		onModelFallback:        nil,
-	})
-	if preflightHandled {
-		return
-	}
-	endpointBody, _ := marshalForwardBody(parsed)
 	endpointKind := promptcontract.EndpointCompletions
 	if endpoint == "/v1/messages" {
 		endpointKind = promptcontract.EndpointMessages
 	}
-	inferenceBody, loweringErr := promptcontract.LowerProviderBody(endpointKind, endpointBody)
+	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
+		candidateParsed := make(map[string]any, len(parsed))
+		for key, value := range parsed {
+			candidateParsed[key] = value
+		}
+		candidateParsed["model"] = candidateModel
+		endpointBody, _ := marshalForwardBody(candidateParsed)
+		inferenceBody, loweringErr := promptcontract.LowerProviderBody(
+			endpointKind, endpointBody)
+		if loweringErr != nil {
+			inferenceBody = endpointBody
+		}
+		return endpointBody, inferenceBody, loweringErr
+	}
+	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
+		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
+		traits, _ := routingTraitsForProviderBody(
+			hasTools, candidateBody, requiresVision)
+		return traits
+	}
+	providerBodyErrorForModel := func(candidateModel string) error {
+		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
+		_, sizeErr := routingTraitsForProviderBody(
+			hasTools, candidateBody, requiresVision)
+		return sizeErr
+	}
+	var endpointBody, inferenceBody []byte
+	var loweringErr error
+	var providerBodyOverflowErr error
+	routingTraits := routingTraitsForModel(model)
+	refreshGenericBody := func(newModel string) bool {
+		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
+		routingTraits, _ = routingTraitsForProviderBody(
+			hasTools, inferenceBody, requiresVision)
+		return true
+	}
+	refreshGenericBody(model)
+
+	// Shared routing/capacity admission preflight (self-route / prefer / public
+	// capacity+TTFT gate — see runInferenceAdmission).
+	var preflightHandled bool
+	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{
+		model:                     model,
+		publicModel:               publicModel,
+		stream:                    stream,
+		estimatedPromptTokens:     estimatedPromptTokens,
+		requestedMaxTokens:        requestedMaxTokens,
+		requiresVision:            requiresVision,
+		hasTools:                  hasTools,
+		traits:                    &routingTraits,
+		traitsForModel:            routingTraitsForModel,
+		providerBodyErrorForModel: providerBodyErrorForModel,
+		modelMaxContext:           modelMaxContext,
+		allowedProviderSerials:    allowedProviderSerials,
+		deadline:                  genericDeadline,
+		policy:                    policy,
+		refundReservation:         refundReservation,
+		onModelFallback:           refreshGenericBody,
+	})
+	if preflightHandled {
+		return
+	}
 	cachePlan := registry.CachePlan{}
 	consumerEndpoint := ""
+	var requestedStopSequences []string
 	if loweringErr == nil {
 		consumerEndpoint = endpoint
+		if endpoint == messagesEndpoint {
+			requestedStopSequences = requestedMessagesStopSequences(parsed)
+		}
 		cachePlan = s.planCacheRoute(
 			r.Context(), consumerKey, model, inferenceBody, requiresVision)
 	} else {
@@ -3594,6 +3748,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
 		ConsumerEndpoint:       consumerEndpoint,
+		RequestedStopSequences: requestedStopSequences,
 		AllowedProviderSerials: allowedProviderSerials,
 		SelfRouteOnly:          policy.enabled,
 		PreferOwner:            policy.prefer,
@@ -3603,7 +3758,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		RequiresVision:         requiresVision,
 		CachePlan:              cachePlan,
 		// Single-attempt path: no retry loop, so no AvoidVersion to thread.
-		Traits:               registry.RequestTraits{HasTools: hasTools},
+		Traits:               routingTraits,
 		RequestedMaxTokens:   requestedMaxTokens,
 		TokenAdmission:       tokenAdmission,
 		ReservedMicroUSD:     reservedMicroUSD,
@@ -3615,7 +3770,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
 		Timing:               timing,
 	}
-
 	// Public inference routes (not self-route / prefer-owner) enforce the
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated
@@ -3643,14 +3797,109 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			pr.ReservedMicroUSD = reservedMicroUSD
 		}
 	}
+	writeProviderReservationFailure := func(err error) {
+		refundExtra()
+		refundReservation()
+		if errors.Is(err, store.ErrInsufficientBalance) {
+			s.recordRejection(rejectionInfo{
+				r:                     r,
+				stage:                 "balance",
+				reasonCode:            "insufficient_funds",
+				httpStatus:            http.StatusPaymentRequired,
+				keyID:                 keyIDFromContext(r.Context()),
+				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+				requestedModel:        publicModel,
+				resolvedModel:         model,
+				stream:                stream,
+				estimatedPromptTokens: estimatedPromptTokens,
+				requestedMaxTokens:    requestedMaxTokens,
+				requiresVision:        requiresVision,
+				hasTools:              hasTools,
+				params:                rejectionSamplingParams(parsed),
+			})
+			s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
+				pr, "insufficient_funds", http.StatusPaymentRequired))
+			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
+				"your balance is too low for this provider price — add funds at /billing or lower max_tokens",
+				withCode("insufficient_quota")))
+			return
+		}
+		s.logger.Error("provider reservation failed (DB error)",
+			"consumer_key", consumerKey, "error", err)
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
+			pr, "provider_error", http.StatusServiceUnavailable))
+		s.writeServiceUnavailable(w, model)
+	}
 
 	var provider *registry.Provider
 	var decision registry.RoutingDecision
 	var excludeProviders []string
-	for attempt := 0; attempt < 3; attempt++ {
+	var lastProviderReservationErr error
+	var lastProviderReservationProvider *registry.Provider
+	var lastProviderReservationDecision registry.RoutingDecision
+	var lastBodyOverflowProvider *registry.Provider
+	var lastBodyOverflowDecision registry.RoutingDecision
+	recordPreparationRoute := func(
+		provider *registry.Provider,
+		decision registry.RoutingDecision,
+		bodyTooLarge bool,
+	) {
+		if provider == nil {
+			return
+		}
+		routeState := &dispatchState{
+			s:                     s,
+			r:                     r,
+			model:                 model,
+			publicModel:           publicModel,
+			consumerKey:           consumerKey,
+			consumerLocation:      consumerLocation,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			policy:                policy,
+			cachePlan:             cachePlan,
+			requestID:             requestID,
+			attempt:               pr.Attempt,
+			provider:              provider,
+			pr:                    pr,
+		}
+		if bodyTooLarge {
+			routeState.recordProviderBodyTooLargeRoute(provider, pr, decision)
+		} else {
+			routeState.recordRoutingDecisionFor(
+				provider, pr, requestID, pr.Attempt, decision, "", "")
+		}
+	}
+reserveProvider:
+	provider = nil
+	for selections, pricingFailures := 0, 0; selections < maxDispatchAttempts && pricingFailures < 3; selections++ {
 		provider, decision = s.registry.ReserveProviderEx(model, pr, excludeProviders...)
 		if provider == nil {
 			break
+		}
+		if _, err := providerBodySizeError(
+			inferenceBody, requiresVision, provider); err != nil {
+			if !errors.Is(err, errProviderBodyTooLarge) {
+				provider.RemovePending(requestID)
+				s.registry.SetProviderIdle(provider.ID)
+				refundExtra()
+				refundReservation()
+				writeJSON(w, http.StatusInternalServerError, errorResponse(
+					"internal_error", "failed to size provider request"))
+				return
+			}
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			refundExtra()
+			lastBodyOverflowProvider = provider
+			lastBodyOverflowDecision = decision
+			excludeProviders = append(excludeProviders, provider.ID)
+			pr.ExcludedProviderIDs = append(pr.ExcludedProviderIDs, provider.ID)
+			providerBodyOverflowErr = err
+			provider = nil
+			continue
 		}
 
 		// Settles FREE when served by the caller's own machine: exclusive
@@ -3683,6 +3932,11 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 						"error", err,
 					)
 				}
+				lastProviderReservationProvider = provider
+				lastProviderReservationDecision = decision
+				lastProviderReservationErr = err
+				pricingFailures++
+				provider = nil
 				continue
 			}
 		}
@@ -3710,6 +3964,30 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 				fmt.Sprintf("model %q is too large for any currently available provider", publicModel),
 				withCode("model_unavailable")))
+			return
+		}
+		preparationErr := exhaustedProviderPreparationError(
+			decision, lastProviderReservationErr, providerBodyOverflowErr)
+		if preparationErr != nil && !errors.Is(preparationErr, errProviderBodyTooLarge) {
+			recordPreparationRoute(
+				lastProviderReservationProvider, lastProviderReservationDecision, false)
+			writeProviderReservationFailure(preparationErr)
+			return
+		}
+		if errors.Is(preparationErr, errProviderBodyTooLarge) {
+			refundReservation()
+			if lastBodyOverflowProvider != nil {
+				recordPreparationRoute(
+					lastBodyOverflowProvider, lastBodyOverflowDecision, true)
+			}
+			rejection := rejectionForGeneric(
+				"validation", "payload_too_large", http.StatusRequestEntityTooLarge, 0)
+			rejection.requestBodyBytes = oversizedProviderBodyBytes(providerBodyOverflowErr)
+			rejection.servabilityComputed = true
+			s.recordRejection(rejection)
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse(
+				"invalid_request_error", providerBodyOverflowErr.Error(),
+				withCode("payload_too_large")))
 			return
 		}
 		queuedReq := &registry.QueuedRequest{
@@ -3801,6 +4079,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		}
 		s.recordWarmPoolQueueState(model)
 		decision = queuedReq.Decision
+		_, sizeErr := providerBodySizeError(inferenceBody, requiresVision, provider)
+		if sizeErr != nil {
+			provider.RemovePending(requestID)
+			s.registry.SetProviderIdle(provider.ID)
+			if !errors.Is(sizeErr, errProviderBodyTooLarge) {
+				refundReservation()
+				writeJSON(w, http.StatusInternalServerError, errorResponse(
+					"internal_error", "failed to size provider request"))
+				return
+			}
+			lastBodyOverflowProvider = provider
+			lastBodyOverflowDecision = decision
+			excludeProviders = append(excludeProviders, provider.ID)
+			pr.ExcludedProviderIDs = append(pr.ExcludedProviderIDs, provider.ID)
+			providerBodyOverflowErr = sizeErr
+			goto reserveProvider
+		}
 	}
 	timing.RoutedAt = time.Now()
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:selected"})
@@ -3854,69 +4149,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	if s.billing != nil && !settlesFreeDirect {
 		if _, err := s.reserveAdditionalForProvider(pr, provider); err != nil {
 			cleanupPending()
-			refundExtra()
-			refundReservation()
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.recordRejection(rejectionInfo{
-					r:                     r,
-					stage:                 "balance",
-					reasonCode:            "insufficient_funds",
-					httpStatus:            http.StatusPaymentRequired,
-					keyID:                 keyIDFromContext(r.Context()),
-					consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-					requestedModel:        publicModel,
-					resolvedModel:         model,
-					stream:                stream,
-					estimatedPromptTokens: estimatedPromptTokens,
-					requestedMaxTokens:    requestedMaxTokens,
-					requiresVision:        requiresVision,
-					hasTools:              hasTools,
-					params:                rejectionSamplingParams(parsed),
-				})
-				writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-					"your balance is too low for this provider price — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-			} else {
-				s.logger.Error("provider reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-				s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusServiceUnavailable))
-				s.writeServiceUnavailable(w, model)
-			}
-			if errors.Is(err, store.ErrInsufficientBalance) {
-				s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "insufficient_funds", http.StatusPaymentRequired))
-			}
+			writeProviderReservationFailure(err)
 			return
 		}
-	}
-
-	// Re-check the cap on the FINAL body we'll seal (the input cap bounded the
-	// read; this body was re-marshaled after mutation). A body over the cap seals
-	// into a frame the provider rejects by tearing down its session — return a
-	// clean 413 instead (see maxInferenceBodyBytes). Billing is already reserved
-	// at this point, so refund before returning.
-	if len(inferenceBody) > maxInferenceBodyBytes {
-		cleanupPending()
-		refundExtra()
-		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "payload_too_large", http.StatusRequestEntityTooLarge))
-		s.recordRejection(rejectionInfo{
-			r:                     r,
-			stage:                 "validation",
-			reasonCode:            "payload_too_large",
-			httpStatus:            http.StatusRequestEntityTooLarge,
-			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-			requestedModel:        publicModel,
-			resolvedModel:         model,
-			stream:                stream,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			requestBodyBytes:      len(inferenceBody),
-			params:                rejectionSamplingParams(parsed),
-		})
-		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("invalid_request_error",
-			fmt.Sprintf("request body exceeds the %d-byte limit", maxInferenceBodyBytes)))
-		return
 	}
 
 	if provider.PublicKey == "" {
@@ -3967,8 +4202,22 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		cleanupPending()
 		refundExtra()
 		refundReservation()
-		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(pr, "provider_error", http.StatusInternalServerError))
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to prepare provider request"))
+		if errors.Is(err, errProviderBodyTooLarge) {
+			s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
+				pr, errorClassClientError, http.StatusRequestEntityTooLarge))
+			rejection := rejectionForGeneric(
+				"validation", "payload_too_large", http.StatusRequestEntityTooLarge, 0)
+			rejection.requestBodyBytes = oversizedProviderBodyBytes(err)
+			rejection.servabilityComputed = true
+			s.recordRejection(rejection)
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse(
+				"invalid_request_error", err.Error(), withCode("payload_too_large")))
+			return
+		}
+		s.updateInferenceRouteOutcomeForPending(pr, dispatchFailedPendingRouteOutcome(
+			pr, "provider_error", http.StatusInternalServerError))
+		writeJSON(w, http.StatusInternalServerError, errorResponse(
+			"internal_error", "failed to prepare provider request"))
 		return
 	}
 	encrypted, err := e2e.Encrypt(inferenceBody, providerPubKey, sessionKeys)

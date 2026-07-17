@@ -213,12 +213,20 @@ public enum ProviderMessage: Sendable, Equatable {
     public struct InferenceComplete: Sendable, Equatable {
         public var requestId: String
         public var usage: UsageInfo
+        public var stopSequence: String?
         public var seSignature: String?
         public var responseHash: String?
 
-        public init(requestId: String, usage: UsageInfo, seSignature: String? = nil, responseHash: String? = nil) {
+        public init(
+            requestId: String,
+            usage: UsageInfo,
+            stopSequence: String? = nil,
+            seSignature: String? = nil,
+            responseHash: String? = nil
+        ) {
             self.requestId = requestId
             self.usage = usage
+            self.stopSequence = stopSequence
             self.seSignature = seSignature
             self.responseHash = responseHash
         }
@@ -587,6 +595,7 @@ extension ProviderMessage: Codable {
         case encryptedData = "encrypted_data"
         // InferenceComplete
         case usage
+        case stopSequence = "stop_sequence"
         case seSignature = "se_signature"
         case responseHash = "response_hash"
         // InferenceError
@@ -694,6 +703,7 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.inferenceComplete, forKey: .type)
             try container.encode(c.requestId, forKey: .requestId)
             try container.encode(c.usage, forKey: .usage)
+            try container.encodeIfPresent(c.stopSequence, forKey: .stopSequence)
             try container.encodeIfPresent(c.seSignature, forKey: .seSignature)
             try container.encodeIfPresent(c.responseHash, forKey: .responseHash)
 
@@ -874,6 +884,7 @@ extension ProviderMessage: Codable {
             self = .inferenceComplete(InferenceComplete(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 usage: try container.decode(UsageInfo.self, forKey: .usage),
+                stopSequence: try container.decodeIfPresent(String.self, forKey: .stopSequence),
                 seSignature: try container.decodeIfPresent(String.self, forKey: .seSignature),
                 responseHash: try container.decodeIfPresent(String.self, forKey: .responseHash)
             ))

@@ -513,7 +513,11 @@ elif [ -n "$SERIAL" ]; then
             echo "  After installing, the provider will verify on first start."
             sleep 3
         fi
-        echo "  Enrollment ✓"
+        if profiles status -type enrollment 2>&1 | grep -q "MDM enrollment: Yes"; then
+            echo "  Enrollment verified ✓"
+        else
+            echo "  Enrollment pending ⚠ (complete it in System Settings, or run: darkbloom enroll)"
+        fi
     else
         echo "  Enrollment ⚠ (coordinator unreachable — enroll later with: darkbloom enroll)"
     fi

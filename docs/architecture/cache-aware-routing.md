@@ -136,12 +136,19 @@ enabled/running/ready/restarts/timeouts/overloads/RSS, prompt artifact
 ready/pending/failed counts, protocol 0/1/2 provider counts, ready v2
 provider-model count, and bounded holder/attempt counts. It never includes model
 IDs, provider IDs, accounts, scopes, prompts, tokens, or chain hashes.
+The response and gauge projection are implemented in
+`coordinator/api/exact_cache_status.go`; bounded artifact aggregation lives in
+`coordinator/promptcontract/provisioner.go:Counts`, protocol distribution in
+`coordinator/registry/cache_status.go:PrefixCacheProtocolStatus`, and holder /
+attempt counts in `coordinator/registry/cache_routing.go:CacheRoutingStateCounts`.
 
 For each selected hint, terminal correlation stays on the in-memory
 `PendingRequest` and emits bounded tags:
 `selected`, `lookup_outcome`, `cache_read`, `tier`, and `result`. This measures
 selected-holder precision and actual cached-read success without using an
-identifier as a metric tag.
+identifier as a metric tag
+(`coordinator/registry/registry.go:PendingRequest`,
+`coordinator/api/provider.go:cacheSelectionTerminalTags`).
 
 ## Configuration and rollback
 

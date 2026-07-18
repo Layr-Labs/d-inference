@@ -13,7 +13,8 @@ function LoginContent() {
   useEffect(() => {
     if (ready && authenticated) {
       const next = searchParams.get("next") || "/";
-      router.replace(next);
+      const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+      router.replace(safeNext);
     }
   }, [ready, authenticated, router, searchParams]);
 

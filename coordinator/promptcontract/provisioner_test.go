@@ -132,6 +132,18 @@ func TestProvisionerCancelsObsoleteCatalogPass(t *testing.T) {
 	}
 }
 
+func TestProvisionerCountsAllStatesWithoutIdentity(t *testing.T) {
+	provisioner := &Provisioner{statuses: map[string]ProvisionStatus{
+		"private-ready":   {ArtifactReady: true},
+		"private-pending": {},
+		"private-failed":  {LastError: "private filesystem detail"},
+	}}
+	counts := provisioner.Counts()
+	if counts.Ready != 1 || counts.Pending != 1 || counts.Failed != 1 {
+		t.Fatalf("counts=%+v", counts)
+	}
+}
+
 func waitForProvision(t *testing.T, provisioner *Provisioner, models int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

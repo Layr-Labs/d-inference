@@ -98,21 +98,3 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		}
 	}
 }
-
-func TestSummarizePromptArtifactsCoversAllStates(t *testing.T) {
-	summary := summarizePromptArtifacts([]promptcontract.ProvisionStatus{
-		{ModelID: "private-ready", ArtifactReady: true},
-		{ModelID: "private-pending"},
-		{ModelID: "private-failed", LastError: "private filesystem detail"},
-	})
-	if summary.Ready != 1 || summary.Pending != 1 || summary.Failed != 1 {
-		t.Fatalf("summary=%+v", summary)
-	}
-	encoded, err := json.Marshal(summary)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encoded), "private") {
-		t.Fatalf("artifact summary leaked detail: %s", encoded)
-	}
-}

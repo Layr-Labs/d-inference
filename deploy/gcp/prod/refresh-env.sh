@@ -18,6 +18,15 @@ case "$MODE" in
     *) fail "usage: $0 [--check|--apply]" ;;
 esac
 
+[[ "$ENV_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] ||
+    fail "ENV_DIR must be an absolute path containing only safe path characters"
+[[ "$ENV_FILE" =~ ^/[A-Za-z0-9._/-]+$ ]] ||
+    fail "ENV_FILE must be an absolute path containing only safe path characters"
+case "$ENV_FILE" in
+    "$ENV_DIR"/*) ;;
+    *) fail "ENV_FILE must be inside ENV_DIR" ;;
+esac
+
 [ -f "$ENV_FILE" ] && [ ! -L "$ENV_FILE" ] || fail "$ENV_FILE must be an existing regular file"
 [ -r "$REQUIRED_FILE" ] || fail "missing required-key manifest: $REQUIRED_FILE"
 [ -r "$DEFAULTS_FILE" ] || fail "missing release defaults: $DEFAULTS_FILE"

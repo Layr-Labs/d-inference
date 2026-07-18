@@ -25,6 +25,12 @@ type ProvisionStatus struct {
 	LastError        string
 }
 
+type ProvisionCounts struct {
+	Ready   int
+	Pending int
+	Failed  int
+}
+
 type Provisioner struct {
 	cache         *ArtifactCache
 	maxConcurrent int
@@ -136,6 +142,28 @@ func (p *Provisioner) Statuses() []ProvisionStatus {
 		return statuses[i].ModelID < statuses[j].ModelID
 	})
 	return statuses
+}
+
+// Counts returns the bounded aggregate used by rollout status/metrics without
+// allocating or exposing per-model status. statuses is capped by maxModels.
+func (p *Provisioner) Counts() ProvisionCounts {
+	if p == nil {
+		return ProvisionCounts{}
+	}
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	var counts ProvisionCounts
+	for _, status := range p.statuses {
+		switch {
+		case status.ArtifactReady:
+			counts.Ready++
+		case status.LastError != "":
+			counts.Failed++
+		default:
+			counts.Pending++
+		}
+	}
+	return counts
 }
 
 func (p *Provisioner) Close() {

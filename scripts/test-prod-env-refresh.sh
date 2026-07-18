@@ -56,4 +56,15 @@ then
     exit 1
 fi
 
+marker="$TEST_ROOT/path-injection-ran"
+if SKIP_PERSISTENCE_CHECK=1 \
+    ENV_DIR="$ENV_DIR;touch$marker" ENV_FILE="$ENV_FILE" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" \
+    "$REFRESH" --check >/dev/null 2>&1
+then
+    echo "refresh accepted an unsafe environment directory" >&2
+    exit 1
+fi
+[ ! -e "$marker" ]
+
 echo "production env refresh tests passed"

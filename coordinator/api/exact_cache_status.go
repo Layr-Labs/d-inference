@@ -63,24 +63,12 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 		status.Sidecar.Overloads = client.Overloads
 	}
 	if s.promptArtifacts != nil {
-		status.PromptArtifacts = summarizePromptArtifacts(s.promptArtifacts.Statuses())
-	}
-	return status
-}
-
-func summarizePromptArtifacts(statuses []promptcontract.ProvisionStatus) ExactCachePromptArtifactStatus {
-	var summary ExactCachePromptArtifactStatus
-	for _, artifact := range statuses {
-		switch {
-		case artifact.ArtifactReady:
-			summary.Ready++
-		case artifact.LastError != "":
-			summary.Failed++
-		default:
-			summary.Pending++
+		counts := s.promptArtifacts.Counts()
+		status.PromptArtifacts = ExactCachePromptArtifactStatus{
+			Ready: counts.Ready, Pending: counts.Pending, Failed: counts.Failed,
 		}
 	}
-	return summary
+	return status
 }
 
 func (s *Server) handleExactCacheStatus(w http.ResponseWriter, _ *http.Request) {

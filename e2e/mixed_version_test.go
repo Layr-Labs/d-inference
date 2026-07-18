@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -17,6 +18,9 @@ import (
 func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
 	if os.Getenv("DARKBLOOM_MIXED_VERSION") != "1" {
 		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.10 binary")
+	}
+	if output, err := exec.Command("/usr/bin/csrutil", "status").CombinedOutput(); err != nil || !strings.Contains(string(output), "status: enabled") {
+		t.Skip("released v0.7.10 enforces SIP; this runner cannot execute it")
 	}
 	require.NotEmpty(t, os.Getenv("DARKBLOOM_PROVIDER_BINARY"))
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")

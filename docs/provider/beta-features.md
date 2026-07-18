@@ -73,3 +73,24 @@ Notes and caveats:
 - Default is `false`. The field is retained in
   `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift` for a
   future EngineV2 implementation.
+
+### `mtp` — Gemma 4 multi-token prediction code path
+
+The v0.7.11 provider contains the default-off MTP implementation, but shipping
+that code does not activate speculative decoding:
+
+```bash
+darkbloom beta enable mtp
+darkbloom restart
+```
+
+Activation additionally requires a verified `spec_dec` assistant artifact in
+the model catalog. Production has no such artifact as of the v0.7.11 release
+preparation, so an enabled provider still falls back to target-only decoding.
+
+The implementation has target-authoritative verification and focused parity
+coverage. That is not a universal certification of token-identical behavior on
+every M1, M2, M3, or unknown Apple chip/model combination. Those hardware
+cohorts require separate canaries and the supervised benchmark matrix before
+activation. Provider publication, exact-cache routing activation, and MTP
+activation are three independent rollout decisions.

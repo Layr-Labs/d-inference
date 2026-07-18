@@ -2,6 +2,7 @@ package api
 
 import (
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -51,6 +52,69 @@ func TestCacheSelectionTTFTSampleRejectsUnauthoritativeInputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, _, ok := cacheSelectionTTFTSample(pr, usage, tc.valid, tc.ttft); ok {
 				t.Fatal("emitted unauthoritative TTFT sample")
+			}
+		})
+	}
+}
+
+func TestCacheSelectionTerminalCorrelationCoversEveryLookupOutcome(t *testing.T) {
+	pr := &registry.PendingRequest{
+		RequestID: "private-request-id", ProviderID: "private-provider-id",
+		ConsumerKey: "private-account-id",
+		CachePlan: registry.CachePlan{
+			ModelAggregateHash: strings.Repeat("a", 64),
+			PromptContractID:   strings.Repeat("b", 64),
+			CacheScope:         "private-cache-scope",
+			PromptTokenCount:   512,
+			Boundaries: []protocol.PrefixCacheAnchor{{
+				TokenCount: 256, ChainHash: strings.Repeat("c", 64),
+			}},
+		},
+		CacheSelectionMode: "active", CacheSelectionTier: "ssd",
+		CacheSelectionSelected: true,
+	}
+	outcomes := []string{
+		"hit", "miss_absent", "miss_corrupt",
+		"skipped_capacity", "skipped_cost", "skipped_policy",
+	}
+	for _, outcome := range outcomes {
+		t.Run(outcome, func(t *testing.T) {
+			tags := cacheSelectionTerminalTags(
+				pr, protocol.UsageInfo{CacheOutcome: outcome}, true, true)
+			joined := strings.Join(tags, ",")
+			for _, want := range []string{
+				"selected:true",
+				"lookup_outcome:" + outcome,
+				"cache_read:" + strconv.FormatBool(outcome == "hit"),
+			} {
+				if !strings.Contains(joined, want) {
+					t.Fatalf("tags %q missing %q", joined, want)
+				}
+			}
+			for _, sensitive := range []string{
+				pr.RequestID, pr.ProviderID, pr.ConsumerKey,
+				pr.CachePlan.ModelAggregateHash, pr.CachePlan.PromptContractID,
+				pr.CachePlan.CacheScope, pr.CachePlan.Boundaries[0].ChainHash,
+			} {
+				if strings.Contains(joined, sensitive) {
+					t.Fatalf("terminal correlation leaked %q in %q", sensitive, joined)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name, outcome  string
+		valid, present bool
+	}{
+		{name: "unreported", outcome: "unreported"},
+		{name: "invalid", outcome: "invalid", present: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tags := cacheSelectionTerminalTags(pr, protocol.UsageInfo{}, tc.valid, tc.present)
+			joined := strings.Join(tags, ",")
+			if !strings.Contains(joined, "lookup_outcome:"+tc.outcome) ||
+				!strings.Contains(joined, "cache_read:false") {
+				t.Fatalf("tags=%q", joined)
 			}
 		})
 	}

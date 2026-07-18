@@ -24,15 +24,47 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 | Item | Value |
 |---|---|
 | Platform | GCE VM `darkbloom-coordinator` (`c3d-highcpu-30`), zone `us-east4-a`, project `darkbloom-mainnet` |
+| Confidential compute | GCP reports AMD **SEV** with maintenance policy `MIGRATE`; Shielded VM Secure Boot, vTPM, and integrity monitoring are enabled. Do not claim SEV-SNP for this VM. |
 | Access | IAP SSH only: `gcloud compute ssh darkbloom-coordinator --project darkbloom-mainnet --zone us-east4-a --tunnel-through-iap` |
-| Domain | `api.darkbloom.dev` (host Caddy systemd service terminates TLS, proxies to `:8080`) |
+| Domain | `api.darkbloom.dev` (host Caddy systemd service terminates TLS using the pre-provisioned static certificate, then proxies to `:8080`) |
 | Coordinator | Docker container `coordinator`, **host network**, `--restart unless-stopped`, entrypoint [`coordinator/deploy/start.sh`](../../coordinator/deploy/start.sh) |
 | MicroMDM | Port 9002, same container, **state on the persistent disk** (see below) |
 | Database | AWS RDS PostgreSQL (external, `EIGENINFERENCE_DATABASE_URL`) |
-| Persistent storage | Host disk `/mnt/disks/userdata`, bind-mounted into the container. Holds the MicroMDM BoltDB (`micromdm/`), step-ca state (`step-ca/`), and logs. `start.sh` symlinks `/data -> /mnt/disks/userdata`. |
+| Persistent storage | Host disk `/mnt/disks/userdata`, bind-mounted into the container. Holds the MicroMDM BoltDB (`micromdm/`), prompt artifacts, and logs. `start.sh` symlinks `/data -> /mnt/disks/userdata`. Any old `step-ca/` tree is retired migration residue; no step-ca process is running and it must not be restored as an active dependency. |
 | Images | Cloud Build trigger builds on every master push → `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` |
-| Env file | `/etc/d-inference/env` on the VM (root-only). **Hand-maintained:** several tuned vars are NOT emitted by any generator script — never regenerate this file; edit it in place and keep a timestamped backup. |
+| Env file | `/etc/d-inference/env` on the VM (root-only). It must live on the boot disk, not tmpfs. [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) preserves every existing value, fails if the observed live tuning set is incomplete, and adds only absent release defaults. |
 | Fallback | The previous container is kept (stopped) as `coordinator_fallback_<timestamp>` for instant rollback |
+
+The live host still has stale Caddy `/acme/*` routing and lacks
+`stream_close_delay 5m`. Those are separate Caddy-maintenance changes. Do not
+reload Caddy during the v0.7.11 coordinator swap because that reconnects the
+provider fleet; the static certificate and loaded config remain in place.
+
+## v0.7.11 release order
+
+Shipping code and activating optimizations are separate operations:
+
+1. Human deploys the coordinator with
+   `EIGENINFERENCE_CACHE_ROUTING_MODE=off` and
+   `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=false`.
+2. After ordinary traffic and all four endpoint response shapes are healthy,
+   human enables the sidecar only. Routing stays off. `/v1/cache/status` must
+   show `sidecar.ready=true`, bounded RSS, no restart loop, and prompt artifacts
+   converging without failures.
+3. Install v0.7.11 on owned provider canaries with MTP left off. Keep v0.7.10
+   eligible; do not raise `EIGENINFERENCE_MIN_PROVIDER_VERSION`.
+4. Exercise chat completions, completions, Responses, and Anthropic Messages,
+   including tools, stop sequences, body limits, and cold fallback.
+5. Publish the signed/notarized provider only after canary acceptance.
+6. Keep exact-cache routing off. Current production models do not advertise a
+   reusable v2 layout. Activation requires a genuinely eligible model, a real
+   positive-hit proof, stable telemetry, and a new independent 256-bit
+   `EIGENINFERENCE_CACHE_MASTER_KEY`.
+7. MTP remains a later rollout. Production has no `spec_dec` artifact and the
+   provider default is off.
+
+The GitHub `benchmarks` environment approval is a human release gate. Do not
+bypass or weaken it.
 
 ## Steps — coordinator deploy (prod)
 
@@ -72,14 +104,53 @@ curl -s localhost:8080/health   # note the provider count for post-swap comparis
 
 ### 3. Env changes (if any)
 
+The current host was observed with `/etc/d-inference` mounted as tmpfs, so most
+backups and the live file would disappear on reboot. A human must migrate it to
+the boot disk once before using the refresh script:
+
 ```bash
-sudo cp /etc/d-inference/env /etc/d-inference/env.bak.$(date +%Y%m%d-%H%M%S)
-sudo vim /etc/d-inference/env   # or targeted sed
-sudo grep -E "^THE_VARS_YOU_CHANGED" /etc/d-inference/env   # verify
+# Human-only on the production VM. Preserve ownership and mode.
+sudo install -d -m 0700 /var/lib/darkbloom-env
+sudo cp -p /etc/d-inference/env /var/lib/darkbloom-env/env
+sudo umount /etc/d-inference
+sudo install -d -m 0700 /etc/d-inference
+sudo cp -p /var/lib/darkbloom-env/env /etc/d-inference/env
+findmnt -n -o FSTYPE --target /etc/d-inference   # must not print tmpfs
+
+# Install the reviewed refresh inputs so reboot/restart uses repository logic.
+sudo install -d -m 0755 /usr/local/lib/darkbloom-env
+sudo install -m 0755 deploy/gcp/prod/refresh-env.sh \
+  /usr/local/sbin/darkbloom-refresh-env
+sudo install -m 0644 deploy/gcp/prod/required-env-keys.txt \
+  /usr/local/lib/darkbloom-env/required-env-keys.txt
+sudo install -m 0644 deploy/gcp/prod/release-env-defaults \
+  /usr/local/lib/darkbloom-env/release-env-defaults
+sudo install -m 0644 deploy/gcp/prod/darkbloom-env-refresh.service \
+  /etc/systemd/system/darkbloom-env-refresh.service
+sudo systemctl daemon-reload
+sudo systemctl enable darkbloom-env-refresh.service
+
+sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
+  DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults \
+  /usr/local/sbin/darkbloom-refresh-env --check
+sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
+  DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults \
+  /usr/local/sbin/darkbloom-refresh-env --apply
+
+# Verify only non-secret rollout controls.
+sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|PROMPT_SIDECAR_ENABLED)=' \
+  /etc/d-inference/env
 ```
 
-New env vars take effect only on container start — flip flags in the same maintenance
-window as the swap.
+The check prints only safe additions, never existing values. The apply step
+writes a same-directory temporary file, verifies that no existing key would be
+dropped, keeps a root-only timestamped backup, and atomically renames the new
+file. It never fetches or rewrites secrets. The installed oneshot validates and
+extends the persistent file before Docker starts on every reboot; a missing
+required variable fails the unit instead of constructing a truncated file.
+
+New env vars take effect only on container start. The first v0.7.11 swap must
+leave both sidecar and routing disabled.
 
 ### 4. Swap
 
@@ -87,6 +158,9 @@ Rules learned the hard way:
 
 - **One host-network container at a time.** Stop the old container *before* starting the
   new one. Two containers fighting over `:8080` caused the 2026-07-03 outage.
+- **Preserve the 10-minute application drain.** Docker's default 10-second stop
+  timeout would SIGKILL active requests; every stop and new container uses 630
+  seconds.
 - **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`
   boots a **blank MicroMDM** — every device lookup returns "device not found", the fleet
   falls to `self_signed` trust, and with `MIN_TRUST=hardware` the network is effectively
@@ -95,10 +169,11 @@ Rules learned the hard way:
 ```bash
 FALLBACK=coordinator_fallback_$(date +%Y%m%d-%H%M%S)
 sudo docker rename coordinator $FALLBACK
-sudo docker stop $FALLBACK
+sudo docker stop -t 630 $FALLBACK
 sudo docker run -d --name coordinator \
   --network host \
   --restart unless-stopped \
+  --stop-timeout 630 \
   -v /mnt/disks/userdata:/mnt/disks/userdata \
   --env-file /etc/d-inference/env \
   us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
@@ -114,6 +189,12 @@ pg_terminate_backend(<pid>)`); do **not** restart the container again.
 ```bash
 # Health + provider reconnection ramp (fleet reconnects within ~1 min)
 curl -s localhost:8080/health
+# Require the deployed commit/version/date embedded by cloudbuild-prod.yaml.
+curl -s localhost:8080/health | jq -e \
+  '.version == "0.7.11" and
+   (.build_commit | test("^[0-9a-f]{40}$")) and
+   .build_date != "unknown"'
+curl -s localhost:8080/v1/cache/status | jq .
 
 # Trust rebuild: hardware upgrades should dominate within ~2 minutes.
 sudo docker logs coordinator 2>&1 | grep -c "upgraded to hardware trust"
@@ -122,10 +203,11 @@ sudo docker logs coordinator 2>&1 | grep -c "upgraded to hardware trust"
 sudo docker logs coordinator 2>&1 | grep -c "device not found in MDM"
 
 # Startup config lines — confirm flags picked up
-sudo docker logs coordinator 2>&1 | grep -E "quality-concurrency|servability|warm-pool|dedicated"
+sudo docker logs coordinator 2>&1 | grep -E "quality-concurrency|servability|warm-pool|dedicated|cache routing"
 
 # Public check (from anywhere)
 curl -s https://api.darkbloom.dev/health
+curl -s https://api.darkbloom.dev/v1/cache/status
 curl -s https://api.darkbloom.dev/v1/stats | head -c 300
 ```
 
@@ -145,7 +227,7 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
 The old container is still on the box, stopped, with the pre-swap image and env:
 
 ```bash
-sudo docker stop coordinator && sudo docker rm coordinator
+sudo docker stop -t 630 coordinator && sudo docker rm coordinator
 sudo docker rename <fallback-name> coordinator   # or docker start <fallback-name>
 sudo docker start coordinator
 # If env was changed, restore the timestamped backup first:
@@ -177,16 +259,29 @@ Tag conventions:
 | Tag shape | Environment |
 |---|---|
 | `vX.Y.Z` | Prod (requires GitHub Environment approval if configured) |
-| `vX.Y.Z-dev.N` | Dev |
 | `vX.Y.Z-swift` or `vX.Y.Z-swift.N` | Accepted aliases during migration |
+
+Dev publication uses `workflow_dispatch` with `environment=dev`; the requested
+version must equal both checked-in source constants.
 
 The fallback version advertised when no release is registered is `LatestProviderVersion` in
 [`coordinator/api/server.go`](../../coordinator/api/server.go). Keep it in sync with
 `ProviderCore.version`. `GET /v1/releases/latest` returns **404 when no release row
 exists** — fixed by registering the release, not by bumping code.
 
+Before a tag exists, run:
+
 ```bash
-git tag -a v0.7.4 -m "Release v0.7.4"
+./scripts/check-release-version.sh 0.7.11
+./scripts/sync-install-embed.sh check
+```
+
+The release workflow repeats the check against the requested tag, built CLI,
+final archived CLI, and app plist. It does not mutate source to manufacture
+agreement.
+
+```bash
+git tag -a v0.7.11 -m "Release v0.7.11"
 git push origin master --tags
 ```
 
@@ -239,6 +334,9 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
+| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle and resource bounds. First deploy `ENABLED=false`; sidecar-only canary flips only this flag. |
+| `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off` for coordinator deploy, sidecar canary, provider canary, and provider publication. |
+| `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required only for a later routing activation; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 
 ## Troubleshooting

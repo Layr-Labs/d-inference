@@ -43,6 +43,10 @@ func TestClientUsesPersistentUnixHTTPAndFailsCold(t *testing.T) {
 				ScopeID string `json:"scope_id"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request.ScopeID == "overloaded" {
+				http.Error(w, "at capacity", http.StatusServiceUnavailable)
+				return
+			}
 			if request.ScopeID == "slow" {
 				time.Sleep(200 * time.Millisecond)
 			}
@@ -109,6 +113,13 @@ func TestClientUsesPersistentUnixHTTPAndFailsCold(t *testing.T) {
 	}
 	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
 		t.Fatalf("deadline was not bounded: %s", elapsed)
+	}
+	input.ScopeID = "overloaded"
+	if plan := client.PlanFailCold(context.Background(), input); plan.Participating {
+		t.Fatal("overloaded sidecar participated")
+	}
+	if stats := client.Stats(); stats.Timeouts != 1 || stats.Overloads != 1 {
+		t.Fatalf("client stats=%+v, want one timeout and one overload", stats)
 	}
 	if err := server.Close(); err != nil {
 		t.Fatal(err)

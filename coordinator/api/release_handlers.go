@@ -133,9 +133,7 @@ func (s *Server) handleRegisterRelease(w http.ResponseWriter, r *http.Request) {
 	// Invalidate cached version/manifest/release responses so providers and
 	// install.sh see the new release on the next request instead of waiting
 	// out the TTL.
-	s.readCache.Invalidate("api_version:v1")
-	s.readCache.Invalidate("runtime_manifest:v1")
-	s.readCache.Invalidate("latest_release:v1")
+	s.invalidateReleaseCaches(release.Platform)
 
 	s.logger.Info("release registered",
 		"version", release.Version,
@@ -457,10 +455,10 @@ func cleanReleaseTarPath(name string) (string, error) {
 func (s *Server) handleLatestRelease(w http.ResponseWriter, r *http.Request) {
 	platform := r.URL.Query().Get("platform")
 	if platform == "" {
-		platform = "macos-arm64"
+		platform = defaultReleasePlatform
 	}
 
-	cacheKey := "latest_release:v1:" + platform
+	cacheKey := latestReleaseCacheKey(platform)
 	if cached, ok := s.readCache.Get(cacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
@@ -516,7 +514,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if req.Platform == "" {
-		req.Platform = "macos-arm64"
+		req.Platform = defaultReleasePlatform
 	}
 	if s.binaryHashEnforce && !req.Force {
 		if release, ok := findReleaseForDeactivation(s.store.ListReleases(), req.Version, req.Platform); ok {
@@ -538,6 +536,7 @@ func (s *Server) handleAdminDeleteRelease(w http.ResponseWriter, r *http.Request
 	// Re-sync known hashes after deactivation.
 	s.SyncBinaryHashes()
 	s.SyncRuntimeManifest()
+	s.invalidateReleaseCaches(req.Platform)
 
 	s.logger.Info("admin: release deactivated", "version", req.Version, "platform", req.Platform)
 	writeJSON(w, http.StatusOK, map[string]any{

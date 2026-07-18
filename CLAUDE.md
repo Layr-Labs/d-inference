@@ -83,7 +83,7 @@ The `.external/` directory is reserved for local external checkouts and **must n
 ```bash
 cd coordinator
 go test ./...
-# Cross-compile for the EigenCloud container (Linux amd64):
+# Cross-compile for the GCP production container (Linux amd64):
 GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o coordinator-linux ./cmd/coordinator
 ```
 
@@ -133,7 +133,10 @@ go test ./e2e/... -run TestBenchmark -v    # load benchmarks
    - ..."
    ```
 4. **Push** the commit and tag: `git push origin master --tags`
-5. The Swift release workflow (`.github/workflows/release-swift.yml`) is triggered by tags shaped `vX.Y.Z` (plus legacy `vX.Y.Z-swift[.N]`); dev/prod routing is by tag shape (e.g. `vX.Y.Z-dev.N` targets dev).
+5. The Swift release workflow (`.github/workflows/release-swift.yml`) is
+   triggered by tags shaped `vX.Y.Z` (plus legacy
+   `vX.Y.Z-swift[.N]`). Dev publication uses `workflow_dispatch`; all requested
+   versions must equal the checked-in source constants.
 
 ## Deploying
 
@@ -141,11 +144,17 @@ Full deploy runbook: **[docs/operations/coordinator-deploy.md](docs/operations/c
 
 Covers coordinator deploy, provider CLI bundling, and install.sh updates.
 
-### Coordinator (prod, EigenCloud)
+### Coordinator (prod, Google Cloud)
 
-> **AI agents must NOT deploy to EigenCloud.** Prod deploys (`ecloud compute app deploy …`, any mutation of the `d-inference` EigenCloud app, any write to EigenCloud KMS or prod secrets) are a human-only action. If asked to ship to prod, stop and hand off — prepare the PR, the tag, or the exact commands, but do not execute them. This applies even when the user says "deploy"; confirm they mean *they* will run it, not you. Read-only commands like `ecloud compute app logs d-inference` or `curl https://api.darkbloom.dev/health` are fine.
+> **AI agents must NOT deploy or mutate production.** Any mutation of the
+> `darkbloom-mainnet` VM, container, services, Caddy, environment, Secret
+> Manager, database, DNS, or traffic is human-only. Agents may prepare the PR,
+> image-build config, tag, and exact commands. Read-only health/log inspection
+> is allowed.
 
-The prod coordinator runs on EigenCloud (TEE). Build target is `coordinator/Dockerfile`; EigenCloud builds from the repo and injects Caddy + TLS. Deploy is blue-green with persistent disk transfer (`/mnt/disks/userdata`).
+The prod coordinator runs on GCE VM `darkbloom-coordinator` in
+`darkbloom-mainnet`. Build target is `coordinator/Dockerfile`; host Caddy
+terminates static TLS. The persistent disk is `/mnt/disks/userdata`.
 
 Human-only deploy flow (for reference — do not run this as the agent):
 
@@ -153,15 +162,18 @@ Human-only deploy flow (for reference — do not run this as the agent):
 # 1. Push your changes (agent may do this if explicitly asked)
 git push origin master
 
-# 2. Trigger EigenCloud deploy — HUMAN ONLY
-ecloud compute app deploy d-inference
+# 2. The repository trigger builds and pushes the immutable master commit.
+# Direct local gcloud builds submit is rejected by cloudbuild-prod.yaml.
+gcloud builds list --project=darkbloom-mainnet --limit=5
 
-# 3. Verify (agent may do this)
+# 3. HUMAN ONLY: follow the drain and fallback-container swap runbook.
+
+# 4. Verify (agent may do this)
 curl https://api.darkbloom.dev/health
-ecloud compute app logs d-inference
 ```
 
-Deploy time: ~5-7 minutes. Env vars/secrets are managed via EigenCloud KMS — see `docs/operations/coordinator-deploy.md` for the full list.
+See `docs/operations/coordinator-deploy.md` for environment preservation,
+deployment, verification, and rollback.
 
 ### Coordinator (dev, Google Cloud)
 
@@ -177,13 +189,13 @@ CI (`.github/workflows/release-swift.yml`) builds, signs, notarizes, and uploads
 
 | Component | Prod | Dev |
 |-----------|------|-----|
-| Coordinator host | EigenCloud app `d-inference` | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
-| Console UI | EigenCloud app | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
+| Coordinator host | GCE VM `darkbloom-coordinator` (`darkbloom-mainnet`, `us-east4-a`) | GCE VM `d-inference-dev` (us-central1-a, Ubuntu + Docker + systemd) |
+| Console UI | Vercel | Vercel (separate dev project, `NEXT_PUBLIC_COORDINATOR_URL=https://api.dev.darkbloom.xyz`) |
 | Domain | `api.darkbloom.dev` | `api.dev.darkbloom.xyz` |
-| TLS | Caddy + EigenCloud-injected certs | Caddy in-container (Let's Encrypt ACME, VM :443) |
+| TLS | Host Caddy + pre-provisioned static certificate | Host Caddy (Let's Encrypt ACME, VM :443) |
 | Database | AWS RDS PostgreSQL (managed) | Cloud SQL Postgres 16 `d-inference-dev-db` via cloud-sql-proxy sidecar |
-| Persistent storage | `/mnt/disks/userdata` (EigenCloud blue-green) | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
-| Logs | `ecloud compute app logs d-inference` | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
+| Persistent storage | GCE persistent disk at `/mnt/disks/userdata` | GCE persistent disk `d-inference-dev-data`, 30 GB, mounted at `/mnt/disks/userdata` |
+| Logs | Docker JSON logs + hourly host archival/direct Datadog submission | `gcloud logging read ...` (VM + Cloud SQL in Cloud Logging) |
 | Release bucket | R2 `d-inf-app` | R2 `d-inf-app-dev` |
 | Trust level | `hardware` (MDM enrollment required) | `hardware` (same — full MDM stack) |
 | Provider install | `curl -fsSL https://api.darkbloom.dev/install.sh \| bash` | `curl -fsSL https://api.dev.darkbloom.xyz/install.sh \| bash` |

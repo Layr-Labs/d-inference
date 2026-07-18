@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -41,6 +42,7 @@ type SupervisorStatus struct {
 	Running  bool
 	Ready    bool
 	Restarts uint64
+	RSSBytes uint64
 }
 
 type Supervisor struct {
@@ -130,7 +132,7 @@ func (s *Supervisor) run(ctx context.Context) {
 			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
 			continue
 		}
-		s.setState(true, false)
+		s.setStateWithRSS(true, false, processRSSBytes(cmd.Process.Pid))
 		waited := make(chan error, 1)
 		go func() { waited <- cmd.Wait() }()
 		ticker := time.NewTicker(s.config.HealthInterval)
@@ -167,7 +169,7 @@ func (s *Supervisor) run(ctx context.Context) {
 						backoff = s.config.RestartBackoffMin
 						stopTimer(startup)
 					}
-					s.setState(true, true)
+					s.setStateWithRSS(true, true, processRSSBytes(cmd.Process.Pid))
 				} else if ready {
 					stopTimer(startup)
 					ticker.Stop()
@@ -232,9 +234,18 @@ func (s *Supervisor) terminate(cmd *exec.Cmd, waited <-chan error) {
 }
 
 func (s *Supervisor) setState(running, ready bool) {
+	s.setStateWithRSS(running, ready, 0)
+}
+
+func (s *Supervisor) setStateWithRSS(running, ready bool, rssBytes uint64) {
 	s.mu.Lock()
 	s.status.Running = running
 	s.status.Ready = ready
+	if running {
+		s.status.RSSBytes = rssBytes
+	} else {
+		s.status.RSSBytes = 0
+	}
 	s.mu.Unlock()
 }
 
@@ -332,4 +343,30 @@ func stopTimer(timer *time.Timer) {
 		default:
 		}
 	}
+}
+
+func processRSSBytes(pid int) uint64 {
+	if pid <= 0 {
+		return 0
+	}
+	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
+	if err != nil {
+		return 0
+	}
+	return rssBytesFromStatm(data, os.Getpagesize())
+}
+
+func rssBytesFromStatm(data []byte, pageSize int) uint64 {
+	fields := strings.Fields(string(data))
+	if len(fields) < 2 {
+		return 0
+	}
+	residentPages, err := strconv.ParseUint(fields[1], 10, 64)
+	if err != nil {
+		return 0
+	}
+	if pageSize <= 0 || residentPages > ^uint64(0)/uint64(pageSize) {
+		return 0
+	}
+	return residentPages * uint64(pageSize)
 }

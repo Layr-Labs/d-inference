@@ -95,9 +95,14 @@ func (m *Metrics) ObserveHistogram(name string, value float64, labels ...MetricL
 // RegisterGauge registers a computed gauge. fn is called each time the metric
 // is read; it should be cheap.
 func (m *Metrics) RegisterGauge(name string, fn GaugeFunc) {
+	m.RegisterGaugeLabels(name, fn)
+}
+
+// RegisterGaugeLabels registers a computed gauge with a bounded label set.
+func (m *Metrics) RegisterGaugeLabels(name string, fn GaugeFunc, labels ...MetricLabel) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.gauges[name] = fn
+	m.gauges[metricKey(name, labels)] = fn
 }
 
 // Snapshot returns a point-in-time view of all metrics.

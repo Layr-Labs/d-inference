@@ -1,4 +1,4 @@
-FROM rust:1.88.0-alpine AS prompt-sidecar-builder
+FROM rust:1.88.0-alpine@sha256:9dfaae478ecd298b6b5a039e1f2cc4fc040fc818a2de9aa78fa714dea036574d AS prompt-sidecar-builder
 ARG BUILDARCH
 ARG TARGETARCH
 RUN apk add --no-cache curl file musl-dev
@@ -29,17 +29,35 @@ RUN if [ "$BUILDARCH" != "$TARGETARCH" ]; then \
     wait "$pid"; \
     trap - EXIT
 
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25-alpine@sha256:56961d79ea8129efddcc0b8643fd8a5416b4e6228cfd477e3fd61deb2672c587 AS builder
+ARG BUILD_VERSION=dev
+ARG BUILD_COMMIT=unknown
+ARG BUILD_DATE=unknown
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -o /app/coordinator-bin ./coordinator/cmd/coordinator
+RUN test -n "$BUILD_VERSION" && test -n "$BUILD_COMMIT" && test -n "$BUILD_DATE" && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a \
+      -ldflags="-s -w \
+        -X github.com/eigeninference/d-inference/coordinator/api.BuildVersion=$BUILD_VERSION \
+        -X github.com/eigeninference/d-inference/coordinator/api.BuildCommit=$BUILD_COMMIT \
+        -X github.com/eigeninference/d-inference/coordinator/api.BuildDate=$BUILD_DATE \
+        -X github.com/eigeninference/d-inference/coordinator/telemetry.CoordinatorVersion=$BUILD_VERSION" \
+      -o /app/coordinator-bin ./coordinator/cmd/coordinator
 
 # Pre-built base with MicroMDM v1.13.1 (also carries step-ca/step CLI, unused
 # since the dormant ACME device-attest leg was removed).
 # Rebuild base only when tool versions change: docker build -f Dockerfile.base -t eigengajesh/d-inference-base:latest . && docker push
-FROM eigengajesh/d-inference-base:v1-amd64
+FROM eigengajesh/d-inference-base:v1-amd64@sha256:4ea05ea089ac61f8d5999f175fbfaeb20171f74cf721dac7ce278a4f28fe9671
+ARG BUILD_VERSION=dev
+ARG BUILD_COMMIT=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.source="https://github.com/Layr-Labs/d-inference" \
+      org.opencontainers.image.version="$BUILD_VERSION" \
+      org.opencontainers.image.revision="$BUILD_COMMIT" \
+      org.opencontainers.image.created="$BUILD_DATE"
 
 COPY --from=builder /app/coordinator-bin /usr/local/bin/coordinator
 COPY --from=prompt-sidecar-builder /app/coordinator/promptsidecar/target/x86_64-unknown-linux-musl/release/promptsidecar /usr/local/bin/promptsidecar

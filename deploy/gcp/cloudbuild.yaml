@@ -1,14 +1,14 @@
 # Cloud Build config for the d-inference DEV coordinator on Google Cloud.
 #
 # Triggered on push to master (path filter: coordinator/** | deploy/gcp/**).
-# Builds coordinator/Dockerfile (same image EigenCloud prod uses), pushes to
+# Builds coordinator/Dockerfile (the same container target as GCP prod), pushes to
 # Artifact Registry, then pins the VM's container image tag and restarts the
 # systemd unit so it picks up the new image.
 #
 # Why GCE VM instead of Cloud Run: the coordinator runs
 # MicroMDM (BoltDB), which needs reliable local filesystem semantics that
 # Cloud Run's ephemeral FS + gcsfuse can't provide. The VM has a persistent
-# disk at /mnt/disks/userdata — same path prod uses on EigenCloud.
+# disk at /mnt/disks/userdata — the same path used by prod.
 #
 # Upgrade time: ~2-4 minutes end-to-end (build + push + SSH restart).
 
@@ -27,12 +27,19 @@ options:
 steps:
   - id: build
     name: gcr.io/cloud-builders/docker
+    entrypoint: bash
     args:
-      - build
-      - --tag=${_IMAGE}:$SHORT_SHA
-      - --tag=${_IMAGE}:latest
-      - --file=coordinator/Dockerfile
-      - .
+      - -ceu
+      - |
+        BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        docker build \
+          --tag=${_IMAGE}:$SHORT_SHA \
+          --tag=${_IMAGE}:latest \
+          --file=coordinator/Dockerfile \
+          --build-arg=BUILD_VERSION=dev \
+          --build-arg=BUILD_COMMIT=$COMMIT_SHA \
+          --build-arg=BUILD_DATE=$${BUILD_DATE} \
+          .
 
   - id: push-sha
     name: gcr.io/cloud-builders/docker

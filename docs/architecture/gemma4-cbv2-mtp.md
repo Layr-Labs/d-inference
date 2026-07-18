@@ -1,12 +1,17 @@
 # Gemma 4 Frozen-KV MTP on Continuous Batching V2
 
-**Status:** implemented and under review in d-inference PR
+**Status:** implementation merged through d-inference PR
 [#547](https://github.com/Layr-Labs/d-inference/pull/547), which pins the engine
 implementation in mlx-swift-lm PR
 [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74), plus the exact
 automatic-verifier repair in mlx-swift-lm PR
-[#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). Default-off; not
-released, registered, or deployed.
+[#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). The code is included
+in the v0.7.11 candidate but remains default-off. Production has no `spec_dec`
+assistant artifact, and release publication is not MTP activation.
+
+The recorded parity matrix is implementation evidence, not universal
+certification for every M1, M2, M3, or unknown Apple chip/model combination.
+Those cohorts require separate owned canaries before any activation.
 
 This document is the implementation contract for production Gemma 4
 multi-token prediction (MTP) in Darkbloom. It records the code-grounded local

@@ -41,7 +41,7 @@ The API is OpenAI- and Anthropic-compatible, so most clients work by changing on
 ```mermaid
 flowchart LR
     U["<b>Consumer</b><br/>OpenAI / Anthropic SDK · curl · Web UI"]
-    subgraph coord["Coordinator · Go · Confidential VM (AMD SEV-SNP)"]
+    subgraph coord["Coordinator · Go · GCP Confidential VM (AMD SEV)"]
         CO["Auth · Routing · Billing<br/>Attestation · E2E relay"]
     end
     subgraph prov["Provider · Swift CLI · hardened macOS process"]
@@ -199,7 +199,7 @@ Pricing is per-token and resolved per request: a provider's custom price, else a
 | Minimum charge | $0.0001 / request |
 | Platform fee | **0%** during public alpha |
 
-Per-token rates target roughly half of comparable hosted APIs. **Live per-model pricing is always at [`GET /v1/pricing`](https://api.darkbloom.dev/v1/pricing).** Funding is via Solana USDC deposits (verified on-chain) or Stripe; provider payouts run through Stripe Connect. Requests routed to your own machine via [self-route](#self-route--direct-mode) are **free**. See [`docs/reference/pricing-model.md`](docs/reference/pricing-model.md).
+Per-token rates target roughly half of comparable hosted APIs. **Live per-model pricing is always at [`GET /v1/pricing`](https://api.darkbloom.dev/v1/pricing).** Funding uses Stripe deposits into the internal micro-USD ledger; provider payouts run through Stripe Connect. Requests routed to your own machine via [self-route](#self-route--direct-mode) are **free**. See [`docs/reference/pricing-model.md`](docs/reference/pricing-model.md).
 
 ## Run a provider
 

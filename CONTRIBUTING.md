@@ -24,7 +24,7 @@ See [CLAUDE.md](CLAUDE.md) for the full layout and architectural decisions. The 
 
 | Directory | Stack | What it is |
 |-----------|-------|------------|
-| `coordinator/` | Go | Central matchmaking server (runs on EigenCloud / GCP) |
+| `coordinator/` | Go | Central matchmaking server (production and dev run on separate GCP projects) |
 | `provider-swift/` | Swift | Hardened CLI daemon on Apple Silicon Macs (`darkbloom` + `darkbloom-enclave`) |
 | `console-ui/` | Next.js 16 / React 19 | Web app (chat, billing, models) |
 
@@ -102,7 +102,9 @@ Comments: explain *why*, not *what*. Don't add comments that just restate what t
 Several surfaces have to stay in sync. If you touch one, check the others:
 
 - **WebSocket protocol**: `provider-swift/Sources/ProviderCore/Protocol/Messages.swift` (Swift) ↔ `coordinator/protocol/messages.go` (Go).
-- **Provider bundle**: `.github/workflows/release-swift.yml`, `scripts/install.sh` (and the embedded copy at `coordinator/internal/api/install.sh`), and `LatestProviderVersion` in `coordinator/internal/api/server.go`.
+- **Provider bundle**: `.github/workflows/release-swift.yml`, canonical
+  `scripts/install.sh`, its generated embed at `coordinator/api/install.sh`, and
+  `LatestProviderVersion` in `coordinator/api/server.go`.
 - **Image generation**: coordinator consumer/provider handlers route to the standalone image-generation service; `provider-swift` does not handle images.
 - **Device linking**: coordinator device auth endpoints + provider `login`/`logout` commands.
 

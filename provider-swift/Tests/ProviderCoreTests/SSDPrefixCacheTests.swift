@@ -797,6 +797,55 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(reader.stats().hits == 1)
     }
 
+    @Test("real SSD hit and miss p95 stay inside the configured stage deadline")
+    func stageLatencyGate() async throws {
+        let dir = tempDir("latency")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let cache = makeCache(dir: dir, kek: kek, clock: clock)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        let hitPrompt = tokens + [999]
+        donateFixture(cache, tokens: tokens)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+
+        var missSamples: [Duration] = []
+        for index in 0 ..< 50 {
+            let started = ContinuousClock.now
+            let result = await cache.stage(
+                requestID: "miss-\(index)",
+                promptTokens: Array(10_000 ..< (10_000 + tokenCount)) + [index],
+                cacheScope: "")
+            missSamples.append(started.duration(to: ContinuousClock.now))
+            #expect(!result.staged)
+            #expect(result.disposition == .missAbsent)
+        }
+
+        var hitSamples: [Duration] = []
+        for index in 0 ..< 20 {
+            let started = ContinuousClock.now
+            let result = await cache.stage(
+                requestID: "hit-\(index)", promptTokens: hitPrompt, cacheScope: "")
+            hitSamples.append(started.duration(to: ContinuousClock.now))
+            #expect(result.staged)
+            let hit = try #require(
+                cache.lookup(tokens: hitPrompt, layerKinds: fixtureLayerKinds, cacheSalt: nil))
+            cache.endAdoption(tokens: hitPrompt, matched: hit.matched, cacheSalt: nil)
+            cache.completeStaging(requestID: "hit-\(index)")
+        }
+
+        missSamples.sort()
+        hitSamples.sort()
+        let missP95 = missSamples[47]
+        let hitP95 = hitSamples[18]
+        let policyDeadline = Duration.milliseconds(
+            Int64(SSDPrefixCachePolicy.maxStageMillis(environment: [:])))
+        print("SSD stage latency: miss_p95=\(missP95) hit_p95=\(hitP95) deadline=\(policyDeadline)")
+        #expect(missP95 < policyDeadline)
+        #expect(hitP95 < policyDeadline)
+    }
+
     @Test("salt isolation on disk: scoped donation is unfindable by other scopes")
     func saltIsolation() async throws {
         let dir = tempDir("salt")

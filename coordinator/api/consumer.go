@@ -3272,8 +3272,8 @@ func microToUSD(micro int64) float64 { return float64(micro) / 1_000_000 }
 // This endpoint does not require authentication.
 //
 // /health is a LIVENESS probe: it returns 200 whenever the process is up, INCLUDING
-// while draining. This is deliberate. EigenCloud's Caddy health-checks its single
-// coordinator upstream on /health with health_status 200, so returning 503 here
+// while draining. This is deliberate. The production host Caddy health-checks its
+// single coordinator upstream on /health with health_status 200, so returning 503 here
 // would mark the only backend down and make the admin/rollback endpoints
 // (POST /v1/admin/drain {"draining":false}) and /readyz unreachable through the
 // public URL — you could not undo a drain remotely. Drain/readiness lives on
@@ -3296,15 +3296,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 // If a release is registered in the store, uses that. Otherwise falls back
 // to the hardcoded LatestProviderVersion.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	const cacheKey = "api_version:v1"
-	if cached, ok := s.readCache.Get(cacheKey); ok {
+	if cached, ok := s.readCache.Get(apiVersionCacheKey); ok {
 		writeCachedJSON(w, cached)
 		return
 	}
 
 	var resp types.VersionResponse
 	// Try release table first.
-	if release := s.store.GetLatestRelease("macos-arm64"); release != nil {
+	if release := s.store.GetLatestRelease(defaultReleasePlatform); release != nil {
 		resp = types.VersionResponse{
 			Version:      release.Version,
 			Platform:     release.Platform,
@@ -3332,7 +3331,7 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to encode version"))
 		return
 	}
-	s.readCache.Set(cacheKey, body, time.Minute)
+	s.readCache.Set(apiVersionCacheKey, body, time.Minute)
 	writeCachedJSON(w, body)
 }
 

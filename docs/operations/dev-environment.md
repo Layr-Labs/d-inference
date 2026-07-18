@@ -2,14 +2,16 @@
 
 How to stand up, operate, and tear down the Darkbloom dev environment on Google Cloud. Dev exists so we can test coordinator, provider bundle, console-ui, Mac fleet, and release pipeline end-to-end without touching prod.
 
-**Prod runs on EigenCloud and is human-deploy-only (see [`coordinator-deploy.md`](coordinator-deploy.md) and `CLAUDE.md`).** Nothing in this runbook deploys to prod.
+**Prod runs in the separate `darkbloom-mainnet` GCP project and is
+human-deploy-only (see [`coordinator-deploy.md`](coordinator-deploy.md)).**
+Nothing in this runbook deploys to prod.
 
 ## What dev looks like
 
 | Component | Location | URL / identifier |
 |---|---|---|
 | Coordinator | GCE VM `d-inference-dev` (us-central1-a, Ubuntu 24.04 + Docker + systemd) | `https://api.dev.darkbloom.xyz` (static IP) |
-| Persistent disk | GCE persistent disk `d-inference-dev-data` mounted at `/mnt/disks/userdata` (same path as EigenCloud prod) | 30 GB, pd-balanced |
+| Persistent disk | GCE persistent disk `d-inference-dev-data` mounted at `/mnt/disks/userdata` (same path as GCP prod) | 30 GB, pd-balanced |
 | Console UI | Vercel project `darkbloom-console-dev`, built from `console-ui/` | `https://console.dev.darkbloom.xyz` |
 | Database | Cloud SQL Postgres 16, instance `d-inference-dev-db`, `db-f1-micro` | 127.0.0.1:5432 from inside the container via cloud-sql-proxy sidecar |
 | Release bucket | Cloudflare R2 `d-inf-app-dev` | R2 CDN URL in env vars |
@@ -17,10 +19,10 @@ How to stand up, operate, and tear down the Darkbloom dev environment on Google 
 | Mac fleet | 2–4 dev Macs | Listed in `deploy/provider-fleet/dev-inventory.txt` |
 | DNS | Vercel Domains | `api.dev.darkbloom.xyz` A → VM static IP; `console.dev.darkbloom.xyz` CNAME → Vercel |
 | Privy | Separate dev Privy app | Values in Secret Manager |
-| Solana | Mainnet, dev-only BIP39 mnemonic | `EIGENINFERENCE_BILLING_MOCK=false` |
+| Coordinator encryption identity | Dev-only BIP39 mnemonic used for X25519 key derivation | Never reuse production's mnemonic |
 | MDM / attestation | Full stack — MicroMDM runs inside the coordinator container | `MIN_TRUST=hardware`, same as prod |
 
-**Why GCE VM, not Cloud Run:** the coordinator container runs MicroMDM (BoltDB + push cert on disk), which needs reliable local filesystem semantics. Cloud Run's ephemeral FS doesn't survive revisions, and gcsfuse is unsafe for BoltDB. The VM's persistent disk lives at `/mnt/disks/userdata` — the same path EigenCloud prod uses, so the container's `start.sh` works unchanged.
+**Why GCE VM, not Cloud Run:** the coordinator container runs MicroMDM (BoltDB + push cert on disk), which needs reliable local filesystem semantics. Cloud Run's ephemeral FS doesn't survive revisions, and gcsfuse is unsafe for BoltDB. The VM's persistent disk lives at `/mnt/disks/userdata` — the same path GCP prod uses, so the container's `start.sh` works unchanged.
 
 **Upgrade time:** ~2–4 minutes end-to-end for the coordinator (build + push + `systemctl restart`). ~30–60 seconds for the console UI on Vercel (auto-builds on git push). During a coordinator restart there is a ~10s blip when the container comes down and back up; providers auto-reconnect.
 
@@ -58,7 +60,7 @@ Values:
 |---|---|
 | `eigeninference-admin-key` | `openssl rand -hex 32` |
 | `eigeninference-release-key` | `openssl rand -hex 32` |
-| `eigeninference-solana-mnemonic` | Generate a **new** BIP39 mnemonic (never reuse prod). Derive the Solana public key and fund it with a small amount of USDC on mainnet for end-to-end testing. |
+| `eigeninference-solana-mnemonic` | Legacy secret name: generate a **new** BIP39 mnemonic for coordinator X25519 key derivation. It has no Solana billing role; never reuse prod. |
 | `eigeninference-privy-app-id` | Dev Privy app dashboard |
 | `eigeninference-privy-app-secret` | Dev Privy app dashboard |
 | `eigeninference-privy-verification-key` | Dev Privy app dashboard (JWKS JSON or PEM) |
@@ -109,7 +111,11 @@ The console UI on Vercel handles its own CI; no second Cloud Build trigger is ne
 
 ### 7. First dev provider release
 
-From the GitHub Actions UI, run **Release Provider Bundle** with `environment=dev`. It builds, signs, notarizes, uploads to R2 `d-inf-app-dev`, and registers with the dev coordinator. Alternatively, push a tag like `v0.3.6-dev.1` — the workflow routes dev/prod by tag shape.
+From the GitHub Actions UI, run **Release Provider Bundle** with
+`environment=dev` and a version exactly matching the checked-in provider and
+coordinator constants. It builds, signs, notarizes, uploads to R2
+`d-inf-app-dev`, and registers with the dev coordinator. Dev tags are not used:
+the exact-version gate rejects tag/source disagreement.
 
 Reference: [`coordinator-deploy.md`](coordinator-deploy.md).
 
@@ -136,8 +142,12 @@ It hits `/health`, `/v1/stats`, `/v1/models/catalog`, verifies `install.sh` temp
 ## Day-to-day flow
 
 - **Push to `master`** → Cloud Build auto-deploys the coordinator; Vercel auto-deploys the console UI. No approval step.
-- **Need a new provider release on dev?** Run the **Release Provider Bundle** workflow with `environment=dev` (or push a `-dev.N` tag).
-- **Prod release after dev bake?** Use the same commit SHA and run the workflow with `environment=prod`. The prod GitHub Environment should require reviewer approval. Dev and prod never share artifacts.
+- **Need a new provider release on dev?** Run the **Release Provider Bundle**
+  workflow with `environment=dev`.
+- **Prod release after dev bake?** Create the reviewed source-matching stable
+  tag on the same commit. Production publication rejects branch dispatches and
+  still requires the protected prod GitHub Environment approval. Dev and prod
+  never share artifacts.
 - **Fleet refresh.** `deploy/provider-fleet/update-fleet.sh dev` reinstalls via SSH + `install.sh`.
 
 ## Secrets mapping
@@ -149,7 +159,7 @@ It hits `/health`, `/v1/stats`, `/v1/models/catalog`, verifies `install.sh` temp
 | `EIGENINFERENCE_PRIVY_APP_ID` | `eigeninference-privy-app-id` | Privy dashboard (dev app) |
 | `EIGENINFERENCE_PRIVY_APP_SECRET` | `eigeninference-privy-app-secret` | Privy dashboard |
 | `EIGENINFERENCE_PRIVY_VERIFICATION_KEY` | `eigeninference-privy-verification-key` | Privy dashboard |
-| `MNEMONIC` | `eigeninference-solana-mnemonic` | Generated fresh for dev |
+| `MNEMONIC` | `eigeninference-solana-mnemonic` | Legacy secret name; generated fresh for dev X25519 key derivation |
 | `EIGENINFERENCE_DATABASE_URL` | `eigeninference-database-url` | Bootstrap writes Cloud SQL conn string (via cloud-sql-proxy on 127.0.0.1:5432) |
 | `MICROMDM_API_KEY` / `EIGENINFERENCE_MDM_API_KEY` | `eigeninference-micromdm-api-key` | Same value for both — keep in sync |
 | `MDM_PUSH_P12_B64` | `eigeninference-mdm-push-p12-b64` | Apple push cert (base64url-encoded PKCS#12) |
@@ -203,7 +213,9 @@ gcloud sql instances delete d-inference-dev-db --quiet
 
 ## What dev does *not* cover
 
-- **EigenCloud blue-green semantics.** The VM + systemd restart model is close but not identical to EigenCloud's blue-green disk transfer. Prod-only deploy paths still need a final smoke on prod (reviewer-approved).
+- **Production's manually managed container swap.** Dev uses a systemd restart;
+  production uses a human-controlled drain, fallback-container swap, and host
+  Caddy maintenance marker.
 - **External user traffic.** Dev is team-only; admin emails are gated to `gajesh@eigenlabs.org` by default.
 - **In-memory mode data loss.** If `EIGENINFERENCE_DATABASE_URL` is unset, the coordinator resets state on every deploy. To re-register the current release and grant test credits after a redeploy, run `scripts/admin.sh EIGENINFERENCE_COORDINATOR_URL=https://api.dev.darkbloom.xyz releases latest`.
 

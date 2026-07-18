@@ -4,7 +4,17 @@ How to move the prod coordinator off EigenCloud onto a GCP Confidential VM with 
 
 Tickets: `DAR-69` (build CVM target) → `DAR-70` (extract + rehydrate sealed state — see [`state-export.md`](state-export.md)) → `DAR-105` (security review) → `DAR-71` (cutover). `DAR-243` (`.ai`) is **decoupled**.
 
-> **Prod EigenCloud, GCP prod deploys, KMS, and DNS are human-only.** AI agents may prepare PRs/commands; a human runs anything that mutates prod.
+> The completed production migration was human-operated. Current production
+> mutation rules live in `coordinator-deploy.md`.
+
+> **Historical record, not an operational runbook.** The migration is complete.
+> Current production is the GCE VM documented in
+> [`coordinator-deploy.md`](coordinator-deploy.md). The deployed VM reports AMD
+> **SEV** with maintenance policy `MIGRATE`, not the proposed SEV-SNP /
+> `TERMINATE` shape below. Host Caddy currently uses a pre-provisioned static
+> certificate. step-ca is not running; any `step-ca/` disk tree and `/acme/*`
+> route are retired residue. Rollback is now the stopped fallback-container
+> procedure, not a DNS return to EigenCloud.
 
 ## Prerequisites
 

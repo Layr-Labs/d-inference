@@ -6,6 +6,17 @@ on:
   pull_request:
 
 jobs:
+  release-integrity:
+    name: Release Integrity
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Check source, fallback, and installer parity
+        run: |
+          ./scripts/check-release-version.sh
+          ./scripts/sync-install-embed.sh check
+          ./scripts/test-prod-env-refresh.sh
+
   test-coordinator:
     name: Coordinator Tests
     runs-on: blacksmith-4vcpu-ubuntu-2404

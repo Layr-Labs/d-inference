@@ -19,9 +19,10 @@ name: Release Provider Bundle (Swift)
 #
 # Swift cutover tag conventions:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
-#   - vX.Y.Z-dev.N     -> dev Swift release
 #   - vX.Y.Z-swift     -> accepted alias while the migration is in progress
 #   - vX.Y.Z-swift.N   -> accepted alias while the migration is in progress
+# Dev releases use workflow_dispatch so the requested version can remain
+# byte-identical to the checked-in provider and coordinator source constants.
 #
 # Repo secrets use DEV_/PROD_ prefixes so both environments can remain at
 # repo level. The release job still binds the resolved GitHub environment so
@@ -87,10 +88,16 @@ jobs:
           set -euo pipefail
           if [ -n "${{ inputs.environment }}" ]; then
             ENV="${{ inputs.environment }}"
-          elif [[ "${{ github.ref_name }}" == *-dev.* ]]; then
-            ENV="dev"
           else
             ENV="prod"
+          fi
+          if [ "${{ github.ref_type }}" = "tag" ] && [[ "${{ github.ref_name }}" == *-dev.* ]]; then
+            echo "::error::-dev tags are unsupported by the exact-version release contract; use workflow_dispatch with environment=dev"
+            exit 1
+          fi
+          if [ "$ENV" = "prod" ] && [ "${{ github.ref_type }}" != "tag" ]; then
+            echo "::error::Production publication requires a source-matching release tag"
+            exit 1
           fi
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
 
@@ -102,6 +109,10 @@ jobs:
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Resolved env=$ENV version=$VERSION"
+
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fail before approval on version drift
+        run: ./scripts/check-release-version.sh "${{ steps.pick.outputs.version }}"
 
   build-and-release:
     name: Build, sign, notarize, upload, register
@@ -167,6 +178,9 @@ jobs:
         with:
           submodules: recursive
           fetch-depth: 0   # gh release --generate-notes wants full history
+
+      - name: Validate release version integrity
+        run: ./scripts/check-release-version.sh "$VERSION"
 
       - name: Show toolchain versions
         run: |
@@ -311,19 +325,6 @@ jobs:
       # Build (tests run by CI, not the release workflow).
       # ----------------------------------------------------------------------
 
-      - name: Inject release version into ProviderCore
-        run: |
-          set -euo pipefail
-          FILE=provider-swift/Sources/ProviderCore/ProviderCore.swift
-          echo "Setting ProviderCore.version → $VERSION"
-          # Target ONLY the version line. Do not grep every string literal: nearby
-          # comments contain quoted words ("crashed"/"reloading"/"idle") which made
-          # the old `grep -o '"..."'` capture multiple lines and break sed.
-          sed -i '' -E "s|(public static let version = )\"[^\"]*\"|\1\"${VERSION}\"|" "$FILE"
-          grep -n 'public static let version' "$FILE"
-          grep -q "public static let version = \"${VERSION}\"" "$FILE" \
-            || { echo "::error::version injection failed for $VERSION"; exit 1; }
-
       - name: Build provider-swift (release)
         working-directory: provider-swift
         run: |
@@ -337,6 +338,8 @@ jobs:
           test -x "$BIN_DIR/$FAN_HELPER_NAME"
           echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
           ls -la "$BIN_DIR" | head -50
+          REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
+          ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
 
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
@@ -727,6 +730,12 @@ jobs:
             "$SMOKE_ROOT/Darkbloom.app"
           DARKBLOOM_NO_UPDATE_CHECK=1 \
             "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke
+          REPORTED=$("$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" --version)
+          ./scripts/check-release-version.sh "$VERSION" "$REPORTED"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
 
           BINARY_HASH=$(shasum -a 256 "${{ steps.bundle.outputs.stage }}/bin/$CLI_NAME" | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
@@ -818,6 +827,7 @@ jobs:
           echo "Release v${VERSION} registered with coordinator"
 
       - name: Create GitHub Release
+        if: needs.resolve-env.outputs.environment == 'prod' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

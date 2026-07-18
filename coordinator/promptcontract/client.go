@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -70,6 +71,13 @@ type Client struct {
 	config    ClientConfig
 	http      *http.Client
 	transport *http.Transport
+	timeouts  atomic.Uint64
+	overloads atomic.Uint64
+}
+
+type ClientStats struct {
+	Timeouts  uint64
+	Overloads uint64
 }
 
 func NewClient(config ClientConfig) *Client {
@@ -115,6 +123,16 @@ func (c *Client) Close() {
 	c.transport.CloseIdleConnections()
 }
 
+func (c *Client) Stats() ClientStats {
+	if c == nil {
+		return ClientStats{}
+	}
+	return ClientStats{
+		Timeouts:  c.timeouts.Load(),
+		Overloads: c.overloads.Load(),
+	}
+}
+
 func (c *Client) Health(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
 	defer cancel()
@@ -124,10 +142,14 @@ func (c *Client) Health(ctx context.Context) error {
 	}
 	response, err := c.http.Do(request)
 	if err != nil {
+		c.recordTransportError(err)
 		return fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusServiceUnavailable {
+			c.overloads.Add(1)
+		}
 		return fmt.Errorf("%w: HTTP %d", ErrSidecarUnavailable, response.StatusCode)
 	}
 	_, err = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
@@ -177,10 +199,14 @@ func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
+		c.recordTransportError(err)
 		return Plan{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusServiceUnavailable {
+			c.overloads.Add(1)
+		}
 		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
 		return Plan{}, fmt.Errorf("%w: HTTP %d", ErrSidecarUnavailable, response.StatusCode)
 	}
@@ -205,6 +231,14 @@ func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
 	}
 	plan.Participating = true
 	return plan, nil
+}
+
+func (c *Client) recordTransportError(err error) {
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.timeouts.Add(1)
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		c.timeouts.Add(1)
+	}
 }
 
 func (c *Client) PlanFailCold(ctx context.Context, input PlanInput) Plan {

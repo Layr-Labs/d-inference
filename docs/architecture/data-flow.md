@@ -122,7 +122,7 @@ The APNs code-identity attestation loop runs once per connection (not periodical
 | Boundary | What is trusted | What is NOT trusted |
 |---|---|---|
 | Consumer → coordinator | TLS certificate chain; optional NaCl Box to coordinator pubkey | Provider cannot read this hop |
-| Coordinator CVM | Hardware-encrypted memory; code is the audited coordinator binary | Cloud provider cannot read CVM memory (SEV-SNP) |
+| Coordinator CVM | Hardware-encrypted memory; code is the audited coordinator binary | Production GCP VM reports AMD SEV confidential compute |
 | Coordinator → provider | NaCl Box to provider's attested X25519 pubkey | Provider network cannot read ciphertext |
 | Provider process | Hardened Runtime, PT_DENY_ATTACH, in-process inference, SIP | Provider owner cannot inspect process memory or attach a debugger |
 

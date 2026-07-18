@@ -131,6 +131,18 @@ Cache-participating attempts are excluded from cold-prefill calibration and
 full-prefill reputation samples. Terminal cache metrics use bounded categorical
 tags only.
 
+`GET /v1/cache/status` exposes only aggregate rollout state: sidecar
+enabled/running/ready/restarts/timeouts/overloads/RSS, prompt artifact
+ready/pending/failed counts, protocol 0/1/2 provider counts, ready v2
+provider-model count, and bounded holder/attempt counts. It never includes model
+IDs, provider IDs, accounts, scopes, prompts, tokens, or chain hashes.
+
+For each selected hint, terminal correlation stays on the in-memory
+`PendingRequest` and emits bounded tags:
+`selected`, `lookup_outcome`, `cache_read`, `tier`, and `result`. This measures
+selected-holder precision and actual cached-read success without using an
+identifier as a metric tag.
+
 ## Configuration and rollback
 
 | Environment variable | Default | Purpose |
@@ -150,3 +162,9 @@ Rollout starts with coordinator routing `off`. Verify sidecar health, contract
 parity, provider capability identity, and proof mismatch rate before enabling
 `on` in an isolated development or canary environment. Rollback always sets
 routing to `off` before rolling back binaries.
+
+The v0.7.11 release does not activate routing. Current production Gemma 4 and
+GPT-OSS layouts require full replay and advertise no reusable v2 model
+capability. Production activation remains blocked on a genuinely eligible
+model, a real positive-hit test, stable correlation telemetry, and a separately
+provisioned 256-bit cache master key.

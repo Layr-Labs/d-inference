@@ -46,7 +46,6 @@ func ReadConfig() Config {
 		EncryptionMnemonic: env.FirstNonEmpty(
 			os.Getenv("MNEMONIC"),
 			os.Getenv(env.EnvPrefix+"_MNEMONIC"),
-			os.Getenv(env.EnvPrefix+"_SOLANA_MNEMONIC"),
 		),
 		StripeSecretKey:              os.Getenv(env.EnvPrefix + "_STRIPE_SECRET_KEY"),
 		StripeWebhookSecret:          os.Getenv(env.EnvPrefix + "_STRIPE_WEBHOOK_SECRET"),

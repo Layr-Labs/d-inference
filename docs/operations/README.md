@@ -22,7 +22,9 @@ Runbooks are written for operators. For architecture and security context, see t
 
 ## Safety rules that apply to every runbook
 
-1. **Prod EigenCloud, GCP prod deploys, KMS, DNS, and release registration are human-only.** AI agents may prepare commands; a human executes anything that mutates prod.
+1. **Production GCP deploys, Secret Manager, VM/container/service/config,
+   database, DNS, traffic, and release registration are human-only.** AI agents
+   may prepare commands; a human executes anything that mutates prod.
 2. **The code is the source of truth.** Claims cite canonical file paths and line ranges where possible.
 3. **Privacy model** (from [`docs/AGENTS.md`](../AGENTS.md)):
    - Consumer → coordinator: TLS by default; optional NaCl Box.

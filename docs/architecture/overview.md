@@ -31,9 +31,9 @@ See [`security/encryption.md`](security/encryption.md) for the precise hop-by-ho
 
 ### Coordinator
 
-The coordinator is the Go control plane. In production it runs in a
-Confidential VM (AMD SEV-SNP) on EigenCloud; development runs on a standard GCP
-VM. Route wiring lives in `coordinator/api/server.go:1411-1536`. Key
+The coordinator is the Go control plane. Production runs in a GCP Confidential
+VM that reports AMD SEV; development runs in a separate standard GCP VM. Route
+wiring lives in `coordinator/api/server.go:1411-1536`. Key
 responsibilities:
 
 * OpenAI-compatible consumer API (`/v1/chat/completions`, `/v1/completions`,

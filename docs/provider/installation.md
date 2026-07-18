@@ -9,7 +9,9 @@ curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
 The coordinator serves the same script at `/install.sh` with environment-specific
-templating; the source copy lives at `scripts/install.sh`.
+templating. `scripts/install.sh` is the sole editable source;
+`scripts/sync-install-embed.sh` deterministically generates the byte-identical
+`coordinator/api/install.sh` file consumed by `go:embed`. CI rejects drift.
 
 ### What the installer does
 

@@ -144,8 +144,8 @@ resulted in an output?"
     `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. In-memory means the data is **lost
     on every restart/deploy and is not queryable** (`docs/operations/dev-environment.md:208`).
   - **Therefore: this telemetry is only useful where Postgres is enabled.** Dev
-    already wires Cloud SQL (`dev-environment.md:153`). Prod (EigenCloud) must have
-    `EIGENINFERENCE_DATABASE_URL` set — confirm before relying on the data. This is
+    wires Cloud SQL (`dev-environment.md:153`). GCP prod uses external AWS RDS
+    and must have `EIGENINFERENCE_DATABASE_URL` set — confirm before relying on the data. This is
     the single gating dependency for the whole effort.
 - **Read side:** admin-authed HTTP — a filtered JSON view *and* a streaming
   **CSV/NDJSON download** for offline analysis (spreadsheet / notebook / DuckDB).

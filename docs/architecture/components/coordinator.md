@@ -2,7 +2,10 @@
 
 The coordinator is Darkbloom's control plane. It is a Go HTTP/WebSocket service that sits between consumers and provider nodes: it authenticates consumers, routes inference requests, verifies provider attestations, manages billing state, and relays encrypted traffic without learning prompt content.
 
-Production runs in a Confidential VM (AMD SEV-SNP). The coordinator therefore decrypts traffic inside hardware-encrypted memory, but it is still a trust boundary: it sees routing metadata and plaintext bodies for the duration of a request and must not log or retain prompt content.
+Production runs in a GCP Confidential VM that reports AMD SEV. The coordinator
+therefore decrypts traffic inside hardware-encrypted memory, but it is still a
+trust boundary: it sees routing metadata and plaintext bodies for the duration
+of a request and must not log or retain prompt content.
 
 ## Responsibilities
 

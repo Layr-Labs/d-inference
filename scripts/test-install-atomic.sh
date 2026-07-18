@@ -5,6 +5,7 @@ ROOT=$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-install-test.XXXXXX")
 trap 'rm -rf "$ROOT"' EXIT
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 INSTALLER="$REPO_ROOT/scripts/install.sh"
+"$REPO_ROOT/scripts/sync-install-embed.sh" check
 
 cat > "$ROOT/paged.c" <<'C'
 #include <libgen.h>

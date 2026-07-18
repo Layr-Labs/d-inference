@@ -23,8 +23,10 @@ and the live `/v1/models` response.
 
 ## Payment rails
 
-- Solana USDC is the primary settlement rail.
-- Stripe integration exists for card payments.
+- Stripe Checkout funds the internal ledger.
+- Stripe Connect handles provider onboarding and payouts.
+- The legacy mnemonic configuration is unrelated to billing; it derives the
+  coordinator X25519 request-encryption identity.
 
 ## Self-route billing
 

@@ -18,6 +18,18 @@ func providerBuildConfig() string {
 }
 
 func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
+	if binaryPath := os.Getenv("DARKBLOOM_PROVIDER_BINARY"); binaryPath != "" {
+		info, err := os.Stat(binaryPath)
+		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("configured provider binary is not executable: %s", binaryPath)
+		}
+		metallibPath := filepath.Join(filepath.Dir(binaryPath), "mlx.metallib")
+		if metallib, metallibErr := os.Stat(metallibPath); metallibErr != nil || metallib.IsDir() {
+			return "", fmt.Errorf("configured provider metallib not found beside binary: %s", metallibPath)
+		}
+		logger.Info("using configured provider binary", "path", binaryPath)
+		return binaryPath, nil
+	}
 	repoRoot := os.Getenv("DARKBLOOM_REPO_ROOT")
 	if repoRoot == "" {
 		cwd, err := os.Getwd()

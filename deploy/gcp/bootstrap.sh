@@ -101,7 +101,8 @@ done
 
 echo "==> Creating Cloud KMS key ring + CMEK for high-sensitivity secrets"
 # CMEK = customer-managed encryption key. Used only for the MDM push cert +
-# Solana mnemonic — keys where destroying the CMEK instantly kills access,
+# coordinator encryption mnemonic (the resource keeps its legacy name) — keys
+# where destroying the CMEK instantly kills access,
 # and rotation doesn't require copying data around. Cheap (~$0.06/mo/key) and
 # worth it for the two most dangerous secrets in dev.
 KMS_RING="d-inference-dev"
@@ -326,7 +327,8 @@ Next steps:
                 eigeninference-micromdm-api-key; do
          echo -n "\$(openssl rand -hex 32)" | gcloud secrets versions add \$S --data-file=-
        done
-     Then add Privy values, Solana mnemonic (generated fresh for dev — not prod's),
+     Then add Privy values, the coordinator encryption mnemonic (generated fresh
+     for dev — not prod's; the secret keeps its legacy solana-mnemonic name),
      the dev R2 CDN URL (public URL of d-inf-app-dev), and the MDM push PKCS#12.
 
   1a. MDM push cert — reusing prod's cert as a time-bound bridge:

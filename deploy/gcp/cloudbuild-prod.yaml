@@ -1,0 +1,76 @@
+timeout: 1800s
+
+substitutions:
+  _IMAGE: us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  - id: release-integrity
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        ./scripts/check-release-version.sh
+        ./scripts/sync-install-embed.sh check
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - TRIGGER_COMMIT=$COMMIT_SHA
+      - TRIGGER_TAG=$SHORT_SHA
+    args:
+      - -ceu
+      - |
+        VERSION=$(awk -F'"' '/public static let version =/ { print $$2 }' \
+          provider-swift/Sources/ProviderCore/ProviderCore.swift)
+        BUILD_COMMIT="$${TRIGGER_COMMIT}"
+        IMAGE_TAG="$${TRIGGER_TAG}"
+        [[ "$${BUILD_COMMIT}" =~ ^[0-9a-f]{40}$ ]] || {
+          echo "production builds require a repository trigger with COMMIT_SHA" >&2
+          exit 1
+        }
+        [[ "$${IMAGE_TAG}" =~ ^[0-9a-f]{7}$ ]] || {
+          echo "production builds require a repository trigger with SHORT_SHA" >&2
+          exit 1
+        }
+        [ "$${IMAGE_TAG}" = "$${BUILD_COMMIT:0:7}" ] || {
+          echo "image tag is not the checked-out trigger commit prefix" >&2
+          exit 1
+        }
+        BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        printf 'BUILD_COMMIT=%s\nIMAGE_TAG=%s\n' \
+          "$${BUILD_COMMIT}" "$${IMAGE_TAG}" > /workspace/release-build.env
+        docker build \
+          --build-arg "BUILD_VERSION=$${VERSION}" \
+          --build-arg "BUILD_COMMIT=$${BUILD_COMMIT}" \
+          --build-arg "BUILD_DATE=$${BUILD_DATE}" \
+          --tag="${_IMAGE}:$${IMAGE_TAG}" \
+          --file=coordinator/Dockerfile \
+          .
+
+  - id: smoke
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/release-build.env
+        docker inspect "${_IMAGE}:$${IMAGE_TAG}" \
+          --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' \
+          | grep -Fx "$${BUILD_COMMIT}"
+        docker run --rm --entrypoint /bin/sh "${_IMAGE}:$${IMAGE_TAG}" \
+          -c 'test -x /usr/local/bin/coordinator && test -x /usr/local/bin/promptsidecar'
+
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        source /workspace/release-build.env
+        docker push "${_IMAGE}:$${IMAGE_TAG}"

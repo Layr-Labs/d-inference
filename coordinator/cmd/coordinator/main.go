@@ -5,7 +5,7 @@
 // attestations, and routes OpenAI-compatible HTTP requests from consumers
 // to appropriate providers based on model availability and trust level.
 //
-// Deployment: The coordinator runs in a GCP Confidential VM (AMD SEV-SNP)
+// Deployment: The coordinator runs in a GCP Confidential VM (AMD SEV)
 // with hardware-encrypted memory. Consumer traffic arrives over HTTPS/TLS.
 // The coordinator can read requests for routing purposes but never logs
 // prompt content.
@@ -854,6 +854,7 @@ func main() {
 		MaxHeaderBytes: 64 << 10,
 	}
 	promptSidecar := promptcontract.NewSupervisor(cfg.PromptSidecar)
+	srv.SetPromptSupervisor(promptSidecar)
 	if cfg.PromptSidecar.Enabled {
 		srv.SetPromptContractClient(promptSidecar.Client())
 	}

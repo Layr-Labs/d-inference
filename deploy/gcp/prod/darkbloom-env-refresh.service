@@ -1,0 +1,15 @@
+[Unit]
+Description=Validate and extend Darkbloom production environment
+After=local-fs.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+Environment=REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt
+Environment=DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults
+ExecStart=/usr/local/sbin/darkbloom-refresh-env --apply
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+RequiredBy=docker.service

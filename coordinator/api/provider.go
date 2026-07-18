@@ -660,11 +660,16 @@ func cacheSelectionTerminalTags(pr *registry.PendingRequest, usage protocol.Usag
 		mode = pr.CacheSelectionMode
 	}
 	result := "unreported"
+	lookupOutcome := "unreported"
+	read := false
 	if usagePresent && !usageValid {
 		result = "invalid"
+		lookupOutcome = "invalid"
 	} else if usageValid {
+		lookupOutcome = usage.CacheOutcome
 		if usage.CacheOutcome == "hit" {
 			result = "hit"
+			read = true
 		} else {
 			result = "non_hit"
 		}
@@ -680,6 +685,8 @@ func cacheSelectionTerminalTags(pr *registry.PendingRequest, usage protocol.Usag
 		"tier:" + tier,
 		"selected:" + strconv.FormatBool(selected),
 		"result:" + result,
+		"lookup_outcome:" + lookupOutcome,
+		"cache_read:" + strconv.FormatBool(read),
 	}
 }
 
@@ -693,7 +700,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 	tags := cacheSelectionTerminalTags(pr, usage, usageValid, usagePresent)
 	s.ddIncr("routing.cache_selection_terminal", tags)
 	if pr.CacheSelectionDiscountMs > 0 {
-		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags[:len(tags)-1])
+		s.ddHistogram("routing.cache_selection_discount_ms", pr.CacheSelectionDiscountMs, tags)
 		if pr.CacheSelectionMode == "active" && pr.CacheSelectionSelected {
 			s.ddIncr("routing.cache_selection_precision", tags)
 		}

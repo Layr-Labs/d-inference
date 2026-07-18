@@ -5,7 +5,7 @@
 # Responsibilities on first boot:
 #   1. Install Docker, gcloud, cloud-sql-proxy
 #   2. Format + mount the attached persistent data disk at /mnt/disks/userdata
-#      (same path as EigenCloud prod, so the container's start.sh works unchanged)
+#      (same path as GCP prod, so the container's start.sh works unchanged)
 #   3. Install a systemd unit for cloud-sql-proxy (Cloud SQL on 127.0.0.1:5432)
 #   4. Install a systemd unit for the coordinator container
 #   5. Fetch secrets from Secret Manager, write /etc/d-inference/env
@@ -65,8 +65,8 @@ if ! command -v cloud-sql-proxy >/dev/null; then
 fi
 
 # Caddy for TLS termination + reverse proxy to the coordinator on :8080.
-# In prod, EigenCloud injects Caddy next to the container; on our GCE VM we
-# run it as a host-level systemd service. Auto-TLS via Let's Encrypt
+# Both GCP environments run Caddy as a host-level systemd service. Dev uses
+# automatic Let's Encrypt
 # HTTP-01 challenge (port 80 allowed by firewall).
 if ! command -v caddy >/dev/null; then
   curl -fsSL https://dl.cloudsmith.io/public/caddy/stable/gpg.key | \
@@ -109,8 +109,6 @@ EIGENINFERENCE_BASE_URL=https://api.dev.darkbloom.xyz
 EIGENINFERENCE_CONSOLE_URL=https://console.dev.darkbloom.xyz
 CORS_ORIGIN=https://console.dev.darkbloom.xyz
 EIGENINFERENCE_R2_CDN_URL=$(fetch eigeninference-r2-cdn-url)
-EIGENINFERENCE_SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
-EIGENINFERENCE_SOLANA_USDC_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 EIGENINFERENCE_ADMIN_EMAILS=gajesh@eigenlabs.org
 EIGENINFERENCE_REFERRAL_SHARE_PCT=15
 DOMAIN=api.dev.darkbloom.xyz

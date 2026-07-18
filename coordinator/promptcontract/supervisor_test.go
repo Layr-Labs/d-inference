@@ -161,6 +161,17 @@ func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
 	})
 }
 
+func TestRSSBytesFromStatm(t *testing.T) {
+	if got := rssBytesFromStatm([]byte("100 25 0 0\n"), 4096); got != 25*4096 {
+		t.Fatalf("rss=%d, want %d", got, 25*4096)
+	}
+	for _, input := range [][]byte{nil, []byte("one"), []byte("1 invalid")} {
+		if got := rssBytesFromStatm(input, 4096); got != 0 {
+			t.Fatalf("malformed statm %q produced rss=%d", input, got)
+		}
+	}
+}
+
 func TestSupervisorHelperProcess(t *testing.T) {
 	if os.Getenv("PROMPT_SIDECAR_HELPER") != "1" {
 		return

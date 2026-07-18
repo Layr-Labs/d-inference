@@ -20,7 +20,7 @@ import (
 const (
 	envTrustGeoHeaders = "EIGENINFERENCE_TRUST_GEO_HEADERS"
 	// envIPAPIKey holds the ip-api.com PRO API key. It is a SECRET — injected via
-	// the deployment env (EigenCloud KMS / GCP Secret Manager), never committed.
+	// the deployment environment / GCP Secret Manager, never committed.
 	// When set, geo lookups use the unmetered https://pro.ip-api.com endpoint;
 	// when empty the resolver falls back to the free http://ip-api.com tier.
 	envIPAPIKey = "EIGENINFERENCE_IPAPI_KEY"

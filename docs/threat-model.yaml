@@ -19,7 +19,7 @@ scope:
     - Admin → Coordinator admin API
     - Provider in-process MLX inference engine
     - Optional provider → privileged fan-helper XPC boundary and AppleSMC writes
-    - Coordinator → Solana payment network
+    - Coordinator → Stripe payment network
     - Apple attestation trust chain (cross-cutting)
   out_of_scope:
     - Dev / staging environment (api.dev.darkbloom.xyz)
@@ -98,10 +98,10 @@ assets:
     notes: Controls which binary hashes are trusted for provider connections.
 
   - id: A-006
-    name: solana_wallet_mnemonic
-    description: BIP39 mnemonic for the coordinator's Solana USDC wallet (m/44'/501'/0'/0').
+    name: coordinator_encryption_mnemonic
+    description: BIP39 mnemonic used to derive the coordinator X25519 request-decryption identity.
     sensitivity: critical
-    notes: Stored in coordinator environment / EigenCloud KMS. Compromise drains provider payouts.
+    notes: Injected through the root-only GCP production environment. It has no payment or Solana role.
 
   - id: A-007
     name: consumer_api_keys
@@ -618,10 +618,9 @@ trust_boundaries:
   - id: TB-008
     name: coordinator_to_payments
     description: >
-      The coordinator manages an internal micro-USD ledger backed by PostgreSQL, accepts
-      Solana USDC deposits verified on-chain, and processes Stripe webhook events for
-      fiat top-ups. The Solana BIP39 wallet mnemonic is the highest-value secret in the
-      coordinator's environment.
+      The coordinator manages an internal micro-USD ledger backed by PostgreSQL,
+      processes Stripe webhook events for deposits, and uses Stripe Connect for
+      provider payouts.
     how_it_works: >
       Stripe webhook ingestion (billing_handlers.go:122–134): the body is read with a
       1 MB limit (io.LimitReader). The Stripe-Signature header is verified using the
@@ -636,14 +635,8 @@ trust_boundaries:
       not Stripe's own event.id. There is no unique database constraint on the
       billing_session_id that would enforce at-most-once credit at the DB level.
 
-      The Solana wallet is derived from a BIP39 mnemonic via SLIP-0010
-      (m/44'/501'/0'/0'). The mnemonic is injected into the coordinator process at
-      startup from EigenCloud KMS environment variables. The coordinator runs inside an
-      AMD SEV-SNP Confidential VM, providing hardware-encrypted memory protection.
-
-      The legacy GET /v1/provider/earnings endpoint (consumer.go:2265–2270) returns
-      provider balance and payment history keyed by wallet address with no authentication
-      requirement.
+      The coordinator runs inside a GCP Confidential VM that reports AMD SEV,
+      providing hardware-encrypted memory protection.
     current_limitations:
       - "Stripe webhook idempotency is not atomic: the completed-session check and the
         balance credit insertion are separate operations. Concurrent duplicate valid
@@ -652,9 +645,6 @@ trust_boundaries:
       - "Idempotency uses a custom billing_session_id rather than Stripe's native
         event.id. There is no unique database constraint enforcing at-most-once credit
         at the storage layer."
-      - "GET /v1/provider/earnings is unauthenticated. Any party who knows or can guess
-        a provider's Solana wallet address can retrieve their full earnings history
-        (consumer.go:2265, SEC-030)."
       - "No rate limiting on payment endpoints beyond the financial rate limiter, which
         defaults to nil (unlimited) unless explicitly configured."
 
@@ -1792,29 +1782,30 @@ threats:
       unless public transparency is an explicit product decision.
 
   - id: T-032
-    trust_boundary: TB-008
+    trust_boundary: TB-001
     stride: Spoofing
-    title: Solana wallet mnemonic exfiltration from coordinator environment
+    title: Coordinator encryption mnemonic exfiltration from environment
     description: >
-      The coordinator's Solana BIP39 mnemonic is stored in the EigenCloud KMS
-      environment. A compromised coordinator process, misconfigured KMS policy,
-      or environment variable leak would allow an attacker to derive the wallet
-      private key and drain provider payouts.
+      The coordinator's BIP39 mnemonic derives its X25519 request-decryption
+      identity. A compromised coordinator process, environment file, or host
+      access policy would allow an attacker to derive that private key and break
+      sender-to-coordinator sealed-request confidentiality.
     adversaries: [ADV-003]
     affected_assets: [A-006]
     affected_files:
       - coordinator/billing/**
+      - coordinator/internal/e2e/**
       - coordinator/cmd/coordinator/main.go
     mitigations:
-      - description: Mnemonic stored in EigenCloud KMS, injected at runtime.
+      - description: Mnemonic is injected through the root-only production environment.
         status: implemented
-      - description: Coordinator runs in AMD SEV-SNP TEE; memory encrypted by hardware.
+      - description: Coordinator runs in a GCP AMD SEV Confidential VM; memory is encrypted by hardware.
         status: implemented
     open_findings: []
     severity: critical
     detection_hint: >
-      Any change that reads, logs, or transmits the Solana mnemonic or derived
-      private key outside the billing package should be treated as a critical issue.
+      Any change that reads, logs, or transmits the mnemonic or derived X25519
+      private key outside the key-derivation path is critical.
 
   # ── TB-009: Apple Attestation Trust Chain (cross-cutting) ─────
 
@@ -2106,7 +2097,7 @@ threats:
       misconfigured KMS policy, or environment-variable leak would let an attacker
       sign arbitrary profiles (or binaries) that macOS treats as coming from the
       registered developer — a higher-value code-signing trust abuse than payment
-      secrets. Same injection pattern and risk class as the Solana mnemonic (T-032).
+      secrets. Same injection pattern and risk class as the encryption mnemonic (T-032).
     adversaries: [ADV-003]
     affected_assets: [A-013]
     affected_files:
@@ -2116,7 +2107,7 @@ threats:
     mitigations:
       - description: Identity stored in KMS, injected at runtime (same pipeline as MDM_PUSH_P12_B64).
         status: implemented
-      - description: Coordinator runs in AMD SEV-SNP TEE; memory encrypted by hardware.
+      - description: Coordinator runs in a GCP AMD SEV Confidential VM; memory is encrypted by hardware.
         status: implemented
       - description: >
           LoadFromEnv never logs the p12 or password (only signer CN/org/expiry), and

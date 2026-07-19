@@ -6,6 +6,7 @@ import { STRIPE_CONNECT_COUNTRIES } from "@/lib/stripe-countries";
 import { microToUsd } from "@/lib/format";
 import { CountryPicker } from "./CountryPicker";
 import { WithdrawalsList } from "./WithdrawalsList";
+import { AutoWithdrawControl } from "./AutoWithdrawControl";
 
 // Shared "withdraw to bank" card (Stripe Connect Express). Renders the status
 // badge, the onboarding / ready / action-needed bodies (with the shared
@@ -23,6 +24,8 @@ export function StripePayoutsCard({
   onOpenWithdraw,
   onUnlink,
   unlinkLoading,
+  onAutoWithdrawChange,
+  autoWithdrawLoading,
   title,
   icon,
   noun,
@@ -40,14 +43,39 @@ export function StripePayoutsCard({
   /** Detach the linked Stripe account (escape hatch for wedged accounts). */
   onUnlink?: () => void;
   unlinkLoading?: boolean;
+  onAutoWithdrawChange: (enabled: boolean) => void;
+  autoWithdrawLoading: boolean;
   title: string;
   icon: React.ReactNode;
   noun: string;
   className: string;
   children?: React.ReactNode;
 }) {
-  // Stripe payouts not configured on this coordinator — hide the card entirely.
-  if (status && !status.configured) return null;
+  const autoWithdrawEnabled = status?.auto_withdraw_enabled === true;
+
+  // Keep an enabled authorization visible during a Stripe configuration
+  // outage so the user can still revoke it.
+  if (status && !status.configured) {
+    if (!autoWithdrawEnabled) return null;
+    return (
+      <div className={className}>
+        <div className="flex items-center gap-2 mb-2">
+          {icon}
+          <h3 className="text-sm font-semibold text-text-primary">{title}</h3>
+        </div>
+        <p className="text-xs text-text-tertiary">
+          Stripe payouts are temporarily unavailable. You can still disable future automatic withdrawals.
+        </p>
+        <AutoWithdrawControl
+          enabled
+          nextAt={status.auto_withdraw_next_at}
+          loading={autoWithdrawLoading}
+          canEnable={false}
+          onChange={onAutoWithdrawChange}
+        />
+      </div>
+    );
+  }
 
   const ready = status?.status === "ready";
   const restricted = status?.status === "restricted";
@@ -169,6 +197,16 @@ export function StripePayoutsCard({
             </button>
           )}
         </>
+      )}
+
+      {(ready || autoWithdrawEnabled) && (
+        <AutoWithdrawControl
+          enabled={autoWithdrawEnabled}
+          nextAt={status?.auto_withdraw_next_at}
+          loading={autoWithdrawLoading}
+          canEnable={ready}
+          onChange={onAutoWithdrawChange}
+        />
       )}
 
       <WithdrawalsList withdrawals={withdrawals} />

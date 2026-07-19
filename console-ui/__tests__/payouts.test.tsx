@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, act, render, screen } from "@testing-library/react";
+import { renderHook, act, render, screen, fireEvent } from "@testing-library/react";
 import { useStripePayouts } from "@/components/payouts/useStripePayouts";
 import { StripePayoutsCard } from "@/components/payouts/StripePayoutsCard";
 import type { StripeStatus } from "@/lib/api";
@@ -12,6 +12,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     startStripeOnboarding: vi.fn(),
     withdrawStripe: vi.fn(),
     fetchStripeWithdrawals: vi.fn(),
+    setStripeAutoWithdraw: vi.fn(),
   };
 });
 
@@ -20,6 +21,7 @@ import {
   fetchStripeStatus,
   withdrawStripe,
   fetchStripeWithdrawals,
+  setStripeAutoWithdraw,
 } from "@/lib/api";
 
 const readyStatus: StripeStatus = {
@@ -141,6 +143,30 @@ describe("useStripePayouts", () => {
     expect(fetchStripeStatus).toHaveBeenCalled(); // status refreshed -> card returns to setup state
     expect(result.current.status?.has_account).toBe(false);
   });
+
+  it("setAutoWithdraw() persists opt-in and updates status", async () => {
+    (fetchStripeStatus as ReturnType<typeof vi.fn>).mockResolvedValue(readyStatus);
+    (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (setStripeAutoWithdraw as ReturnType<typeof vi.fn>).mockResolvedValue({
+      auto_withdraw_enabled: true,
+      auto_withdraw_next_at: "2026-07-20T09:00:00Z",
+      auto_withdraw_cadence: "weekly",
+      auto_withdraw_method: "standard",
+    });
+    const addToast = vi.fn();
+    const { result } = renderHook(() => useStripePayouts({ addToast, enabled: false }));
+    await act(async () => {
+      await result.current.reload();
+      await result.current.setAutoWithdraw(true);
+    });
+
+    expect(setStripeAutoWithdraw).toHaveBeenCalledWith(true);
+    expect(result.current.status?.auto_withdraw_enabled).toBe(true);
+    expect(addToast).toHaveBeenCalledWith(
+      "Automatic weekly withdrawals enabled",
+      "success",
+    );
+  });
 });
 
 describe("StripePayoutsCard", () => {
@@ -157,6 +183,8 @@ describe("StripePayoutsCard", () => {
         onCountryChange={noop}
         onOnboard={noop}
         onOpenWithdraw={noop}
+        onAutoWithdrawChange={noop}
+        autoWithdrawLoading={false}
         title="Withdraw to Bank"
         icon={null}
         noun="credits"
@@ -177,6 +205,8 @@ describe("StripePayoutsCard", () => {
         onCountryChange={noop}
         onOnboard={noop}
         onOpenWithdraw={noop}
+        onAutoWithdrawChange={noop}
+        autoWithdrawLoading={false}
         title="Withdraw to Bank"
         icon={null}
         noun="credits"
@@ -185,5 +215,39 @@ describe("StripePayoutsCard", () => {
     );
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /withdraw/i })).not.toBeDisabled();
+  });
+
+  it("shows the weekly schedule and lets the user revoke authorization", () => {
+    const onAutoWithdrawChange = vi.fn();
+    render(
+      <StripePayoutsCard
+        status={{
+          ...readyStatus,
+          auto_withdraw_enabled: true,
+          auto_withdraw_next_at: "2026-07-20T09:00:00Z",
+        }}
+        withdrawals={[]}
+        balanceMicroUsd={5_000_000}
+        onboardLoading={false}
+        selectedCountry="US"
+        onCountryChange={noop}
+        onOnboard={noop}
+        onOpenWithdraw={noop}
+        onAutoWithdrawChange={onAutoWithdrawChange}
+        autoWithdrawLoading={false}
+        title="Withdraw to Bank"
+        icon={null}
+        noun="earnings"
+        className="card"
+      />,
+    );
+
+    const toggle = screen.getByRole("switch", {
+      name: "Disable automatic weekly withdrawals",
+    });
+    expect(toggle).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(/Next run: Mon, Jul 20/)).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(onAutoWithdrawChange).toHaveBeenCalledWith(false);
   });
 });

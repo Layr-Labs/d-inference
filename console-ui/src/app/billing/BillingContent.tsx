@@ -237,6 +237,8 @@ export default function BillingContent() {
             onOnboard={payouts.onboard}
             onUnlink={payouts.unlink}
             unlinkLoading={payouts.unlinkLoading}
+            onAutoWithdrawChange={payouts.setAutoWithdraw}
+            autoWithdrawLoading={payouts.autoWithdrawLoading}
             onOpenWithdraw={() => payouts.openWithdraw("10")}
             title="Withdraw to Bank"
             icon={<Building2 size={16} className="text-teal" />}

@@ -31,7 +31,7 @@ export function WithdrawalsList({ withdrawals }: { withdrawals: StripeWithdrawal
                   {formatUsd(microToUsd(w.net_micro_usd))}
                 </span>
                 <span className="text-[10px] font-mono uppercase text-text-tertiary">
-                  {w.method}
+                  {w.source === "automatic" ? "weekly auto" : w.method}
                 </span>
               </div>
               <span

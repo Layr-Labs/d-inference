@@ -139,6 +139,19 @@ export interface StripeStatus {
   instant_fee_bps?: number;
   instant_fee_min_usd?: number;
   currently_due?: string[];
+  auto_withdraw_enabled?: boolean;
+  auto_withdraw_authorized_at?: string | null;
+  auto_withdraw_next_at?: string | null;
+  auto_withdraw_cadence?: "weekly";
+  auto_withdraw_method?: "standard";
+}
+
+export interface StripeAutoWithdrawResponse {
+  auto_withdraw_enabled: boolean;
+  auto_withdraw_authorized_at?: string | null;
+  auto_withdraw_next_at?: string | null;
+  auto_withdraw_cadence: "weekly";
+  auto_withdraw_method: "standard";
 }
 
 export interface StripeOnboardResponse {
@@ -171,6 +184,8 @@ export interface StripeWithdrawal {
   fee_micro_usd: number;
   net_micro_usd: number;
   method: "standard" | "instant";
+  source?: "manual" | "automatic";
+  scheduled_for?: string;
   status: "pending" | "transferred" | "paid" | "failed";
   failure_reason?: string;
   refunded?: boolean;

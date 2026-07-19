@@ -6,6 +6,7 @@ import type {
   StripeCheckoutResponse,
   StripeStatus,
   StripeOnboardResponse,
+  StripeAutoWithdrawResponse,
   StripeWithdrawResponse,
   StripeWithdrawal,
 } from "./types";
@@ -80,6 +81,19 @@ export async function fetchStripeWithdrawals(limit = 20): Promise<StripeWithdraw
   if (!res.ok) throw new Error(`Failed to fetch withdrawals: ${res.status}`);
   const data = await res.json();
   return data.withdrawals || [];
+}
+
+export async function setStripeAutoWithdraw(enabled: boolean): Promise<StripeAutoWithdrawResponse> {
+  const res = await fetch("/api/payments/stripe/auto-withdraw", {
+    method: "PUT",
+    headers: proxyHeaders(),
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw apiErrorFromBody(data, res.status, `Automatic withdrawal update failed (${res.status})`);
+  }
+  return res.json();
 }
 
 // Detach the linked Stripe Connect account so a fresh one can be onboarded.

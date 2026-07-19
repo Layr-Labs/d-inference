@@ -5,6 +5,7 @@ import {
   startStripeOnboarding,
   withdrawStripe,
   fetchStripeWithdrawals,
+  setStripeAutoWithdraw,
 } from "@/lib/api";
 import { jsonResponse, stubClientFetch } from "./helpers/client-harness";
 
@@ -192,5 +193,32 @@ describe("fetchStripeWithdrawals", () => {
     client.fetch.mockResolvedValueOnce(jsonResponse({ withdrawals: [] }));
     await fetchStripeWithdrawals(5);
     expect(client.fetch).toHaveBeenCalledWith("/api/payments/stripe/withdrawals?limit=5", expect.any(Object));
+  });
+});
+
+describe("setStripeAutoWithdraw", () => {
+  it("PUTs the explicit authorization choice", async () => {
+    client.fetch.mockResolvedValueOnce(jsonResponse({
+      auto_withdraw_enabled: true,
+      auto_withdraw_next_at: "2026-07-20T09:00:00Z",
+      auto_withdraw_cadence: "weekly",
+      auto_withdraw_method: "standard",
+    }));
+
+    const response = await setStripeAutoWithdraw(true);
+
+    const [url, opts] = client.fetch.mock.calls[0];
+    expect(url).toBe("/api/payments/stripe/auto-withdraw");
+    expect(opts.method).toBe("PUT");
+    expect(JSON.parse(opts.body)).toEqual({ enabled: true });
+    expect(response.auto_withdraw_enabled).toBe(true);
+  });
+
+  it("surfaces coordinator errors", async () => {
+    client.fetch.mockResolvedValueOnce(jsonResponse({
+      error: { type: "payout_destination_changed", message: "refresh and authorize again" },
+    }, 409));
+
+    await expect(setStripeAutoWithdraw(true)).rejects.toThrow(/refresh and authorize again/);
   });
 });

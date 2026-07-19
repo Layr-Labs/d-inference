@@ -6,6 +6,7 @@ import {
   startStripeOnboarding,
   withdrawStripe,
   fetchStripeWithdrawals,
+  setStripeAutoWithdraw as updateStripeAutoWithdraw,
   unlinkStripeAccount,
   type StripeStatus,
   type StripeWithdrawal,
@@ -38,6 +39,9 @@ export interface UseStripePayouts {
   /** Detach the linked Stripe account so a fresh one can be onboarded. */
   unlink: () => Promise<void>;
   unlinkLoading: boolean;
+  /** Enable or revoke weekly automatic withdrawals. */
+  setAutoWithdraw: (enabled: boolean) => Promise<void>;
+  autoWithdrawLoading: boolean;
 }
 
 export interface StripePayoutsOptions {
@@ -69,6 +73,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   const [withdrawMethod, setWithdrawMethod] = useState<WithdrawMethod>("standard");
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("");
+  const [autoWithdrawLoading, setAutoWithdrawLoading] = useState(false);
 
   // Once a Stripe Express account exists its country is locked — pre-select it.
   useEffect(() => {
@@ -164,6 +169,25 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     setUnlinkLoading(false);
   }, [addToast, reload]);
 
+  const setAutoWithdraw = useCallback(async (enabled: boolean) => {
+    setAutoWithdrawLoading(true);
+    try {
+      const updated = await updateStripeAutoWithdraw(enabled);
+      setStatus((current) => current ? { ...current, ...updated } : current);
+      addToast(
+        enabled
+          ? "Automatic weekly withdrawals enabled"
+          : "Automatic weekly withdrawals disabled",
+        "success",
+      );
+    } catch (e) {
+      addToast(`Automatic withdrawal update failed: ${(e as Error).message}`);
+      await reload(false);
+    } finally {
+      setAutoWithdrawLoading(false);
+    }
+  }, [addToast, reload]);
+
   return {
     status,
     withdrawals,
@@ -183,5 +207,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     openWithdraw,
     unlink,
     unlinkLoading,
+    setAutoWithdraw,
+    autoWithdrawLoading,
   };
 }

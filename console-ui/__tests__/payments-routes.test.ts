@@ -125,6 +125,52 @@ describe("POST /api/payments/stripe/checkout", () => {
   });
 });
 
+describe("PUT /api/payments/stripe/auto-withdraw", () => {
+  it("forwards explicit authorization and Privy auth", async () => {
+    upstream.fetch.mockResolvedValueOnce(
+      upstreamOk({
+        auto_withdraw_enabled: true,
+        auto_withdraw_next_at: "2026-07-20T09:00:00Z",
+      })
+    );
+    const { PUT } = await import("@/app/api/payments/stripe/auto-withdraw/route");
+    const req = makeRequest("/api/payments/stripe/auto-withdraw", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        authorization: "Bearer privy-token-123",
+      },
+      body: JSON.stringify({ enabled: true }),
+    });
+
+    const res = await PUT(req);
+
+    expect(res.status).toBe(200);
+    const [upstreamUrl, opts] = upstream.fetch.mock.calls[0];
+    expect(upstreamUrl).toBe(`${DEFAULT_COORD}/v1/billing/stripe/auto-withdraw`);
+    expect(opts.method).toBe("PUT");
+    expect(opts.headers.Authorization).toBe("Bearer privy-token-123");
+    expect(JSON.parse(opts.body)).toEqual({ enabled: true });
+  });
+
+  it("preserves the coordinator error envelope", async () => {
+    upstream.fetch.mockResolvedValueOnce(
+      upstreamError(409, JSON.stringify({
+        error: { type: "payout_destination_changed", message: "refresh" },
+      }))
+    );
+    const { PUT } = await import("@/app/api/payments/stripe/auto-withdraw/route");
+    const req = makeRequest("/api/payments/stripe/auto-withdraw", {
+      method: "PUT",
+      body: JSON.stringify({ enabled: true }),
+    });
+
+    const res = await PUT(req);
+
+    expect(res.status).toBe(409);
+  });
+});
+
 describe("GET /api/payments/usage", () => {
   it("proxies to coordinator /v1/payments/usage", async () => {
     const entries = {

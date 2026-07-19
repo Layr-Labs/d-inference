@@ -7,4 +7,5 @@ export { StripeWithdrawModal } from "./StripeWithdrawModal";
 export { CountryPicker } from "./CountryPicker";
 export { WithdrawalsList } from "./WithdrawalsList";
 export { StripePayoutsCard } from "./StripePayoutsCard";
+export { AutoWithdrawControl } from "./AutoWithdrawControl";
 export { useStripePayouts, type UseStripePayouts } from "./useStripePayouts";

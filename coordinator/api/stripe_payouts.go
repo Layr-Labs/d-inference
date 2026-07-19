@@ -254,6 +254,9 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		"instant_fee_bps":        billing.InstantFeeBps,
 		"instant_fee_min_usd":    float64(billing.InstantFeeMinMicroUSD) / 1_000_000,
 	}
+	for key, value := range stripeAutoWithdrawFields(user) {
+		resp[key] = value
+	}
 
 	// Optional refresh=1 query param fetches the latest snapshot from Stripe
 	// and rewrites our local state. The frontend hits this on return from the

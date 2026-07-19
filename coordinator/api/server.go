@@ -1791,15 +1791,15 @@ func (s *Server) routes() {
 	// Wallet balance
 	s.mux.HandleFunc("GET /v1/billing/wallet/balance", s.requireAuth(s.handleWalletBalance))
 
-	// Stripe Payouts (Connect Express) — bank/card withdrawals.
-	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requireAuth(s.handleStripeOnboard))
-	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
-	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
-	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
-	// requirePrivyAuth (not requireAuth): unlink is an account-management
-	// operation — a leaked inference API key must not be able to detach the
-	// user's payout account.
-	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.handleStripeUnlink))
+	// Stripe Payouts (Connect Express) — all payout details and mutations
+	// require an interactive Privy session. A leaked inference API key must not
+	// reveal bank metadata, create transfers, or change recurring authorization.
+	s.mux.HandleFunc("POST /v1/billing/stripe/onboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeOnboard)))
+	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requirePrivyAuth(s.handleStripeStatus))
+	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeWithdraw)))
+	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requirePrivyAuth(s.handleStripeWithdrawals))
+	s.mux.HandleFunc("PUT /v1/billing/stripe/auto-withdraw", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeAutoWithdraw)))
+	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeUnlink)))
 	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 
 	// Pricing — GET is public, PUT/DELETE require auth

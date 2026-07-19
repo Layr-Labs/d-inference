@@ -835,6 +835,11 @@ func main() {
 	// No-op when Stripe Connect isn't configured. Spawns its own panic-safe loop.
 	srv.StartStripePayoutReconciler(ctx)
 
+	// User-authorized weekly Stripe withdrawals. The worker atomically
+	// re-checks each due authorization before debiting and resumes any
+	// already-debited automatic transfer left pending by a restart.
+	srv.StartStripeAutoWithdrawWorker(ctx)
+
 	// HTTP server with graceful shutdown.
 	httpServer := &http.Server{
 		Addr:    ":" + cfg.ServerConfig.Port,

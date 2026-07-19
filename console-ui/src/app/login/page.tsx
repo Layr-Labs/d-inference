@@ -11,7 +11,7 @@ function isSafeRedirect(next: string): boolean {
   }
   try {
     const url = new URL(next, window.location.origin);
-    return url.origin === window.location.origin;
+    return url.origin === window.location.origin && !url.pathname.includes("\\");
   } catch {
     return false;
   }

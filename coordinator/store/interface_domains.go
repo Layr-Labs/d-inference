@@ -303,6 +303,14 @@ type BillingStore interface {
 	// (checkable with errors.Is) when the account can't cover the debit.
 	CreateStripeWithdrawalWithDebit(withdrawal *StripeWithdrawal, entryType LedgerEntryType, reference string) error
 
+	// CreateStripeAutoWithdrawalWithDebit is the automatic-withdrawal variant.
+	// In the same transaction/critical section as the debit, it verifies that
+	// the user is still opted in, the linked Stripe account is unchanged and
+	// ready, and scheduledFor exactly matches a due NextAt slot. This closes the
+	// opt-out-vs-worker race. It returns ErrAutoWithdrawNotAuthorized when any
+	// authorization condition no longer holds.
+	CreateStripeAutoWithdrawalWithDebit(withdrawal *StripeWithdrawal, entryType LedgerEntryType, reference string, scheduledFor time.Time) error
+
 	// GetStripeWithdrawal returns a withdrawal by its internal UUID.
 	GetStripeWithdrawal(id string) (*StripeWithdrawal, error)
 
@@ -353,6 +361,12 @@ type BillingStore interface {
 	// above MaxStripeWithdrawalsByStatusLimit) is capped at
 	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
+
+	// ListStripeWithdrawalsBySourceStatus returns a bounded, oldest-first set
+	// for a source/status pair. The automatic payout worker uses it to resume
+	// already-authorized pending transfers even if the user subsequently opts
+	// out; disabling only prevents future debits.
+	ListStripeWithdrawalsBySourceStatus(source, status string, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for
 	// the given connected account (acct_…) in the given status, oldest first.
@@ -432,6 +446,22 @@ type UserStore interface {
 	// GetUserByStripeAccount finds a user by their Stripe connected account ID.
 	// Used by webhook handlers to route account.updated / payout.* events.
 	GetUserByStripeAccount(stripeAccountID string) (*User, error)
+
+	// SetStripeAutoWithdraw enables or disables explicit weekly automatic
+	// withdrawal authorization. Enabling an already-enabled preference is
+	// idempotent and preserves its existing schedule. Disabling clears the
+	// active authorization timestamp and next run.
+	SetStripeAutoWithdraw(accountID string, enabled bool, authorizedAt, nextAt time.Time) error
+
+	// ListUsersDueForStripeAutoWithdraw returns opted-in, payout-ready users
+	// whose next schedule slot is due, oldest slot first.
+	ListUsersDueForStripeAutoWithdraw(now time.Time, limit int) ([]User, error)
+
+	// AdvanceStripeAutoWithdraw moves a still-enabled preference from the exact
+	// scheduledFor slot to nextAt. The compare-and-swap prevents a stale worker
+	// from overwriting a concurrent disable/re-enable. It returns whether the
+	// schedule was advanced.
+	AdvanceStripeAutoWithdraw(accountID string, scheduledFor, nextAt time.Time) (bool, error)
 
 	// SetUserRole sets the account role (e.g. "" or RoleService). Used by the
 	// admin API to grant a partner account elevated rate limits.

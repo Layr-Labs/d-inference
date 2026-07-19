@@ -30,6 +30,12 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 // treating every error as not-found.
 var ErrNotFound = errors.New("not found")
 
+// ErrAutoWithdrawNotAuthorized is returned when an automatic Stripe
+// withdrawal no longer matches the user's active authorization and scheduled
+// run. Callers must stop before moving money; a later worker pass will load the
+// current preference.
+var ErrAutoWithdrawNotAuthorized = errors.New("automatic withdrawal is not authorized")
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -553,6 +559,13 @@ type User struct {
 	StripeDestinationType  string `json:"stripe_destination_type,omitempty"` // "bank" | "card" | ""
 	StripeDestinationLast4 string `json:"stripe_destination_last4,omitempty"`
 	StripeInstantEligible  bool   `json:"stripe_instant_eligible,omitempty"` // debit-card destination supports Instant Payouts
+
+	// Weekly automatic withdrawals require explicit interactive authorization.
+	// NextAt is the exact schedule slot workers must match atomically before
+	// debiting; changing or revoking the preference invalidates stale workers.
+	StripeAutoWithdrawEnabled      bool       `json:"stripe_auto_withdraw_enabled,omitempty"`
+	StripeAutoWithdrawAuthorizedAt *time.Time `json:"stripe_auto_withdraw_authorized_at,omitempty"`
+	StripeAutoWithdrawNextAt       *time.Time `json:"stripe_auto_withdraw_next_at,omitempty"`
 }
 
 // MaxStripeWithdrawalsByStatusLimit caps ListStripeWithdrawalsByStatus result
@@ -560,28 +573,35 @@ type User struct {
 // into memory is never intended (threat-model review advisory).
 const MaxStripeWithdrawalsByStatusLimit = 1000
 
-// StripeWithdrawal records a user-initiated payout via Stripe Connect Express.
+const (
+	StripeWithdrawalSourceManual    = "manual"
+	StripeWithdrawalSourceAutomatic = "automatic"
+)
+
+// StripeWithdrawal records a payout via Stripe Connect Express.
 // The lifecycle is: pending (debit recorded) → transferred (platform→connected
 // account transfer succeeded) → paid (Stripe payout to bank/card succeeded).
 // On failure at any stage we re-credit the user via LedgerRefund and set the
 // status to "failed".
 type StripeWithdrawal struct {
-	ID              string    `json:"id"`                        // internal UUID, used as Stripe idempotency key prefix
-	AccountID       string    `json:"account_id"`                // internal account that owns the withdrawal
-	StripeAccountID string    `json:"stripe_account_id"`         // Stripe connected account (acct_…)
-	TransferID      string    `json:"transfer_id,omitempty"`     // Stripe transfer (tr_…)
-	PayoutID        string    `json:"payout_id,omitempty"`       // Stripe payout (po_…) we created (instant path)
-	SweepPayoutID   string    `json:"sweep_payout_id,omitempty"` // automatic sweep payout (po_…) that claimed this row as paid — lets a later payout.failed for the same sweep reopen it
-	AmountMicroUSD  int64     `json:"amount_micro_usd"`          // gross amount debited from ledger
-	FeeMicroUSD     int64     `json:"fee_micro_usd"`             // fee retained by platform
-	NetMicroUSD     int64     `json:"net_micro_usd"`             // amount transferred to user (gross - fee)
-	Method          string    `json:"method"`                    // "standard" | "instant"
-	Status          string    `json:"status"`                    // "pending" | "transferred" | "paid" | "failed"
-	FailureReason   string    `json:"failure_reason,omitempty"`  // populated when Status="failed"
-	Refunded        bool      `json:"refunded,omitempty"`        // true after the failure refund is credited
-	FeeRefunded     bool      `json:"fee_refunded,omitempty"`    // true after the instant fee is credited back (instant payout fell back to the standard sweep)
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID              string     `json:"id"`                        // internal UUID, used as Stripe idempotency key prefix
+	AccountID       string     `json:"account_id"`                // internal account that owns the withdrawal
+	StripeAccountID string     `json:"stripe_account_id"`         // Stripe connected account (acct_…)
+	TransferID      string     `json:"transfer_id,omitempty"`     // Stripe transfer (tr_…)
+	PayoutID        string     `json:"payout_id,omitempty"`       // Stripe payout (po_…) we created (instant path)
+	SweepPayoutID   string     `json:"sweep_payout_id,omitempty"` // automatic sweep payout (po_…) that claimed this row as paid — lets a later payout.failed for the same sweep reopen it
+	AmountMicroUSD  int64      `json:"amount_micro_usd"`          // gross amount debited from ledger
+	FeeMicroUSD     int64      `json:"fee_micro_usd"`             // fee retained by platform
+	NetMicroUSD     int64      `json:"net_micro_usd"`             // amount transferred to user (gross - fee)
+	Method          string     `json:"method"`                    // "standard" | "instant"
+	Source          string     `json:"source"`                    // "manual" | "automatic"
+	ScheduledFor    *time.Time `json:"scheduled_for,omitempty"`   // weekly schedule slot; automatic withdrawals only
+	Status          string     `json:"status"`                    // "pending" | "transferred" | "paid" | "failed"
+	FailureReason   string     `json:"failure_reason,omitempty"`  // populated when Status="failed"
+	Refunded        bool       `json:"refunded,omitempty"`        // true after the failure refund is credited
+	FeeRefunded     bool       `json:"fee_refunded,omitempty"`    // true after the instant fee is credited back (instant payout fell back to the standard sweep)
+	CreatedAt       time.Time  `json:"created_at"`
+	UpdatedAt       time.Time  `json:"updated_at"`
 }
 
 // SupportedModel is the lightweight in-memory shape the model-listing and

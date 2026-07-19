@@ -94,6 +94,13 @@ marker without reading or rewriting `balances` or `ledger_entries`; this preserv
 legitimate live zero balances. Only a legacy schema where the column is absent gets the
 set-wise historical backfill. Concurrent starters serialize on the marker, and a
 failure rolls back both the marker and all migration changes.
+See
+[`coordinator/store/postgres.go:1037-1041`](../../coordinator/store/postgres.go#L1037-L1041)
+for the startup call,
+[`coordinator/store/postgres_withdrawable_migration.go:175-244`](../../coordinator/store/postgres_withdrawable_migration.go#L175-L244)
+for the transactional claim/schema boundary, and
+[`coordinator/store/postgres_withdrawable_migration.go:15-108`](../../coordinator/store/postgres_withdrawable_migration.go#L15-L108)
+for the legacy-only set-wise reconstruction.
 
 Startup emits one privacy-safe `postgres migration completed` log with only the
 migration name, result, and duration. Expected results are
@@ -106,6 +113,10 @@ withdrawable column fails closed if its ledger contains generic refunds or accou
 migrations whose withdrawable provenance cannot be reconstructed exactly. The marker,
 new column, and partial updates all roll back; reconcile that database offline rather
 than bypassing the check.
+The result/duration logging implementation is
+[`coordinator/store/postgres_withdrawable_migration.go:123-140`](../../coordinator/store/postgres_withdrawable_migration.go#L123-L140);
+the fail-closed ambiguity gate and transaction commit are
+[`coordinator/store/postgres_withdrawable_migration.go:225-244`](../../coordinator/store/postgres_withdrawable_migration.go#L225-L244).
 
 ```bash
 # No rows = safe to proceed. Rows here = investigate/kill blockers first.
@@ -252,6 +263,10 @@ withdrawn funds. For the rollout that introduces this migration, recovery is
 **roll-forward only**: fix the startup problem and restart the target image, or build a
 patched image from the previous application commit with the marker-safe migration
 included.
+The marker ID is defined at
+[`coordinator/store/postgres_withdrawable_migration.go:13`](../../coordinator/store/postgres_withdrawable_migration.go#L13),
+and the marker-preserving existing-schema path is
+[`coordinator/store/postgres_withdrawable_migration.go:182-217`](../../coordinator/store/postgres_withdrawable_migration.go#L182-L217).
 
 ```bash
 # Use an immutable digest from the release's reviewed marker-safe allowlist.

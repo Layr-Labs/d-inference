@@ -64,6 +64,40 @@ func TestMemoryStripeAutoWithdrawPreferenceLifecycle(t *testing.T) {
 	}
 }
 
+func TestMemoryStripeAutoWithdrawDuePagination(t *testing.T) {
+	s := NewMemory(Config{})
+	now := time.Now().UTC().Truncate(time.Second)
+	slot := now.Add(-time.Hour)
+	for _, accountID := range []string{"acct-page-a", "acct-page-b", "acct-page-c"} {
+		user := &User{AccountID: accountID, PrivyUserID: "did:privy:" + accountID}
+		if err := s.CreateUser(user); err != nil {
+			t.Fatal(err)
+		}
+		stripeID := "stripe_" + accountID
+		if err := s.SetUserStripeAccount(
+			accountID, stripeID, "ready", "US", "bank", "4242", false,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetStripeAutoWithdraw(
+			accountID, stripeID, true, now.Add(-2*time.Hour), slot,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, err := s.ListUsersDueForStripeAutoWithdrawPage(now, time.Time{}, "", 2)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first page = %+v, err = %v", first, err)
+	}
+	second, err := s.ListUsersDueForStripeAutoWithdrawPage(
+		now, *first[1].StripeAutoWithdrawNextAt, first[1].AccountID, 2,
+	)
+	if err != nil || len(second) != 1 || second[0].AccountID != "acct-page-c" {
+		t.Fatalf("second page = %+v, err = %v", second, err)
+	}
+}
+
 func TestMemoryStripeAutoWithdrawDebitChecksAuthorizationAtomically(t *testing.T) {
 	s := NewMemory(Config{})
 	user := &User{AccountID: "acct-auto-debit", PrivyUserID: "did:privy:auto-debit"}

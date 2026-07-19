@@ -172,8 +172,13 @@ routing to `off` before rolling back binaries.
 
 The v0.7.11 release does not activate routing. Providers with
 `cbv2-frozen-full-3` contiguous native-float support can advertise Gemma 4 and GPT-OSS
-as protocol-v2 models only after SSD scan readiness; paged hybrid slots remain
-v1/cold. Production activation is still a separate operational decision:
+as protocol-v2 models only after SSD scan readiness
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift:325-343`,
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClientState.swift:176-184`,
+`provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift:27-36`);
+paged hybrid slots remain v1/cold
+(`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift:110-129`).
+Production activation is still a separate operational decision:
 positive durable-hit evidence, stable correlation telemetry, healthy prompt
 artifacts, routing-mode enablement, and a separately provisioned 256-bit cache
 master key remain required.

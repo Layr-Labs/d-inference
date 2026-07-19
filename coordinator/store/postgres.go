@@ -3514,24 +3514,37 @@ func (s *PostgresStore) SetStripeAutoWithdraw(accountID, expectedStripeAccountID
 // ListUsersDueForStripeAutoWithdraw returns opted-in, payout-ready users with
 // a due schedule slot, oldest first.
 func (s *PostgresStore) ListUsersDueForStripeAutoWithdraw(now time.Time, limit int) ([]User, error) {
+	return s.ListUsersDueForStripeAutoWithdrawPage(now, time.Time{}, "", limit)
+}
+
+func (s *PostgresStore) ListUsersDueForStripeAutoWithdrawPage(now, afterNextAt time.Time, afterAccountID string, limit int) ([]User, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	rows, err := s.pool.Query(ctx,
-		`SELECT `+userSelectColumns+` FROM users
+	query := `SELECT ` + userSelectColumns + ` FROM users
 		 WHERE stripe_auto_withdraw_enabled = TRUE
 		   AND stripe_auto_withdraw_next_at IS NOT NULL
 		   AND stripe_auto_withdraw_next_at <= $1
 		   AND stripe_account_status = 'ready'
 		   AND stripe_account_id != ''
-		   AND stripe_auto_withdraw_account_id = stripe_account_id
-		 ORDER BY stripe_auto_withdraw_next_at ASC
-		 LIMIT $2`,
-		now, limit,
+		   AND stripe_auto_withdraw_account_id = stripe_account_id`
+	args := []any{now}
+	if !afterNextAt.IsZero() {
+		query += ` AND (
+			stripe_auto_withdraw_next_at > $2 OR
+			(stripe_auto_withdraw_next_at = $2 AND account_id > $3)
+		)`
+		args = append(args, afterNextAt, afterAccountID)
+	}
+	args = append(args, limit)
+	query += fmt.Sprintf(
+		` ORDER BY stripe_auto_withdraw_next_at ASC, account_id ASC LIMIT $%d`,
+		len(args),
 	)
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: list due Stripe automatic withdrawals: %w", err)
 	}
@@ -4351,6 +4364,9 @@ func (s *PostgresStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID strin
 			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
 		}
 		out = append(out, *w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate stripe withdrawals by sweep payout: %w", err)
 	}
 	return out, nil
 }

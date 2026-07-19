@@ -2163,6 +2163,10 @@ func (s *MemoryStore) SetStripeAutoWithdraw(accountID, expectedStripeAccountID s
 
 // ListUsersDueForStripeAutoWithdraw returns ready users with due slots.
 func (s *MemoryStore) ListUsersDueForStripeAutoWithdraw(now time.Time, limit int) ([]User, error) {
+	return s.ListUsersDueForStripeAutoWithdrawPage(now, time.Time{}, "", limit)
+}
+
+func (s *MemoryStore) ListUsersDueForStripeAutoWithdrawPage(now, afterNextAt time.Time, afterAccountID string, limit int) ([]User, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
@@ -2177,9 +2181,17 @@ func (s *MemoryStore) ListUsersDueForStripeAutoWithdraw(now time.Time, limit int
 			u.StripeAutoWithdrawAccountID != u.StripeAccountID {
 			continue
 		}
+		if !afterNextAt.IsZero() &&
+			(u.StripeAutoWithdrawNextAt.Before(afterNextAt) ||
+				(u.StripeAutoWithdrawNextAt.Equal(afterNextAt) && u.AccountID <= afterAccountID)) {
+			continue
+		}
 		out = append(out, *u)
 	}
 	sort.Slice(out, func(i, j int) bool {
+		if out[i].StripeAutoWithdrawNextAt.Equal(*out[j].StripeAutoWithdrawNextAt) {
+			return out[i].AccountID < out[j].AccountID
+		}
 		return out[i].StripeAutoWithdrawNextAt.Before(*out[j].StripeAutoWithdrawNextAt)
 	})
 	if len(out) > limit {

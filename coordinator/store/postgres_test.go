@@ -222,6 +222,40 @@ func TestPostgresStripeAutoWithdrawPreferenceLifecycle(t *testing.T) {
 	}
 }
 
+func TestPostgresStripeAutoWithdrawDuePagination(t *testing.T) {
+	s := testPostgresStore(t)
+	now := time.Now().UTC().Truncate(time.Second)
+	slot := now.Add(-time.Hour)
+	for _, accountID := range []string{"acct-pg-page-a", "acct-pg-page-b", "acct-pg-page-c"} {
+		if err := s.CreateUser(&User{
+			AccountID: accountID, PrivyUserID: "did:privy:" + accountID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		stripeID := "stripe_" + accountID
+		if err := s.SetUserStripeAccount(
+			accountID, stripeID, "ready", "US", "bank", "4242", false,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetStripeAutoWithdraw(
+			accountID, stripeID, true, now.Add(-2*time.Hour), slot,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := s.ListUsersDueForStripeAutoWithdrawPage(now, time.Time{}, "", 2)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first page = %+v, err = %v", first, err)
+	}
+	second, err := s.ListUsersDueForStripeAutoWithdrawPage(
+		now, *first[1].StripeAutoWithdrawNextAt, first[1].AccountID, 2,
+	)
+	if err != nil || len(second) != 1 || second[0].AccountID != "acct-pg-page-c" {
+		t.Fatalf("second page = %+v, err = %v", second, err)
+	}
+}
+
 // CreateUser must persist create-time Role and PlatformFeePercent (parity with
 // the in-memory store), so one-call provisioning of a service account survives.
 func TestPostgresCreateUserPersistsRoleAndFee(t *testing.T) {
@@ -879,7 +913,7 @@ func TestPostgresCreateStripeAutoWithdrawalWithDebit(t *testing.T) {
 func TestPostgresStripeWithdrawalAtomicFailureAndGuards(t *testing.T) {
 	s := testPostgresStore(t)
 	accountID := "acct-pg-auto-guards"
-	if err := s.CreditWithdrawable(accountID, 5_000_000, LedgerPayout, "earnings"); err != nil {
+	if err := s.CreditWithdrawable(accountID, 6_000_000, LedgerPayout, "earnings"); err != nil {
 		t.Fatal(err)
 	}
 	wd := &StripeWithdrawal{

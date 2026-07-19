@@ -514,6 +514,11 @@ type UserStore interface {
 	// whose next schedule slot is due, oldest slot first.
 	ListUsersDueForStripeAutoWithdraw(now time.Time, limit int) ([]User, error)
 
+	// ListUsersDueForStripeAutoWithdrawPage continues the same ordered scan
+	// after (afterNextAt, afterAccountID), allowing one bounded worker sweep to
+	// drain more than a single batch without re-reading unchanged rows.
+	ListUsersDueForStripeAutoWithdrawPage(now, afterNextAt time.Time, afterAccountID string, limit int) ([]User, error)
+
 	// AdvanceStripeAutoWithdraw moves a still-enabled preference from the exact
 	// scheduledFor slot to nextAt. The compare-and-swap prevents a stale worker
 	// from overwriting a concurrent disable/re-enable. It returns whether the

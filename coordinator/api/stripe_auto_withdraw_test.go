@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -242,6 +243,45 @@ func TestStripeAutoWithdrawWorkerTransfersFullBalanceOnce(t *testing.T) {
 	srv.sweepStripeAutoWithdrawals(now)
 	if got := calls.snapshot(); got.count != 1 {
 		t.Fatalf("duplicate sweep made %d Stripe transfers", got.count)
+	}
+}
+
+func TestStripeAutoWithdrawWorkerDrainsMultipleDuePages(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	now := time.Now().UTC().Truncate(time.Second)
+	slot := now.Add(-time.Minute)
+	const users = stripeAutoWithdrawBatch + 4
+	for i := 0; i < users; i++ {
+		accountID := fmt.Sprintf("acct-auto-page-%02d", i)
+		user := readyUser(t, st, accountID, accountID+"@example.com", false)
+		if err := st.CreditWithdrawable(
+			user.AccountID, 1_000_000, store.LedgerPayout, "earnings",
+		); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetStripeAutoWithdraw(
+			user.AccountID, user.StripeAccountID, true,
+			now.Add(-time.Hour), slot,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	srv.sweepStripeAutoWithdrawals(now)
+
+	processed := 0
+	for i := 0; i < users; i++ {
+		accountID := fmt.Sprintf("acct-auto-page-%02d", i)
+		rows, err := st.ListStripeWithdrawals(accountID, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) == 1 && rows[0].Status == "transferred" {
+			processed++
+		}
+	}
+	if processed != users {
+		t.Fatalf("processed %d/%d due users across pages", processed, users)
 	}
 }
 

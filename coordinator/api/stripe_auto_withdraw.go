@@ -18,9 +18,10 @@ const (
 	stripeAutoWithdrawInterval = 15 * time.Minute
 	// 16 rows × 8 workers × at most three 30s Stripe calls per due row leaves
 	// ample margin below the 15-minute ticker cadence.
-	stripeAutoWithdrawBatch   = 16
-	stripeAutoWithdrawWorkers = 8
-	stripeAutoWithdrawHourUTC = 9
+	stripeAutoWithdrawBatch       = 16
+	stripeAutoWithdrawWorkers     = 8
+	stripeAutoWithdrawHourUTC     = 9
+	stripeAutoWithdrawSweepBudget = 10 * time.Minute
 	// Stripe may evict idempotency keys after 24 hours. Never replay a pending
 	// transfer close to that boundary; stale rows move to manual reconciliation.
 	stripeAutoWithdrawResumeWindow = 23 * time.Hour
@@ -135,52 +136,86 @@ func (s *Server) StartStripeAutoWithdrawWorker(ctx context.Context) {
 }
 
 func (s *Server) sweepStripeAutoWithdrawals(now time.Time) {
-	s.resumePendingStripeAutoWithdrawals(now)
-
-	users, err := s.billing.Store().ListUsersDueForStripeAutoWithdraw(
-		now, stripeAutoWithdrawBatch,
-	)
-	if err != nil {
-		s.logger.Error("stripe auto payout: list due users failed", "error", err)
-		s.ddIncr("billing.auto_withdraw", []string{"outcome:list_failed"})
-		return
-	}
-	s.runStripePayoutBatch(len(users), "api.stripeAutoWithdrawDue", func(i int) {
-		s.processDueStripeAutoWithdrawal(&users[i], now)
-	})
+	deadline := time.Now().Add(stripeAutoWithdrawSweepBudget)
+	s.resumePendingStripeAutoWithdrawals(now, deadline)
+	s.processDueStripeAutoWithdrawals(now, deadline)
 }
 
-func (s *Server) resumePendingStripeAutoWithdrawals(now time.Time) {
-	pending, err := s.billing.Store().ListStripeWithdrawalsBySourceStatusAfter(
-		store.StripeWithdrawalSourceAutomatic, "pending",
-		now.Add(-stripeAutoWithdrawResumeWindow), now, stripeAutoWithdrawBatch,
-	)
-	if err != nil {
-		s.logger.Error("stripe auto payout: list pending withdrawals failed", "error", err)
-		s.ddIncr("billing.auto_withdraw", []string{"outcome:resume_list_failed"})
-		return
-	}
-	s.runStripePayoutBatch(len(pending), "api.stripeAutoWithdrawResume", func(i int) {
-		wd := &pending[i]
-		user := &store.User{
-			AccountID:       wd.AccountID,
-			StripeAccountID: wd.StripeAccountID,
+func (s *Server) processDueStripeAutoWithdrawals(now, deadline time.Time) {
+	var afterNextAt time.Time
+	var afterAccountID string
+	for time.Now().Before(deadline) {
+		users, err := s.billing.Store().ListUsersDueForStripeAutoWithdrawPage(
+			now, afterNextAt, afterAccountID, stripeAutoWithdrawBatch,
+		)
+		if err != nil {
+			s.logger.Error("stripe auto payout: list due users failed", "error", err)
+			s.ddIncr("billing.auto_withdraw", []string{"outcome:list_failed"})
+			return
 		}
-		result, payoutErr := s.executeStripeTransfer(stripeTransferRequest{
-			User:            user,
-			GrossMicroUSD:   wd.AmountMicroUSD,
-			FeeMicroUSD:     wd.FeeMicroUSD,
-			Method:          wd.Method,
-			Source:          store.StripeWithdrawalSourceAutomatic,
-			WithdrawalID:    wd.ID,
-			ScheduledFor:    wd.ScheduledFor,
-			TransferMessage: "Darkbloom weekly automatic withdrawal",
+		if len(users) == 0 {
+			return
+		}
+		s.runStripePayoutBatch(len(users), "api.stripeAutoWithdrawDue", func(i int) {
+			s.processDueStripeAutoWithdrawal(&users[i], now)
 		})
-		s.recordStripeAutoWithdrawResult(wd, result, payoutErr, "resume")
-		if wd.ScheduledFor != nil && (result != nil || payoutErr != nil && payoutErr.Withdrawal != nil) {
-			s.advanceStripeAutoWithdrawSchedule(wd.AccountID, *wd.ScheduledFor, now)
+		last := users[len(users)-1]
+		afterNextAt = *last.StripeAutoWithdrawNextAt
+		afterAccountID = last.AccountID
+		if len(users) < stripeAutoWithdrawBatch {
+			return
 		}
-	})
+	}
+	s.logger.Warn("stripe auto payout: due-user sweep budget exhausted")
+	s.ddIncr("billing.auto_withdraw", []string{"outcome:sweep_budget_exhausted", "stage:due"})
+}
+
+func (s *Server) resumePendingStripeAutoWithdrawals(now, deadline time.Time) {
+	for time.Now().Before(deadline) {
+		pending, err := s.billing.Store().ListStripeWithdrawalsBySourceStatusAfter(
+			store.StripeWithdrawalSourceAutomatic, "pending",
+			now.Add(-stripeAutoWithdrawResumeWindow), now, stripeAutoWithdrawBatch,
+		)
+		if err != nil {
+			s.logger.Error("stripe auto payout: list pending withdrawals failed", "error", err)
+			s.ddIncr("billing.auto_withdraw", []string{"outcome:resume_list_failed"})
+			return
+		}
+		if len(pending) == 0 {
+			return
+		}
+		s.runStripePayoutBatch(len(pending), "api.stripeAutoWithdrawResume", func(i int) {
+			wd := &pending[i]
+			user := &store.User{
+				AccountID:       wd.AccountID,
+				StripeAccountID: wd.StripeAccountID,
+			}
+			result, payoutErr := s.executeStripeTransfer(stripeTransferRequest{
+				User:            user,
+				GrossMicroUSD:   wd.AmountMicroUSD,
+				FeeMicroUSD:     wd.FeeMicroUSD,
+				Method:          wd.Method,
+				Source:          store.StripeWithdrawalSourceAutomatic,
+				WithdrawalID:    wd.ID,
+				ScheduledFor:    wd.ScheduledFor,
+				TransferMessage: "Darkbloom weekly automatic withdrawal",
+			})
+			s.recordStripeAutoWithdrawResult(wd, result, payoutErr, "resume")
+			if errors.Is(payoutErr, store.ErrStripeWithdrawalBusy) {
+				_, _ = s.billing.Store().RecordStripeWithdrawalPendingFailure(
+					wd.ID, wd.FailureReason, now.Add(stripeAutoWithdrawInterval),
+				)
+			}
+			if wd.ScheduledFor != nil && (result != nil || payoutErr != nil && payoutErr.Withdrawal != nil) {
+				s.advanceStripeAutoWithdrawSchedule(wd.AccountID, *wd.ScheduledFor, now)
+			}
+		})
+		if len(pending) < stripeAutoWithdrawBatch {
+			return
+		}
+	}
+	s.logger.Warn("stripe auto payout: pending-resume sweep budget exhausted")
+	s.ddIncr("billing.auto_withdraw", []string{"outcome:sweep_budget_exhausted", "stage:resume"})
 }
 
 func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time) {

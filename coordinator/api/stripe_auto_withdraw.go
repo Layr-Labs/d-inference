@@ -198,6 +198,7 @@ func (s *Server) resumePendingStripeAutoWithdrawals(now, deadline time.Time) {
 				Source:          store.StripeWithdrawalSourceAutomatic,
 				WithdrawalID:    wd.ID,
 				ScheduledFor:    wd.ScheduledFor,
+				RetryCutoff:     now.Add(-stripeAutoWithdrawResumeWindow),
 				TransferMessage: "Darkbloom weekly automatic withdrawal",
 			})
 			s.recordStripeAutoWithdrawResult(wd, result, payoutErr, "resume")
@@ -263,6 +264,7 @@ func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time)
 		Source:          store.StripeWithdrawalSourceAutomatic,
 		WithdrawalID:    withdrawalID,
 		ScheduledFor:    &scheduledFor,
+		RetryCutoff:     now.Add(-stripeAutoWithdrawResumeWindow),
 		TransferMessage: "Darkbloom weekly automatic withdrawal",
 	})
 	s.recordStripeAutoWithdrawResult(existing, result, payoutErr, "scheduled")

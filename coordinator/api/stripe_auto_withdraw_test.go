@@ -373,6 +373,41 @@ func TestStripeAutoWithdrawWorkerDoesNotReplayExpiredIdempotencyKey(t *testing.T
 	}
 }
 
+func TestStripeAutoWithdrawUsesSweepCutoffForEntireBatch(t *testing.T) {
+	fakeStripe, calls := newAutoWithdrawStripeServer(t)
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	createdAt := time.Now().UTC().Add(-stripeAutoWithdrawResumeWindow - time.Second)
+	retryCutoff := createdAt.Add(-time.Second)
+	wd := &store.StripeWithdrawal{
+		ID: "wd-fixed-cutoff", AccountID: "acct-fixed-cutoff",
+		StripeAccountID: "acct_stripe_fixed", AmountMicroUSD: 1_000_000,
+		NetMicroUSD: 1_000_000, Method: "standard",
+		Source: store.StripeWithdrawalSourceAutomatic, Status: "pending",
+		CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
+	if err := st.CreateStripeWithdrawal(wd); err != nil {
+		t.Fatal(err)
+	}
+
+	result, payoutErr := srv.executeStripeTransfer(stripeTransferRequest{
+		User: &store.User{
+			AccountID: wd.AccountID, StripeAccountID: wd.StripeAccountID,
+		},
+		GrossMicroUSD: wd.AmountMicroUSD,
+		Method:        "standard",
+		Source:        store.StripeWithdrawalSourceAutomatic,
+		WithdrawalID:  wd.ID,
+		RetryCutoff:   retryCutoff,
+	})
+
+	if payoutErr != nil || result == nil || result.Withdrawal.Status != "transferred" {
+		t.Fatalf("fixed-cutoff retry result=%+v err=%v", result, payoutErr)
+	}
+	if got := calls.snapshot(); got.count != 1 {
+		t.Fatalf("fixed-cutoff retry made %d transfers, want 1", got.count)
+	}
+}
+
 type autoWithdrawStripeCalls struct {
 	mu             sync.Mutex
 	count          int

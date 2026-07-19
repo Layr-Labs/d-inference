@@ -17,6 +17,7 @@ type stripeTransferRequest struct {
 	Source          string
 	WithdrawalID    string
 	ScheduledFor    *time.Time
+	RetryCutoff     time.Time
 	TransferMessage string
 }
 
@@ -170,7 +171,7 @@ func (s *Server) executeStripeTransfer(req stripeTransferRequest) (*stripeTransf
 		}
 		defer release()
 		if existing := s.loadAutomaticWithdrawal(req, 1); existing != nil {
-			return s.continueAutomaticStripeTransfer(existing, req.TransferMessage)
+			return s.continueAutomaticStripeTransfer(existing, req.TransferMessage, req.RetryCutoff)
 		}
 	}
 
@@ -212,7 +213,7 @@ func (s *Server) executeStripeTransfer(req stripeTransferRequest) (*stripeTransf
 		// our first lookup and insert. Load it and continue the same transfer.
 		if req.Source == store.StripeWithdrawalSourceAutomatic {
 			if existing := s.loadAutomaticWithdrawal(req, 3); existing != nil {
-				return s.continueAutomaticStripeTransfer(existing, req.TransferMessage)
+				return s.continueAutomaticStripeTransfer(existing, req.TransferMessage, req.RetryCutoff)
 			}
 		}
 		if errors.Is(err, store.ErrInsufficientBalance) {
@@ -244,9 +245,11 @@ func (s *Server) executeStripeTransfer(req stripeTransferRequest) (*stripeTransf
 	return s.continueStripeTransfer(wd, req.TransferMessage)
 }
 
-func (s *Server) continueAutomaticStripeTransfer(wd *store.StripeWithdrawal, description string) (*stripeTransferResult, *stripeTransferError) {
-	if wd.Status == "pending" &&
-		!wd.CreatedAt.After(time.Now().Add(-stripeAutoWithdrawResumeWindow)) {
+func (s *Server) continueAutomaticStripeTransfer(wd *store.StripeWithdrawal, description string, retryCutoff time.Time) (*stripeTransferResult, *stripeTransferError) {
+	if retryCutoff.IsZero() {
+		retryCutoff = time.Now().Add(-stripeAutoWithdrawResumeWindow)
+	}
+	if wd.Status == "pending" && !wd.CreatedAt.After(retryCutoff) {
 		return nil, &stripeTransferError{
 			StatusCode: http.StatusConflict,
 			Code:       "auto_withdraw_reconciliation_required",

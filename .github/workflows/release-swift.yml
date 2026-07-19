@@ -185,9 +185,15 @@ jobs:
       - name: Validate release version integrity
         run: ./scripts/check-release-version.sh "$VERSION"
 
+      - name: Set up Go for prompt parity
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.4.0
+        with:
+          go-version: '1.25.0'
+
       - name: Show toolchain versions
         run: |
           set -euo pipefail
+          go version
           xcodebuild -version
           swift --version
           xcrun --sdk macosx --show-sdk-version

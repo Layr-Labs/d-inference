@@ -168,7 +168,7 @@ func TestStripeStatusRefreshReturnsRevokedAutoWithdrawState(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","code":"resource_missing","message":"missing"}}`)
+		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","message":"No such account: 'acct_gone'"}}`)
 	}))
 	t.Cleanup(fakeStripe.Close)
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)

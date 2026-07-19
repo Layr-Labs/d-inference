@@ -33,7 +33,7 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 | Persistent storage | Host disk `/mnt/disks/userdata`, bind-mounted into the container. Holds the MicroMDM BoltDB (`micromdm/`), prompt artifacts, and logs. `start.sh` symlinks `/data -> /mnt/disks/userdata`. Any old `step-ca/` tree is retired migration residue; no step-ca process is running and it must not be restored as an active dependency. |
 | Images | Cloud Build trigger builds on every master push → `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` |
 | Env file | `/etc/d-inference/env` on the VM (root-only). It must live on the boot disk, not tmpfs. [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) preserves every existing value, fails if the observed live tuning set is incomplete, and adds only absent release defaults. |
-| Fallback | The previous container is kept (stopped) as `coordinator_fallback_<timestamp>` for instant rollback |
+| Fallback | The previous container is kept stopped for forensics. Restart it only when its immutable image digest is on the reviewed marker-safe allowlist; pre-`backfill_withdrawable_balance_v1` images are never rollback targets. |
 
 The live host still has stale Caddy `/acme/*` routing and lacks
 `stream_close_delay 5m`. Those are separate Caddy-maintenance changes. Do not
@@ -85,6 +85,27 @@ The image tag is the 7-char short SHA of the master commit.
 migrations; an `ALTER TABLE` queued behind a long-running query's relation lock will
 hang the whole deploy (2026-07-03 outage: repeated restarts stacked migrations behind a
 58-minute runaway query — recovery was killing the blocking PID, not more restarts).
+
+The historical withdrawable-balance backfill is no longer part of the repeatable
+startup statement list. Migration `backfill_withdrawable_balance_v1` uses a unique
+`schema_migrations` claim in the same transaction as its schema/data changes. On an
+existing database that already has `balances.withdrawable_micro_usd`, it records the
+marker without reading or rewriting `balances` or `ledger_entries`; this preserves
+legitimate live zero balances. Only a legacy schema where the column is absent gets the
+set-wise historical backfill. Concurrent starters serialize on the marker, and a
+failure rolls back both the marker and all migration changes.
+
+Startup emits one privacy-safe `postgres migration completed` log with only the
+migration name, result, and duration. Expected results are
+`backfilled_legacy_schema` on a fresh or genuinely legacy schema,
+`preserved_existing_schema` on the first upgraded startup of a database that already
+has live split-balance accounting, and `already_applied` thereafter. A rollback to a
+coordinator version before this migration reintroduces the old every-startup backfill
+and is not financially safe; roll forward instead. A genuinely legacy schema with no
+withdrawable column fails closed if its ledger contains generic refunds or account
+migrations whose withdrawable provenance cannot be reconstructed exactly. The marker,
+new column, and partial updates all roll back; reconcile that database offline rather
+than bypassing the check.
 
 ```bash
 # No rows = safe to proceed. Rows here = investigate/kill blockers first.
@@ -224,18 +245,32 @@ psql "$PROD_DB_URL" -c "select date_trunc('minute', created_at) m,
 
 ### 6. Rollback
 
-The old container is still on the box, stopped, with the pre-swap image and env:
+Never restart a fallback coordinator that predates
+`backfill_withdrawable_balance_v1`. Older binaries ignore the marker and run the
+historical withdrawable-balance reconstruction on every startup, which can recreate
+withdrawn funds. For the rollout that introduces this migration, recovery is
+**roll-forward only**: fix the startup problem and restart the target image, or build a
+patched image from the previous application commit with the marker-safe migration
+included.
 
 ```bash
+# Use an immutable digest from the release's reviewed marker-safe allowlist.
+# A mutable tag, stopped container name, or source-file presence is not proof.
+FALLBACK_IMAGE=us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator@sha256:<reviewed-digest>
 sudo docker stop -t 630 coordinator && sudo docker rm coordinator
-sudo docker rename <fallback-name> coordinator   # or docker start <fallback-name>
-sudo docker start coordinator
-# If env was changed, restore the timestamped backup first:
 sudo cp /etc/d-inference/env.bak.<timestamp> /etc/d-inference/env
+sudo docker run -d --name coordinator \
+  --network host \
+  --restart unless-stopped \
+  --stop-timeout 630 \
+  -v /mnt/disks/userdata:/mnt/disks/userdata \
+  --env-file /etc/d-inference/env \
+  "$FALLBACK_IMAGE"
 ```
 
-Rollback time: ~30 seconds. Providers reconnect automatically (the live registry is
-in-process and rebuilt on reconnect; durable state is in RDS and on the persistent disk).
+Providers reconnect automatically after a marker-safe recovery (the live registry is
+in-process and rebuilt on reconnect; durable state is in RDS and on the persistent
+disk).
 
 ## Provider CLI release
 

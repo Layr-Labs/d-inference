@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchStripeStatus,
   startStripeOnboarding,
@@ -74,6 +74,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("");
   const [autoWithdrawLoading, setAutoWithdrawLoading] = useState(false);
+  const reloadSequence = useRef(0);
 
   // Once a Stripe Express account exists its country is locked — pre-select it.
   useEffect(() => {
@@ -83,13 +84,16 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   }, [status?.stripe_account_country]);
 
   const reload = useCallback(async (refresh = false) => {
+    const sequence = ++reloadSequence.current;
     try {
       const [s, wds] = await Promise.all([
         fetchStripeStatus(refresh),
         fetchStripeWithdrawals(20).catch(() => [] as StripeWithdrawal[]),
       ]);
-      setStatus(s);
-      setWithdrawals(wds);
+      if (sequence === reloadSequence.current) {
+        setStatus(s);
+        setWithdrawals(wds);
+      }
     } catch (e) {
       // Silent — Stripe Payouts is optional infrastructure.
       console.warn("stripe status fetch failed:", (e as Error).message);
@@ -173,6 +177,9 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     setAutoWithdrawLoading(true);
     try {
       const updated = await updateStripeAutoWithdraw(enabled);
+      // The mutation response is authoritative. Invalidate any slower status
+      // request that started before this response arrived.
+      reloadSequence.current++;
       setStatus((current) => current ? { ...current, ...updated } : current);
       addToast(
         enabled

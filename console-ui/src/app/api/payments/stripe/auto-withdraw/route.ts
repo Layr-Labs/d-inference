@@ -1,5 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
-import { coordinatorUrl, privyAuth } from "@/lib/server/coordinator";
+import { NextRequest } from "next/server";
+import { coordinatorUrl, passthrough, privyAuth } from "@/lib/server/coordinator";
 
 export async function PUT(req: NextRequest) {
   const authHeader = privyAuth(req);
@@ -12,6 +12,5 @@ export async function PUT(req: NextRequest) {
     },
     body: JSON.stringify(body),
   });
-  const data = await res.json().catch(() => ({}));
-  return NextResponse.json(data, { status: res.status });
+  return passthrough(res);
 }

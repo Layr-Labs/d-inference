@@ -32,6 +32,12 @@ export function AutoWithdrawControl({
 }) {
   const nextLabel = formatAutoWithdrawNextAt(nextAt);
   const disabled = loading || (!enabled && !canEnable);
+  let scheduleLabel = "Enabled - next check is being scheduled";
+  if (!canEnable) {
+    scheduleLabel = "Paused - automatic withdrawals resume when Stripe payouts are ready";
+  } else if (nextLabel) {
+    scheduleLabel = `Next check: ${nextLabel}`;
+  }
 
   return (
     <div className="mt-4 rounded-lg border border-border-dim bg-bg-primary p-3">
@@ -44,16 +50,16 @@ export function AutoWithdrawControl({
             </p>
           </div>
           <p className="mt-1 text-xs leading-relaxed text-text-tertiary">
-            Every Monday at 09:00 UTC, send all whole-cent available earnings
-            through Stripe&apos;s free standard payout. Any sub-cent remainder stays
-            in your balance.
+            Every Monday at 09:00 UTC, if at least $1 is available, send all
+            whole-cent earnings through Stripe&apos;s free standard payout. Any
+            sub-cent remainder stays in your balance.
           </p>
         </div>
         <button
           type="button"
           role="switch"
           aria-checked={enabled}
-          aria-label={`${enabled ? "Disable" : "Enable"} automatic weekly withdrawals`}
+          aria-label="Automatic weekly withdrawals"
           disabled={disabled}
           onClick={() => onChange(!enabled)}
           className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors ${
@@ -78,7 +84,7 @@ export function AutoWithdrawControl({
       </div>
       {enabled && (
         <p className="mt-2 text-xs font-mono text-teal">
-          {nextLabel ? `Next run: ${nextLabel}` : "Enabled - next run is being scheduled"}
+          {scheduleLabel}
         </p>
       )}
       {!enabled && !canEnable && (

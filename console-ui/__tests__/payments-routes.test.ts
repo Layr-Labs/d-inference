@@ -168,6 +168,29 @@ describe("PUT /api/payments/stripe/auto-withdraw", () => {
     const res = await PUT(req);
 
     expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: { type: "payout_destination_changed", message: "refresh" },
+    });
+  });
+
+  it("falls back to the Privy cookie", async () => {
+    upstream.fetch.mockResolvedValueOnce(
+      upstreamOk({ auto_withdraw_enabled: false })
+    );
+    const { PUT } = await import("@/app/api/payments/stripe/auto-withdraw/route");
+    const req = makeRequest("/api/payments/stripe/auto-withdraw", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        cookie: "privy-token=cookie-token",
+      },
+      body: JSON.stringify({ enabled: false }),
+    });
+
+    await PUT(req);
+
+    const [, opts] = upstream.fetch.mock.calls[0];
+    expect(opts.headers.Authorization).toBe("Bearer cookie-token");
   });
 });
 

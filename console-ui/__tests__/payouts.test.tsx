@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act, render, screen, fireEvent } from "@testing-library/react";
 import { useStripePayouts } from "@/components/payouts/useStripePayouts";
 import { StripePayoutsCard } from "@/components/payouts/StripePayoutsCard";
+import { formatAutoWithdrawNextAt } from "@/components/payouts/AutoWithdrawControl";
+import { WithdrawalsList } from "@/components/payouts/WithdrawalsList";
 import type { StripeStatus } from "@/lib/api";
 
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -166,6 +168,100 @@ describe("useStripePayouts", () => {
       "Automatic weekly withdrawals enabled",
       "success",
     );
+
+    (setStripeAutoWithdraw as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      auto_withdraw_enabled: false,
+      auto_withdraw_authorized_at: null,
+      auto_withdraw_next_at: null,
+      auto_withdraw_cadence: "weekly",
+      auto_withdraw_method: "standard",
+    });
+    await act(async () => {
+      await result.current.setAutoWithdraw(false);
+    });
+    expect(setStripeAutoWithdraw).toHaveBeenLastCalledWith(false);
+    expect(result.current.status?.auto_withdraw_enabled).toBe(false);
+  });
+
+  it("does not let an older reload overwrite a completed toggle", async () => {
+    let resolveStaleStatus!: (status: StripeStatus) => void;
+    const staleStatus = new Promise<StripeStatus>((resolve) => {
+      resolveStaleStatus = resolve;
+    });
+    (fetchStripeStatus as ReturnType<typeof vi.fn>).mockReturnValueOnce(staleStatus);
+    (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (setStripeAutoWithdraw as ReturnType<typeof vi.fn>).mockResolvedValue({
+      auto_withdraw_enabled: true,
+      auto_withdraw_next_at: "2026-07-20T09:00:00Z",
+      auto_withdraw_cadence: "weekly",
+      auto_withdraw_method: "standard",
+    });
+    const { result } = renderHook(() =>
+      useStripePayouts({ addToast: vi.fn(), enabled: false }),
+    );
+
+    let pendingReload!: Promise<void>;
+    act(() => {
+      pendingReload = result.current.reload();
+    });
+    await act(async () => {
+      // Seed the already-rendered status a real user would have before clicking.
+      resolveStaleStatus(readyStatus);
+      await pendingReload;
+    });
+
+    // Start another reload that will return stale "disabled" data.
+    let resolveSecondStatus!: (status: StripeStatus) => void;
+    (fetchStripeStatus as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      new Promise<StripeStatus>((resolve) => {
+        resolveSecondStatus = resolve;
+      }),
+    );
+    act(() => {
+      pendingReload = result.current.reload();
+    });
+    await act(async () => {
+      await result.current.setAutoWithdraw(true);
+    });
+    await act(async () => {
+      resolveSecondStatus({ ...readyStatus, auto_withdraw_enabled: false });
+      await pendingReload;
+    });
+
+    expect(result.current.status?.auto_withdraw_enabled).toBe(true);
+  });
+
+  it("exposes loading while an automatic-withdraw update is in flight", async () => {
+    let resolveUpdate!: (value: {
+      auto_withdraw_enabled: boolean;
+      auto_withdraw_cadence: "weekly";
+      auto_withdraw_method: "standard";
+    }) => void;
+    (setStripeAutoWithdraw as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveUpdate = resolve;
+      }),
+    );
+    const { result } = renderHook(() =>
+      useStripePayouts({ addToast: vi.fn(), enabled: false }),
+    );
+
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = result.current.setAutoWithdraw(true);
+      await Promise.resolve();
+    });
+    expect(result.current.autoWithdrawLoading).toBe(true);
+
+    await act(async () => {
+      resolveUpdate({
+        auto_withdraw_enabled: true,
+        auto_withdraw_cadence: "weekly",
+        auto_withdraw_method: "standard",
+      });
+      await pending;
+    });
+    expect(result.current.autoWithdrawLoading).toBe(false);
   });
 });
 
@@ -243,11 +339,103 @@ describe("StripePayoutsCard", () => {
     );
 
     const toggle = screen.getByRole("switch", {
-      name: "Disable automatic weekly withdrawals",
+      name: "Automatic weekly withdrawals",
     });
     expect(toggle).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText(/Next run: Mon, Jul 20/)).toBeInTheDocument();
+    expect(screen.getByText(/Next check: Mon, Jul 20/)).toBeInTheDocument();
     fireEvent.click(toggle);
     expect(onAutoWithdrawChange).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps opt-out available while the Stripe account is restricted", () => {
+    const onAutoWithdrawChange = vi.fn();
+    render(
+      <StripePayoutsCard
+        status={{
+          ...readyStatus,
+          status: "restricted",
+          auto_withdraw_enabled: true,
+          auto_withdraw_next_at: "2026-07-20T09:00:00Z",
+        }}
+        withdrawals={[]}
+        balanceMicroUsd={5_000_000}
+        onboardLoading={false}
+        selectedCountry="US"
+        onCountryChange={noop}
+        onOnboard={noop}
+        onOpenWithdraw={noop}
+        onAutoWithdrawChange={onAutoWithdrawChange}
+        autoWithdrawLoading={false}
+        title="Withdraw to Bank"
+        icon={null}
+        noun="earnings"
+        className="card"
+      />,
+    );
+
+    expect(screen.getByText(/Paused - automatic withdrawals/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", {
+      name: "Automatic weekly withdrawals",
+    }));
+    expect(onAutoWithdrawChange).toHaveBeenCalledWith(false);
+  });
+
+  it("keeps opt-out available during a Stripe configuration outage", () => {
+    render(
+      <StripePayoutsCard
+        status={{
+          configured: false,
+          has_account: true,
+          status: "ready",
+          auto_withdraw_enabled: true,
+        }}
+        withdrawals={[]}
+        balanceMicroUsd={0}
+        onboardLoading={false}
+        selectedCountry=""
+        onCountryChange={noop}
+        onOnboard={noop}
+        onOpenWithdraw={noop}
+        onAutoWithdrawChange={noop}
+        autoWithdrawLoading={false}
+        title="Withdraw to Bank"
+        icon={null}
+        noun="earnings"
+        className="card"
+      />,
+    );
+
+    expect(screen.getByText(/temporarily unavailable/)).toBeInTheDocument();
+    expect(screen.getByRole("switch", {
+      name: "Automatic weekly withdrawals",
+    })).not.toBeDisabled();
+  });
+});
+
+describe("automatic withdrawal presentation", () => {
+  it("formats the schedule explicitly in UTC", () => {
+    expect(formatAutoWithdrawNextAt("2026-07-20T09:00:00Z"))
+      .toBe("Mon, Jul 20, 9:00 AM UTC");
+  });
+
+  it("labels automatic withdrawals in history", () => {
+    render(
+      <WithdrawalsList
+        withdrawals={[{
+          id: "wd-auto",
+          account_id: "acct",
+          stripe_account_id: "acct_stripe",
+          amount_micro_usd: 5_000_000,
+          fee_micro_usd: 0,
+          net_micro_usd: 5_000_000,
+          method: "standard",
+          source: "automatic",
+          status: "transferred",
+          created_at: "2026-07-20T09:00:00Z",
+          updated_at: "2026-07-20T09:00:01Z",
+        }]}
+      />,
+    );
+    expect(screen.getByText("weekly auto")).toBeInTheDocument();
   });
 });

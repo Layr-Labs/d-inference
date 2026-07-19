@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/saferun"
+	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const (
@@ -73,7 +74,8 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 	// in the latter case money moved without a local trace. No safe
 	// automatic action exists (can't tell the two apart locally), so alert
 	// for a manual check against the Stripe dashboard.
-	if pending, err := s.billing.Store().ListStripeWithdrawalsByStatus("pending", pendingCutoff, stripeReconcileBatch); err != nil {
+	pending, pendingTruncated, err := s.listStuckStripeWithdrawals("pending", pendingCutoff)
+	if err != nil {
 		s.logger.Error("stripe reconciler: list stale pending withdrawals failed", "error", err)
 	} else if len(pending) > 0 {
 		for _, wd := range pending {
@@ -82,9 +84,13 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 				"stripe_account_id", wd.StripeAccountID,
 				"amount_micro_usd", wd.AmountMicroUSD, "created_at", wd.CreatedAt)
 		}
+		if pendingTruncated {
+			s.logger.Error("stripe reconciler: stale pending result cap reached",
+				"rows", len(pending))
+		}
 	}
 
-	stuck, err := s.billing.Store().ListStripeWithdrawalsByStatus("transferred", cutoff, stripeReconcileBatch)
+	stuck, stuckTruncated, err := s.listStuckStripeWithdrawals("transferred", cutoff)
 	if err != nil {
 		s.logger.Error("stripe reconciler: list stuck withdrawals failed", "error", err)
 		return
@@ -100,7 +106,8 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 		byAcct[wd.StripeAccountID]++
 	}
 	s.logger.Warn("stripe reconciler: withdrawals stuck in transferred",
-		"withdrawals", len(stuck), "accounts", len(byAcct), "stuck_threshold", stripeStuckThreshold.String())
+		"withdrawals", len(stuck), "accounts", len(byAcct),
+		"stuck_threshold", stripeStuckThreshold.String(), "truncated", stuckTruncated)
 
 	for acctID, count := range byAcct {
 		if acctID == "" {
@@ -131,4 +138,27 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 			"disabled_reason", acct.DisabledReason,
 			"payout_interval", acct.PayoutInterval)
 	}
+}
+
+func (s *Server) listStuckStripeWithdrawals(status string, cutoff time.Time) ([]store.StripeWithdrawal, bool, error) {
+	const maxPages = 50
+	out := make([]store.StripeWithdrawal, 0, stripeReconcileBatch)
+	var afterCreatedAt time.Time
+	var afterID string
+	for page := 0; page < maxPages; page++ {
+		rows, err := s.billing.Store().ListStripeWithdrawalsByStatusPage(
+			status, cutoff, afterCreatedAt, afterID, stripeReconcileBatch,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, rows...)
+		if len(rows) < stripeReconcileBatch {
+			return out, false, nil
+		}
+		last := rows[len(rows)-1]
+		afterCreatedAt = last.CreatedAt
+		afterID = last.ID
+	}
+	return out, true, nil
 }

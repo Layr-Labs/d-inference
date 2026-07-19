@@ -552,6 +552,13 @@ func (f *flakyPayoutStore) UpdateStripeWithdrawal(wd *store.StripeWithdrawal) er
 	return f.MemoryStore.UpdateStripeWithdrawal(wd)
 }
 
+func (f *flakyPayoutStore) RefundReversedStripeWithdrawal(id string) (bool, error) {
+	if f.failUpdates {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.RefundReversedStripeWithdrawal(id)
+}
+
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
 func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
 	t.Helper()
@@ -572,10 +579,9 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *
 	return srv, flaky
 }
 
-// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
-// lands but the row persist fails → 500 → Stripe redelivers → the
-// reference-deduped credit no-ops and the persist completes. Exactly one
-// refund, terminal row.
+// TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the atomic
+// credit+terminal transition fails as one unit → 500 → Stripe redelivers and
+// applies both exactly once.
 func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -593,8 +599,8 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 	if w := deliverConnectWebhook(t, srv, transferReversedPayload("tr_conv")); w.Code != http.StatusInternalServerError {
 		t.Fatalf("got %d, want 500 (persist failed — Stripe must redeliver)", w.Code)
 	}
-	if bal := flaky.GetBalance(user.AccountID); bal != balBefore+5_000_000 {
-		t.Fatalf("credit should have landed once: balance = %d", bal)
+	if bal := flaky.GetBalance(user.AccountID); bal != balBefore {
+		t.Fatalf("failed atomic transition moved balance: %d -> %d", balBefore, bal)
 	}
 
 	flaky.failUpdates = false

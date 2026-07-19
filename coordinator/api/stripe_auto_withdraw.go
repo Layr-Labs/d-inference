@@ -16,9 +16,11 @@ import (
 
 const (
 	stripeAutoWithdrawInterval = 15 * time.Minute
-	stripeAutoWithdrawBatch    = 200
-	stripeAutoWithdrawWorkers  = 8
-	stripeAutoWithdrawHourUTC  = 9
+	// 32 rows × 8 workers × at most three 30s Stripe calls per due row keeps a
+	// worst-case resume+due sweep below the 15-minute ticker cadence.
+	stripeAutoWithdrawBatch   = 32
+	stripeAutoWithdrawWorkers = 8
+	stripeAutoWithdrawHourUTC = 9
 	// Stripe may evict idempotency keys after 24 hours. Never replay a pending
 	// transfer close to that boundary; stale rows move to manual reconciliation.
 	stripeAutoWithdrawResumeWindow = 23 * time.Hour
@@ -151,7 +153,7 @@ func (s *Server) sweepStripeAutoWithdrawals(now time.Time) {
 func (s *Server) resumePendingStripeAutoWithdrawals(now time.Time) {
 	pending, err := s.billing.Store().ListStripeWithdrawalsBySourceStatusAfter(
 		store.StripeWithdrawalSourceAutomatic, "pending",
-		now.Add(-stripeAutoWithdrawResumeWindow), stripeAutoWithdrawBatch,
+		now.Add(-stripeAutoWithdrawResumeWindow), now, stripeAutoWithdrawBatch,
 	)
 	if err != nil {
 		s.logger.Error("stripe auto payout: list pending withdrawals failed", "error", err)
@@ -200,6 +202,9 @@ func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time)
 			s.ddIncr("billing.auto_withdraw", []string{"outcome:balance_read_failed"})
 			return
 		}
+		// Stripe transfers are integer cents. Keep sub-cent earnings in the
+		// ledger instead of silently debiting them as rounding dust.
+		amountMicroUSD = (amountMicroUSD / 10_000) * 10_000
 		if amountMicroUSD < billing.MinWithdrawMicroUSD {
 			s.ddIncr("billing.auto_withdraw", []string{"outcome:below_minimum"})
 			s.advanceStripeAutoWithdrawSchedule(user.AccountID, scheduledFor, now)

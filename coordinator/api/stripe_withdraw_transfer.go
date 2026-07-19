@@ -327,7 +327,9 @@ func (s *Server) continueStripeTransfer(wd *store.StripeWithdrawal, description 
 	if err != nil && !billing.IsDefinitiveAPIErr(err) {
 		reason := "transfer_create_unconfirmed: " + err.Error()
 		wd.FailureReason = reason
-		if !s.recordPendingStripeFailureWithRetry(wd.ID, reason) {
+		if !s.recordPendingStripeFailureWithRetry(
+			wd.ID, reason, time.Now().Add(stripeAutoWithdrawInterval),
+		) {
 			s.logger.Error("stripe payout: persist ambiguous-transfer state failed",
 				"withdrawal_id", wd.ID)
 		}
@@ -425,12 +427,14 @@ func (s *Server) markStripeWithdrawalTransferredWithRetry(withdrawalID, transfer
 	return false
 }
 
-func (s *Server) recordPendingStripeFailureWithRetry(withdrawalID, reason string) bool {
+func (s *Server) recordPendingStripeFailureWithRetry(withdrawalID, reason string, retryAfter time.Time) bool {
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
-		applied, err := s.billing.Store().RecordStripeWithdrawalPendingFailure(withdrawalID, reason)
+		applied, err := s.billing.Store().RecordStripeWithdrawalPendingFailure(
+			withdrawalID, reason, retryAfter,
+		)
 		if err == nil {
 			return applied
 		}

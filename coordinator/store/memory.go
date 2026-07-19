@@ -2465,12 +2465,13 @@ func (s *MemoryStore) MarkStripeWithdrawalTransferred(id, transferID string) (bo
 	w.TransferID = transferID
 	w.Status = "transferred"
 	w.FailureReason = ""
+	w.RetryAfter = nil
 	w.UpdatedAt = time.Now()
 	s.stripeWithdrawalsByTransferID[transferID] = id
 	return true, nil
 }
 
-func (s *MemoryStore) RecordStripeWithdrawalPendingFailure(id, failureReason string) (bool, error) {
+func (s *MemoryStore) RecordStripeWithdrawalPendingFailure(id, failureReason string, retryAfter time.Time) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -2482,6 +2483,8 @@ func (s *MemoryStore) RecordStripeWithdrawalPendingFailure(id, failureReason str
 		return false, nil
 	}
 	w.FailureReason = failureReason
+	retryAfter = retryAfter.UTC()
+	w.RetryAfter = &retryAfter
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2517,6 +2520,57 @@ func (s *MemoryStore) FailStripeWithdrawalAndRefund(id, failureReason string) (b
 	w.Status = "failed"
 	w.FailureReason = failureReason
 	w.Refunded = true
+	w.RetryAfter = nil
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (s *MemoryStore) RefundReversedStripeWithdrawal(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status == "paid" {
+		return false, nil
+	}
+	if w.Status == "failed" && w.Refunded {
+		return true, nil
+	}
+	if w.Refunded {
+		w.Status = "failed"
+		w.FailureReason = "transfer_reversed"
+		w.RetryAfter = nil
+		w.UpdatedAt = time.Now()
+		return true, nil
+	}
+
+	creditOnce := func(amount int64, ref string) bool {
+		if amount <= 0 {
+			return false
+		}
+		for i := range s.ledgerEntries {
+			entry := &s.ledgerEntries[i]
+			if entry.AccountID == w.AccountID && entry.Type == LedgerRefund &&
+				entry.Reference == ref {
+				return true
+			}
+		}
+		s.creditLocked(w.AccountID, amount, LedgerRefund, ref, time.Now())
+		s.withdrawable[w.AccountID] += amount
+		return true
+	}
+	netMicroUSD := w.AmountMicroUSD - w.FeeMicroUSD
+	creditOnce(netMicroUSD, "stripe_withdraw:"+w.ID)
+	if creditOnce(w.FeeMicroUSD, "stripe_withdraw_fee:"+w.ID) {
+		w.FeeRefunded = true
+	}
+	w.Status = "failed"
+	w.FailureReason = "transfer_reversed"
+	w.Refunded = true
+	w.RetryAfter = nil
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2594,6 +2648,24 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	return true, nil
 }
 
+func (s *MemoryStore) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutID, failureReason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status != "paid" || w.Refunded || w.SweepPayoutID != expectedSweepPayoutID {
+		return false, nil
+	}
+	w.Status = "transferred"
+	w.SweepPayoutID = ""
+	w.FailureReason = failureReason
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
 // ListStripeWithdrawalsBySweepPayoutID returns the rows stamped by the given
 // automatic sweep payout, oldest first.
 func (s *MemoryStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID string) ([]StripeWithdrawal, error) {
@@ -2634,9 +2706,36 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 	return out, nil
 }
 
+func (s *MemoryStore) ListStripeWithdrawalsByStatusPage(status string, olderThan, afterCreatedAt time.Time, afterID string, limit int) ([]StripeWithdrawal, error) {
+	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
+		limit = MaxStripeWithdrawalsByStatusLimit
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	out := []StripeWithdrawal{}
+	for _, w := range s.stripeWithdrawalsByID {
+		afterCursor := afterCreatedAt.IsZero() || w.CreatedAt.After(afterCreatedAt) ||
+			(w.CreatedAt.Equal(afterCreatedAt) && w.ID > afterID)
+		if w.Status == status && w.CreatedAt.Before(olderThan) && afterCursor {
+			out = append(out, *w)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // ListStripeWithdrawalsBySourceStatusAfter returns recent, unrefunded rows for
 // the automatic worker's bounded idempotency window.
-func (s *MemoryStore) ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter time.Time, limit int) ([]StripeWithdrawal, error) {
+func (s *MemoryStore) ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter, eligibleAt time.Time, limit int) ([]StripeWithdrawal, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
@@ -2646,11 +2745,25 @@ func (s *MemoryStore) ListStripeWithdrawalsBySourceStatusAfter(source, status st
 	out := []StripeWithdrawal{}
 	for _, w := range s.stripeWithdrawalsByID {
 		if w.Source == source && w.Status == status && !w.Refunded &&
-			w.CreatedAt.After(createdAfter) {
+			w.CreatedAt.After(createdAfter) &&
+			(w.RetryAfter == nil || !w.RetryAfter.After(eligibleAt)) {
 			out = append(out, *w)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		iOrder := out[i].CreatedAt
+		if out[i].RetryAfter != nil {
+			iOrder = *out[i].RetryAfter
+		}
+		jOrder := out[j].CreatedAt
+		if out[j].RetryAfter != nil {
+			jOrder = *out[j].RetryAfter
+		}
+		if iOrder.Equal(jOrder) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return iOrder.Before(jOrder)
+	})
 	if len(out) > limit {
 		out = out[:limit]
 	}

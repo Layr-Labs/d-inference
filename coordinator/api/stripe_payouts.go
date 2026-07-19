@@ -200,9 +200,20 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		stripeAcctID = acct.ID
-		if err := s.billing.Store().SetUserStripeAccount(user.AccountID, stripeAcctID, stripeStatusPending, country, "", "", false); err != nil {
+		applied, err := s.billing.Store().SetUserStripeAccountIfCurrent(
+			user.AccountID, user.StripeAccountID, stripeAcctID,
+			stripeStatusPending, country, "", "", false,
+		)
+		if err != nil {
 			s.logger.Error("stripe connect: persist account id failed", "error", err)
 			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to persist Stripe account"))
+			return
+		}
+		if !applied {
+			s.logger.Warn("stripe connect: account changed while onboarding",
+				"created_stripe_account_id", stripeAcctID)
+			writeJSON(w, http.StatusConflict, errorResponse("payout_destination_changed",
+				"your payout destination changed while setup was starting — refresh and try again"))
 			return
 		}
 	}
@@ -273,9 +284,12 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 			// offers a fresh onboarding instead of a permanently broken state.
 			s.logger.Warn("stripe connect: stored account gone — unlinking",
 				"stripe_account_id", user.StripeAccountID, "error", err)
-			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); perr != nil {
+			applied, perr := s.billing.Store().SetUserStripeAccountIfCurrent(
+				user.AccountID, user.StripeAccountID, "", "", "", "", "", false,
+			)
+			if perr != nil {
 				s.logger.Error("stripe connect: unlink gone account failed", "error", perr)
-			} else {
+			} else if applied {
 				resp["has_account"] = false
 				resp["stripe_account_id"] = ""
 				resp["status"] = ""
@@ -296,10 +310,14 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			status := stripeStatusForAccount(acct)
-			if err := s.billing.Store().SetUserStripeAccount(user.AccountID, user.StripeAccountID,
-				status, acct.Country, acct.DestinationType, acct.DestinationLast4, acct.InstantEligible); err != nil {
+			applied, err := s.billing.Store().SetUserStripeAccountIfCurrent(
+				user.AccountID, user.StripeAccountID, user.StripeAccountID,
+				status, acct.Country, acct.DestinationType,
+				acct.DestinationLast4, acct.InstantEligible,
+			)
+			if err != nil {
 				s.logger.Warn("stripe connect: status persist failed", "error", err)
-			} else {
+			} else if applied {
 				resp["status"] = status
 				resp["stripe_account_country"] = acct.Country
 				resp["destination_type"] = acct.DestinationType
@@ -314,6 +332,16 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	// the preference after all mutations so one response never says both
 	// "unlinked" and "automatic withdrawals enabled".
 	if refreshed, err := s.billing.Store().GetUserByAccountID(user.AccountID); err == nil {
+		resp["has_account"] = refreshed.StripeAccountID != ""
+		resp["stripe_account_id"] = refreshed.StripeAccountID
+		resp["status"] = refreshed.StripeAccountStatus
+		resp["stripe_account_country"] = refreshed.StripeAccountCountry
+		resp["destination_type"] = refreshed.StripeDestinationType
+		resp["destination_last4"] = refreshed.StripeDestinationLast4
+		resp["instant_eligible"] = refreshed.StripeInstantEligible
+		if refreshed.StripeAccountID == "" {
+			delete(resp, "currently_due")
+		}
 		for key, value := range stripeAutoWithdrawFields(refreshed) {
 			resp[key] = value
 		}
@@ -367,9 +395,17 @@ func (s *Server) handleStripeUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prev := user.StripeAccountID
-	if err := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); err != nil {
+	applied, err := s.billing.Store().SetUserStripeAccountIfCurrent(
+		user.AccountID, prev, "", "", "", "", "", false,
+	)
+	if err != nil {
 		s.logger.Error("stripe connect: unlink failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to unlink Stripe account"))
+		return
+	}
+	if !applied {
+		writeJSON(w, http.StatusConflict, errorResponse("payout_destination_changed",
+			"your payout destination changed — refresh before unlinking"))
 		return
 	}
 	s.logger.Info("stripe connect: account unlinked",

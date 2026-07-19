@@ -221,11 +221,11 @@ func TestStripeAutoWithdrawWorkerTransfersFullBalanceOnce(t *testing.T) {
 	}
 	wd := rows[0]
 	if wd.Source != store.StripeWithdrawalSourceAutomatic || wd.Status != "transferred" ||
-		wd.AmountMicroUSD != 12_345_678 || wd.ScheduledFor == nil || !wd.ScheduledFor.Equal(slot) {
+		wd.AmountMicroUSD != 12_340_000 || wd.ScheduledFor == nil || !wd.ScheduledFor.Equal(slot) {
 		t.Fatalf("withdrawal = %+v", wd)
 	}
-	if balance := st.GetWithdrawableBalance(user.AccountID); balance != 0 {
-		t.Fatalf("withdrawable balance = %d, want 0", balance)
+	if balance := st.GetWithdrawableBalance(user.AccountID); balance != 5_678 {
+		t.Fatalf("withdrawable balance = %d, want 5,678 sub-cent remainder", balance)
 	}
 	if got := calls.snapshot(); got.count != 1 || got.amountCents != "1234" ||
 		got.idempotencyKey != "wd-tr-"+wd.ID {

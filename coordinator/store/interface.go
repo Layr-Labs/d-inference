@@ -608,6 +608,7 @@ type StripeWithdrawal struct {
 	Method          string     `json:"method"`                    // "standard" | "instant"
 	Source          string     `json:"source"`                    // "manual" | "automatic"
 	ScheduledFor    *time.Time `json:"scheduled_for,omitempty"`   // weekly schedule slot; automatic withdrawals only
+	RetryAfter      *time.Time `json:"-"`                         // internal automatic-transfer retry eligibility
 	Status          string     `json:"status"`                    // "pending" | "transferred" | "paid" | "failed"
 	FailureReason   string     `json:"failure_reason,omitempty"`  // populated when Status="failed"
 	Refunded        bool       `json:"refunded,omitempty"`        // true after the failure refund is credited

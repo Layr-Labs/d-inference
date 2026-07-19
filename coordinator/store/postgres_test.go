@@ -859,7 +859,8 @@ func TestPostgresCreateStripeAutoWithdrawalWithDebit(t *testing.T) {
 	}
 
 	rows, err := s.ListStripeWithdrawalsBySourceStatusAfter(
-		StripeWithdrawalSourceAutomatic, "pending", time.Now().Add(-time.Hour), 10,
+		StripeWithdrawalSourceAutomatic, "pending",
+		time.Now().Add(-time.Hour), time.Now(), 10,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -891,13 +892,13 @@ func TestPostgresStripeWithdrawalAtomicFailureAndGuards(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "timeout"); err != nil || !applied {
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "timeout", time.Now()); err != nil || !applied {
 		t.Fatalf("pending failure = %v, err = %v", applied, err)
 	}
 	if applied, err := s.MarkStripeWithdrawalTransferred(wd.ID, "tr_pg_guards"); err != nil || !applied {
 		t.Fatalf("mark transferred = %v, err = %v", applied, err)
 	}
-	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "stale"); err != nil || applied {
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "stale", time.Now()); err != nil || applied {
 		t.Fatalf("stale pending failure = %v, err = %v", applied, err)
 	}
 	stored, _ := s.GetStripeWithdrawal(wd.ID)

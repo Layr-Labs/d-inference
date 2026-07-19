@@ -343,13 +343,18 @@ type BillingStore interface {
 	// RecordStripeWithdrawalPendingFailure records an ambiguous transfer error
 	// only while the row is still unrefunded pending state with no transfer ID.
 	// A stale worker can therefore never overwrite a concurrent success.
-	RecordStripeWithdrawalPendingFailure(id, failureReason string) (bool, error)
+	RecordStripeWithdrawalPendingFailure(id, failureReason string, retryAfter time.Time) (bool, error)
 
 	// FailStripeWithdrawalAndRefund atomically credits the gross amount back to
 	// both balance columns, records the reference-idempotent refund ledger
 	// entry, and terminalizes an untransferred withdrawal. It returns true when
 	// the row is durably failed+refunded, including an idempotent replay.
 	FailStripeWithdrawalAndRefund(id, failureReason string) (bool, error)
+
+	// RefundReversedStripeWithdrawal atomically handles a full Stripe transfer
+	// reversal: idempotently credits principal/fee ledger references and marks
+	// the non-paid row failed+refunded under one row lock.
+	RefundReversedStripeWithdrawal(id string) (bool, error)
 
 	// MarkStripeWithdrawalPaid atomically flips a withdrawal to "paid" —
 	// but only from a non-terminal, non-refunded state ("pending" or
@@ -372,6 +377,11 @@ type BillingStore interface {
 	// overwritten back to sweep-eligible). Returns whether it was applied.
 	ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason string, feeRefunded bool) (bool, error)
 
+	// ReopenStripeWithdrawalAfterSweepFailure reopens only the paid,
+	// unrefunded row attributed to expectedSweepPayoutID. It prevents a stale
+	// bounced-sweep event from overwriting another terminal transition.
+	ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepPayoutID, failureReason string) (bool, error)
+
 	// ListStripeWithdrawalsBySweepPayoutID returns the withdrawals a given
 	// automatic sweep payout claimed (SweepPayoutID stamp). Used to reopen
 	// exactly those rows when the sweep later bounces.
@@ -388,11 +398,15 @@ type BillingStore interface {
 	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
 
+	// ListStripeWithdrawalsByStatusPage is the reconciler's stable
+	// (created_at,id) cursor so persistent rows cannot hide later rows.
+	ListStripeWithdrawalsByStatusPage(status string, olderThan, afterCreatedAt time.Time, afterID string, limit int) ([]StripeWithdrawal, error)
+
 	// ListStripeWithdrawalsBySourceStatusAfter returns a bounded, oldest-first
 	// set newer than createdAfter. The automatic payout worker uses the age
 	// bound to stop replaying Stripe idempotency keys before their 24-hour
 	// retention guarantee expires.
-	ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter time.Time, limit int) ([]StripeWithdrawal, error)
+	ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter, eligibleAt time.Time, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for
 	// the given connected account (acct_…) in the given status, oldest first.

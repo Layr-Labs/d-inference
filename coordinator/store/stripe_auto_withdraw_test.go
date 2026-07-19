@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -163,7 +164,8 @@ func TestMemoryListsPendingAutomaticWithdrawals(t *testing.T) {
 	}
 
 	rows, err := s.ListStripeWithdrawalsBySourceStatusAfter(
-		StripeWithdrawalSourceAutomatic, "pending", time.Now().Add(-time.Hour), 10,
+		StripeWithdrawalSourceAutomatic, "pending",
+		time.Now().Add(-time.Hour), time.Now(), 10,
 	)
 	if err != nil || len(rows) != 1 || rows[0].ID != "auto-pending" {
 		t.Fatalf("rows = %+v, err = %v", rows, err)
@@ -244,13 +246,13 @@ func TestMemoryStripeWithdrawalGuardedTransitionsAndLock(t *testing.T) {
 	if err := s.CreateStripeWithdrawal(wd); err != nil {
 		t.Fatal(err)
 	}
-	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "timeout"); err != nil || !applied {
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "timeout", time.Now()); err != nil || !applied {
 		t.Fatalf("pending failure = %v, err = %v", applied, err)
 	}
 	if applied, err := s.MarkStripeWithdrawalTransferred(wd.ID, "tr_guarded"); err != nil || !applied {
 		t.Fatalf("mark transferred = %v, err = %v", applied, err)
 	}
-	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "stale timeout"); err != nil || applied {
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "stale timeout", time.Now()); err != nil || applied {
 		t.Fatalf("stale failure = %v, err = %v", applied, err)
 	}
 	stored, _ := s.GetStripeWithdrawal(wd.ID)
@@ -272,4 +274,80 @@ func TestMemoryStripeWithdrawalGuardedTransitionsAndLock(t *testing.T) {
 		t.Fatalf("lock after release = %v, err = %v", acquired, err)
 	}
 	release()
+}
+
+func TestMemoryAutomaticWithdrawalRetryEligibilityIsFair(t *testing.T) {
+	s := NewMemory(Config{})
+	now := time.Now().UTC()
+	for i := 0; i < MaxStripeWithdrawalsByStatusLimit/10; i++ {
+		created := now.Add(-time.Hour).Add(time.Duration(i) * time.Millisecond)
+		retryAfter := now.Add(time.Hour)
+		wd := &StripeWithdrawal{
+			ID:        fmt.Sprintf("wd-deferred-%03d", i),
+			AccountID: "acct-fair", StripeAccountID: "acct_stripe",
+			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+			Method: "standard", Source: StripeWithdrawalSourceAutomatic,
+			Status: "pending", CreatedAt: created, UpdatedAt: created,
+			RetryAfter: &retryAfter,
+		}
+		if err := s.CreateStripeWithdrawal(wd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eligible := &StripeWithdrawal{
+		ID: "wd-eligible-newer", AccountID: "acct-fair", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "standard", Source: StripeWithdrawalSourceAutomatic,
+		Status: "pending", CreatedAt: now.Add(-time.Minute), UpdatedAt: now.Add(-time.Minute),
+	}
+	if err := s.CreateStripeWithdrawal(eligible); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.ListStripeWithdrawalsBySourceStatusAfter(
+		StripeWithdrawalSourceAutomatic, "pending", now.Add(-2*time.Hour), now, 10,
+	)
+	if err != nil || len(rows) != 1 || rows[0].ID != eligible.ID {
+		t.Fatalf("eligible rows = %+v, err = %v", rows, err)
+	}
+}
+
+func TestMemoryReversalRefundAndSweepReopenAreGuarded(t *testing.T) {
+	s := NewMemory(Config{})
+	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		ID: "wd-reversal-paid", AccountID: "acct-reversal", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "paid", TransferID: "tr_paid",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := s.RefundReversedStripeWithdrawal("wd-reversal-paid"); err != nil || applied {
+		t.Fatalf("paid reversal refund = %v, err = %v", applied, err)
+	}
+	if balance := s.GetWithdrawableBalance("acct-reversal"); balance != 0 {
+		t.Fatalf("paid reversal credited %d", balance)
+	}
+
+	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		ID: "wd-sweep-guard", AccountID: "acct-reversal", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "paid", TransferID: "tr_sweep",
+		SweepPayoutID: "po_new",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := s.ReopenStripeWithdrawalAfterSweepFailure(
+		"wd-sweep-guard", "po_old", "old sweep failed",
+	); err != nil || applied {
+		t.Fatalf("stale sweep reopen = %v, err = %v", applied, err)
+	}
+	row, _ := s.GetStripeWithdrawal("wd-sweep-guard")
+	if row.Status != "paid" || row.SweepPayoutID != "po_new" {
+		t.Fatalf("stale sweep overwrote row: %+v", row)
+	}
+	if applied, err := s.ReopenStripeWithdrawalAfterSweepFailure(
+		"wd-sweep-guard", "po_new", "new sweep failed",
+	); err != nil || !applied {
+		t.Fatalf("matching sweep reopen = %v, err = %v", applied, err)
+	}
 }

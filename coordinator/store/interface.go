@@ -36,6 +36,17 @@ var ErrNotFound = errors.New("not found")
 // current preference.
 var ErrAutoWithdrawNotAuthorized = errors.New("automatic withdrawal is not authorized")
 
+// ErrStripeWithdrawalBusy means another coordinator instance currently owns
+// the short-lived execution lock for the same withdrawal. The caller should
+// leave the schedule unchanged; the owner will complete or the lock will be
+// released when its database session ends.
+var ErrStripeWithdrawalBusy = errors.New("Stripe withdrawal is being processed")
+
+// ErrStripeWithdrawalReconciliationRequired means a pending Stripe request is
+// older than Stripe's idempotency-key retention guarantee and must not be
+// replayed automatically.
+var ErrStripeWithdrawalReconciliationRequired = errors.New("Stripe withdrawal requires reconciliation")
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -564,6 +575,7 @@ type User struct {
 	// NextAt is the exact schedule slot workers must match atomically before
 	// debiting; changing or revoking the preference invalidates stale workers.
 	StripeAutoWithdrawEnabled      bool       `json:"stripe_auto_withdraw_enabled,omitempty"`
+	StripeAutoWithdrawAccountID    string     `json:"-"`
 	StripeAutoWithdrawAuthorizedAt *time.Time `json:"stripe_auto_withdraw_authorized_at,omitempty"`
 	StripeAutoWithdrawNextAt       *time.Time `json:"stripe_auto_withdraw_next_at,omitempty"`
 }

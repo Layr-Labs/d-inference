@@ -114,7 +114,10 @@ func TestStripePayoutRoutesRejectInferenceAPIKeys(t *testing.T) {
 		path   string
 		body   string
 	}{
+		{http.MethodPost, "/v1/billing/stripe/onboard", `{"country":"US"}`},
+		{http.MethodGet, "/v1/billing/stripe/status", ""},
 		{http.MethodPost, "/v1/billing/withdraw/stripe", `{"amount_usd":"1.00"}`},
+		{http.MethodGet, "/v1/billing/stripe/withdrawals", ""},
 		{http.MethodPut, "/v1/billing/stripe/auto-withdraw", `{"enabled":true}`},
 		{http.MethodDelete, "/v1/billing/stripe/account", ""},
 	} {
@@ -134,6 +137,69 @@ func TestStripePayoutRoutesRejectInferenceAPIKeys(t *testing.T) {
 	}
 }
 
+func TestStripeAutoWithdrawCanBeDisabledWhenStripeIsUnavailable(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	user := readyUser(t, st, "acct-auto-disable-outage", "alice@example.com", false)
+	now := time.Now().UTC()
+	if err := st.SetStripeAutoWithdraw(
+		user.AccountID, user.StripeAccountID, true, now, now.Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	srv.SetBilling(nil)
+	user, _ = st.GetUserByAccountID(user.AccountID)
+
+	req := httptest.NewRequest(http.MethodPut, "/v1/billing/stripe/auto-withdraw",
+		strings.NewReader(`{"enabled":false}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeAutoWithdraw(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("disable status = %d: %s", w.Code, w.Body.String())
+	}
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAutoWithdrawEnabled {
+		t.Fatal("Stripe outage prevented authorization revocation")
+	}
+}
+
+func TestStripeStatusRefreshReturnsRevokedAutoWithdrawState(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":{"type":"invalid_request_error","code":"resource_missing","message":"missing"}}`)
+	}))
+	t.Cleanup(fakeStripe.Close)
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-auto-status-gone", "alice@example.com", false)
+	now := time.Now().UTC()
+	if err := st.SetStripeAutoWithdraw(
+		user.AccountID, user.StripeAccountID, true, now, now.Add(time.Hour),
+	); err != nil {
+		t.Fatal(err)
+	}
+	user, _ = st.GetUserByAccountID(user.AccountID)
+
+	req := httptest.NewRequest(
+		http.MethodGet, "/v1/billing/stripe/status?refresh=1", nil,
+	)
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["has_account"] != false || response["auto_withdraw_enabled"] != false {
+		t.Fatalf("contradictory refreshed status: %v", response)
+	}
+}
+
 func TestStripeAutoWithdrawWorkerTransfersFullBalanceOnce(t *testing.T) {
 	fakeStripe, calls := newAutoWithdrawStripeServer(t)
 	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
@@ -143,7 +209,7 @@ func TestStripeAutoWithdrawWorkerTransfersFullBalanceOnce(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	slot := now.Add(-time.Minute)
-	if err := st.SetStripeAutoWithdraw(user.AccountID, true, now.Add(-time.Hour), slot); err != nil {
+	if err := st.SetStripeAutoWithdraw(user.AccountID, user.StripeAccountID, true, now.Add(-time.Hour), slot); err != nil {
 		t.Fatal(err)
 	}
 
@@ -188,7 +254,7 @@ func TestStripeAutoWithdrawWorkerResumesDebitAfterOptOut(t *testing.T) {
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	slot := now.Add(-time.Minute)
-	if err := st.SetStripeAutoWithdraw(user.AccountID, true, now.Add(-time.Hour), slot); err != nil {
+	if err := st.SetStripeAutoWithdraw(user.AccountID, user.StripeAccountID, true, now.Add(-time.Hour), slot); err != nil {
 		t.Fatal(err)
 	}
 	id := automaticStripeWithdrawalID(user.AccountID, slot)
@@ -202,7 +268,7 @@ func TestStripeAutoWithdrawWorkerResumesDebitAfterOptOut(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetStripeAutoWithdraw(user.AccountID, false, now, time.Time{}); err != nil {
+	if err := st.SetStripeAutoWithdraw(user.AccountID, user.StripeAccountID, false, now, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -221,6 +287,49 @@ func TestStripeAutoWithdrawWorkerResumesDebitAfterOptOut(t *testing.T) {
 	refreshed, _ := st.GetUserByAccountID(user.AccountID)
 	if refreshed.StripeAutoWithdrawEnabled {
 		t.Fatal("resuming an in-flight withdrawal re-enabled the preference")
+	}
+}
+
+func TestStripeAutoWithdrawWorkerDoesNotReplayExpiredIdempotencyKey(t *testing.T) {
+	fakeStripe, calls := newAutoWithdrawStripeServer(t)
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-auto-expired", "alice@example.com", false)
+	if err := st.CreditWithdrawable(user.AccountID, 5_000_000, store.LedgerPayout, "earnings"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	slot := now.Add(-24 * time.Hour)
+	if err := st.SetStripeAutoWithdraw(
+		user.AccountID, user.StripeAccountID, true, now.Add(-25*time.Hour), slot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	id := automaticStripeWithdrawalID(user.AccountID, slot)
+	createdAt := now.Add(-stripeAutoWithdrawResumeWindow - time.Minute)
+	wd := &store.StripeWithdrawal{
+		ID: id, AccountID: user.AccountID, StripeAccountID: user.StripeAccountID,
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Status: "pending", CreatedAt: createdAt, UpdatedAt: createdAt,
+	}
+	if err := st.CreateStripeAutoWithdrawalWithDebit(
+		wd, store.LedgerStripePayout, "stripe_withdraw:"+id, slot,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.sweepStripeAutoWithdrawals(now)
+
+	if got := calls.snapshot(); got.count != 0 {
+		t.Fatalf("expired idempotency key was replayed %d time(s)", got.count)
+	}
+	stored, _ := st.GetStripeWithdrawal(id)
+	if stored.Status != "pending" || stored.TransferID != "" {
+		t.Fatalf("expired row was mutated: %+v", stored)
+	}
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAutoWithdrawNextAt == nil ||
+		!refreshed.StripeAutoWithdrawNextAt.After(now) {
+		t.Fatalf("expired slot was not advanced to avoid starvation: %+v", refreshed)
 	}
 }
 

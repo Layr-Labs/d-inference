@@ -199,6 +199,10 @@ type LedgerStore interface {
 	// GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 	GetWithdrawableBalance(accountID string) int64
 
+	// GetWithdrawableBalanceWithError is the worker-safe variant that
+	// distinguishes a real zero balance from a transient persistence failure.
+	GetWithdrawableBalanceWithError(accountID string) (int64, error)
+
 	// GetBalanceWithWithdrawable returns both the total balance and the
 	// withdrawable balance in a single query, avoiding two round trips to
 	// the same row in the balances table.
@@ -311,6 +315,12 @@ type BillingStore interface {
 	// authorization condition no longer holds.
 	CreateStripeAutoWithdrawalWithDebit(withdrawal *StripeWithdrawal, entryType LedgerEntryType, reference string, scheduledFor time.Time) error
 
+	// TryLockStripeWithdrawal acquires a cross-instance execution lock for one
+	// automatic withdrawal. release must be called exactly once when acquired.
+	// The Postgres implementation holds a session advisory lock; process death
+	// releases it automatically.
+	TryLockStripeWithdrawal(id string) (acquired bool, release func(), err error)
+
 	// GetStripeWithdrawal returns a withdrawal by its internal UUID.
 	GetStripeWithdrawal(id string) (*StripeWithdrawal, error)
 
@@ -324,6 +334,22 @@ type BillingStore interface {
 
 	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
 	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
+
+	// MarkStripeWithdrawalTransferred records the Stripe transfer ID using a
+	// guarded, idempotent transition. It never overwrites a terminal/refunded
+	// row or a different transfer ID.
+	MarkStripeWithdrawalTransferred(id, transferID string) (bool, error)
+
+	// RecordStripeWithdrawalPendingFailure records an ambiguous transfer error
+	// only while the row is still unrefunded pending state with no transfer ID.
+	// A stale worker can therefore never overwrite a concurrent success.
+	RecordStripeWithdrawalPendingFailure(id, failureReason string) (bool, error)
+
+	// FailStripeWithdrawalAndRefund atomically credits the gross amount back to
+	// both balance columns, records the reference-idempotent refund ledger
+	// entry, and terminalizes an untransferred withdrawal. It returns true when
+	// the row is durably failed+refunded, including an idempotent replay.
+	FailStripeWithdrawalAndRefund(id, failureReason string) (bool, error)
 
 	// MarkStripeWithdrawalPaid atomically flips a withdrawal to "paid" —
 	// but only from a non-terminal, non-refunded state ("pending" or
@@ -362,11 +388,11 @@ type BillingStore interface {
 	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
 
-	// ListStripeWithdrawalsBySourceStatus returns a bounded, oldest-first set
-	// for a source/status pair. The automatic payout worker uses it to resume
-	// already-authorized pending transfers even if the user subsequently opts
-	// out; disabling only prevents future debits.
-	ListStripeWithdrawalsBySourceStatus(source, status string, limit int) ([]StripeWithdrawal, error)
+	// ListStripeWithdrawalsBySourceStatusAfter returns a bounded, oldest-first
+	// set newer than createdAfter. The automatic payout worker uses the age
+	// bound to stop replaying Stripe idempotency keys before their 24-hour
+	// retention guarantee expires.
+	ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter time.Time, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsForStripeAccount returns withdrawals destined for
 	// the given connected account (acct_…) in the given status, oldest first.
@@ -443,6 +469,12 @@ type UserStore interface {
 	// account is locked to; empty leaves the column unchanged.
 	SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) error
 
+	// SetUserStripeAccountIfCurrent applies the same update only when the
+	// currently linked Stripe account still equals expectedStripeAccountID.
+	// It is the compare-and-swap used by old in-flight withdrawals so they
+	// cannot clear or restrict a newly linked destination.
+	SetUserStripeAccountIfCurrent(accountID, expectedStripeAccountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) (bool, error)
+
 	// GetUserByStripeAccount finds a user by their Stripe connected account ID.
 	// Used by webhook handlers to route account.updated / payout.* events.
 	GetUserByStripeAccount(stripeAccountID string) (*User, error)
@@ -451,7 +483,7 @@ type UserStore interface {
 	// withdrawal authorization. Enabling an already-enabled preference is
 	// idempotent and preserves its existing schedule. Disabling clears the
 	// active authorization timestamp and next run.
-	SetStripeAutoWithdraw(accountID string, enabled bool, authorizedAt, nextAt time.Time) error
+	SetStripeAutoWithdraw(accountID, expectedStripeAccountID string, enabled bool, authorizedAt, nextAt time.Time) error
 
 	// ListUsersDueForStripeAutoWithdraw returns opted-in, payout-ready users
 	// whose next schedule slot is due, oldest slot first.

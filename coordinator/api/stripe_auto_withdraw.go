@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/billing"
@@ -16,7 +17,11 @@ import (
 const (
 	stripeAutoWithdrawInterval = 15 * time.Minute
 	stripeAutoWithdrawBatch    = 200
+	stripeAutoWithdrawWorkers  = 8
 	stripeAutoWithdrawHourUTC  = 9
+	// Stripe may evict idempotency keys after 24 hours. Never replay a pending
+	// transfer close to that boundary; stale rows move to manual reconciliation.
+	stripeAutoWithdrawResumeWindow = 23 * time.Hour
 )
 
 var stripeAutoWithdrawNamespace = uuid.MustParse("153e2b49-6615-4de7-884f-a69c953d6173")
@@ -28,12 +33,6 @@ func (s *Server) handleStripeAutoWithdraw(w http.ResponseWriter, r *http.Request
 	if user == nil {
 		return
 	}
-	if s.billing == nil || s.billing.StripeConnect() == nil {
-		writeJSON(w, http.StatusServiceUnavailable,
-			errorResponse("billing_error", "Stripe Payouts not configured"))
-		return
-	}
-
 	var req struct {
 		Enabled *bool `json:"enabled"`
 	}
@@ -42,6 +41,11 @@ func (s *Server) handleStripeAutoWithdraw(w http.ResponseWriter, r *http.Request
 	if err := decoder.Decode(&req); err != nil || req.Enabled == nil {
 		writeJSON(w, http.StatusBadRequest,
 			errorResponse("invalid_request_error", "enabled must be a boolean"))
+		return
+	}
+	if *req.Enabled && (s.billing == nil || s.billing.StripeConnect() == nil) {
+		writeJSON(w, http.StatusServiceUnavailable,
+			errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
 	if *req.Enabled &&
@@ -53,9 +57,14 @@ func (s *Server) handleStripeAutoWithdraw(w http.ResponseWriter, r *http.Request
 
 	now := time.Now().UTC()
 	nextAt := nextStripeAutoWithdrawAt(now)
-	if err := s.billing.Store().SetStripeAutoWithdraw(
-		user.AccountID, *req.Enabled, now, nextAt,
+	if err := s.store.SetStripeAutoWithdraw(
+		user.AccountID, user.StripeAccountID, *req.Enabled, now, nextAt,
 	); err != nil {
+		if errors.Is(err, store.ErrAutoWithdrawNotAuthorized) {
+			writeJSON(w, http.StatusConflict, errorResponse("payout_destination_changed",
+				"your Stripe payout destination changed — refresh and authorize it again"))
+			return
+		}
 		s.logger.Error("stripe auto payout: preference update failed",
 			"error", err, "account", shortAccountID(user.AccountID))
 		writeJSON(w, http.StatusInternalServerError,
@@ -63,7 +72,7 @@ func (s *Server) handleStripeAutoWithdraw(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	updated, err := s.billing.Store().GetUserByAccountID(user.AccountID)
+	updated, err := s.store.GetUserByAccountID(user.AccountID)
 	if err != nil {
 		s.logger.Error("stripe auto payout: preference reload failed",
 			"error", err, "account", shortAccountID(user.AccountID))
@@ -134,21 +143,22 @@ func (s *Server) sweepStripeAutoWithdrawals(now time.Time) {
 		s.ddIncr("billing.auto_withdraw", []string{"outcome:list_failed"})
 		return
 	}
-	for i := range users {
+	s.runStripeAutoWithdrawBatch(len(users), "api.stripeAutoWithdrawDue", func(i int) {
 		s.processDueStripeAutoWithdrawal(&users[i], now)
-	}
+	})
 }
 
 func (s *Server) resumePendingStripeAutoWithdrawals(now time.Time) {
-	pending, err := s.billing.Store().ListStripeWithdrawalsBySourceStatus(
-		store.StripeWithdrawalSourceAutomatic, "pending", stripeAutoWithdrawBatch,
+	pending, err := s.billing.Store().ListStripeWithdrawalsBySourceStatusAfter(
+		store.StripeWithdrawalSourceAutomatic, "pending",
+		now.Add(-stripeAutoWithdrawResumeWindow), stripeAutoWithdrawBatch,
 	)
 	if err != nil {
 		s.logger.Error("stripe auto payout: list pending withdrawals failed", "error", err)
 		s.ddIncr("billing.auto_withdraw", []string{"outcome:resume_list_failed"})
 		return
 	}
-	for i := range pending {
+	s.runStripeAutoWithdrawBatch(len(pending), "api.stripeAutoWithdrawResume", func(i int) {
 		wd := &pending[i]
 		user := &store.User{
 			AccountID:       wd.AccountID,
@@ -168,7 +178,7 @@ func (s *Server) resumePendingStripeAutoWithdrawals(now time.Time) {
 		if wd.ScheduledFor != nil && (result != nil || payoutErr != nil && payoutErr.Withdrawal != nil) {
 			s.advanceStripeAutoWithdrawSchedule(wd.AccountID, *wd.ScheduledFor, now)
 		}
-	}
+	})
 }
 
 func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time) {
@@ -181,7 +191,15 @@ func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time)
 	existing, _ := s.billing.Store().GetStripeWithdrawal(withdrawalID)
 	amountMicroUSD := int64(0)
 	if existing == nil {
-		amountMicroUSD = s.billing.Store().GetWithdrawableBalance(user.AccountID)
+		var err error
+		amountMicroUSD, err = s.billing.Store().GetWithdrawableBalanceWithError(user.AccountID)
+		if err != nil {
+			s.logger.Warn("stripe auto payout: balance read failed",
+				"error", err, "account", shortAccountID(user.AccountID))
+			s.deferStripeAutoWithdrawSchedule(user.AccountID, scheduledFor, now.Add(time.Hour))
+			s.ddIncr("billing.auto_withdraw", []string{"outcome:balance_read_failed"})
+			return
+		}
 		if amountMicroUSD < billing.MinWithdrawMicroUSD {
 			s.ddIncr("billing.auto_withdraw", []string{"outcome:below_minimum"})
 			s.advanceStripeAutoWithdrawSchedule(user.AccountID, scheduledFor, now)
@@ -189,6 +207,9 @@ func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time)
 		}
 		if _, payoutErr := s.validateStripePayoutAccount(user, "standard"); payoutErr != nil {
 			s.recordStripeAutoWithdrawResult(nil, nil, payoutErr, "precheck")
+			if payoutErr.Code == "stripe_error" {
+				s.deferStripeAutoWithdrawSchedule(user.AccountID, scheduledFor, now.Add(time.Hour))
+			}
 			return
 		}
 	} else {
@@ -207,7 +228,39 @@ func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time)
 	s.recordStripeAutoWithdrawResult(existing, result, payoutErr, "scheduled")
 	if result != nil || payoutErr != nil && payoutErr.Withdrawal != nil {
 		s.advanceStripeAutoWithdrawSchedule(user.AccountID, scheduledFor, now)
+	} else if payoutErr != nil &&
+		!errors.Is(payoutErr, store.ErrStripeWithdrawalBusy) &&
+		!errors.Is(payoutErr, store.ErrAutoWithdrawNotAuthorized) {
+		s.deferStripeAutoWithdrawSchedule(
+			user.AccountID, scheduledFor, now.Add(stripeAutoWithdrawInterval),
+		)
 	}
+}
+
+func (s *Server) runStripeAutoWithdrawBatch(count int, name string, fn func(int)) {
+	if count == 0 {
+		return
+	}
+	workers := min(stripeAutoWithdrawWorkers, count)
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				func() {
+					defer saferun.Recover(s.logger, name)
+					fn(index)
+				}()
+			}
+		}()
+	}
+	for index := range count {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func (s *Server) recordStripeAutoWithdrawResult(
@@ -254,6 +307,14 @@ func (s *Server) recordStripeAutoWithdrawResult(
 
 func (s *Server) advanceStripeAutoWithdrawSchedule(accountID string, scheduledFor, now time.Time) {
 	nextAt := nextStripeAutoWithdrawAt(now)
+	s.moveStripeAutoWithdrawSchedule(accountID, scheduledFor, nextAt, "schedule_advanced")
+}
+
+func (s *Server) deferStripeAutoWithdrawSchedule(accountID string, scheduledFor, retryAt time.Time) {
+	s.moveStripeAutoWithdrawSchedule(accountID, scheduledFor, retryAt, "retry_deferred")
+}
+
+func (s *Server) moveStripeAutoWithdrawSchedule(accountID string, scheduledFor, nextAt time.Time, outcome string) {
 	advanced, err := s.billing.Store().AdvanceStripeAutoWithdraw(
 		accountID, scheduledFor, nextAt,
 	)
@@ -264,7 +325,7 @@ func (s *Server) advanceStripeAutoWithdrawSchedule(accountID string, scheduledFo
 		return
 	}
 	if advanced {
-		s.ddIncr("billing.auto_withdraw", []string{"outcome:schedule_advanced"})
+		s.ddIncr("billing.auto_withdraw", []string{"outcome:" + outcome})
 	}
 }
 

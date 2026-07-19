@@ -237,7 +237,11 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.billing == nil || s.billing.StripeConnect() == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"has_account": false, "configured": false})
+		resp := map[string]any{"has_account": user.StripeAccountID != "", "configured": false}
+		for key, value := range stripeAutoWithdrawFields(user) {
+			resp[key] = value
+		}
+		writeJSON(w, http.StatusOK, resp)
 		return
 	}
 
@@ -306,6 +310,14 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Account refreshes can revoke destination-scoped authorization. Reload
+	// the preference after all mutations so one response never says both
+	// "unlinked" and "automatic withdrawals enabled".
+	if refreshed, err := s.billing.Store().GetUserByAccountID(user.AccountID); err == nil {
+		for key, value := range stripeAutoWithdrawFields(refreshed) {
+			resp[key] = value
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 

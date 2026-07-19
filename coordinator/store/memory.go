@@ -81,6 +81,7 @@ type MemoryStore struct {
 	stripeWithdrawalsByTransferID map[string]string   // transferID → withdrawalID
 	stripeWithdrawalsByPayoutID   map[string]string   // payoutID → withdrawalID
 	stripeWithdrawalsByAccount    map[string][]string // accountID → []withdrawalID, newest last
+	stripeWithdrawalLocks         map[string]bool     // withdrawalID → execution lock held
 
 	// Device authorization
 	deviceCodesByCode     map[string]*DeviceCode // deviceCode → DeviceCode
@@ -177,6 +178,7 @@ func NewMemory(scfg Config) *MemoryStore {
 		stripeWithdrawalsByTransferID: make(map[string]string),
 		stripeWithdrawalsByPayoutID:   make(map[string]string),
 		stripeWithdrawalsByAccount:    make(map[string][]string),
+		stripeWithdrawalLocks:         make(map[string]bool),
 		deviceCodesByCode:             make(map[string]*DeviceCode),
 		deviceCodesByUserCode:         make(map[string]*DeviceCode),
 		providerTokens:                make(map[string]*ProviderToken),
@@ -1245,6 +1247,10 @@ func (s *MemoryStore) GetWithdrawableBalance(accountID string) int64 {
 	return s.withdrawable[accountID]
 }
 
+func (s *MemoryStore) GetWithdrawableBalanceWithError(accountID string) (int64, error) {
+	return s.GetWithdrawableBalance(accountID), nil
+}
+
 // GetBalanceWithWithdrawable returns both balances under a single lock.
 func (s *MemoryStore) GetBalanceWithWithdrawable(accountID string) (int64, int64) {
 	s.mu.RLock()
@@ -2049,7 +2055,28 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 	if !ok {
 		return fmt.Errorf("user with account ID %q not found", accountID)
 	}
+	s.setUserStripeAccountLocked(u, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4, instantEligible)
+	return nil
+}
 
+// SetUserStripeAccountIfCurrent conditionally updates a destination under the
+// same lock as the comparison.
+func (s *MemoryStore) SetUserStripeAccountIfCurrent(accountID, expectedStripeAccountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	u, ok := s.usersByAccountID[accountID]
+	if !ok {
+		return false, fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	if u.StripeAccountID != expectedStripeAccountID {
+		return false, nil
+	}
+	s.setUserStripeAccountLocked(u, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4, instantEligible)
+	return true, nil
+}
+
+func (s *MemoryStore) setUserStripeAccountLocked(u *User, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) {
 	// Maintain the by-stripe-account index. A user may switch accounts (e.g.
 	// after a manual reset) so we drop the old mapping if it was different.
 	accountChanged := u.StripeAccountID != stripeAccountID
@@ -2060,6 +2087,7 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 		// Authorization applies to one linked destination. Replacing or
 		// unlinking it requires the user to opt in again.
 		u.StripeAutoWithdrawEnabled = false
+		u.StripeAutoWithdrawAccountID = ""
 		u.StripeAutoWithdrawAuthorizedAt = nil
 		u.StripeAutoWithdrawNextAt = nil
 	}
@@ -2082,7 +2110,6 @@ func (s *MemoryStore) SetUserStripeAccount(accountID, stripeAccountID, status, s
 	if stripeAccountID != "" {
 		s.usersByStripeAccountID[stripeAccountID] = u
 	}
-	return nil
 }
 
 // GetUserByStripeAccount finds a user by their Stripe connected account ID.
@@ -2100,7 +2127,7 @@ func (s *MemoryStore) GetUserByStripeAccount(stripeAccountID string) (*User, err
 
 // SetStripeAutoWithdraw updates explicit weekly automatic-withdrawal
 // authorization. Re-enabling is idempotent and preserves the current slot.
-func (s *MemoryStore) SetStripeAutoWithdraw(accountID string, enabled bool, authorizedAt, nextAt time.Time) error {
+func (s *MemoryStore) SetStripeAutoWithdraw(accountID, expectedStripeAccountID string, enabled bool, authorizedAt, nextAt time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -2110,16 +2137,25 @@ func (s *MemoryStore) SetStripeAutoWithdraw(accountID string, enabled bool, auth
 	}
 	if !enabled {
 		u.StripeAutoWithdrawEnabled = false
+		u.StripeAutoWithdrawAccountID = ""
 		u.StripeAutoWithdrawAuthorizedAt = nil
 		u.StripeAutoWithdrawNextAt = nil
 		return nil
 	}
+	if u.StripeAccountID == "" || u.StripeAccountID != expectedStripeAccountID ||
+		u.StripeAccountStatus != "ready" {
+		return fmt.Errorf("Stripe destination changed or is not ready: %w", ErrAutoWithdrawNotAuthorized)
+	}
 	if u.StripeAutoWithdrawEnabled {
+		if u.StripeAutoWithdrawAccountID != expectedStripeAccountID {
+			return fmt.Errorf("automatic withdrawal destination changed: %w", ErrAutoWithdrawNotAuthorized)
+		}
 		return nil
 	}
 	authorizedAt = authorizedAt.UTC()
 	nextAt = nextAt.UTC()
 	u.StripeAutoWithdrawEnabled = true
+	u.StripeAutoWithdrawAccountID = expectedStripeAccountID
 	u.StripeAutoWithdrawAuthorizedAt = &authorizedAt
 	u.StripeAutoWithdrawNextAt = &nextAt
 	return nil
@@ -2137,7 +2173,8 @@ func (s *MemoryStore) ListUsersDueForStripeAutoWithdraw(now time.Time, limit int
 	for _, u := range s.usersByAccountID {
 		if !u.StripeAutoWithdrawEnabled || u.StripeAutoWithdrawNextAt == nil ||
 			u.StripeAutoWithdrawNextAt.After(now) ||
-			u.StripeAccountStatus != "ready" || u.StripeAccountID == "" {
+			u.StripeAccountStatus != "ready" || u.StripeAccountID == "" ||
+			u.StripeAutoWithdrawAccountID != u.StripeAccountID {
 			continue
 		}
 		out = append(out, *u)
@@ -2269,6 +2306,26 @@ func (s *MemoryStore) CreateStripeAutoWithdrawalWithDebit(w *StripeWithdrawal, e
 	return s.createStripeWithdrawalWithDebit(w, entryType, reference, &scheduledFor)
 }
 
+func (s *MemoryStore) TryLockStripeWithdrawal(id string) (bool, func(), error) {
+	s.mu.Lock()
+	if s.stripeWithdrawalLocks[id] {
+		s.mu.Unlock()
+		return false, func() {}, nil
+	}
+	s.stripeWithdrawalLocks[id] = true
+	s.mu.Unlock()
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.stripeWithdrawalLocks, id)
+			s.mu.Unlock()
+		})
+	}
+	return true, release, nil
+}
+
 func (s *MemoryStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, entryType LedgerEntryType, reference string, scheduledFor *time.Time) error {
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
@@ -2289,7 +2346,8 @@ func (s *MemoryStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, entry
 			!u.StripeAutoWithdrawNextAt.Equal(*scheduledFor) ||
 			u.StripeAutoWithdrawNextAt.After(time.Now()) ||
 			u.StripeAccountStatus != "ready" ||
-			u.StripeAccountID != w.StripeAccountID {
+			u.StripeAccountID != w.StripeAccountID ||
+			u.StripeAutoWithdrawAccountID != w.StripeAccountID {
 			return fmt.Errorf("automatic withdrawal authorization changed: %w", ErrAutoWithdrawNotAuthorized)
 		}
 	}
@@ -2379,6 +2437,88 @@ func (s *MemoryStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	cp.UpdatedAt = time.Now()
 	s.stripeWithdrawalsByID[w.ID] = &cp
 	return nil
+}
+
+func (s *MemoryStore) MarkStripeWithdrawalTransferred(id, transferID string) (bool, error) {
+	if id == "" || transferID == "" {
+		return false, errors.New("stripe withdrawal and transfer ids are required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Refunded || w.Status == "failed" {
+		return false, nil
+	}
+	if (w.Status == "transferred" || w.Status == "paid") && w.TransferID == transferID {
+		return true, nil
+	}
+	if w.Status != "pending" || (w.TransferID != "" && w.TransferID != transferID) {
+		return false, nil
+	}
+	if owner, exists := s.stripeWithdrawalsByTransferID[transferID]; exists && owner != id {
+		return false, fmt.Errorf("Stripe transfer %q already belongs to withdrawal %q", transferID, owner)
+	}
+	w.TransferID = transferID
+	w.Status = "transferred"
+	w.FailureReason = ""
+	w.UpdatedAt = time.Now()
+	s.stripeWithdrawalsByTransferID[transferID] = id
+	return true, nil
+}
+
+func (s *MemoryStore) RecordStripeWithdrawalPendingFailure(id, failureReason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status != "pending" || w.TransferID != "" || w.Refunded {
+		return false, nil
+	}
+	w.FailureReason = failureReason
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (s *MemoryStore) FailStripeWithdrawalAndRefund(id, failureReason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if w.Status == "failed" && w.Refunded {
+		return true, nil
+	}
+	if w.Status != "pending" || w.TransferID != "" {
+		return false, nil
+	}
+
+	ref := "stripe_withdraw:" + id
+	refundExists := false
+	for i := range s.ledgerEntries {
+		entry := &s.ledgerEntries[i]
+		if entry.AccountID == w.AccountID && entry.Type == LedgerRefund && entry.Reference == ref {
+			refundExists = true
+			break
+		}
+	}
+	if !refundExists {
+		s.creditLocked(w.AccountID, w.AmountMicroUSD, LedgerRefund, ref, time.Now())
+		s.withdrawable[w.AccountID] += w.AmountMicroUSD
+	}
+	w.Status = "failed"
+	w.FailureReason = failureReason
+	w.Refunded = true
+	w.UpdatedAt = time.Now()
+	return true, nil
 }
 
 func (s *MemoryStore) ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error) {
@@ -2494,9 +2634,9 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 	return out, nil
 }
 
-// ListStripeWithdrawalsBySourceStatus returns a bounded, oldest-first set for
-// the automatic worker's resumable state machine.
-func (s *MemoryStore) ListStripeWithdrawalsBySourceStatus(source, status string, limit int) ([]StripeWithdrawal, error) {
+// ListStripeWithdrawalsBySourceStatusAfter returns recent, unrefunded rows for
+// the automatic worker's bounded idempotency window.
+func (s *MemoryStore) ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter time.Time, limit int) ([]StripeWithdrawal, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
@@ -2505,7 +2645,8 @@ func (s *MemoryStore) ListStripeWithdrawalsBySourceStatus(source, status string,
 
 	out := []StripeWithdrawal{}
 	for _, w := range s.stripeWithdrawalsByID {
-		if w.Source == source && w.Status == status {
+		if w.Source == source && w.Status == status && !w.Refunded &&
+			w.CreatedAt.After(createdAfter) {
 			out = append(out, *w)
 		}
 	}

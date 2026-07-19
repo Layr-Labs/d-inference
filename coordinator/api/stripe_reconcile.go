@@ -17,6 +17,11 @@ const (
 	// bank rail. 48h covers all of that with margin.
 	stripeStuckThreshold = 48 * time.Hour
 
+	// Stripe only guarantees idempotency-key retention for 24 hours. Pending
+	// automatic transfers stop replaying at 23 hours and need reconciliation
+	// immediately, rather than waiting for the transferred-row threshold.
+	stripePendingReconcileThreshold = 23 * time.Hour
+
 	// stripeReconcileBatch bounds how many stuck rows one sweep inspects.
 	stripeReconcileBatch = 200
 )
@@ -61,13 +66,14 @@ func (s *Server) StartStripePayoutReconciler(ctx context.Context) {
 // sweepStuckStripeWithdrawals runs one reconciler pass.
 func (s *Server) sweepStuckStripeWithdrawals() {
 	cutoff := time.Now().Add(-stripeStuckThreshold)
+	pendingCutoff := time.Now().Add(-stripePendingReconcileThreshold)
 
 	// Rows stuck in "pending" mean the transfer-create either never ran
 	// (crash mid-request) or ran and the row update failed after retries —
 	// in the latter case money moved without a local trace. No safe
 	// automatic action exists (can't tell the two apart locally), so alert
 	// for a manual check against the Stripe dashboard.
-	if pending, err := s.billing.Store().ListStripeWithdrawalsByStatus("pending", cutoff, stripeReconcileBatch); err != nil {
+	if pending, err := s.billing.Store().ListStripeWithdrawalsByStatus("pending", pendingCutoff, stripeReconcileBatch); err != nil {
 		s.logger.Error("stripe reconciler: list stale pending withdrawals failed", "error", err)
 	} else if len(pending) > 0 {
 		for _, wd := range pending {

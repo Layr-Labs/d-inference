@@ -135,17 +135,11 @@ func (s *Server) setStripeAccountIfCurrent(
 	accountID, expectedStripeAccountID, stripeAccountID, status, country,
 	destinationType, destinationLast4 string, instantEligible bool,
 ) error {
-	current, err := s.billing.Store().GetUserByAccountID(accountID)
-	if err != nil {
-		return err
-	}
-	if current.StripeAccountID != expectedStripeAccountID {
-		return nil
-	}
-	return s.billing.Store().SetUserStripeAccount(
-		accountID, stripeAccountID, status, country,
+	_, err := s.billing.Store().SetUserStripeAccountIfCurrent(
+		accountID, expectedStripeAccountID, stripeAccountID, status, country,
 		destinationType, destinationLast4, instantEligible,
 	)
+	return err
 }
 
 // executeStripeTransfer persists the debit before making an idempotent Stripe
@@ -156,8 +150,26 @@ func (s *Server) executeStripeTransfer(req stripeTransferRequest) (*stripeTransf
 		req.Source = store.StripeWithdrawalSourceManual
 	}
 	if req.Source == store.StripeWithdrawalSourceAutomatic {
+		acquired, release, err := s.billing.Store().TryLockStripeWithdrawal(req.WithdrawalID)
+		if err != nil {
+			return nil, &stripeTransferError{
+				StatusCode: http.StatusServiceUnavailable,
+				Code:       "auto_withdraw_lock_failed",
+				Message:    "automatic withdrawal could not acquire its execution lock",
+				Err:        err,
+			}
+		}
+		if !acquired {
+			return nil, &stripeTransferError{
+				StatusCode: http.StatusConflict,
+				Code:       "auto_withdraw_busy",
+				Message:    "automatic withdrawal is already being processed",
+				Err:        store.ErrStripeWithdrawalBusy,
+			}
+		}
+		defer release()
 		if existing := s.loadAutomaticWithdrawal(req, 1); existing != nil {
-			return s.continueStripeTransfer(existing, req.TransferMessage)
+			return s.continueAutomaticStripeTransfer(existing, req.TransferMessage)
 		}
 	}
 
@@ -199,7 +211,7 @@ func (s *Server) executeStripeTransfer(req stripeTransferRequest) (*stripeTransf
 		// our first lookup and insert. Load it and continue the same transfer.
 		if req.Source == store.StripeWithdrawalSourceAutomatic {
 			if existing := s.loadAutomaticWithdrawal(req, 3); existing != nil {
-				return s.continueStripeTransfer(existing, req.TransferMessage)
+				return s.continueAutomaticStripeTransfer(existing, req.TransferMessage)
 			}
 		}
 		if errors.Is(err, store.ErrInsufficientBalance) {
@@ -231,6 +243,20 @@ func (s *Server) executeStripeTransfer(req stripeTransferRequest) (*stripeTransf
 	return s.continueStripeTransfer(wd, req.TransferMessage)
 }
 
+func (s *Server) continueAutomaticStripeTransfer(wd *store.StripeWithdrawal, description string) (*stripeTransferResult, *stripeTransferError) {
+	if wd.Status == "pending" &&
+		!wd.CreatedAt.After(time.Now().Add(-stripeAutoWithdrawResumeWindow)) {
+		return nil, &stripeTransferError{
+			StatusCode: http.StatusConflict,
+			Code:       "auto_withdraw_reconciliation_required",
+			Message:    "automatic withdrawal is outside Stripe's safe retry window",
+			Err:        store.ErrStripeWithdrawalReconciliationRequired,
+			Withdrawal: wd,
+		}
+	}
+	return s.continueStripeTransfer(wd, description)
+}
+
 func (s *Server) loadAutomaticWithdrawal(req stripeTransferRequest, attempts int) *store.StripeWithdrawal {
 	for attempt := 0; attempt < attempts; attempt++ {
 		if attempt > 0 {
@@ -257,30 +283,23 @@ func (s *Server) continueStripeTransfer(wd *store.StripeWithdrawal, description 
 		return &stripeTransferResult{Withdrawal: wd}, nil
 	}
 	if wd.TransferID != "" {
-		wd.Status = "transferred"
-		if err := s.persistWithdrawalUpdate(wd, "recovered transfer_id"); err != nil {
+		if !s.markStripeWithdrawalTransferredWithRetry(wd.ID, wd.TransferID) {
 			s.logger.Error("stripe payout: recover transferred state failed",
-				"error", err, "withdrawal_id", wd.ID, "transfer_id", wd.TransferID)
+				"withdrawal_id", wd.ID, "transfer_id", wd.TransferID)
 		}
+		wd.Status = "transferred"
 		return &stripeTransferResult{
 			Withdrawal: wd,
 			Transfer:   &billing.Transfer{ID: wd.TransferID},
 		}, nil
 	}
 
-	debitRef := "stripe_withdraw:" + wd.ID
 	markFailedRefund := func(reason string) bool {
-		refunded := s.creditRefundOnceWithRetry(
-			wd.AccountID, wd.AmountMicroUSD, debitRef, wd.ID,
-		)
+		refunded := s.failStripeWithdrawalAndRefundWithRetry(wd.ID, reason)
 		if refunded {
 			wd.Refunded = true
-		}
-		wd.Status = "failed"
-		wd.FailureReason = reason
-		if err := s.persistWithdrawalUpdate(wd, "failure"); err != nil {
-			s.logger.Error("stripe payout: mark failed failed",
-				"error", err, "withdrawal_id", wd.ID)
+			wd.Status = "failed"
+			wd.FailureReason = reason
 		}
 		return refunded
 	}
@@ -288,19 +307,29 @@ func (s *Server) continueStripeTransfer(wd *store.StripeWithdrawal, description 
 	if description == "" {
 		description = "Darkbloom credit withdrawal"
 	}
-	transfer, err := retryAmbiguousStripe(func() (*billing.Transfer, error) {
+	createTransfer := func() (*billing.Transfer, error) {
 		return s.billing.StripeConnect().CreateTransfer(billing.CreateTransferParams{
 			DestinationAccountID: wd.StripeAccountID,
 			AmountCents:          microUSDToCents(wd.NetMicroUSD),
 			IdempotencyKey:       "wd-tr-" + wd.ID,
 			Description:          description,
 		})
-	})
+	}
+	var transfer *billing.Transfer
+	var err error
+	if wd.Source == store.StripeWithdrawalSourceAutomatic {
+		// The worker retries on its next bounded sweep. One HTTP attempt keeps
+		// a Stripe outage from overrunning the worker cadence.
+		transfer, err = createTransfer()
+	} else {
+		transfer, err = retryAmbiguousStripe(createTransfer)
+	}
 	if err != nil && !billing.IsDefinitiveAPIErr(err) {
-		wd.FailureReason = "transfer_create_unconfirmed: " + err.Error()
-		if persistErr := s.persistWithdrawalUpdate(wd, "ambiguous transfer"); persistErr != nil {
+		reason := "transfer_create_unconfirmed: " + err.Error()
+		wd.FailureReason = reason
+		if !s.recordPendingStripeFailureWithRetry(wd.ID, reason) {
 			s.logger.Error("stripe payout: persist ambiguous-transfer state failed",
-				"error", persistErr, "withdrawal_id", wd.ID)
+				"withdrawal_id", wd.ID)
 		}
 		s.logger.Error("stripe payout: transfer outcome UNCONFIRMED — no refund issued, verify against Stripe dashboard",
 			"error", err, "withdrawal_id", wd.ID, "idempotency_key", "wd-tr-"+wd.ID)
@@ -356,9 +385,57 @@ func (s *Server) continueStripeTransfer(wd *store.StripeWithdrawal, description 
 
 	wd.TransferID = transfer.ID
 	wd.Status = "transferred"
-	if err := s.persistWithdrawalUpdate(wd, "transfer_id"); err != nil {
+	if !s.markStripeWithdrawalTransferredWithRetry(wd.ID, transfer.ID) {
 		s.logger.Error("stripe payout: persist transfer_id failed after retries — row stuck pending, funds deliver via sweep",
-			"error", err, "withdrawal_id", wd.ID, "transfer_id", transfer.ID)
+			"withdrawal_id", wd.ID, "transfer_id", transfer.ID)
 	}
 	return &stripeTransferResult{Withdrawal: wd, Transfer: transfer}, nil
+}
+
+func (s *Server) failStripeWithdrawalAndRefundWithRetry(withdrawalID, reason string) bool {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		refunded, err := s.billing.Store().FailStripeWithdrawalAndRefund(withdrawalID, reason)
+		if err == nil {
+			return refunded
+		}
+		s.logger.Warn("stripe payout: atomic refund attempt failed",
+			"attempt", attempt+1, "error", err, "withdrawal_id", withdrawalID)
+	}
+	s.logger.Error("stripe payout: atomic refund failed after retries — MANUAL REVIEW REQUIRED",
+		"withdrawal_id", withdrawalID)
+	return false
+}
+
+func (s *Server) markStripeWithdrawalTransferredWithRetry(withdrawalID, transferID string) bool {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		applied, err := s.billing.Store().MarkStripeWithdrawalTransferred(withdrawalID, transferID)
+		if err == nil {
+			return applied
+		}
+		s.logger.Warn("stripe payout: transfer transition attempt failed",
+			"attempt", attempt+1, "error", err,
+			"withdrawal_id", withdrawalID, "transfer_id", transferID)
+	}
+	return false
+}
+
+func (s *Server) recordPendingStripeFailureWithRetry(withdrawalID, reason string) bool {
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		applied, err := s.billing.Store().RecordStripeWithdrawalPendingFailure(withdrawalID, reason)
+		if err == nil {
+			return applied
+		}
+		s.logger.Warn("stripe payout: pending failure persist attempt failed",
+			"attempt", attempt+1, "error", err, "withdrawal_id", withdrawalID)
+	}
+	return false
 }

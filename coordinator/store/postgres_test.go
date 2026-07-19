@@ -157,11 +157,11 @@ func TestPostgresStripeAutoWithdrawPreferenceLifecycle(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	due := now.Add(-time.Hour)
-	if err := s.SetStripeAutoWithdraw(user.AccountID, true, now.Add(-2*time.Hour), due); err != nil {
+	if err := s.SetStripeAutoWithdraw(user.AccountID, "acct_pg_auto_a", true, now.Add(-2*time.Hour), due); err != nil {
 		t.Fatal(err)
 	}
 	// Idempotent enable must not postpone the already-authorized slot.
-	if err := s.SetStripeAutoWithdraw(user.AccountID, true, now, now.Add(7*24*time.Hour)); err != nil {
+	if err := s.SetStripeAutoWithdraw(user.AccountID, "acct_pg_auto_a", true, now, now.Add(7*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetUserByAccountID(user.AccountID)
@@ -203,6 +203,22 @@ func TestPostgresStripeAutoWithdrawPreferenceLifecycle(t *testing.T) {
 	if got.StripeAutoWithdrawEnabled || got.StripeAutoWithdrawAuthorizedAt != nil ||
 		got.StripeAutoWithdrawNextAt != nil {
 		t.Fatalf("destination replacement did not revoke preference: %+v", got)
+	}
+	err = s.SetStripeAutoWithdraw(
+		user.AccountID, "acct_pg_auto_a", true, now, next,
+	)
+	if !errors.Is(err, ErrAutoWithdrawNotAuthorized) {
+		t.Fatalf("stale destination err = %v, want ErrAutoWithdrawNotAuthorized", err)
+	}
+	applied, err := s.SetUserStripeAccountIfCurrent(
+		user.AccountID, "acct_pg_auto_a", "", "", "", "", "", false,
+	)
+	if err != nil || applied {
+		t.Fatalf("stale account CAS = %v, err = %v", applied, err)
+	}
+	got, _ = s.GetUserByAccountID(user.AccountID)
+	if got.StripeAccountID != "acct_pg_auto_b" {
+		t.Fatalf("stale account CAS overwrote destination: %+v", got)
 	}
 }
 
@@ -805,7 +821,7 @@ func TestPostgresCreateStripeAutoWithdrawalWithDebit(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	slot := now.Add(-time.Minute)
-	if err := s.SetStripeAutoWithdraw(user.AccountID, true, now.Add(-time.Hour), slot); err != nil {
+	if err := s.SetStripeAutoWithdraw(user.AccountID, "acct_pg_auto_debit", true, now.Add(-time.Hour), slot); err != nil {
 		t.Fatal(err)
 	}
 	newWithdrawal := func(id string) *StripeWithdrawal {
@@ -842,8 +858,8 @@ func TestPostgresCreateStripeAutoWithdrawalWithDebit(t *testing.T) {
 		t.Fatalf("balance = %d, want 6_000_000", balance)
 	}
 
-	rows, err := s.ListStripeWithdrawalsBySourceStatus(
-		StripeWithdrawalSourceAutomatic, "pending", 10,
+	rows, err := s.ListStripeWithdrawalsBySourceStatusAfter(
+		StripeWithdrawalSourceAutomatic, "pending", time.Now().Add(-time.Hour), 10,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -857,4 +873,74 @@ func TestPostgresCreateStripeAutoWithdrawalWithDebit(t *testing.T) {
 	if !found {
 		t.Fatalf("pending automatic rows did not include %s: %+v", wd.ID, rows)
 	}
+}
+
+func TestPostgresStripeWithdrawalAtomicFailureAndGuards(t *testing.T) {
+	s := testPostgresStore(t)
+	accountID := "acct-pg-auto-guards"
+	if err := s.CreditWithdrawable(accountID, 5_000_000, LedgerPayout, "earnings"); err != nil {
+		t.Fatal(err)
+	}
+	wd := &StripeWithdrawal{
+		ID: "wd-pg-auto-guards", AccountID: accountID, StripeAccountID: "acct_pg_guards",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Source: StripeWithdrawalSourceAutomatic, Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(
+		wd, LedgerStripePayout, "stripe_withdraw:"+wd.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "timeout"); err != nil || !applied {
+		t.Fatalf("pending failure = %v, err = %v", applied, err)
+	}
+	if applied, err := s.MarkStripeWithdrawalTransferred(wd.ID, "tr_pg_guards"); err != nil || !applied {
+		t.Fatalf("mark transferred = %v, err = %v", applied, err)
+	}
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "stale"); err != nil || applied {
+		t.Fatalf("stale pending failure = %v, err = %v", applied, err)
+	}
+	stored, _ := s.GetStripeWithdrawal(wd.ID)
+	if stored.Status != "transferred" || stored.TransferID != "tr_pg_guards" ||
+		stored.FailureReason != "" {
+		t.Fatalf("stale worker overwrote transfer: %+v", stored)
+	}
+
+	refundWD := &StripeWithdrawal{
+		ID: "wd-pg-auto-refund", AccountID: accountID, StripeAccountID: "acct_pg_guards",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "standard", Source: StripeWithdrawalSourceAutomatic, Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(
+		refundWD, LedgerStripePayout, "stripe_withdraw:"+refundWD.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if refunded, err := s.FailStripeWithdrawalAndRefund(refundWD.ID, "definitive failure"); err != nil || !refunded {
+		t.Fatalf("atomic refund = %v, err = %v", refunded, err)
+	}
+	if refunded, err := s.FailStripeWithdrawalAndRefund(refundWD.ID, "redelivery"); err != nil || !refunded {
+		t.Fatalf("idempotent refund = %v, err = %v", refunded, err)
+	}
+	refundedRow, _ := s.GetStripeWithdrawal(refundWD.ID)
+	if refundedRow.Status != "failed" || !refundedRow.Refunded {
+		t.Fatalf("refunded row = %+v", refundedRow)
+	}
+}
+
+func TestPostgresStripeWithdrawalExecutionLock(t *testing.T) {
+	s := testPostgresStore(t)
+	acquired, release, err := s.TryLockStripeWithdrawal("wd-pg-lock")
+	if err != nil || !acquired {
+		t.Fatalf("first lock = %v, err = %v", acquired, err)
+	}
+	if acquired, _, err := s.TryLockStripeWithdrawal("wd-pg-lock"); err != nil || acquired {
+		t.Fatalf("second lock = %v, err = %v", acquired, err)
+	}
+	release()
+	acquired, release, err = s.TryLockStripeWithdrawal("wd-pg-lock")
+	if err != nil || !acquired {
+		t.Fatalf("lock after release = %v, err = %v", acquired, err)
+	}
+	release()
 }

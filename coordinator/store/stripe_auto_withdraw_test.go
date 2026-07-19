@@ -18,11 +18,11 @@ func TestMemoryStripeAutoWithdrawPreferenceLifecycle(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Second)
 	due := now.Add(-time.Hour)
-	if err := s.SetStripeAutoWithdraw(user.AccountID, true, now.Add(-2*time.Hour), due); err != nil {
+	if err := s.SetStripeAutoWithdraw(user.AccountID, "acct_stripe_a", true, now.Add(-2*time.Hour), due); err != nil {
 		t.Fatal(err)
 	}
 	// Re-enabling is idempotent: a repeated UI request cannot postpone the run.
-	if err := s.SetStripeAutoWithdraw(user.AccountID, true, now, now.Add(7*24*time.Hour)); err != nil {
+	if err := s.SetStripeAutoWithdraw(user.AccountID, "acct_stripe_a", true, now, now.Add(7*24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -78,7 +78,7 @@ func TestMemoryStripeAutoWithdrawDebitChecksAuthorizationAtomically(t *testing.T
 
 	now := time.Now().UTC().Truncate(time.Second)
 	slot := now.Add(-time.Minute)
-	if err := s.SetStripeAutoWithdraw(user.AccountID, true, now.Add(-time.Hour), slot); err != nil {
+	if err := s.SetStripeAutoWithdraw(user.AccountID, "acct_stripe", true, now.Add(-time.Hour), slot); err != nil {
 		t.Fatal(err)
 	}
 	newWithdrawal := func(id string) *StripeWithdrawal {
@@ -162,10 +162,114 @@ func TestMemoryListsPendingAutomaticWithdrawals(t *testing.T) {
 		}
 	}
 
-	rows, err := s.ListStripeWithdrawalsBySourceStatus(
-		StripeWithdrawalSourceAutomatic, "pending", 10,
+	rows, err := s.ListStripeWithdrawalsBySourceStatusAfter(
+		StripeWithdrawalSourceAutomatic, "pending", time.Now().Add(-time.Hour), 10,
 	)
 	if err != nil || len(rows) != 1 || rows[0].ID != "auto-pending" {
 		t.Fatalf("rows = %+v, err = %v", rows, err)
 	}
+}
+
+func TestMemoryStripeAutoWithdrawBindsExpectedDestination(t *testing.T) {
+	s := NewMemory(Config{})
+	user := &User{AccountID: "acct-auto-bind", PrivyUserID: "did:privy:auto-bind"}
+	if err := s.CreateUser(user); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetUserStripeAccount(user.AccountID, "acct_destination_b", "ready", "US", "bank", "4242", false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	err := s.SetStripeAutoWithdraw(
+		user.AccountID, "acct_stale_a", true, now, now.Add(time.Hour),
+	)
+	if !errors.Is(err, ErrAutoWithdrawNotAuthorized) {
+		t.Fatalf("stale destination err = %v, want ErrAutoWithdrawNotAuthorized", err)
+	}
+	got, _ := s.GetUserByAccountID(user.AccountID)
+	if got.StripeAutoWithdrawEnabled {
+		t.Fatal("stale authorization enabled withdrawals for a replacement destination")
+	}
+
+	applied, err := s.SetUserStripeAccountIfCurrent(
+		user.AccountID, "acct_stale_a", "", "", "", "", "", false,
+	)
+	if err != nil || applied {
+		t.Fatalf("stale account CAS = %v, err = %v", applied, err)
+	}
+	got, _ = s.GetUserByAccountID(user.AccountID)
+	if got.StripeAccountID != "acct_destination_b" {
+		t.Fatalf("stale account CAS overwrote destination: %+v", got)
+	}
+}
+
+func TestMemoryStripeWithdrawalAtomicFailureRefund(t *testing.T) {
+	s := NewMemory(Config{})
+	if err := s.CreditWithdrawable("acct-atomic-refund", 5_000_000, LedgerPayout, "earnings"); err != nil {
+		t.Fatal(err)
+	}
+	wd := &StripeWithdrawal{
+		ID: "wd-atomic-refund", AccountID: "acct-atomic-refund", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "standard", Source: StripeWithdrawalSourceAutomatic, Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawalWithDebit(
+		wd, LedgerStripePayout, "stripe_withdraw:"+wd.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	refunded, err := s.FailStripeWithdrawalAndRefund(wd.ID, "transfer_create_failed")
+	if err != nil || !refunded {
+		t.Fatalf("refund = %v, err = %v", refunded, err)
+	}
+	stored, _ := s.GetStripeWithdrawal(wd.ID)
+	if stored.Status != "failed" || !stored.Refunded ||
+		s.GetWithdrawableBalance(wd.AccountID) != 5_000_000 {
+		t.Fatalf("atomic refund state = %+v balance=%d", stored, s.GetWithdrawableBalance(wd.AccountID))
+	}
+	refunded, err = s.FailStripeWithdrawalAndRefund(wd.ID, "redelivery")
+	if err != nil || !refunded || s.GetWithdrawableBalance(wd.AccountID) != 5_000_000 {
+		t.Fatalf("idempotent refund = %v err=%v balance=%d",
+			refunded, err, s.GetWithdrawableBalance(wd.AccountID))
+	}
+}
+
+func TestMemoryStripeWithdrawalGuardedTransitionsAndLock(t *testing.T) {
+	s := NewMemory(Config{})
+	wd := &StripeWithdrawal{
+		ID: "wd-guarded", AccountID: "acct-guarded", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "standard", Source: StripeWithdrawalSourceAutomatic, Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawal(wd); err != nil {
+		t.Fatal(err)
+	}
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "timeout"); err != nil || !applied {
+		t.Fatalf("pending failure = %v, err = %v", applied, err)
+	}
+	if applied, err := s.MarkStripeWithdrawalTransferred(wd.ID, "tr_guarded"); err != nil || !applied {
+		t.Fatalf("mark transferred = %v, err = %v", applied, err)
+	}
+	if applied, err := s.RecordStripeWithdrawalPendingFailure(wd.ID, "stale timeout"); err != nil || applied {
+		t.Fatalf("stale failure = %v, err = %v", applied, err)
+	}
+	stored, _ := s.GetStripeWithdrawal(wd.ID)
+	if stored.Status != "transferred" || stored.TransferID != "tr_guarded" ||
+		stored.FailureReason != "" {
+		t.Fatalf("stale worker overwrote success: %+v", stored)
+	}
+
+	acquired, release, err := s.TryLockStripeWithdrawal(wd.ID)
+	if err != nil || !acquired {
+		t.Fatalf("first lock = %v, err = %v", acquired, err)
+	}
+	if acquired, _, err := s.TryLockStripeWithdrawal(wd.ID); err != nil || acquired {
+		t.Fatalf("second lock = %v, err = %v", acquired, err)
+	}
+	release()
+	acquired, release, err = s.TryLockStripeWithdrawal(wd.ID)
+	if err != nil || !acquired {
+		t.Fatalf("lock after release = %v, err = %v", acquired, err)
+	}
+	release()
 }

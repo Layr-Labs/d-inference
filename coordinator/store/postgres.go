@@ -677,14 +677,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_destination_last4 TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_instant_eligible BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_auto_withdraw_enabled BOOLEAN NOT NULL DEFAULT FALSE; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_auto_withdraw_account_id TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_auto_withdraw_authorized_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_auto_withdraw_next_at TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_stripe_account ON users(stripe_account_id) WHERE stripe_account_id != ''`,
-		`CREATE INDEX IF NOT EXISTS idx_users_stripe_auto_withdraw_due
-		 ON users(stripe_auto_withdraw_next_at)
-		 WHERE stripe_auto_withdraw_enabled = TRUE
-		   AND stripe_account_status = 'ready'
-		   AND stripe_account_id != ''`,
 
 		// Account role + per-account platform fee override (service accounts, e.g. OpenRouter).
 		`DO $$ BEGIN ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT ''; EXCEPTION WHEN others THEN NULL; END $$`,
@@ -716,9 +712,6 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_sweep_payout ON stripe_withdrawals(sweep_payout_id) WHERE sweep_payout_id != ''`,
-		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_auto_pending
-		 ON stripe_withdrawals(created_at)
-		 WHERE source = 'automatic' AND status = 'pending'`,
 
 		// Telemetry events table + indices removed.
 		// Datadog is the sole durable sink for telemetry — the Postgres table
@@ -1068,6 +1061,56 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 	// startup never runs a long, lock-holding data migration on this hot table.
 	if err := s.ensureProviderEarningsJobIndex(ctx); err != nil {
 		return err
+	}
+	for _, index := range []struct {
+		name string
+		ddl  string
+	}{
+		{
+			name: "idx_users_stripe_auto_withdraw_due",
+			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_stripe_auto_withdraw_due
+				ON users(stripe_auto_withdraw_next_at)
+				WHERE stripe_auto_withdraw_enabled = TRUE
+				  AND stripe_account_status = 'ready'
+				  AND stripe_account_id != ''`,
+		},
+		{
+			name: "idx_stripe_withdrawals_auto_pending",
+			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_stripe_withdrawals_auto_pending
+				ON stripe_withdrawals(created_at)
+				WHERE source = 'automatic' AND status = 'pending' AND refunded = FALSE`,
+		},
+	} {
+		if err := s.ensureConcurrentIndex(ctx, index.name, index.ddl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) ensureConcurrentIndex(ctx context.Context, name, ddl string) error {
+	var valid bool
+	if err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE((
+			SELECT i.indisvalid
+			FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid
+			WHERE c.relname = $1
+		), false)`, name).Scan(&valid); err != nil {
+		return fmt.Errorf("store: check %s: %w", name, err)
+	}
+	if valid {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `DROP INDEX IF EXISTS `+name); err != nil {
+		return fmt.Errorf("store: drop invalid %s: %w", name, err)
+	}
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("store: acquire conn for %s: %w", name, err)
+	}
+	defer conn.Release()
+	if _, err := conn.Conn().PgConn().Exec(ctx, ddl).ReadAll(); err != nil {
+		return fmt.Errorf("store: create %s concurrently: %w", name, err)
 	}
 	return nil
 }
@@ -2675,6 +2718,11 @@ func (s *PostgresStore) Credit(accountID string, amountMicroUSD int64, entryType
 
 // GetWithdrawableBalance returns the withdrawable balance in micro-USD.
 func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
+	balance, _ := s.GetWithdrawableBalanceWithError(accountID)
+	return balance
+}
+
+func (s *PostgresStore) GetWithdrawableBalanceWithError(accountID string) (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -2683,9 +2731,12 @@ func (s *PostgresStore) GetWithdrawableBalance(accountID string) int64 {
 		`SELECT withdrawable_micro_usd FROM balances WHERE account_id = $1`, accountID,
 	).Scan(&balance)
 	if err != nil {
-		return 0
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("store: get withdrawable balance: %w", err)
 	}
-	return balance
+	return balance, nil
 }
 
 // GetBalanceWithWithdrawable returns both balances in a single query.
@@ -3256,7 +3307,8 @@ func (s *PostgresStore) CreateUser(user *User) error {
 const userSelectColumns = `account_id, privy_user_id, email, role, platform_fee_percent,
 	stripe_account_id, stripe_account_status, stripe_account_country,
 	stripe_destination_type, stripe_destination_last4, stripe_instant_eligible,
-	stripe_auto_withdraw_enabled, stripe_auto_withdraw_authorized_at,
+	stripe_auto_withdraw_enabled, stripe_auto_withdraw_account_id,
+	stripe_auto_withdraw_authorized_at,
 	stripe_auto_withdraw_next_at, created_at`
 
 func scanUser(row interface {
@@ -3266,7 +3318,8 @@ func scanUser(row interface {
 	if err := row.Scan(&u.AccountID, &u.PrivyUserID, &u.Email, &u.Role, &u.PlatformFeePercent,
 		&u.StripeAccountID, &u.StripeAccountStatus, &u.StripeAccountCountry,
 		&u.StripeDestinationType, &u.StripeDestinationLast4, &u.StripeInstantEligible,
-		&u.StripeAutoWithdrawEnabled, &u.StripeAutoWithdrawAuthorizedAt,
+		&u.StripeAutoWithdrawEnabled, &u.StripeAutoWithdrawAccountID,
+		&u.StripeAutoWithdrawAuthorizedAt,
 		&u.StripeAutoWithdrawNextAt, &u.CreatedAt); err != nil {
 		return nil, err
 	}
@@ -3307,6 +3360,21 @@ func (s *PostgresStore) GetUserByAccountID(accountID string) (*User, error) {
 // stripeAccountCountry is the ISO country the Express account is locked to.
 // Pass an empty string to leave the existing country value unchanged.
 func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) error {
+	applied, err := s.setUserStripeAccount(accountID, nil, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4, instantEligible)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return fmt.Errorf("user with account ID %q not found", accountID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) SetUserStripeAccountIfCurrent(accountID, expectedStripeAccountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) (bool, error) {
+	return s.setUserStripeAccount(accountID, &expectedStripeAccountID, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4, instantEligible)
+}
+
+func (s *PostgresStore) setUserStripeAccount(accountID string, expectedStripeAccountID *string, stripeAccountID, status, stripeAccountCountry, destinationType, destinationLast4 string, instantEligible bool) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -3322,6 +3390,11 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 		// next onboarding attempt.
 		countryClause = ", stripe_account_country = ''"
 	}
+	whereClause := "account_id = $1"
+	if expectedStripeAccountID != nil {
+		args = append(args, *expectedStripeAccountID)
+		whereClause += fmt.Sprintf(" AND stripe_account_id = $%d", len(args))
+	}
 
 	tag, err := s.pool.Exec(ctx,
 		fmt.Sprintf(`UPDATE users SET
@@ -3334,6 +3407,10 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 				WHEN stripe_account_id <> $2 THEN FALSE
 				ELSE stripe_auto_withdraw_enabled
 			END,
+			stripe_auto_withdraw_account_id = CASE
+				WHEN stripe_account_id <> $2 THEN ''
+				ELSE stripe_auto_withdraw_account_id
+			END,
 			stripe_auto_withdraw_authorized_at = CASE
 				WHEN stripe_account_id <> $2 THEN NULL
 				ELSE stripe_auto_withdraw_authorized_at
@@ -3342,16 +3419,13 @@ func (s *PostgresStore) SetUserStripeAccount(accountID, stripeAccountID, status,
 				WHEN stripe_account_id <> $2 THEN NULL
 				ELSE stripe_auto_withdraw_next_at
 			END%s
-		 WHERE account_id = $1`, countryClause),
+		 WHERE %s`, countryClause, whereClause),
 		args...,
 	)
 	if err != nil {
-		return fmt.Errorf("store: set stripe account: %w", err)
+		return false, fmt.Errorf("store: set stripe account: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("user with account ID %q not found", accountID)
-	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // GetUserByStripeAccount finds a user by their Stripe connected account ID.
@@ -3372,29 +3446,43 @@ func (s *PostgresStore) GetUserByStripeAccount(stripeAccountID string) (*User, e
 // SetStripeAutoWithdraw updates the user's explicit weekly withdrawal
 // authorization. Re-enabling an active preference is idempotent and preserves
 // its current schedule.
-func (s *PostgresStore) SetStripeAutoWithdraw(accountID string, enabled bool, authorizedAt, nextAt time.Time) error {
+func (s *PostgresStore) SetStripeAutoWithdraw(accountID, expectedStripeAccountID string, enabled bool, authorizedAt, nextAt time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE users SET
-			stripe_auto_withdraw_enabled = $2,
+			stripe_auto_withdraw_enabled = $3,
+			stripe_auto_withdraw_account_id = CASE
+				WHEN $3 THEN $2
+				ELSE ''
+			END,
 			stripe_auto_withdraw_authorized_at = CASE
-				WHEN $2 THEN COALESCE(stripe_auto_withdraw_authorized_at, $3)
+				WHEN $3 THEN COALESCE(stripe_auto_withdraw_authorized_at, $4)
 				ELSE NULL
 			END,
 			stripe_auto_withdraw_next_at = CASE
-				WHEN $2 THEN COALESCE(stripe_auto_withdraw_next_at, $4)
+				WHEN $3 THEN COALESCE(stripe_auto_withdraw_next_at, $5)
 				ELSE NULL
 			END
-		 WHERE account_id = $1`,
-		accountID, enabled, authorizedAt, nextAt,
+		 WHERE account_id = $1
+		   AND (
+		     $3 = FALSE OR (
+		       stripe_account_id = $2
+		       AND stripe_account_status = 'ready'
+		       AND (
+		         stripe_auto_withdraw_enabled = FALSE
+		         OR stripe_auto_withdraw_account_id IN ('', $2)
+		       )
+		     )
+		   )`,
+		accountID, expectedStripeAccountID, enabled, authorizedAt, nextAt,
 	)
 	if err != nil {
 		return fmt.Errorf("store: set Stripe automatic withdrawal: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("user with account ID %q not found", accountID)
+		return fmt.Errorf("Stripe destination changed or is not ready: %w", ErrAutoWithdrawNotAuthorized)
 	}
 	return nil
 }
@@ -3415,6 +3503,7 @@ func (s *PostgresStore) ListUsersDueForStripeAutoWithdraw(now time.Time, limit i
 		   AND stripe_auto_withdraw_next_at <= $1
 		   AND stripe_account_status = 'ready'
 		   AND stripe_account_id != ''
+		   AND stripe_auto_withdraw_account_id = stripe_account_id
 		 ORDER BY stripe_auto_withdraw_next_at ASC
 		 LIMIT $2`,
 		now, limit,
@@ -3567,6 +3656,47 @@ func (s *PostgresStore) CreateStripeAutoWithdrawalWithDebit(w *StripeWithdrawal,
 	return s.createStripeWithdrawalWithDebit(w, entryType, reference, &scheduledFor)
 }
 
+func (s *PostgresStore) TryLockStripeWithdrawal(id string) (bool, func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	conn, err := s.pool.Acquire(ctx)
+	if err != nil {
+		cancel()
+		return false, nil, fmt.Errorf("store: acquire Stripe withdrawal lock connection: %w", err)
+	}
+	var acquired bool
+	err = conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock(hashtextextended($1, 0))`,
+		"stripe-withdrawal:"+id,
+	).Scan(&acquired)
+	cancel()
+	if err != nil {
+		conn.Release()
+		return false, nil, fmt.Errorf("store: acquire Stripe withdrawal lock: %w", err)
+	}
+	if !acquired {
+		conn.Release()
+		return false, func() {}, nil
+	}
+
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			unlockCtx, unlockCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer unlockCancel()
+			if _, unlockErr := conn.Exec(unlockCtx,
+				`SELECT pg_advisory_unlock(hashtextextended($1, 0))`,
+				"stripe-withdrawal:"+id,
+			); unlockErr != nil {
+				// Releasing the connection closes the ownership scope if the
+				// session itself has failed; healthy sessions explicitly unlock.
+				conn.Conn().PgConn().Close(unlockCtx)
+			}
+			conn.Release()
+		})
+	}
+	return true, release, nil
+}
+
 func (s *PostgresStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, entryType LedgerEntryType, reference string, scheduledFor *time.Time) error {
 	if w == nil || w.ID == "" {
 		return errors.New("stripe withdrawal id is required")
@@ -3608,6 +3738,7 @@ func (s *PostgresStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 			   AND stripe_auto_withdraw_next_at <= NOW()
 			   AND stripe_account_status = 'ready'
 			   AND stripe_account_id = $3
+			   AND stripe_auto_withdraw_account_id = $3
 			 FOR UPDATE`,
 			w.AccountID, *scheduledFor, w.StripeAccountID,
 		).Scan(&authorized)
@@ -3745,6 +3876,136 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	}
 	w.UpdatedAt = time.Now()
 	return nil
+}
+
+func (s *PostgresStore) MarkStripeWithdrawalTransferred(id, transferID string) (bool, error) {
+	if id == "" || transferID == "" {
+		return false, errors.New("stripe withdrawal and transfer ids are required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET transfer_id = $2, status = 'transferred', failure_reason = '', updated_at = NOW()
+		 WHERE id = $1
+		   AND status = 'pending'
+		   AND refunded = FALSE
+		   AND transfer_id IN ('', $2)`,
+		id, transferID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: mark Stripe withdrawal transferred: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return true, nil
+	}
+
+	var status, existingTransferID string
+	var refunded bool
+	err = s.pool.QueryRow(ctx,
+		`SELECT status, transfer_id, refunded FROM stripe_withdrawals WHERE id = $1`,
+		id,
+	).Scan(&status, &existingTransferID, &refunded)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+		}
+		return false, fmt.Errorf("store: inspect Stripe transfer transition: %w", err)
+	}
+	return !refunded && existingTransferID == transferID &&
+		(status == "transferred" || status == "paid"), nil
+}
+
+func (s *PostgresStore) RecordStripeWithdrawalPendingFailure(id, failureReason string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET failure_reason = $2, updated_at = NOW()
+		 WHERE id = $1
+		   AND status = 'pending'
+		   AND transfer_id = ''
+		   AND refunded = FALSE`,
+		id, failureReason,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: record pending Stripe withdrawal failure: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *PostgresStore) FailStripeWithdrawalAndRefund(id, failureReason string) (bool, error) {
+	if id == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin Stripe withdrawal refund: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var accountID, status, transferID string
+	var amountMicroUSD int64
+	var refunded bool
+	err = tx.QueryRow(ctx,
+		`SELECT account_id, amount_micro_usd, status, transfer_id, refunded
+		 FROM stripe_withdrawals WHERE id = $1 FOR UPDATE`,
+		id,
+	).Scan(&accountID, &amountMicroUSD, &status, &transferID, &refunded)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+		}
+		return false, fmt.Errorf("store: lock Stripe withdrawal for refund: %w", err)
+	}
+	if status == "failed" && refunded {
+		return true, tx.Commit(ctx)
+	}
+	if status != "pending" || transferID != "" {
+		return false, tx.Commit(ctx)
+	}
+
+	ref := "stripe_withdraw:" + id
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`,
+		string(LedgerRefund)+":"+ref,
+	); err != nil {
+		return false, fmt.Errorf("store: lock Stripe withdrawal refund reference: %w", err)
+	}
+	var refundExists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM ledger_entries
+		   WHERE account_id = $1 AND entry_type = $2 AND reference = $3
+		 )`,
+		accountID, string(LedgerRefund), ref,
+	).Scan(&refundExists); err != nil {
+		return false, fmt.Errorf("store: inspect Stripe withdrawal refund: %w", err)
+	}
+	if !refundExists {
+		if err := creditWithdrawableTx(
+			ctx, tx, accountID, amountMicroUSD, LedgerRefund, ref, time.Time{},
+		); err != nil {
+			return false, err
+		}
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET status = 'failed', failure_reason = $2, refunded = TRUE, updated_at = NOW()
+		 WHERE id = $1`,
+		id, failureReason,
+	); err != nil {
+		return false, fmt.Errorf("store: terminalize refunded Stripe withdrawal: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit Stripe withdrawal refund: %w", err)
+	}
+	return true, nil
 }
 
 func (s *PostgresStore) ListStripeWithdrawals(accountID string, limit int) ([]StripeWithdrawal, error) {
@@ -3889,9 +4150,9 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan t
 	return out, nil
 }
 
-// ListStripeWithdrawalsBySourceStatus returns a bounded, oldest-first set for
-// the automatic worker's resumable state machine.
-func (s *PostgresStore) ListStripeWithdrawalsBySourceStatus(source, status string, limit int) ([]StripeWithdrawal, error) {
+// ListStripeWithdrawalsBySourceStatusAfter returns recent, unrefunded rows for
+// the automatic worker's bounded idempotency window.
+func (s *PostgresStore) ListStripeWithdrawalsBySourceStatusAfter(source, status string, createdAfter time.Time, limit int) ([]StripeWithdrawal, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
@@ -3900,10 +4161,10 @@ func (s *PostgresStore) ListStripeWithdrawalsBySourceStatus(source, status strin
 
 	rows, err := s.pool.Query(ctx,
 		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
-		 WHERE source = $1 AND status = $2
+		 WHERE source = $1 AND status = $2 AND created_at > $3 AND refunded = FALSE
 		 ORDER BY created_at ASC
-		 LIMIT $3`,
-		source, status, limit,
+		 LIMIT $4`,
+		source, status, createdAfter, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list Stripe withdrawals by source/status: %w", err)

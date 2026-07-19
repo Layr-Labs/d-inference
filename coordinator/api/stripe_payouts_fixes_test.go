@@ -559,6 +559,13 @@ func (f *flakyPayoutStore) RefundReversedStripeWithdrawal(id string) (bool, erro
 	return f.MemoryStore.RefundReversedStripeWithdrawal(id)
 }
 
+func (f *flakyPayoutStore) MarkStripeWithdrawalFailedIfRefunded(id, reason string) (bool, error) {
+	if f.failUpdates {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.MarkStripeWithdrawalFailedIfRefunded(id, reason)
+}
+
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
 func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
 	t.Helper()

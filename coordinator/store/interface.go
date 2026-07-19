@@ -47,6 +47,10 @@ var ErrStripeWithdrawalBusy = errors.New("Stripe withdrawal is being processed")
 // replayed automatically.
 var ErrStripeWithdrawalReconciliationRequired = errors.New("Stripe withdrawal requires reconciliation")
 
+// ErrStripeWithdrawalStateChanged means a guarded write lost a race to a
+// terminal/refund transition and was intentionally not applied.
+var ErrStripeWithdrawalStateChanged = errors.New("Stripe withdrawal state changed")
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -609,6 +613,7 @@ type StripeWithdrawal struct {
 	Source          string     `json:"source"`                    // "manual" | "automatic"
 	ScheduledFor    *time.Time `json:"scheduled_for,omitempty"`   // weekly schedule slot; automatic withdrawals only
 	RetryAfter      *time.Time `json:"-"`                         // internal automatic-transfer retry eligibility
+	ReconcileAfter  *time.Time `json:"-"`                         // persistent fair-rotation marker for the reconciler
 	Status          string     `json:"status"`                    // "pending" | "transferred" | "paid" | "failed"
 	FailureReason   string     `json:"failure_reason,omitempty"`  // populated when Status="failed"
 	Refunded        bool       `json:"refunded,omitempty"`        // true after the failure refund is credited

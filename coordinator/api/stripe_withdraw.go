@@ -327,8 +327,13 @@ func (s *Server) persistWithdrawalUpdate(wd *store.StripeWithdrawal, stage strin
 		if attempt > 0 {
 			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
 		}
-		if err = s.billing.Store().UpdateStripeWithdrawal(wd); err == nil {
-			return nil
+		var applied bool
+		applied, err = s.billing.Store().UpdateStripeWithdrawalIfActive(wd)
+		if err == nil {
+			if applied {
+				return nil
+			}
+			return store.ErrStripeWithdrawalStateChanged
 		}
 		s.logger.Warn("stripe payout: persist "+stage+" attempt failed",
 			"attempt", attempt+1, "error", err, "withdrawal_id", wd.ID)

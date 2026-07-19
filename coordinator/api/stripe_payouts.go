@@ -228,9 +228,18 @@ func (s *Server) handleStripeOnboard(w http.ResponseWriter, r *http.Request) {
 	// Re-read the user — the SetUserStripeAccount above may have updated the
 	// status from "" to "pending"; we want the response to reflect that.
 	refreshed, err := s.billing.Store().GetUserByAccountID(user.AccountID)
-	if err == nil {
-		user = refreshed
+	if err != nil {
+		s.logger.Error("stripe connect: account reload failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError,
+			errorResponse("internal_error", "payout setup started but its current state could not be loaded"))
+		return
 	}
+	if refreshed.StripeAccountID != stripeAcctID {
+		writeJSON(w, http.StatusConflict, errorResponse("payout_destination_changed",
+			"your payout destination changed while setup was starting — refresh and try again"))
+		return
+	}
+	user = refreshed
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"url":               link,
@@ -272,6 +281,7 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	for key, value := range stripeAutoWithdrawFields(user) {
 		resp[key] = value
 	}
+	liveSnapshotAccountID := ""
 
 	// Optional refresh=1 query param fetches the latest snapshot from Stripe
 	// and rewrites our local state. The frontend hits this on return from the
@@ -324,6 +334,7 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 				resp["destination_last4"] = acct.DestinationLast4
 				resp["instant_eligible"] = acct.InstantEligible
 				resp["currently_due"] = acct.CurrentlyDue
+				liveSnapshotAccountID = user.StripeAccountID
 			}
 		}
 	}
@@ -331,20 +342,25 @@ func (s *Server) handleStripeStatus(w http.ResponseWriter, r *http.Request) {
 	// Account refreshes can revoke destination-scoped authorization. Reload
 	// the preference after all mutations so one response never says both
 	// "unlinked" and "automatic withdrawals enabled".
-	if refreshed, err := s.billing.Store().GetUserByAccountID(user.AccountID); err == nil {
-		resp["has_account"] = refreshed.StripeAccountID != ""
-		resp["stripe_account_id"] = refreshed.StripeAccountID
-		resp["status"] = refreshed.StripeAccountStatus
-		resp["stripe_account_country"] = refreshed.StripeAccountCountry
-		resp["destination_type"] = refreshed.StripeDestinationType
-		resp["destination_last4"] = refreshed.StripeDestinationLast4
-		resp["instant_eligible"] = refreshed.StripeInstantEligible
-		if refreshed.StripeAccountID == "" {
-			delete(resp, "currently_due")
-		}
-		for key, value := range stripeAutoWithdrawFields(refreshed) {
-			resp[key] = value
-		}
+	refreshed, err := s.billing.Store().GetUserByAccountID(user.AccountID)
+	if err != nil {
+		s.logger.Error("stripe connect: final status reload failed", "error", err)
+		writeJSON(w, http.StatusInternalServerError,
+			errorResponse("internal_error", "current payout status could not be loaded"))
+		return
+	}
+	resp["has_account"] = refreshed.StripeAccountID != ""
+	resp["stripe_account_id"] = refreshed.StripeAccountID
+	resp["status"] = refreshed.StripeAccountStatus
+	resp["stripe_account_country"] = refreshed.StripeAccountCountry
+	resp["destination_type"] = refreshed.StripeDestinationType
+	resp["destination_last4"] = refreshed.StripeDestinationLast4
+	resp["instant_eligible"] = refreshed.StripeInstantEligible
+	if refreshed.StripeAccountID != liveSnapshotAccountID {
+		delete(resp, "currently_due")
+	}
+	for key, value := range stripeAutoWithdrawFields(refreshed) {
+		resp[key] = value
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

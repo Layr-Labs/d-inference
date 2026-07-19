@@ -712,6 +712,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS reconcile_after TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_sweep_payout ON stripe_withdrawals(sweep_payout_id) WHERE sweep_payout_id != ''`,
 
 		// Telemetry events table + indices removed.
@@ -1076,10 +1077,16 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 				  AND stripe_account_id != ''`,
 		},
 		{
-			name: "idx_stripe_withdrawals_auto_pending",
-			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_stripe_withdrawals_auto_pending
+			name: "idx_stripe_withdrawals_auto_pending_v2",
+			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_stripe_withdrawals_auto_pending_v2
 				ON stripe_withdrawals((COALESCE(retry_after, created_at)), created_at)
 				WHERE source = 'automatic' AND status = 'pending' AND refunded = FALSE`,
+		},
+		{
+			name: "idx_stripe_withdrawals_reconcile_v1",
+			ddl: `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_stripe_withdrawals_reconcile_v1
+				ON stripe_withdrawals((COALESCE(reconcile_after, created_at)), created_at)
+				WHERE status IN ('pending', 'transferred')`,
 		},
 	} {
 		if err := s.ensureConcurrentIndex(ctx, index.name, index.ddl); err != nil {
@@ -3638,12 +3645,13 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, source,
-		  scheduled_for, retry_after, status, failure_reason, refunded,
-		  fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		  scheduled_for, retry_after, reconcile_after, status, failure_reason,
+		  refunded, fee_refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Source,
-		w.ScheduledFor, w.RetryAfter, w.Status, w.FailureReason, w.Refunded, w.FeeRefunded,
+		w.ScheduledFor, w.RetryAfter, w.ReconcileAfter, w.Status,
+		w.FailureReason, w.Refunded, w.FeeRefunded,
 		w.CreatedAt, w.UpdatedAt,
 	)
 	if err != nil {
@@ -3799,12 +3807,13 @@ func (s *PostgresStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, source,
-		  scheduled_for, retry_after, status, failure_reason, refunded,
-		  fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
+		  scheduled_for, retry_after, reconcile_after, status, failure_reason,
+		  refunded, fee_refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Source,
-		w.ScheduledFor, w.RetryAfter, w.Status, w.FailureReason, w.Refunded, w.FeeRefunded,
+		w.ScheduledFor, w.RetryAfter, w.ReconcileAfter, w.Status,
+		w.FailureReason, w.Refunded, w.FeeRefunded,
 		w.CreatedAt, w.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("store: create stripe withdrawal: %w", err)
@@ -3815,14 +3824,15 @@ func (s *PostgresStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, source,
-	scheduled_for, retry_after, status, failure_reason, refunded, fee_refunded,
+	scheduled_for, retry_after, reconcile_after, status, failure_reason, refunded, fee_refunded,
 	created_at, updated_at`
 
 func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
 	var w StripeWithdrawal
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID, &w.SweepPayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Source,
-		&w.ScheduledFor, &w.RetryAfter, &w.Status, &w.FailureReason, &w.Refunded,
+		&w.ScheduledFor, &w.RetryAfter, &w.ReconcileAfter,
+		&w.Status, &w.FailureReason, &w.Refunded,
 		&w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -3892,6 +3902,45 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	}
 	w.UpdatedAt = time.Now()
 	return nil
+}
+
+func (s *PostgresStore) UpdateStripeWithdrawalIfActive(w *StripeWithdrawal) (bool, error) {
+	if w == nil || w.ID == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET payout_id = $3, status = $4, failure_reason = $5,
+		     fee_refunded = (fee_refunded OR $6), updated_at = NOW()
+		 WHERE id = $1
+		   AND transfer_id = $2
+		   AND refunded = FALSE
+		   AND status IN ('pending', 'transferred')
+		   AND payout_id IN ('', $3)`,
+		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason, w.FeeRefunded,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: update active Stripe withdrawal: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+func (s *PostgresStore) MarkStripeWithdrawalFailedIfRefunded(id, failureReason string) (bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tag, err := s.pool.Exec(ctx,
+		`UPDATE stripe_withdrawals
+		 SET status = 'failed', failure_reason = $2,
+		     retry_after = NULL, updated_at = NOW()
+		 WHERE id = $1 AND refunded = TRUE AND status <> 'paid'`,
+		id, failureReason,
+	)
+	if err != nil {
+		return false, fmt.Errorf("store: terminalize refunded Stripe withdrawal: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (s *PostgresStore) MarkStripeWithdrawalTransferred(id, transferID string) (bool, error) {
@@ -4263,26 +4312,18 @@ func (s *PostgresStore) ListStripeWithdrawalsBySweepPayoutID(sweepPayoutID strin
 // status created before olderThan, oldest first. Limits <= 0 or above the cap
 // are clamped to MaxStripeWithdrawalsByStatusLimit — never unbounded.
 func (s *PostgresStore) ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error) {
-	return s.ListStripeWithdrawalsByStatusPage(status, olderThan, time.Time{}, "", limit)
-}
-
-func (s *PostgresStore) ListStripeWithdrawalsByStatusPage(status string, olderThan, afterCreatedAt time.Time, afterID string, limit int) ([]StripeWithdrawal, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	q := `SELECT ` + stripeWithdrawalSelectColumns + ` FROM stripe_withdrawals
-		 WHERE status = $1 AND created_at < $2`
-	args := []any{status, olderThan}
-	if !afterCreatedAt.IsZero() {
-		q += ` AND (created_at > $3 OR (created_at = $3 AND id > $4))`
-		args = append(args, afterCreatedAt, afterID)
-	}
-	args = append(args, limit)
-	q += fmt.Sprintf(` ORDER BY created_at ASC, id ASC LIMIT $%d`, len(args))
-	rows, err := s.pool.Query(ctx, q, args...)
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
+		 WHERE status = $1 AND created_at < $2
+		 ORDER BY created_at ASC, id ASC LIMIT $3`,
+		status, olderThan, limit,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("store: list stripe withdrawals by status: %w", err)
 	}
@@ -4295,6 +4336,64 @@ func (s *PostgresStore) ListStripeWithdrawalsByStatusPage(status string, olderTh
 			return nil, fmt.Errorf("store: scan stripe withdrawal: %w", err)
 		}
 		out = append(out, *w)
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) ClaimStripeWithdrawalsForReconciliation(status string, olderThan, eligibleAt, nextEligibleAt time.Time, limit int) ([]StripeWithdrawal, error) {
+	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
+		limit = MaxStripeWithdrawalsByStatusLimit
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin Stripe reconciliation claim: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx,
+		`SELECT `+stripeWithdrawalSelectColumns+` FROM stripe_withdrawals
+		 WHERE status = $1 AND created_at < $2
+		   AND (reconcile_after IS NULL OR reconcile_after <= $3)
+		 ORDER BY COALESCE(reconcile_after, created_at) ASC, created_at ASC, id ASC
+		 FOR UPDATE SKIP LOCKED
+		 LIMIT $4`,
+		status, olderThan, eligibleAt, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: select Stripe reconciliation claims: %w", err)
+	}
+	out := []StripeWithdrawal{}
+	ids := make([]string, 0, limit)
+	for rows.Next() {
+		w, err := scanStripeWithdrawal(rows)
+		if err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("store: scan Stripe reconciliation claim: %w", err)
+		}
+		out = append(out, *w)
+		ids = append(ids, w.ID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("store: iterate Stripe reconciliation claims: %w", err)
+	}
+	rows.Close()
+	if len(ids) > 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE stripe_withdrawals SET reconcile_after = $2 WHERE id = ANY($1::text[])`,
+			ids, nextEligibleAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: defer Stripe reconciliation claims: %w", err)
+		}
+		for i := range out {
+			next := nextEligibleAt.UTC()
+			out[i].ReconcileAfter = &next
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit Stripe reconciliation claims: %w", err)
 	}
 	return out, nil
 }

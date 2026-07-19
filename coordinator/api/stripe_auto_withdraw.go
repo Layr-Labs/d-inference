@@ -16,9 +16,9 @@ import (
 
 const (
 	stripeAutoWithdrawInterval = 15 * time.Minute
-	// 32 rows × 8 workers × at most three 30s Stripe calls per due row keeps a
-	// worst-case resume+due sweep below the 15-minute ticker cadence.
-	stripeAutoWithdrawBatch   = 32
+	// 16 rows × 8 workers × at most three 30s Stripe calls per due row leaves
+	// ample margin below the 15-minute ticker cadence.
+	stripeAutoWithdrawBatch   = 16
 	stripeAutoWithdrawWorkers = 8
 	stripeAutoWithdrawHourUTC = 9
 	// Stripe may evict idempotency keys after 24 hours. Never replay a pending
@@ -145,7 +145,7 @@ func (s *Server) sweepStripeAutoWithdrawals(now time.Time) {
 		s.ddIncr("billing.auto_withdraw", []string{"outcome:list_failed"})
 		return
 	}
-	s.runStripeAutoWithdrawBatch(len(users), "api.stripeAutoWithdrawDue", func(i int) {
+	s.runStripePayoutBatch(len(users), "api.stripeAutoWithdrawDue", func(i int) {
 		s.processDueStripeAutoWithdrawal(&users[i], now)
 	})
 }
@@ -160,7 +160,7 @@ func (s *Server) resumePendingStripeAutoWithdrawals(now time.Time) {
 		s.ddIncr("billing.auto_withdraw", []string{"outcome:resume_list_failed"})
 		return
 	}
-	s.runStripeAutoWithdrawBatch(len(pending), "api.stripeAutoWithdrawResume", func(i int) {
+	s.runStripePayoutBatch(len(pending), "api.stripeAutoWithdrawResume", func(i int) {
 		wd := &pending[i]
 		user := &store.User{
 			AccountID:       wd.AccountID,
@@ -242,7 +242,7 @@ func (s *Server) processDueStripeAutoWithdrawal(user *store.User, now time.Time)
 	}
 }
 
-func (s *Server) runStripeAutoWithdrawBatch(count int, name string, fn func(int)) {
+func (s *Server) runStripePayoutBatch(count int, name string, fn func(int)) {
 	if count == 0 {
 		return
 	}

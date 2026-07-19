@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/saferun"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
 const (
@@ -23,8 +22,9 @@ const (
 	// immediately, rather than waiting for the transferred-row threshold.
 	stripePendingReconcileThreshold = 23 * time.Hour
 
-	// stripeReconcileBatch bounds how many stuck rows one sweep inspects.
-	stripeReconcileBatch = 200
+	// Persisted fair claims plus bounded account concurrency keep each hourly
+	// pass finite without letting unchanged old rows hide newer failures.
+	stripeReconcileBatch = 32
 )
 
 // StartStripePayoutReconciler launches the hourly stuck-withdrawal sweep: it
@@ -66,15 +66,19 @@ func (s *Server) StartStripePayoutReconciler(ctx context.Context) {
 
 // sweepStuckStripeWithdrawals runs one reconciler pass.
 func (s *Server) sweepStuckStripeWithdrawals() {
-	cutoff := time.Now().Add(-stripeStuckThreshold)
-	pendingCutoff := time.Now().Add(-stripePendingReconcileThreshold)
+	now := time.Now()
+	cutoff := now.Add(-stripeStuckThreshold)
+	pendingCutoff := now.Add(-stripePendingReconcileThreshold)
+	nextEligibleAt := now.Add(stripeReconcileInterval)
 
 	// Rows stuck in "pending" mean the transfer-create either never ran
 	// (crash mid-request) or ran and the row update failed after retries —
 	// in the latter case money moved without a local trace. No safe
 	// automatic action exists (can't tell the two apart locally), so alert
 	// for a manual check against the Stripe dashboard.
-	pending, pendingTruncated, err := s.listStuckStripeWithdrawals("pending", pendingCutoff)
+	pending, err := s.billing.Store().ClaimStripeWithdrawalsForReconciliation(
+		"pending", pendingCutoff, now, nextEligibleAt, stripeReconcileBatch,
+	)
 	if err != nil {
 		s.logger.Error("stripe reconciler: list stale pending withdrawals failed", "error", err)
 	} else if len(pending) > 0 {
@@ -84,13 +88,11 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 				"stripe_account_id", wd.StripeAccountID,
 				"amount_micro_usd", wd.AmountMicroUSD, "created_at", wd.CreatedAt)
 		}
-		if pendingTruncated {
-			s.logger.Error("stripe reconciler: stale pending result cap reached",
-				"rows", len(pending))
-		}
 	}
 
-	stuck, stuckTruncated, err := s.listStuckStripeWithdrawals("transferred", cutoff)
+	stuck, err := s.billing.Store().ClaimStripeWithdrawalsForReconciliation(
+		"transferred", cutoff, now, nextEligibleAt, stripeReconcileBatch,
+	)
 	if err != nil {
 		s.logger.Error("stripe reconciler: list stuck withdrawals failed", "error", err)
 		return
@@ -107,27 +109,37 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 	}
 	s.logger.Warn("stripe reconciler: withdrawals stuck in transferred",
 		"withdrawals", len(stuck), "accounts", len(byAcct),
-		"stuck_threshold", stripeStuckThreshold.String(), "truncated", stuckTruncated)
+		"stuck_threshold", stripeStuckThreshold.String())
 
+	type stuckAccount struct {
+		id    string
+		count int
+	}
+	accounts := make([]stuckAccount, 0, len(byAcct))
 	for acctID, count := range byAcct {
 		if acctID == "" {
 			continue
 		}
+		accounts = append(accounts, stuckAccount{id: acctID, count: count})
+	}
+	s.runStripePayoutBatch(len(accounts), "api.stripePayoutReconciler", func(i int) {
+		acctID := accounts[i].id
+		count := accounts[i].count
 		acct, err := s.billing.StripeConnect().GetAccount(acctID)
 		if err != nil {
 			s.logger.Warn("stripe reconciler: account fetch failed",
 				"stripe_account_id", acctID, "stuck_withdrawals", count, "error", err)
-			continue
+			return
 		}
 		if acct.PayoutInterval == "manual" {
 			if err := s.billing.StripeConnect().UpdateAccountPayoutScheduleAuto(acctID, acct.Country); err != nil {
 				s.logger.Error("stripe reconciler: payout schedule heal failed",
 					"stripe_account_id", acctID, "stuck_withdrawals", count, "error", err)
-				continue
+				return
 			}
 			s.logger.Info("stripe reconciler: healed manual payout schedule to automatic",
 				"stripe_account_id", acctID, "stuck_withdrawals", count)
-			continue
+			return
 		}
 		// Schedule is already automatic — the sweep should be moving these.
 		// Loud log for ops: likely payouts_enabled=false (user needs to fix
@@ -137,28 +149,5 @@ func (s *Server) sweepStuckStripeWithdrawals() {
 			"payouts_enabled", acct.PayoutsEnabled,
 			"disabled_reason", acct.DisabledReason,
 			"payout_interval", acct.PayoutInterval)
-	}
-}
-
-func (s *Server) listStuckStripeWithdrawals(status string, cutoff time.Time) ([]store.StripeWithdrawal, bool, error) {
-	const maxPages = 50
-	out := make([]store.StripeWithdrawal, 0, stripeReconcileBatch)
-	var afterCreatedAt time.Time
-	var afterID string
-	for page := 0; page < maxPages; page++ {
-		rows, err := s.billing.Store().ListStripeWithdrawalsByStatusPage(
-			status, cutoff, afterCreatedAt, afterID, stripeReconcileBatch,
-		)
-		if err != nil {
-			return nil, false, err
-		}
-		out = append(out, rows...)
-		if len(rows) < stripeReconcileBatch {
-			return out, false, nil
-		}
-		last := rows[len(rows)-1]
-		afterCreatedAt = last.CreatedAt
-		afterID = last.ID
-	}
-	return out, true, nil
+	})
 }

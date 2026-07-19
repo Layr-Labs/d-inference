@@ -312,6 +312,41 @@ func TestMemoryAutomaticWithdrawalRetryEligibilityIsFair(t *testing.T) {
 	}
 }
 
+func TestMemoryReconciliationClaimsRotatePersistently(t *testing.T) {
+	s := NewMemory(Config{})
+	now := time.Now().UTC()
+	created := now.Add(-72 * time.Hour)
+	for i := 0; i < 33; i++ {
+		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+			ID:        fmt.Sprintf("wd-reconcile-%02d", i),
+			AccountID: "acct-reconcile", StripeAccountID: "acct_stripe",
+			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+			Method: "standard", Status: "transferred",
+			CreatedAt: created.Add(time.Duration(i) * time.Millisecond),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seen := map[string]bool{}
+	for _, want := range []int{16, 16, 1} {
+		rows, err := s.ClaimStripeWithdrawalsForReconciliation(
+			"transferred", now.Add(-48*time.Hour), now, now.Add(time.Hour), 16,
+		)
+		if err != nil || len(rows) != want {
+			t.Fatalf("claim len = %d, want %d, err = %v", len(rows), want, err)
+		}
+		for _, row := range rows {
+			if seen[row.ID] {
+				t.Fatalf("row %s was claimed twice before rotation completed", row.ID)
+			}
+			seen[row.ID] = true
+		}
+	}
+	if len(seen) != 33 {
+		t.Fatalf("claimed %d unique rows, want 33", len(seen))
+	}
+}
+
 func TestMemoryReversalRefundAndSweepReopenAreGuarded(t *testing.T) {
 	s := NewMemory(Config{})
 	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
@@ -326,6 +361,26 @@ func TestMemoryReversalRefundAndSweepReopenAreGuarded(t *testing.T) {
 	}
 	if balance := s.GetWithdrawableBalance("acct-reversal"); balance != 0 {
 		t.Fatalf("paid reversal credited %d", balance)
+	}
+
+	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		ID: "wd-reversal-active", AccountID: "acct-reversal", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "instant", Status: "transferred", TransferID: "tr_active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := s.GetStripeWithdrawal("wd-reversal-active")
+	if applied, err := s.RefundReversedStripeWithdrawal(stale.ID); err != nil || !applied {
+		t.Fatalf("reversal refund = %v, err = %v", applied, err)
+	}
+	stale.PayoutID = "po_stale"
+	if applied, err := s.UpdateStripeWithdrawalIfActive(stale); err != nil || applied {
+		t.Fatalf("stale instant update = %v, err = %v", applied, err)
+	}
+	reversed, _ := s.GetStripeWithdrawal(stale.ID)
+	if reversed.Status != "failed" || !reversed.Refunded || reversed.PayoutID != "" {
+		t.Fatalf("stale instant update resurrected reversal: %+v", reversed)
 	}
 
 	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{

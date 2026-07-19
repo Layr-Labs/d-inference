@@ -335,6 +335,16 @@ type BillingStore interface {
 	// UpdateStripeWithdrawal persists status/transfer/payout/fail-reason changes.
 	UpdateStripeWithdrawal(withdrawal *StripeWithdrawal) error
 
+	// UpdateStripeWithdrawalIfActive applies instant-payout metadata only while
+	// the row remains unrefunded pending/transferred state with the same
+	// transfer and no competing payout ID. It cannot resurrect a concurrently
+	// refunded/terminal withdrawal.
+	UpdateStripeWithdrawalIfActive(withdrawal *StripeWithdrawal) (bool, error)
+
+	// MarkStripeWithdrawalFailedIfRefunded terminalizes a legacy refunded row
+	// without changing ledger state, guarded on refunded=true and status!=paid.
+	MarkStripeWithdrawalFailedIfRefunded(id, failureReason string) (bool, error)
+
 	// MarkStripeWithdrawalTransferred records the Stripe transfer ID using a
 	// guarded, idempotent transition. It never overwrites a terminal/refunded
 	// row or a different transfer ID.
@@ -398,9 +408,10 @@ type BillingStore interface {
 	// MaxStripeWithdrawalsByStatusLimit — the result set is never unbounded.
 	ListStripeWithdrawalsByStatus(status string, olderThan time.Time, limit int) ([]StripeWithdrawal, error)
 
-	// ListStripeWithdrawalsByStatusPage is the reconciler's stable
-	// (created_at,id) cursor so persistent rows cannot hide later rows.
-	ListStripeWithdrawalsByStatusPage(status string, olderThan, afterCreatedAt time.Time, afterID string, limit int) ([]StripeWithdrawal, error)
+	// ClaimStripeWithdrawalsForReconciliation persistently rotates through
+	// stuck rows. Eligible rows are claimed with SKIP LOCKED and deferred until
+	// nextEligibleAt, so unchanged old rows cannot starve later rows.
+	ClaimStripeWithdrawalsForReconciliation(status string, olderThan, eligibleAt, nextEligibleAt time.Time, limit int) ([]StripeWithdrawal, error)
 
 	// ListStripeWithdrawalsBySourceStatusAfter returns a bounded, oldest-first
 	// set newer than createdAfter. The automatic payout worker uses the age

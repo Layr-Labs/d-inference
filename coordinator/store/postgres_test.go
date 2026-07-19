@@ -945,3 +945,50 @@ func TestPostgresStripeWithdrawalExecutionLock(t *testing.T) {
 	}
 	release()
 }
+
+func TestPostgresStripeWithdrawalActiveGuardAndReconciliationClaim(t *testing.T) {
+	s := testPostgresStore(t)
+	now := time.Now().UTC()
+	stale := &StripeWithdrawal{
+		ID: "wd-pg-active-guard", AccountID: "acct-pg-active-guard",
+		StripeAccountID: "acct_pg_active", TransferID: "tr_pg_active",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "instant", Status: "transferred",
+		CreatedAt: now.Add(-72 * time.Hour),
+	}
+	if err := s.CreateStripeWithdrawal(stale); err != nil {
+		t.Fatal(err)
+	}
+	copyBeforeReversal, _ := s.GetStripeWithdrawal(stale.ID)
+	if applied, err := s.RefundReversedStripeWithdrawal(stale.ID); err != nil || !applied {
+		t.Fatalf("reversal = %v, err = %v", applied, err)
+	}
+	copyBeforeReversal.PayoutID = "po_stale"
+	if applied, err := s.UpdateStripeWithdrawalIfActive(copyBeforeReversal); err != nil || applied {
+		t.Fatalf("stale active update = %v, err = %v", applied, err)
+	}
+
+	for i := 0; i < 3; i++ {
+		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+			ID:        fmt.Sprintf("wd-pg-reconcile-%d", i),
+			AccountID: "acct-pg-reconcile", StripeAccountID: "acct_pg_reconcile",
+			AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+			Method: "standard", Status: "transferred",
+			CreatedAt: now.Add(-72*time.Hour + time.Duration(i)*time.Millisecond),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := s.ClaimStripeWithdrawalsForReconciliation(
+		"transferred", now.Add(-48*time.Hour), now, now.Add(time.Hour), 2,
+	)
+	if err != nil || len(first) != 2 {
+		t.Fatalf("first claims = %+v, err = %v", first, err)
+	}
+	second, err := s.ClaimStripeWithdrawalsForReconciliation(
+		"transferred", now.Add(-48*time.Hour), now, now.Add(time.Hour), 2,
+	)
+	if err != nil || len(second) != 1 {
+		t.Fatalf("second claims = %+v, err = %v", second, err)
+	}
+}

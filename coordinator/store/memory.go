@@ -2439,6 +2439,58 @@ func (s *MemoryStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	return nil
 }
 
+func (s *MemoryStore) UpdateStripeWithdrawalIfActive(w *StripeWithdrawal) (bool, error) {
+	if w == nil || w.ID == "" {
+		return false, errors.New("stripe withdrawal id is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	existing, ok := s.stripeWithdrawalsByID[w.ID]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", w.ID, ErrNotFound)
+	}
+	if existing.Refunded || (existing.Status != "pending" && existing.Status != "transferred") ||
+		existing.TransferID != w.TransferID ||
+		(existing.PayoutID != "" && existing.PayoutID != w.PayoutID) {
+		return false, nil
+	}
+	if existing.PayoutID != w.PayoutID {
+		if existing.PayoutID != "" {
+			delete(s.stripeWithdrawalsByPayoutID, existing.PayoutID)
+		}
+		if w.PayoutID != "" {
+			if owner, exists := s.stripeWithdrawalsByPayoutID[w.PayoutID]; exists && owner != w.ID {
+				return false, fmt.Errorf("Stripe payout %q already belongs to withdrawal %q", w.PayoutID, owner)
+			}
+			s.stripeWithdrawalsByPayoutID[w.PayoutID] = w.ID
+		}
+	}
+	existing.PayoutID = w.PayoutID
+	existing.Status = w.Status
+	existing.FailureReason = w.FailureReason
+	existing.FeeRefunded = existing.FeeRefunded || w.FeeRefunded
+	existing.UpdatedAt = time.Now()
+	return true, nil
+}
+
+func (s *MemoryStore) MarkStripeWithdrawalFailedIfRefunded(id, failureReason string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	w, ok := s.stripeWithdrawalsByID[id]
+	if !ok {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	if !w.Refunded || w.Status == "paid" {
+		return false, nil
+	}
+	w.Status = "failed"
+	w.FailureReason = failureReason
+	w.RetryAfter = nil
+	w.UpdatedAt = time.Now()
+	return true, nil
+}
+
 func (s *MemoryStore) MarkStripeWithdrawalTransferred(id, transferID string) (bool, error) {
 	if id == "" || transferID == "" {
 		return false, errors.New("stripe withdrawal and transfer ids are required")
@@ -2706,29 +2758,42 @@ func (s *MemoryStore) ListStripeWithdrawalsByStatus(status string, olderThan tim
 	return out, nil
 }
 
-func (s *MemoryStore) ListStripeWithdrawalsByStatusPage(status string, olderThan, afterCreatedAt time.Time, afterID string, limit int) ([]StripeWithdrawal, error) {
+func (s *MemoryStore) ClaimStripeWithdrawalsForReconciliation(status string, olderThan, eligibleAt, nextEligibleAt time.Time, limit int) ([]StripeWithdrawal, error) {
 	if limit <= 0 || limit > MaxStripeWithdrawalsByStatusLimit {
 		limit = MaxStripeWithdrawalsByStatusLimit
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	out := []StripeWithdrawal{}
+	candidates := make([]*StripeWithdrawal, 0)
 	for _, w := range s.stripeWithdrawalsByID {
-		afterCursor := afterCreatedAt.IsZero() || w.CreatedAt.After(afterCreatedAt) ||
-			(w.CreatedAt.Equal(afterCreatedAt) && w.ID > afterID)
-		if w.Status == status && w.CreatedAt.Before(olderThan) && afterCursor {
-			out = append(out, *w)
+		if w.Status == status && w.CreatedAt.Before(olderThan) &&
+			(w.ReconcileAfter == nil || !w.ReconcileAfter.After(eligibleAt)) {
+			candidates = append(candidates, w)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID < out[j].ID
+	sort.Slice(candidates, func(i, j int) bool {
+		iOrder := candidates[i].CreatedAt
+		if candidates[i].ReconcileAfter != nil {
+			iOrder = *candidates[i].ReconcileAfter
 		}
-		return out[i].CreatedAt.Before(out[j].CreatedAt)
+		jOrder := candidates[j].CreatedAt
+		if candidates[j].ReconcileAfter != nil {
+			jOrder = *candidates[j].ReconcileAfter
+		}
+		if iOrder.Equal(jOrder) {
+			return candidates[i].ID < candidates[j].ID
+		}
+		return iOrder.Before(jOrder)
 	})
-	if len(out) > limit {
-		out = out[:limit]
+	if len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	out := make([]StripeWithdrawal, 0, len(candidates))
+	nextEligibleAt = nextEligibleAt.UTC()
+	for _, w := range candidates {
+		w.ReconcileAfter = &nextEligibleAt
+		out = append(out, *w)
 	}
 	return out, nil
 }

@@ -196,10 +196,16 @@ func (s *Server) handlePayoutTerminal(event *billing.WebhookEvent, connectedAcct
 		// Legacy row already refunded under the old semantics — leave it
 		// terminal so we never double-account.
 		if wd.Status != "failed" {
-			wd.Status = "failed"
-			if err := s.billing.Store().UpdateStripeWithdrawal(wd); err != nil {
+			applied, err := s.billing.Store().MarkStripeWithdrawalFailedIfRefunded(
+				wd.ID, wd.FailureReason,
+			)
+			if err != nil {
 				s.logger.Error("stripe connect webhook: status flip failed", "error", err)
 				return err
+			}
+			if !applied {
+				s.logger.Error("stripe connect webhook: refunded-row status flip raced with paid state — manual review required",
+					"withdrawal_id", wd.ID, "payout_id", pe.ID)
 			}
 		}
 		return nil

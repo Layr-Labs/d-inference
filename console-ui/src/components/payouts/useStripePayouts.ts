@@ -74,7 +74,8 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   const [withdrawLoading, setWithdrawLoading] = useState(false);
   const [selectedCountry, setSelectedCountry] = useState("");
   const [autoWithdrawLoading, setAutoWithdrawLoading] = useState(false);
-  const reloadSequence = useRef(0);
+  const statusSequence = useRef(0);
+  const withdrawalsSequence = useRef(0);
 
   // Once a Stripe Express account exists its country is locked — pre-select it.
   useEffect(() => {
@@ -84,14 +85,17 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
   }, [status?.stripe_account_country]);
 
   const reload = useCallback(async (refresh = false) => {
-    const sequence = ++reloadSequence.current;
+    const currentStatusSequence = ++statusSequence.current;
+    const currentWithdrawalsSequence = ++withdrawalsSequence.current;
     try {
       const [s, wds] = await Promise.all([
         fetchStripeStatus(refresh),
         fetchStripeWithdrawals(20).catch(() => [] as StripeWithdrawal[]),
       ]);
-      if (sequence === reloadSequence.current) {
+      if (currentStatusSequence === statusSequence.current) {
         setStatus(s);
+      }
+      if (currentWithdrawalsSequence === withdrawalsSequence.current) {
         setWithdrawals(wds);
       }
     } catch (e) {
@@ -179,7 +183,7 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
       const updated = await updateStripeAutoWithdraw(enabled);
       // The mutation response is authoritative. Invalidate any slower status
       // request that started before this response arrived.
-      reloadSequence.current++;
+      statusSequence.current++;
       setStatus((current) => current ? { ...current, ...updated } : current);
       addToast(
         enabled

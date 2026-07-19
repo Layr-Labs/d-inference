@@ -217,6 +217,14 @@ describe("useStripePayouts", () => {
         resolveSecondStatus = resolve;
       }),
     );
+    (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
+      {
+        id: "wd-fresh-history",
+        status: "transferred",
+        net_micro_usd: 5_000_000,
+        method: "standard",
+      },
+    ]);
     act(() => {
       pendingReload = result.current.reload();
     });
@@ -229,6 +237,7 @@ describe("useStripePayouts", () => {
     });
 
     expect(result.current.status?.auto_withdraw_enabled).toBe(true);
+    expect(result.current.withdrawals[0]?.id).toBe("wd-fresh-history");
   });
 
   it("exposes loading while an automatic-withdraw update is in flight", async () => {

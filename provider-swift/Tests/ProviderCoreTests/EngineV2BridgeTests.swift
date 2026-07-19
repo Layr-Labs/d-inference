@@ -270,7 +270,8 @@ private func makeRequest(
 
 private func makeBridgeStagedCache(
     parent: URL,
-    budget: GlobalKVCacheBudget
+    budget: GlobalKVCacheBudget,
+    nominalFullKVBytesPerToken: Int = 16
 ) async throws -> (cache: SSDPrefixCache, prompt: [Int]) {
     _ = LiveInferenceFixtures.ensureMetallibColocated()
     let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
@@ -285,6 +286,7 @@ private func makeBridgeStagedCache(
             weightHash: "bridge-stage-weight",
             blockSize: 8,
             adoptionBoundTokens: 0,
+            nominalFullKVBytesPerToken: nominalFullKVBytesPerToken,
             layoutEpoch: SSDBlockStore.layoutEpoch(blockSize: 8, layerKinds: layerKinds),
             root: root,
             dedicatedRoot: parent,
@@ -1614,7 +1616,12 @@ struct EngineV2SharedBudgetTests {
     func sharedBudgetGateRejectsBeforeEngine() async {
         let engine = ScriptedCBv2Engine(script: .manual)
         let budget = TestBudgets.exhausted()
-        let bridge = makeBridge(engine: engine, kvBytesPerToken: 4000, kvBudget: budget)
+        let telemetry = TelemetrySink()
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: 4000,
+            kvBudget: budget,
+            telemetry: telemetry)
         let (events, _) = await record(await bridge.submitTokenized(
             promptTokens: [1, 2, 3, 4, 5],
             request: makeRequest(maxTokens: 16),
@@ -1627,6 +1634,9 @@ struct EngineV2SharedBudgetTests {
         // and no bookkeeping leaked.
         #expect(engine.submitted.isEmpty)
         #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(!telemetry.events.contains {
+            $0.fields?["operation"]?.description == "prefix_cache_replay"
+        })
         let counters = await bridge._testCounters()
         #expect(counters.active == 0)
         // Classified exactly like the legacy KV-reserve rejection: retryable
@@ -1770,6 +1780,58 @@ struct EngineV2SharedBudgetTests {
         engine.manualContinuation?.finish()
         _ = await consumer.value
         #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("native-width augmentation refusal rejects before cold over-admission")
+    func nativeWidthRefusalRejectsRequest() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-native-width-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        let kvBytesPerToken = 1_000_000
+        let worstCaseTokens = 66
+        let nominalBytes = UInt64(kvBytesPerToken * worstCaseTokens)
+        let gib: UInt64 = 1_073_741_824
+        let budget = GlobalKVCacheBudget(
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(
+                    total: 3 * gib,
+                    active: gib - nominalBytes,
+                    cache: 0,
+                    systemAvailable: nominalBytes)
+            })
+        let fixture = try await makeBridgeStagedCache(
+            parent: parent,
+            budget: budget,
+            nominalFullKVBytesPerToken: 0)
+        defer { fixture.cache.close() }
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let telemetry = TelemetrySink()
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: kvBytesPerToken,
+            kvBudget: budget,
+            ssdPrefixCache: fixture.cache,
+            telemetry: telemetry)
+
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: fixture.prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-native-width",
+            cacheScope: "scope"))
+        #expect(engine.submitted.isEmpty)
+        #expect(events == [.error(
+            "token_budget_exhausted: request requires \(worstCaseTokens) tokens "
+                + "but the shared KV budget has no headroom")])
+        #expect(fixture.cache.bytesInUse == 0)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(telemetry.events.contains {
+            $0.fields?["reason"]?.description == "native_kv_capacity"
+                && $0.fields?["prefix_capacity_refusal"]?.description == "true"
+        })
     }
 }
 

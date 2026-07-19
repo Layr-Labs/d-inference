@@ -392,6 +392,8 @@ public actor EngineV2Bridge {
         var ssdStaged = false
         var ssdStagedDeviceBytes = 0
         var ssdStagedTokens = 0
+        var ssdReuseAttempted = false
+        var ssdCapacityFallbackEmitted = false
         if !cacheEnabled {
             usageSignal?.recordCacheDisabled(tier: ssdPrefixCache == nil ? .memory : .ssd)
         } else if multimodal != nil {
@@ -409,8 +411,10 @@ public actor EngineV2Bridge {
                     requestId: id,
                     reason: "stage_capacity",
                     capacityRefusal: true)
+                ssdCapacityFallbackEmitted = true
             }
             ssdStaged = stageResult.staged
+            ssdReuseAttempted = stageResult.staged
             ssdStagedDeviceBytes = stageResult.deviceBytes
             ssdStagedTokens = stageResult.stagedTokens
             // `stage` suspended this actor — re-check the duplicate guard
@@ -446,8 +450,8 @@ public actor EngineV2Bridge {
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
-        // footprint (prompt + maxTokens at the fp16 rate — the caches v2
-        // actually builds) in the process-wide ledger BEFORE handing the
+        // footprint (prompt + maxTokens at the nominal configured rate) in
+        // the process-wide ledger BEFORE handing the
         // request to the engine. The engine's private byte ledger
         // (`AdmissionV2`, sized to its own `kvBytesCapacity`) only knows its
         // own slot; when another slot (legacy or v2) already has live KV
@@ -491,7 +495,7 @@ public actor EngineV2Bridge {
                     kvBytesPerToken: kvBytesPerToken,
                     tokenCount: worstCaseTokens)
             }
-            if sharedKVReserved, ssdStaged, ssdStagedDeviceBytes > 0,
+            if sharedKVReserved, ssdReuseAttempted, ssdStagedDeviceBytes > 0,
                 ssdStagedTokens > 0,
                 let cache = ssdPrefixCache
             {
@@ -505,31 +509,39 @@ public actor EngineV2Bridge {
                         requestID: id,
                         additionalBytes: additional)
                     if !augmented, let prefixCacheReceiptID {
-                        await cache.abandonStaging(requestID: prefixCacheReceiptID)
+                        if ssdStaged {
+                            await cache.abandonStaging(requestID: prefixCacheReceiptID)
+                        }
+                        await kvBudget.release(requestID: id)
+                        sharedKVReserved = false
                         ssdStaged = false
-                        ssdStagedDeviceBytes = 0
-                        ssdStagedTokens = 0
                         emitPrefixCacheColdFallback(
                             requestId: id,
                             reason: "native_kv_capacity",
                             capacityRefusal: true)
+                        ssdCapacityFallbackEmitted = true
                     }
                 } else if additional == nil, let prefixCacheReceiptID {
-                    await cache.abandonStaging(requestID: prefixCacheReceiptID)
+                    if ssdStaged {
+                        await cache.abandonStaging(requestID: prefixCacheReceiptID)
+                    }
+                    await kvBudget.release(requestID: id)
+                    sharedKVReserved = false
                     ssdStaged = false
-                    ssdStagedDeviceBytes = 0
-                    ssdStagedTokens = 0
                     emitPrefixCacheColdFallback(
                         requestId: id,
                         reason: "native_kv_accounting",
                         capacityRefusal: true)
+                    ssdCapacityFallbackEmitted = true
                 }
             }
             guard sharedKVReserved else {
-                emitPrefixCacheColdFallback(
-                    requestId: id,
-                    reason: "shared_kv_capacity",
-                    capacityRefusal: true)
+                if ssdReuseAttempted, !ssdCapacityFallbackEmitted {
+                    emitPrefixCacheColdFallback(
+                        requestId: id,
+                        reason: "shared_kv_capacity",
+                        capacityRefusal: true)
+                }
                 if let prefixCacheReceiptID {
                     if ssdStaged {
                         await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)

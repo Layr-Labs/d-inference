@@ -170,8 +170,10 @@ parity, provider capability identity, and proof mismatch rate before enabling
 `on` in an isolated development or canary environment. Rollback always sets
 routing to `off` before rolling back binaries.
 
-The v0.7.11 release does not activate routing. Current production Gemma 4 and
-GPT-OSS layouts require full replay and advertise no reusable v2 model
-capability. Production activation remains blocked on a genuinely eligible
-model, a real positive-hit test, stable correlation telemetry, and a separately
-provisioned 256-bit cache master key.
+The v0.7.11 release does not activate routing. Providers with
+`cbv2-frozen-full-3` contiguous native-float support can advertise Gemma 4 and GPT-OSS
+as protocol-v2 models only after SSD scan readiness; paged hybrid slots remain
+v1/cold. Production activation is still a separate operational decision:
+positive durable-hit evidence, stable correlation telemetry, healthy prompt
+artifacts, routing-mode enablement, and a separately provisioned 256-bit cache
+master key remain required.

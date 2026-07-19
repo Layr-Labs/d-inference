@@ -142,7 +142,7 @@ enum SSDBlockStore {
 
     // MARK: Layout epoch
 
-    /// `"cbv2-snap-2|f16|<blockSize>|<layerKindsDigest[:8]>"` — bumps
+    /// `"cbv2-frozen-full-3|native-fp|<blockSize>|<layerKindsDigest[:8]>"` — bumps
     /// whenever the engine's snapshot semantics, KV dtype policy, block
     /// size, or the model's layer-kind derivation change, so old files
     /// fail closed. The provider binary version is deliberately NOT in
@@ -160,7 +160,7 @@ enum SSDBlockStore {
         }
         let digest = SHA256.hash(data: Data(canonical.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
-        return "cbv2-snap-2|f16|\(blockSize)|\(hex)"
+        return "cbv2-frozen-full-3|native-fp|\(blockSize)|\(hex)"
     }
 
     // MARK: Paths

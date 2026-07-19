@@ -65,8 +65,37 @@ private struct PrefixStubTokenizer: MLXLMCommon.Tokenizer {
     }
 }
 
+private final class PrefixTelemetryCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [TelemetryEvent] = []
+
+    func append(_ event: TelemetryEvent) {
+        lock.withLock { events.append(event) }
+    }
+
+    var snapshot: [TelemetryEvent] {
+        lock.withLock { events }
+    }
+}
+
 @Suite("EngineV2 prefix cache: usage detail")
 struct EngineV2PrefixCacheUsageTests {
+
+    @Test("native full-row delta covers the complete request span")
+    func nativeReservationDelta() {
+        #expect(EngineV2Bridge.nativeFullReservationDelta(
+            stagedBytes: 49_152 * 2_816,
+            stagedTokens: 2_816,
+            nominalBytesPerToken: 24_576,
+            worstCaseTokens: 2_817 + 4_096
+        ) == UInt64(24_576 * (2_817 + 4_096)))
+        #expect(EngineV2Bridge.nativeFullReservationDelta(
+            stagedBytes: 10,
+            stagedTokens: 3,
+            nominalBytesPerToken: 1,
+            worstCaseTokens: 10
+        ) == nil)
+    }
 
     @Test("bridge records prefixCacheHitTokens into the per-request signal at the terminal")
     func usageSignalRecords() async throws {
@@ -94,6 +123,62 @@ struct EngineV2PrefixCacheUsageTests {
         for await _ in stream {}
 
         #expect(signal.prefixCacheHitTokens == 256)
+    }
+
+    @Test("bridge emits content-free frozen replay plan telemetry")
+    func frozenReplayTelemetry() async throws {
+        let engine = PrefixScriptedEngine(events: [
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(
+                    promptTokens: 2817,
+                    completionTokens: 1,
+                    prefixCacheHitTokens: 1280,
+                    prefixCacheOutcome: .hit,
+                    prefixCacheMatchedTokens: 2816,
+                    prefixCachePrefillTokensSaved: 1280,
+                    prefixCacheStrategy: .frozenFullReplay,
+                    prefixCacheReplayTokens: 1536,
+                    prefixCacheBoundarySplits: 1)),
+        ])
+        let capture = PrefixTelemetryCapture()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "gpt-oss-20b",
+            tokenizer: TokenizerHandle(PrefixStubTokenizer()),
+            eosTokenIds: [2],
+            emitTelemetry: { capture.append($0) })
+
+        let stream = await bridge.submitTokenized(
+            promptTokens: Array(repeating: 7, count: 2817),
+            request: ChatCompletionRequest(
+                model: "gpt-oss-20b",
+                messages: [ChatMessage(role: "user", content: "hi")]),
+            requestId: "req-frozen-telemetry")
+        for await _ in stream {}
+
+        let replay = try #require(capture.snapshot.first {
+            $0.fields?["operation"]?.description == "prefix_cache_replay"
+        })
+        #expect(replay.fields?["prefix_reuse_strategy"]?.description == "frozen_full_replay")
+        #expect(replay.fields?["prefix_matched_tokens"]?.description == "2816")
+        #expect(replay.fields?["prefix_replay_tokens"]?.description == "1536")
+        #expect(replay.fields?["prefix_saved_tokens"]?.description == "1280")
+        #expect(replay.fields?["prefix_boundary_splits"]?.description == "1")
+        #expect(replay.fields?["prefix_capacity_refusal"]?.description == "false")
+        #expect(replay.fields?["prefix_cold_fallback"]?.description == "false")
+        #expect(replay.fields?.keys.contains("request_id") != true)
+
+        await bridge.emitPrefixCacheColdFallback(
+            requestId: "req-capacity",
+            reason: "stage_capacity",
+            capacityRefusal: true)
+        let fallback = try #require(capture.snapshot.last {
+            $0.requestId == "req-capacity"
+        })
+        #expect(fallback.fields?["prefix_capacity_refusal"]?.description == "true")
+        #expect(fallback.fields?["prefix_cold_fallback"]?.description == "true")
+        #expect(fallback.fields?["reason"]?.description == "stage_capacity")
     }
 
     @Test("injectCachedTokens: splices prompt_tokens_details into a usage frame")

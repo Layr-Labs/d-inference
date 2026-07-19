@@ -19,6 +19,18 @@ import MLXLMCommon
 import os
 #endif
 
+enum SSDPrefixCacheConstructionFailure: String, Sendable {
+    case missingWeightHash = "missing_weight_hash"
+    case unsupportedPlan = "unsupported_plan"
+    case unsafePath = "unsafe_path"
+    case keyUnavailable = "key_unavailable"
+    case ephemeralKeyUnavailable = "ephemeral_key_unavailable"
+    case blockContractMismatch = "block_contract_mismatch"
+    case epochUnavailable = "epoch_unavailable"
+    case promptContractUnavailable = "prompt_contract_unavailable"
+    case layoutUnavailable = "layout_unavailable"
+}
+
 enum SSDPrefixCacheFactory {
 
     #if canImport(os)
@@ -86,20 +98,25 @@ enum SSDPrefixCacheFactory {
         promptContractID: String,
         weightHash: String?,
         layerKinds: [CBv2LayerKind],
+        prefixReuseCapability: CBv2PrefixReuseCapability,
         kvBudget: GlobalKVCacheBudget?,
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        onConstructionFailure:
+            (@Sendable (SSDPrefixCacheConstructionFailure) -> Void)? = nil
     ) async -> SSDPrefixCache? {
         guard let weightHash = verifiedWeightHash(weightHash) else {
+            onConstructionFailure?(.missingWeightHash)
             #if canImport(os)
             logger.warning(
                 "ssd prefix cache disabled for \(modelId, privacy: .public): verified live weight hash unavailable")
             #endif
             return nil
         }
-        guard PrefixCachePolicy.supportsReusablePrefixes(layerKinds: layerKinds) else {
+        guard prefixReuseCapability.isSupported else {
+            onConstructionFailure?(.unsupportedPlan)
             #if canImport(os)
             logger.info(
-                "ssd prefix cache disabled for \(modelId, privacy: .public): hybrid attention layout requires full replay")
+                "ssd prefix cache disabled for \(modelId, privacy: .public): prefix reuse unsupported (\(prefixReuseCapability.unsupportedReason?.rawValue ?? "unknown", privacy: .public), backend=\(prefixReuseCapability.backend.rawValue, privacy: .public))")
             #endif
             return nil
         }
@@ -110,6 +127,7 @@ enum SSDPrefixCacheFactory {
                 dedicatedRoot: wholeRoot,
                 modelRoot: dir)
         } catch {
+            onConstructionFailure?(.unsafePath)
             #if canImport(os)
             logger.warning(
                 "ssd prefix cache disabled for \(modelId, privacy: .public): unsafe cache path (\(String(describing: error), privacy: .public))")
@@ -132,6 +150,7 @@ enum SSDPrefixCacheFactory {
             let allowEphemeral =
                 ephEnv == "1" || ephEnv == "true" || ephEnv == "yes" || ephEnv == "on"
             guard allowEphemeral else {
+                onConstructionFailure?(.keyUnavailable)
                 #if canImport(os)
                 logger.warning(
                     "ssd prefix cache disabled for \(modelId, privacy: .public): KEK unavailable (\(String(describing: error), privacy: .public))")
@@ -141,7 +160,10 @@ enum SSDPrefixCacheFactory {
             let kek = KVCacheKEK(
                 wrapper: InMemoryKeyWrappingService(),
                 storage: InMemoryWrappedKEKStorage(identifier: "ephemeral-ssd"))
-            guard let ephKey = try? await kek.loadOrCreate() else { return nil }
+            guard let ephKey = try? await kek.loadOrCreate() else {
+                onConstructionFailure?(.ephemeralKeyUnavailable)
+                return nil
+            }
             #if canImport(os)
             logger.warning(
                 "ssd prefix cache (\(modelId, privacy: .public)): EPHEMERAL in-memory KEK (DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL) — files do not survive restart; TEST/STRESS ONLY")
@@ -153,6 +175,7 @@ enum SSDPrefixCacheFactory {
         guard PromptContractIdentity.blockHashVersion == CBv2BlockHasher.version,
             PromptContractIdentity.blockSize == UInt32(blockSize)
         else {
+            onConstructionFailure?(.blockContractMismatch)
             #if canImport(os)
             logger.warning(
                 "ssd prefix cache disabled for \(modelId, privacy: .public): prompt-contract/block-hasher binary mismatch")
@@ -178,6 +201,7 @@ enum SSDPrefixCacheFactory {
                     layoutEpoch: layoutEpoch,
                     keyFingerprint: keyFingerprint))
         } catch {
+            onConstructionFailure?(.epochUnavailable)
             #if canImport(os)
             logger.warning(
                 "ssd prefix cache disabled for \(modelId, privacy: .public): cache epoch unavailable (\(String(describing: error), privacy: .public))")
@@ -189,13 +213,16 @@ enum SSDPrefixCacheFactory {
             promptContractID: promptContractID,
             weightHash: weightHash,
             blockSize: blockSize,
-            adoptionBoundTokens: PrefixCachePolicy.adoptionBoundTokens(layerKinds: layerKinds),
+            adoptionBoundTokens: prefixReuseCapability.conservativeReplayBoundTokens,
+            nominalFullKVBytesPerToken: prefixReuseCapability.fullKVBytesPerToken,
             layoutEpoch: layoutEpoch,
             epochStore: epochStore,
             root: dir,
             dedicatedRoot: wholeRoot,
             ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: environment),
-            minEffectiveTokens: SSDPrefixCachePolicy.minEffectiveTokens(environment: environment),
+            minEffectiveTokens: PrefixCachePolicy.minEffectiveTokens(
+                capability: prefixReuseCapability,
+                environment: environment),
             maxStageBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
             nowSeconds: { Int64(Date().timeIntervalSince1970) })
@@ -224,7 +251,7 @@ enum SSDPrefixCacheFactory {
         startWholeRootMaintenance(environment: environment)
         #if canImport(os)
         logger.info(
-            "ssd prefix cache active for \(modelId, privacy: .public) at \(dir.path, privacy: .public): ttl \(config.ttlSeconds)s sliding, box-wide disk budget \(PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment, freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))) B, adoption bound \(config.adoptionBoundTokens) tok — HMAC-keyed names (T-041 leak #2 closed), no memory carve")
+            "ssd prefix cache active for \(modelId, privacy: .public) at \(dir.path, privacy: .public): strategy \(prefixReuseCapability.strategy?.rawValue ?? "none", privacy: .public), backend \(prefixReuseCapability.backend.rawValue, privacy: .public), ttl \(config.ttlSeconds)s sliding, box-wide disk budget \(PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment, freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))) B, replay bound \(config.adoptionBoundTokens) tok — HMAC-keyed names (T-041 leak #2 closed), no memory carve")
         #endif
         return cache
     }

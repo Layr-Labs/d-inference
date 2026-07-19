@@ -57,7 +57,7 @@ struct PrefixCachePolicyTests {
         }
     }
 
-    @Test("reusable prefixes reject a storage-owning full layer after sliding attention")
+    @Test("typed capability enables frozen contiguous hybrids and rejects paged hybrids")
     func reusableLayoutSafety() {
         let full = CBv2LayerKind(
             attention: .full, headDim: 64, kvHeads: 4, queryHeads: 8)
@@ -67,15 +67,33 @@ struct PrefixCachePolicyTests {
             attention: .full, sharesKVWithLayer: 0,
             headDim: 64, kvHeads: 4, queryHeads: 8)
 
-        #expect(PrefixCachePolicy.supportsReusablePrefixes(layerKinds: [full, full]))
-        #expect(PrefixCachePolicy.supportsReusablePrefixes(layerKinds: [full, windowed]))
-        #expect(PrefixCachePolicy.supportsReusablePrefixes(layerKinds: [windowed, windowed]))
-        #expect(PrefixCachePolicy.supportsReusablePrefixes(
-            layerKinds: [windowed, sharedFull]))
-        #expect(!PrefixCachePolicy.supportsReusablePrefixes(
-            layerKinds: [windowed, full]))
-        #expect(!PrefixCachePolicy.supportsReusablePrefixes(
-            layerKinds: [full, windowed, full]))
+        #expect(PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [full, full], backendSelection: .contiguous).strategy == .direct)
+        #expect(PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [full, windowed], backendSelection: .paged).strategy == .tailReplay)
+        #expect(PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [windowed, sharedFull],
+            backendSelection: .contiguous).unsupportedReason == .invalidLayout)
+
+        let hybrid = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [full, windowed, full],
+            backendSelection: .contiguous)
+        #expect(hybrid.isSupported)
+        #expect(hybrid.strategy == .frozenFullReplay)
+        #expect(hybrid.plan(matchedBoundary: 512)?.replayStart == 384)
+        #expect(hybrid.plan(matchedBoundary: 512)?.restoredFullTokens == 512)
+
+        let pagedHybrid = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [windowed, full],
+            backendSelection: .paged)
+        #expect(!pagedHybrid.isSupported)
+        #expect(pagedHybrid.unsupportedReason == .pagedHybridRequiresDualCursor)
+
+        let killedPagedHybrid = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [windowed, full],
+            backendSelection: .paged,
+            pagedKilled: true)
+        #expect(killedPagedHybrid.strategy == .frozenFullReplay)
     }
 
     @Test("adoptionBoundTokens: windowCount × maxWindow; 0 for pure full attention")
@@ -94,6 +112,68 @@ struct PrefixCachePolicyTests {
         mixed[0].attention = .slidingWindow(512)
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: mixed) == 2 * 512)
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: []) == 0)
+    }
+
+    @Test("Gemma QAT and GPT-OSS contiguous layouts qualify for v2; paged stays cold")
+    func productionHybridCapabilities() {
+        let sliding128 = CBv2LayerKind(
+            attention: .slidingWindow(128),
+            headDim: 64,
+            kvHeads: 8,
+            queryHeads: 64)
+        let gptFull = CBv2LayerKind(
+            attention: .full,
+            headDim: 64,
+            kvHeads: 8,
+            queryHeads: 64)
+        let gpt = (0 ..< 12).flatMap { _ in [sliding128, gptFull] }
+
+        let sliding1024 = CBv2LayerKind(
+            attention: .slidingWindow(1024),
+            headDim: 256,
+            kvHeads: 1,
+            queryHeads: 16)
+        let gemmaFull = CBv2LayerKind(
+            attention: .full,
+            headDim: 256,
+            kvHeads: 1,
+            queryHeads: 16)
+        let gemma = (0 ..< 5).flatMap { _ in
+            Array(repeating: sliding1024, count: 5) + [gemmaFull]
+        }
+
+        for kinds in [gpt, gemma] {
+            let contiguous = PrefixCachePolicy.prefixReuseCapability(
+                layerKinds: kinds,
+                backendSelection: .contiguous)
+            #expect(contiguous.isSupported)
+            #expect(contiguous.strategy == .frozenFullReplay)
+
+            let paged = PrefixCachePolicy.prefixReuseCapability(
+                layerKinds: kinds,
+                backendSelection: .paged)
+            #expect(!paged.isSupported)
+            #expect(paged.unsupportedReason == .pagedHybridRequiresDualCursor)
+        }
+        #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gpt) == 1_536)
+        #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma) == 25_600)
+        let gptCapability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: gpt,
+            backendSelection: .contiguous)
+        let gemmaCapability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: gemma,
+            backendSelection: .contiguous)
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: gptCapability,
+            environment: [:]) == 1_024)
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: gemmaCapability,
+            environment: [:]) == 1_536)
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: gemmaCapability,
+            environment: [
+                SSDPrefixCachePolicy.minEffectiveTokensFlag: "2048"
+            ]) == 2_048)
     }
 
 }

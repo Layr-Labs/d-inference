@@ -90,15 +90,19 @@ go test ./e2e -run TestBenchmark -count=1 -v -timeout 30m
 The sidecar request deadline (`EIGENINFERENCE_PROMPT_SIDECAR_TIMEOUT_MS`) and
 provider SSD stage deadline (`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS`) are
 functional upper bounds, not performance claims. Cache-hit and miss latency
-acceptance requires a positive-hit-capable real model; current production
-Gemma 4 and GPT-OSS layouts remain cold-only, so the protected benchmark is a
-human gate rather than a fabricated pass.
+acceptance requires a positive-hit-capable real model. Contiguous,
+unquantized Gemma 4 and GPT-OSS slots now use frozen-full replay; paged hybrids
+remain cold-only. Protected benchmarks and human approval are still mandatory
+before routing activation.
 
 Local M4 release-preparation evidence on 2026-07-17:
 
 - Rust planner fixture: p50 146 µs, p99 562 µs.
 - Persistent Unix HTTP planning: p50 165 µs, p99 595 µs.
 - Real encrypted DBK3 fixture: miss p95 0.145 ms, hit-stage p95 9.182 ms.
+
+Frozen-full local evidence from 2026-07-19 is recorded in
+`docs/reports/2026-07-19-frozen-full-prefix-cache-proof.md`.
 
 The automated gates are derived from the configured one-second planning/stage
 deadlines; the Rust gate additionally requires at least a 16× p99 safety

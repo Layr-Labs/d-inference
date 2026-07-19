@@ -266,6 +266,12 @@ public enum TelemetryFieldFilter {
         // boolean and a coarse image/video/mixed label; media/prompt content
         // NEVER rides telemetry. Mirror in Go + TS allowlists.
         "multimodal", "media_kind",
+        // Exact-prefix replay telemetry. Counts and bounded enums only; never
+        // token ids, prompt text, hashes, cache keys, or account scope.
+        "prefix_reuse_strategy", "prefix_matched_tokens", "prefix_replay_tokens",
+        "prefix_saved_tokens", "prefix_boundary_splits",
+        "prefix_construction_failure", "prefix_capacity_refusal",
+        "prefix_cold_fallback",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

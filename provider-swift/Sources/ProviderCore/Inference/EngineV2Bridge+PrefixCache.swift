@@ -170,6 +170,114 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
 extension EngineV2Bridge {
 
+    static func nativeFullReservationDelta(
+        stagedBytes: Int,
+        stagedTokens: Int,
+        nominalBytesPerToken: Int,
+        worstCaseTokens: Int
+    ) -> UInt64? {
+        guard stagedBytes > 0, stagedTokens > 0,
+            stagedBytes.isMultiple(of: stagedTokens),
+            nominalBytesPerToken >= 0,
+            worstCaseTokens > 0
+        else { return nil }
+        let exact = stagedBytes / stagedTokens
+        let delta = max(0, exact - nominalBytesPerToken)
+        let (total, overflow) = delta.multipliedReportingOverflow(by: worstCaseTokens)
+        guard !overflow else { return nil }
+        return UInt64(total)
+    }
+
+    func emitPrefixCacheColdFallback(
+        requestId: String,
+        reason: String,
+        capacityRefusal: Bool
+    ) {
+        prefixCacheFallbackTelemetrySeen &+= 1
+        guard prefixCacheFallbackTelemetrySeen == 1
+            || prefixCacheFallbackTelemetrySeen.isMultiple(of: 64)
+        else { return }
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: .warn,
+            kind: .engineHealth,
+            message: "engine_v2: prefix reuse fell back cold"
+        )
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("prefix_cache_replay"),
+            "backend": .string(kvBackendKind.rawValue),
+            "model": .string(modelId),
+            "reason": .string(reason),
+            "prefix_reuse_strategy": .string("none"),
+            "prefix_matched_tokens": .int(0),
+            "prefix_replay_tokens": .int(0),
+            "prefix_saved_tokens": .int(0),
+            "prefix_boundary_splits": .int(0),
+            "prefix_capacity_refusal": .bool(capacityRefusal),
+            "prefix_cold_fallback": .bool(true),
+        ])
+        event.requestId = requestId
+        emit(event)
+    }
+
+    /// Content-free exact-prefix replay outcome. All values are bounded enums,
+    /// booleans, or aggregate counts; token ids and prompt/cache identities
+    /// never enter telemetry.
+    func emitPrefixReuseTelemetry(requestId: String, usage: CBv2Usage) {
+        switch usage.prefixCacheOutcome {
+        case .hit:
+            prefixCacheHitTelemetrySeen &+= 1
+            guard prefixCacheHitTelemetrySeen == 1
+                || prefixCacheHitTelemetrySeen.isMultiple(of: 64)
+            else { return }
+        case .skippedCapacity, .adoptionFailed:
+            prefixCacheFallbackTelemetrySeen &+= 1
+            guard prefixCacheFallbackTelemetrySeen == 1
+                || prefixCacheFallbackTelemetrySeen.isMultiple(of: 64)
+            else { return }
+        case .disabled, .skippedPolicy, .miss:
+            return
+        }
+        let outcome: String
+        switch usage.prefixCacheOutcome {
+        case .disabled: outcome = "disabled"
+        case .skippedPolicy: outcome = "skipped_policy"
+        case .miss: outcome = "miss"
+        case .hit: outcome = "hit"
+        case .skippedCapacity: outcome = "skipped_capacity"
+        case .adoptionFailed: outcome = "adoption_failed"
+        }
+        let coldFallback =
+            usage.prefixCacheOutcome == .skippedPolicy
+            || usage.prefixCacheOutcome == .skippedCapacity
+            || usage.prefixCacheOutcome == .adoptionFailed
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: coldFallback ? .warn : .info,
+            kind: .engineHealth,
+            message: "engine_v2: exact prefix reuse resolved"
+        )
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("prefix_cache_replay"),
+            "backend": .string(kvBackendKind.rawValue),
+            "model": .string(modelId),
+            "reason": .string(outcome),
+            "prefix_reuse_strategy": .string(
+                usage.prefixCacheStrategy?.rawValue ?? "none"),
+            "prefix_matched_tokens": .int(max(0, usage.prefixCacheMatchedTokens)),
+            "prefix_replay_tokens": .int(max(0, usage.prefixCacheReplayTokens)),
+            "prefix_saved_tokens": .int(max(0, usage.prefixCachePrefillTokensSaved)),
+            "prefix_boundary_splits": .int(max(0, usage.prefixCacheBoundarySplits)),
+            "prefix_capacity_refusal": .bool(
+                usage.prefixCacheOutcome == .skippedCapacity),
+            "prefix_cold_fallback": .bool(coldFallback),
+        ])
+        event.requestId = requestId
+        emit(event)
+    }
+
     /// The slot's TOTAL KV byte claim: for contiguous, the engine admission
     /// ceiling; for paged, the immutable PHYSICAL backend capacity.
     /// Fleet sizing (`makeEngineV2BridgeForSlot`) and the heartbeat clamp

@@ -1,7 +1,8 @@
 # SSD KV Cache Reference
 
-This is the as-built v0.7.5 reference for the ContinuousBatchingV2 encrypted
-SSD prefix cache. The pre-v0.7.5 `BatchScheduler`, `PrefixCacheManager`, and
+This is the current reference for the ContinuousBatchingV2 encrypted SSD prefix
+cache, including the `cbv2-frozen-full-3` hybrid replay semantics. The
+pre-v0.7.5 `BatchScheduler`, `PrefixCacheManager`, and
 `EncryptedPrefixCachePersistence` implementations are retired.
 
 ## Status
@@ -30,16 +31,16 @@ is for unsigned tests only and does not preserve cache data across restarts.
 2. `SSDPrefixCache` probes its in-memory HMAC-tag index before submission.
 3. On a hit, it reserves staging bytes in `GlobalKVCacheBudget`, reads and
    authenticates a contiguous block run, and seeds the engine's staging map.
-4. ContinuousBatchingV2 adopts only the reusable prefix and recomputes the
-   model-specific sliding-window bound.
+4. ContinuousBatchingV2 derives a typed M/C/R plan. Safe layouts restore full
+   rows through C. Interleaved contiguous native-float hybrids restore owning full rows
+   through M and keep them immutable while replay rebuilds sliding rows from C.
 5. Completed requests donate eligible block snapshots to a bounded write-behind
    queue. Admission, write-rate, low-disk, TTL, and box-wide LRU guards apply.
 
-Structurally safe layouts share this layer-aware CBv2 block path. Interleaved
-hybrids with a storage-owning full-attention layer after sliding attention are
-cold-only because exactness requires full replay; they advertise no reusable
-cache capability. Eligible layouts persist a donation only when it also clears
-the configured effective-token floor. See
+Structurally safe layouts preserve their existing direct/tail-replay path.
+Interleaved hybrids use frozen-full replay on contiguous unquantized rows. Paged
+hybrids, quantized rows, and unknown layouts fail cold. Eligible layouts persist
+a donation only when it also clears the configured effective-token floor. See
 [`ssd-kv-cache-hybrid-models.md`](./ssd-kv-cache-hybrid-models.md).
 
 ## Environment variables
@@ -49,7 +50,7 @@ the configured effective-token floor. See
 | `DARKBLOOM_PREFIX_CACHE` | unset/on | Single production kill switch; any explicit non-affirmative value disables encrypted SSD |
 | `DARKBLOOM_PREFIX_CACHE_DISK_GB` | min(20 GiB, free/2) | Box-wide SSD budget |
 | `DARKBLOOM_PREFIX_CACHE_SSD_TTL_SECONDS` | 900 | Sliding TTL; overrides can only shorten the 15-minute maximum |
-| `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | 1024 | Minimum reusable tokens after the hybrid recompute bound |
+| `DARKBLOOM_PREFIX_CACHE_SSD_MIN_EFFECTIVE_TOKENS` | 1024 | Generic minimum saved tokens; frozen hybrids with R ≥ 25,600 enforce at least 1,536 from real Gemma evidence |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB` | 1024 | Per-request staging-memory cap |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS` | 1000 | Maximum estimated staging time |
 | `DARKBLOOM_PREFIX_CACHE_SSD_MAX_WRITE_GB_PER_DAY` | 150 | Daily endurance limit; `0` means unlimited |
@@ -78,8 +79,11 @@ prefix hashes, request IDs, and cache-scope values never touch disk.
 Reusable entries require both a verified weight hash and a prompt contract
 computed from the loaded model's tokenizer, template, and config artifacts.
 If either identity is unavailable, the SSD tier stays disabled. Reads also
-verify that binding, the layout epoch, block size, and full lookup tag. Any
-parse, binding, or authentication failure is deleted and treated as a cold miss.
+verify that binding, the `cbv2-frozen-full-3` layout epoch, block size, and full
+lookup tag. Any parse, binding, or authentication failure is deleted and
+treated as a cold miss. Upgrading from `cbv2-snap-2` rotates the per-model cache
+epoch and purges old blocks before readiness is advertised; DBK3 itself is
+unchanged.
 
 The legacy `darkbloom/kv/` tree is swept on startup. The `kv3/` root is
 separate and is not touched by that cleanup; the retired `kv2/` layout is

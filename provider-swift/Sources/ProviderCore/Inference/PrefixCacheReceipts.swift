@@ -236,17 +236,20 @@ struct SSDPrefixCacheStageResult: Sendable, Equatable {
     let stageMs: Double
     let chainHashes: [Data]
     let blockSize: Int
+    let deviceBytes: Int
 
     init(
         disposition: SSDPrefixCacheStageDisposition,
         stageMs: Double,
         chainHashes: [Data] = [],
-        blockSize: Int = 0
+        blockSize: Int = 0,
+        deviceBytes: Int = 0
     ) {
         self.disposition = disposition
         self.stageMs = stageMs
         self.chainHashes = chainHashes
         self.blockSize = blockSize
+        self.deviceBytes = max(0, deviceBytes)
     }
 
     var staged: Bool {

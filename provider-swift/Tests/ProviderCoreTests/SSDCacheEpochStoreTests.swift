@@ -1,4 +1,6 @@
+import CryptoKit
 import Foundation
+import MLXLMCommon
 import Testing
 
 @testable import ProviderCore
@@ -53,6 +55,111 @@ struct SSDCacheEpochStoreTests {
         #expect(changed.current != rotatedEpoch)
         #expect(first.current == nil)
         #expect(!FileManager.default.fileExists(atPath: block.path))
+    }
+
+    @Test("frozen-full layout epoch purges snap-2 blocks before publication")
+    func frozenReplayEpochRotation() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-epoch-frozen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let old = try SSDCacheEpochStore(
+            root: root,
+            binding: binding(
+                contract: String(repeating: "b", count: 64),
+                layout: "cbv2-snap-2|f16|256|deadbeef"))
+        let oldEpoch = try #require(old.current)
+        let block = SSDBlockStore.fileURL(
+            root: root,
+            tag16Hex: String(repeating: "a", count: 32))
+        try FileManager.default.createDirectory(
+            at: block.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("old-semantics".utf8).write(to: block)
+
+        let currentLayout = SSDBlockStore.layoutEpoch(
+            blockSize: 256,
+            layerKinds: [
+                CBv2LayerKind(
+                    attention: .full,
+                    headDim: 64,
+                    kvHeads: 8,
+                    queryHeads: 64)
+            ])
+        #expect(currentLayout.hasPrefix("cbv2-frozen-full-3|native-fp|"))
+        let current = try SSDCacheEpochStore(
+            root: root,
+            binding: binding(
+                contract: String(repeating: "b", count: 64),
+                layout: currentLayout))
+        #expect(current.current != oldEpoch)
+        #expect(old.current == nil)
+        #expect(!FileManager.default.fileExists(atPath: block.path))
+    }
+
+    @Test("provider advertises v2 only after frozen cache scan readiness")
+    func advertisementWaitsForScan() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cache-ready-frozen-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let kinds = [
+            CBv2LayerKind(
+                attention: .slidingWindow(128),
+                headDim: 64,
+                kvHeads: 8,
+                queryHeads: 64),
+            CBv2LayerKind(
+                attention: .full,
+                headDim: 64,
+                kvHeads: 8,
+                queryHeads: 64),
+        ]
+        let layout = SSDBlockStore.layoutEpoch(blockSize: 256, layerKinds: kinds)
+        let epochStore = try SSDCacheEpochStore(
+            root: root,
+            binding: binding(
+                contract: String(repeating: "b", count: 64),
+                layout: layout))
+        let cache = SSDPrefixCache(
+            config: .init(
+                modelId: "gpt-oss",
+                promptContractID: String(repeating: "b", count: 64),
+                weightHash: String(repeating: "a", count: 64),
+                blockSize: 256,
+                adoptionBoundTokens: 128,
+                layoutEpoch: layout,
+                epochStore: epochStore,
+                root: root,
+                ttlSeconds: 900,
+                minEffectiveTokens: 1,
+                maxStageBytes: 1 << 20,
+                maxStageMillis: 1_000,
+                nowSeconds: { 1_000 }),
+            kekKey: SymmetricKey(size: .bits256),
+            kvBudget: nil,
+            diskBudget: SSDDiskBudget(),
+            maxWriteBytesPerDay: 0,
+            strictFsync: false,
+            diskBudgetBytes: { 1 << 30 })
+        let state = ProviderState()
+        state.setPrefixCacheV2Sources(["gpt-oss": cache])
+        #expect(state.prefixCacheV2Advertisement().protocolVersion == 1)
+        #expect(state.prefixCacheV2Advertisement().models.isEmpty)
+
+        cache.startBackgroundTasks(sweepIntervalSeconds: 3_600)
+        for _ in 0 ..< 100
+        where state.prefixCacheV2Advertisement().protocolVersion != 2 {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let ready = state.prefixCacheV2Advertisement()
+        #expect(ready.protocolVersion == 2)
+        #expect(ready.models.map(\.modelId) == ["gpt-oss"])
+        #expect(ready.models.allSatisfy { $0.ready })
+
+        await cache.closeAndWait()
+        #expect(state.prefixCacheV2Advertisement().protocolVersion == 1)
     }
 
     @Test("epoch metadata symlink is rejected without following it")
@@ -146,14 +253,17 @@ struct SSDCacheEpochStoreTests {
         #expect(current != originalEpoch)
     }
 
-    private func binding(contract: String) -> SSDCacheEpochStore.Binding {
+    private func binding(
+        contract: String,
+        layout: String = "layout"
+    ) -> SSDCacheEpochStore.Binding {
         SSDCacheEpochStore.Binding(
             modelId: "model",
             modelAggregateHash: String(repeating: "a", count: 64),
             promptContractId: contract,
             blockHashVersion: "dbk3",
             blockSize: 256,
-            layoutEpoch: "layout",
+            layoutEpoch: layout,
             keyFingerprint: String(repeating: "e", count: 64))
     }
 }

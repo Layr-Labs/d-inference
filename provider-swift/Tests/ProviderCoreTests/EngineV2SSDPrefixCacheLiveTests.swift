@@ -154,19 +154,26 @@ struct EngineV2SSDPrefixCacheLiveTests {
         ttlSeconds: Int64 = 900
     ) -> SSDPrefixCache {
         let blockSize = PrefixCachePolicy.blockSize
+        let capability = CBv2PrefixReuseCapability.derive(
+            layerKinds: live.layerKinds,
+            backend: .contiguousUnquantized)
         let config = SSDPrefixCache.Config(
             modelId: live.modelID,
-            promptContractID: try! PromptContractIdentity.compute(
-                modelDirectory: live.modelDirectory),
+            // This suite proves cache/engine behavior on real weights. Prompt
+            // artifact readiness has its own production parity suite and may
+            // deliberately be unavailable on a raw upstream HF snapshot.
+            promptContractID: "live-real-weight-cache-contract-v1",
             weightHash: "live-test-weights",
             blockSize: blockSize,
-            adoptionBoundTokens: PrefixCachePolicy.adoptionBoundTokens(
-                layerKinds: live.layerKinds),
+            adoptionBoundTokens: capability.conservativeReplayBoundTokens,
+            nominalFullKVBytesPerToken: capability.fullKVBytesPerToken,
             layoutEpoch: SSDBlockStore.layoutEpoch(
                 blockSize: blockSize, layerKinds: live.layerKinds),
             root: dir,
             ttlSeconds: ttlSeconds,
-            minEffectiveTokens: SSDPrefixCachePolicy.defaultMinEffectiveTokens,
+            minEffectiveTokens: PrefixCachePolicy.minEffectiveTokens(
+                capability: capability,
+                environment: [:]),
             maxStageBytes: SSDPrefixCachePolicy.defaultMaxStageBytes,
             maxStageMillis: 60_000,  // generous: CI boxes vary
             nowSeconds: { clock.now })
@@ -476,7 +483,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
             live: live, dir: dir, kek: SymmetricKey(size: .bits256), clock: clock)
         let bridge = try makeBridge(live, ssdCache: cache)
 
-        // Typical prompt (~1.5k tokens) — WAY under the 26,624-token
+        // Typical prompt (~1.5k tokens) — WAY under the 27,136-token
         // donation floor: the request serves normally and the tier writes
         // NOTHING; the engine keeps its full live KV grant.
         let conversation = try buildConversation(live, minTurn1Tokens: 1500)
@@ -497,7 +504,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
     }
 
     @Test(
-        "gemma-qat, DEFAULT config, long context (>26.6k): tail cached, adopted from disk byte-identically",
+        "gemma-qat, DEFAULT config, long context (>27.1k): tail cached, adopted from disk byte-identically",
         .enabled(if:
             LiveInferenceFixtures.liveTestsEnabled
                 && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil)
@@ -507,14 +514,21 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let blockSize = PrefixCachePolicy.blockSize
         let bound = PrefixCachePolicy.adoptionBoundTokens(layerKinds: live.layerKinds)
         #expect(bound == 25_600)
+        let capability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: live.layerKinds,
+            backendSelection: .contiguous)
+        let benefitFloor = PrefixCachePolicy.minEffectiveTokens(
+            capability: capability,
+            environment: [:])
+        #expect(benefitFloor == 1_536)
 
-        // Past the donation floor (bound + 1,024) with whole-block margin.
-        let minTurn1 = bound + SSDPrefixCachePolicy.defaultMinEffectiveTokens + 3 * blockSize
+        // Past the evidence-backed donation floor (bound + 1,536) with margin.
+        let minTurn1 = bound + benefitFloor + 3 * blockSize
         let conversation = try buildConversation(live, minTurn1Tokens: minTurn1)
         #expect(conversation.sharedPrefixTokens >= minTurn1)
         let sharedBlocks = conversation.sharedPrefixTokens / blockSize
         let expectedMinHit = sharedBlocks * blockSize - bound
-        #expect(expectedMinHit >= SSDPrefixCachePolicy.defaultMinEffectiveTokens)
+        #expect(expectedMinHit >= benefitFloor)
         print("[ssd-live] gemma long-context: turn1=\(conversation.turn1Tokens.count) tok, "
             + "shared=\(conversation.sharedPrefixTokens), bound=\(bound), "
             + "expectedMinHit=\(expectedMinHit)")
@@ -546,7 +560,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let turn2Warm = try await runTurn(
             bridge: bridge, live: live, promptTokens: conversation.turn2Tokens,
             maxTokens: maxTokens, requestId: "gemma-t2-warm")
-        #expect(turn2Warm.prefixCacheHitTokens >= SSDPrefixCachePolicy.defaultMinEffectiveTokens,
+        #expect(turn2Warm.prefixCacheHitTokens >= benefitFloor,
             "gemma warm turn 2 hit \(turn2Warm.prefixCacheHitTokens) (< 1024)")
         #expect(cache.bytesInUse == 0, "staging must drain after adoption")
         await bridge.shutdown()

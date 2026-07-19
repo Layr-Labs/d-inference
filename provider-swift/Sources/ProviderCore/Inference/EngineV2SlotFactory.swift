@@ -255,20 +255,48 @@ enum EngineV2SlotFactory {
             let ssdLayerKinds: [CBv2LayerKind]?
             ssdLayerKinds = EngineV2Factory.cbv2LayerKinds(model: servingModel)
             if let ssdLayerKinds {
+                let prefixReuseCapability = PrefixCachePolicy.prefixReuseCapability(
+                    layerKinds: ssdLayerKinds,
+                    backendSelection: kvBackendSelection,
+                    pagedKilled: EngineV2KVBackendPolicy.killSwitchDisabled(
+                        environment: environment))
                 if let promptContractID {
                     ssdPrefixCache = await SSDPrefixCacheFactory.make(
                         modelId: modelId,
                         promptContractID: promptContractID,
                         weightHash: weightHash,
                         layerKinds: ssdLayerKinds,
+                        prefixReuseCapability: prefixReuseCapability,
                         kvBudget: kvBudget,
-                        environment: environment)
+                        environment: environment,
+                        onConstructionFailure: { failure in
+                            Self.emitPrefixCacheConstructionFailure(
+                                modelId: modelId,
+                                capability: prefixReuseCapability,
+                                failure: failure,
+                                emitTelemetry: emitTelemetry)
+                        })
                 } else {
+                    Self.emitPrefixCacheConstructionFailure(
+                        modelId: modelId,
+                        capability: prefixReuseCapability,
+                        failure: .promptContractUnavailable,
+                        emitTelemetry: emitTelemetry)
                     logWarning(
                         "engine_v2: SSD prefix cache skipped for \(modelId) — "
                             + "prompt contract could not be computed from local artifacts")
                 }
             } else {
+                let unavailableCapability = PrefixCachePolicy.prefixReuseCapability(
+                    layerKinds: [],
+                    backendSelection: kvBackendSelection,
+                    pagedKilled: EngineV2KVBackendPolicy.killSwitchDisabled(
+                        environment: environment))
+                Self.emitPrefixCacheConstructionFailure(
+                    modelId: modelId,
+                    capability: unavailableCapability,
+                    failure: .layoutUnavailable,
+                    emitTelemetry: emitTelemetry)
                 logInfo(
                     "engine_v2: SSD prefix cache skipped for \(modelId) — no "
                         + "derivable CBv2 layer kinds (non-adapted family)")
@@ -354,5 +382,34 @@ enum EngineV2SlotFactory {
             assistantBytes: mtpStatus.assistantBytes,
             mtpArtifact: prepared.mtpArtifact,
             mtpStatus: mtpStatus)
+    }
+
+    private static func emitPrefixCacheConstructionFailure(
+        modelId: String,
+        capability: CBv2PrefixReuseCapability,
+        failure: SSDPrefixCacheConstructionFailure,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
+    ) {
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: .warn,
+            kind: .engineHealth,
+            message: "engine_v2: SSD prefix cache construction failed"
+        )
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("prefix_cache_construction"),
+            "backend": .string(capability.backend.rawValue),
+            "model": .string(modelId),
+            "prefix_reuse_strategy": .string(
+                capability.strategy?.rawValue ?? "none"),
+            "prefix_construction_failure": .string(failure.rawValue),
+            "prefix_cold_fallback": .bool(true),
+        ])
+        if let emitTelemetry {
+            emitTelemetry(event)
+        } else {
+            TelemetryClient.shared.emit(event)
+        }
     }
 }

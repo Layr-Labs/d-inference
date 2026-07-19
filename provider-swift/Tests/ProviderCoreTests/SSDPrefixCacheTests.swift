@@ -196,7 +196,7 @@ struct SSDBlockStoreTests {
         SSDBlockMetadata(
             lookupTag: String(repeating: "ab", count: 32),
             weightHash: "w-hash",
-            layoutEpoch: "cbv2-snap-2|f16|8|deadbeef",
+            layoutEpoch: "cbv2-frozen-full-3|native-fp|8|deadbeef",
             blockSize: 8,
             layerCount: 2,
             chunks: sizes.enumerated().map { i, _ in
@@ -228,7 +228,7 @@ struct SSDBlockStoreTests {
         }
     }
 
-    @Test("legacy DBK2 bytes and snap-1 epochs are rejected by the DBK3 tier")
+    @Test("legacy DBK2 bytes and pre-frozen epochs are rejected by the DBK3 tier")
     func legacyArtifactsFailClosed() throws {
         let dir = tempDir("legacy-store")
         defer { try? FileManager.default.removeItem(at: dir) }
@@ -239,7 +239,7 @@ struct SSDBlockStoreTests {
         let metadata = SSDBlockMetadata(
             lookupTag: tagHex + String(repeating: "0", count: 32),
             weightHash: "test-weight-hash",
-            layoutEpoch: "cbv2-snap-1|f16|\(fixtureBlockSize)|legacy",
+            layoutEpoch: "cbv2-snap-2|f16|\(fixtureBlockSize)|legacy",
             blockSize: fixtureBlockSize,
             layerCount: fixtureLayerKinds.count,
             chunks: [
@@ -251,7 +251,7 @@ struct SSDBlockStoreTests {
             chunkPlaintextSizes: chunks.map(\.count),
             createdAt: 1_000)
         try SSDBlockStore.write(to: url, metadata: metadata, chunks: chunks, kekKey: kek)
-        #expect(try SSDBlockStore.readMetadataOnly(from: url).layoutEpoch.hasPrefix("cbv2-snap-1|"))
+        #expect(try SSDBlockStore.readMetadataOnly(from: url).layoutEpoch.hasPrefix("cbv2-snap-2|"))
 
         let cache = makeCache(
             dir: dir, kek: kek, clock: ClockBox(1_001), ttlSeconds: 0)
@@ -361,7 +361,7 @@ struct SSDBlockStoreTests {
         let c = SSDBlockStore.layoutEpoch(blockSize: 16, layerKinds: fixtureLayerKinds)
         #expect(a != b)
         #expect(a != c)
-        #expect(a.hasPrefix("cbv2-snap-2|f16|8|"))
+        #expect(a.hasPrefix("cbv2-frozen-full-3|native-fp|8|"))
     }
 
     @Test("atomic writer uses the exact Darkbloom-owned crash-temp grammar")
@@ -1589,6 +1589,21 @@ struct SSDReadyWriteBarrierTests {
 
 // MARK: - Staging reservation hygiene
 
+private final class BudgetAvailableBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt64
+
+    init(_ value: UInt64) { self.value = value }
+
+    func set(_ value: UInt64) {
+        lock.withLock { self.value = value }
+    }
+
+    var current: UInt64 {
+        lock.withLock { value }
+    }
+}
+
 @Suite("SSD prefix cache: staging reservations", .serialized)
 struct SSDPrefixCacheReservationTests {
 
@@ -1680,12 +1695,6 @@ struct SSDPrefixCacheReservationTests {
         bytes[bytes.count - 10] ^= 0xFF
         try bytes.write(to: lastURL)
 
-        // Expected staged bytes = the surviving 7 blocks' file sizes.
-        var expectedBytes = 0
-        for i in 0 ..< chain.count - 1 {
-            expectedBytes += try Data(contentsOf: fileURL(i)).count
-        }
-
         let prompt = tokens + [7]
         let stageResult = await cache.stage(
             requestID: "req-short", promptTokens: prompt, cacheScope: "")
@@ -1694,11 +1703,12 @@ struct SSDPrefixCacheReservationTests {
             matchedTokens: 7 * fixtureBlockSize,
             expectedPrefillTokensSaved: 7 * fixtureBlockSize,
             shortenedByCorruption: true))
+        let expectedBytes = stageResult.deviceBytes
+        #expect(expectedBytes > 0)
         #expect(cache.stats().corruptDropped == 1)
         // Regression (Codex, v0.7.5 SSD review): the reservation and the
-        // staging accounting must reflect the SHORTENED run — they used to
-        // stay at the original 8-block figure, falsely consuming shared KV
-        // headroom until this request's release.
+        // staging accounting must reflect exact rehydrated MLX bytes for the
+        // SHORTENED run — never the original run or encrypted file overhead.
         #expect(await budget.outstandingReservedBytes() == UInt64(expectedBytes))
         #expect(cache.bytesInUse == expectedBytes)
 
@@ -1881,6 +1891,51 @@ struct SSDPrefixCacheReservationTests {
         cache.completeStaging(requestID: requestA)
         #expect(await waitForZeroOutstanding(budget), "the last user must drain the entry reservation")
         #expect(cache.bytesInUse == 0)
+    }
+
+    @Test("same-prefix attachment needs no spare provisional headroom")
+    func attachAtCapacity() async throws {
+        let dir = tempDir("res-attach-full")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let available = BudgetAvailableBox(64 * 1_073_741_824)
+        let budget = GlobalKVCacheBudget(
+            capFraction: 0.9,
+            activationReserveBytes: 0,
+            configReserveBytes: 0,
+            memorySnapshot: {
+                GlobalKVCacheBudget.MemorySnapshot(
+                    total: 64 * 1_073_741_824,
+                    active: 0,
+                    cache: 0,
+                    systemAvailable: available.current)
+            })
+        let cache = await makeStagedCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            kvBudget: budget)
+        defer { cache.close() }
+        let prompt = Array(0 ..< tokenCount) + [1]
+        let first = await cache.stage(
+            requestID: "attach-a",
+            promptTokens: prompt,
+            cacheScope: "")
+        #expect(first.staged)
+        let reserved = await budget.outstandingReservedBytes()
+        #expect(reserved == UInt64(first.deviceBytes))
+        available.set(reserved)
+
+        let second = await cache.stage(
+            requestID: "attach-b",
+            promptTokens: prompt,
+            cacheScope: "")
+        #expect(second.staged)
+        #expect(second.deviceBytes == first.deviceBytes)
+        #expect(await budget.outstandingReservedBytes() == reserved)
+
+        cache.completeStaging(requestID: "attach-a")
+        cache.completeStaging(requestID: "attach-b")
+        #expect(await waitForZeroOutstanding(budget))
     }
 
     @Test("two cache instances may reserve the same raw receipt id independently")
@@ -2467,31 +2522,31 @@ struct SSDPrefixCacheDonationGateTests {
         #expect(dbk3Files(under: dir).count == 11)
     }
 
-    @Test("gemma constants: the >26.6k long-context tail caches; anything shorter writes nothing")
+    @Test("gemma constants: the >27.1k evidence-backed tail caches; shorter writes nothing")
     func gemmaConstantsGate() async throws {
         let dir = tempDir("gate-gemma")
         defer { try? FileManager.default.removeItem(at: dir) }
         let clock = ClockBox(10_000)
-        // Real gemma-4-26B numbers: bound 25 × 1,024 = 25,600; floor 26,624.
+        // Real Gemma numbers: bound 25,600 + measured saved-token floor 1,536.
         let cache = makeCache(
             dir: dir, kek: SymmetricKey(size: .bits256), clock: clock,
-            blockSize: 256, adoptionBound: 25_600, minEffectiveTokens: 1024)
+            blockSize: 256, adoptionBound: 25_600, minEffectiveTokens: 1_536)
         defer { cache.close() }
 
         // A typical prompt (4k) AND the exact floor both write nothing —
         // the negative that used to be enforced by excluding gemma wholesale.
         donate(cache, tokenCount: 4096)
         await expectNoWrites(cache, dir: dir)
-        donate(cache, tokenCount: 26_624)
+        donate(cache, tokenCount: 27_136)
         await expectNoWrites(cache, dir: dir)
 
-        // The long-context tail (105 whole blocks = 26,880 tokens) persists.
-        donate(cache, tokenCount: 26_880 + 5)
+        // The long-context tail (107 whole blocks = 27,392 tokens) persists.
+        donate(cache, tokenCount: 27_392 + 5)
         let deadline = ContinuousClock.now + .seconds(30)
-        while ContinuousClock.now < deadline, cache.index.count < 105 {
+        while ContinuousClock.now < deadline, cache.index.count < 107 {
             try? await Task.sleep(for: .milliseconds(50))
         }
-        #expect(cache.index.count == 105)
+        #expect(cache.index.count == 107)
     }
 
     @Test("unknown/saturated adoption bound: never persists (the only 'never cached' case)")

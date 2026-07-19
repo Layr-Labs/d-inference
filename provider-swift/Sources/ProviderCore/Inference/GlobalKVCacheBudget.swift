@@ -200,6 +200,48 @@ public actor GlobalKVCacheBudget {
         return commit(requestID: requestID, bytes: bytes)
     }
 
+    /// Atomically grow an existing request reservation. Used when SSD staging
+    /// reveals native KV width (for example GPT-OSS fp32 full rows) after the
+    /// initial nominal token reservation was taken.
+    public func increaseReservation(requestID: String, additionalBytes: UInt64) -> Bool {
+        guard additionalBytes > 0, var current = reservations[requestID] else {
+            return additionalBytes == 0 && reservations[requestID] != nil
+        }
+        let (newBytes, overflow) = current.bytes.addingReportingOverflow(additionalBytes)
+        guard !overflow else { return false }
+        let available = availableReservationBytes()
+        guard additionalBytes <= available else {
+            reclaimer.scheduleReclaim(shortfall: additionalBytes - available)
+            recordCommitRejection()
+            return false
+        }
+        current.bytes = newBytes
+        reservations[requestID] = current
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
+        return true
+    }
+
+    /// Atomically resize an existing raw-byte reservation after encrypted file
+    /// estimates have been rehydrated into exact MLX arrays.
+    public func resizeReservationBytes(requestID: String, bytes: UInt64) -> Bool {
+        guard bytes > 0, var current = reservations[requestID] else { return false }
+        if bytes > current.bytes {
+            let additional = bytes - current.bytes
+            let available = availableReservationBytes()
+            guard additional <= available else {
+                reclaimer.scheduleReclaim(shortfall: additional - available)
+                recordCommitRejection()
+                return false
+            }
+        }
+        current.bytes = bytes
+        reservations[requestID] = current
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
+        return true
+    }
+
     /// Reserve a loading model's WEIGHT footprint for the duration of its load,
     /// unconditionally. A model's weights are not yet visible in MLX active/cache
     /// while `loadModelContainer` is still allocating them, so a KV reservation

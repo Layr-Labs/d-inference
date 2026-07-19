@@ -126,6 +126,16 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	// NEVER rides telemetry. Mirror of the Swift + TS allowlists.
 	"multimodal": {},
 	"media_kind": {},
+	// Exact-prefix replay diagnostics: bounded strategy/reason values and
+	// aggregate token counts only. Never prompt/token content or cache keys.
+	"prefix_reuse_strategy":       {},
+	"prefix_matched_tokens":       {},
+	"prefix_replay_tokens":        {},
+	"prefix_saved_tokens":         {},
+	"prefix_boundary_splits":      {},
+	"prefix_construction_failure": {},
+	"prefix_capacity_refusal":     {},
+	"prefix_cold_fallback":        {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

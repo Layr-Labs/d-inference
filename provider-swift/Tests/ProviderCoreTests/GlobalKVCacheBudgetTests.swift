@@ -37,6 +37,26 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!(await budget.reserve(requestID: "overflow", kvBytesPerToken: Int.max, tokenCount: Int.max)))
 }
 
+@Test func globalKVCacheBudgetGrowsAndReconcilesNativeByteReservationsAtomically() async {
+    let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {
+        GlobalKVCacheBudget.MemorySnapshot(
+            total: 8 * gib,
+            active: 0,
+            cache: 0,
+            systemAvailable: 1_000)
+    }
+    #expect(await budget.reserveBytes(requestID: "native", bytes: 400))
+    #expect(await budget.increaseReservation(requestID: "native", additionalBytes: 300))
+    #expect(await budget.outstandingReservedBytes() == 700)
+    #expect(!(await budget.increaseReservation(requestID: "native", additionalBytes: 301)))
+    #expect(await budget.outstandingReservedBytes() == 700)
+    #expect(await budget.resizeReservationBytes(requestID: "native", bytes: 512))
+    #expect(await budget.outstandingReservedBytes() == 512)
+    #expect(!(await budget.resizeReservationBytes(requestID: "missing", bytes: 1)))
+    await budget.release(requestID: "native")
+    #expect(await budget.outstandingReservedBytes() == 0)
+}
+
 /// The cap fraction bounds the total reservable bytes: 0.5 × 8 GiB = 4 GiB cap
 /// (the fraction binds, not the 6 GiB floor), so a 3 GiB reservation fits but a
 /// further 2 GiB (→5 GiB) does not.

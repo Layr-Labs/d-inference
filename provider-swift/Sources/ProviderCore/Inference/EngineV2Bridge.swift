@@ -155,6 +155,8 @@ public actor EngineV2Bridge {
     /// This counter is a separate namespace: advancing it must never perturb
     /// engine idMap/cancellation or sampler reproducibility.
     var nextPrefixCacheReceiptRawId: UInt64 = 1
+    var prefixCacheHitTelemetrySeen: UInt64 = 0
+    var prefixCacheFallbackTelemetrySeen: UInt64 = 0
     /// Live per-request pump tasks, so `shutdown()` can cancel any that
     /// outlive the engine drain (defense against a leaked stream). Keyed by
     /// the (normalized) provider request-id; each entry removes itself when
@@ -388,6 +390,8 @@ public actor EngineV2Bridge {
         // where lookup never ran (rejections below, pump terminals).
         // Vision requests never stage (engine policy symmetry).
         var ssdStaged = false
+        var ssdStagedDeviceBytes = 0
+        var ssdStagedTokens = 0
         if !cacheEnabled {
             usageSignal?.recordCacheDisabled(tier: ssdPrefixCache == nil ? .memory : .ssd)
         } else if multimodal != nil {
@@ -400,7 +404,15 @@ public actor EngineV2Bridge {
                 promptTokens: promptTokens,
                 cacheScope: cacheScope)
             usageSignal?.record(stageResult: stageResult)
+            if case .skippedCapacity = stageResult.disposition {
+                emitPrefixCacheColdFallback(
+                    requestId: id,
+                    reason: "stage_capacity",
+                    capacityRefusal: true)
+            }
             ssdStaged = stageResult.staged
+            ssdStagedDeviceBytes = stageResult.deviceBytes
+            ssdStagedTokens = stageResult.stagedTokens
             // `stage` suspended this actor — re-check the duplicate guard
             // (same discipline as the shared-budget gate below).
             guard active[id] == nil else {
@@ -479,7 +491,45 @@ public actor EngineV2Bridge {
                     kvBytesPerToken: kvBytesPerToken,
                     tokenCount: worstCaseTokens)
             }
+            if sharedKVReserved, ssdStaged, ssdStagedDeviceBytes > 0,
+                ssdStagedTokens > 0,
+                let cache = ssdPrefixCache
+            {
+                let additional = Self.nativeFullReservationDelta(
+                    stagedBytes: ssdStagedDeviceBytes,
+                    stagedTokens: ssdStagedTokens,
+                    nominalBytesPerToken: cache.config.nominalFullKVBytesPerToken,
+                    worstCaseTokens: worstCaseTokens)
+                if let additional, additional > 0 {
+                    let augmented = await kvBudget.increaseReservation(
+                        requestID: id,
+                        additionalBytes: additional)
+                    if !augmented, let prefixCacheReceiptID {
+                        await cache.abandonStaging(requestID: prefixCacheReceiptID)
+                        ssdStaged = false
+                        ssdStagedDeviceBytes = 0
+                        ssdStagedTokens = 0
+                        emitPrefixCacheColdFallback(
+                            requestId: id,
+                            reason: "native_kv_capacity",
+                            capacityRefusal: true)
+                    }
+                } else if additional == nil, let prefixCacheReceiptID {
+                    await cache.abandonStaging(requestID: prefixCacheReceiptID)
+                    ssdStaged = false
+                    ssdStagedDeviceBytes = 0
+                    ssdStagedTokens = 0
+                    emitPrefixCacheColdFallback(
+                        requestId: id,
+                        reason: "native_kv_accounting",
+                        capacityRefusal: true)
+                }
+            }
             guard sharedKVReserved else {
+                emitPrefixCacheColdFallback(
+                    requestId: id,
+                    reason: "shared_kv_capacity",
+                    capacityRefusal: true)
                 if let prefixCacheReceiptID {
                     if ssdStaged {
                         await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
@@ -852,6 +902,7 @@ public actor EngineV2Bridge {
                 usageSignal?.record(
                     usage: usage,
                     fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+                emitPrefixReuseTelemetry(requestId: id, usage: usage)
                 finishAndEmit(
                     id: id, reason: reason, usage: usage,
                     sawFirstToken: sawFirstToken, continuation: continuation

@@ -105,42 +105,54 @@ enum PrefixCachePolicy {
         return n  // 0 ⇒ disabled
     }
 
-    // MARK: - SSD adoption bound
+    // MARK: - Exact prefix-reuse capability
 
-    /// Whether the engine can resume from a partial layer snapshot without
-    /// changing model outputs. A storage-owning full-attention layer after any
-    /// sliding-window layer permanently caches activations computed from an
-    /// incomplete replay window, so `cbv2RequiredRecompute` correctly requires
-    /// full replay for that layout. Advertising reusable SSD evidence for such
-    /// a model would be false: staging can match bytes but save zero prefill.
-    static func supportsReusablePrefixes(layerKinds: [CBv2LayerKind]) -> Bool {
-        var sawWindowedLayer = false
-        for kind in layerKinds {
-            if case .slidingWindow = kind.attention {
-                sawWindowedLayer = true
-            } else if sawWindowedLayer, kind.sharesKVWithLayer == nil {
-                return false
-            }
+    /// Construct the engine-owned typed capability for the backend selected
+    /// before cache construction. `.auto` is the shipped contiguous,
+    /// unquantized native-float backend. Explicit paged selection remains eligible only for layouts
+    /// whose ordinary single-cursor replay is exact; interleaved hybrids fail
+    /// cold until a separately-proven paged dual-cursor row exists.
+    static func prefixReuseCapability(
+        layerKinds: [CBv2LayerKind],
+        backendSelection: EngineV2KVBackendSelection,
+        pagedKilled: Bool = false
+    ) -> CBv2PrefixReuseCapability {
+        let backend: CBv2PrefixReuseBackend
+        switch backendSelection {
+        case .auto, .contiguous:
+            backend = .contiguousUnquantized
+        case .paged:
+            backend = pagedKilled ? .contiguousUnquantized : .pagedFP16
         }
-        return true
+        return CBv2PrefixReuseCapability.derive(
+            layerKinds: layerKinds,
+            backend: backend)
     }
 
-    /// The model's adoption bound: `windowCount × maxWindow` over its layer
-    /// kinds for layouts that pass `supportsReusablePrefixes`. 0 for pure
-    /// full-attention models (every whole-block hit is adoptable).
+    /// Conservative finite-window replay length. Kept as a policy convenience
+    /// for SSD donation/stage benefit gates; the engine plan remains
+    /// authoritative per matched boundary.
     static func adoptionBoundTokens(layerKinds: [CBv2LayerKind]) -> Int {
-        var maxWindow = 0
-        var windowCount = 0
-        for kind in layerKinds {
-            if case .slidingWindow(let window) = kind.attention {
-                maxWindow = max(maxWindow, window)
-                windowCount += 1
-            }
-        }
-        // Same overflow posture as the engine's derivation: the product can
-        // only overflow at absurd model shapes; saturate rather than trap.
-        let (bound, overflow) = windowCount.multipliedReportingOverflow(by: maxWindow)
-        return overflow ? Int.max : bound
+        CBv2PrefixReuseCapability.derive(
+            layerKinds: layerKinds,
+            backend: .contiguousUnquantized
+        ).conservativeReplayBoundTokens
+    }
+
+    /// Real Gemma QAT evidence is noisy/negative at only 1,024 saved tokens
+    /// and positive from 1,536 onward; GPT's shorter 1,536-token replay span
+    /// remains beneficial at the generic 1,024 floor. The environment may
+    /// raise either floor but cannot lower the proved long-hybrid minimum.
+    static func minEffectiveTokens(
+        capability: CBv2PrefixReuseCapability,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int {
+        let configured = SSDPrefixCachePolicy.minEffectiveTokens(environment: environment)
+        let longHybridFloor =
+            capability.strategy == .frozenFullReplay
+                && capability.conservativeReplayBoundTokens >= 25_600
+            ? 1_536 : 0
+        return max(configured, longHybridFloor)
     }
 
 }

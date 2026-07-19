@@ -53,9 +53,10 @@ An EngineV2 prefix cache accelerates repeated or shared prompts. The encrypted
 SSD tier is the only production tier. It is selected by default and can be
 disabled with `DARKBLOOM_PREFIX_CACHE=0`; there is no production RAM cache or
 persistent memory carve. CBv2 layer-aware block snapshots are enabled only for
-layouts that can resume exactly. Interleaved hybrids with a storage-owning full
-layer after sliding attention require full replay and remain cold-only. The
-production gate is
+layouts that can resume exactly. Interleaved hybrids use frozen-full tail replay
+on contiguous unquantized rows: sliding state rebuilds from C while owning full K/V
+remains immutable through M. Paged hybrids and quantized rows remain cold-only.
+The production capability policy is
 `provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`.
 
 See [`reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) for the as-built reference and

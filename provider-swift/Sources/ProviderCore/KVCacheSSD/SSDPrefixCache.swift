@@ -111,6 +111,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         /// `windowCount × maxWindow` — the engine's recompute bound; the
         /// staging benefit gate subtracts it from `matched`.
         let adoptionBoundTokens: Int
+        /// Nominal full-row bytes per token used by the provider's initial
+        /// request reservation. Staging reports exact native bytes so the
+        /// bridge can reserve only the fp32/native-width delta.
+        let nominalFullKVBytesPerToken: Int
         let layoutEpoch: String
         let epochStore: SSDCacheEpochStore?
         /// `…/darkbloom/kv3/<modelKey>` — files live here, per-model, in
@@ -133,6 +137,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             weightHash: String,
             blockSize: Int,
             adoptionBoundTokens: Int,
+            nominalFullKVBytesPerToken: Int = 0,
             layoutEpoch: String,
             epochStore: SSDCacheEpochStore? = nil,
             root: URL,
@@ -148,6 +153,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             self.weightHash = weightHash
             self.blockSize = blockSize
             self.adoptionBoundTokens = adoptionBoundTokens
+            self.nominalFullKVBytesPerToken = max(0, nominalFullKVBytesPerToken)
             self.layoutEpoch = layoutEpoch
             self.epochStore = epochStore
             self.root = root
@@ -900,7 +906,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let evidenceHashes = maxBlocks > 0
             ? hasher.chainHashes(tokens: promptTokens, maxBlocks: maxBlocks)
             : []
-        func finish(_ disposition: SSDPrefixCacheStageDisposition) -> SSDPrefixCacheStageResult {
+        func finish(
+            _ disposition: SSDPrefixCacheStageDisposition,
+            deviceBytes: Int = 0
+        ) -> SSDPrefixCacheStageResult {
             let elapsed = started.duration(to: .now).components
             let milliseconds =
                 Double(elapsed.seconds) * 1_000
@@ -909,7 +918,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 disposition: disposition,
                 stageMs: max(0, milliseconds),
                 chainHashes: evidenceHashes,
-                blockSize: config.blockSize)
+                blockSize: config.blockSize,
+                deviceBytes: deviceBytes)
         }
         let stageEpoch: String?
         if let epochStore = config.epochStore {
@@ -968,41 +978,36 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         }
         guard k > 0 else { return finish(.skippedCost) }
 
-        // Concurrent same-prefix request: attach to the existing staged
-        // entry (ONE entry, ONE per-entry reservation, one residency ticket
-        // per attached request). The provisional reservation below is only
-        // the memory-pressure gate for the case where THIS request has to
-        // build the entry — on attach it is redundant with the entry's own
-        // reservation and released immediately.
+        // Concurrent same-prefix request: attach BEFORE taking a provisional
+        // reservation. The existing entry already owns one exact reservation;
+        // requiring spare headroom for a zero-allocation ticket would produce
+        // false cold fallbacks under a full but correctly-accounted budget.
         let terminalTag = tags16[k - 1]
         let reservationKey = reservationKey(forRequestID: requestID)
-        if let kvBudget {
-            guard await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(runBytes))
-            else { return finish(.skippedCapacity) }
-        }
-        let attached = lock.withLock { () -> Bool in
+        let attachedBytes = lock.withLock { () -> Int? in
             guard !closed,
                 !destructiveChangeInProgress,
                 cacheEpochMatches(stageEpoch)
-            else { return false }
+            else { return nil }
             guard let existing = stagedEntries[terminalTag],
                 existing.cacheEpoch == stageEpoch,
                 existing.matched == k * config.blockSize
-            else { return false }
+            else { return nil }
             existing.openTickets.insert(requestID)
             tickets[requestID] = terminalTag
-            return true
+            return existing.deviceBytes
         }
-        if attached {
-            // Redundant with the entry's per-entry reservation — release it
-            // so a shared entry is charged to the shared KV budget exactly
-            // once, no matter how many requests attach.
-            await releaseReservation(reservationKey)
+        if let attachedBytes {
             return finish(.staged(
                 matchedTokens: k * config.blockSize,
                 expectedPrefillTokensSaved: max(
                     0, k * config.blockSize - min(config.adoptionBoundTokens, k * config.blockSize)),
-                shortenedByCorruption: false))
+                shortenedByCorruption: false),
+                deviceBytes: attachedBytes)
+        }
+        if let kvBudget {
+            guard await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(runBytes))
+            else { return finish(.skippedCapacity) }
         }
 
         // Read + decrypt + verify blocks 1..k off the engine threads.
@@ -1087,13 +1092,38 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             await releaseReservation(reservationKey)
             return finish(.skippedPolicy)
         }
+        var exactDeviceBytes = 0
+        for entry in prefix {
+            guard let entry else { continue }
+            let (entryBytes, entryOverflow) = entry.keys.nbytes.addingReportingOverflow(
+                entry.values.nbytes)
+            let (total, totalOverflow) = exactDeviceBytes.addingReportingOverflow(entryBytes)
+            guard !entryOverflow, !totalOverflow else {
+                await releaseReservation(reservationKey)
+                return finish(.skippedCapacity)
+            }
+            exactDeviceBytes = total
+        }
+        guard exactDeviceBytes > 0 else {
+            await releaseReservation(reservationKey)
+            return finish(.missCorrupt)
+        }
+        if let kvBudget, exactDeviceBytes != stagedRunBytes {
+            guard await kvBudget.resizeReservationBytes(
+                requestID: reservationKey,
+                bytes: UInt64(exactDeviceBytes))
+            else {
+                await releaseReservation(reservationKey)
+                return finish(.skippedCapacity)
+            }
+        }
 
         // Post-build resolution: another concurrent request may have won the
         // race and created the entry while we were reading off-thread, in
         // which case we ATTACH (and release our now-redundant provisional
         // reservation); otherwise we CREATE and our reservation becomes the
         // entry's per-entry reservation.
-        enum StageResolution { case created, attached, failed }
+        enum StageResolution { case created, attached(deviceBytes: Int), failed }
         let resolution: StageResolution = lock.withLock {
             guard !closed,
                 !destructiveChangeInProgress,
@@ -1105,7 +1135,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = terminalTag
-                return .attached
+                return .attached(deviceBytes: existing.deviceBytes)
             }
             let usedTag = tags16[usableBlocks - 1]
             if let existing = stagedEntries[usedTag],
@@ -1114,26 +1144,27 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = usedTag
-                return .attached
+                return .attached(deviceBytes: existing.deviceBytes)
             }
             stagedEntries[usedTag] = StagedEntry(
-                matched: matched, prefix: prefix, deviceBytes: stagedRunBytes,
+                matched: matched, prefix: prefix, deviceBytes: exactDeviceBytes,
                 cacheEpoch: stageEpoch, firstTicket: requestID, reservationKey: reservationKey)
             tickets[requestID] = usedTag
-            statsBox.add(stages: 1, stagedBytesDelta: stagedRunBytes)
+            statsBox.add(stages: 1, stagedBytesDelta: exactDeviceBytes)
             return .created
         }
         switch resolution {
         case .failed:
             await releaseReservation(reservationKey)
             return finish(.skippedPolicy)
-        case .attached:
+        case .attached(let attachedDeviceBytes):
             // Redundant with the winner's per-entry reservation.
             await releaseReservation(reservationKey)
             return finish(.staged(
                 matchedTokens: matched,
                 expectedPrefillTokensSaved: effective,
-                shortenedByCorruption: shortenedByCorruption))
+                shortenedByCorruption: shortenedByCorruption),
+                deviceBytes: attachedDeviceBytes)
         case .created:
             break  // reservation is now owned by the staged entry
         }
@@ -1151,7 +1182,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         return finish(.staged(
             matchedTokens: matched,
             expectedPrefillTokensSaved: effective,
-            shortenedByCorruption: shortenedByCorruption))
+            shortenedByCorruption: shortenedByCorruption),
+            deviceBytes: exactDeviceBytes)
     }
 
     func stage(

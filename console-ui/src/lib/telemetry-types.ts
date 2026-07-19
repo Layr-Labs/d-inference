@@ -129,4 +129,13 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   // Go + Swift allowlists).
   "multimodal",
   "media_kind",
+  // Exact-prefix replay diagnostics: bounded enums and counts only.
+  "prefix_reuse_strategy",
+  "prefix_matched_tokens",
+  "prefix_replay_tokens",
+  "prefix_saved_tokens",
+  "prefix_boundary_splits",
+  "prefix_construction_failure",
+  "prefix_capacity_refusal",
+  "prefix_cold_fallback",
 ]);

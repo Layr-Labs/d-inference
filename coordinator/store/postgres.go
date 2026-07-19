@@ -713,6 +713,7 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS scheduled_for TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS retry_after TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
 		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS reconcile_after TIMESTAMPTZ; EXCEPTION WHEN others THEN NULL; END $$`,
+		`DO $$ BEGIN ALTER TABLE stripe_withdrawals ADD COLUMN IF NOT EXISTS payout_version BIGINT NOT NULL DEFAULT 0; EXCEPTION WHEN others THEN NULL; END $$`,
 		`CREATE INDEX IF NOT EXISTS idx_stripe_withdrawals_sweep_payout ON stripe_withdrawals(sweep_payout_id) WHERE sweep_payout_id != ''`,
 
 		// Telemetry events table + indices removed.
@@ -3645,12 +3646,12 @@ func (s *PostgresStore) CreateStripeWithdrawal(w *StripeWithdrawal) error {
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, source,
-		  scheduled_for, retry_after, reconcile_after, status, failure_reason,
-		  refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		  scheduled_for, retry_after, reconcile_after, payout_version, status,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Source,
-		w.ScheduledFor, w.RetryAfter, w.ReconcileAfter, w.Status,
+		w.ScheduledFor, w.RetryAfter, w.ReconcileAfter, w.PayoutVersion, w.Status,
 		w.FailureReason, w.Refunded, w.FeeRefunded,
 		w.CreatedAt, w.UpdatedAt,
 	)
@@ -3807,12 +3808,12 @@ func (s *PostgresStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 		`INSERT INTO stripe_withdrawals
 		 (id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 		  amount_micro_usd, fee_micro_usd, net_micro_usd, method, source,
-		  scheduled_for, retry_after, reconcile_after, status, failure_reason,
-		  refunded, fee_refunded, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		  scheduled_for, retry_after, reconcile_after, payout_version, status,
+		  failure_reason, refunded, fee_refunded, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 		w.ID, w.AccountID, w.StripeAccountID, w.TransferID, w.PayoutID, w.SweepPayoutID,
 		w.AmountMicroUSD, w.FeeMicroUSD, w.NetMicroUSD, w.Method, w.Source,
-		w.ScheduledFor, w.RetryAfter, w.ReconcileAfter, w.Status,
+		w.ScheduledFor, w.RetryAfter, w.ReconcileAfter, w.PayoutVersion, w.Status,
 		w.FailureReason, w.Refunded, w.FeeRefunded,
 		w.CreatedAt, w.UpdatedAt,
 	); err != nil {
@@ -3824,7 +3825,7 @@ func (s *PostgresStore) createStripeWithdrawalWithDebit(w *StripeWithdrawal, ent
 
 const stripeWithdrawalSelectColumns = `id, account_id, stripe_account_id, transfer_id, payout_id, sweep_payout_id,
 	amount_micro_usd, fee_micro_usd, net_micro_usd, method, source,
-	scheduled_for, retry_after, reconcile_after, status, failure_reason, refunded, fee_refunded,
+	scheduled_for, retry_after, reconcile_after, payout_version, status, failure_reason, refunded, fee_refunded,
 	created_at, updated_at`
 
 func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawal, error) {
@@ -3832,7 +3833,7 @@ func scanStripeWithdrawal(row interface{ Scan(...any) error }) (*StripeWithdrawa
 	if err := row.Scan(&w.ID, &w.AccountID, &w.StripeAccountID, &w.TransferID, &w.PayoutID, &w.SweepPayoutID,
 		&w.AmountMicroUSD, &w.FeeMicroUSD, &w.NetMicroUSD, &w.Method, &w.Source,
 		&w.ScheduledFor, &w.RetryAfter, &w.ReconcileAfter,
-		&w.Status, &w.FailureReason, &w.Refunded,
+		&w.PayoutVersion, &w.Status, &w.FailureReason, &w.Refunded,
 		&w.FeeRefunded, &w.CreatedAt, &w.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -3890,7 +3891,8 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE stripe_withdrawals SET
 			transfer_id = $2, payout_id = $3, sweep_payout_id = $4, status = $5,
-			failure_reason = $6, refunded = $7, fee_refunded = $8, updated_at = NOW()
+			failure_reason = $6, refunded = $7, fee_refunded = $8,
+			payout_version = payout_version + 1, updated_at = NOW()
 		 WHERE id = $1`,
 		w.ID, w.TransferID, w.PayoutID, w.SweepPayoutID, w.Status, w.FailureReason, w.Refunded, w.FeeRefunded,
 	)
@@ -3901,6 +3903,7 @@ func (s *PostgresStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 		return fmt.Errorf("stripe withdrawal %q not found", w.ID)
 	}
 	w.UpdatedAt = time.Now()
+	w.PayoutVersion++
 	return nil
 }
 
@@ -3910,21 +3913,58 @@ func (s *PostgresStore) UpdateStripeWithdrawalIfActive(w *StripeWithdrawal) (boo
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tag, err := s.pool.Exec(ctx,
+	var newVersion int64
+	err := s.pool.QueryRow(ctx,
 		`UPDATE stripe_withdrawals
-		 SET payout_id = $3, status = $4, failure_reason = $5,
-		     fee_refunded = (fee_refunded OR $6), updated_at = NOW()
+		 SET transfer_id = $2, payout_id = $3, status = $4, failure_reason = $5,
+		     fee_refunded = (fee_refunded OR $6),
+		     payout_version = payout_version + 1, updated_at = NOW()
 		 WHERE id = $1
-		   AND transfer_id = $2
+		   AND payout_version = $7
+		   AND transfer_id IN ('', $2)
 		   AND refunded = FALSE
 		   AND status IN ('pending', 'transferred')
-		   AND payout_id IN ('', $3)`,
-		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason, w.FeeRefunded,
-	)
-	if err != nil {
+		   AND payout_id IN ('', $3)
+		 RETURNING payout_version`,
+		w.ID, w.TransferID, w.PayoutID, w.Status, w.FailureReason,
+		w.FeeRefunded, w.PayoutVersion,
+	).Scan(&newVersion)
+	if err == nil {
+		w.PayoutVersion = newVersion
+		return true, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("store: update active Stripe withdrawal: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+
+	var transferID, payoutID, status, failureReason string
+	var feeRefunded, refunded bool
+	err = s.pool.QueryRow(ctx,
+		`SELECT transfer_id, payout_id, status, failure_reason,
+		        fee_refunded, refunded, payout_version
+		 FROM stripe_withdrawals WHERE id = $1`,
+		w.ID,
+	).Scan(&transferID, &payoutID, &status, &failureReason,
+		&feeRefunded, &refunded, &newVersion)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("stripe withdrawal %q: %w", w.ID, ErrNotFound)
+		}
+		return false, fmt.Errorf("store: inspect active Stripe withdrawal: %w", err)
+	}
+	desiredPersisted := !refunded && transferID == w.TransferID &&
+		payoutID == w.PayoutID && (!w.FeeRefunded || feeRefunded)
+	if w.PayoutID == "" {
+		desiredPersisted = desiredPersisted && status == w.Status &&
+			failureReason == w.FailureReason
+	} else {
+		desiredPersisted = desiredPersisted &&
+			(status == w.Status || status == "paid")
+	}
+	if desiredPersisted {
+		w.PayoutVersion = newVersion
+	}
+	return desiredPersisted, nil
 }
 
 func (s *PostgresStore) MarkStripeWithdrawalFailedIfRefunded(id, failureReason string) (bool, error) {
@@ -3933,7 +3973,8 @@ func (s *PostgresStore) MarkStripeWithdrawalFailedIfRefunded(id, failureReason s
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'failed', failure_reason = $2,
-		     retry_after = NULL, updated_at = NOW()
+		     retry_after = NULL, payout_version = payout_version + 1,
+		     updated_at = NOW()
 		 WHERE id = $1 AND refunded = TRUE AND status <> 'paid'`,
 		id, failureReason,
 	)
@@ -4063,7 +4104,8 @@ func (s *PostgresStore) FailStripeWithdrawalAndRefund(id, failureReason string) 
 	if _, err := tx.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'failed', failure_reason = $2, refunded = TRUE,
-		     retry_after = NULL, updated_at = NOW()
+		     retry_after = NULL, payout_version = payout_version + 1,
+		     updated_at = NOW()
 		 WHERE id = $1`,
 		id, failureReason,
 	); err != nil {
@@ -4112,7 +4154,8 @@ func (s *PostgresStore) RefundReversedStripeWithdrawal(id string) (bool, error) 
 		if _, err := tx.Exec(ctx,
 			`UPDATE stripe_withdrawals
 			 SET status = 'failed', failure_reason = 'transfer_reversed',
-			     retry_after = NULL, updated_at = NOW()
+			     retry_after = NULL, payout_version = payout_version + 1,
+			     updated_at = NOW()
 			 WHERE id = $1`,
 			id,
 		); err != nil {
@@ -4164,7 +4207,8 @@ func (s *PostgresStore) RefundReversedStripeWithdrawal(id string) (bool, error) 
 		`UPDATE stripe_withdrawals
 		 SET status = 'failed', failure_reason = 'transfer_reversed',
 		     refunded = TRUE, fee_refunded = (fee_refunded OR $2),
-		     retry_after = NULL, updated_at = NOW()
+		     retry_after = NULL, payout_version = payout_version + 1,
+		     updated_at = NOW()
 		 WHERE id = $1`,
 		id, feeRefunded || feeApplied,
 	); err != nil {
@@ -4219,6 +4263,7 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayo
 		`UPDATE stripe_withdrawals
 		 SET status = 'paid',
 		     sweep_payout_id = CASE WHEN $3 <> '' THEN $3 ELSE sweep_payout_id END,
+		     payout_version = payout_version + 1,
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
@@ -4247,6 +4292,7 @@ func (s *PostgresStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReas
 		     payout_id = '',
 		     failure_reason = $2,
 		     fee_refunded = (fee_refunded OR $3),
+		     payout_version = payout_version + 1,
 		     updated_at = NOW()
 		 WHERE id = $1
 		   AND refunded = FALSE
@@ -4266,7 +4312,8 @@ func (s *PostgresStore) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSwee
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE stripe_withdrawals
 		 SET status = 'transferred', sweep_payout_id = '',
-		     failure_reason = $3, updated_at = NOW()
+		     failure_reason = $3, payout_version = payout_version + 1,
+		     updated_at = NOW()
 		 WHERE id = $1
 		   AND status = 'paid'
 		   AND refunded = FALSE

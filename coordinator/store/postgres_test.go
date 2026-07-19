@@ -968,6 +968,48 @@ func TestPostgresStripeWithdrawalActiveGuardAndReconciliationClaim(t *testing.T)
 		t.Fatalf("stale active update = %v, err = %v", applied, err)
 	}
 
+	aba := &StripeWithdrawal{
+		ID: "wd-pg-payout-aba", AccountID: "acct-pg-active-guard",
+		StripeAccountID: "acct_pg_active", TransferID: "tr_pg_aba",
+		AmountMicroUSD: 1_000_000, NetMicroUSD: 1_000_000,
+		Method: "instant", Status: "transferred",
+	}
+	if err := s.CreateStripeWithdrawal(aba); err != nil {
+		t.Fatal(err)
+	}
+	firstAttempt, _ := s.GetStripeWithdrawal(aba.ID)
+	staleRetry := *firstAttempt
+	firstAttempt.PayoutID = "po_pg_aba"
+	staleRetry.PayoutID = "po_pg_aba"
+	if applied, err := s.UpdateStripeWithdrawalIfActive(firstAttempt); err != nil || !applied {
+		t.Fatalf("persist payout = %v, err = %v", applied, err)
+	}
+	if applied, err := s.ReopenStripeWithdrawalAfterPayoutFailure(
+		aba.ID, "payout failed", false,
+	); err != nil || !applied {
+		t.Fatalf("detach payout = %v, err = %v", applied, err)
+	}
+	if applied, err := s.UpdateStripeWithdrawalIfActive(&staleRetry); err != nil || applied {
+		t.Fatalf("stale payout retry = %v, err = %v", applied, err)
+	}
+
+	recoverIDs := &StripeWithdrawal{
+		ID: "wd-pg-recover-ids", AccountID: "acct-pg-active-guard",
+		StripeAccountID: "acct_pg_active",
+		AmountMicroUSD:  1_000_000, NetMicroUSD: 1_000_000,
+		Method: "instant", Status: "pending",
+	}
+	if err := s.CreateStripeWithdrawal(recoverIDs); err != nil {
+		t.Fatal(err)
+	}
+	recoverIDs, _ = s.GetStripeWithdrawal(recoverIDs.ID)
+	recoverIDs.TransferID = "tr_pg_recovered"
+	recoverIDs.PayoutID = "po_pg_recovered"
+	recoverIDs.Status = "transferred"
+	if applied, err := s.UpdateStripeWithdrawalIfActive(recoverIDs); err != nil || !applied {
+		t.Fatalf("recover ids = %v, err = %v", applied, err)
+	}
+
 	for i := 0; i < 3; i++ {
 		if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
 			ID:        fmt.Sprintf("wd-pg-reconcile-%d", i),

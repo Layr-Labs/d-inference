@@ -21,8 +21,9 @@ type stripeTransferRequest struct {
 }
 
 type stripeTransferResult struct {
-	Withdrawal *store.StripeWithdrawal
-	Transfer   *billing.Transfer
+	Withdrawal        *store.StripeWithdrawal
+	Transfer          *billing.Transfer
+	TransferPersisted bool
 }
 
 // stripeTransferError carries stable API copy while preserving the underlying
@@ -283,14 +284,16 @@ func (s *Server) continueStripeTransfer(wd *store.StripeWithdrawal, description 
 		return &stripeTransferResult{Withdrawal: wd}, nil
 	}
 	if wd.TransferID != "" {
-		if !s.markStripeWithdrawalTransferredWithRetry(wd.ID, wd.TransferID) {
+		persisted := s.markStripeWithdrawalTransferredWithRetry(wd.ID, wd.TransferID)
+		if !persisted {
 			s.logger.Error("stripe payout: recover transferred state failed",
 				"withdrawal_id", wd.ID, "transfer_id", wd.TransferID)
 		}
 		wd.Status = "transferred"
 		return &stripeTransferResult{
-			Withdrawal: wd,
-			Transfer:   &billing.Transfer{ID: wd.TransferID},
+			Withdrawal:        wd,
+			Transfer:          &billing.Transfer{ID: wd.TransferID},
+			TransferPersisted: persisted,
 		}, nil
 	}
 
@@ -387,11 +390,14 @@ func (s *Server) continueStripeTransfer(wd *store.StripeWithdrawal, description 
 
 	wd.TransferID = transfer.ID
 	wd.Status = "transferred"
-	if !s.markStripeWithdrawalTransferredWithRetry(wd.ID, transfer.ID) {
+	persisted := s.markStripeWithdrawalTransferredWithRetry(wd.ID, transfer.ID)
+	if !persisted {
 		s.logger.Error("stripe payout: persist transfer_id failed after retries — row stuck pending, funds deliver via sweep",
 			"withdrawal_id", wd.ID, "transfer_id", transfer.ID)
 	}
-	return &stripeTransferResult{Withdrawal: wd, Transfer: transfer}, nil
+	return &stripeTransferResult{
+		Withdrawal: wd, Transfer: transfer, TransferPersisted: persisted,
+	}, nil
 }
 
 func (s *Server) failStripeWithdrawalAndRefundWithRetry(withdrawalID, reason string) bool {

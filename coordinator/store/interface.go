@@ -614,6 +614,7 @@ type StripeWithdrawal struct {
 	ScheduledFor    *time.Time `json:"scheduled_for,omitempty"`   // weekly schedule slot; automatic withdrawals only
 	RetryAfter      *time.Time `json:"-"`                         // internal automatic-transfer retry eligibility
 	ReconcileAfter  *time.Time `json:"-"`                         // persistent fair-rotation marker for the reconciler
+	PayoutVersion   int64      `json:"-"`                         // CAS generation for instant/terminal payout transitions
 	Status          string     `json:"status"`                    // "pending" | "transferred" | "paid" | "failed"
 	FailureReason   string     `json:"failure_reason,omitempty"`  // populated when Status="failed"
 	Refunded        bool       `json:"refunded,omitempty"`        // true after the failure refund is credited

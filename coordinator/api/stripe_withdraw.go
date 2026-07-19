@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -150,6 +151,42 @@ func (s *Server) handleStripeWithdraw(w http.ResponseWriter, r *http.Request) {
 			"method":            method,
 			"eta":               etaForMethod(method, acct.Country),
 			"message":           sweepDeliveryMessage(acct.Country),
+			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
+		})
+		return
+	}
+
+	// Never create an instant payout until the transfer ID is durable. If the
+	// store stayed unavailable after retries, Stripe's automatic sweep still
+	// delivers the transferred funds; refund the instant fee and avoid creating
+	// an untrackable payout whose webhook/reversal could not find this row.
+	if !transferResult.TransferPersisted {
+		feeRefunded := feeMicroUSD == 0
+		if feeMicroUSD > 0 &&
+			s.creditRefundOnceWithRetry(user.AccountID, feeMicroUSD,
+				"stripe_withdraw_fee:"+withdrawalID, withdrawalID) {
+			feeRefunded = true
+			wd.FeeRefunded = true
+		}
+		wd.FailureReason = "instant_payout_skipped: transfer state was not durably persisted"
+		if err := s.persistWithdrawalUpdate(wd, "instant skip"); err != nil &&
+			!errors.Is(err, store.ErrStripeWithdrawalStateChanged) {
+			s.logger.Error("stripe payout: persist instant-skip state failed",
+				"error", err, "withdrawal_id", withdrawalID)
+		}
+		message := "instant payout was skipped because transfer tracking was temporarily unavailable; funds will arrive via the standard bank payout"
+		if !feeRefunded {
+			message += "; the instant-fee refund is pending, contact support if it does not appear shortly"
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"status":            "transferred",
+			"withdrawal_id":     withdrawalID,
+			"transfer_id":       transfer.ID,
+			"amount_usd":        formatUSD(grossMicroUSD),
+			"fee_usd":           formatUSD(feeMicroUSD),
+			"net_usd":           formatUSD(netMicroUSD),
+			"method":            method,
+			"message":           message,
 			"balance_micro_usd": s.billing.Ledger().Balance(user.AccountID),
 		})
 		return

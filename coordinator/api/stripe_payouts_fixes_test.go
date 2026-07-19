@@ -534,8 +534,9 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 // failures into specific operations.
 type flakyPayoutStore struct {
 	*store.MemoryStore
-	failLookups bool
-	failUpdates bool
+	failLookups             bool
+	failUpdates             bool
+	failTransferTransitions bool
 }
 
 func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*store.StripeWithdrawal, error) {
@@ -566,6 +567,13 @@ func (f *flakyPayoutStore) MarkStripeWithdrawalFailedIfRefunded(id, reason strin
 	return f.MemoryStore.MarkStripeWithdrawalFailedIfRefunded(id, reason)
 }
 
+func (f *flakyPayoutStore) MarkStripeWithdrawalTransferred(id, transferID string) (bool, error) {
+	if f.failTransferTransitions {
+		return false, errors.New("connection reset by peer")
+	}
+	return f.MemoryStore.MarkStripeWithdrawalTransferred(id, transferID)
+}
+
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
 func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
 	t.Helper()
@@ -584,6 +592,52 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *
 		StripeConnectPlatformCountry: "US",
 	}))
 	return srv, flaky
+}
+
+func TestInstantPayoutSkippedWhenTransferIDCannotPersist(t *testing.T) {
+	var payoutCalls atomic.Int32
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/accounts/"):
+			id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
+			_, _ = w.Write([]byte(healthyAccountJSON(id, "US", "full", true)))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/transfers":
+			_, _ = w.Write([]byte(`{"id":"tr_unpersisted","amount":450,"destination":"acct_test"}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/payouts":
+			payoutCalls.Add(1)
+			_, _ = w.Write([]byte(`{"id":"po_must_not_exist","status":"pending"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fakeStripe.Close()
+	srv, flaky := newFlakyPayoutServer(t, fakeStripe)
+	user := readyUser(t, flaky.MemoryStore, "acct-instant-unpersisted", "alice@example.com", true)
+	if err := flaky.CreditWithdrawable(user.AccountID, 10_000_000, store.LedgerPayout, "earnings"); err != nil {
+		t.Fatal(err)
+	}
+	flaky.failTransferTransitions = true
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/withdraw/stripe",
+		strings.NewReader(`{"amount_usd":"5.00","method":"instant"}`))
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeWithdraw(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	if payoutCalls.Load() != 0 {
+		t.Fatalf("created %d untrackable instant payout(s)", payoutCalls.Load())
+	}
+	rows, err := flaky.ListStripeWithdrawals(user.AccountID, 10)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("withdrawals = %+v, err = %v", rows, err)
+	}
+	if rows[0].TransferID != "tr_unpersisted" || !rows[0].FeeRefunded ||
+		!strings.Contains(rows[0].FailureReason, "instant_payout_skipped") {
+		t.Fatalf("fallback state = %+v", rows[0])
+	}
 }
 
 // TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the atomic

@@ -384,6 +384,51 @@ func TestMemoryReversalRefundAndSweepReopenAreGuarded(t *testing.T) {
 	}
 
 	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		ID: "wd-payout-aba", AccountID: "acct-reversal", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "instant", Status: "transferred", TransferID: "tr_aba",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	firstAttempt, _ := s.GetStripeWithdrawal("wd-payout-aba")
+	staleRetry := *firstAttempt
+	firstAttempt.PayoutID = "po_aba"
+	staleRetry.PayoutID = "po_aba"
+	if applied, err := s.UpdateStripeWithdrawalIfActive(firstAttempt); err != nil || !applied {
+		t.Fatalf("persist payout id = %v, err = %v", applied, err)
+	}
+	if applied, err := s.ReopenStripeWithdrawalAfterPayoutFailure(
+		firstAttempt.ID, "payout failed", false,
+	); err != nil || !applied {
+		t.Fatalf("detach failed payout = %v, err = %v", applied, err)
+	}
+	if applied, err := s.UpdateStripeWithdrawalIfActive(&staleRetry); err != nil || applied {
+		t.Fatalf("stale payout retry = %v, err = %v", applied, err)
+	}
+	afterRetry, _ := s.GetStripeWithdrawal(firstAttempt.ID)
+	if afterRetry.PayoutID != "" || afterRetry.Status != "transferred" {
+		t.Fatalf("stale retry reattached failed payout: %+v", afterRetry)
+	}
+
+	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
+		ID: "wd-transfer-recover", AccountID: "acct-reversal", StripeAccountID: "acct_stripe",
+		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
+		Method: "instant", Status: "pending",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recoverTransfer, _ := s.GetStripeWithdrawal("wd-transfer-recover")
+	recoverTransfer.TransferID = "tr_recovered"
+	recoverTransfer.PayoutID = "po_recovered"
+	recoverTransfer.Status = "transferred"
+	if applied, err := s.UpdateStripeWithdrawalIfActive(recoverTransfer); err != nil || !applied {
+		t.Fatalf("recover transfer+payout ids = %v, err = %v", applied, err)
+	}
+	if row, err := s.GetStripeWithdrawalByTransferID("tr_recovered"); err != nil || row.ID != recoverTransfer.ID {
+		t.Fatalf("recovered transfer index row = %+v, err = %v", row, err)
+	}
+
+	if err := s.CreateStripeWithdrawal(&StripeWithdrawal{
 		ID: "wd-sweep-guard", AccountID: "acct-reversal", StripeAccountID: "acct_stripe",
 		AmountMicroUSD: 5_000_000, NetMicroUSD: 5_000_000,
 		Method: "standard", Status: "paid", TransferID: "tr_sweep",

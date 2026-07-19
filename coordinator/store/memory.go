@@ -2435,6 +2435,8 @@ func (s *MemoryStore) UpdateStripeWithdrawal(w *StripeWithdrawal) error {
 	}
 	cp := *w
 	cp.UpdatedAt = time.Now()
+	cp.PayoutVersion = existing.PayoutVersion + 1
+	w.PayoutVersion = cp.PayoutVersion
 	s.stripeWithdrawalsByID[w.ID] = &cp
 	return nil
 }
@@ -2450,10 +2452,33 @@ func (s *MemoryStore) UpdateStripeWithdrawalIfActive(w *StripeWithdrawal) (bool,
 	if !ok {
 		return false, fmt.Errorf("stripe withdrawal %q: %w", w.ID, ErrNotFound)
 	}
+	desiredPersisted := func() bool {
+		matches := !existing.Refunded && existing.TransferID == w.TransferID &&
+			existing.PayoutID == w.PayoutID &&
+			(!w.FeeRefunded || existing.FeeRefunded)
+		if w.PayoutID == "" {
+			return matches && existing.Status == w.Status &&
+				existing.FailureReason == w.FailureReason
+		}
+		return matches && (existing.Status == w.Status || existing.Status == "paid")
+	}
+	if existing.PayoutVersion != w.PayoutVersion {
+		if desiredPersisted() {
+			w.PayoutVersion = existing.PayoutVersion
+			return true, nil
+		}
+		return false, nil
+	}
 	if existing.Refunded || (existing.Status != "pending" && existing.Status != "transferred") ||
-		existing.TransferID != w.TransferID ||
+		(existing.TransferID != "" && existing.TransferID != w.TransferID) ||
 		(existing.PayoutID != "" && existing.PayoutID != w.PayoutID) {
 		return false, nil
+	}
+	if existing.TransferID == "" && w.TransferID != "" {
+		if owner, exists := s.stripeWithdrawalsByTransferID[w.TransferID]; exists && owner != w.ID {
+			return false, fmt.Errorf("Stripe transfer %q already belongs to withdrawal %q", w.TransferID, owner)
+		}
+		s.stripeWithdrawalsByTransferID[w.TransferID] = w.ID
 	}
 	if existing.PayoutID != w.PayoutID {
 		if existing.PayoutID != "" {
@@ -2466,10 +2491,13 @@ func (s *MemoryStore) UpdateStripeWithdrawalIfActive(w *StripeWithdrawal) (bool,
 			s.stripeWithdrawalsByPayoutID[w.PayoutID] = w.ID
 		}
 	}
+	existing.TransferID = w.TransferID
 	existing.PayoutID = w.PayoutID
 	existing.Status = w.Status
 	existing.FailureReason = w.FailureReason
 	existing.FeeRefunded = existing.FeeRefunded || w.FeeRefunded
+	existing.PayoutVersion++
+	w.PayoutVersion = existing.PayoutVersion
 	existing.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2487,6 +2515,7 @@ func (s *MemoryStore) MarkStripeWithdrawalFailedIfRefunded(id, failureReason str
 	w.Status = "failed"
 	w.FailureReason = failureReason
 	w.RetryAfter = nil
+	w.PayoutVersion++
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2573,6 +2602,7 @@ func (s *MemoryStore) FailStripeWithdrawalAndRefund(id, failureReason string) (b
 	w.FailureReason = failureReason
 	w.Refunded = true
 	w.RetryAfter = nil
+	w.PayoutVersion++
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2595,6 +2625,7 @@ func (s *MemoryStore) RefundReversedStripeWithdrawal(id string) (bool, error) {
 		w.Status = "failed"
 		w.FailureReason = "transfer_reversed"
 		w.RetryAfter = nil
+		w.PayoutVersion++
 		w.UpdatedAt = time.Now()
 		return true, nil
 	}
@@ -2623,6 +2654,7 @@ func (s *MemoryStore) RefundReversedStripeWithdrawal(id string) (bool, error) {
 	w.FailureReason = "transfer_reversed"
 	w.Refunded = true
 	w.RetryAfter = nil
+	w.PayoutVersion++
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2670,6 +2702,7 @@ func (s *MemoryStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayout
 	if sweepPayoutID != "" {
 		w.SweepPayoutID = sweepPayoutID
 	}
+	w.PayoutVersion++
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2696,6 +2729,7 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterPayoutFailure(id, failureReason
 	w.PayoutID = ""
 	w.FailureReason = failureReason
 	w.FeeRefunded = w.FeeRefunded || feeRefunded
+	w.PayoutVersion++
 	w.UpdatedAt = time.Now()
 	return true, nil
 }
@@ -2714,6 +2748,7 @@ func (s *MemoryStore) ReopenStripeWithdrawalAfterSweepFailure(id, expectedSweepP
 	w.Status = "transferred"
 	w.SweepPayoutID = ""
 	w.FailureReason = failureReason
+	w.PayoutVersion++
 	w.UpdatedAt = time.Now()
 	return true, nil
 }

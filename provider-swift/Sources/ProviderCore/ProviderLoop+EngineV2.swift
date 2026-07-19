@@ -144,7 +144,7 @@ extension ProviderLoop {
     /// One existing slot's re-slice bookkeeping: its sizing inputs, its
     /// engine grant BEFORE this re-slice (the restore point), and the
     /// bridge whose ceiling gets updated.
-    private struct ExistingSlotGrant {
+    internal struct ExistingSlotGrant {
         let slot: EngineV2KVSizing.ResliceSlot
         let previousGrant: Int
         let bridge: EngineV2Bridge
@@ -154,9 +154,12 @@ extension ProviderLoop {
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's), minus the
     /// activation reserve, honoring the operator `memory_reserve_gb`.
-    private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
+    internal func fleetKVBudgetBytes(
+        extraWeightBytes: Int,
+        replacingModelId: String? = nil
+    ) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
-        for (_, slot) in modelSlots {
+        for (modelId, slot) in modelSlots where modelId != replacingModelId {
             let (sum, overflow) = totalWeights
                 .addingReportingOverflow(UInt64(max(0, slot.sizing.weightsBytes)))
             totalWeights = overflow ? .max : sum
@@ -178,7 +181,7 @@ extension ProviderLoop {
     /// load. Paged physical claims are tracked separately by
     /// `slotKVBytesClaim()` for fleet accounting and never shrink when this
     /// logical target is re-sliced.
-    private func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
+    internal func existingSlotGrants(excludingModelId: String) async -> [ExistingSlotGrant] {
         var existing: [ExistingSlotGrant] = []
         for (slotModelId, slot) in modelSlots
         where slotModelId != excludingModelId && !modelsUnloading.contains(slotModelId) {
@@ -535,7 +538,9 @@ extension ProviderLoop {
         kvBytesCapacity: Int,
         specDecPreparation: SpecDecPreparation,
         preparedModel: EngineV2PreparedModel?,
-        cacheEligibleWeightHash: String? = nil
+        cacheEligibleWeightHash: String? = nil,
+        registerRuntime: Bool = true,
+        logConstruction: Bool = true
     ) async throws -> ProviderEngineBundle {
         let maxConcurrent = engineV2MaxConcurrent(forModel: modelId)
 
@@ -606,7 +611,7 @@ extension ProviderLoop {
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,
-                logInfo: { slotLogger.info($0) },
+                logInfo: { if logConstruction { slotLogger.info($0) } },
                 logWarning: { slotLogger.warning($0) })
         }
         let bridge = bundle.bridge
@@ -616,14 +621,16 @@ extension ProviderLoop {
         // (Prefix-cache construction — RAM carve AND the SSD offload tier —
         // budget bookkeeping, stats loggers, and the cache-state log line
         // all live inside the shared slot factory.)
-        await engineV2Runtime.register(modelId: modelId, bridge: bridge)
-        if isVLM {
+        if registerRuntime {
+            await engineV2Runtime.register(modelId: modelId, bridge: bridge)
+        }
+        if registerRuntime, isVLM {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
                     + "(vlm routing: text→v2, media→v2 multimodal prefill "
                     + "(image+video, fail-loud)) "
                     + "[kv=\(bridge.kvBackendKind.rawValue)]")
-        } else {
+        } else if registerRuntime {
             logger.info(
                 "engine_v2: serving \(modelId) via ContinuousBatchingV2 "
                     + "[kv=\(bridge.kvBackendKind.rawValue)]")

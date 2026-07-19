@@ -279,7 +279,9 @@ extension ProviderLoop {
         if modelSlots.count >= maxModelSlots {
             let modelsWithInflight = Set(requestToModel.values)
             let evictable = modelSlots.filter {
-                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+                !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key)
+                    && !modelsUnloading.contains($0.key)
+                    && !modelsPromotingSpecDec.contains($0.key)
             }
             if evictable.isEmpty || !allowEviction {
                 isLoadingAny = false
@@ -331,11 +333,26 @@ extension ProviderLoop {
                 recordModelLoadError(model: modelId, message: message)
                 throw InferenceError.modelLoadFailed(message)
             }
-            // The assistant is optional and must never make an otherwise
-            // loadable target fail. It is charged before allocation when it
-            // fits; otherwise this load continues target-only.
-            mtpPreparation = await admitSpecDecIfMemoryAllows(
-                mtpPreparation, targetRequiredGb: requiredGb)
+            // Make mandatory target residency visible first, then atomically
+            // grow that promise for the optional assistant. A concurrent KV
+            // claim can win only the optional race; the target remains
+            // reserved and serves target-only.
+            let targetPendingBytes = Self.pendingLoadReservationBytes(
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                extraWeightBytes: 0)
+            await kvBudget.reservePendingLoad(
+                requestID: pendingLoadID, bytes: targetPendingBytes)
+            if let artifact = mtpPreparation.artifact,
+                !(await kvBudget.increaseReservationIfAvailable(
+                    requestID: pendingLoadID,
+                    additionalBytes: artifact.residentBytes))
+            {
+                logger.warning(
+                    "mtp: model assistant skipped reason=\(MTPFallbackReason.assistantMemoryUnavailable.rawValue) "
+                        + "assistant_bytes=\(artifact.residentBytes)")
+                mtpPreparation = mtpPreparation.fallingBack(
+                    .assistantMemoryUnavailable)
+            }
             let extraWeightBytes = mtpPreparation.artifact?.residentBytes ?? 0
             try Task.checkCancellation()
             if isShuttingDown { throw CancellationError() }
@@ -346,11 +363,6 @@ extension ProviderLoop {
             // blows the unified-memory cap. Released once the weights are resident.
             // Includes `extraWeightBytes` (the drafter): those bytes land in
             // mlxUsed during this load window just like the target's.
-            let pendingLoadBytes = Self.pendingLoadReservationBytes(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(requestID: pendingLoadID, bytes: pendingLoadBytes)
-
             logger.info("Loading model: \(modelId) from \(modelPath.path)")
             // Cold-start load timing (slot-level `model_load_time_ms`): from
             // here to slot install — covering the weight load, sizing, and
@@ -735,6 +747,19 @@ extension ProviderLoop {
         else { return }
         let engineV2 = engineBundle.bridge
         modelsUnloading.insert(modelId)
+        // Promotion can retain this target container while loading/building a
+        // replacement. Fence new work first, then cancel AND await promotion
+        // cleanup before releasing weights or regrowing survivor grants.
+        if let promotion = specDecPromotionTasks[modelId] {
+            promotion.cancel()
+            await promotion.value
+        }
+        specDecPromotionTasks.removeValue(forKey: modelId)
+        specDecPromotionTaskIDs.removeValue(forKey: modelId)
+        pendingSpecDecPromotions.removeValue(forKey: modelId)
+        modelsPromotingSpecDec.remove(modelId)
+        specDecPromotionAttempts.removeValue(forKey: modelId)
+        specDecPromotionGenerations.removeValue(forKey: modelId)
         // Retire the slot's v2 bridge: unregister so heartbeats/cancellation
         // stop fanning out to it, then drain the engine gracefully (running
         // requests finish, new submissions are rejected).
@@ -865,7 +890,11 @@ extension ProviderLoop {
             let modelsWithInflight = Set(requestToModel.values)
             let candidate = allowEviction
                 ? modelSlots
-                    .filter { !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key) }
+                    .filter {
+                        !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key)
+                            && !modelsUnloading.contains($0.key)
+                            && !modelsPromotingSpecDec.contains($0.key)
+                    }
                     .min(by: { $0.value.lastInferenceAt < $1.value.lastInferenceAt })
                 : nil
 
@@ -938,7 +967,9 @@ extension ProviderLoop {
         // evicted to make room, so its presence means we must NOT pre-reject.
         let modelsWithInflight = Set(requestToModel.values)
         let hasEvictable = modelSlots.contains {
-            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key) && !modelsUnloading.contains($0.key)
+            !modelsWithInflight.contains($0.key) && !hasLocalReservation($0.key)
+                && !modelsUnloading.contains($0.key)
+                && !modelsPromotingSpecDec.contains($0.key)
         }
 
         // Not enough free memory and nothing idle to evict. Drop the reclaimable

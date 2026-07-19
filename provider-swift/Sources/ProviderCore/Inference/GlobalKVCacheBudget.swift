@@ -220,6 +220,33 @@ public actor GlobalKVCacheBudget {
         reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
     }
 
+    /// Atomically add optional residency to an existing pending-load promise.
+    /// Unlike `replacePendingLoadReservation`, growth is conditional on current
+    /// live headroom and every concurrent reservation. The mandatory target
+    /// remains reserved when an optional assistant loses this race.
+    public func increaseReservationIfAvailable(
+        requestID: String,
+        additionalBytes: UInt64
+    ) -> Bool {
+        guard additionalBytes > 0,
+            var current = reservations[requestID]
+        else { return false }
+        let available = availableReservationBytes()
+        guard additionalBytes <= available else {
+            reclaimer.scheduleReclaim(shortfall: additionalBytes - available)
+            recordCommitRejection()
+            return false
+        }
+        let (total, overflow) = current.bytes.addingReportingOverflow(
+            additionalBytes)
+        guard !overflow else { return false }
+        current.bytes = total
+        reservations[requestID] = current
+        rejectionStreakStart = nil
+        lastRejectionAt = nil
+        return true
+    }
+
     /// Atomically replace the in-flight load reservation when target weights
     /// become live but an optional assistant is still pending. Zero removes it.
     public func replacePendingLoadReservation(requestID: String, bytes: UInt64) {

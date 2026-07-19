@@ -80,8 +80,8 @@ public struct StandaloneServerConfig: Sendable {
     public let engineV2KVBackend: String
     /// Per-model overrides (`engine_v2_kv_backend_by_model`).
     public let engineV2KVBackendByModel: [String: String]
-    /// MTP beta configuration. Defaults off; the CLI/config owner passes these
-    /// through when standalone MTP is intentionally enabled.
+    /// MTP policy. Defaults on; coordinator-independent local mode can activate
+    /// only from an explicit local assistant path and otherwise stays target-only.
     public let mtp: Bool
     public let mtpDrafterPath: String?
 
@@ -96,7 +96,7 @@ public struct StandaloneServerConfig: Sendable {
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
-        mtp: Bool = false,
+        mtp: Bool = true,
         mtpDrafterPath: String? = nil
     ) {
         self.port = port
@@ -1225,11 +1225,15 @@ public actor StandaloneServer {
                     // that loads can actually serve (matches the runtime KV gate).
                     headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
+            let targetPendingBytes = ProviderLoop.pendingLoadReservationBytes(
+                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
+                extraWeightBytes: 0)
+            await kvBudget.reservePendingLoad(
+                requestID: pendingLoadID, bytes: targetPendingBytes)
             if let artifact = mtpPreparation.artifact {
-                if !ProviderLoop.assistantMemoryFits(
-                    availableGb: await availableMemoryGb(),
-                    targetRequiredGb: targetRequiredGb,
-                    assistantBytes: artifact.residentBytes)
+                if !(await kvBudget.increaseReservationIfAvailable(
+                    requestID: pendingLoadID,
+                    additionalBytes: artifact.residentBytes))
                 {
                     mtpPreparation = mtpPreparation.fallingBack(
                         .assistantMemoryUnavailable)
@@ -1243,12 +1247,6 @@ public actor StandaloneServer {
             // Keep incoming weights visible to the process-wide KV ledger while
             // loadContainer is suspended. Existing-model requests continue to
             // serve during this await and must not reserve the same headroom.
-            let pendingLoadBytes = ProviderLoop.pendingLoadReservationBytes(
-                estimatedWeightsGb: modelInfo.estimatedMemoryGb,
-                extraWeightBytes: extraWeightBytes)
-            await kvBudget.reservePendingLoad(
-                requestID: pendingLoadID, bytes: pendingLoadBytes)
-
             try await v2TestHooks?.beforeWeightLoad?(modelId)
             let reusableSSDRequested = PrefixCachePolicy.isEnabled()
             let preLoadCacheHash = reusableSSDRequested

@@ -73,22 +73,6 @@ private actor StaleFunnelCatalog: SpecDecCatalogLooking {
     }
 }
 
-private actor SlowFunnelCatalog: SpecDecCatalogLooking {
-    func cachedModel(id: String) -> CatalogModel? { nil }
-    func model(id: String) async throws -> CatalogModel? {
-        try await taskSleep(.seconds(5))
-        return nil
-    }
-}
-
-private actor FunnelSleepProbe {
-    private(set) var durations: [Duration] = []
-
-    func sleep(_ duration: Duration) {
-        durations.append(duration)
-    }
-}
-
 private func funnelModel(id: String = "gemma-4-target", metadata: [String: JSONValue]? = nil) -> CatalogModel {
     CatalogModel(
         id: id, s3Name: "unused", displayName: id, sizeGb: 1,
@@ -97,14 +81,22 @@ private func funnelModel(id: String = "gemma-4-target", metadata: [String: JSONV
 
 private let localAssistantConfig = Data(#"{"model_type":"gemma4_assistant"}"#.utf8)
 
-private func makeLocalAssistant() throws -> URL {
+private func makeLocalAssistant(fill: UInt8 = 0x5a) throws -> URL {
     let root = FileManager.default.temporaryDirectory
         .appendingPathComponent("specdec-local-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
     try localAssistantConfig.write(to: root.appendingPathComponent("config.json"))
-    try Data(repeating: 0x5a, count: 4096)
+    try Data(repeating: fill, count: 4096)
         .write(to: root.appendingPathComponent("model.safetensors"))
     return root
+}
+
+private actor FunnelArtifactRecorder {
+    private(set) var revisions: [String] = []
+
+    func record(_ artifact: SpecDecArtifact) {
+        revisions.append(artifact.revision)
+    }
 }
 
 @Suite("SpecDec production artifact funnel")
@@ -357,20 +349,93 @@ struct SpecDecArtifactFunnelTests {
         #expect(await catalog.cancellations == 1)
     }
 
-    @Test("catalog prewarm fails open when the short deadline wins")
-    func prewarmDeadline() async {
-        let sleepProbe = FunnelSleepProbe()
+    @Test("concurrent shutdown callers await foreground preparation")
+    func concurrentShutdownAwaitsForegroundPreparation() async throws {
+        let catalog = GatedFunnelCatalog(funnelModel())
         let funnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(
                 storeRoot: FileManager.default.temporaryDirectory,
                 cdnBaseURL: "http://127.0.0.1:1"),
-            catalog: SlowFunnelCatalog())
-        let warmed = await funnel.prewarmCatalog(
-            modelId: "gemma-4-target",
-            timeout: .milliseconds(20),
-            sleep: { duration in await sleepProbe.sleep(duration) })
-        #expect(!warmed)
-        #expect(await sleepProbe.durations == [.milliseconds(20)])
+            catalog: catalog)
+        let request = SpecDecArtifactFunnel.Request(
+            modelId: "gemma-4-target", modelType: "gemma4", enabled: true,
+            localPath: nil, allowDownload: true, environment: [:])
+        let preparation = Task { await funnel.prepareForLoad(request) }
+        for _ in 0..<100 {
+            if await catalog.calls > 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        async let first: Void = funnel.shutdown()
+        async let second: Void = funnel.shutdown()
+        for _ in 0..<100 {
+            if await catalog.cancellations > 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        await catalog.release()
+        _ = await (first, second)
+        let result = await preparation.value
+
+        #expect(result.status.reason == .catalogUnavailable)
+        #expect(await catalog.active == 0)
+        #expect(await catalog.cancellations == 1)
+    }
+
+    @Test("newer catalog generation suppresses an older artifact-ready event")
+    func generationOrdersArtifactEvents() async throws {
+        let firstURL = try makeLocalAssistant(fill: 0x11)
+        let secondURL = try makeLocalAssistant(fill: 0x22)
+        defer {
+            try? FileManager.default.removeItem(at: firstURL)
+            try? FileManager.default.removeItem(at: secondURL)
+        }
+        let first = try #require(
+            SpecDecStore.inspectLocalArtifact(path: firstURL.path))
+        let second = try #require(
+            SpecDecStore.inspectLocalArtifact(path: secondURL.path))
+        let recorder = FunnelArtifactRecorder()
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(), catalog: nil)
+        await funnel.setArtifactReadyHandler { _, artifact, _ in
+            await recorder.record(artifact)
+        }
+
+        let older = await funnel.beginCatalogGeneration(modelId: "gemma")
+        let newer = await funnel.beginCatalogGeneration(modelId: "gemma")
+        await funnel.notifyReady(
+            modelId: "gemma", artifact: first, generation: older)
+        await funnel.notifyReady(
+            modelId: "gemma", artifact: second, generation: newer)
+
+        #expect(await recorder.revisions == [second.revision])
+        await funnel.shutdown()
+    }
+
+    @Test("foreground failures honor backoff and periodic rediscovery continues")
+    func foregroundBackoffAndPeriodicRediscovery() async throws {
+        let catalog = FunnelCatalog(nil)
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(
+                storeRoot: FileManager.default.temporaryDirectory,
+                cdnBaseURL: "http://127.0.0.1:1"),
+            catalog: catalog)
+        await funnel.configureReevaluationForTesting(
+            delays: [.milliseconds(5), .milliseconds(5), .milliseconds(5)],
+            steadyInterval: .milliseconds(10))
+        let request = SpecDecArtifactFunnel.Request(
+            modelId: "gemma-4-target", modelType: "gemma4", enabled: true,
+            localPath: nil, allowDownload: true, environment: [:])
+
+        _ = await funnel.prepareForLoad(request)
+        let callsAfterFailure = await catalog.calls
+        _ = await funnel.prepareForLoad(request)
+        #expect(await catalog.calls == callsAfterFailure)
+
+        for _ in 0..<200 {
+            if await catalog.calls >= 5 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(await catalog.calls >= 5)
         await funnel.shutdown()
     }
 }

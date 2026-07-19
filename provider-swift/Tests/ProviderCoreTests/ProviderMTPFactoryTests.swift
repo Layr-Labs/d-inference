@@ -168,7 +168,7 @@ private actor MTPFreshProcessCatalog: SpecDecCatalogLooking {
 
 @Suite("Provider MTP target/assistant preparation")
 struct ProviderMTPFactoryTests {
-    @Test("fresh-process catalog prewarm activates a verified cached assistant on first load")
+    @Test("fresh-process load activates a verified cached assistant")
     func freshProcessCachedCatalogAssistantActivates() async throws {
         let staged = try mtpCatalogArtifact()
         defer { try? FileManager.default.removeItem(at: staged.directory) }
@@ -197,8 +197,7 @@ struct ProviderMTPFactoryTests {
         let funnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(storeRoot: root), catalog: catalog)
 
-        #expect(await funnel.prewarmCatalog(modelId: model.id, timeout: .seconds(1)))
-        let preparation = await funnel.prepare(.init(
+        let preparation = await funnel.prepareForLoad(.init(
             modelId: model.id, modelType: "gemma4", enabled: true,
             localPath: nil, allowDownload: true, environment: [:]))
         #expect(preparation.artifact?.source == .catalog)

@@ -119,6 +119,7 @@ extension ProviderLoop {
     /// all three so a local stream is never cut off mid-generation.
     internal var hasInflightWork: Bool {
         !inflightTasks.isEmpty || !requestToModel.isEmpty || localReservations.hasAny
+            || !specDecPromotionTasks.isEmpty
     }
 
     internal func waitForInflightDrain(timeout: Duration) async -> Bool {

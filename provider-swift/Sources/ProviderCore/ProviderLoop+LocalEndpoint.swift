@@ -101,6 +101,10 @@ extension ProviderLoop {
         // Fast-path drain/shutdown reject; an authoritative re-check follows the
         // `await` below, right before the reservation is taken (see comment there).
         try throwIfRefusingNewLocalWork()
+        if modelsPromotingSpecDec.contains(modelId) {
+            throw MultiModelBatchSchedulerEngineError.queueFull(
+                "model engine is being safely upgraded")
+        }
         do {
             try await ensureModelLoaded(modelId: modelId)
         } catch let err as InferenceError {
@@ -121,6 +125,10 @@ extension ProviderLoop {
         // is atomic — the reservation is either refused or counted in
         // `hasInflightWork` before any drain snapshot can miss it.
         try throwIfRefusingNewLocalWork()
+        if modelsPromotingSpecDec.contains(modelId) {
+            throw MultiModelBatchSchedulerEngineError.queueFull(
+                "model engine is being safely upgraded")
+        }
         localReservations.reserve(modelId)
         modelSlots[modelId]?.lastInferenceAt = .now
         let release: @Sendable (String) async -> Void = { [weak self] mid in

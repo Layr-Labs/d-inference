@@ -169,6 +169,16 @@ extension EngineV2Bridge {
         active.count
     }
 
+    /// Drain-safe replacement boundary. Outer provider request maps can clear
+    /// before the engine has finalized a cancelled row, so promotion must
+    /// require both bridge ownership and engine queue state to be empty.
+    public func isQuiescentForReplacement() -> Bool {
+        let snapshot = capacitySnapshot()
+        return active.isEmpty
+            && snapshot.activeRequests == 0
+            && snapshot.waitingRequests == 0
+    }
+
     /// This engine's live-KV admission ceiling in bytes.
     /// The heartbeat (`EngineV2Runtime.capacitySummary`) uses it as the
     /// grant input to the live budget clamp

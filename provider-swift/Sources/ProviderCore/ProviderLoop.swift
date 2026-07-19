@@ -285,6 +285,24 @@ public actor ProviderLoop {
     /// thrashing rebuilds).
     internal var engineV2LastRecoveryAt: [String: ContinuousClock.Instant] = [:]
 
+    /// Verified-assistant promotion lifecycle. One task per model waits for an
+    /// idle boundary, builds a replacement over retained target weights, and
+    /// swaps only after runtime activation and memory checks pass.
+    internal var specDecPromotionTasks: [String: Task<Void, Never>] = [:]
+    internal var specDecPromotionTaskIDs: [String: UUID] = [:]
+    internal var modelsPromotingSpecDec: Set<String> = []
+    internal struct SpecDecPromotionAttemptState {
+        let identity: String
+        var attempts: Int
+    }
+    internal struct SpecDecPromotionCandidate {
+        let artifact: SpecDecArtifact
+        let generation: UInt64
+    }
+    internal var specDecPromotionAttempts: [String: SpecDecPromotionAttemptState] = [:]
+    internal var specDecPromotionGenerations: [String: UInt64] = [:]
+    internal var pendingSpecDecPromotions: [String: SpecDecPromotionCandidate] = [:]
+
     /// Tracks in-flight inference tasks by request ID so they can be cancelled.
     internal var inflightTasks: [String: Task<Void, Never>] = [:]
 

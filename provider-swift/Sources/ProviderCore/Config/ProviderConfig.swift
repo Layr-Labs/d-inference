@@ -142,12 +142,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// false: availability beats perfection — a self-test failure may be
     /// transient and the model can still serve via the lazy-load path.
     public var startupSelftestFailClosed: Bool
-    /// MTP (multi-token prediction / speculative decoding) opt-in for CBv2
-    /// (`mtp` under `[backend]`, default false — beta id `mtp`). When enabled,
-    /// slot build resolves a Gemma drafter (`mtp_drafter_path` if set, else the
-    /// catalog entry's `spec_dec` download) and binds it to the engine. Drafter
-    /// resolution/load is fail-open: any failure means plain decode, never a
-    /// slot failure. `DARKBLOOM_CBV2_MTP` remains the engine-side kill switch.
+    /// Gemma 4 MTP policy (`mtp` under `[backend]`, default true). A missing key
+    /// migrates to production-default activation; an explicit `false` remains a
+    /// persistent per-provider opt-out. `DARKBLOOM_CBV2_MTP=0` has highest
+    /// precedence and forces target-only behavior even when this field is true.
+    /// Resolution/load is fail-open: any failure means target-only decode.
     public var mtp: Bool
     /// Optional local drafter directory override (`mtp_drafter_path` under
     /// `[backend]`) — the canary path: `config.json` + `*.safetensors`, no R2
@@ -178,7 +177,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         startupPreloadTimeoutSecs: UInt64 = 120,
         startupSelftest: Bool = true,
         startupSelftestFailClosed: Bool = false,
-        mtp: Bool = false,
+        mtp: Bool = true,
         mtpDrafterPath: String? = nil
     ) {
         self.port = port
@@ -254,7 +253,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.startupSelftest = try container.decodeIfPresent(Bool.self, forKey: .startupSelftest) ?? true
         self.startupSelftestFailClosed =
             try container.decodeIfPresent(Bool.self, forKey: .startupSelftestFailClosed) ?? false
-        self.mtp = try container.decodeIfPresent(Bool.self, forKey: .mtp) ?? false
+        self.mtp = try container.decodeIfPresent(Bool.self, forKey: .mtp) ?? true
         self.mtpDrafterPath = try container.decodeIfPresent(String.self, forKey: .mtpDrafterPath)
         // Retired keys: presence-only scan so startup can WARN (values are
         // ignored; an old provider.toml must keep loading cleanly).

@@ -208,6 +208,7 @@ extension ProviderLoop {
     /// hot-swap.
     private func beginUpdateDraining() {
         updatePhase = .draining
+        cancelSpecDecPromotions()
     }
 
     /// Download, verify, and stage the release bundle while still serving.

@@ -245,6 +245,17 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        if modelsPromotingSpecDec.contains(modelId) {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "model engine is being safely upgraded",
+                    statusCode: 503,
+                    errorReason: nil),
+                fallbackFailure: .capacity,
+                send: send)
+            return
+        }
         if await fastAdmissionReject(modelId: modelId) {
             logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
             lookupReceiptFinalizer.sendTerminal(
@@ -270,6 +281,17 @@ extension ProviderLoop {
             send: send,
             lookupReceiptFinalizer: lookupReceiptFinalizer)
         {
+            return
+        }
+        if modelsPromotingSpecDec.contains(modelId) {
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "model engine is being safely upgraded",
+                    statusCode: 503,
+                    errorReason: nil),
+                fallbackFailure: .capacity,
+                send: send)
             return
         }
 

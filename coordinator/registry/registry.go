@@ -3624,6 +3624,7 @@ func mergeHeartbeatSessionStats(previous, current protocol.HeartbeatStats) proto
 
 // Disconnect removes a provider from the registry and cleans up pending requests.
 func (r *Registry) Disconnect(id string) {
+	var disconnectedModels []string
 	r.mu.Lock()
 	p, ok := r.providers[id]
 	if ok {
@@ -3673,6 +3674,10 @@ func (r *Registry) Disconnect(id string) {
 			}
 		}
 		delete(r.faultKeyBySession, id)
+		disconnectedModels = make([]string, 0, len(p.Models))
+		for _, m := range p.Models {
+			disconnectedModels = append(disconnectedModels, m.ID)
+		}
 		if p.Status != StatusUntrusted {
 			r.onlineCount.Add(-1)
 			for _, m := range p.Models {
@@ -3686,6 +3691,11 @@ func (r *Registry) Disconnect(id string) {
 	if !ok {
 		return
 	}
+	// Removing the last capable provider can turn a queued constrained request
+	// from temporarily capacity-blocked into permanently unservable. Re-run
+	// the canonical drain after removal so those waiters receive the immediate
+	// capability-unavailable result instead of sleeping until maxWait.
+	r.drainQueuedRequestsForModels(disconnectedModels)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
 	r.cacheRouting.disconnect(id)

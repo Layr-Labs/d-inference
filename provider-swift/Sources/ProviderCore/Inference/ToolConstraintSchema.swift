@@ -149,31 +149,64 @@ enum ToolConstraintSchemaCompiler {
     }
 
     private static func grammarCost(_ schema: ToolValueSchema) -> Int {
+        let nullableBranchCost: Int
+        if case .null = schema {
+            nullableBranchCost = 0
+        } else {
+            nullableBranchCost = schema.nullable ? 4 : 0
+        }
+        let baseCost = boundedGrammarAdd(
+            8, nullableBranchCost)
+        let payloadCost: Int
         switch schema {
         case .object(let properties, _, _):
-            return properties.reduce(2) {
-                min(
-                    maxGrammarComplexity + 1,
-                    $0 + $1.name.utf8.count + 2 + grammarCost($1.schema))
+            payloadCost = properties.reduce(2) {
+                boundedGrammarAdd(
+                    $0,
+                    boundedGrammarAdd(
+                        $1.name.utf8.count + 2,
+                        grammarCost($1.schema)))
             }
         case .array(let items, _, let maxItems, _):
             let count = maxItems ?? maxArrayItems
-            let (product, overflow) = (grammarCost(items) + 1)
-                .multipliedReportingOverflow(by: count)
-            return overflow
-                ? maxGrammarComplexity + 1
-                : min(maxGrammarComplexity + 1, 2 + product)
+            payloadCost = boundedGrammarAdd(
+                2,
+                boundedGrammarMultiply(
+                    boundedGrammarAdd(grammarCost(items), 1),
+                    count))
         case .string(let values, _):
-            return values?.reduce(0) { $0 + $1.utf8.count + 10 } ?? 16
+            payloadCost =
+                values?.reduce(0) {
+                    boundedGrammarAdd($0, $1.utf8.count + 10)
+                } ?? 16
         case .boolean(let values, _):
-            return (values?.count ?? 2) * 5
+            payloadCost = boundedGrammarMultiply(values?.count ?? 2, 5)
         case .integer(let values, _):
-            return values?.reduce(0) { $0 + String($1).count } ?? 20
+            payloadCost =
+                values?.reduce(0) {
+                    boundedGrammarAdd($0, String($1).count)
+                } ?? 20
         case .number(let values, _):
-            return values?.reduce(0) { $0 + String($1).count } ?? 40
+            payloadCost =
+                values?.reduce(0) {
+                    boundedGrammarAdd($0, String($1).count)
+                } ?? 40
         case .null:
-            return 4
+            payloadCost = 4
         }
+        return boundedGrammarAdd(baseCost, payloadCost)
+    }
+
+    private static func boundedGrammarAdd(_ lhs: Int, _ rhs: Int) -> Int {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? maxGrammarComplexity + 1 : min(maxGrammarComplexity + 1, sum)
+    }
+
+    private static func boundedGrammarMultiply(_ lhs: Int, _ rhs: Int) -> Int {
+        let (product, overflow) = lhs.multipliedReportingOverflow(by: rhs)
+        return overflow
+            ? maxGrammarComplexity + 1
+            : min(maxGrammarComplexity + 1, product)
     }
 
     private static func compileSchema(

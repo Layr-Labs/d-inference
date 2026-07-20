@@ -551,6 +551,28 @@ struct GemmaToolConstraintTests {
         #expect(start.duration(to: clock.now) < .seconds(1))
     }
 
+    @Test("nullable branches count toward the grammar complexity ceiling")
+    func nullableBranchesAreCharged() {
+        var properties: [String: MLXLMCommon.JSONValue] = [:]
+        for index in 0 ..< 128 {
+            properties["p\(index)"] = .object([
+                "type": .array([.string("string"), .string("null")]),
+                "enum": .array([.null]),
+            ])
+        }
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object(properties),
+        ])
+        let tools = (0 ..< 64).map {
+            tool(name: "tool\($0)", parameters: parameters)
+        }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(choice: .mode(.required), tools: tools))
+        }
+    }
+
     @Test("numeric grammar cannot exceed parser-representable bounds")
     func numericGrammarIsBounded() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
@@ -684,6 +706,73 @@ struct GemmaToolConstraintTests {
                 .init(function: .init(
                     name: "weather", arguments: ["country": .string("FR")])),
             ], prepared: broadPrepared)
+        }
+    }
+
+    @Test("auto validation honors draft-04 tuple items and additionalItems")
+    func autoTupleItemsValidation() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "coordinates": .object([
+                    "type": .string("array"),
+                    "items": .array([
+                        .object(["type": .string("integer")]),
+                        .object(["type": .string("string")]),
+                    ]),
+                    "additionalItems": .bool(false),
+                ]),
+            ]),
+            "required": .array([.string("coordinates")]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools == nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: [
+                    "coordinates": .array([.int(7), .string("north")]),
+                ])),
+        ], prepared: prepared)
+        for invalid in [
+            MLXLMCommon.JSONValue.array([.string("north"), .int(7)]),
+            .array([.int(7), .string("north"), .bool(true)]),
+        ] {
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather",
+                        arguments: ["coordinates": invalid])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
+    @Test("auto integer validation accepts only integral finite doubles")
+    func autoIntegerValidationAcceptsIntegralDoubles() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "count": .object(["type": .string("integer")]),
+            ]),
+            "required": .array([.string("count")]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["count": .double(1.0)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["count": .double(1.5)])),
+            ], prepared: prepared)
         }
     }
 

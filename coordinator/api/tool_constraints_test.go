@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -238,6 +239,71 @@ func TestValidateToolConstraintRequestRejectsProviderGrammarExplosion(t *testing
 	if typed.status != http.StatusUnprocessableEntity ||
 		!strings.Contains(typed.message, "grammar exceeds") {
 		t.Fatalf("unexpected complexity rejection: %+v", typed)
+	}
+}
+
+func TestValidateToolConstraintRequestRejectsNullArrayBounds(t *testing.T) {
+	for _, bound := range []string{"minItems", "maxItems"} {
+		t.Run(bound, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`{
+				"model":"m",
+				"messages":[{"role":"user","content":"x"}],
+				"tools":[{"type":"function","function":{
+					"name":"expand",
+					"parameters":{
+						"type":"object",
+						"properties":{
+							"values":{"type":"array","items":{"type":"string"},"%s":null}
+						}
+					}
+				}}],
+				"tool_choice":"required"
+			}`, bound))
+			_, err := validateToolConstraintRequest(body)
+			var typed *toolConstraintRequestError
+			if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
+				t.Fatalf("null %s accepted: %T %v", bound, err, err)
+			}
+		})
+	}
+}
+
+func TestValidateToolConstraintRequestChargesNullableBranches(t *testing.T) {
+	properties := make(map[string]any, 128)
+	for index := range 128 {
+		properties[fmt.Sprintf("p%d", index)] = map[string]any{
+			"type": []any{"string", "null"},
+			"enum": []any{nil},
+		}
+	}
+	tools := make([]any, 64)
+	for index := range tools {
+		tools[index] = map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": fmt.Sprintf("tool%d", index),
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": properties,
+				},
+			},
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":       "m",
+		"messages":    []any{map[string]any{"role": "user", "content": "x"}},
+		"tools":       tools,
+		"tool_choice": "required",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, validationErr := validateToolConstraintRequest(body)
+	var typed *toolConstraintRequestError
+	if !errors.As(validationErr, &typed) ||
+		typed.status != http.StatusUnprocessableEntity ||
+		!strings.Contains(typed.message, "grammar exceeds") {
+		t.Fatalf("nullable grammar undercharged: %T %v", validationErr, validationErr)
 	}
 }
 

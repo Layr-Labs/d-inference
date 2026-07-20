@@ -105,6 +105,48 @@ func TestQueuedConstraintTerminatesWhenOnlyOldProvidersRemain(t *testing.T) {
 	}
 }
 
+func TestQueuedConstraintTerminatesWhenLastCapableProviderDisconnects(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-disconnect"
+	provider := makeSchedulerProvider(t, reg, "capable", model, 100)
+	provider.mu.Lock()
+	provider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	provider.ToolConstraintModels = map[string]struct{}{model: {}}
+	provider.mu.Unlock()
+
+	request := &QueuedRequest{
+		RequestID:  "queued-disconnect",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:          "queued-disconnect",
+			Model:              model,
+			RequestedMaxTokens: 32,
+			Traits: RequestTraits{
+				HasTools:               true,
+				RequiresToolConstraint: true,
+			},
+		},
+	}
+	if err := reg.Queue().Enqueue(request); err != nil {
+		t.Fatal(err)
+	}
+
+	reg.Disconnect(provider.ID)
+
+	select {
+	case selected := <-request.ResponseCh:
+		if selected != nil {
+			t.Fatalf("disconnected provider received constrained request: %s", selected.ID)
+		}
+		if !errors.Is(request.FailureReason, ErrQueueToolConstraintUnavailable) {
+			t.Fatalf("failure = %v", request.FailureReason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("disconnect left constrained request waiting for queue timeout")
+	}
+}
+
 func TestModelsUpdateRefreshesConstraintRoutingImmediately(t *testing.T) {
 	reg := New(testLogger())
 	oldModel := "gemma-4-old"

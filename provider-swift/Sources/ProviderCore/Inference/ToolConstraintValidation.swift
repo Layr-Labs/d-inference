@@ -111,6 +111,9 @@ enum ToolConstraintValidation {
             return allowed?.contains(value) ?? true
         case (.integer(let allowed, _), .int(let value)):
             return allowed?.contains(value) ?? true
+        case (.integer(let allowed, _), .double(let value)):
+            guard value.isFinite, value.rounded() == value else { return false }
+            return allowed?.contains(where: { Double($0) == value }) ?? true
         case (.number(let allowed, _), .int(let value)):
             return allowed?.contains(Double(value)) ?? true
         case (.number(let allowed, _), .double(let value)):
@@ -235,10 +238,20 @@ enum ToolConstraintValidation {
             } else {
                 prefix = []
             }
+            let legacyTuple: [ToolArgumentJSONValue]
+            if prefix.isEmpty, case .array(let schemas)? = object["items"] {
+                legacyTuple = schemas
+            } else {
+                legacyTuple = []
+            }
             for (index, child) in values.enumerated() {
                 let childSchema: ToolArgumentJSONValue?
                 if index < prefix.count {
                     childSchema = prefix[index]
+                } else if index < legacyTuple.count {
+                    childSchema = legacyTuple[index]
+                } else if !legacyTuple.isEmpty {
+                    childSchema = object["additionalItems"]
                 } else if let items = object["items"] {
                     childSchema = items
                 } else {
@@ -304,6 +317,8 @@ enum ToolConstraintValidation {
             ("array", .array), ("string", .string), ("integer", .int),
             ("number", .int), ("number", .double):
             true
+        case ("integer", .double(let number)):
+            number.isFinite && number.rounded() == number
         default:
             false
         }

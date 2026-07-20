@@ -4,6 +4,8 @@ use std::collections::HashSet;
 
 const MAX_ARRAY_ITEMS: usize = 16;
 const MAX_GRAMMAR_COMPLEXITY: usize = 50_000;
+const SCHEMA_FIXED_COST: usize = 8;
+const NULLABLE_BRANCH_COST: usize = 4;
 const STRING_DELIMITERS: [&str; 6] = [
     r#"<|"|>"#,
     "<escape>",
@@ -237,8 +239,18 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
     let Some(schema) = schema.as_object() else {
         return MAX_GRAMMAR_COMPLEXITY + 1;
     };
-    let Ok((kind, _)) = constrained_schema_type(schema) else {
+    let Ok((kind, mut nullable)) = constrained_schema_type(schema) else {
         return MAX_GRAMMAR_COMPLEXITY + 1;
+    };
+    match schema.get("nullable") {
+        None => {}
+        Some(Value::Bool(value)) => nullable |= *value,
+        Some(_) => return MAX_GRAMMAR_COMPLEXITY + 1,
+    }
+    let base_cost = if nullable {
+        grammar_add(SCHEMA_FIXED_COST, NULLABLE_BRANCH_COST)
+    } else {
+        SCHEMA_FIXED_COST
     };
     let finite_values = if let Some(constant) = schema.get("const") {
         Some(vec![constant])
@@ -248,7 +260,7 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
             .and_then(Value::as_array)
             .map(|values| values.iter().collect())
     };
-    match kind.as_str() {
+    let payload_cost = match kind.as_str() {
         "object" => {
             let mut cost = 2;
             if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
@@ -300,7 +312,8 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
         }
         "null" => 4,
         _ => MAX_GRAMMAR_COMPLEXITY + 1,
-    }
+    };
+    grammar_add(base_cost, payload_cost)
 }
 
 fn grammar_add(lhs: usize, rhs: usize) -> usize {
@@ -317,7 +330,7 @@ fn grammar_multiply(lhs: usize, rhs: usize) -> usize {
 
 fn constrained_nonnegative(raw: Option<&Value>) -> Result<Option<usize>, NormalizeError> {
     match raw {
-        None | Some(Value::Null) => Ok(None),
+        None => Ok(None),
         Some(Value::Number(value)) => value
             .as_u64()
             .and_then(|value| usize::try_from(value).ok())
@@ -370,6 +383,58 @@ mod tests {
                 }
             }
         })];
+        assert!(validate_constrained_tools(&tools).is_err());
+    }
+
+    #[test]
+    fn rejects_null_array_bounds() {
+        for bound in ["minItems", "maxItems"] {
+            let mut array = json!({
+                "type": "array",
+                "items": {"type": "string"}
+            });
+            array
+                .as_object_mut()
+                .expect("array schema")
+                .insert(bound.into(), Value::Null);
+            let tools = vec![json!({
+                "type": "function",
+                "function": {
+                    "name": "expand",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"values": array}
+                    }
+                }
+            })];
+            assert!(validate_constrained_tools(&tools).is_err(), "{bound}");
+        }
+    }
+
+    #[test]
+    fn charges_nullable_branches_to_the_grammar_budget() {
+        let properties = (0..128)
+            .map(|index| {
+                (
+                    format!("p{index}"),
+                    json!({"type": ["string", "null"], "enum": [null]}),
+                )
+            })
+            .collect::<serde_json::Map<String, Value>>();
+        let tools = (0..64)
+            .map(|index| {
+                json!({
+                    "type": "function",
+                    "function": {
+                        "name": format!("tool{index}"),
+                        "parameters": {
+                            "type": "object",
+                            "properties": properties.clone()
+                        }
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
         assert!(validate_constrained_tools(&tools).is_err());
     }
 

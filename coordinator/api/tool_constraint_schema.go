@@ -10,6 +10,8 @@ import (
 const (
 	constrainedMaxArrayItems        = 16
 	constrainedMaxGrammarComplexity = 50_000
+	constrainedSchemaFixedCost      = 8
+	constrainedNullableBranchCost   = 4
 )
 
 var constrainedStringDelimiters = []string{
@@ -110,11 +112,19 @@ func validateConstrainedSchema(raw any, root bool, depth int, path string) error
 		if err := validateConstrainedSchema(items, false, depth+1, path+".items"); err != nil {
 			return err
 		}
-		minItems, err := constrainedNonnegativeInt(schema["minItems"], 0)
+		rawMinItems, hasMinItems := schema["minItems"]
+		if hasMinItems && rawMinItems == nil {
+			return invalidToolConstraint(path+".minItems must be a nonnegative integer", "tools")
+		}
+		minItems, err := constrainedNonnegativeInt(rawMinItems, 0)
 		if err != nil {
 			return invalidToolConstraint(path+".minItems must be a nonnegative integer", "tools")
 		}
-		maxItems, hasMax, err := constrainedOptionalInt(schema["maxItems"])
+		rawMaxItems, hasMaxItems := schema["maxItems"]
+		if hasMaxItems && rawMaxItems == nil {
+			return invalidToolConstraint(path+".maxItems must be a nonnegative integer", "tools")
+		}
+		maxItems, hasMax, err := constrainedOptionalInt(rawMaxItems)
 		if err != nil {
 			return invalidToolConstraint(path+".maxItems must be a nonnegative integer", "tools")
 		}
@@ -134,69 +144,83 @@ func constrainedSchemaGrammarCost(raw any) int {
 	if !ok {
 		return constrainedMaxGrammarComplexity + 1
 	}
-	kind, _, err := constrainedSchemaType(schema)
+	kind, nullable, err := constrainedSchemaType(schema)
 	if err != nil {
 		return constrainedMaxGrammarComplexity + 1
 	}
+	if rawNullable, exists := schema["nullable"]; exists {
+		flag, ok := rawNullable.(bool)
+		if !ok {
+			return constrainedMaxGrammarComplexity + 1
+		}
+		nullable = nullable || flag
+	}
+	baseCost := constrainedSchemaFixedCost
+	if nullable {
+		baseCost = constrainedGrammarAdd(baseCost, constrainedNullableBranchCost)
+	}
 	values, finite := constrainedSchemaFiniteValues(schema)
+	payloadCost := 0
 	switch kind {
 	case "object":
-		cost := 2
+		payloadCost = 2
 		properties, _ := schema["properties"].(map[string]any)
 		for name, child := range properties {
-			cost = constrainedGrammarAdd(
-				cost, len([]byte(name))+2+constrainedSchemaGrammarCost(child))
+			payloadCost = constrainedGrammarAdd(
+				payloadCost, len([]byte(name))+2+constrainedSchemaGrammarCost(child))
 		}
-		return cost
 	case "array":
 		count := constrainedMaxArrayItems
 		if maximum, present, parseErr := constrainedOptionalInt(schema["maxItems"]); parseErr == nil && present {
 			count = maximum
 		}
 		itemCost := constrainedSchemaGrammarCost(schema["items"])
-		return constrainedGrammarAdd(
+		payloadCost = constrainedGrammarAdd(
 			2, constrainedGrammarMultiply(itemCost+1, count))
 	case "string":
 		if !finite {
-			return 16
-		}
-		cost := 0
-		for _, value := range values {
-			if text, ok := value.(string); ok {
-				cost = constrainedGrammarAdd(cost, len([]byte(text))+10)
+			payloadCost = 16
+		} else {
+			for _, value := range values {
+				if text, ok := value.(string); ok {
+					payloadCost = constrainedGrammarAdd(
+						payloadCost, len([]byte(text))+10)
+				}
 			}
 		}
-		return cost
 	case "boolean":
 		if !finite {
-			return 10
-		}
-		count := 0
-		for _, value := range values {
-			if _, ok := value.(bool); ok {
-				count++
+			payloadCost = 10
+		} else {
+			count := 0
+			for _, value := range values {
+				if _, ok := value.(bool); ok {
+					count++
+				}
 			}
+			payloadCost = constrainedGrammarMultiply(count, 5)
 		}
-		return constrainedGrammarMultiply(count, 5)
 	case "integer", "number":
 		if !finite {
 			if kind == "integer" {
-				return 20
+				payloadCost = 20
+			} else {
+				payloadCost = 40
 			}
-			return 40
-		}
-		cost := 0
-		for _, value := range values {
-			if number, ok := value.(json.Number); ok {
-				cost = constrainedGrammarAdd(cost, len(number.String()))
+		} else {
+			for _, value := range values {
+				if number, ok := value.(json.Number); ok {
+					payloadCost = constrainedGrammarAdd(
+						payloadCost, len(number.String()))
+				}
 			}
 		}
-		return cost
 	case "null":
-		return 4
+		payloadCost = 4
 	default:
 		return constrainedMaxGrammarComplexity + 1
 	}
+	return constrainedGrammarAdd(baseCost, payloadCost)
 }
 
 func constrainedSchemaFiniteValues(schema map[string]any) ([]any, bool) {

@@ -116,6 +116,12 @@ private struct WideConstraintTokenizer: MLXLMCommon.Tokenizer {
 
 @Suite("Gemma CBv2 tool constraints")
 struct GemmaToolConstraintTests {
+    private static let realGemmaModelID =
+        "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+    private static var hasRealGemmaTokenizerFixture: Bool {
+        ModelScanner.resolveLocalPath(modelID: realGemmaModelID) != nil
+    }
+
     private let tokenizer = TokenizerHandle(ASCIIConstraintTokenizer())
 
     private func tool(
@@ -681,13 +687,13 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("local production Gemma tokenizer compiles and accepts the canonical envelope")
+    @Test(
+        "local production Gemma tokenizer compiles and accepts the canonical envelope",
+        .enabled(if: Self.hasRealGemmaTokenizerFixture)
+    )
     func realGemmaTokenizerIntegration() async throws {
-        let modelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-        guard let directory = ModelScanner.resolveLocalPath(modelID: modelID) else {
-            Issue.record("local Gemma tokenizer fixture is unavailable")
-            return
-        }
+        let directory = try #require(
+            ModelScanner.resolveLocalPath(modelID: Self.realGemmaModelID))
         let loaded = try await LocalTokenizerLoader().load(from: directory)
         let handle = TokenizerHandle(loaded)
         let request = OpenAIChatCompletionRequest(

@@ -170,24 +170,6 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
 extension EngineV2Bridge {
 
-    static func nativeFullReservationDelta(
-        stagedBytes: Int,
-        stagedTokens: Int,
-        nominalBytesPerToken: Int,
-        worstCaseTokens: Int
-    ) -> UInt64? {
-        guard stagedBytes > 0, stagedTokens > 0,
-            stagedBytes.isMultiple(of: stagedTokens),
-            nominalBytesPerToken >= 0,
-            worstCaseTokens > 0
-        else { return nil }
-        let exact = stagedBytes / stagedTokens
-        let delta = max(0, exact - nominalBytesPerToken)
-        let (total, overflow) = delta.multipliedReportingOverflow(by: worstCaseTokens)
-        guard !overflow else { return nil }
-        return UInt64(total)
-    }
-
     func emitPrefixCacheColdFallback(
         requestId: String,
         reason: String,

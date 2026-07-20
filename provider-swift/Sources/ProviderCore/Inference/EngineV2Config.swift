@@ -251,8 +251,8 @@ public enum EngineV2Factory {
 
     /// WARN `engine_health` event when a model configured for `kv_quant` is
     /// served through engine_v2, which does NOT support KV-quant and uses
-    /// fp16 caches (`makeProductionEngine` builds `CBv2LayerCache`, never a
-    /// quantized cache). Surfacing this keeps the operator from assuming
+    /// unquantized native-float caches (`makeProductionEngine` builds
+    /// `CBv2LayerCache`, never a quantized cache). Surfacing this keeps the operator from assuming
     /// the memory savings apply. Allowlisted fields only.
     static func emitKVQuantUnsupportedTelemetry(
         modelId: String,
@@ -262,7 +262,7 @@ public enum EngineV2Factory {
             source: .provider,
             severity: .warn,
             kind: .engineHealth,
-            message: "engine_v2: kv_quant not supported — using fp16 caches"
+            message: "engine_v2: kv_quant not supported — using unquantized native KV"
         )
         event.fields = TelemetryFieldFilter.filter([
             "component": .string("engine"),

@@ -37,7 +37,7 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!(await budget.reserve(requestID: "overflow", kvBytesPerToken: Int.max, tokenCount: Int.max)))
 }
 
-@Test func globalKVCacheBudgetGrowsAndReconcilesNativeByteReservationsAtomically() async {
+@Test func globalKVCacheBudgetReconcilesExactByteReservationsAtomically() async {
     let budget = GlobalKVCacheBudget(capFraction: 1.0, activationReserveBytes: 0) {
         GlobalKVCacheBudget.MemorySnapshot(
             total: 8 * gib,
@@ -46,9 +46,12 @@ private let gib: UInt64 = 1024 * 1024 * 1024
             systemAvailable: 1_000)
     }
     #expect(await budget.reserveBytes(requestID: "native", bytes: 400))
-    #expect(await budget.increaseReservation(requestID: "native", additionalBytes: 300))
+    #expect(await budget.outstandingReservedBytes() == 400)
+    #expect(await budget.increaseReservation(requestID: "native", additionalBytes: 100))
+    #expect(await budget.outstandingReservedBytes() == 500)
+    #expect(await budget.resizeReservationBytes(requestID: "native", bytes: 700))
     #expect(await budget.outstandingReservedBytes() == 700)
-    #expect(!(await budget.increaseReservation(requestID: "native", additionalBytes: 301)))
+    #expect(!(await budget.resizeReservationBytes(requestID: "native", bytes: 1_001)))
     #expect(await budget.outstandingReservedBytes() == 700)
     #expect(await budget.resizeReservationBytes(requestID: "native", bytes: 512))
     #expect(await budget.outstandingReservedBytes() == 512)

@@ -55,9 +55,13 @@ disabled with `DARKBLOOM_PREFIX_CACHE=0`; there is no production RAM cache or
 persistent memory carve. CBv2 layer-aware block snapshots are enabled only for
 layouts that can resume exactly. Interleaved hybrids use frozen-full tail replay
 on contiguous unquantized rows: sliding state rebuilds from C while owning full K/V
-remains immutable through M. Paged hybrids and quantized rows remain cold-only.
+remains immutable through M
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/ContiguousKVBackend.swift:162-230`;
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FrozenReplayFullSequenceKV.swift:54-99`).
+Paged hybrids and quantized rows remain cold-only
+(`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift:120-153`).
 The production capability policy is
-`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift`.
+`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift:108-139`.
 
 See [`reference/ssd-kv-cache.md`](../reference/ssd-kv-cache.md) for the as-built reference and
 [`reference/ssd-kv-cache-hybrid-models.md`](../reference/ssd-kv-cache-hybrid-models.md) for the hybrid-model design.

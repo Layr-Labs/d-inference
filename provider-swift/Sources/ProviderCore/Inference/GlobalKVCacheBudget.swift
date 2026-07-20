@@ -200,26 +200,17 @@ public actor GlobalKVCacheBudget {
         return commit(requestID: requestID, bytes: bytes)
     }
 
-    /// Atomically grow an existing request reservation. Used when SSD staging
-    /// reveals native KV width (for example GPT-OSS fp32 full rows) after the
-    /// initial nominal token reservation was taken.
+    /// Compatibility surface for callers that grow an existing raw-byte
+    /// reservation. Production contiguous KV now reserves its native width
+    /// atomically up front; SSD staging uses `resizeReservationBytes`.
+    @available(*, deprecated, message: "Reserve native KV up front or use resizeReservationBytes")
     public func increaseReservation(requestID: String, additionalBytes: UInt64) -> Bool {
-        guard additionalBytes > 0, var current = reservations[requestID] else {
+        guard additionalBytes > 0, let current = reservations[requestID] else {
             return additionalBytes == 0 && reservations[requestID] != nil
         }
-        let (newBytes, overflow) = current.bytes.addingReportingOverflow(additionalBytes)
+        let (target, overflow) = current.bytes.addingReportingOverflow(additionalBytes)
         guard !overflow else { return false }
-        let available = availableReservationBytes()
-        guard additionalBytes <= available else {
-            reclaimer.scheduleReclaim(shortfall: additionalBytes - available)
-            recordCommitRejection()
-            return false
-        }
-        current.bytes = newBytes
-        reservations[requestID] = current
-        rejectionStreakStart = nil
-        lastRejectionAt = nil
-        return true
+        return resizeReservationBytes(requestID: requestID, bytes: target)
     }
 
     /// Atomically resize an existing raw-byte reservation after encrypted file

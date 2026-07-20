@@ -111,9 +111,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         /// `windowCount × maxWindow` — the engine's recompute bound; the
         /// staging benefit gate subtracts it from `matched`.
         let adoptionBoundTokens: Int
-        /// Nominal full-row bytes per token used by the provider's initial
-        /// request reservation. Staging reports exact native bytes so the
-        /// bridge can reserve only the fp32/native-width delta.
+        /// Nominal fp16 full-row bytes per token used by SSD replay planning.
+        /// The slot factory independently gives every contiguous request a
+        /// resolved native-width process reservation before staging.
         let nominalFullKVBytesPerToken: Int
         let layoutEpoch: String
         let epochStore: SSDCacheEpochStore?

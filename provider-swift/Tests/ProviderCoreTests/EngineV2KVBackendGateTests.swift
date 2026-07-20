@@ -10,6 +10,7 @@
 // These tests CONSTRUCT engines (paged construction materializes its slab
 // pool — a small Metal eval), but never run a forward pass.
 
+import CryptoKit
 import Foundation
 import MLX
 import MLXLLM
@@ -66,6 +67,30 @@ private func tinyGemma4Text() throws -> Gemma4TextModel {
         "use_double_wide_mlp": false,
     ])
     return Gemma4TextModel(config)
+}
+
+private struct GateProcessorError: Error {}
+
+private struct GateProcessor: UserInputProcessor {
+    func prepare(input: UserInput) async throws -> LMInput {
+        throw GateProcessorError()
+    }
+}
+
+private final class GateCacheCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _cache: SSDPrefixCache?
+    private var _capability: CBv2PrefixReuseCapability?
+
+    func set(cache: SSDPrefixCache, capability: CBv2PrefixReuseCapability) {
+        lock.withLock {
+            _cache = cache
+            _capability = capability
+        }
+    }
+
+    var cache: SSDPrefixCache? { lock.withLock { _cache } }
+    var capability: CBv2PrefixReuseCapability? { lock.withLock { _capability } }
 }
 
 private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
@@ -174,5 +199,241 @@ struct EngineV2KVBackendGateTests {
         #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason?.hasPrefix("kernel_preflight:") == true)
         await build.engine.shutdown()
+    }
+
+    @Test("explicit paged fallback constructs frozen-full cache for resolved contiguous backend")
+    func pagedFallbackConstructsFrozenCache() async throws {
+        struct PreflightFailure: Error {}
+        let model = try tinyGemma4Text()
+        let prepared = try EngineV2Factory.prepareProductionBackend(
+            model: model,
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBackend: .paged,
+            maxContextLength: 2048,
+            environment: [:],
+            pagedPreflightOverride: { _ in throw PreflightFailure() })
+        #expect(prepared.kind == .contiguous)
+        #expect(prepared.fallbackReason?.hasPrefix("kernel_preflight:") == true)
+
+        let capability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: prepared.layerKinds,
+            backendSelection: .contiguous)
+        #expect(capability.strategy == .frozenFullReplay)
+        #expect(capability.isSupported)
+
+        let capacityFallback = try EngineV2Factory.prepareProductionBackend(
+            model: model,
+            kvBytesCapacity: 1_024,
+            maxConcurrentRequests: 2,
+            kvBackend: .paged,
+            maxContextLength: 2048,
+            environment: [:],
+            pagedPreflightOverride: { _ in })
+        #expect(capacityFallback.kind == .contiguous)
+        #expect(capacityFallback.fallbackReason?.hasPrefix("physical_capacity:") == true)
+        #expect(PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: capacityFallback.layerKinds,
+            backendSelection: .contiguous
+        ).strategy == .frozenFullReplay)
+
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("paged-fallback-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let cache = SSDPrefixCache(
+            config: .init(
+                modelId: "tiny-gemma-paged-fallback",
+                promptContractID: "tiny-gemma-contract",
+                weightHash: "tiny-gemma-weights",
+                blockSize: PrefixCachePolicy.blockSize,
+                adoptionBoundTokens: capability.conservativeReplayBoundTokens,
+                nominalFullKVBytesPerToken: capability.fullKVBytesPerToken,
+                layoutEpoch: SSDBlockStore.layoutEpoch(
+                    blockSize: PrefixCachePolicy.blockSize,
+                    layerKinds: prepared.layerKinds),
+                root: root,
+                ttlSeconds: 900,
+                minEffectiveTokens: 1,
+                maxStageBytes: 1 << 20,
+                maxStageMillis: 1_000,
+                nowSeconds: { 1_000 }),
+            kekKey: SymmetricKey(size: .bits256),
+            kvBudget: nil,
+            diskBudget: SSDDiskBudget(),
+            maxWriteBytesPerDay: 0,
+            strictFsync: false,
+            diskBudgetBytes: { 1 << 20 })
+        defer { cache.close() }
+
+        let build = try EngineV2Factory.assembleProductionBuild(
+            model: model,
+            tokenizer: StubBridgeTokenizer(),
+            prefixCache: cache,
+            maxConcurrentRequests: 2,
+            mtpDrafter: nil,
+            mtpConfig: CBv2MTPConfig(),
+            preparedBackend: prepared)
+        #expect(build.kvBackendKind == .contiguous)
+        let engine = try #require(build.engine as? EngineV2)
+        #expect(engine.prefixReuseCapability.strategy == .frozenFullReplay)
+        #expect(throws: CBv2KVError.self) {
+            _ = try EngineV2Factory.assembleProductionBuild(
+                model: model,
+                tokenizer: StubBridgeTokenizer(),
+                prefixCache: cache,
+                maxConcurrentRequests: 2,
+                mtpDrafter: nil,
+                mtpConfig: CBv2MTPConfig(),
+                preparedBackend: prepared)
+        }
+        await build.engine.shutdown()
+    }
+
+    @Test("slot factory resolves paged fallback before constructing frozen cache")
+    func slotFactoryOrdersResolvedBackendBeforeCache() async throws {
+        struct PreflightFailure: Error {}
+        let model = try tinyGemma4Text()
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: "tiny/gemma"),
+                model: model,
+                processor: GateProcessor(),
+                tokenizer: tokenizer))
+        let preparedModel = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: model,
+                eosTokenIds: [1],
+                extraEOSTokens: []),
+            servingModel: model,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+        let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("slot-fallback-cache-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let capture = GateCacheCapture()
+
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: "tiny-gemma",
+            modelType: "gemma4_text",
+            isVLM: false,
+            modelDirectory: nil,
+            container: container,
+            tokenizer: TokenizerHandle(tokenizer),
+            sizing: SlotSizingSnapshot(
+                weightsBytes: 1,
+                fp16KVBytesPerToken: 1_024,
+                maxContextLength: 2_048,
+                defaultMaxTokens: 32),
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBudget: nil,
+            kvQuantConfigured: false,
+            kvBackendConfig: "paged",
+            weightHash: String(repeating: "a", count: 64),
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            preparedModel: preparedModel,
+            assemblyOverrides: .init(
+                promptContractID: "tiny-gemma-contract",
+                pagedPreflight: { _ in throw PreflightFailure() },
+                makePrefixCache: { layerKinds, capability in
+                    let cache = SSDPrefixCache(
+                        config: .init(
+                            modelId: "tiny-gemma",
+                            promptContractID: "tiny-gemma-contract",
+                            weightHash: String(repeating: "a", count: 64),
+                            blockSize: PrefixCachePolicy.blockSize,
+                            adoptionBoundTokens: capability.conservativeReplayBoundTokens,
+                            nominalFullKVBytesPerToken: capability.fullKVBytesPerToken,
+                            layoutEpoch: SSDBlockStore.layoutEpoch(
+                                blockSize: PrefixCachePolicy.blockSize,
+                                layerKinds: layerKinds),
+                            root: root,
+                            ttlSeconds: 900,
+                            minEffectiveTokens: 1,
+                            maxStageBytes: 1 << 20,
+                            maxStageMillis: 1_000,
+                            nowSeconds: { 1_000 }),
+                        kekKey: SymmetricKey(size: .bits256),
+                        kvBudget: nil,
+                        diskBudget: SSDDiskBudget(),
+                        maxWriteBytesPerDay: 0,
+                        strictFsync: false,
+                        diskBudgetBytes: { 1 << 20 })
+                    capture.set(cache: cache, capability: capability)
+                    return cache
+                }),
+            environment: [:])
+        let cache = try #require(capture.cache)
+        let backendKind = await bundle.bridge.kvBackendKind
+        #expect(backendKind == .contiguous)
+        #expect(bundle.bridge.ssdPrefixCache === cache)
+        #expect(capture.capability?.strategy == .frozenFullReplay)
+        #expect(capture.capability?.backend == .contiguousUnquantized)
+        await bundle.bridge.shutdown()
+    }
+
+    @Test("slot factory publishes GPT-OSS native contiguous rate without SSD staging")
+    func slotFactoryPublishesNativeGPTOSSRate() async throws {
+        let model = try tinyGPTOSS()
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: "tiny/gpt-oss"),
+                model: model,
+                processor: GateProcessor(),
+                tokenizer: tokenizer))
+        let preparedModel = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: model,
+                eosTokenIds: [1],
+                extraEOSTokens: []),
+            servingModel: model,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+        let nominalRate = 100_000
+        let expectedRate =
+            nominalRate
+            + CBv2PrefixReuseCapability.derive(
+                layerKinds: model.cbv2LayerKinds,
+                backend: .contiguousUnquantized
+            ).fullKVBytesPerToken
+
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: "tiny-gpt-oss",
+            modelType: "gpt_oss",
+            isVLM: false,
+            modelDirectory: nil,
+            container: container,
+            tokenizer: TokenizerHandle(tokenizer),
+            sizing: SlotSizingSnapshot(
+                weightsBytes: 1,
+                fp16KVBytesPerToken: nominalRate,
+                maxContextLength: 2_048,
+                defaultMaxTokens: 32),
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBudget: nil,
+            kvQuantConfigured: false,
+            kvBackendConfig: "contiguous",
+            weightHash: String(repeating: "b", count: 64),
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            preparedModel: preparedModel,
+            environment: [PrefixCachePolicy.environmentFlag: "0"])
+        let backendKind = await bundle.bridge.kvBackendKind
+        let nativeRate = await bundle.bridge.kvBytesPerToken
+        let heartbeat = await bundle.bridge.backendSlotCapacity()
+        #expect(backendKind == .contiguous)
+        #expect(nativeRate == expectedRate)
+        #expect(heartbeat.kvBytesPerToken == Int64(expectedRate))
+        await bundle.bridge.shutdown()
     }
 }

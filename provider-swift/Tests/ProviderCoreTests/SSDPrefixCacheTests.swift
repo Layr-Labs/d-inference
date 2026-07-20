@@ -623,6 +623,26 @@ struct SSDPrefixCacheModeTests {
         #expect(SSDPrefixCacheFactory.verifiedWeightHash("  abcd1234  ") == "abcd1234")
     }
 
+    @Test("test root is isolated and requires the ephemeral-key gate")
+    func isolatedTestRoot() {
+        let root = tempDir("factory-test-root").standardizedFileURL
+        defer { try? FileManager.default.removeItem(at: root) }
+        let raw = [
+            "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL": "1",
+            SSDPrefixCacheFactory.testRootEnvironmentKey: root.path,
+        ]
+        #expect(SSDPrefixCacheFactory.cacheRootDirectory(environment: raw) == root)
+        #expect(
+            SSDPrefixCacheFactory.cacheDirectory(
+                modelId: "isolated-model",
+                environment: raw
+            ).deletingLastPathComponent() == root)
+        #expect(
+            SSDPrefixCacheFactory.cacheRootDirectory(environment: [
+                SSDPrefixCacheFactory.testRootEnvironmentKey: root.path
+            ]) != root)
+    }
+
     @Test("durable-byte stage estimate is positive, conservative, and wire-bounded")
     func durableStageEstimate() {
         #expect(SSDPrefixCachePolicy.estimatedStageMillis(bytes: 1) == 1)

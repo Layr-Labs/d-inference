@@ -86,7 +86,8 @@ extension EngineV2Bridge {
         //                           conservative for sliding-window models,
         //                           whose engine ledger plateaus per layer)
         //   activeTokenBudgetMax  ← min(kvBytesCapacity, live fleet clamp) /
-        //                           fp16 rate (the engine's admission ceiling
+        //                           resolved native rate (the engine's
+        //                           admission ceiling
         //                           in tokens, clamped to the sizing
         //                           function's CURRENT answer when the caller
         //                           supplies fleet context — see the doc

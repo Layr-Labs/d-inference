@@ -95,10 +95,10 @@ public actor EngineV2Bridge {
     let maxConcurrentRequests: Int
     /// Per-token KV byte cost for bytes→tokens capacity derivation
     /// (0 = unknown; capacity then falls back to the engine's token counts).
-    /// This is the unquantized fp16 rate: v0.7.5 rejects `kv_quant` intent with
-    /// a warning and EngineV2 builds only fp16 caches, so heartbeat budgets and
-    /// the shared-budget reservation below are
-    /// sized to the caches actually built — see `EngineV2KVSizing`.
+    /// This is the resolved native serving rate. Contiguous GPT-OSS adds the
+    /// fp32 owning-full-row delta to the nominal fp16 sizing rate; Gemma and
+    /// paged slots remain fp16. Heartbeats and process-wide reservations use
+    /// the same value so neither can overstate capacity.
     let kvBytesPerToken: Int
     /// Process-wide KV reservation ledger shared by every EngineV2 slot.
     /// When set (production), each v2 submission must RESERVE its worst-case
@@ -390,10 +390,7 @@ public actor EngineV2Bridge {
         // where lookup never ran (rejections below, pump terminals).
         // Vision requests never stage (engine policy symmetry).
         var ssdStaged = false
-        var ssdStagedDeviceBytes = 0
-        var ssdStagedTokens = 0
         var ssdReuseAttempted = false
-        var ssdCapacityFallbackEmitted = false
         if !cacheEnabled {
             usageSignal?.recordCacheDisabled(tier: ssdPrefixCache == nil ? .memory : .ssd)
         } else if multimodal != nil {
@@ -411,12 +408,9 @@ public actor EngineV2Bridge {
                     requestId: id,
                     reason: "stage_capacity",
                     capacityRefusal: true)
-                ssdCapacityFallbackEmitted = true
             }
             ssdStaged = stageResult.staged
             ssdReuseAttempted = stageResult.staged
-            ssdStagedDeviceBytes = stageResult.deviceBytes
-            ssdStagedTokens = stageResult.stagedTokens
             // `stage` suspended this actor — re-check the duplicate guard
             // (same discipline as the shared-budget gate below).
             guard active[id] == nil else {
@@ -448,10 +442,29 @@ public actor EngineV2Bridge {
             multimodal: multimodal
         )
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
+        let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
+            cbv2Request.maxTokens)
+        guard !tokenCountOverflow else {
+            if let prefixCacheReceiptID {
+                if ssdStaged {
+                    await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
+                }
+                if readyReceiptRegistered {
+                    ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
+                }
+            }
+            usageSignal?.finalizeLookup(
+                failure: .capacity,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+            continuation.yield(.error(
+                "token_budget_exhausted: request token count overflow"))
+            continuation.finish()
+            return stream
+        }
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
-        // footprint (prompt + maxTokens at the nominal configured rate) in
-        // the process-wide ledger BEFORE handing the
+        // footprint (prompt + maxTokens at the resolved native serving rate)
+        // in the process-wide ledger BEFORE handing the
         // request to the engine. The engine's private byte ledger
         // (`AdmissionV2`, sized to its own `kvBytesCapacity`) only knows its
         // own slot; when another slot (legacy or v2) already has live KV
@@ -469,7 +482,6 @@ public actor EngineV2Bridge {
         // (unit tests / standalone), the per-token rate is unknown (0), or
         // maxTokens ≤ 0 (degenerate request — the engine finishes it
         // immediately without allocating any KV).
-        let worstCaseTokens = promptTokens.count + cbv2Request.maxTokens
         var sharedKVReserved = false
         // PAGED slots skip the per-request shared-KV reserve: the pool is
         // physically committed at construction (`materializeSlabs`) and
@@ -495,48 +507,8 @@ public actor EngineV2Bridge {
                     kvBytesPerToken: kvBytesPerToken,
                     tokenCount: worstCaseTokens)
             }
-            if sharedKVReserved, ssdReuseAttempted, ssdStagedDeviceBytes > 0,
-                ssdStagedTokens > 0,
-                let cache = ssdPrefixCache
-            {
-                let additional = Self.nativeFullReservationDelta(
-                    stagedBytes: ssdStagedDeviceBytes,
-                    stagedTokens: ssdStagedTokens,
-                    nominalBytesPerToken: cache.config.nominalFullKVBytesPerToken,
-                    worstCaseTokens: worstCaseTokens)
-                if let additional, additional > 0 {
-                    let augmented = await kvBudget.increaseReservation(
-                        requestID: id,
-                        additionalBytes: additional)
-                    if !augmented, let prefixCacheReceiptID {
-                        if ssdStaged {
-                            await cache.abandonStaging(requestID: prefixCacheReceiptID)
-                        }
-                        await kvBudget.release(requestID: id)
-                        sharedKVReserved = false
-                        ssdStaged = false
-                        emitPrefixCacheColdFallback(
-                            requestId: id,
-                            reason: "native_kv_capacity",
-                            capacityRefusal: true)
-                        ssdCapacityFallbackEmitted = true
-                    }
-                } else if additional == nil, let prefixCacheReceiptID {
-                    if ssdStaged {
-                        await cache.abandonStaging(requestID: prefixCacheReceiptID)
-                    }
-                    await kvBudget.release(requestID: id)
-                    sharedKVReserved = false
-                    ssdStaged = false
-                    emitPrefixCacheColdFallback(
-                        requestId: id,
-                        reason: "native_kv_accounting",
-                        capacityRefusal: true)
-                    ssdCapacityFallbackEmitted = true
-                }
-            }
             guard sharedKVReserved else {
-                if ssdReuseAttempted, !ssdCapacityFallbackEmitted {
+                if ssdReuseAttempted {
                     emitPrefixCacheColdFallback(
                         requestId: id,
                         reason: "shared_kv_capacity",

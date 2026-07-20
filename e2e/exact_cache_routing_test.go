@@ -63,13 +63,18 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	require.NoError(t, suite.Coordinator.Registry.SendLoadModel(providers[0].ID, model))
 	firstModel := waitForLoadedModel(t, providers[0], model, 3*time.Minute)
 	require.Equal(t, firstModel.WeightHash, secondModel.WeightHash)
-	for _, provider := range providers {
-		provider.Mu().Lock()
-		_, advertised := provider.PrefixCacheV2Models[model]
-		provider.Mu().Unlock()
-		require.False(t, advertised,
-			"unsafe hybrid attention layout advertised reusable cache evidence")
-	}
+	require.Eventually(t, func() bool {
+		for _, provider := range providers {
+			provider.Mu().Lock()
+			_, advertised := provider.PrefixCacheV2Models[model]
+			provider.Mu().Unlock()
+			if !advertised {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 100*time.Millisecond,
+		"contiguous frozen-full hybrid slots did not advertise after SSD scan readiness")
 
 	fixture := loadExactCacheArtifacts(t, model, firstModel.WeightHash)
 	contractArtifacts, err := promptcontract.PromptArtifacts(fixture.manifest.Files)
@@ -77,6 +82,13 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	contractID, err := promptcontract.ContractID(
 		contractArtifacts, promptcontract.CurrentVersions())
 	require.NoError(t, err)
+	for _, provider := range providers {
+		provider.Mu().Lock()
+		capability := provider.PrefixCacheV2Models[model]
+		provider.Mu().Unlock()
+		require.Equal(t, contractID, capability.PromptContractID)
+		require.Equal(t, firstModel.WeightHash, capability.ModelAggregateHash)
+	}
 
 	artifactServer := httptest.NewServer(http.HandlerFunc(func(
 		w http.ResponseWriter, request *http.Request,
@@ -155,22 +167,29 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 
 	prompt := longExactCachePrompt()
 	first := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
-	require.Zero(t, first.cachedTokens, "unsafe hybrid model reported a cache hit")
-	holders, attempts := suite.Coordinator.Registry.CacheRoutingStateCounts()
-	require.Zero(t, holders, "unsafe hybrid model published a reusable cache holder")
-	require.Zero(t, attempts, "unsafe hybrid model entered the v2 receipt protocol")
+	require.Zero(t, first.cachedTokens, "first request must prefill cold before donation")
+	require.Eventually(t, func() bool {
+		_, attempts := suite.Coordinator.Registry.CacheRoutingStateCounts()
+		return attempts > 0
+	}, 5*time.Second, 100*time.Millisecond,
+		"first request did not enter the provider-confirmed cache protocol")
+	require.Eventually(t, func() bool {
+		holders, _ := suite.Coordinator.Registry.CacheRoutingStateCounts()
+		return holders > 0
+	}, 2*time.Minute, 250*time.Millisecond,
+		"durable frozen-full donation did not publish a reusable cache holder")
 
-	// Bring the second provider into the candidate set. Current production
-	// models interleave sliding and storage-owning full attention, so exact
-	// replay requires a full prefill and both providers must remain cold.
+	// Bring the second provider into the candidate set. Provider-confirmed
+	// evidence must keep the repeated request on the owner and preserve exact
+	// deterministic output through frozen-full adoption.
 	stabilizeExactCacheRoutingCosts(providers, model)
 	providers[1].Mu().Lock()
 	providers[1].Status = registry.StatusOnline
 	providers[1].Mu().Unlock()
 
 	second := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
-	require.Zero(t, second.cachedTokens,
-		"hybrid full-replay policy was misreported as reusable prefix work")
+	require.Positive(t, second.cachedTokens)
+	require.Equal(t, first.content, second.content)
 
 	isolated := postExactCacheChat(t, suite, suite.Users[1].APIKey, model, prompt)
 	require.Zero(t, isolated.cachedTokens,

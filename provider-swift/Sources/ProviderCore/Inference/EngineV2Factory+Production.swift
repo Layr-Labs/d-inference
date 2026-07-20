@@ -110,6 +110,22 @@ extension EngineV2Factory {
         }
     }
 
+    /// Process-wide per-request reservation rate for the contiguous backend.
+    /// GPT-OSS owning full-attention rows are fp32 while the sizing snapshot is
+    /// all-fp16; Gemma and paged rows stay at the nominal fp16 rate.
+    static func nativeKVBytesPerToken(
+        nominalFP16BytesPerToken: Int,
+        fp16FullKVBytesPerToken: Int,
+        fullRowsUseFP32: Bool
+    ) -> Int {
+        guard nominalFP16BytesPerToken > 0 else { return 0 }
+        guard fullRowsUseFP32 else { return nominalFP16BytesPerToken }
+        guard fp16FullKVBytesPerToken >= 0 else { return Int.max }
+        let (nativeRate, overflow) = nominalFP16BytesPerToken.addingReportingOverflow(
+            fp16FullKVBytesPerToken)
+        return overflow ? Int.max : nativeRate
+    }
+
     /// Build the real `EngineV2` over a loaded model.
     ///
     /// - Parameters:
@@ -177,6 +193,61 @@ extension EngineV2Factory {
         public let kvBackendFallbackReason: String?
     }
 
+    /// Fully resolved backend resources, created before SSD cache construction
+    /// so provider capability follows the backend that will actually serve.
+    final class ProductionBackendPreparation {
+        let layerKinds: [CBv2LayerKind]
+        let kind: EngineV2KVBackendKind
+        let fallbackReason: String?
+
+        private let lock = NSLock()
+        private let modelIdentity: ObjectIdentifier
+        private let maxConcurrentRequests: Int
+        private var backend: CBv2KVBackend?
+        private var caches: [any CBv2AttendingLayerCache]?
+
+        init(
+            model: any LanguageModel,
+            maxConcurrentRequests: Int,
+            layerKinds: [CBv2LayerKind],
+            backend: CBv2KVBackend,
+            caches: [any CBv2AttendingLayerCache],
+            kind: EngineV2KVBackendKind,
+            fallbackReason: String?
+        ) {
+            self.modelIdentity = ObjectIdentifier(model)
+            self.maxConcurrentRequests = max(1, maxConcurrentRequests)
+            self.layerKinds = layerKinds
+            self.backend = backend
+            self.caches = caches
+            self.kind = kind
+            self.fallbackReason = fallbackReason
+        }
+
+        func consume(
+            model: any LanguageModel,
+            maxConcurrentRequests: Int
+        ) throws -> (CBv2KVBackend, [any CBv2AttendingLayerCache]) {
+            try lock.withLock {
+                guard modelIdentity == ObjectIdentifier(model) else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "prepared backend model identity changed before assembly")
+                }
+                guard self.maxConcurrentRequests == max(1, maxConcurrentRequests) else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "prepared backend concurrency changed before assembly")
+                }
+                guard let backend, let caches else {
+                    throw CBv2KVError.backendIneligible(
+                        reason: "prepared backend was already consumed")
+                }
+                self.backend = nil
+                self.caches = nil
+                return (backend, caches)
+            }
+        }
+    }
+
     /// Build the real `EngineV2` over a loaded model, returning the engine
     /// together with the KV-backend decision (`ProductionBuild`).
     ///
@@ -202,6 +273,36 @@ extension EngineV2Factory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBuild {
+        let preparedBackend = try prepareProductionBackend(
+            model: model,
+            kvBytesCapacity: kvBytesCapacity,
+            maxConcurrentRequests: maxConcurrentRequests,
+            kvBackend: kvBackend,
+            maxContextLength: maxContextLength,
+            environment: environment,
+            pagedPreflightOverride: pagedPreflightOverride)
+        return try assembleProductionBuild(
+            model: model,
+            tokenizer: tokenizer,
+            prefixCache: prefixCache,
+            maxConcurrentRequests: maxConcurrentRequests,
+            mtpDrafter: mtpDrafter,
+            mtpConfig: mtpConfig,
+            preparedBackend: preparedBackend)
+    }
+
+    /// Resolve and materialize the exact production backend without creating
+    /// EngineV2. Slot assembly uses this phase before SSD construction, then
+    /// injects the cache only when the resolved backend capability supports it.
+    static func prepareProductionBackend(
+        model: any LanguageModel,
+        kvBytesCapacity: Int,
+        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        kvBackend: EngineV2KVBackendSelection = .auto,
+        maxContextLength: Int? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
+    ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
         }
@@ -253,17 +354,22 @@ extension EngineV2Factory {
         }
 
         let schedulerConfig = CBv2SchedulerConfig(
-            maxConcurrentRequests: max(1, maxConcurrentRequests),
-            enablePrefixCache: prefixCache != nil)
-        let engineLoopConfig = CBv2EngineLoopConfig()
+            maxConcurrentRequests: max(1, maxConcurrentRequests))
 
-        func contiguousAssembly() -> (CBv2KVBackend, [any CBv2AttendingLayerCache]) {
+        func contiguousPreparation() -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(
                 config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
             let caches = newCaches { index, kind in
                 CBv2LayerCache(layerIndex: index, kind: kind)
             }
-            return (backend, caches)
+            return ProductionBackendPreparation(
+                model: model,
+                maxConcurrentRequests: maxConcurrentRequests,
+                layerKinds: layerKinds,
+                backend: backend,
+                caches: caches,
+                kind: .contiguous,
+                fallbackReason: fallbackReason)
         }
 
         if resolvedKind == .paged {
@@ -316,17 +422,14 @@ extension EngineV2Factory {
                     // Resource and size eligibility has already thrown
                     // catchably; first traffic cannot discover either.
                     paged.pool.materializeSlabs()
-                    return ProductionBuild(
-                        engine: makeEngineV2(
-                            model: model, tokenizer: tokenizer, layerKinds: layerKinds,
-                            backend: paged, caches: caches,
-                            schedulerConfig: schedulerConfig,
-                            prefixCache: prefixCache,
-                            loopConfig: engineLoopConfig,
-                            mtpDrafter: mtpDrafter,
-                            mtpConfig: mtpConfig),
-                        kvBackendKind: .paged,
-                        kvBackendFallbackReason: nil)
+                    return ProductionBackendPreparation(
+                        model: model,
+                        maxConcurrentRequests: maxConcurrentRequests,
+                        layerKinds: layerKinds,
+                        backend: paged,
+                        caches: caches,
+                        kind: .paged,
+                        fallbackReason: nil)
                 } catch let error as CBv2KVError {
                     // Paged ineligibility/capacity is a supported degradation:
                     // fall back to the contiguous backend (INFO telemetry at the
@@ -341,18 +444,40 @@ extension EngineV2Factory {
                 }
             }
         }
-        let (backend, caches) = contiguousAssembly()
+        return contiguousPreparation()
+    }
+
+    /// Final engine assembly over an already resolved backend. This method has
+    /// no backend fallback path, so its cache capability cannot drift.
+    static func assembleProductionBuild(
+        model: any LanguageModel,
+        tokenizer: any MLXLMCommon.Tokenizer,
+        prefixCache: (any CBv2PrefixCache)?,
+        maxConcurrentRequests: Int,
+        mtpDrafter: (any CBv2MTPDrafter)?,
+        mtpConfig: CBv2MTPConfig,
+        preparedBackend: ProductionBackendPreparation
+    ) throws -> ProductionBuild {
+        let (backend, caches) = try preparedBackend.consume(
+            model: model,
+            maxConcurrentRequests: maxConcurrentRequests)
+        let schedulerConfig = CBv2SchedulerConfig(
+            maxConcurrentRequests: max(1, maxConcurrentRequests),
+            enablePrefixCache: prefixCache != nil)
         return ProductionBuild(
             engine: makeEngineV2(
-                model: model, tokenizer: tokenizer, layerKinds: layerKinds,
-                backend: backend, caches: caches,
+                model: model,
+                tokenizer: tokenizer,
+                layerKinds: preparedBackend.layerKinds,
+                backend: backend,
+                caches: caches,
                 schedulerConfig: schedulerConfig,
                 prefixCache: prefixCache,
-                loopConfig: engineLoopConfig,
+                loopConfig: CBv2EngineLoopConfig(),
                 mtpDrafter: mtpDrafter,
                 mtpConfig: mtpConfig),
-            kvBackendKind: .contiguous,
-            kvBackendFallbackReason: fallbackReason)
+            kvBackendKind: preparedBackend.kind,
+            kvBackendFallbackReason: preparedBackend.fallbackReason)
     }
 
     /// Shared final assembly for both backends.

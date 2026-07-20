@@ -81,20 +81,23 @@ private final class PrefixTelemetryCapture: @unchecked Sendable {
 @Suite("EngineV2 prefix cache: usage detail")
 struct EngineV2PrefixCacheUsageTests {
 
-    @Test("native full-row delta covers the complete request span")
-    func nativeReservationDelta() {
-        #expect(EngineV2Bridge.nativeFullReservationDelta(
-            stagedBytes: 49_152 * 2_816,
-            stagedTokens: 2_816,
-            nominalBytesPerToken: 24_576,
-            worstCaseTokens: 2_817 + 4_096
-        ) == UInt64(24_576 * (2_817 + 4_096)))
-        #expect(EngineV2Bridge.nativeFullReservationDelta(
-            stagedBytes: 10,
-            stagedTokens: 3,
-            nominalBytesPerToken: 1,
-            worstCaseTokens: 10
-        ) == nil)
+    @Test("native contiguous rate includes fp32 owning-full rows without staging")
+    func nativeReservationRate() {
+        #expect(EngineV2Factory.nativeKVBytesPerToken(
+            nominalFP16BytesPerToken: 100_000,
+            fp16FullKVBytesPerToken: 24_576,
+            fullRowsUseFP32: true
+        ) == 124_576)
+        #expect(EngineV2Factory.nativeKVBytesPerToken(
+            nominalFP16BytesPerToken: 100_000,
+            fp16FullKVBytesPerToken: 24_576,
+            fullRowsUseFP32: false
+        ) == 100_000)
+        #expect(EngineV2Factory.nativeKVBytesPerToken(
+            nominalFP16BytesPerToken: Int.max,
+            fp16FullKVBytesPerToken: 1,
+            fullRowsUseFP32: true
+        ) == Int.max)
     }
 
     @Test("bridge records prefixCacheHitTokens into the per-request signal at the terminal")

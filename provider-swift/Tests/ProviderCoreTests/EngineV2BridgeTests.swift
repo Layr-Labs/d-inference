@@ -201,6 +201,18 @@ private func record(
     return (events, tps)
 }
 
+private func waitForBudgetRelease(
+    _ budget: GlobalKVCacheBudget,
+    timeout: Duration = .seconds(1)
+) async -> Bool {
+    let deadline = ContinuousClock.now.advanced(by: timeout)
+    while await budget.outstandingReservedBytes() != 0 {
+        if ContinuousClock.now >= deadline { return false }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return true
+}
+
 // MARK: - Shared builders
 
 private func makeBridge(
@@ -270,8 +282,7 @@ private func makeRequest(
 
 private func makeBridgeStagedCache(
     parent: URL,
-    budget: GlobalKVCacheBudget,
-    nominalFullKVBytesPerToken: Int = 16
+    budget: GlobalKVCacheBudget
 ) async throws -> (cache: SSDPrefixCache, prompt: [Int]) {
     _ = LiveInferenceFixtures.ensureMetallibColocated()
     let root = parent.appendingPathComponent("aaaaaaaaaaaa", isDirectory: true)
@@ -286,7 +297,7 @@ private func makeBridgeStagedCache(
             weightHash: "bridge-stage-weight",
             blockSize: 8,
             adoptionBoundTokens: 0,
-            nominalFullKVBytesPerToken: nominalFullKVBytesPerToken,
+            nominalFullKVBytesPerToken: 16,
             layoutEpoch: SSDBlockStore.layoutEpoch(blockSize: 8, layerKinds: layerKinds),
             root: root,
             dedicatedRoot: parent,
@@ -973,10 +984,15 @@ struct EngineV2CancellationTests {
     @Test("bridge cancel maps the provider request-id to the minted engine id")
     func bridgeCancelMapsId() async {
         let engine = ScriptedCBv2Engine(script: .manual)
-        let bridge = makeBridge(engine: engine)
+        let budget = TestBudgets.ample()
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: 4_000,
+            kvBudget: budget)
         let stream = await bridge.submit(request: makeRequest(), requestId: "req-abc")
         let engineId = await bridge._testEngineRequestId(for: "req-abc")
         #expect(engineId != nil)
+        #expect(await budget.outstandingReservedBytes() > 0)
 
         await bridge.cancel(requestId: "req-abc")
         #expect(engine.cancelled == [engineId!])
@@ -989,6 +1005,7 @@ struct EngineV2CancellationTests {
         let (events, _) = await record(stream)
         #expect(events.last == .error("request cancelled"))
         #expect(await bridge._testEngineRequestId(for: "req-abc") == nil)
+        #expect(await budget.outstandingReservedBytes() == 0)
     }
 
     @Test("cancel for an unknown id is a no-op")
@@ -1727,6 +1744,121 @@ struct EngineV2SharedBudgetTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
+    @Test("native rate is reserved on cache miss, disabled cache, and staged hit exactly once")
+    func nativeRateCoversEveryCacheStateWithoutDoubleReservation() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-native-states-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+
+        let budget = TestBudgets.ample()
+        let fixture = try await makeBridgeStagedCache(parent: parent, budget: budget)
+        defer { fixture.cache.close() }
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let nativeRate = 4_000
+        let requestBytes = UInt64(nativeRate * (fixture.prompt.count + 1))
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: nativeRate,
+            kvBudget: budget,
+            ssdPrefixCache: fixture.cache)
+
+        let missPrompt = fixture.prompt.map { $0 + 10_000 }
+        let miss = await bridge.submitTokenized(
+            promptTokens: missPrompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-native-miss",
+            cacheScope: "scope")
+        #expect(fixture.cache.bytesInUse == 0)
+        #expect(await budget.outstandingReservedBytes() == requestBytes)
+        engine.manualContinuation?.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: missPrompt.count, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await record(miss)
+        #expect(await budget.outstandingReservedBytes() == 0)
+
+        let disabled = await bridge.submitTokenized(
+            promptTokens: fixture.prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-native-disabled",
+            cacheScope: "scope",
+            cacheEnabled: false)
+        #expect(fixture.cache.bytesInUse == 0)
+        #expect(await budget.outstandingReservedBytes() == requestBytes)
+        engine.manualContinuation?.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: fixture.prompt.count, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await record(disabled)
+        #expect(await budget.outstandingReservedBytes() == 0)
+
+        let staged = await bridge.submitTokenized(
+            promptTokens: fixture.prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-native-staged",
+            cacheScope: "scope")
+        let stagedBytes = fixture.cache.bytesInUse
+        #expect(stagedBytes > 0)
+        #expect(
+            await budget.outstandingReservedBytes()
+                == requestBytes + UInt64(stagedBytes),
+            "staging and the native request span are each reserved exactly once")
+        engine.manualContinuation?.yield(.finished(
+            reason: .stop,
+            usage: CBv2Usage(promptTokens: fixture.prompt.count, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await record(staged)
+        #expect(await waitForBudgetRelease(budget))
+        #expect(fixture.cache.bytesInUse == 0)
+    }
+
+    @Test("native request byte multiplication overflow rejects before engine submission")
+    func nativeRateOverflowRejectsRequest() async {
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let budget = TestBudgets.ample()
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: Int.max,
+            kvBudget: budget)
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: [1],
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-native-overflow"))
+        #expect(engine.submitted.isEmpty)
+        #expect(events == [.error(
+            "token_budget_exhausted: request requires 2 tokens "
+                + "but the shared KV budget has no headroom")])
+        #expect(await budget.outstandingReservedBytes() == 0)
+    }
+
+    @Test("prompt plus max-token overflow unwinds staged cache state")
+    func tokenCountOverflowUnwindsStaging() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-token-overflow-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let budget = TestBudgets.ample()
+        let fixture = try await makeBridgeStagedCache(parent: parent, budget: budget)
+        defer { fixture.cache.close() }
+        let engine = ScriptedCBv2Engine(script: .manual)
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: 4_000,
+            kvBudget: budget,
+            ssdPrefixCache: fixture.cache)
+
+        let (events, _) = await record(await bridge.submitTokenized(
+            promptTokens: fixture.prompt,
+            request: makeRequest(maxTokens: Int.max),
+            requestId: "req-token-overflow",
+            cacheScope: "scope"))
+        #expect(events == [.error("token_budget_exhausted: request token count overflow")])
+        #expect(engine.submitted.isEmpty)
+        #expect(await waitForBudgetRelease(budget))
+        #expect(fixture.cache.bytesInUse == 0)
+    }
+
     @Test("SSD staging never false-rejects a request that fits cold at the exact boundary")
     func stagingFallsBackToColdReservation() async throws {
         let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
@@ -1782,16 +1914,17 @@ struct EngineV2SharedBudgetTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    @Test("native-width augmentation refusal rejects before cold over-admission")
+    @Test("native-width rate rejects staged-to-cold fallback before over-admission")
     func nativeWidthRefusalRejectsRequest() async throws {
         let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("bridge-native-width-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: parent) }
 
-        let kvBytesPerToken = 1_000_000
+        let nominalKVBytesPerToken = 1_000_000
+        let nativeKVBytesPerToken = nominalKVBytesPerToken + 16
         let worstCaseTokens = 66
-        let nominalBytes = UInt64(kvBytesPerToken * worstCaseTokens)
+        let nominalBytes = UInt64(nominalKVBytesPerToken * worstCaseTokens)
         let gib: UInt64 = 1_073_741_824
         let budget = GlobalKVCacheBudget(
             capFraction: 1.0,
@@ -1803,16 +1936,13 @@ struct EngineV2SharedBudgetTests {
                     cache: 0,
                     systemAvailable: nominalBytes)
             })
-        let fixture = try await makeBridgeStagedCache(
-            parent: parent,
-            budget: budget,
-            nominalFullKVBytesPerToken: 0)
+        let fixture = try await makeBridgeStagedCache(parent: parent, budget: budget)
         defer { fixture.cache.close() }
         let engine = ScriptedCBv2Engine(script: .manual)
         let telemetry = TelemetrySink()
         let bridge = makeBridge(
             engine: engine,
-            kvBytesPerToken: kvBytesPerToken,
+            kvBytesPerToken: nativeKVBytesPerToken,
             kvBudget: budget,
             ssdPrefixCache: fixture.cache,
             telemetry: telemetry)
@@ -1829,7 +1959,7 @@ struct EngineV2SharedBudgetTests {
         #expect(fixture.cache.bytesInUse == 0)
         #expect(await budget.outstandingReservedBytes() == 0)
         #expect(telemetry.events.contains {
-            $0.fields?["reason"]?.description == "native_kv_capacity"
+            $0.fields?["reason"]?.description == "shared_kv_capacity"
                 && $0.fields?["prefix_capacity_refusal"]?.description == "true"
         })
     }

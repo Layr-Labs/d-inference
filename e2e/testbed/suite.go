@@ -481,7 +481,11 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		cmd.Env = append(cmd.Env, "DARKBLOOM_AUTH_TOKEN_PATH="+cfg.AuthTokenPath)
 	}
 	if cfg.EnableEphemeralPrefixCache {
-		cmd.Env = append(cmd.Env, "DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1")
+		cmd.Env = append(
+			cmd.Env,
+			"DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1",
+			"DARKBLOOM_PREFIX_CACHE_TEST_ROOT="+filepath.Join(p.StateDir, "prefix-cache"),
+		)
 	}
 
 	if err := cmd.Start(); err != nil {

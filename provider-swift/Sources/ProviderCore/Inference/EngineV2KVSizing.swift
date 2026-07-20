@@ -2,18 +2,20 @@
 //
 // Per-token KV byte-cost resolution for the ContinuousBatchingV2 bridge.
 //
-// The v2 engine builds UNQUANTIZED (fp16) `CBv2LayerCache`s regardless of the
-// provider's `kv_quant` setting — KV-quant is not composed with EngineV2
-// (`EngineV2Factory.makeProductionEngine` always uses `CBv2LayerCache`). A
+// The v2 engine builds UNQUANTIZED native-float `CBv2LayerCache`s regardless
+// of the provider's `kv_quant` setting — KV-quant is not composed with EngineV2
+// (`EngineV2Factory.makeProductionEngine` always uses `CBv2LayerCache`). The
+// sizing snapshot remains an all-fp16 baseline; slot assembly adds GPT-OSS's
+// fp32 owning-full-row delta before heartbeat/shared-budget publication. A
 // stale or test sizing input can still carry a quantized `kvBytesPerToken`
 // rate that is 2–4× smaller than fp16. Feeding that rate into the bridge would
 // make heartbeat token budgets (`kvBytesCapacity / kvBytesPerToken`) and
 // active-token counts (`kvBytesInUse / kvBytesPerToken`) OVERSTATE capacity by
-// the same 2–4×, and would under-size the shared-budget KV reservation.
+// the same 2–4×, and would under-size the native shared-budget KV reservation.
 //
 // `resolve` is retained as compatibility test math for the removed quantized
 // input shape. Production v0.7.5 rejects kv_quant intent with a warning and
-// takes the fp16 rate directly from SlotSizingSnapshot.
+// takes the fp16 baseline from SlotSizingSnapshot before native-width resolution.
 
 import Foundation
 

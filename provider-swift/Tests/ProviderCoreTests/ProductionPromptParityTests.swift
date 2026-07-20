@@ -36,6 +36,11 @@ struct ProductionPromptParityTests {
             #expect(model.ineligibilityReason == nil)
             let tokenizer = try await LocalTokenizerLoader().load(
                 from: modelDirectory)
+            let detectedModelType = ModelScanner.parseConfigJSON(
+                at: modelDirectory.appendingPathComponent("config.json")
+            ).modelType
+            let modelType = model.modelType ?? detectedModelType
+            #expect(modelType != nil, "production prompt artifact must identify its model type")
             #expect(!model.cases.isEmpty)
             for fixture in model.cases {
                 let providerBody = try JSONSerialization.data(
@@ -43,7 +48,7 @@ struct ProductionPromptParityTests {
                 let actual = try ProviderPromptContractPipeline.tokenizeProviderBody(
                     providerBody,
                     tokenizer: tokenizer,
-                    modelType: model.modelType)
+                    modelType: modelType)
                 let difference = firstDifference(actual, fixture.tokenIDs).map { index in
                     let actualToken = actual.indices.contains(index)
                         ? "\(actual[index]) \(tokenizer.convertIdToToken(actual[index]) ?? "<unknown>")"

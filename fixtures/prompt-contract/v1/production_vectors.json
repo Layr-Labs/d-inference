@@ -1205,7 +1205,8 @@
                             "type": "string"
                           },
                           {
-                            "type": "string"
+                            "type": "string",
+                            "x-darkbloom-original-boolean-schema": false
                           }
                         ],
                         "type": "array"
@@ -4819,7 +4820,8 @@
                             "type": "string"
                           },
                           {
-                            "type": "string"
+                            "type": "string",
+                            "x-darkbloom-original-boolean-schema": false
                           }
                         ],
                         "type": "array"
@@ -8433,7 +8435,8 @@
                             "type": "string"
                           },
                           {
-                            "type": "string"
+                            "type": "string",
+                            "x-darkbloom-original-boolean-schema": false
                           }
                         ],
                         "type": "array"

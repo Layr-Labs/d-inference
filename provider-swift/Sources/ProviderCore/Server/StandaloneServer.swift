@@ -1305,7 +1305,12 @@ public actor StandaloneServer {
             await kvBudget.replacePendingLoadReservation(
                 requestID: pendingLoadID, bytes: extraWeightBytes)
             let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
-                TokenizerHandle(ctx.tokenizer)
+                TokenizerHandle(
+                    ctx.tokenizer,
+                    toolConstraintContractVerified:
+                        Gemma4ToolConstraintContract.isVerified(
+                            modelType: modelInfo.modelType,
+                            modelDirectory: modelPath))
             }
             if Task.isCancelled {
                 newcomer.release()

@@ -103,9 +103,6 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	}
 
 	originalRawBody := rawBody
-	if _, ok := parseJSONBody(w, originalRawBody); !ok {
-		return inferencePrelude{}, false
-	}
 
 	// Normalize tool JSON-Schemas before parsing and dispatch so providers
 	// running binaries older than 0.6.3 (which normalize provider-side, #310)

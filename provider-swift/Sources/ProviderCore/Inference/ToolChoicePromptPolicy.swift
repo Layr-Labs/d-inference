@@ -82,8 +82,7 @@ enum ToolChoicePromptPolicy {
                 + "Your entire response must be that tool call; a text answer is forbidden. For any required "
                 + "string argument without an obvious value, use the user's request text."
             let compiled = try compileConstrainedTools(
-                request.tools ?? [], mode: .named(name)
-            ).filter { $0.name == name }
+                [selected], mode: .named(name))
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
                 tools: [selected],

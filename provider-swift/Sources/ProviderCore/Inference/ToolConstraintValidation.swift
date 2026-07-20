@@ -12,6 +12,10 @@ import MLXLMServer
 private typealias ToolArgumentJSONValue = MLXLMCommon.JSONValue
 
 enum ToolConstraintValidation {
+    private static let maxSafePatternBytes = 128
+    private static let maxSafePatternCount = 32
+    private static let maxSafePatternInputBytes = 16 * 1024
+
     static func validate(
         _ calls: [ToolCall],
         prepared: ToolChoicePromptPolicy.Prepared
@@ -136,9 +140,22 @@ enum ToolConstraintValidation {
         guard depth <= 32 else { return false }
         if case .bool(let accepts) = schema { return accepts }
         guard case .object(let object) = schema else { return false }
+        if object.count == 2,
+            object["type"] == .string("string"),
+            case .bool(let accepts)? =
+                object[ToolSchemaNormalization.originalBooleanSchemaKey]
+        {
+            return accepts
+        }
 
-        if let constant = object["const"], value != constant { return false }
-        if case .array(let values)? = object["enum"], !values.contains(value) {
+        if let constant = object["const"],
+            !jsonSchemaEqual(value, constant)
+        {
+            return false
+        }
+        if case .array(let values)? = object["enum"],
+            !values.contains(where: { jsonSchemaEqual(value, $0) })
+        {
             return false
         }
         if case .array(let variants)? = object["allOf"],
@@ -200,15 +217,14 @@ enum ToolConstraintValidation {
             } else {
                 patterns = [:]
             }
+            guard patterns.count <= maxSafePatternCount else { return false }
             for (name, child) in values {
                 if let schema = properties[name],
                     !validateJSONSchema(child, schema: schema, depth: depth + 1)
                 {
                     return false
                 }
-                let matching = patterns.filter {
-                    name.range(of: $0.key, options: .regularExpression) != nil
-                }
+                let matching = patterns.filter { safePatternMatches(name, pattern: $0.key) }
                 if matching.contains(where: {
                     !validateJSONSchema(child, schema: $0.value, depth: depth + 1)
                 }) {
@@ -271,13 +287,13 @@ enum ToolConstraintValidation {
 
         case .string(let string):
             if !countWithinBounds(
-                string.count, minimum: object["minLength"],
+                string.unicodeScalars.count, minimum: object["minLength"],
                 maximum: object["maxLength"])
             {
                 return false
             }
             if case .string(let pattern)? = object["pattern"],
-                string.range(of: pattern, options: .regularExpression) == nil
+                !safePatternMatches(string, pattern: pattern)
             {
                 return false
             }
@@ -289,6 +305,41 @@ enum ToolConstraintValidation {
             return number.isFinite && validateNumber(number, object: object)
         case .null, .bool:
             return true
+        }
+    }
+
+    /// Linear-time subset for post-generation `auto` validation. Foundation's
+    /// backtracking regex engine can spend unbounded CPU on user-controlled
+    /// schemas. Literal contains/prefix/suffix/exact patterns cover the common
+    /// JSON-Schema cases while regex metacharacters fail closed.
+    private static func safePatternMatches(
+        _ value: String,
+        pattern: String
+    ) -> Bool {
+        guard pattern.utf8.count <= maxSafePatternBytes,
+            value.utf8.count <= maxSafePatternInputBytes
+        else { return false }
+
+        var literal = pattern[...]
+        let anchoredStart = literal.first == "^"
+        if anchoredStart { literal.removeFirst() }
+        let anchoredEnd = literal.last == "$"
+        if anchoredEnd { literal.removeLast() }
+        let regexMetacharacters = CharacterSet(charactersIn: #"\\.^$|?*+()[]{}"#)
+        guard literal.unicodeScalars.allSatisfy({
+            !regexMetacharacters.contains($0)
+        }) else { return false }
+
+        let text = String(literal)
+        switch (anchoredStart, anchoredEnd) {
+        case (true, true):
+            return value == text
+        case (true, false):
+            return value.hasPrefix(text)
+        case (false, true):
+            return value.hasSuffix(text)
+        case (false, false):
+            return value.contains(text)
         }
     }
 
@@ -324,6 +375,30 @@ enum ToolConstraintValidation {
         }
     }
 
+    private static func jsonSchemaEqual(
+        _ lhs: ToolArgumentJSONValue,
+        _ rhs: ToolArgumentJSONValue
+    ) -> Bool {
+        switch (lhs, rhs) {
+        case (.int(let lhs), .double(let rhs)):
+            return rhs.isFinite && Int(exactly: rhs) == lhs
+        case (.double(let lhs), .int(let rhs)):
+            return lhs.isFinite && Int(exactly: lhs) == rhs
+        case (.array(let lhs), .array(let rhs)):
+            return lhs.count == rhs.count
+                && zip(lhs, rhs).allSatisfy {
+                    jsonSchemaEqual($0.0, $0.1)
+                }
+        case (.object(let lhs), .object(let rhs)):
+            guard lhs.count == rhs.count else { return false }
+            return lhs.allSatisfy { key, value in
+                rhs[key].map { jsonSchemaEqual(value, $0) } ?? false
+            }
+        default:
+            return lhs == rhs
+        }
+    }
+
     private static func countWithinBounds(
         _ count: Int,
         minimum: ToolArgumentJSONValue?,
@@ -338,8 +413,14 @@ enum ToolConstraintValidation {
         _ value: Double,
         object: [String: ToolArgumentJSONValue]
     ) -> Bool {
-        if let minimum = number(object["minimum"]), value < minimum { return false }
-        if let maximum = number(object["maximum"]), value > maximum { return false }
+        if let minimum = number(object["minimum"]) {
+            let exclusive = object["exclusiveMinimum"] == .bool(true)
+            if exclusive ? value <= minimum : value < minimum { return false }
+        }
+        if let maximum = number(object["maximum"]) {
+            let exclusive = object["exclusiveMaximum"] == .bool(true)
+            if exclusive ? value >= maximum : value > maximum { return false }
+        }
         if let minimum = number(object["exclusiveMinimum"]), value <= minimum { return false }
         if let maximum = number(object["exclusiveMaximum"]), value >= maximum { return false }
         if let multiple = number(object["multipleOf"]), multiple > 0 {

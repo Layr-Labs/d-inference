@@ -99,10 +99,17 @@ public struct ModelArchitecture: Sendable {
 /// reference without copying the underlying tokenizer state every load.
 public final class TokenizerHandle: @unchecked Sendable {
     public let inner: any MLXLMCommon.Tokenizer
+    let toolConstraintContractVerified: Bool
     private let toolConstraintLock = NSLock()
     private var gemmaVocabularies: [[Int]: GemmaTokenVocabulary] = [:]
 
-    public init(_ inner: any MLXLMCommon.Tokenizer) { self.inner = inner }
+    public init(
+        _ inner: any MLXLMCommon.Tokenizer,
+        toolConstraintContractVerified: Bool = false
+    ) {
+        self.inner = inner
+        self.toolConstraintContractVerified = toolConstraintContractVerified
+    }
 
     func gemmaVocabulary(
         stopTokenIDs: Set<Int>

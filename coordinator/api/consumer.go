@@ -558,9 +558,17 @@ func rewriteChunkModel(chunk string, pr *registry.PendingRequest) string {
 // pass through unchanged (publicModel == buildModel). ok=false means the alias
 // currently has no usable build; the caller should surface a model_unavailable
 // error.
-func (s *Server) resolveRequestedModel(parsed map[string]any, rawBody []byte, requested string, allowedProviderSerials []string, policy selfRoutePolicy) (buildModel, publicModel string, newRawBody []byte, ok bool) {
-	buildID, isAlias, resolved := s.registry.ResolveModelConstrained(
-		requested, allowedProviderSerials, policy.ownerAccountID, policy.enabled, policy.prefer)
+func (s *Server) resolveRequestedModel(
+	parsed map[string]any,
+	rawBody []byte,
+	requested string,
+	allowedProviderSerials []string,
+	policy selfRoutePolicy,
+	traits registry.RequestTraits,
+) (buildModel, publicModel string, newRawBody []byte, ok bool) {
+	buildID, isAlias, resolved := s.registry.ResolveModelConstrainedWithTraits(
+		requested, allowedProviderSerials, policy.ownerAccountID,
+		policy.enabled, policy.prefer, traits)
 	if !resolved {
 		return "", requested, rawBody, false
 	}
@@ -1434,13 +1442,55 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// coordinator-stamped provider AccountID, so nothing here is forgeable.
 	policy := s.resolveSelfRoutePolicy(r)
 
+	// Derive request-shape traits before alias resolution. During a
+	// mixed-version rollout Desired may have ordinary providers while Previous
+	// has the only provider capable of enforcing this exact tool policy.
+	requiresVision := detectMediaRequirement(parsed)
+	hasTools := requestHasTools(parsed)
+	isResponsesAPI := input != nil && len(messages) == 0
+	constraintBody := originalRawBody
+	if isResponsesAPI {
+		constraintBody, err = promptcontract.LowerProviderBody(
+			promptcontract.EndpointResponses, originalRawBody)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse(
+				"invalid_request_error", err.Error()))
+			return
+		}
+	}
+	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
+	if validationErr != nil {
+		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
+		writeToolConstraintValidationError(w, validationErr)
+		return
+	}
+	validatedMode := validatedPolicy.mode
+	toolChoiceName := validatedPolicy.name
+	parallelToolCalls := validatedPolicy.parallel
+	s.recordToolConstraintMetric(validatedMode, "requested")
+	requiresToolConstraint := validatedMode.requiresGrammar()
+	if requiresToolConstraint && requiresVision {
+		writeJSON(w, http.StatusBadRequest, errorResponse(
+			"invalid_request_error",
+			"inference-enforced tool_choice is not supported for multimodal requests",
+			withParam("tool_choice")))
+		return
+	}
+	aliasTraits := registry.RequestTraits{
+		HasTools:               hasTools,
+		RequiresToolConstraint: requiresToolConstraint,
+		ToolChoiceMode:         string(validatedMode),
+		ToolChoiceName:         toolChoiceName,
+		ParallelToolCalls:      parallelToolCalls,
+	}
+
 	// Resolve a public alias (e.g. "gemma-4-26b") to a concrete build id, now
 	// that routing constraints (serial allowlist / self-route) are known so the
 	// pick only considers builds the constrained provider set can actually
 	// serve. From here on `model` is the build (routing/billing/serving) while
 	// `publicModel` is echoed back so the consumer never sees the quant.
 	buildModel, publicModel, resolvedBody, ok := s.resolveRequestedModel(
-		parsed, rawBody, model, allowedProviderSerials, policy)
+		parsed, rawBody, model, allowedProviderSerials, policy, aliasTraits)
 	if !ok {
 		s.recordRejection(rejectionInfo{
 			r:               r,
@@ -1458,44 +1508,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	model, rawBody = buildModel, resolvedBody
 
-	// Vision gating: a request carrying image/video input must land on a provider
-	// advertising a vision-capable (VLM) build of this model, or the media is
-	// silently dropped and the answer is image-blind. Fail fast with a clear error
-	// when the fleet has no such provider (e.g. before the gemma fleet finishes
-	// updating to 0.6.0); the routing layer enforces the same gate per dispatch.
-	requiresVision := detectMediaRequirement(parsed)
-	// Tool-bearing requests are routed only to providers that can render tool
-	// schemas without crashing (version floor + template_render_ok gate);
-	// detected here, alongside the media gate, while the parsed body is hot.
-	hasTools := requestHasTools(parsed)
-	isResponsesAPI := input != nil && len(messages) == 0
-	constraintBody := originalRawBody
-	if isResponsesAPI {
-		constraintBody, err = promptcontract.LowerProviderBody(
-			promptcontract.EndpointResponses, originalRawBody)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, errorResponse(
-				"invalid_request_error", err.Error()))
-			return
-		}
-	}
-	validatedMode, validationErr := validateToolConstraintRequest(constraintBody)
-	if validationErr != nil {
-		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
-		writeToolConstraintValidationError(w, validationErr)
-		return
-	}
-	s.recordToolConstraintMetric(validatedMode, "requested")
-	_, toolChoiceName, parallelToolCalls, _ := toolChoicePolicyFromBody(
-		constraintBody)
-	requiresToolConstraint := validatedMode.requiresGrammar()
-	if requiresToolConstraint && requiresVision {
-		writeJSON(w, http.StatusBadRequest, errorResponse(
-			"invalid_request_error",
-			"inference-enforced tool_choice is not supported for multimodal requests",
-			withParam("tool_choice")))
-		return
-	}
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
 	// Responses→chat lowering doesn't carry image/video parts through.
@@ -3572,11 +3584,40 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)
 
+	constraintBody, constraintLowerErr := promptcontract.LowerProviderBody(
+		endpointKind, originalRawBody)
+	if constraintLowerErr != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse(
+			"invalid_request_error", constraintLowerErr.Error()))
+		return
+	}
+	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
+	if validationErr != nil {
+		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
+		writeToolConstraintValidationError(w, validationErr)
+		return
+	}
+	validatedMode := validatedPolicy.mode
+	toolChoiceName := validatedPolicy.name
+	parallelToolCalls := validatedPolicy.parallel
+	s.recordToolConstraintMetric(validatedMode, "requested")
+	requiresToolConstraint := validatedMode.requiresGrammar()
+	requiresVision := detectMediaRequirement(parsed)
+	hasTools := requestHasTools(parsed)
+	aliasTraits := registry.RequestTraits{
+		HasTools:               hasTools,
+		RequiresToolConstraint: requiresToolConstraint,
+		ToolChoiceMode:         string(validatedMode),
+		ToolChoiceName:         toolChoiceName,
+		ParallelToolCalls:      parallelToolCalls,
+	}
+
 	// Resolve a public alias to a concrete build id, constraint-aware (after
 	// allowlist/self-route are known). resolveRequestedModel rewrites
 	// parsed["model"] to the build; this handler builds the provider body fresh
 	// from `parsed` (inferenceBody below), so rawBody isn't threaded here.
-	buildModel, publicModel, _, ok := s.resolveRequestedModel(parsed, rawBody, model, allowedProviderSerials, policy)
+	buildModel, publicModel, _, ok := s.resolveRequestedModel(
+		parsed, rawBody, model, allowedProviderSerials, policy, aliasTraits)
 	if !ok {
 		s.recordRejection(rejectionInfo{
 			r:               r,
@@ -3610,29 +3651,9 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
-	constraintBody, constraintLowerErr := promptcontract.LowerProviderBody(
-		endpointKind, originalRawBody)
-	if constraintLowerErr != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse(
-			"invalid_request_error", constraintLowerErr.Error()))
-		return
-	}
-	validatedMode, validationErr := validateToolConstraintRequest(constraintBody)
-	if validationErr != nil {
-		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
-		writeToolConstraintValidationError(w, validationErr)
-		return
-	}
-	s.recordToolConstraintMetric(validatedMode, "requested")
-	_, toolChoiceName, parallelToolCalls, _ := toolChoicePolicyFromBody(
-		constraintBody)
-	requiresToolConstraint := validatedMode.requiresGrammar()
-
 	// Shared media/tools fail-fast (see visionToolsFailFast). Completions and
 	// Anthropic bodies share the top-level "tools" field; neither has the
 	// Responses-API media surface, so rejectResponsesMedia is false here.
-	requiresVision := detectMediaRequirement(parsed)
-	hasTools := requestHasTools(parsed)
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
 		requiresToolConstraint,
 		false, policy, allowedProviderSerials) {

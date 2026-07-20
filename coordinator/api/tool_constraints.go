@@ -32,28 +32,46 @@ const (
 	maxConstrainedStopBytes     = 256
 )
 
+type validatedToolConstraintPolicy struct {
+	mode     toolChoiceMode
+	name     string
+	parallel bool
+}
+
 func validateToolConstraintRequest(body []byte) (toolChoiceMode, error) {
+	policy, err := validateToolConstraintPolicy(body)
+	return policy.mode, err
+}
+
+func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, error) {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	var root map[string]any
 	if err := decoder.Decode(&root); err != nil {
-		return "", invalidToolConstraint("invalid request body", "")
+		return validatedToolConstraintPolicy{},
+			invalidToolConstraint("invalid request body", "")
 	}
 	mode, selected, err := parseToolChoice(root["tool_choice"])
 	if err != nil {
-		return "", err
+		return validatedToolConstraintPolicy{}, err
+	}
+	policy := validatedToolConstraintPolicy{
+		mode: mode, name: selected, parallel: true,
 	}
 	if parallel, exists := root["parallel_tool_calls"]; exists && parallel != nil {
-		if _, ok := parallel.(bool); !ok {
-			return mode, invalidToolConstraint("parallel_tool_calls must be boolean", "parallel_tool_calls")
+		value, ok := parallel.(bool)
+		if !ok {
+			return policy,
+				invalidToolConstraint("parallel_tool_calls must be boolean", "parallel_tool_calls")
 		}
+		policy.parallel = value
 	}
 
 	enforceSchema := mode == toolChoiceRequired || mode == toolChoiceNamed
 	if mode.requiresGrammar() {
 		if parser, exists := root["tool_call_parser"]; exists && parser != nil {
 			if parser != "gemma" {
-				return mode, invalidToolConstraint(
+				return policy, invalidToolConstraint(
 					"inference-enforced Gemma tool_choice requires tool_call_parser 'gemma'",
 					"tool_call_parser")
 			}
@@ -61,27 +79,28 @@ func validateToolConstraintRequest(body []byte) (toolChoiceMode, error) {
 	}
 	if mode == toolChoiceRequired || mode == toolChoiceNamed {
 		if err := validateConstrainedStops(root["stop"]); err != nil {
-			return mode, err
+			return policy, err
 		}
 	}
-	tools, err := validateDeclaredTools(root["tools"], enforceSchema)
+	tools, err := validateDeclaredTools(
+		root["tools"], enforceSchema, selected)
 	if err != nil {
-		return mode, err
+		return policy, err
 	}
 	if mode == toolChoiceRequired && len(tools) == 0 {
-		return mode, invalidToolConstraint(
+		return policy, invalidToolConstraint(
 			"tool_choice 'required' needs at least one declared tool", "tool_choice")
 	}
 	if mode == toolChoiceNamed {
 		if _, ok := tools[selected]; !ok {
-			return mode, invalidToolConstraint(
+			return policy, invalidToolConstraint(
 				"tool_choice names an undeclared function", "tool_choice")
 		}
 	}
 	if err := validateToolHistory(root["messages"]); err != nil {
-		return mode, err
+		return policy, err
 	}
-	return mode, nil
+	return policy, nil
 }
 
 func validateConstrainedStops(raw any) error {
@@ -126,31 +145,6 @@ func validateConstrainedStops(raw any) error {
 			"stop")
 	}
 	return nil
-}
-
-func toolChoicePolicyFromBody(
-	body []byte,
-) (toolChoiceMode, string, bool, error) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	var root map[string]any
-	if err := decoder.Decode(&root); err != nil {
-		return "", "", false, err
-	}
-	mode, name, err := parseToolChoice(root["tool_choice"])
-	if err != nil {
-		return "", "", false, err
-	}
-	parallel := true
-	if raw, exists := root["parallel_tool_calls"]; exists && raw != nil {
-		value, ok := raw.(bool)
-		if !ok {
-			return "", "", false, invalidToolConstraint(
-				"parallel_tool_calls must be boolean", "parallel_tool_calls")
-		}
-		parallel = value
-	}
-	return mode, name, parallel, nil
 }
 
 func (m toolChoiceMode) requiresGrammar() bool {
@@ -213,7 +207,11 @@ func parseToolChoice(raw any) (toolChoiceMode, string, error) {
 	return toolChoiceNamed, name, nil
 }
 
-func validateDeclaredTools(raw any, enforceSchema bool) (map[string]map[string]any, error) {
+func validateDeclaredTools(
+	raw any,
+	enforceSchema bool,
+	selected string,
+) (map[string]map[string]any, error) {
 	if raw == nil {
 		return nil, nil
 	}
@@ -244,7 +242,7 @@ func validateDeclaredTools(raw any, enforceSchema bool) (map[string]map[string]a
 		if _, duplicate := tools[name]; duplicate {
 			return nil, invalidToolConstraint("tool function names must be unique", "tools")
 		}
-		if enforceSchema {
+		if enforceSchema && (selected == "" || name == selected) {
 			parameters := function["parameters"]
 			if parameters == nil {
 				parameters = map[string]any{"type": "object"}

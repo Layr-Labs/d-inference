@@ -16,6 +16,20 @@ const STRING_DELIMITERS: [&str; 6] = [
 ];
 
 pub(crate) fn validate_constrained_tools(tools: &[Value]) -> Result<(), NormalizeError> {
+    validate_constrained_tools_for(tools, None)
+}
+
+pub(crate) fn validate_selected_constrained_tool(
+    tools: &[Value],
+    selected: &str,
+) -> Result<(), NormalizeError> {
+    validate_constrained_tools_for(tools, Some(selected))
+}
+
+fn validate_constrained_tools_for(
+    tools: &[Value],
+    selected: Option<&str>,
+) -> Result<(), NormalizeError> {
     if tools.len() > 64 {
         return Err(NormalizeError::InvalidTools);
     }
@@ -30,6 +44,9 @@ pub(crate) fn validate_constrained_tools(tools: &[Value]) -> Result<(), Normaliz
             .get("name")
             .and_then(Value::as_str)
             .ok_or(NormalizeError::InvalidTools)?;
+        if selected.is_some_and(|selected| selected != name) {
+            continue;
+        }
         let schema_cost = match function.get("parameters") {
             None | Some(Value::Null) => 2,
             Some(schema) => {

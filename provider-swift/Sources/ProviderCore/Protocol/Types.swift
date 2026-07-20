@@ -104,6 +104,10 @@ public struct ModelInfo: Codable, Sendable, Equatable {
     /// refuse routing tool-bearing requests to this (provider, model). Unlike
     /// `isVision`, FALSE IS THE SIGNAL and must go on the wire.
     public var templateRenderOK: Bool?
+    /// SHA-256 of the exact chat_template.jinja bytes. Tool-constraint
+    /// capability is advertised only when this equals the code-pinned Gemma
+    /// contract hash; ordinary template rendering remains independently gated.
+    public var toolConstraintTemplateHash: String?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -115,6 +119,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         case weightHash = "weight_hash"
         case isVision = "is_vision"
         case templateRenderOK = "template_render_ok"
+        case toolConstraintTemplateHash = "tool_constraint_template_hash"
     }
 
     public init(
@@ -126,7 +131,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         estimatedMemoryGb: Double,
         weightHash: String? = nil,
         isVision: Bool? = nil,
-        templateRenderOK: Bool? = nil
+        templateRenderOK: Bool? = nil,
+        toolConstraintTemplateHash: String? = nil
     ) {
         self.id = id
         self.modelType = modelType
@@ -137,6 +143,7 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         self.weightHash = weightHash
         self.isVision = isVision
         self.templateRenderOK = templateRenderOK
+        self.toolConstraintTemplateHash = toolConstraintTemplateHash
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -156,6 +163,8 @@ public struct ModelInfo: Codable, Sendable, Equatable {
         // the broken-template routing signal. Omit only when unknown (nil), so
         // the coordinator can distinguish "check didn't run" from "passed".
         try container.encodeIfPresent(templateRenderOK, forKey: .templateRenderOK)
+        try container.encodeIfPresent(
+            toolConstraintTemplateHash, forKey: .toolConstraintTemplateHash)
     }
 }
 

@@ -60,6 +60,8 @@ const maxToolNormalizationBytes = 4 * 1024 * 1024
 // whereas the harm we are preventing is unbounded recursion on every request.
 const maxToolSchemaDepth = 64
 
+const originalBooleanSchemaKey = "x-darkbloom-original-boolean-schema"
+
 // toolsKeyNeedle is the cheap byte gate: only bodies carrying these bytes pay
 // the JSON round-trip.
 var toolsKeyNeedle = []byte(`"tools"`)
@@ -202,9 +204,10 @@ func injectDefaultTypes(node any, depth int, changed *bool) any {
 // BE a schema, so a positional value needs no marker-key evidence:
 //
 //   - a boolean (the valid JSON-Schema allow/deny-all shorthand, e.g.
-//     `"x": true` under properties) is replaced with {"type":"string"} —
-//     Gemma-style templates subscript every property value
-//     (`value['type'] | upper`), which throws on a bool;
+//     `"x": true` under properties) is replaced with a render-safe string
+//     schema carrying originalBooleanSchemaKey, so Gemma can subscript
+//     `value['type']` while provider-side auto validation retains the original
+//     allow/deny-all semantics;
 //   - a map is guaranteed a string `type` after recursion (missing →
 //     inferredType; present-but-non-string → collapsed, see the schema arm),
 //     with NO looksLikeSchemaNode gate — that heuristic previously let valid
@@ -223,7 +226,10 @@ func injectTypes(node any, depth int, changed *bool, positional bool) any {
 	case bool:
 		if positional {
 			*changed = true
-			return map[string]any{"type": "string"}
+			return map[string]any{
+				"type":                   "string",
+				originalBooleanSchemaKey: n,
+			}
 		}
 		return node
 	case []any:

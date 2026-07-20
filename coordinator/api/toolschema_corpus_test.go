@@ -60,16 +60,21 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessAnnotationOnlyNodes(t *testing.T)
 
 // Boolean property schemas (`"x": true` / `"y": false`) are valid JSON Schema
 // (allow-all / deny-all). The template subscripts every property value, so
-// booleans must be replaced with {"type":"string"}.
+// booleans become render-safe string schemas while retaining their original
+// semantics for provider-side auto validation.
 func TestNormalizeToolSchemas_Corpus_BooleanPropertySchemas(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"x":true,"y":false}}}}]}`)
 
 	props := tsnProps(t, NormalizeToolSchemas(body))
-	for _, name := range []string{"x", "y"} {
+	for name, want := range map[string]bool{"x": true, "y": false} {
 		node := tsnMap(t, props[name], name)
-		if !reflect.DeepEqual(node, map[string]any{"type": "string"}) {
-			t.Errorf("%s = %#v, want {\"type\":\"string\"}", name, node)
+		expected := map[string]any{
+			"type":                   "string",
+			originalBooleanSchemaKey: want,
+		}
+		if !reflect.DeepEqual(node, expected) {
+			t.Errorf("%s = %#v, want %#v", name, node, expected)
 		}
 	}
 }
@@ -81,8 +86,12 @@ func TestNormalizeToolSchemas_Corpus_BooleanItems(t *testing.T) {
 
 	arr := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["arr"], "arr")
 	items := tsnMap(t, arr["items"], "arr.items")
-	if !reflect.DeepEqual(items, map[string]any{"type": "string"}) {
-		t.Errorf("items = %#v, want {\"type\":\"string\"}", items)
+	expected := map[string]any{
+		"type":                   "string",
+		originalBooleanSchemaKey: true,
+	}
+	if !reflect.DeepEqual(items, expected) {
+		t.Errorf("items = %#v, want %#v", items, expected)
 	}
 }
 

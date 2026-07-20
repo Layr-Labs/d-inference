@@ -56,6 +56,32 @@ struct ToolSchemaNormalizationTests {
         let noTools = #"{"model":"m","messages":[]}"#.data(using: .utf8)!
         #expect(ToolSchemaNormalization.ensureParameterTypes(in: noTools) == noTools)
     }
+
+    @Test func preservesBooleanSchemaSemanticsForPostValidation() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "allow":true,
+            "deny":false
+          }}}}]}
+        """#.data(using: .utf8)!
+        let function = try #require(
+            (parse(ToolSchemaNormalization.ensureParameterTypes(in: body))["tools"]
+                as? [[String: Any]])?[0]["function"] as? [String: Any])
+        let properties = try #require(
+            (function["parameters"] as? [String: Any])?["properties"]
+                as? [String: Any])
+        let allow = try #require(properties["allow"] as? [String: Any])
+        let deny = try #require(properties["deny"] as? [String: Any])
+        #expect(allow["type"] as? String == "string")
+        #expect(
+            allow[ToolSchemaNormalization.originalBooleanSchemaKey] as? Bool
+                == true)
+        #expect(deny["type"] as? String == "string")
+        #expect(
+            deny[ToolSchemaNormalization.originalBooleanSchemaKey] as? Bool
+                == false)
+    }
 }
 
 extension ToolSchemaNormalizationTests {

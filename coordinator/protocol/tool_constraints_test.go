@@ -47,8 +47,11 @@ func TestModelsUpdateToolConstraintCapabilityIsAdditive(t *testing.T) {
 	}
 
 	current, err := json.Marshal(ModelsUpdateMessage{
-		Type:                   TypeModelsUpdate,
-		Models:                 []ModelInfo{{ID: "gemma-4-hot"}},
+		Type: TypeModelsUpdate,
+		Models: []ModelInfo{{
+			ID:                         "gemma-4-hot",
+			ToolConstraintTemplateHash: "pinned-template-hash",
+		}},
 		ToolConstraintProtocol: 1,
 		ToolConstraintModels:   []string{"gemma-4-hot"},
 	})
@@ -61,7 +64,8 @@ func TestModelsUpdateToolConstraintCapabilityIsAdditive(t *testing.T) {
 	}
 	if decoded.ToolConstraintProtocol != 1 ||
 		len(decoded.ToolConstraintModels) != 1 ||
-		decoded.ToolConstraintModels[0] != "gemma-4-hot" {
+		decoded.ToolConstraintModels[0] != "gemma-4-hot" ||
+		decoded.Models[0].ToolConstraintTemplateHash != "pinned-template-hash" {
 		t.Fatalf("models_update capability round trip failed: %+v", decoded)
 	}
 }

@@ -105,6 +105,56 @@ func TestQueuedConstraintTerminatesWhenOnlyOldProvidersRemain(t *testing.T) {
 	}
 }
 
+func TestQueuedSelfRouteConstraintIgnoresUnrelatedCapableProviders(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-self-route-queue"
+	owner := makeSchedulerProvider(t, reg, "owner-old", model, 100)
+	setProviderVersion(owner, "0.7.10")
+	owner.mu.Lock()
+	owner.AccountID = "owner"
+	owner.mu.Unlock()
+
+	public := makeSchedulerProvider(t, reg, "public-capable", model, 100)
+	setProviderVersion(public, "99.0.0")
+	public.mu.Lock()
+	public.AccountID = "other"
+	public.ToolConstraintProtocol = ToolConstraintProtocolV1
+	public.ToolConstraintModels = map[string]struct{}{model: {}}
+	public.mu.Unlock()
+
+	request := &QueuedRequest{
+		RequestID:  "queued-self-route-constraint",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:          "queued-self-route-constraint",
+			Model:              model,
+			RequestedMaxTokens: 32,
+			OwnerAccountID:     "owner",
+			SelfRouteOnly:      true,
+			Traits: RequestTraits{
+				HasTools:               true,
+				RequiresToolConstraint: true,
+			},
+		},
+	}
+	if err := reg.Queue().Enqueue(request); err != nil {
+		t.Fatal(err)
+	}
+	reg.DrainQueuedRequestsForModel(model)
+	select {
+	case selected := <-request.ResponseCh:
+		if selected != nil {
+			t.Fatalf("unrelated provider received self-route request: %s", selected.ID)
+		}
+		if !errors.Is(request.FailureReason, ErrQueueToolConstraintUnavailable) {
+			t.Fatalf("failure = %v", request.FailureReason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("self-route request waited on an unrelated capable provider")
+	}
+}
+
 func TestQueuedConstraintTerminatesWhenLastCapableProviderDisconnects(t *testing.T) {
 	reg := New(testLogger())
 	model := "gemma-4-disconnect"
@@ -206,5 +256,37 @@ func TestModelsUpdateRefreshesConstraintRoutingImmediately(t *testing.T) {
 		newModel, 10, 32, traits,
 	); candidates != 0 {
 		t.Fatalf("removed hot capability still routed: %d", candidates)
+	}
+}
+
+func TestAliasResolutionFallsBackToConstraintCapablePreviousBuild(t *testing.T) {
+	reg := New(testLogger())
+	desired := "gemma-4-desired"
+	previous := "gemma-4-previous"
+	desiredProvider := makeSchedulerProvider(t, reg, "desired-old", desired, 100)
+	previousProvider := makeSchedulerProvider(t, reg, "previous-capable", previous, 100)
+	setProviderVersion(desiredProvider, "0.7.10")
+	setProviderVersion(previousProvider, "99.0.0")
+	previousProvider.mu.Lock()
+	previousProvider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	previousProvider.ToolConstraintModels = map[string]struct{}{previous: {}}
+	previousProvider.mu.Unlock()
+	reg.SetModelAliases(map[string]AliasTarget{
+		"gemma-4": {Desired: desired, Previous: previous},
+	})
+
+	build, isAlias, ok := reg.ResolveModelConstrainedWithTraits(
+		"gemma-4", nil, "", false, false,
+		RequestTraits{HasTools: true, RequiresToolConstraint: true})
+	if !ok || !isAlias || build != previous {
+		t.Fatalf(
+			"constrained alias resolved to build=%q alias=%v ok=%v, want previous %q",
+			build, isAlias, ok, previous)
+	}
+
+	build, _, ok = reg.ResolveModelConstrainedWithTraits(
+		"gemma-4", nil, "", false, false, RequestTraits{})
+	if !ok || build != desired {
+		t.Fatalf("ordinary alias resolved to %q ok=%v, want desired %q", build, ok, desired)
 	}
 }

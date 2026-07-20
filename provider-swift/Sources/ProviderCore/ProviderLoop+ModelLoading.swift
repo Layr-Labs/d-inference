@@ -491,7 +491,12 @@ extension ProviderLoop {
             }
 
             let tokenizer: TokenizerHandle = try await newcomer.borrow().perform { ctx in
-                TokenizerHandle(ctx.tokenizer)
+                TokenizerHandle(
+                    ctx.tokenizer,
+                    toolConstraintContractVerified:
+                        Gemma4ToolConstraintContract.isVerified(
+                            modelType: modelInfo.modelType,
+                            modelDirectory: modelPath))
             }
 
             // ONE ENGINE (v0.7.5): re-slice co-resident KV grants (shrink

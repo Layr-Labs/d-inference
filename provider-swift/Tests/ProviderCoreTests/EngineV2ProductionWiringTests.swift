@@ -251,6 +251,12 @@ private func makeBridge(
     )
 }
 
+private func makeConstraintVerifiedWiringTokenizer() -> TokenizerHandle {
+    TokenizerHandle(
+        WiringStubTokenizer(),
+        toolConstraintContractVerified: true)
+}
+
 private func makeSizing(
     weightsGiB: UInt64, kvRate: Int = 20_480, maxContext: Int = 131_072
 ) -> SlotSizingSnapshot {
@@ -1044,7 +1050,7 @@ struct EngineV2RequestRoutingTests {
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        tokenizer: makeConstraintVerifiedWiringTokenizer(),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -1069,6 +1075,42 @@ struct EngineV2RequestRoutingTests {
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: makeConstraintVerifiedWiringTokenizer(),
+                        modelType: "gemma4",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: .user, content: .text("hello"))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .mode(.required))
+
+        var emitted: [MLXServerGenerationEvent] = []
+        do {
+            let stream = try await providerEngine.streamChatCompletion(request: request)
+            for try await event in stream {
+                emitted.append(event)
+            }
+            Issue.record("scripted engine bypass should still fail validation")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(
+                error == .toolChoiceViolation(
+                    "required tool_choice produced visible text before a tool call"))
+        }
+        #expect(emitted.isEmpty)
+        #expect(engine.submitted.count == 1)
+        #expect(engine.submitted[0].tokenConstraint?.mode == .required)
+    }
+
+    @Test("required tool choice rejects an unpinned template contract before submit")
+    func requiredToolChoiceRejectsUnpinnedTemplate() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
@@ -1081,14 +1123,14 @@ struct EngineV2RequestRoutingTests {
             toolChoice: .mode(.required))
 
         do {
-            let stream = try await providerEngine.streamChatCompletion(request: request)
-            for try await _ in stream {}
-            Issue.record("scripted engine bypass should still fail validation")
+            _ = try await providerEngine.streamChatCompletion(request: request)
+            Issue.record("expected pinned prompt-contract rejection")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .toolChoiceViolation("model did not emit the required tool call"))
+            #expect(
+                error == .invalidToolPayload(
+                    "inference-enforced tool_choice requires the pinned Gemma prompt contract"))
         }
-        #expect(engine.submitted.count == 1)
-        #expect(engine.submitted[0].tokenConstraint?.mode == .required)
+        #expect(engine.submitted.isEmpty)
     }
 
     @Test("auto mode returns malformed tagged output as visible text")
@@ -1106,7 +1148,7 @@ struct EngineV2RequestRoutingTests {
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        tokenizer: makeConstraintVerifiedWiringTokenizer(),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -1140,7 +1182,7 @@ struct EngineV2RequestRoutingTests {
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        tokenizer: makeConstraintVerifiedWiringTokenizer(),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -1151,13 +1193,19 @@ struct EngineV2RequestRoutingTests {
             tools: [.init(function: .init(name: "calculate"))],
             toolChoice: .function(name: "calculate"))
 
+        var emitted: [MLXServerGenerationEvent] = []
         do {
             let stream = try await providerEngine.streamChatCompletion(request: request)
-            for try await _ in stream {}
+            for try await event in stream {
+                emitted.append(event)
+            }
             Issue.record("expected named tool_choice mismatch")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .toolChoiceViolation("model did not emit the named tool call"))
+            #expect(
+                error == .toolChoiceViolation(
+                    "named tool_choice produced visible text before a tool call"))
         }
+        #expect(emitted.isEmpty)
     }
 
     @Test("constrained Gemma rejects a mismatched parser before submit")

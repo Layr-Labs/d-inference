@@ -122,7 +122,28 @@ struct GemmaToolConstraintTests {
         ModelScanner.resolveLocalPath(modelID: realGemmaModelID) != nil
     }
 
-    private let tokenizer = TokenizerHandle(ASCIIConstraintTokenizer())
+    private let tokenizer = TokenizerHandle(
+        ASCIIConstraintTokenizer(),
+        toolConstraintContractVerified: true)
+
+    @Test("tool grammar accepts only exact Gemma types and pinned template bytes")
+    func pinnedTemplateContract() throws {
+        #expect(Gemma4ToolConstraintContract.supports(modelType: "gemma4_text"))
+        #expect(!Gemma4ToolConstraintContract.supports(modelType: "gemma4_assistant_v2"))
+        #expect(!Gemma4ToolConstraintContract.supports(modelType: nil))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("drifted template".utf8).write(
+            to: directory.appendingPathComponent("chat_template.jinja"))
+        #expect(
+            !Gemma4ToolConstraintContract.isVerified(
+                modelType: "gemma4_text",
+                modelDirectory: directory))
+    }
 
     private func tool(
         name: String = "weather",
@@ -334,6 +355,31 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("named choice compiles only the selected tool schema")
+    func namedChoiceIgnoresUnsupportedUnselectedSchema() throws {
+        let unsupported: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "pattern": .string("^x$"),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .function(name: "weather"),
+                tools: [tool(), tool(name: "unused", parameters: unsupported)]))
+        #expect(prepared.tools?.map(\.function.name) == ["weather"])
+        #expect(prepared.compiledTools?.map(\.name) == ["weather"])
+
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .function(name: "unused"),
+                    tools: [tool(), tool(name: "unused", parameters: unsupported)]))
+        }
+    }
+
     @Test("structural schemas infer object and array types like the coordinator")
     func structuralTypeInferenceMatchesCoordinator() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
@@ -443,7 +489,9 @@ struct GemmaToolConstraintTests {
         let constraint = try #require(try ToolConstraintFactory.make(
             prepared: prepared,
             request: request,
-            tokenizer: TokenizerHandle(WideConstraintTokenizer()),
+            tokenizer: TokenizerHandle(
+                WideConstraintTokenizer(),
+                toolConstraintContractVerified: true),
             modelContext: .init(
                 modelId: request.model, modelType: "gemma4_text"),
             defaultMaxTokens: 128,
@@ -707,6 +755,25 @@ struct GemmaToolConstraintTests {
                     name: "weather", arguments: ["country": .string("FR")])),
             ], prepared: broadPrepared)
         }
+
+        let unsafePatternSchema: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "patternProperties": .object([
+                "^(a+)+$": .object(["type": .string("string")]),
+            ]),
+            "additionalProperties": .bool(false),
+        ])
+        let unsafePrepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: unsafePatternSchema)],
+                parallel: false))
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["aaaa": .string("value")])),
+            ], prepared: unsafePrepared)
+        }
     }
 
     @Test("auto validation honors draft-04 tuple items and additionalItems")
@@ -776,6 +843,133 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("auto enum and const compare JSON numbers mathematically")
+    func autoNumericFiniteValuesCompareAcrossRepresentations() throws {
+        for assertion in [
+            ("enum", MLXLMCommon.JSONValue.array([.int(1)])),
+            ("const", MLXLMCommon.JSONValue.int(1)),
+        ] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("number"),
+                        assertion.0: assertion.1,
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            #expect(prepared.compiledTools == nil)
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["value": .double(1.0)])),
+            ], prepared: prepared)
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["value": .double(2.0)])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
+    @Test("auto validation honors draft-04 boolean exclusive bounds")
+    func autoDraft04ExclusiveBounds() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("number"),
+                    "minimum": .int(5),
+                    "exclusiveMinimum": .bool(true),
+                    "maximum": .int(10),
+                    "exclusiveMaximum": .bool(true),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["value": .int(6)])),
+        ], prepared: prepared)
+        for boundary in [5, 10] {
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["value": .int(boundary)])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
+    @Test("auto string bounds count Unicode code points")
+    func autoStringBoundsUseUnicodeCodePoints() throws {
+        let decomposed = "e\u{301}"
+        for (assertion, bound, shouldPass) in [
+            ("minLength", 2, true),
+            ("maxLength", 1, false),
+        ] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("string"),
+                        assertion: .int(bound),
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            let call = ToolCall(function: .init(
+                name: "weather", arguments: ["value": .string(decomposed)]))
+            if shouldPass {
+                try ToolConstraintValidation.validate([call], prepared: prepared)
+            } else {
+                #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                    try ToolConstraintValidation.validate([call], prepared: prepared)
+                }
+            }
+        }
+    }
+
+    @Test("auto validation restores normalized boolean schema semantics")
+    func autoBooleanSchemaSemanticsSurviveNormalization() throws {
+        for accepts in [true, false] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("string"),
+                        ToolSchemaNormalization.originalBooleanSchemaKey:
+                            .bool(accepts),
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            #expect(prepared.compiledTools == nil)
+            let call = ToolCall(function: .init(
+                name: "weather", arguments: ["value": .int(7)]))
+            if accepts {
+                try ToolConstraintValidation.validate([call], prepared: prepared)
+            } else {
+                #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                    try ToolConstraintValidation.validate([call], prepared: prepared)
+                }
+            }
+        }
+    }
+
     @Test(
         "local production Gemma tokenizer compiles and accepts the canonical envelope",
         .enabled(if: Self.hasRealGemmaTokenizerFixture)
@@ -784,7 +978,12 @@ struct GemmaToolConstraintTests {
         let directory = try #require(
             ModelScanner.resolveLocalPath(modelID: Self.realGemmaModelID))
         let loaded = try await LocalTokenizerLoader().load(from: directory)
-        let handle = TokenizerHandle(loaded)
+        let handle = TokenizerHandle(
+            loaded,
+            toolConstraintContractVerified:
+                Gemma4ToolConstraintContract.isVerified(
+                    modelType: "gemma4_text",
+                    modelDirectory: directory))
         let request = OpenAIChatCompletionRequest(
             model: "gemma-4-26b-qat-4bit",
             messages: [.init(role: .user, content: .text("weather"))],

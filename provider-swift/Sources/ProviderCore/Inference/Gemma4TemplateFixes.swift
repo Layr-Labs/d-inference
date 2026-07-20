@@ -22,10 +22,7 @@
 
 enum Gemma4TemplateFix {
     static func applies(to context: ChatTemplateFixContext) -> Bool {
-        guard let modelType = context.modelType?.lowercased() else {
-            return context.modelId?.lowercased().contains("gemma-4") == true
-        }
-        return modelType.hasPrefix("gemma4")
+        Gemma4ToolConstraintContract.supports(modelType: context.modelType)
     }
 
     static func normalizeMessages(

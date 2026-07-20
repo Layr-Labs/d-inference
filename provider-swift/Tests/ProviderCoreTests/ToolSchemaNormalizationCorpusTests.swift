@@ -58,10 +58,14 @@ struct ToolSchemaNormalizationCorpusTests {
     @Test func booleanPropertySchemasBecomeStringTyped() throws {
         let props = try normalizedProps(
             #"{"type":"object","properties":{"x":true,"y":false}}"#)
-        for name in ["x", "y"] {
+        for (name, expected) in ["x": true, "y": false] {
             let node = try #require(props[name] as? [String: Any], "\(name)")
             #expect(node["type"] as? String == "string", "\(name)")
-            #expect(node.count == 1, "\(name)")
+            #expect(
+                node[ToolSchemaNormalization.originalBooleanSchemaKey] as? Bool
+                    == expected,
+                "\(name)")
+            #expect(node.count == 2, "\(name)")
         }
     }
 
@@ -71,6 +75,9 @@ struct ToolSchemaNormalizationCorpusTests {
         let arr = try #require(props["arr"] as? [String: Any])
         let items = try #require(arr["items"] as? [String: Any])
         #expect(items["type"] as? String == "string")
+        #expect(
+            items[ToolSchemaNormalization.originalBooleanSchemaKey] as? Bool
+                == true)
     }
 
     @Test func scalarNonStringTypeCollapses() throws {

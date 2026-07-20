@@ -625,6 +625,22 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                 if let visible = handler.processChunk(text),
                                     !visible.isEmpty
                                 {
+                                    if prepared.requiresToolCall {
+                                        let policy =
+                                            switch prepared.mode {
+                                            case .named: "named"
+                                            case .required: "required"
+                                            case .auto, .none: "constrained"
+                                            }
+                                        await cancelUpstream()
+                                        await releaseBox.fire()
+                                        continuation.finish(
+                                            throwing: MultiModelBatchSchedulerEngineError
+                                                .toolChoiceViolation(
+                                                    "\(policy) tool_choice produced visible text before a tool call"
+                                                ))
+                                        return
+                                    }
                                     continuation.yield(.content(visible))
                                 }
                             } else {

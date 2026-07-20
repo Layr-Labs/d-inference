@@ -230,8 +230,9 @@ public enum CoordinatorClientCodec {
         _ models: [ModelInfo]
     ) -> [String] {
         models.filter {
-            Gemma4TemplateFix.applies(to: ChatTemplateFixContext(
-                modelId: $0.id, modelType: $0.modelType))
+            Gemma4ToolConstraintContract.supports(modelType: $0.modelType)
+                && $0.toolConstraintTemplateHash
+                    == Gemma4ToolConstraintContract.pinnedTemplateSHA256
         }.map(\.id).sorted()
     }
 

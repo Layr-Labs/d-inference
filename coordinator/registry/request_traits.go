@@ -209,7 +209,8 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 // unrelated public provider and fail later with a misleading error.
 func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials ...string) bool {
 	traits := RequestTraits{HasTools: true}
-	return r.hasToolCapableProviderForModel(model, traits, allowedSerials...)
+	return r.hasToolCapableProviderForModel(
+		model, traits, "", false, allowedSerials...)
 }
 
 // HasToolConstraintProviderForModel is the fail-fast companion for
@@ -220,12 +221,34 @@ func (r *Registry) HasToolConstraintProviderForModel(
 	allowedSerials ...string,
 ) bool {
 	traits := RequestTraits{HasTools: true, RequiresToolConstraint: true}
-	return r.hasToolCapableProviderForModel(model, traits, allowedSerials...)
+	return r.hasToolCapableProviderForModel(
+		model, traits, "", false, allowedSerials...)
+}
+
+func (r *Registry) hasToolConstraintProviderForPending(
+	model string,
+	pending *PendingRequest,
+) bool {
+	if pending == nil {
+		return r.HasToolConstraintProviderForModel(model)
+	}
+	traits := RequestTraits{
+		HasTools:               true,
+		RequiresToolConstraint: true,
+	}
+	return r.hasToolCapableProviderForModel(
+		model,
+		traits,
+		pending.OwnerAccountID,
+		pending.SelfRouteOnly,
+		pending.AllowedProviderSerials...)
 }
 
 func (r *Registry) hasToolCapableProviderForModel(
 	model string,
 	traits RequestTraits,
+	ownerAccountID string,
+	selfRouteOnly bool,
 	allowedSerials ...string,
 ) bool {
 	allowedSet := make(map[string]struct{}, len(allowedSerials))
@@ -243,7 +266,10 @@ func (r *Registry) hasToolCapableProviderForModel(
 		// p.Status, p.Version, and p.Models are guarded by p.mu (writers hold
 		// it), so the whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
-		eligible := p.Status != StatusOffline && p.Status != StatusUntrusted &&
+		ownerEligible := !selfRouteOnly ||
+			(ownerAccountID != "" && p.AccountID == ownerAccountID)
+		eligible := ownerEligible &&
+			p.Status != StatusOffline && p.Status != StatusUntrusted &&
 			r.providerServesCatalogModelLocked(p, model) &&
 			r.providerEligibleForTraitsLocked(p, model, traits)
 		p.mu.Unlock()

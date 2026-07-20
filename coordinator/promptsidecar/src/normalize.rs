@@ -2,6 +2,8 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use thiserror::Error;
 
+const ORIGINAL_BOOLEAN_SCHEMA_KEY: &str = "x-darkbloom-original-boolean-schema";
+
 #[derive(Clone, Debug)]
 pub struct NormalizedRequest {
     pub messages: Vec<Value>,
@@ -340,8 +342,11 @@ fn normalize_tool_parameter_types(body: &mut Map<String, Value>) {
 }
 
 fn inject_schema_types(node: &mut Value, positional: bool) {
-    if positional && node.is_boolean() {
-        *node = json!({"type": "string"});
+    if positional && let Some(accepts) = node.as_bool() {
+        *node = json!({
+            "type": "string",
+            (ORIGINAL_BOOLEAN_SCHEMA_KEY): accepts
+        });
         return;
     }
     if let Some(array) = node.as_array_mut() {
@@ -517,11 +522,11 @@ fn apply_tool_choice_policy(
         .as_ref()
         .filter(|tools| !tools.is_empty())
         .ok_or(NormalizeError::InvalidTools)?;
-    crate::tool_constraint::validate_constrained_tools(declared)?;
     let instruction = if let Some(name) = selected_name {
         if !declared.iter().any(|tool| tool_name(tool) == Some(name)) {
             return Err(NormalizeError::InvalidTools);
         }
+        crate::tool_constraint::validate_selected_constrained_tool(declared, name)?;
         *tools = Some(
             declared
                 .iter()
@@ -533,11 +538,13 @@ fn apply_tool_choice_policy(
             "Call the declared function '{name}' now. You must emit a '{name}' tool call with valid arguments before any final answer, even when another function seems more relevant. Your entire response must be that tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
         )
     } else if declared.len() == 1 {
+        crate::tool_constraint::validate_constrained_tools(declared)?;
         let name = tool_name(&declared[0]).ok_or(NormalizeError::InvalidTools)?;
         format!(
             "Call the declared function '{name}' now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require the tool. Your entire response must be the tool call; a text answer is forbidden. For any required string argument without an obvious value, use the user's request text."
         )
     } else {
+        crate::tool_constraint::validate_constrained_tools(declared)?;
         "Call one of the declared tools now. You must emit a tool call with valid arguments before any final answer, even when the user's request does not require a tool. Your entire response must be the tool call; a text answer is forbidden.".into()
     };
     add_instruction(messages, &instruction, true);
@@ -1026,6 +1033,64 @@ mod tests {
             });
             assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
         }
+    }
+
+    #[test]
+    fn preserves_boolean_schema_semantics_for_provider_validation() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"f",
+                "parameters":{"type":"object","properties":{
+                    "allow":true,
+                    "deny":false
+                }}
+            }}]
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let properties = &normalized.tools.unwrap()[0]["function"]["parameters"]["properties"];
+        assert_eq!(properties["allow"]["type"], "string");
+        assert_eq!(properties["allow"][ORIGINAL_BOOLEAN_SCHEMA_KEY], true);
+        assert_eq!(properties["deny"]["type"], "string");
+        assert_eq!(properties["deny"][ORIGINAL_BOOLEAN_SCHEMA_KEY], false);
+    }
+
+    #[test]
+    fn named_choice_ignores_unsupported_unselected_schema() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[
+                {"type":"function","function":{
+                    "name":"selected",
+                    "parameters":{"type":"object","properties":{
+                        "value":{"type":"string"}
+                    }}
+                }},
+                {"type":"function","function":{
+                    "name":"unused",
+                    "parameters":{"type":"object","properties":{
+                        "value":{"pattern":"^x$"}
+                    }}
+                }}
+            ],
+            "tool_choice":{"type":"function","function":{"name":"selected"}}
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let tools = normalized.tools.expect("selected tool");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0]["function"]["name"], "selected");
+
+        let mut unsupported = body;
+        unsupported["tool_choice"]["function"]["name"] = json!("unused");
+        assert!(
+            normalize(
+                unsupported.as_object().unwrap().clone(),
+                Some("gemma4_text")
+            )
+            .is_err()
+        );
     }
 
     #[test]

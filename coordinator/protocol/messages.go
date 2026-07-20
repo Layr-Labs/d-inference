@@ -136,6 +136,10 @@ type ModelInfo struct {
 	// explicit false SURVIVES the wire — false is the exclusion signal, while
 	// nil is omitted entirely.
 	TemplateRenderOK *bool `json:"template_render_ok,omitempty"`
+	// ToolConstraintTemplateHash binds inference-time grammar capability to the
+	// exact chat-template bytes the provider loaded. It is informational unless
+	// the provider also advertises the model under tool_constraint_models.
+	ToolConstraintTemplateHash string `json:"tool_constraint_template_hash,omitempty"`
 }
 
 // PrefixCacheV2Capability binds one live model slot to the exact artifacts and

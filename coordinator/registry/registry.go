@@ -1812,9 +1812,22 @@ func (r *Registry) ResolveModel(requested string) (buildID string, isAlias bool,
 // but absent from the request's allowed provider set (which would then fail at
 // dispatch). With no constraints it is identical to ResolveModel.
 func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []string, ownerAccountID string, selfRouteOnly, preferOwner bool) (buildID string, isAlias bool, ok bool) {
-	if len(allowedSerials) == 0 && !selfRouteOnly && !preferOwner {
-		return r.ResolveModel(requested)
-	}
+	return r.ResolveModelConstrainedWithTraits(
+		requested, allowedSerials, ownerAccountID, selfRouteOnly, preferOwner,
+		RequestTraits{})
+}
+
+// ResolveModelConstrainedWithTraits extends ResolveModelConstrained with the
+// same request-shape gates used at dispatch. During a mixed-version rollout an
+// alias must not resolve to Desired merely because an old provider can serve
+// ordinary text when Previous has a provider capable of the requested shape.
+func (r *Registry) ResolveModelConstrainedWithTraits(
+	requested string,
+	allowedSerials []string,
+	ownerAccountID string,
+	selfRouteOnly, preferOwner bool,
+	traits RequestTraits,
+) (buildID string, isAlias bool, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -1834,26 +1847,38 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 	now := time.Now()
 	hardConstrained := len(allowed) > 0 || selfRouteOnly
 	if preferOwner && ownerAccountID != "" {
-		if r.anyEligibleProviderCanRouteLocked(t.Desired, nil, ownerAccountID, true, true, now) {
+		if r.anyEligibleProviderCanRouteWithTraitsLocked(
+			t.Desired, nil, ownerAccountID, true, true, now, traits,
+		) {
 			return t.Desired, true, true
 		}
-		if t.Previous != "" && r.anyEligibleProviderCanRouteLocked(t.Previous, nil, ownerAccountID, true, true, now) {
+		if t.Previous != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
+			t.Previous, nil, ownerAccountID, true, true, now, traits,
+		) {
 			return t.Previous, true, true
 		}
 	}
 	if !hardConstrained {
-		if r.anyProviderCanRouteBuildLocked(t.Desired) {
+		if r.anyEligibleProviderCanRouteWithTraitsLocked(
+			t.Desired, nil, "", false, false, now, traits,
+		) {
 			return t.Desired, true, true
 		}
-		if t.Previous != "" && r.anyProviderCanRouteBuildLocked(t.Previous) {
+		if t.Previous != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
+			t.Previous, nil, "", false, false, now, traits,
+		) {
 			return t.Previous, true, true
 		}
 		return t.Desired, true, true
 	}
-	if t.Desired != "" && r.anyEligibleProviderCanRouteLocked(t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
+	if t.Desired != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
+		t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits,
+	) {
 		return t.Desired, true, true
 	}
-	if t.Previous != "" && r.anyEligibleProviderCanRouteLocked(t.Previous, allowed, ownerAccountID, selfRouteOnly, preferOwner, now) {
+	if t.Previous != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
+		t.Previous, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits,
+	) {
 		return t.Previous, true, true
 	}
 	// Only HARD-constrained requests (serial pin / self-route-only) reach here —
@@ -1865,11 +1890,18 @@ func (r *Registry) ResolveModelConstrained(requested string, allowedSerials []st
 	return "", true, false
 }
 
-// anyEligibleProviderCanRouteLocked reports whether some provider both matches
-// the request's constraint (serial allowlist and/or self-route ownership) and
-// can route the build. Self-route to an OWNED machine relaxes trust and allows
-// private-only providers, mirroring snapshotProviderLocked. Caller holds r.mu.
-func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSerials map[string]struct{}, ownerAccountID string, selfRouteOnly, preferOwner bool, now time.Time) bool {
+// anyEligibleProviderCanRouteWithTraitsLocked reports whether some provider
+// matches the request's routing constraints and exact capability traits.
+// Self-route to an owned machine relaxes trust and allows private-only
+// providers, mirroring snapshotProviderLocked. Caller holds r.mu.
+func (r *Registry) anyEligibleProviderCanRouteWithTraitsLocked(
+	buildID string,
+	allowedSerials map[string]struct{},
+	ownerAccountID string,
+	selfRouteOnly, preferOwner bool,
+	now time.Time,
+	traits RequestTraits,
+) bool {
 	for _, p := range r.providers {
 		p.mu.Lock()
 		ok := func() bool {
@@ -1894,7 +1926,8 @@ func (r *Registry) anyEligibleProviderCanRouteLocked(buildID string, allowedSeri
 				minTrust = TrustNone
 				allowPrivate = true
 			}
-			return r.providerCanRouteBuildLocked(p, buildID, minTrust, now, allowPrivate)
+			return r.providerCanRouteBuildLocked(p, buildID, minTrust, now, allowPrivate) &&
+				r.providerEligibleForTraitsLocked(p, buildID, traits)
 		}()
 		p.mu.Unlock()
 		if ok {

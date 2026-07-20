@@ -21,9 +21,11 @@ enum ToolConstraintFactory {
         stopTokenIDs: Set<Int>
     ) throws -> (any CBv2TokenConstraint)? {
         guard prepared.mode.requiresInferenceGrammar else { return nil }
-        guard Gemma4TemplateFix.applies(to: modelContext) else {
+        guard Gemma4TemplateFix.applies(to: modelContext),
+            tokenizer.toolConstraintContractVerified
+        else {
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "inference-enforced tool_choice is not supported for this model family")
+                "inference-enforced tool_choice requires the pinned Gemma prompt contract")
         }
         let maxTokens = request.maxTokens ?? defaultMaxTokens
         guard maxTokens > 0 else {

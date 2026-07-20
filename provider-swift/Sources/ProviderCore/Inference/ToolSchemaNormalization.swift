@@ -14,6 +14,9 @@ import Foundation
 /// mlx-swift-lm is left untouched, and non-tool requests pay zero cost (the work
 /// is gated on the body actually carrying `tools`).
 enum ToolSchemaNormalization {
+    static let originalBooleanSchemaKey =
+        "x-darkbloom-original-boolean-schema"
+
     /// Return `data` with default `type`s injected into tool parameter schemas.
     /// Fast-paths out (returns the input unchanged) when the body carries no
     /// `tools`, or when it isn't a JSON object we can repair.
@@ -61,7 +64,8 @@ enum ToolSchemaNormalization {
     /// `prefixItems`, a map-valued `additionalProperties`, or a member of
     /// `anyOf`/`oneOf`/`allOf` — IS a schema by definition, so it needs no
     /// marker-key evidence: booleans (the valid allow/deny-all shorthand)
-    /// become `{"type":"string"}` and maps are guaranteed a string `type`.
+    /// become render-safe string schemas carrying their original semantic
+    /// value, and maps are guaranteed a string `type`.
     static func injectDefaultTypes(_ node: Any) -> Any {
         injectTypes(node, positional: false)
     }
@@ -72,7 +76,10 @@ enum ToolSchemaNormalization {
     /// `items`, `prefixItems`, union member lists).
     private static func injectTypes(_ node: Any, positional: Bool) -> Any {
         if positional, isJSONBoolean(node) {
-            return ["type": "string"] as [String: Any]
+            return [
+                "type": "string",
+                originalBooleanSchemaKey: node,
+            ] as [String: Any]
         }
         if let arr = node as? [Any] {
             return arr.map { injectTypes($0, positional: positional) }

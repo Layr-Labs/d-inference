@@ -87,14 +87,18 @@ import Testing
         parameters: nil,
         quantization: "4bit",
         sizeBytes: 1,
-        estimatedMemoryGb: 1)
+        estimatedMemoryGb: 1,
+        toolConstraintTemplateHash:
+            Gemma4ToolConstraintContract.pinnedTemplateSHA256)
     let typeOnlyGemma = ModelInfo(
         id: "custom-model-id",
         modelType: "gemma4_text",
         parameters: nil,
         quantization: "4bit",
         sizeBytes: 1,
-        estimatedMemoryGb: 1)
+        estimatedMemoryGb: 1,
+        toolConstraintTemplateHash:
+            Gemma4ToolConstraintContract.pinnedTemplateSHA256)
     let misleadingID = ModelInfo(
         id: "gemma-4-not-actually-gemma",
         modelType: "qwen",
@@ -102,10 +106,21 @@ import Testing
         quantization: "4bit",
         sizeBytes: 1,
         estimatedMemoryGb: 1)
+    let driftedTemplate = ModelInfo(
+        id: "gemma-4-drifted-template",
+        modelType: "gemma4_text",
+        parameters: nil,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1,
+        toolConstraintTemplateHash: "wrong")
     let config = CoordinatorClientConfig(
         url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
         hardware: clientSampleHardware(),
-        models: [clientSampleModel(), gemma, typeOnlyGemma, misleadingID],
+        models: [
+            clientSampleModel(), gemma, typeOnlyGemma, misleadingID,
+            driftedTemplate,
+        ],
         backendName: "mlx_swift_lm",
         publicKey: "cHVibGlj",
         attestation: RawJSON(rawBytes: Data(#"{"signature":"sig"}"#.utf8)))
@@ -142,7 +157,9 @@ import Testing
         parameters: nil,
         quantization: "4bit",
         sizeBytes: 1,
-        estimatedMemoryGb: 1)
+        estimatedMemoryGb: 1,
+        toolConstraintTemplateHash:
+            Gemma4ToolConstraintContract.pinnedTemplateSHA256)
     let data = try CoordinatorClientCodec.encodeOutboundMessage(
         .modelsUpdate(models: [gemma]))
     let object = try clientJSONObject(data)

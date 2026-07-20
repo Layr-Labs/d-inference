@@ -202,6 +202,36 @@ func TestValidateToolConstraintRequestAcceptsNormalizedSubset(t *testing.T) {
 	}
 }
 
+func TestNamedToolChoiceValidatesOnlySelectedSchema(t *testing.T) {
+	body := func(choice string) []byte {
+		return []byte(fmt.Sprintf(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[
+			{"type":"function","function":{
+				"name":"selected",
+				"parameters":{"type":"object","properties":{"value":{"type":"string"}}}
+			}},
+			{"type":"function","function":{
+				"name":"unused",
+				"parameters":{"type":"object","properties":{"value":{"pattern":"^x$"}}}
+			}}
+		],
+		"tool_choice":{"type":"function","function":{"name":%q}}
+	}`, choice))
+	}
+	mode, err := validateToolConstraintRequest(body("selected"))
+	if err != nil || mode != toolChoiceNamed {
+		t.Fatalf("unselected unsupported schema rejected named choice: mode=%q err=%v", mode, err)
+	}
+
+	_, err = validateToolConstraintRequest(body("unused"))
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusUnprocessableEntity {
+		t.Fatalf("selected unsupported schema accepted: %T %v", err, err)
+	}
+}
+
 func TestValidateToolConstraintRequestRejectsProviderGrammarExplosion(t *testing.T) {
 	var value any = map[string]any{"type": "string"}
 	for range 4 {

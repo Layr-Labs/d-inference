@@ -92,8 +92,12 @@ provider SSD stage deadline (`DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MS`) are
 functional upper bounds, not performance claims. Cache-hit and miss latency
 acceptance requires a positive-hit-capable real model. Contiguous,
 unquantized Gemma 4 and GPT-OSS slots now use frozen-full replay; paged hybrids
-remain cold-only. Protected benchmarks and human approval are still mandatory
-before routing activation.
+remain cold-only
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:289-317`;
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift:127-153`;
+`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/SequenceKV/FrozenReplayFullSequenceKV.swift:54-99`).
+Protected benchmarks and human approval are still mandatory before routing
+activation.
 
 Local M4 release-preparation evidence on 2026-07-17:
 

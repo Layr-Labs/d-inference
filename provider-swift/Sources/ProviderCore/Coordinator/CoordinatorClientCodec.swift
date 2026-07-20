@@ -35,6 +35,7 @@ public enum CoordinatorClientCodec {
         } else {
             effectiveModels = baseModels
         }
+        let constrainedModels = toolConstraintModelIDs(effectiveModels)
         return .register(ProviderMessage.Register(
             hardware: config.hardware,
             models: effectiveModels,
@@ -53,7 +54,9 @@ public enum CoordinatorClientCodec {
             apnsDeviceToken: effectiveToken,
             apnsEnvironment: effectiveEnv,
             prefixCacheProtocol: prefixCacheProtocol,
-            prefixCacheV2Models: prefixCacheV2Models
+            prefixCacheV2Models: prefixCacheV2Models,
+            toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
+            toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels
         ))
     }
 
@@ -182,7 +185,10 @@ public enum CoordinatorClientCodec {
             ))
 
         case .modelsUpdate(let models):
-            return .modelsUpdate(ProviderMessage.ModelsUpdate(models: models))
+            return .modelsUpdate(ProviderMessage.ModelsUpdate(
+                models: models,
+                toolConstraintProtocol: 1,
+                toolConstraintModels: toolConstraintModelIDs(models)))
 
         case .prefixCacheLookup(
             let requestId, let nonce, let outcome, let tier,
@@ -218,6 +224,15 @@ public enum CoordinatorClientCodec {
         case .prefixCacheReadyV2(let message):
             return .prefixCacheReadyV2(message)
         }
+    }
+
+    private static func toolConstraintModelIDs(
+        _ models: [ModelInfo]
+    ) -> [String] {
+        models.filter {
+            Gemma4TemplateFix.applies(to: ChatTemplateFixContext(
+                modelId: $0.id, modelType: $0.modelType))
+        }.map(\.id).sorted()
     }
 
     public static func encodeOutboundMessage(_ outbound: OutboundMessage) throws -> Data {

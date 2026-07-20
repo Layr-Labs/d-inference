@@ -54,10 +54,15 @@ func parseStreamChunkChoices(chunk string) []streamChunkChoice {
 // events (response.created / response.in_progress / response.completed /
 // response.incomplete). All spec-required fields are present so strict SDK
 // parsers accept the snapshot.
-func responsesSnapshot(responseID string, createdAt int64, model, status string, output []any, usage *types.ResponsesUsage, incomplete *types.ResponsesIncompleteDetail) map[string]any {
+func responsesSnapshot(responseID string, createdAt int64, model, status string, output []any, usage *types.ResponsesUsage, incomplete *types.ResponsesIncompleteDetail, policies ...registry.RequestTraits) map[string]any {
 	if output == nil {
 		output = []any{}
 	}
+	var traits registry.RequestTraits
+	if len(policies) > 0 {
+		traits = policies[0]
+	}
+	toolChoice, parallel := responsesToolPolicy(traits)
 	snap := map[string]any{
 		"id":                   responseID,
 		"object":               "response",
@@ -70,12 +75,12 @@ func responsesSnapshot(responseID string, createdAt int64, model, status string,
 		"max_output_tokens":    nil,
 		"model":                model,
 		"output":               output,
-		"parallel_tool_calls":  true,
+		"parallel_tool_calls":  parallel,
 		"previous_response_id": nil,
 		"store":                false,
 		"temperature":          nil,
 		"text":                 map[string]any{"format": map[string]any{"type": "text"}},
-		"tool_choice":          "auto",
+		"tool_choice":          toolChoice,
 		"tools":                []any{},
 		"top_p":                nil,
 		"truncation":           "disabled",
@@ -91,6 +96,25 @@ func responsesSnapshot(responseID string, createdAt int64, model, status string,
 		snap["incomplete_details"] = incomplete
 	}
 	return snap
+}
+
+func responsesToolPolicy(traits registry.RequestTraits) (any, bool) {
+	if traits.ToolChoiceMode == "" {
+		return "auto", true
+	}
+	switch traits.ToolChoiceMode {
+	case string(toolChoiceNone):
+		return "none", traits.ParallelToolCalls
+	case string(toolChoiceRequired):
+		return "required", traits.ParallelToolCalls
+	case string(toolChoiceNamed):
+		return map[string]any{
+			"type": "function",
+			"name": traits.ToolChoiceName,
+		}, traits.ParallelToolCalls
+	default:
+		return "auto", traits.ParallelToolCalls
+	}
 }
 
 // responsesStreamEmitter translates provider chat.completion.chunk deltas into
@@ -163,10 +187,10 @@ func (e *responsesStreamEmitter) emit(eventType string, fields map[string]any) {
 // start emits response.created and response.in_progress.
 func (e *responsesStreamEmitter) start() {
 	e.emit("response.created", map[string]any{
-		"response": responsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil),
+		"response": responsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil, e.pr.Traits),
 	})
 	e.emit("response.in_progress", map[string]any{
-		"response": responsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil),
+		"response": responsesSnapshot(e.responseID, e.createdAt, e.model, "in_progress", nil, nil, nil, e.pr.Traits),
 	})
 }
 
@@ -439,7 +463,9 @@ func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 		status = "incomplete"
 		eventType = "response.incomplete"
 	}
-	snap := responsesSnapshot(e.responseID, e.createdAt, e.model, status, e.output, &u, incomplete)
+	snap := responsesSnapshot(
+		e.responseID, e.createdAt, e.model, status, e.output, &u, incomplete,
+		e.pr.Traits)
 	if e.pr.SESignature != "" {
 		snap["se_signature"] = e.pr.SESignature
 		snap["response_hash"] = e.pr.ResponseHash

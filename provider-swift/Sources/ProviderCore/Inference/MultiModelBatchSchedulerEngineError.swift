@@ -40,9 +40,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// 500s.
     case invalidToolPayload(String)
     /// The MODEL failed to satisfy the request's forced `tool_choice`
-    /// contract: it did not emit the required tool call, emitted a call
-    /// outside the allowed set, or produced more deferred prose than the
-    /// enforcement buffer holds. This depends on what the model GENERATED —
+    /// contract, or the inference-time grammar reached an impossible state.
+    /// This depends on what the model GENERATED —
     /// a re-sample (or another provider) can comply — so it surfaces as 422
     /// with error_reason "tool_noncompliance" (E5), which stays on the
     /// coordinator's normal bounded-failover path, NOT as a generic 500
@@ -119,6 +118,10 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
         // capacity by the broader substring checks below.
         if lowercased.hasPrefix(EngineV2Translation.multimodalRejectedPrefix) {
             return .multimodalRejected(message)
+        }
+        if lowercased == "tool_constraint_impossible_state" {
+            return .toolChoiceViolation(
+                "inference-time tool constraint reached an impossible state")
         }
         // Planner validation failures share the `token_budget_exhausted:`
         // prefix but are request-shape errors, NOT transient capacity

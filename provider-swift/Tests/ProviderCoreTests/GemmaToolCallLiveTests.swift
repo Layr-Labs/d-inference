@@ -200,6 +200,78 @@ struct GemmaToolCallLiveTests {
         }
     }
 
+    @Test(
+        "real Gemma CBv2 sampler enforces required tool choice before token selection",
+        .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
+    )
+    func realModelRequiredChoiceIsGrammarConstrained() async throws {
+        let loaded: LiveInferenceFixtures.LoadedBridge
+        do {
+            loaded = try await LiveInferenceFixtures.loadBridge(
+                modelID: LiveInferenceFixtures.gemmaModelID,
+                maxConcurrentRequests: 2,
+                memoryBudgetBytes: 64 * 1024 * 1024 * 1024,
+                defaultMaxTokens: 96)
+        } catch let skip as LiveFixtureSkip {
+            Issue.record("skipping: \(skip)")
+            return
+        }
+        let bridge = loaded.bridge
+        defer {
+            Task {
+                await bridge.shutdown()
+                MLX.Memory.clearCache()
+            }
+        }
+        let tokenizer = TokenizerHandle(
+            try await LocalTokenizerLoader().load(from: loaded.modelDirectory))
+        let modelID = LiveInferenceFixtures.gemmaModelID
+        let engine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [modelID: .init(
+                    tokenizer: tokenizer,
+                    modelType: "gemma4_text",
+                    engineV2Bridge: bridge)]
+            },
+            defaultMaxTokens: 96)
+        let request = OpenAIChatCompletionRequest(
+            model: modelID,
+            messages: [.init(
+                role: .user,
+                content: .text("Print the contents of hello.txt"))],
+            tools: [.init(function: .init(
+                name: "run_terminal",
+                description: "Run a shell command and return stdout.",
+                parameters: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "command": .object(["type": .string("string")]),
+                    ]),
+                    "required": .array([.string("command")]),
+                    "additionalProperties": .bool(false),
+                ])))],
+            toolChoice: .function(name: "run_terminal"),
+            parallelToolCalls: false,
+            stream: true,
+            temperature: 0,
+            maxTokens: 96)
+
+        let stream = try await engine.streamChatCompletion(request: request)
+        var calls: [ToolCall] = []
+        var visible = ""
+        for try await event in stream {
+            switch event {
+            case .toolCall(let call): calls.append(call)
+            case .content(let text): visible += text
+            case .info: break
+            }
+        }
+        #expect(visible.isEmpty)
+        #expect(calls.count == 1)
+        #expect(calls.first?.function.name == "run_terminal")
+        #expect(calls.first?.function.arguments["command"] != nil)
+    }
+
     // MARK: - helpers
 
     /// A readable window of `text` centered on the first occurrence of `needle`.

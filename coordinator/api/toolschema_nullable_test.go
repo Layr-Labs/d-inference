@@ -166,11 +166,11 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeInsideAdditionalPropertiesSchema
 	}
 }
 
-// Go-specific: an explicit `nullable` survives the array-type collapse.
-func TestNormalizeToolSchemas_ExplicitNullableLeftUntouched(t *testing.T) {
+// An explicit false cannot erase a null member from the original type union.
+func TestNormalizeToolSchemas_TypeUnionOverridesNullableFalse(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{
-	    "kept":{"type":["string","null"],"nullable":false},
+	    "kept":{"type":["STRING","NULL"],"nullable":false},
 	    "set":{"type":["string","null"]}}}}}]}`)
 
 	props := tsnProps(t, NormalizeToolSchemas(body))
@@ -178,9 +178,8 @@ func TestNormalizeToolSchemas_ExplicitNullableLeftUntouched(t *testing.T) {
 	if got := tsnType(t, kept, "kept"); got != "string" {
 		t.Errorf("kept type = %q, want string", got)
 	}
-	// The explicit value is NOT clobbered, even though it disagrees.
-	if kept["nullable"] != false {
-		t.Errorf("kept nullable = %v, want explicit false preserved", kept["nullable"])
+	if kept["nullable"] != true {
+		t.Errorf("kept nullable = %v, want union-preserving true", kept["nullable"])
 	}
 	set := tsnMap(t, props["set"], "set")
 	if set["nullable"] != true {

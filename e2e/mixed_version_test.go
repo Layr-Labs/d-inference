@@ -34,9 +34,12 @@ func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
 	providers[0].Mu().Lock()
 	version := providers[0].Version
 	cacheProtocol := providers[0].PrefixCacheProtocol
+	toolConstraintProtocol := providers[0].ToolConstraintProtocol
 	providers[0].Mu().Unlock()
 	require.Equal(t, "0.7.10", version)
 	require.Less(t, cacheProtocol, 2, "released provider unexpectedly advertised candidate protocol v2")
+	require.Zero(t, toolConstraintProtocol,
+		"released provider unexpectedly advertised inference-time tool constraints")
 
 	model := suite.PrimaryModelID()
 	tool := map[string]any{
@@ -62,7 +65,7 @@ func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
 			body: map[string]any{
 				"model": model, "messages": []map[string]string{{"role": "user", "content": "Reply with OK."}},
 				"max_tokens": 16, "temperature": 0, "stop": []string{"END"},
-				"tools": []any{tool}, "tool_choice": "none",
+				"tools": []any{tool}, "tool_choice": "auto",
 			},
 			required: []string{`"choices"`, `"message"`},
 		},
@@ -78,7 +81,7 @@ func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
 			name: "responses", endpoint: "/v1/responses",
 			body: map[string]any{
 				"model": model, "input": "Reply with OK.", "max_output_tokens": 16,
-				"temperature": 0, "tools": []any{tool}, "tool_choice": "none",
+				"temperature": 0, "tools": []any{tool}, "tool_choice": "auto",
 			},
 			required: []string{`"object":"response"`, `"output"`},
 		},
@@ -113,6 +116,35 @@ func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
 			assertNoPositiveCachedTokens(t, body)
 		})
 	}
+
+	t.Run("constrained choices never downgrade to the released provider", func(t *testing.T) {
+		for _, choice := range []any{
+			"none",
+			"required",
+			map[string]any{
+				"type":     "function",
+				"function": map[string]any{"name": "lookup_weather"},
+			},
+		} {
+			payload, err := json.Marshal(map[string]any{
+				"model": model,
+				"messages": []map[string]string{{
+					"role": "user", "content": "Reply with OK.",
+				}},
+				"max_tokens":  16,
+				"tools":       []any{tool},
+				"tool_choice": choice,
+			})
+			require.NoError(t, err)
+			response := postMixedVersionRequest(
+				t, suite, "/v1/chat/completions", payload)
+			body, readErr := io.ReadAll(response.Body)
+			response.Body.Close()
+			require.NoError(t, readErr)
+			require.Equal(t, http.StatusServiceUnavailable, response.StatusCode, string(body))
+			require.Contains(t, string(body), "inference-time tool_choice enforcement")
+		}
+	})
 
 	t.Run("body_limit", func(t *testing.T) {
 		oversized := `{"model":` + mustJSON(t, model) +

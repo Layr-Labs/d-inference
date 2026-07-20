@@ -49,14 +49,29 @@ OpenAI-compatible chat completions. Handler: [`handleChatCompletions`](../../coo
 | `temperature` | number | no | Passed through to the provider |
 | `top_p` | number | no | Passed through to the provider |
 | `tools` | array | no | Tool-bearing requests are gated to providers that pass template rendering |
-| `tool_choice` | string / object | no | |
+| `tool_choice` | string / object | no | `auto`, `none`, `required`, or an exact named function |
+| `parallel_tool_calls` | bool | no | Default `true`; when `false`, at most one call is permitted |
 | `response_format` | object | no | `json_object`, `json_schema` |
 | `stop` | string / array | no | |
 | `seed` | integer | no | |
 | `provider_serial` / `provider_serials` | string / array | no | Darkbloom-specific routing allowlist; stripped before forwarding |
 | `n` | integer | no | **Rejected if > 1** ([`consumer.go:1323-1327`](../../coordinator/api/consumer.go)) |
 
-The raw body is passed through to the provider to preserve fields that the coordinator does not parse ([`consumer.go:1296-1298`](../../coordinator/api/consumer.go)).
+The coordinator preserves unknown chat fields while applying bounded normalization and routing mutations, then lowers Responses/Anthropic endpoint-native bodies to the provider's OpenAI chat contract before encryption ([`inference_preprocess.go`](../../coordinator/api/inference_preprocess.go), [`promptcontract`](../../coordinator/promptcontract)).
+
+#### Tool-choice guarantees
+
+Tool behavior has three distinct layers:
+
+1. Prompt instruction improves model intent but is not an enforcement boundary. It is produced by [`ToolChoicePromptPolicy`](../../provider-swift/Sources/ProviderCore/Inference/ToolChoicePromptPolicy.swift).
+2. Inference enforcement applies a per-row CBv2 token grammar for `none`, `required`, and exact named choices. The sampler masks invalid logits before selection; required calls are limited to declared functions, named calls to the exact function, and arguments to the supported normalized JSON-Schema subset. Mixed batches retain independent grammar state. See [`ToolConstraintFactory`](../../provider-swift/Sources/ProviderCore/Inference/ToolConstraintFactory.swift), [`GemmaToolConstraintGrammar`](../../provider-swift/Sources/ProviderCore/Inference/GemmaToolConstraintGrammar.swift), and [`TokenConstraintSamplerV2`](../../libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/TokenConstraintSamplerV2.swift).
+3. Post-generation parsing and schema validation remains defense in depth and handles historical unconstrained `auto` output. It is not the mechanism enforcing required/named choices. See [`GemmaFunctionParser`](../../libs/mlx-swift-lm/Libraries/MLXLMCommon/Tool/Parsers/GemmaFunctionParser.swift) and [`ToolConstraintValidation`](../../provider-swift/Sources/ProviderCore/Inference/ToolConstraintValidation.swift).
+
+The production Gemma template remains the pinned artifact. Its bytes and aggregate model hash are not replaced or fetched at runtime. Code-level schema normalization, turn repair, and argument decoding in [`Gemma4TemplateFixes`](../../provider-swift/Sources/ProviderCore/Inference/Gemma4TemplateFixes.swift) run before rendering; the Rust prompt sidecar mirrors those semantics in [`normalize.rs`](../../coordinator/promptsidecar/src/normalize.rs).
+
+`auto` stays model-selected and works on mixed-version providers that satisfy the ordinary tools floor. `none`, `required`, and named choices route only to providers explicitly advertising tool-constraint protocol v1 for the concrete model; they are never silently downgraded to prompt-only behavior. Malformed names, constraints, arguments, and orphan histories return 400. A constrained schema outside the supported subset returns 422 before inference.
+
+The enforced subset is bounded: object parameters, scalar leaves, nested objects, homogeneous arrays of at most 16 generated items, `required`, boolean `additionalProperties`, `nullable`, and type-compatible `enum`/`const`; depth is capped at 16, properties at 128, and combined grammar complexity at 50,000 units. Free integers and numbers use a parser-safe finite decimal form (no exponent). Constrained `number` enum/const is rejected because JSON decoders cannot preserve every source decimal exactly across Go, Rust, and Swift; callers needing finite exact choices must declare `integer` or use strings. Unsupported assertions fail closed. Gemma parser overrides other than `gemma`, and constrained multimodal requests, return 400 rather than falling back. Up to four custom stop strings of at most 256 UTF-8 bytes each are composed with the grammar; an impossible combination is rejected before inference.
 
 #### Response (non-streaming)
 
@@ -86,7 +101,7 @@ The raw body is passed through to the provider to preserve fields that the coord
 
 ### `POST /v1/responses`
 
-Responses API surface. Shares the same handler as chat completions and is auto-detected by the presence of `input` instead of `messages` ([`server.go:1414`](../../coordinator/api/server.go), [`consumer.go:1377`](../../coordinator/api/consumer.go)). Internally lowered to chat-completions format before dispatch ([`responsesRequestToChatCompletions`](../../coordinator/api/consumer.go)).
+Responses API surface. Shares the same handler as chat completions and is auto-detected by the presence of `input` instead of `messages` ([`server.go:1414`](../../coordinator/api/server.go), [`consumer.go`](../../coordinator/api/consumer.go)). Internally lowered to chat-completions format before dispatch by [`endpoint_lower_responses.go`](../../coordinator/promptcontract/endpoint_lower_responses.go); adjacent parallel function calls are coalesced into one assistant turn, and enforced tool choice plus parallel-call policy are echoed in streaming snapshots and non-streaming responses.
 
 ### `POST /v1/completions`
 
@@ -94,7 +109,7 @@ Legacy completions endpoint. Route at [`server.go:1415`](../../coordinator/api/s
 
 ### `POST /v1/messages`
 
-Anthropic Messages API compatible endpoint. Route at [`server.go:1416`](../../coordinator/api/server.go).
+Anthropic Messages API compatible endpoint. Route at [`server.go:1416`](../../coordinator/api/server.go). `tool_choice.type=any` lowers to `required`, `type=tool` lowers to an exact named choice, and `disable_parallel_tool_use` lowers to `parallel_tool_calls=false` in [`endpoint_lower_messages.go`](../../coordinator/promptcontract/endpoint_lower_messages.go).
 
 ## Model listing endpoints
 

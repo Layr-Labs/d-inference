@@ -70,6 +70,15 @@ func lowerMessages(input map[string]any) (map[string]any, error) {
 	} else if present {
 		output["tool_choice"] = choice
 	}
+	if choice, ok := rawChoice.(map[string]any); ok {
+		if rawDisable, exists := choice["disable_parallel_tool_use"]; exists {
+			disable, ok := rawDisable.(bool)
+			if !ok {
+				return nil, ErrEndpointBodyInvalid
+			}
+			output["parallel_tool_calls"] = !disable
+		}
+	}
 	return output, nil
 }
 

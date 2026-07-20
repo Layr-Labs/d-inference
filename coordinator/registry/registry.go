@@ -526,6 +526,11 @@ type Provider struct {
 	// PrefixCacheV2Models is the validated, connection-scoped capability set
 	// keyed by concrete model ID. It is authoritative for v2 receipt identity.
 	PrefixCacheV2Models map[string]protocol.PrefixCacheV2Capability
+	// ToolConstraintProtocol advertises inference-time tool grammar support.
+	// ToolConstraintModels is the explicit concrete-model allowlist; required,
+	// named, and none choices never route by binary version inference alone.
+	ToolConstraintProtocol int
+	ToolConstraintModels   map[string]struct{}
 	// prefixCacheRevision changes whenever capability identity or quarantine
 	// state changes. Scheduler hints snapshot it and revalidate under p.mu so a
 	// concurrent heartbeat/proof failure cannot apply a stale cache discount.
@@ -1980,9 +1985,37 @@ func (r *Registry) anyProviderCanRouteBuildLocked(buildID string) bool {
 // prefetch/swap can never take traffic. Returns build ids that were merged and
 // build ids that were dropped from this provider.
 func (r *Registry) MergeProviderModels(providerID string, models []protocol.ModelInfo) (merged, dropped []string) {
+	return r.mergeProviderModels(providerID, models, 0, nil)
+}
+
+// MergeProviderModelsWithCapabilities is the current-provider models_update
+// path. Capability fields are authoritative for the concrete models carried by
+// this update; omitted fields preserve legacy-provider behavior.
+func (r *Registry) MergeProviderModelsWithCapabilities(
+	providerID string,
+	models []protocol.ModelInfo,
+	toolConstraintProtocol int,
+	toolConstraintModels []string,
+) (merged, dropped []string) {
+	return r.mergeProviderModels(
+		providerID,
+		models,
+		toolConstraintProtocol,
+		toolConstraintModels,
+	)
+}
+
+func (r *Registry) mergeProviderModels(
+	providerID string,
+	models []protocol.ModelInfo,
+	toolConstraintProtocol int,
+	toolConstraintModels []string,
+) (merged, dropped []string) {
 	if len(models) == 0 {
 		return nil, nil
 	}
+	updatedToolConstraintModels := toolConstraintModelSet(
+		toolConstraintModels, models)
 	r.mu.RLock()
 	p, ok := r.providers[providerID]
 	// hasCatalog mirrors modelAllowedByCatalogLocked: a nil catalog (dev/test
@@ -2053,6 +2086,17 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 		}
 		merged = append(merged, m.ID)
 		present[m.ID] = struct{}{}
+		if toolConstraintProtocol != 0 {
+			p.ToolConstraintProtocol = toolConstraintProtocol
+			if _, supported := updatedToolConstraintModels[m.ID]; toolConstraintProtocol == ToolConstraintProtocolV1 && supported {
+				if p.ToolConstraintModels == nil {
+					p.ToolConstraintModels = make(map[string]struct{})
+				}
+				p.ToolConstraintModels[m.ID] = struct{}{}
+			} else {
+				delete(p.ToolConstraintModels, m.ID)
+			}
+		}
 	}
 	// Compute the hard-swap drop set: a VALIDATED desired build authorizes
 	// dropping only that alias's previous build. This is intentionally
@@ -2080,6 +2124,7 @@ func (r *Registry) MergeProviderModels(providerID string, models []protocol.Mode
 				r.logger.Info("models_update hard-swap: dropping retired build",
 					"provider_id", providerID, "model_id", m.ID)
 				dropped = append(dropped, m.ID)
+				delete(p.ToolConstraintModels, m.ID)
 				continue
 			}
 			kept = append(kept, m)
@@ -2634,6 +2679,8 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		DecodeTPS:               msg.DecodeTPS,
 		PrefixCacheProtocol:     msg.PrefixCacheProtocol,
 		PrefixCacheV2Models:     prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models),
+		ToolConstraintProtocol:  msg.ToolConstraintProtocol,
+		ToolConstraintModels:    toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
 		TrustLevel:              TrustNone,
 		RuntimeVerified:         true,  // default to verified; API layer sets false when manifest check fails
 		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured

@@ -99,6 +99,10 @@ type dispatchState struct {
 	tokenAdmission         registry.TokenAdmission
 	requiresVision         bool
 	hasTools               bool
+	requiresToolConstraint bool
+	toolChoiceMode         string
+	toolChoiceName         string
+	parallelToolCalls      bool
 	isResponsesAPI         bool
 	stream                 bool
 	policy                 selfRoutePolicy
@@ -190,6 +194,10 @@ type dispatchState struct {
 func (d *dispatchState) traits() registry.RequestTraits {
 	return registry.RequestTraits{
 		HasTools:               d.hasTools,
+		RequiresToolConstraint: d.requiresToolConstraint,
+		ToolChoiceMode:         d.toolChoiceMode,
+		ToolChoiceName:         d.toolChoiceName,
+		ParallelToolCalls:      d.parallelToolCalls,
 		AvoidVersion:           d.lastFailedVersion,
 		MinPrefixCacheProtocol: d.minPrefixCacheProtocol,
 	}
@@ -1041,6 +1049,23 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
 				s.recordRejection(d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
 				s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
+				return outcomeResponseWritten
+			}
+			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
+				s.recordWarmPoolQueueState(d.model)
+				d.updateRoutingOutcome(d.errorRoutingOutcome(
+					"error", "model_capability_unsupported",
+					http.StatusServiceUnavailable))
+				d.refundReservation()
+				s.recordRejection(d.rejectionInfoWithDecision(
+					"queue", "model_capability_unsupported",
+					http.StatusServiceUnavailable, 0, queuedReq.Decision))
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+					"model_unavailable",
+					fmt.Sprintf(
+						"no online provider for model %q supports inference-time tool_choice enforcement",
+						d.publicModel),
+					withParam("model")))
 				return outcomeResponseWritten
 			}
 			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
@@ -2539,7 +2564,9 @@ exhausted:
 		} else if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
-			_, capRej, _ := s.registry.QuickCapacityCheckForRequest(d.model, d.estimatedPromptTokens, d.requestedMaxTokens, registry.RequestTraits{HasTools: d.hasTools}, d.requiresVision, d.allowedProviderSerials...)
+			_, capRej, _ := s.registry.QuickCapacityCheckForRequest(
+				d.model, d.estimatedPromptTokens, d.requestedMaxTokens,
+				d.traits(), d.requiresVision, d.allowedProviderSerials...)
 			if capRej > 0 {
 				statusCode = http.StatusTooManyRequests
 			} else {

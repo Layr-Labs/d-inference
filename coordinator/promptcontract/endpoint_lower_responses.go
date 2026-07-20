@@ -77,7 +77,14 @@ func lowerResponsesMessages(input any) ([]any, error) {
 					callID, _ = item["id"].(string)
 				}
 				name, _ := item["name"].(string)
-				arguments, _ := item["arguments"].(string)
+				arguments := "{}"
+				if rawArguments, exists := item["arguments"]; exists {
+					var ok bool
+					arguments, ok = rawArguments.(string)
+					if !ok {
+						return nil, ErrEndpointBodyInvalid
+					}
+				}
 				messages = append(messages, map[string]any{
 					"role": "assistant", "content": "",
 					"tool_calls": []any{map[string]any{
@@ -113,7 +120,31 @@ func lowerResponsesMessages(input any) ([]any, error) {
 	if len(messages) == 0 {
 		return nil, ErrEndpointBodyInvalid
 	}
-	return messages, nil
+	return coalesceResponsesFunctionCalls(messages), nil
+}
+
+func coalesceResponsesFunctionCalls(messages []any) []any {
+	output := make([]any, 0, len(messages))
+	for _, value := range messages {
+		message, ok := value.(map[string]any)
+		calls, hasCalls := message["tool_calls"].([]any)
+		if !ok || !hasCalls || len(calls) == 0 {
+			output = append(output, value)
+			continue
+		}
+		if len(output) > 0 {
+			if previous, ok := output[len(output)-1].(map[string]any); ok && previous["role"] == "assistant" {
+				if previousCalls, ok := previous["tool_calls"].([]any); ok {
+					previous["tool_calls"] = append(previousCalls, calls...)
+					continue
+				}
+			}
+		}
+		cloned := cloneObject(message)
+		cloned["tool_calls"] = append([]any(nil), calls...)
+		output = append(output, cloned)
+	}
+	return output
 }
 
 func responsesContentText(content any) string {

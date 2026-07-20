@@ -1,4 +1,5 @@
 use serde_json::{Map, Value, json};
+use std::collections::HashSet;
 use thiserror::Error;
 
 #[derive(Clone, Debug)]
@@ -384,11 +385,11 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
         let members = types
             .iter()
             .filter_map(Value::as_str)
-            .map(str::to_owned)
+            .map(str::to_ascii_lowercase)
             .collect::<Vec<_>>();
         if members.iter().any(|value| value == "null")
             && members.iter().any(|value| value != "null")
-            && !object.contains_key("nullable")
+            && object.get("nullable") != Some(&Value::Bool(true))
         {
             object.insert("nullable".into(), Value::Bool(true));
         }
@@ -467,6 +468,12 @@ fn apply_tool_choice_policy(
     tools: &mut Option<Vec<Value>>,
 ) -> Result<(), NormalizeError> {
     validate_tool_names(tools.as_deref().unwrap_or_default())?;
+    if let Some(parallel) = body.get("parallel_tool_calls")
+        && !parallel.is_boolean()
+        && !parallel.is_null()
+    {
+        return Err(NormalizeError::InvalidTools);
+    }
     let choice = body.get("tool_choice");
     let mode = choice.and_then(Value::as_str).or_else(|| {
         choice
@@ -490,20 +497,19 @@ fn apply_tool_choice_policy(
         return Err(NormalizeError::InvalidTools);
     }
     let selected_name = if mode == Some("function") {
-        Some(
-            choice
-                .and_then(Value::as_object)
-                .and_then(|object| {
-                    object.get("name").and_then(Value::as_str).or_else(|| {
-                        object
-                            .get("function")
-                            .and_then(Value::as_object)
-                            .and_then(|function| function.get("name"))
-                            .and_then(Value::as_str)
-                    })
-                })
-                .ok_or(NormalizeError::InvalidTools)?,
-        )
+        let object = choice
+            .and_then(Value::as_object)
+            .ok_or(NormalizeError::InvalidTools)?;
+        let top_level = object.get("name").and_then(Value::as_str);
+        let nested = object
+            .get("function")
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str);
+        if top_level.is_some() && nested.is_some() && top_level != nested {
+            return Err(NormalizeError::InvalidTools);
+        }
+        Some(top_level.or(nested).ok_or(NormalizeError::InvalidTools)?)
     } else {
         None
     };
@@ -511,6 +517,7 @@ fn apply_tool_choice_policy(
         .as_ref()
         .filter(|tools| !tools.is_empty())
         .ok_or(NormalizeError::InvalidTools)?;
+    crate::tool_constraint::validate_constrained_tools(declared)?;
     let instruction = if let Some(name) = selected_name {
         if !declared.iter().any(|tool| tool_name(tool) == Some(name)) {
             return Err(NormalizeError::InvalidTools);
@@ -579,6 +586,7 @@ fn append_content(message: &mut Value, instruction: &str) {
 }
 
 fn validate_tool_names(tools: &[Value]) -> Result<(), NormalizeError> {
+    let mut names = HashSet::new();
     for tool in tools {
         let name = tool_name(tool).ok_or(NormalizeError::InvalidTools)?;
         if name.is_empty()
@@ -587,6 +595,9 @@ fn validate_tool_names(tools: &[Value]) -> Result<(), NormalizeError> {
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
         {
+            return Err(NormalizeError::InvalidTools);
+        }
+        if !names.insert(name) {
             return Err(NormalizeError::InvalidTools);
         }
     }
@@ -929,7 +940,12 @@ mod tests {
                     "parameters":{
                         "properties":{
                             "city":{"description":"city name"},
-                            "days":{"items":{"enum":[1,2]}}
+                            "days":{"items":{"enum":[1,2]}},
+                            "optional":{
+                                "type":["STRING","NULL"],
+                                "nullable":false,
+                                "enum":[null]
+                            }
                         }
                     }
                 }
@@ -944,6 +960,8 @@ mod tests {
         assert_eq!(parameters["properties"]["city"]["type"], "string");
         assert_eq!(parameters["properties"]["days"]["type"], "array");
         assert_eq!(parameters["properties"]["days"]["items"]["type"], "string");
+        assert_eq!(parameters["properties"]["optional"]["type"], "string");
+        assert_eq!(parameters["properties"]["optional"]["nullable"], true);
     }
 
     #[test]
@@ -966,6 +984,90 @@ mod tests {
             }),
         ] {
             assert!(normalize(body.as_object().unwrap().clone(), None).is_err());
+        }
+    }
+
+    #[test]
+    fn constrained_schema_subset_matches_swift_policy() {
+        let supported = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"weather"}],
+            "parallel_tool_calls":false,
+            "tools":[{"type":"function","function":{
+                "name":"weather",
+                "parameters":{
+                    "type":"object",
+                    "properties":{
+                        "city":{"type":"string","enum":["Paris","Tokyo"]},
+                        "days":{"type":["integer","null"]},
+                        "units":{"type":"array","items":{"type":"string"},"maxItems":3}
+                    },
+                    "required":["city"],
+                    "additionalProperties":false
+                }
+            }}],
+            "tool_choice":"required"
+        });
+        assert!(normalize(supported.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
+
+        for unsupported in [
+            json!({"oneOf":[{"type":"string"},{"type":"integer"}]}),
+            json!({"type":"string","pattern":"^x$"}),
+            json!({"type":"array","items":{"type":"string"},"maxItems":17}),
+        ] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"f",
+                    "parameters":{"type":"object","properties":{"x":unsupported}}
+                }}],
+                "tool_choice":"required"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
+    }
+
+    #[test]
+    fn constrained_parallel_policy_is_typed() {
+        let malformed = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"f","parameters":{"type":"object"}
+            }}],
+            "tool_choice":"required",
+            "parallel_tool_calls":"false"
+        });
+        assert!(normalize(malformed.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+    }
+
+    #[test]
+    fn constrained_enum_and_named_choice_validation_matches_swift() {
+        for body in [
+            json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"safe",
+                    "parameters":{"type":"object","properties":{
+                        "x":{"type":"string","enum":[1]}
+                    }}
+                }}],
+                "tool_choice":"required"
+            }),
+            json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{"name":"safe"}}],
+                "tool_choice":{
+                    "type":"function",
+                    "name":"safe",
+                    "function":{"name":"other"}
+                }
+            }),
+        ] {
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
         }
     }
 

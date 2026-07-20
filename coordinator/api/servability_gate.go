@@ -67,7 +67,8 @@ func (s *Server) shedIfUnservable(
 	modelMaxContext int,
 	stream bool,
 	estimatedPromptTokens, requestedMaxTokens int,
-	requiresVision, hasTools bool,
+	requiresVision bool,
+	traits registry.RequestTraits,
 	allowedProviderSerials []string,
 	refundReservation func(),
 ) bool {
@@ -92,7 +93,7 @@ func (s *Server) shedIfUnservable(
 		calibratedContextPromptTokens(model, estimatedPromptTokens),
 		requestedMaxTokens,
 		modelMaxContext,
-		registry.RequestTraits{HasTools: hasTools},
+		traits,
 		requiresVision,
 		allowedProviderSerials...,
 	)
@@ -132,7 +133,7 @@ func (s *Server) shedIfUnservable(
 		estimatedPromptTokens: estimatedPromptTokens,
 		requestedMaxTokens:    requestedMaxTokens,
 		requiresVision:        requiresVision,
-		hasTools:              hasTools,
+		hasTools:              traits.HasTools,
 		retryAfterMs:          retryAfter * 1000,
 		params:                rejectionSamplingParams(parsed),
 		// Structurally unservable: no provider could have served it. Setting

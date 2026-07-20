@@ -291,7 +291,11 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 	// capacity fallback so an alias whose Previous build still has capacity
 	// fails over first; an unservable request is then rejected with an
 	// uptime-neutral 429 (OpenRouter fails over) instead of admit→5xx.
-	if s.shedIfUnservable(w, r, parsed, publicModel, model, p.modelMaxContext, p.stream, p.estimatedPromptTokens, p.requestedMaxTokens, p.requiresVision, p.hasTools, p.allowedProviderSerials, refundReservation) {
+	if s.shedIfUnservable(
+		w, r, parsed, publicModel, model, p.modelMaxContext, p.stream,
+		p.estimatedPromptTokens, p.requestedMaxTokens, p.requiresVision,
+		requestTraits(), p.allowedProviderSerials, refundReservation,
+	) {
 		return model, true
 	}
 	if candidateCount == 0 && capacityRejections == 0 && modelTooLarge > 0 {

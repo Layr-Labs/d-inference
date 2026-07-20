@@ -134,6 +134,11 @@ fn responses_messages(input: &Value) -> Result<Vec<Value>, EndpointError> {
                 let call_id = string_field(item, "call_id")
                     .or_else(|| string_field(item, "id"))
                     .unwrap_or_default();
+                let arguments = match item.get("arguments") {
+                    None => "{}",
+                    Some(Value::String(arguments)) => arguments,
+                    Some(_) => return Err(EndpointError::Invalid),
+                };
                 messages.push(json!({
                     "role": "assistant",
                     "content": "",
@@ -142,7 +147,7 @@ fn responses_messages(input: &Value) -> Result<Vec<Value>, EndpointError> {
                         "type": "function",
                         "function": {
                             "name": string_field(item, "name").unwrap_or_default(),
-                            "arguments": string_field(item, "arguments").unwrap_or_default(),
+                            "arguments": arguments,
                         }
                     }]
                 }));
@@ -170,7 +175,33 @@ fn responses_messages(input: &Value) -> Result<Vec<Value>, EndpointError> {
     if messages.is_empty() {
         return Err(EndpointError::Invalid);
     }
-    Ok(messages)
+    Ok(coalesce_responses_function_calls(messages))
+}
+
+fn coalesce_responses_function_calls(messages: Vec<Value>) -> Vec<Value> {
+    let mut output: Vec<Value> = Vec::with_capacity(messages.len());
+    for message in messages {
+        let calls = message
+            .as_object()
+            .and_then(|message| message.get("tool_calls"))
+            .and_then(Value::as_array)
+            .filter(|calls| !calls.is_empty())
+            .cloned();
+        let Some(calls) = calls else {
+            output.push(message);
+            continue;
+        };
+        if let Some(previous) = output.last_mut().and_then(Value::as_object_mut)
+            && previous.get("role").and_then(Value::as_str) == Some("assistant")
+            && let Some(previous_calls) =
+                previous.get_mut("tool_calls").and_then(Value::as_array_mut)
+        {
+            previous_calls.extend(calls);
+            continue;
+        }
+        output.push(message);
+    }
+    output
 }
 
 fn responses_content_text(content: Option<&Value>) -> String {
@@ -315,6 +346,14 @@ fn lower_messages(input: &Map<String, Value>) -> Result<Map<String, Value>, Endp
     }
     if let Some(choice) = anthropic_tool_choice(input.get("tool_choice"))? {
         out.insert("tool_choice".into(), choice);
+    }
+    if let Some(choice) = input.get("tool_choice").and_then(Value::as_object)
+        && let Some(disable) = choice.get("disable_parallel_tool_use")
+    {
+        out.insert(
+            "parallel_tool_calls".into(),
+            Value::Bool(!disable.as_bool().ok_or(EndpointError::Invalid)?),
+        );
     }
     Ok(out)
 }

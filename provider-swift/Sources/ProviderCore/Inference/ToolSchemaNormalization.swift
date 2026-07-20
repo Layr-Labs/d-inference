@@ -113,12 +113,13 @@ enum ToolSchemaNormalization {
         // scalar non-string `type` (e.g. `"type": 123`) collapses the same way,
         // to the structural inference. Nullability is preserved losslessly: the
         // gemma template natively renders the standard `nullable` key, so
-        // collapsing away a "null" member sets it (without clobbering an
-        // explicit value).
+        // collapsing away a "null" member sets it to true. An explicit false
+        // cannot override the union's null member without changing semantics.
         if let t = dict["type"], !(t is String) {
-            let members = (t as? [Any])?.compactMap { $0 as? String } ?? []
+            let members =
+                (t as? [Any])?.compactMap { ($0 as? String)?.lowercased() } ?? []
             if members.contains("null"), members.contains(where: { $0 != "null" }),
-                dict["nullable"] == nil {
+                dict["nullable"] as? Bool != true {
                 dict["nullable"] = true
             }
             dict["type"] = collapsedType(members: members, in: dict)

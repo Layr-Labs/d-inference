@@ -127,7 +127,11 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
         tokenIds.map { "t\($0)" }.joined()
     }
     func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
-    func convertIdToToken(_ id: Int) -> String? { nil }
+    func convertIdToToken(_ id: Int) -> String? {
+        if id == 2 { return "</s>" }
+        guard id >= 0, id < 128, let scalar = UnicodeScalar(id) else { return nil }
+        return String(Character(scalar))
+    }
     var bosToken: String? { nil }
     var eosToken: String? { "</s>" }
     var unknownToken: String? { nil }
@@ -1054,8 +1058,8 @@ struct EngineV2RequestRoutingTests {
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
     }
 
-    @Test("required tool choice rejects a text-only model completion")
-    func requiredToolChoiceRejectsTextOnlyCompletion() async throws {
+    @Test("required tool choice installs a CBv2 grammar before submission")
+    func requiredToolChoiceInstallsGrammar() async throws {
         let engine = WiringScriptedEngine(script: .stream([
             .delta(text: "plain answer", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
@@ -1076,23 +1080,26 @@ struct EngineV2RequestRoutingTests {
             tools: [.init(function: .init(name: "calculate"))],
             toolChoice: .mode(.required))
 
-        var events: [MLXServerGenerationEvent] = []
         do {
             let stream = try await providerEngine.streamChatCompletion(request: request)
-            for try await event in stream { events.append(event) }
-            Issue.record("expected required tool call failure")
+            for try await _ in stream {}
+            Issue.record("scripted engine bypass should still fail validation")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            // E5: tool-choice noncompliance is the typed 422 case, not a 500.
             #expect(error == .toolChoiceViolation("model did not emit the required tool call"))
         }
-        #expect(events.isEmpty, "text must stay suppressed when no required call is emitted")
+        #expect(engine.submitted.count == 1)
+        #expect(engine.submitted[0].tokenConstraint?.mode == .required)
     }
 
-    @Test("required tool choice bounds deferred text before a call")
-    func requiredToolChoiceBoundsDeferredContent() async throws {
+    @Test("auto mode returns malformed tagged output as visible text")
+    func autoToolParseFallbackIsVisible() async throws {
+        let malformed =
+            #"<|tool_call>call:bad{payload:[}<tool_call|>"#
         let engine = WiringScriptedEngine(script: .stream([
-            .delta(text: String(repeating: "x", count: 1024 * 1024 + 1),
-                   tokens: [10], logprobs: nil),
+            .delta(text: malformed, tokens: [10], logprobs: nil),
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
         ]))
         let bridge = makeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
@@ -1108,57 +1115,15 @@ struct EngineV2RequestRoutingTests {
             model: "gemma-4-26b-qat-4bit",
             messages: [.init(role: .user, content: .text("hello"))],
             tools: [.init(function: .init(name: "calculate"))],
-            toolChoice: .mode(.required))
-
-        var events: [MLXServerGenerationEvent] = []
-        do {
-            let stream = try await providerEngine.streamChatCompletion(request: request)
-            for try await event in stream { events.append(event) }
-            Issue.record("expected deferred content limit failure")
-        } catch let error as MultiModelBatchSchedulerEngineError {
-            // E5: tool-choice noncompliance is the typed 422 case, not a 500.
-            #expect(error == .toolChoiceViolation(
-                "required tool call response exceeded deferred content limit"))
-        }
-        #expect(events.isEmpty)
-    }
-
-    @Test("required tool choice suppresses preamble after a valid call")
-    func requiredToolChoiceSuppressesPreamble() async throws {
-        let engine = WiringScriptedEngine(script: .stream([
-            .delta(
-                text: "preamble<|tool_call>call:calculate{expression:2+2}<tool_call|>",
-                tokens: [10], logprobs: nil),
-            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
-        ]))
-        let bridge = makeBridge(engine: engine)
-        let providerEngine = MultiModelBatchSchedulerEngine(
-            registryProvider: { @Sendable in
-                [
-                    "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "gemma4",
-                        engineV2Bridge: bridge)
-                ]
-            })
-        let request = OpenAIChatCompletionRequest(
-            model: "gemma-4-26b-qat-4bit",
-            messages: [.init(role: .user, content: .text("hello"))],
-            tools: [.init(function: .init(name: "calculate"))],
-            toolChoice: .mode(.required))
+            toolChoice: .mode(.auto))
 
         let stream = try await providerEngine.streamChatCompletion(request: request)
-        var contents: [String] = []
-        var calls: [ToolCall] = []
+        var content = ""
         for try await event in stream {
-            switch event {
-            case .content(let content): contents.append(content)
-            case .toolCall(let call): calls.append(call)
-            case .info: break
-            }
+            if case .content(let text) = event { content += text }
         }
-        #expect(contents.isEmpty)
-        #expect(calls.map(\.function.name) == ["calculate"])
+        #expect(content == malformed)
+        #expect(engine.submitted.first?.tokenConstraint == nil)
     }
 
     @Test("named tool choice rejects a parsed different function")
@@ -1176,7 +1141,7 @@ struct EngineV2RequestRoutingTests {
                 [
                     "gemma-4-26b-qat-4bit": .init(
                         tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                        modelType: "qwen3_5",
+                        modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
             })
@@ -1191,9 +1156,37 @@ struct EngineV2RequestRoutingTests {
             for try await _ in stream {}
             Issue.record("expected named tool_choice mismatch")
         } catch let error as MultiModelBatchSchedulerEngineError {
-            // E5: tool-choice noncompliance is the typed 422 case, not a 500.
-            #expect(error == .toolChoiceViolation("model emitted a tool call outside tool_choice"))
+            #expect(error == .toolChoiceViolation("model did not emit the named tool call"))
         }
+    }
+
+    @Test("constrained Gemma rejects a mismatched parser before submit")
+    func constrainedToolChoiceRejectsParserOverride() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [.init(role: .user, content: .text("weather"))],
+            tools: [.init(function: .init(name: "calculate"))],
+            toolChoice: .mode(.required),
+            toolCallParser: "json")
+        do {
+            _ = try await providerEngine.streamChatCompletion(request: request)
+            Issue.record("expected parser mismatch rejection")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            #expect(error == .invalidToolPayload(
+                "inference-enforced Gemma tool_choice requires the gemma tool parser"))
+        }
+        #expect(engine.submitted.isEmpty)
     }
 
     @Test("forced tool choice rejects multimodal requests before media work")
@@ -1224,7 +1217,7 @@ struct EngineV2RequestRoutingTests {
             Issue.record("expected forced multimodal tool choice rejection")
         } catch let error as MultiModelBatchSchedulerEngineError {
             #expect(error == .invalidToolPayload(
-                "forced tool_choice is not supported for multimodal requests"))
+                "inference-enforced tool_choice is not supported for multimodal requests"))
         }
         #expect(engine.submitted.isEmpty)
     }

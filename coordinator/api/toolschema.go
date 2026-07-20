@@ -293,13 +293,14 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 	// is its type would not be refilled below and would crash anyway).
 	// Nullability is preserved losslessly: the gemma template natively
 	// renders the standard `nullable` key, so collapsing away a "null"
-	// member sets it (without clobbering an explicit value).
+	// member sets it to true. An explicit false cannot override the union's
+	// null member without changing the original schema semantics.
 	if t, present := dict["type"]; present {
 		if _, isString := t.(string); !isString {
 			members := typeStringMembers(t)
 			if slices.Contains(members, "null") &&
 				slices.ContainsFunc(members, func(m string) bool { return m != "null" }) {
-				if _, hasNullable := dict["nullable"]; !hasNullable {
+				if nullable, _ := dict["nullable"].(bool); !nullable {
 					dict["nullable"] = true
 				}
 			}
@@ -348,7 +349,7 @@ func typeStringMembers(t any) []string {
 	members := make([]string, 0, len(arr))
 	for _, m := range arr {
 		if s, ok := m.(string); ok {
-			members = append(members, s)
+			members = append(members, strings.ToLower(s))
 		}
 	}
 	return members

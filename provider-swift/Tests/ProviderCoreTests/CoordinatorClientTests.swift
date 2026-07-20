@@ -80,6 +80,84 @@ import Testing
     #expect(withTok["apns_environment"] as? String == "production")
 }
 
+@Test func registrationAdvertisesExplicitGemmaToolConstraintModels() throws {
+    let gemma = ModelInfo(
+        id: "gemma-4-26b-qat-4bit",
+        modelType: "gemma4_text",
+        parameters: nil,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1)
+    let typeOnlyGemma = ModelInfo(
+        id: "custom-model-id",
+        modelType: "gemma4_text",
+        parameters: nil,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1)
+    let misleadingID = ModelInfo(
+        id: "gemma-4-not-actually-gemma",
+        modelType: "qwen",
+        parameters: nil,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1)
+    let config = CoordinatorClientConfig(
+        url: "wss://api.dev.darkbloom.xyz/v1/providers/ws",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel(), gemma, typeOnlyGemma, misleadingID],
+        backendName: "mlx_swift_lm",
+        publicKey: "cHVibGlj",
+        attestation: RawJSON(rawBytes: Data(#"{"signature":"sig"}"#.utf8)))
+
+    let data = try CoordinatorClientCodec.encodeRegistration(from: config)
+    let object = try clientJSONObject(data)
+    #expect(object["tool_constraint_protocol"] as? Int == 1)
+    #expect(
+        object["tool_constraint_models"] as? [String]
+            == [typeOnlyGemma.id, gemma.id].sorted())
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    guard case .register(let registration) = decoded else {
+        throw ClientTestFailure.unexpectedMessage
+    }
+    #expect(registration.toolConstraintProtocol == 1)
+    #expect(registration.toolConstraintModels == [typeOnlyGemma.id, gemma.id].sorted())
+
+    let ordinary = CoordinatorClientConfig(
+        url: config.url,
+        hardware: config.hardware,
+        models: [clientSampleModel()],
+        backendName: config.backendName)
+    let legacyShape = try clientJSONObject(
+        CoordinatorClientCodec.encodeRegistration(from: ordinary))
+    #expect(legacyShape["tool_constraint_protocol"] == nil)
+    #expect(legacyShape["tool_constraint_models"] == nil)
+}
+
+@Test func hotModelUpdateRefreshesToolConstraintCapabilities() throws {
+    let gemma = ModelInfo(
+        id: "gemma-4-hot-build",
+        modelType: "gemma4_text",
+        parameters: nil,
+        quantization: "4bit",
+        sizeBytes: 1,
+        estimatedMemoryGb: 1)
+    let data = try CoordinatorClientCodec.encodeOutboundMessage(
+        .modelsUpdate(models: [gemma]))
+    let object = try clientJSONObject(data)
+    #expect(object["type"] as? String == "models_update")
+    #expect(object["tool_constraint_protocol"] as? Int == 1)
+    #expect(object["tool_constraint_models"] as? [String] == [gemma.id])
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    guard case .modelsUpdate(let update) = decoded else {
+        throw ClientTestFailure.unexpectedMessage
+    }
+    #expect(update.toolConstraintProtocol == 1)
+    #expect(update.toolConstraintModels == [gemma.id])
+}
+
 @Test func registrationHonorsAuthoritativeModelWeightHashSnapshots() throws {
     // The daemon-start weight hash goes stale when a model is re-published and
     // re-downloaded while the daemon runs. After the loop refreshes the hash at

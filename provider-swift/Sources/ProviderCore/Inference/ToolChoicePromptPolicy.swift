@@ -6,18 +6,31 @@ enum ToolChoicePromptPolicy {
     struct Prepared: Sendable {
         let messages: [OpenAIChatMessage]
         let tools: [OpenAITool]?
-        let requiresToolCall: Bool
+        let mode: ToolConstraintMode
+        let compiledTools: [CompiledToolSchema]?
+        let allowsParallelCalls: Bool
         let allowedToolNames: Set<String>
+
+        var requiresToolCall: Bool {
+            switch mode {
+            case .required, .named: true
+            case .none, .auto: false
+            }
+        }
     }
 
     static func prepare(_ request: OpenAIChatCompletionRequest) throws -> Prepared {
         try validateToolNames(request.tools)
+        let allowsParallelCalls = request.parallelToolCalls ?? true
         switch request.toolChoice {
         case nil, .mode(.auto):
             return Prepared(
                 messages: request.messages,
                 tools: request.tools,
-                requiresToolCall: false,
+                mode: .auto,
+                compiledTools: try? ToolConstraintSchemaCompiler.compile(
+                    tools: request.tools, mode: .auto),
+                allowsParallelCalls: allowsParallelCalls,
                 allowedToolNames: Set(request.tools?.map(\.function.name) ?? []))
 
         case .mode(.none):
@@ -26,7 +39,9 @@ enum ToolChoicePromptPolicy {
                     "Do not call any tool. Answer the user directly without emitting a tool call.",
                     to: request.messages),
                 tools: nil,
-                requiresToolCall: false,
+                mode: .none,
+                compiledTools: nil,
+                allowsParallelCalls: false,
                 allowedToolNames: [])
 
         case .mode(.required):
@@ -47,10 +62,13 @@ enum ToolChoicePromptPolicy {
                     + "before any final answer, even when the user's request does not require a tool. "
                     + "Your entire response must be the tool call; a text answer is forbidden."
             }
+            let compiled = try compileConstrainedTools(tools, mode: .required)
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
                 tools: tools,
-                requiresToolCall: true,
+                mode: .required,
+                compiledTools: compiled,
+                allowsParallelCalls: allowsParallelCalls,
                 allowedToolNames: Set(tools.map(\.function.name)))
 
         case .function(let name):
@@ -63,22 +81,34 @@ enum ToolChoicePromptPolicy {
                 + "valid arguments before any final answer, even when another function seems more relevant. "
                 + "Your entire response must be that tool call; a text answer is forbidden. For any required "
                 + "string argument without an obvious value, use the user's request text."
+            let compiled = try compileConstrainedTools(
+                request.tools ?? [], mode: .named(name)
+            ).filter { $0.name == name }
             return Prepared(
                 messages: forcingInstruction(instruction, in: request.messages),
                 tools: [selected],
-                requiresToolCall: true,
+                mode: .named(name),
+                compiledTools: compiled,
+                allowsParallelCalls: allowsParallelCalls,
                 allowedToolNames: [name])
         }
     }
 
     private static func validateToolNames(_ tools: [OpenAITool]?) throws {
-        for tool in tools ?? [] where !isValidFunctionName(tool.function.name) {
-            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")
+        var names = Set<String>()
+        for tool in tools ?? [] {
+            guard isValidFunctionName(tool.function.name) else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "tool function names must match ^[a-zA-Z0-9_-]{1,64}$")
+            }
+            guard names.insert(tool.function.name).inserted else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "tool function names must be unique")
+            }
         }
     }
 
-    private static func isValidFunctionName(_ name: String) -> Bool {
+    static func isValidFunctionName(_ name: String) -> Bool {
         let bytes = name.utf8
         guard (1...64).contains(bytes.count) else { return false }
         return bytes.allSatisfy { byte in
@@ -87,6 +117,18 @@ enum ToolChoicePromptPolicy {
                 || (97...122).contains(byte)
                 || byte == 45
                 || byte == 95
+        }
+    }
+
+    private static func compileConstrainedTools(
+        _ tools: [OpenAITool],
+        mode: ToolConstraintMode
+    ) throws -> [CompiledToolSchema] {
+        do {
+            return try ToolConstraintSchemaCompiler.compile(tools: tools, mode: mode)
+        } catch let error as ToolConstraintSchemaError {
+            throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                error.localizedDescription)
         }
     }
 

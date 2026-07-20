@@ -1366,6 +1366,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawBody := prelude.rawBody
+	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
 
@@ -1467,10 +1468,39 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// schemas without crashing (version floor + template_render_ok gate);
 	// detected here, alongside the media gate, while the parsed body is hot.
 	hasTools := requestHasTools(parsed)
+	isResponsesAPI := input != nil && len(messages) == 0
+	constraintBody := originalRawBody
+	if isResponsesAPI {
+		constraintBody, err = promptcontract.LowerProviderBody(
+			promptcontract.EndpointResponses, originalRawBody)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, errorResponse(
+				"invalid_request_error", err.Error()))
+			return
+		}
+	}
+	validatedMode, validationErr := validateToolConstraintRequest(constraintBody)
+	if validationErr != nil {
+		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+		writeToolConstraintValidationError(w, validationErr)
+		return
+	}
+	s.recordToolConstraintMetric(validatedMode, "requested")
+	_, toolChoiceName, parallelToolCalls, _ := toolChoicePolicyFromBody(
+		constraintBody)
+	requiresToolConstraint := validatedMode.requiresGrammar()
+	if requiresToolConstraint && requiresVision {
+		writeJSON(w, http.StatusBadRequest, errorResponse(
+			"invalid_request_error",
+			"inference-enforced tool_choice is not supported for multimodal requests",
+			withParam("tool_choice")))
+		return
+	}
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
 	// Responses→chat lowering doesn't carry image/video parts through.
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
+		requiresToolConstraint,
 		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
 		return
 	}
@@ -1479,8 +1509,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools) {
 		return
 	}
-
-	isResponsesAPI := input != nil && len(messages) == 0
 
 	// Inject model-specific defaults from the registry: reasoning_parser
 	// and max_tokens bound. Single DB lookup (cached for platform prices).
@@ -1567,10 +1595,20 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	routingTraitsForModel := func(candidateModel string) registry.RequestTraits {
 		candidateBody, bodyErr := providerBodyForModel(candidateModel)
 		if bodyErr != nil {
-			return registry.RequestTraits{HasTools: hasTools}
+			return registry.RequestTraits{
+				HasTools:               hasTools,
+				RequiresToolConstraint: requiresToolConstraint,
+				ToolChoiceMode:         string(validatedMode),
+				ToolChoiceName:         toolChoiceName,
+				ParallelToolCalls:      parallelToolCalls,
+			}
 		}
 		traits, _ := routingTraitsForProviderBody(
 			hasTools, candidateBody, requiresVision)
+		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.ToolChoiceMode = string(validatedMode)
+		traits.ToolChoiceName = toolChoiceName
+		traits.ParallelToolCalls = parallelToolCalls
 		return traits
 	}
 	providerBodyErrorForModel := func(candidateModel string) error {
@@ -1750,6 +1788,10 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		requestedMaxTokens:     requestedMaxTokens,
 		requiresVision:         requiresVision,
 		hasTools:               hasTools,
+		requiresToolConstraint: requiresToolConstraint,
+		toolChoiceMode:         string(validatedMode),
+		toolChoiceName:         toolChoiceName,
+		parallelToolCalls:      parallelToolCalls,
 		isResponsesAPI:         isResponsesAPI,
 		stream:                 stream,
 		policy:                 policy,
@@ -2210,7 +2252,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
 										return
 									}
-									respObj := chatCompletionToResponses(chatResp, consumerModel(pr), pr.SESignature, pr.ResponseHash)
+									respObj := chatCompletionToResponses(
+										chatResp, consumerModel(pr), pr.SESignature,
+										pr.ResponseHash, pr.Traits)
 									s.noteInferenceSuccess(pr)
 									writeJSON(w, http.StatusOK, respObj)
 									return
@@ -2247,7 +2291,10 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 					var resp any
 					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+						resp = buildResponsesResponse(
+							pr.RequestID, consumerModel(pr), msg, usage,
+							pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash,
+							pr.Traits)
 					} else if pr.ConsumerEndpoint == completionsEndpoint ||
 						pr.ConsumerEndpoint == messagesEndpoint {
 						resp = buildGenericEndpointResponse(pr, msg, usage)
@@ -3085,16 +3132,16 @@ func appendResponsesOutputItems(output []any, requestID string, msg extractedMes
 // finalizeResponsesEnvelope fills the spec-required envelope fields of a
 // Responses object: status derived from incomplete_details, and the
 // always-present defaults (tool_choice, tools, metadata, parallel_tool_calls).
-func finalizeResponsesEnvelope(r *types.ResponsesResponse) {
+func finalizeResponsesEnvelope(
+	r *types.ResponsesResponse,
+	traits registry.RequestTraits,
+) {
 	if r.IncompleteDetail != nil {
 		r.Status = "incomplete"
 	} else {
 		r.Status = "completed"
 	}
-	r.ParallelToolCalls = true
-	if r.ToolChoice == nil {
-		r.ToolChoice = "auto"
-	}
+	r.ToolChoice, r.ParallelToolCalls = responsesToolPolicy(traits)
 	if r.Tools == nil {
 		r.Tools = []any{}
 	}
@@ -3103,7 +3150,7 @@ func finalizeResponsesEnvelope(r *types.ResponsesResponse) {
 	}
 }
 
-func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, requestedMax int, seSignature, responseHash string) types.ResponsesResponse {
+func buildResponsesResponse(requestID, model string, msg extractedMessage, usage protocol.UsageInfo, requestedMax int, seSignature, responseHash string, policies ...registry.RequestTraits) types.ResponsesResponse {
 	reasoningTokens := resolveReasoningTokens(usage, msg.Reasoning)
 	finishReason := effectiveFinishReason(msg.FinishReason, len(msg.ToolCalls) > 0, usage, requestedMax)
 	resp := types.ResponsesResponse{
@@ -3115,7 +3162,11 @@ func buildResponsesResponse(requestID, model string, msg extractedMessage, usage
 		Usage:            buildResponsesUsage(uint64(usage.PromptTokens), uint64(usage.CompletionTokens), reasoningTokens, uint64(usage.CachedTokens)),
 		IncompleteDetail: buildResponsesIncompleteDetails(finishReason),
 	}
-	finalizeResponsesEnvelope(&resp)
+	var traits registry.RequestTraits
+	if len(policies) > 0 {
+		traits = policies[0]
+	}
+	finalizeResponsesEnvelope(&resp, traits)
 	if seSignature != "" {
 		resp.SESignature = seSignature
 		resp.ResponseHash = responseHash
@@ -3144,7 +3195,7 @@ func chatUsageToResponsesUsage(resp types.ChatCompletionResponse, reasoning stri
 	return buildResponsesUsage(uint64(resp.Usage.PromptTokens), uint64(resp.Usage.CompletionTokens), uint64(reasoningTokens), uint64(cachedTokens))
 }
 
-func chatCompletionToResponses(resp types.ChatCompletionResponse, requestedModel, seSignature, responseHash string) types.ResponsesResponse {
+func chatCompletionToResponses(resp types.ChatCompletionResponse, requestedModel, seSignature, responseHash string, policies ...registry.RequestTraits) types.ResponsesResponse {
 	requestID := strings.TrimPrefix(resp.ID, "chatcmpl-")
 	if requestID == "" {
 		requestID = uuid.NewString()
@@ -3174,7 +3225,11 @@ func chatCompletionToResponses(resp types.ChatCompletionResponse, requestedModel
 	if finishReason != "" && finishReason != "stop" {
 		r.IncompleteDetail = buildResponsesIncompleteDetails(finishReason)
 	}
-	finalizeResponsesEnvelope(&r)
+	var traits registry.RequestTraits
+	if len(policies) > 0 {
+		traits = policies[0]
+	}
+	finalizeResponsesEnvelope(&r, traits)
 	if seSignature != "" {
 		r.SESignature = seSignature
 		r.ResponseHash = responseHash
@@ -3487,8 +3542,13 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	rawBody := prelude.rawBody
+	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
+	endpointKind := promptcontract.EndpointCompletions
+	if endpoint == "/v1/messages" {
+		endpointKind = promptcontract.EndpointMessages
+	}
 
 	allowedProviderSerials, hasProviderAllowlist, err := parseProviderSerialAllowlist(parsed)
 	if err != nil {
@@ -3550,6 +3610,23 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			fmt.Sprintf("model %q is not available — see /v1/models for supported models", publicModel), withParam("model")))
 		return
 	}
+	constraintBody, constraintLowerErr := promptcontract.LowerProviderBody(
+		endpointKind, originalRawBody)
+	if constraintLowerErr != nil {
+		writeJSON(w, http.StatusBadRequest, errorResponse(
+			"invalid_request_error", constraintLowerErr.Error()))
+		return
+	}
+	validatedMode, validationErr := validateToolConstraintRequest(constraintBody)
+	if validationErr != nil {
+		s.recordToolConstraintMetric(validatedMode, "compile_rejection")
+		writeToolConstraintValidationError(w, validationErr)
+		return
+	}
+	s.recordToolConstraintMetric(validatedMode, "requested")
+	_, toolChoiceName, parallelToolCalls, _ := toolChoicePolicyFromBody(
+		constraintBody)
+	requiresToolConstraint := validatedMode.requiresGrammar()
 
 	// Shared media/tools fail-fast (see visionToolsFailFast). Completions and
 	// Anthropic bodies share the top-level "tools" field; neither has the
@@ -3557,6 +3634,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	requiresVision := detectMediaRequirement(parsed)
 	hasTools := requestHasTools(parsed)
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
+		requiresToolConstraint,
 		false, policy, allowedProviderSerials) {
 		return
 	}
@@ -3653,10 +3731,6 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		return info
 	}
 
-	endpointKind := promptcontract.EndpointCompletions
-	if endpoint == "/v1/messages" {
-		endpointKind = promptcontract.EndpointMessages
-	}
 	lowerGenericBodyForModel := func(candidateModel string) ([]byte, []byte, error) {
 		candidateParsed := make(map[string]any, len(parsed))
 		for key, value := range parsed {
@@ -3675,6 +3749,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		_, candidateBody, _ := lowerGenericBodyForModel(candidateModel)
 		traits, _ := routingTraitsForProviderBody(
 			hasTools, candidateBody, requiresVision)
+		traits.RequiresToolConstraint = requiresToolConstraint
+		traits.ToolChoiceMode = string(validatedMode)
+		traits.ToolChoiceName = toolChoiceName
+		traits.ParallelToolCalls = parallelToolCalls
 		return traits
 	}
 	providerBodyErrorForModel := func(candidateModel string) error {
@@ -3691,6 +3769,10 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		endpointBody, inferenceBody, loweringErr = lowerGenericBodyForModel(newModel)
 		routingTraits, _ = routingTraitsForProviderBody(
 			hasTools, inferenceBody, requiresVision)
+		routingTraits.RequiresToolConstraint = requiresToolConstraint
+		routingTraits.ToolChoiceMode = string(validatedMode)
+		routingTraits.ToolChoiceName = toolChoiceName
+		routingTraits.ParallelToolCalls = parallelToolCalls
 		return true
 	}
 	refreshGenericBody(model)
@@ -3847,22 +3929,26 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 			return
 		}
 		routeState := &dispatchState{
-			s:                     s,
-			r:                     r,
-			model:                 model,
-			publicModel:           publicModel,
-			consumerKey:           consumerKey,
-			consumerLocation:      consumerLocation,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			policy:                policy,
-			cachePlan:             cachePlan,
-			requestID:             requestID,
-			attempt:               pr.Attempt,
-			provider:              provider,
-			pr:                    pr,
+			s:                      s,
+			r:                      r,
+			model:                  model,
+			publicModel:            publicModel,
+			consumerKey:            consumerKey,
+			consumerLocation:       consumerLocation,
+			estimatedPromptTokens:  estimatedPromptTokens,
+			requestedMaxTokens:     requestedMaxTokens,
+			requiresVision:         requiresVision,
+			hasTools:               hasTools,
+			requiresToolConstraint: requiresToolConstraint,
+			toolChoiceMode:         string(validatedMode),
+			toolChoiceName:         toolChoiceName,
+			parallelToolCalls:      parallelToolCalls,
+			policy:                 policy,
+			cachePlan:              cachePlan,
+			requestID:              requestID,
+			attempt:                pr.Attempt,
+			provider:               provider,
+			pr:                     pr,
 		}
 		if bodyTooLarge {
 			routeState.recordProviderBodyTooLargeRoute(provider, pr, decision)
@@ -4019,21 +4105,25 @@ reserveProvider:
 		s.kickColdDispatch(model)
 		s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:queued"})
 		routeState := &dispatchState{
-			s:                     s,
-			r:                     r,
-			model:                 model,
-			publicModel:           publicModel,
-			consumerKey:           consumerKey,
-			consumerLocation:      consumerLocation,
-			estimatedPromptTokens: estimatedPromptTokens,
-			requestedMaxTokens:    requestedMaxTokens,
-			requiresVision:        requiresVision,
-			hasTools:              hasTools,
-			policy:                policy,
-			cachePlan:             cachePlan,
-			requestID:             requestID,
-			attempt:               pr.Attempt,
-			pr:                    pr,
+			s:                      s,
+			r:                      r,
+			model:                  model,
+			publicModel:            publicModel,
+			consumerKey:            consumerKey,
+			consumerLocation:       consumerLocation,
+			estimatedPromptTokens:  estimatedPromptTokens,
+			requestedMaxTokens:     requestedMaxTokens,
+			requiresVision:         requiresVision,
+			hasTools:               hasTools,
+			requiresToolConstraint: requiresToolConstraint,
+			toolChoiceMode:         string(validatedMode),
+			toolChoiceName:         toolChoiceName,
+			parallelToolCalls:      parallelToolCalls,
+			policy:                 policy,
+			cachePlan:              cachePlan,
+			requestID:              requestID,
+			attempt:                pr.Attempt,
+			pr:                     pr,
 		}
 		routeState.recordRoutingDecisionFor(nil, pr, requestID, pr.Attempt, decision, "", "queued")
 		provider, err = s.registry.Queue().WaitForProviderContext(r.Context(), queuedReq)
@@ -4058,6 +4148,24 @@ reserveProvider:
 				refundReservation()
 				s.recordRejection(rejectionForGenericWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
 				s.writeTTFTTooSlow(w, model, publicModel, bestTTFT, genericDeadline)
+				return
+			}
+			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
+				s.recordWarmPoolQueueState(model)
+				s.updateInferenceRouteOutcomeForPending(
+					pr, pendingRouteOutcome(
+						pr, "error", "model_capability_unsupported",
+						http.StatusServiceUnavailable))
+				refundReservation()
+				s.recordRejection(rejectionForGenericWithDecision(
+					"queue", "model_capability_unsupported",
+					http.StatusServiceUnavailable, 0, queuedReq.Decision))
+				writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+					"model_unavailable",
+					fmt.Sprintf(
+						"no online provider for model %q supports inference-time tool_choice enforcement",
+						publicModel),
+					withParam("model")))
 				return
 			}
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "queue_timeout", http.StatusTooManyRequests))
@@ -4104,22 +4212,26 @@ reserveProvider:
 		s.ddGauge("routing.effective_decode_tps", decision.EffectiveTPS, []string{"provider_id:" + provider.ID})
 	}
 	routeState := &dispatchState{
-		s:                     s,
-		r:                     r,
-		model:                 model,
-		publicModel:           publicModel,
-		consumerKey:           consumerKey,
-		consumerLocation:      consumerLocation,
-		estimatedPromptTokens: estimatedPromptTokens,
-		requestedMaxTokens:    requestedMaxTokens,
-		requiresVision:        requiresVision,
-		hasTools:              hasTools,
-		policy:                policy,
-		cachePlan:             cachePlan,
-		requestID:             requestID,
-		attempt:               pr.Attempt,
-		provider:              provider,
-		pr:                    pr,
+		s:                      s,
+		r:                      r,
+		model:                  model,
+		publicModel:            publicModel,
+		consumerKey:            consumerKey,
+		consumerLocation:       consumerLocation,
+		estimatedPromptTokens:  estimatedPromptTokens,
+		requestedMaxTokens:     requestedMaxTokens,
+		requiresVision:         requiresVision,
+		hasTools:               hasTools,
+		requiresToolConstraint: requiresToolConstraint,
+		toolChoiceMode:         string(validatedMode),
+		toolChoiceName:         toolChoiceName,
+		parallelToolCalls:      parallelToolCalls,
+		policy:                 policy,
+		cachePlan:              cachePlan,
+		requestID:              requestID,
+		attempt:                pr.Attempt,
+		provider:               provider,
+		pr:                     pr,
 	}
 	routeState.recordRoutingDecisionFor(provider, pr, requestID, pr.Attempt, decision, "", "")
 	pendingCleanup := true

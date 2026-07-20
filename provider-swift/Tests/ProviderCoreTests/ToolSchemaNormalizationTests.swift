@@ -124,6 +124,25 @@ extension ToolSchemaNormalizationTests {
         #expect(city["nullable"] as? Bool == true)
     }
 
+    @Test func nullableUnionOverridesExplicitFalse() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "value":{"type":["STRING","NULL"],"nullable":false,"enum":[null]}}}}}]}
+        """#.data(using: .utf8)!
+
+        let out = ToolSchemaNormalization.ensureParameterTypes(in: body)
+        let function = try #require(
+            (parse(out)["tools"] as? [[String: Any]])?[0]["function"]
+                as? [String: Any])
+        let properties = try #require(
+            (function["parameters"] as? [String: Any])?["properties"]
+                as? [String: Any])
+        let value = try #require(properties["value"] as? [String: Any])
+        #expect(value["type"] as? String == "string")
+        #expect(value["nullable"] as? Bool == true)
+    }
+
     @Test func collapsesArrayTypeSkippingLeadingNull() throws {
         let body = #"""
         {"tools":[{"type":"function","function":{"name":"f",

@@ -17,6 +17,17 @@ type RequestTraits struct {
 	// therefore gated by capabilityVersionFloors and by the per-model
 	// template_render_ok advertisement.
 	HasTools bool
+	// RequiresToolConstraint is true for none/required/exact named choices.
+	// These requests route only to providers that explicitly advertise the
+	// concrete model under tool-constraint protocol v1. Auto remains valid on
+	// the ordinary tools floor for mixed-version compatibility.
+	RequiresToolConstraint bool
+	// Responses output policy, carried with the request so lifecycle snapshots
+	// echo what was actually enforced instead of hardcoded auto/parallel=true.
+	// ToolChoiceName is populated only for exact named mode.
+	ToolChoiceMode    string
+	ToolChoiceName    string
+	ParallelToolCalls bool
 	// AvoidVersion is the SOFT version-diversity hint for retries: when set,
 	// candidate selection first excludes providers running exactly this binary
 	// version (the one a previous attempt just failed on) so a deterministic
@@ -166,6 +177,9 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 	if p.PrefixCacheProtocol < t.MinPrefixCacheProtocol {
 		return false
 	}
+	if t.RequiresToolConstraint && !providerSupportsToolConstraintLocked(p, model) {
+		return false
+	}
 	// Render-broken: applies to ALL requests for the model.
 	if providerTemplateRenderBrokenLocked(p, model) {
 		return false
@@ -195,6 +209,25 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 // unrelated public provider and fail later with a misleading error.
 func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials ...string) bool {
 	traits := RequestTraits{HasTools: true}
+	return r.hasToolCapableProviderForModel(model, traits, allowedSerials...)
+}
+
+// HasToolConstraintProviderForModel is the fail-fast companion for
+// none/required/named choices. Unlike the legacy tools version floor, this
+// requires an explicit protocol-v1 advertisement for the concrete model.
+func (r *Registry) HasToolConstraintProviderForModel(
+	model string,
+	allowedSerials ...string,
+) bool {
+	traits := RequestTraits{HasTools: true, RequiresToolConstraint: true}
+	return r.hasToolCapableProviderForModel(model, traits, allowedSerials...)
+}
+
+func (r *Registry) hasToolCapableProviderForModel(
+	model string,
+	traits RequestTraits,
+	allowedSerials ...string,
+) bool {
 	allowedSet := make(map[string]struct{}, len(allowedSerials))
 	for _, s := range allowedSerials {
 		allowedSet[s] = struct{}{}

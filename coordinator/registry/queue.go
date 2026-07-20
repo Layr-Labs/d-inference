@@ -42,6 +42,12 @@ var ErrQueueTimeout = errors.New("request queue timeout")
 // ttft_too_slow 429 instead of a queue timeout.
 var ErrQueueTTFTTooSlow = errors.New("all providers for queued request exceed the TTFT target")
 
+// ErrQueueToolConstraintUnavailable is returned when a constrained waiter can
+// no longer be served by any explicit-capability provider. Old providers may
+// still serve auto/ordinary requests, but required/named/none never downgrade.
+var ErrQueueToolConstraintUnavailable = errors.New(
+	"no provider supports inference-time tool constraints for queued request")
+
 // QueuedRequest represents a request waiting for a provider.
 type QueuedRequest struct {
 	RequestID  string

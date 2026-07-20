@@ -335,7 +335,8 @@ public actor EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
-        mediaKind: EngineV2MediaKind? = nil
+        mediaKind: EngineV2MediaKind? = nil,
+        tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) async -> AsyncStream<GenerationEvent> {
         // Validate the caller-supplied id before it becomes a dictionary key /
         // cancel-correlation handle: a nil / empty / over-long / non-printable
@@ -371,7 +372,8 @@ public actor EngineV2Bridge {
             stopTokenIds: stopTokenIds,
             cacheScope: cacheScope,
             cacheEnabled: cacheEnabled,
-            multimodal: multimodal
+            multimodal: multimodal,
+            tokenConstraint: tokenConstraint
         )
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)

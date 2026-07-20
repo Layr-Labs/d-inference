@@ -72,9 +72,10 @@ func marshalForwardBody(v any) ([]byte, error) {
 // prelude: the (tool-schema-normalized) raw body and its parsed map, plus the
 // consumer-requested model name (alias or raw build id, pre-resolution).
 type inferencePrelude struct {
-	rawBody []byte
-	parsed  map[string]any
-	model   string
+	rawBody         []byte
+	originalRawBody []byte
+	parsed          map[string]any
+	model           string
 }
 
 // parseInferencePrelude runs the request prelude shared verbatim by
@@ -101,6 +102,11 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		return inferencePrelude{}, false
 	}
 
+	originalRawBody := rawBody
+	if _, ok := parseJSONBody(w, originalRawBody); !ok {
+		return inferencePrelude{}, false
+	}
+
 	// Normalize tool JSON-Schemas before parsing and dispatch so providers
 	// running binaries older than 0.6.3 (which normalize provider-side, #310)
 	// never see the schema shapes that crash Gemma-style chat templates
@@ -112,6 +118,10 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	parsed, ok := parseJSONBody(w, rawBody)
 	if !ok {
 		return inferencePrelude{}, false
+	}
+	if stop, ok := parsed["stop"].(string); ok {
+		parsed["stop"] = []any{stop}
+		rawBody, _ = marshalForwardBody(parsed)
 	}
 
 	model, _ := parsed["model"].(string)
@@ -128,7 +138,10 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		return inferencePrelude{}, false
 	}
 
-	return inferencePrelude{rawBody: rawBody, parsed: parsed, model: model}, true
+	return inferencePrelude{
+		rawBody: rawBody, originalRawBody: originalRawBody,
+		parsed: parsed, model: model,
+	}, true
 }
 
 // parseJSONBody unmarshals the request body, writing the standard invalid-JSON
@@ -163,7 +176,7 @@ func parseJSONBody(w http.ResponseWriter, rawBody []byte) (map[string]any, bool)
 func (s *Server) visionToolsFailFast(
 	w http.ResponseWriter,
 	model, publicModel string,
-	requiresVision, hasTools bool,
+	requiresVision, hasTools, requiresToolConstraint bool,
 	rejectResponsesMedia bool,
 	policy selfRoutePolicy,
 	allowedProviderSerials []string,
@@ -205,6 +218,13 @@ func (s *Server) visionToolsFailFast(
 	if hasTools && !policy.enabled && !policy.prefer && !s.registry.HasToolCapableProviderForModel(model, allowedProviderSerials...) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
+			withParam("model")))
+		return true
+	}
+	if requiresToolConstraint && !policy.enabled && !policy.prefer &&
+		!s.registry.HasToolConstraintProviderForModel(model, allowedProviderSerials...) {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			fmt.Sprintf("no online provider for model %q advertises inference-time tool_choice enforcement", publicModel),
 			withParam("model")))
 		return true
 	}

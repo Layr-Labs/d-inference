@@ -2468,6 +2468,13 @@ func (r *Registry) drainQueuedRequestsForModels(models []string) {
 			}
 			provider, decision := r.ReserveProviderEx(model, req.Pending)
 			if provider == nil {
+				if req.Pending.Traits.RequiresToolConstraint &&
+					!r.HasToolConstraintProviderForModel(
+						model, req.Pending.AllowedProviderSerials...) {
+					req.Decision = decision
+					req.failWithReason(ErrQueueToolConstraintUnavailable)
+					continue
+				}
 				// A pure-TTFT rejection (hard-reject mode, no capacity-rejected
 				// provider that could free up) is deterministic for this pass:
 				// requeueing would only make the waiter hang until maxWait for

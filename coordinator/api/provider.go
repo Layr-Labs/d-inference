@@ -763,7 +763,12 @@ func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry
 // routable, so a bad/buggy prefetch never takes traffic. This closes the loop
 // without waiting for the provider to reconnect or resetting trust/reputation.
 func (s *Server) handleModelsUpdate(providerID string, provider *registry.Provider, msg *protocol.ModelsUpdateMessage) {
-	merged, dropped := s.registry.MergeProviderModels(providerID, msg.Models)
+	merged, dropped := s.registry.MergeProviderModelsWithCapabilities(
+		providerID,
+		msg.Models,
+		msg.ToolConstraintProtocol,
+		msg.ToolConstraintModels,
+	)
 	for _, id := range merged {
 		s.logger.Info("provider now advertises build (models_update)",
 			"provider_id", providerID, "model_id", id)

@@ -290,6 +290,12 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 			}
 		}
 	}
+	if dict["type"] == nil && nullableCombinatorUnion(dict) {
+		if nullable, _ := dict["nullable"].(bool); !nullable {
+			dict["nullable"] = true
+			*changed = true
+		}
+	}
 
 	// A type that is PRESENT but not a string crashes `| upper` just like a
 	// missing one. The common real-world shape is the JSON-Schema array form
@@ -342,6 +348,48 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 		}
 	}
 	return dict
+}
+
+func nullableCombinatorUnion(dict map[string]any) bool {
+	for _, key := range []string{"anyOf", "oneOf"} {
+		variants, ok := dict[key].([]any)
+		if !ok {
+			continue
+		}
+		hasNull := false
+		hasConcrete := false
+		for _, rawVariant := range variants {
+			variant, ok := rawVariant.(map[string]any)
+			if !ok {
+				continue
+			}
+			if nullable, _ := variant["nullable"].(bool); nullable {
+				hasNull = true
+			}
+			switch member := variant["type"].(type) {
+			case string:
+				if strings.EqualFold(member, "null") {
+					hasNull = true
+				} else {
+					hasConcrete = true
+				}
+			case []any:
+				for _, rawType := range member {
+					if member, ok := rawType.(string); ok {
+						if strings.EqualFold(member, "null") {
+							hasNull = true
+						} else {
+							hasConcrete = true
+						}
+					}
+				}
+			}
+		}
+		if hasNull && hasConcrete {
+			return true
+		}
+	}
+	return false
 }
 
 // typeStringMembers extracts the string members of an array-form `type`

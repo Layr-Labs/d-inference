@@ -85,12 +85,19 @@ enum ToolConstraintValidation {
         }
     }
 
-    static func validateAutoSchemas(_ tools: [OpenAITool]?) throws {
+    static func validateAutoSchemas(
+        _ tools: [OpenAITool]?,
+        allowInternalSchemaMetadata: Bool = true
+    ) throws {
         for tool in tools ?? [] {
             guard let parameters = tool.function.parameters else { continue }
-            guard autoSchemaPatternsAreSupported(parameters, depth: 0) else {
+            guard autoSchemaIsSupported(
+                parameters,
+                depth: 0,
+                allowInternalSchemaMetadata: allowInternalSchemaMetadata)
+            else {
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "auto tool schemas support only bounded literal pattern and patternProperties assertions"
+                    "auto tool schema uses unsupported assertions or reserved metadata"
                 )
             }
         }
@@ -137,8 +144,8 @@ enum ToolConstraintValidation {
         case (.integer(let allowed, _), .int(let value)):
             return allowed?.contains(value) ?? true
         case (.integer(let allowed, _), .double(let value)):
-            guard value.isFinite, value.rounded() == value else { return false }
-            return allowed?.contains(where: { Double($0) == value }) ?? true
+            guard value.isFinite, let integer = Int(exactly: value) else { return false }
+            return allowed?.contains(integer) ?? true
         case (.number(let allowed, _), .int(let value)):
             return allowed?.contains(Double(value)) ?? true
         case (.number(let allowed, _), .double(let value)):
@@ -376,17 +383,56 @@ enum ToolConstraintValidation {
         }
     }
 
-    private static func autoSchemaPatternsAreSupported(
+    private static func autoSchemaIsSupported(
         _ schema: ToolArgumentJSONValue,
-        depth: Int
+        depth: Int,
+        allowInternalSchemaMetadata: Bool
     ) -> Bool {
         guard depth <= 32 else { return false }
         switch schema {
         case .array(let values):
             return values.allSatisfy {
-                autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                autoSchemaIsSupported(
+                    $0,
+                    depth: depth + 1,
+                    allowInternalSchemaMetadata: allowInternalSchemaMetadata)
             }
         case .object(let object):
+            if !allowInternalSchemaMetadata,
+                object[ToolSchemaNormalization.originalBooleanSchemaKey] != nil
+            {
+                return false
+            }
+            if object["$ref"] != nil
+                || object["if"] != nil
+                || object["then"] != nil
+                || object["else"] != nil
+            {
+                return false
+            }
+            if case .array(let rawTypes)? = object["type"] {
+                var concrete = Set<String>()
+                for rawType in rawTypes {
+                    guard case .string(let rawType) = rawType else { return false }
+                    if rawType.lowercased() != "null" {
+                        concrete.insert(rawType.lowercased())
+                    }
+                }
+                if concrete.count > 1 { return false }
+            }
+            for keyword in ["anyOf", "oneOf"] {
+                guard case .array(let variants)? = object[keyword] else { continue }
+                var concrete = Set<String>()
+                for variant in variants {
+                    guard case .object(let variant) = variant else { return false }
+                    let declared = schemaTypes(variant["type"])
+                    if declared.isEmpty { return false }
+                    let members = declared
+                        .filter { $0 != "null" }
+                    concrete.formUnion(members)
+                }
+                if concrete.count > 1 { return false }
+            }
             if let pattern = object["pattern"] {
                 guard case .string(let pattern) = pattern,
                     safePatternComponents(pattern) != nil
@@ -406,7 +452,10 @@ enum ToolConstraintValidation {
                 "unevaluatedItems", "unevaluatedProperties",
             ] {
                 if let child = object[key],
-                    !autoSchemaPatternsAreSupported(child, depth: depth + 1)
+                    !autoSchemaIsSupported(
+                        child,
+                        depth: depth + 1,
+                        allowInternalSchemaMetadata: allowInternalSchemaMetadata)
                 {
                     return false
                 }
@@ -414,7 +463,10 @@ enum ToolConstraintValidation {
             for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
                 if case .array(let children)? = object[key],
                     !children.allSatisfy({
-                        autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                        autoSchemaIsSupported(
+                            $0,
+                            depth: depth + 1,
+                            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
                     })
                 {
                     return false
@@ -423,12 +475,17 @@ enum ToolConstraintValidation {
             if let items = object["items"] {
                 if case .array(let tuple) = items {
                     if !tuple.allSatisfy({
-                        autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                        autoSchemaIsSupported(
+                            $0,
+                            depth: depth + 1,
+                            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
                     }) {
                         return false
                     }
-                } else if !autoSchemaPatternsAreSupported(
-                    items, depth: depth + 1)
+                } else if !autoSchemaIsSupported(
+                    items,
+                    depth: depth + 1,
+                    allowInternalSchemaMetadata: allowInternalSchemaMetadata)
                 {
                     return false
                 }
@@ -439,7 +496,10 @@ enum ToolConstraintValidation {
             ] {
                 if case .object(let children)? = object[key],
                     !children.values.allSatisfy({
-                        autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                        autoSchemaIsSupported(
+                            $0,
+                            depth: depth + 1,
+                            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
                     })
                 {
                     return false
@@ -600,6 +660,7 @@ enum ToolConstraintValidation {
             if let exact = Int(exactly: multiple), exact > 0 {
                 return value % exact == 0
             }
+            return integerIsMultipleOfJSONDecimal(value, multiple: multiple)
         default:
             break
         }
@@ -614,6 +675,64 @@ enum ToolConstraintValidation {
         let quotient = value / multiple
         guard quotient.isFinite else { return false }
         return abs(quotient - quotient.rounded()) <= 1e-9
+    }
+
+    /// Exact divisibility under JSON decimal-number semantics. JSON decoding
+    /// stores the assertion as Double, but its shortest round-tripping String
+    /// recovers the decimal value clients declared (for example 0.1, not the
+    /// binary IEEE-754 fraction). The coefficient has at most 17 digits, so it
+    /// fits UInt64; exponent handling uses checked powers of ten or cancels the
+    /// denominator's 2/5 factors without constructing an unbounded integer.
+    private static func integerIsMultipleOfJSONDecimal(
+        _ value: Int,
+        multiple: Double
+    ) -> Bool {
+        if value == 0 { return true }
+        let parts = String(multiple).lowercased().split(
+            separator: "e",
+            maxSplits: 1,
+            omittingEmptySubsequences: false)
+        guard let mantissa = parts.first else { return false }
+        let explicitExponent =
+            parts.count == 2 ? Int(parts[1]) : 0
+        guard let explicitExponent else { return false }
+        let mantissaParts = mantissa.split(
+            separator: ".",
+            maxSplits: 1,
+            omittingEmptySubsequences: false)
+        let fractionalDigits = mantissaParts.count == 2
+            ? mantissaParts[1].count
+            : 0
+        let digits = mantissaParts.joined()
+        guard var coefficient = UInt64(digits), coefficient > 0 else {
+            return false
+        }
+        var exponent = explicitExponent - fractionalDigits
+        while coefficient.isMultiple(of: 10) {
+            coefficient /= 10
+            exponent += 1
+        }
+
+        let magnitude = UInt64(value.magnitude)
+        if exponent >= 0 {
+            var divisor = coefficient
+            for _ in 0 ..< exponent {
+                let (next, overflow) = divisor.multipliedReportingOverflow(by: 10)
+                if overflow { return false }
+                divisor = next
+            }
+            return magnitude % divisor == 0
+        }
+
+        let denominatorPower = -exponent
+        var requiredDivisor = coefficient
+        for _ in 0 ..< denominatorPower where requiredDivisor.isMultiple(of: 2) {
+            requiredDivisor /= 2
+        }
+        for _ in 0 ..< denominatorPower where requiredDivisor.isMultiple(of: 5) {
+            requiredDivisor /= 5
+        }
+        return magnitude % requiredDivisor == 0
     }
 
     private static func compareNumbers(

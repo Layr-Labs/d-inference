@@ -35,6 +35,7 @@ pub fn normalize(
         .ok_or(NormalizeError::MissingModel)?
         .to_owned();
 
+    validate_raw_auto_tool_schemas(&body)?;
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
@@ -271,6 +272,25 @@ fn validate_function_definition(
     Ok(function.clone())
 }
 
+fn validate_raw_auto_tool_schemas(body: &Map<String, Value>) -> Result<(), NormalizeError> {
+    let choice = body.get("tool_choice");
+    let mode = choice.and_then(Value::as_str).or_else(|| {
+        choice
+            .and_then(Value::as_object)
+            .and_then(|object| object.get("type"))
+            .and_then(Value::as_str)
+    });
+    if choice.is_some() && mode != Some("auto") {
+        return Ok(());
+    }
+    let tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    crate::tool_constraint::validate_auto_tool_patterns(tools)
+}
+
 fn normalize_legacy_function_calls(body: &mut Map<String, Value>) -> Result<(), NormalizeError> {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return Ok(());
@@ -386,6 +406,12 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
             }
         }
     }
+    if !object.contains_key("type")
+        && nullable_combinator_union(object)
+        && object.get("nullable") != Some(&Value::Bool(true))
+    {
+        object.insert("nullable".into(), Value::Bool(true));
+    }
     if let Some(Value::Array(types)) = object.get("type") {
         let members = types
             .iter()
@@ -441,6 +467,39 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
     }
 }
 
+fn nullable_combinator_union(object: &Map<String, Value>) -> bool {
+    for key in ["anyOf", "oneOf"] {
+        let Some(variants) = object.get(key).and_then(Value::as_array) else {
+            continue;
+        };
+        let mut has_null = false;
+        let mut has_concrete = false;
+        for variant in variants {
+            let Some(variant) = variant.as_object() else {
+                continue;
+            };
+            has_null |= variant.get("nullable") == Some(&Value::Bool(true));
+            match variant.get("type") {
+                Some(Value::String(member)) => {
+                    has_null |= member.eq_ignore_ascii_case("null");
+                    has_concrete |= !member.eq_ignore_ascii_case("null");
+                }
+                Some(Value::Array(members)) => {
+                    for member in members.iter().filter_map(Value::as_str) {
+                        has_null |= member.eq_ignore_ascii_case("null");
+                        has_concrete |= !member.eq_ignore_ascii_case("null");
+                    }
+                }
+                _ => {}
+            }
+        }
+        if has_null && has_concrete {
+            return true;
+        }
+    }
+    false
+}
+
 fn inferred_schema_type(object: &Map<String, Value>) -> String {
     if object.contains_key("properties")
         || object.contains_key("patternProperties")
@@ -487,7 +546,6 @@ fn apply_tool_choice_policy(
             .and_then(Value::as_str)
     });
     if choice.is_none() || mode == Some("auto") {
-        crate::tool_constraint::validate_auto_tool_patterns(tools.as_deref().unwrap_or_default())?;
         return Ok(());
     }
     if mode == Some("none") {
@@ -1058,6 +1116,32 @@ mod tests {
     }
 
     #[test]
+    fn combinator_union_preserves_nullability() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"lookup",
+                "parameters":{"type":"object","properties":{
+                    "value":{"anyOf":[{"type":"string"},{"type":"null"}]},
+                    "explicit":{
+                        "type":"string",
+                        "anyOf":[{"type":"string"},{"type":"null"}]
+                    }
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let tools = normalized.tools.unwrap();
+        let properties = &tools[0]["function"]["parameters"]["properties"];
+        let value = &properties["value"];
+        assert_eq!(value["type"], "string");
+        assert_eq!(value["nullable"], true);
+        assert!(properties["explicit"].get("nullable").is_none());
+    }
+
+    #[test]
     fn auto_regex_support_is_rejected_before_inference() {
         let body = |pattern: &str| {
             json!({
@@ -1138,6 +1222,30 @@ mod tests {
             "tool_choice":"auto"
         });
         assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+    }
+
+    #[test]
+    fn unsupported_auto_semantics_fail_before_render_normalization() {
+        for property_schema in [
+            json!({"type":["string","integer"]}),
+            json!({"oneOf":[{"type":"string"},{"type":"integer"}]}),
+            json!({"$ref":"#/$defs/Address"}),
+            json!({
+                "if":{"properties":{"kind":{"const":"business"}}},
+                "then":{"required":["tax_id"]}
+            }),
+        ] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"lookup",
+                    "parameters":{"type":"object","properties":{"value":property_schema}}
+                }}],
+                "tool_choice":"auto"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
     }
 
     #[test]

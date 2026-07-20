@@ -196,6 +196,43 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
             }
         }
         Value::Object(object) => {
+            if object.contains_key("$ref") {
+                return Err(NormalizeError::InvalidTools);
+            }
+            if ["if", "then", "else"]
+                .iter()
+                .any(|keyword| object.contains_key(*keyword))
+            {
+                return Err(NormalizeError::InvalidTools);
+            }
+            if let Some(types) = object.get("type").and_then(Value::as_array) {
+                let mut concrete = std::collections::HashSet::new();
+                for raw_type in types {
+                    let raw_type = raw_type.as_str().ok_or(NormalizeError::InvalidTools)?;
+                    if !raw_type.eq_ignore_ascii_case("null") {
+                        concrete.insert(raw_type.to_ascii_lowercase());
+                    }
+                }
+                if concrete.len() > 1 {
+                    return Err(NormalizeError::InvalidTools);
+                }
+            }
+            for keyword in ["anyOf", "oneOf"] {
+                let Some(variants) = object.get(keyword).and_then(Value::as_array) else {
+                    continue;
+                };
+                let mut concrete = std::collections::HashSet::new();
+                for variant in variants {
+                    let variant = variant.as_object().ok_or(NormalizeError::InvalidTools)?;
+                    let members = raw_schema_concrete_types(
+                        variant.get("type").ok_or(NormalizeError::InvalidTools)?,
+                    )?;
+                    concrete.extend(members);
+                }
+                if concrete.len() > 1 {
+                    return Err(NormalizeError::InvalidTools);
+                }
+            }
             if let Some(pattern) = object.get("pattern") {
                 let pattern = pattern.as_str().ok_or(NormalizeError::InvalidTools)?;
                 if !safe_auto_schema_pattern(pattern) {
@@ -265,6 +302,29 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
         _ => {}
     }
     Ok(())
+}
+
+fn raw_schema_concrete_types(
+    raw: &Value,
+) -> Result<std::collections::HashSet<String>, NormalizeError> {
+    let mut concrete = std::collections::HashSet::new();
+    match raw {
+        Value::String(member) => {
+            if !member.eq_ignore_ascii_case("null") {
+                concrete.insert(member.to_ascii_lowercase());
+            }
+        }
+        Value::Array(members) => {
+            for member in members {
+                let member = member.as_str().ok_or(NormalizeError::InvalidTools)?;
+                if !member.eq_ignore_ascii_case("null") {
+                    concrete.insert(member.to_ascii_lowercase());
+                }
+            }
+        }
+        _ => return Err(NormalizeError::InvalidTools),
+    }
+    Ok(concrete)
 }
 
 fn safe_auto_schema_pattern(pattern: &str) -> bool {

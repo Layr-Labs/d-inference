@@ -476,6 +476,10 @@ type InferenceRequestMessage struct {
 	CacheReceiptNonce   string            `json:"cache_receipt_nonce,omitempty"`
 	CacheScope          string            `json:"cache_scope,omitempty"`
 	PrefixCacheProtocol int               `json:"prefix_cache_protocol,omitempty"`
+	// ToolSchemaMetadataProtocol authenticates coordinator-owned schema
+	// metadata carried inside the encrypted body. Version 1 means the
+	// coordinator rejected client-forged reserved keys before normalization.
+	ToolSchemaMetadataProtocol int `json:"tool_schema_metadata_protocol,omitempty"`
 }
 
 // EncryptedPayload carries a NaCl Box encrypted message.

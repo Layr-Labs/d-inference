@@ -19,12 +19,17 @@ enum ToolChoicePromptPolicy {
         }
     }
 
-    static func prepare(_ request: OpenAIChatCompletionRequest) throws -> Prepared {
+    static func prepare(
+        _ request: OpenAIChatCompletionRequest,
+        allowInternalSchemaMetadata: Bool = true
+    ) throws -> Prepared {
         try validateToolNames(request.tools)
         let allowsParallelCalls = request.parallelToolCalls ?? true
         switch request.toolChoice {
         case nil, .mode(.auto):
-            try ToolConstraintValidation.validateAutoSchemas(request.tools)
+            try ToolConstraintValidation.validateAutoSchemas(
+                request.tools,
+                allowInternalSchemaMetadata: allowInternalSchemaMetadata)
             return Prepared(
                 messages: request.messages,
                 tools: request.tools,

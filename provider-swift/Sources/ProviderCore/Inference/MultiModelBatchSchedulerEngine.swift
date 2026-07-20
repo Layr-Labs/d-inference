@@ -106,6 +106,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// + `TelemetryClient.shared`); unit tests inject a scripted preparer so
     /// the routing is exercisable without model weights.
     private let engineV2Vision: EngineV2VisionPlumbing?
+    /// Coordinator-bound requests may carry schema metadata inserted only
+    /// after the coordinator rejects client-forged copies. Direct local HTTP
+    /// requests have no such trusted boundary and must reject that metadata.
+    private let allowInternalToolSchemaMetadata: Bool
 
     public init(
         registryProvider: @escaping @Sendable () async -> Registry,
@@ -133,6 +137,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.engineV2Sampling = engineV2Sampling
         self.engineV2Vision = engineV2Vision
         self.engineV2Usage = engineV2Usage
+        self.allowInternalToolSchemaMetadata = true
         self.acquire = nil
         self.tokenizerProvider = nil
         self.availableModelsOverride = nil
@@ -183,6 +188,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // (no provider frame decorator), so there is nowhere to splice
         // cached_tokens — same scoping as `engineV2Logprobs`.
         self.engineV2Usage = nil
+        self.allowInternalToolSchemaMetadata = false
     }
 
     // MARK: - MLXServerEngine
@@ -238,7 +244,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
 
         let prepared: ToolChoicePromptPolicy.Prepared
         do {
-            prepared = try ToolChoicePromptPolicy.prepare(request)
+            prepared = try ToolChoicePromptPolicy.prepare(
+                request,
+                allowInternalSchemaMetadata: allowInternalToolSchemaMetadata)
         } catch {
             await releaseBox.fire()
             throw error

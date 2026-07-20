@@ -735,8 +735,14 @@ struct GemmaToolConstraintTests {
             "patternProperties": .object([
                 "^city$": .object([
                     "oneOf": .array([
-                        .object(["type": .string("string")]),
-                        .object(["type": .string("integer")]),
+                        .object([
+                            "type": .string("string"),
+                            "const": .string("Paris"),
+                        ]),
+                        .object([
+                            "type": .string("string"),
+                            "const": .string("Tokyo"),
+                        ]),
                     ]),
                 ]),
             ]),
@@ -791,6 +797,73 @@ struct GemmaToolConstraintTests {
                 request(
                     choice: .mode(.auto),
                     tools: [tool(parameters: parameters)]))
+        }
+    }
+
+    @Test("unsupported auto semantics fail before inference")
+    func unsupportedAutoSemanticsFailDuringPreparation() {
+        let schemas: [MLXLMCommon.JSONValue] = [
+            .object([
+                "type": .array([.string("string"), .string("integer")]),
+            ]),
+            .object([
+                "oneOf": .array([
+                    .object(["type": .string("string")]),
+                    .object(["type": .string("integer")]),
+                ]),
+            ]),
+            .object([
+                "$ref": .string("#/$defs/Address"),
+            ]),
+            .object([
+                "if": .object([
+                    "properties": .object([
+                        "kind": .object(["const": .string("business")]),
+                    ]),
+                ]),
+                "then": .object([
+                    "required": .array([.string("tax_id")]),
+                ]),
+            ]),
+        ]
+        for schema in schemas {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object(["value": schema]),
+            ])
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                _ = try ToolChoicePromptPolicy.prepare(
+                    request(
+                        choice: .mode(.auto),
+                        tools: [tool(parameters: parameters)]))
+            }
+        }
+    }
+
+    @Test("direct requests reject reserved boolean schema metadata")
+    func directRequestRejectsReservedBooleanMetadata() {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("string"),
+                    ToolSchemaNormalization.originalBooleanSchemaKey: .bool(true),
+                ]),
+            ]),
+        ])
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]),
+                allowInternalSchemaMetadata: false)
+        }
+        #expect(throws: Never.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]),
+                allowInternalSchemaMetadata: true)
         }
     }
 
@@ -1046,6 +1119,51 @@ struct GemmaToolConstraintTests {
                     arguments: ["value": .int(9_007_199_254_740_993)])),
             ], prepared: prepared)
         }
+        for (value, multiple) in [
+            (Int.max, 3e-20),
+            (9_007_199_254_740_992, 3e-40),
+        ] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("integer"),
+                        "multipleOf": .double(multiple),
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather",
+                        arguments: ["value": .int(value)])),
+                ], prepared: prepared)
+            }
+        }
+        for multiple in [0.1, 1e-200] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("integer"),
+                        "multipleOf": .double(multiple),
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .int(1)])),
+            ], prepared: prepared)
+        }
     }
 
     @Test("auto integer multipleOf preserves precision")
@@ -1073,6 +1191,65 @@ struct GemmaToolConstraintTests {
                 .init(function: .init(
                     name: "weather",
                     arguments: ["value": .int(9_007_199_254_740_993)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("auto decimal multipleOf preserves large integer precision")
+    func autoDecimalMultipleOfPreservesLargeIntegerPrecision() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("integer"),
+                    "multipleOf": .double(2.5),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["value": .int(9_007_199_254_740_990)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .int(9_007_199_254_740_993)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("compiled integer enum preserves integral-double precision")
+    func compiledIntegerEnumPreservesPrecision() throws {
+        let allowed = 9_007_199_254_740_993
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("integer"),
+                    "enum": .array([.int(allowed)]),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools != nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["value": .int(allowed)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .double(9_007_199_254_740_992.0)])),
             ], prepared: prepared)
         }
     }

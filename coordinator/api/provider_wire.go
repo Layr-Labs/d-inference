@@ -10,8 +10,9 @@ func providerInferenceWireMessage(
 	pr *registry.PendingRequest,
 ) protocol.InferenceRequestMessage {
 	message := protocol.InferenceRequestMessage{
-		Type:      protocol.TypeInferenceRequest,
-		RequestID: requestID,
+		Type:                       protocol.TypeInferenceRequest,
+		RequestID:                  requestID,
+		ToolSchemaMetadataProtocol: 1,
 		EncryptedBody: &protocol.EncryptedPayload{
 			EphemeralPublicKey: ephemeralPublicKey,
 			Ciphertext:         ciphertext,

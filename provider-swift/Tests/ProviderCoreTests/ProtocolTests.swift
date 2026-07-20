@@ -993,12 +993,14 @@ import Testing
         encryptedBody: EncryptedPayload(ephemeralPublicKey: "a", ciphertext: "b"),
         cacheReceiptNonce: "nonce-1",
         cacheScope: "account-route-key",
-        prefixCacheProtocol: 2))
+        prefixCacheProtocol: 2,
+        toolSchemaMetadataProtocol: 1))
     let data = try ProviderProtocolCodec.encodeCoordinatorMessage(scoped)
     let object = try jsonObject(data)
     #expect(object["cache_receipt_nonce"] as? String == "nonce-1")
     #expect(object["cache_scope"] as? String == "account-route-key")
     #expect(object["prefix_cache_protocol"] as? Int == 2)
+    #expect(object["tool_schema_metadata_protocol"] as? Int == 1)
     #expect(try ProviderProtocolCodec.decodeCoordinatorMessage(from: data) == scoped)
 
     let legacy = #"{"type":"inference_request","request_id":"r","body":null}"#
@@ -1008,6 +1010,7 @@ import Testing
     #expect(decoded.cacheReceiptNonce == nil)
     #expect(decoded.cacheScope == nil)
     #expect(decoded.prefixCacheProtocol == nil)
+    #expect(decoded.toolSchemaMetadataProtocol == nil)
 }
 
 @Test func prefixCacheReceiptMessagesMatchWireContract() throws {

@@ -295,6 +295,55 @@ func TestAutoToolChoiceRejectsForgedBooleanSchemaMetadata(t *testing.T) {
 	}
 }
 
+func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testing.T) {
+	schemas := map[string]any{
+		"multi-type union": map[string]any{
+			"type": []any{"string", "integer"},
+		},
+		"multi-type oneOf": map[string]any{
+			"oneOf": []any{
+				map[string]any{"type": "string"},
+				map[string]any{"type": "integer"},
+			},
+		},
+		"reference": map[string]any{
+			"$ref": "#/$defs/Address",
+		},
+		"conditional": map[string]any{
+			"if":   map[string]any{"properties": map[string]any{"kind": map[string]any{"const": "business"}}},
+			"then": map[string]any{"required": []any{"tax_id"}},
+		},
+	}
+	for name, propertySchema := range schemas {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"model":    "m",
+				"messages": []any{map[string]any{"role": "user", "content": "x"}},
+				"tools": []any{map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name": "lookup",
+						"parameters": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"value": propertySchema},
+						},
+					},
+				}},
+				"tool_choice": "auto",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, validationErr := validateToolConstraintRequest(body)
+			var typed *toolConstraintRequestError
+			if !errors.As(validationErr, &typed) ||
+				typed.status != http.StatusUnprocessableEntity {
+				t.Fatalf("unsupported auto schema accepted: %T %v", validationErr, validationErr)
+			}
+		})
+	}
+}
+
 func TestAutoPatternValidationDoesNotDoubleCountTupleContainers(t *testing.T) {
 	var item any = map[string]any{"type": "string", "pattern": "^city$"}
 	for range 17 {

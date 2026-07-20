@@ -77,7 +77,8 @@ extension CoordinatorClient {
                 senderPublicKey: senderKeyBytes,
                 cacheReceiptNonce: request.cacheReceiptNonce,
                 cacheScope: request.cacheScope,
-                prefixCacheProtocol: request.prefixCacheProtocol
+                prefixCacheProtocol: request.prefixCacheProtocol,
+                toolSchemaMetadataProtocol: request.toolSchemaMetadataProtocol
             ))
 
         case .cancel(let cancel):

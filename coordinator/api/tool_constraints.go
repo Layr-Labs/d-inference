@@ -291,6 +291,60 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 			return invalidToolConstraint(
 				"tool schema contains reserved internal metadata", "tools")
 		}
+		if _, hasReference := value["$ref"]; hasReference {
+			return unsupportedToolConstraint(
+				"auto tool schemas do not support $ref")
+		}
+		for _, keyword := range []string{"if", "then", "else"} {
+			if _, conditional := value[keyword]; conditional {
+				return unsupportedToolConstraint(
+					"auto tool schemas do not support conditional assertions")
+			}
+		}
+		if rawTypes, ok := value["type"].([]any); ok {
+			concrete := make(map[string]struct{}, len(rawTypes))
+			for _, rawType := range rawTypes {
+				member, ok := rawType.(string)
+				if !ok {
+					return unsupportedToolConstraint(
+						"auto tool schema type arrays must contain strings")
+				}
+				member = strings.ToLower(member)
+				if member != "null" {
+					concrete[member] = struct{}{}
+				}
+			}
+			if len(concrete) > 1 {
+				return unsupportedToolConstraint(
+					"auto tool schemas support only one concrete type plus null")
+			}
+		}
+		for _, keyword := range []string{"anyOf", "oneOf"} {
+			variants, ok := value[keyword].([]any)
+			if !ok {
+				continue
+			}
+			concrete := make(map[string]struct{})
+			for _, rawVariant := range variants {
+				variant, ok := rawVariant.(map[string]any)
+				if !ok {
+					return unsupportedToolConstraint(
+						"auto tool schema union members must be objects")
+				}
+				members, err := autoConcreteSchemaTypes(variant["type"])
+				if err != nil {
+					return unsupportedToolConstraint(
+						"auto tool schema union members require an explicit type")
+				}
+				for member := range members {
+					concrete[member] = struct{}{}
+				}
+			}
+			if len(concrete) > 1 {
+				return unsupportedToolConstraint(
+					"auto tool schemas do not support multi-type anyOf/oneOf unions")
+			}
+		}
 		if raw, exists := value["pattern"]; exists {
 			pattern, ok := raw.(string)
 			if !ok || !safeAutoSchemaPattern(pattern) {
@@ -368,6 +422,29 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 		}
 	}
 	return nil
+}
+
+func autoConcreteSchemaTypes(raw any) (map[string]struct{}, error) {
+	concrete := make(map[string]struct{})
+	switch value := raw.(type) {
+	case string:
+		if member := strings.ToLower(value); member != "null" {
+			concrete[member] = struct{}{}
+		}
+	case []any:
+		for _, rawMember := range value {
+			member, ok := rawMember.(string)
+			if !ok {
+				return nil, fmt.Errorf("schema type member is not a string")
+			}
+			if member = strings.ToLower(member); member != "null" {
+				concrete[member] = struct{}{}
+			}
+		}
+	default:
+		return nil, fmt.Errorf("schema type is missing")
+	}
+	return concrete, nil
 }
 
 func safeAutoSchemaPattern(pattern string) bool {

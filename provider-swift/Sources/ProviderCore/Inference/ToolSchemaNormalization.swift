@@ -16,6 +16,24 @@ import Foundation
 enum ToolSchemaNormalization {
     static let originalBooleanSchemaKey =
         "x-darkbloom-original-boolean-schema"
+    static let metadataProtocolVersion = 1
+
+    static func containsReservedMetadata(in data: Data) -> Bool {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+            let tools = root["tools"] as? [Any]
+        else {
+            return false
+        }
+        return tools.contains { tool in
+            guard let tool = tool as? [String: Any],
+                let function = tool["function"] as? [String: Any],
+                let parameters = function["parameters"]
+            else {
+                return false
+            }
+            return schemaContainsReservedMetadata(parameters)
+        }
+    }
 
     /// Return `data` with default `type`s injected into tool parameter schemas.
     /// Fast-paths out (returns the input unchanged) when the body carries no
@@ -110,6 +128,12 @@ enum ToolSchemaNormalization {
                 dict[key] = variants.map { injectTypes($0, positional: true) }
             }
         }
+        if dict["type"] == nil,
+            nullableCombinatorUnion(dict),
+            dict["nullable"] as? Bool != true
+        {
+            dict["nullable"] = true
+        }
 
         // A type that is PRESENT but not a string crashes `| upper` just like a
         // missing one. The common real-world shape is the JSON-Schema array form
@@ -154,6 +178,41 @@ enum ToolSchemaNormalization {
         return dict
     }
 
+    private static func schemaContainsReservedMetadata(_ node: Any) -> Bool {
+        if let array = node as? [Any] {
+            return array.contains(where: schemaContainsReservedMetadata)
+        }
+        guard let object = node as? [String: Any] else { return false }
+        if object[originalBooleanSchemaKey] != nil { return true }
+        for key in [
+            "additionalProperties", "additionalItems", "contains", "contentSchema",
+            "if", "then", "else", "not", "propertyNames",
+            "unevaluatedItems", "unevaluatedProperties", "items",
+        ] {
+            if let child = object[key], schemaContainsReservedMetadata(child) {
+                return true
+            }
+        }
+        for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+            if let children = object[key] as? [Any],
+                children.contains(where: schemaContainsReservedMetadata)
+            {
+                return true
+            }
+        }
+        for key in [
+            "properties", "patternProperties", "dependentSchemas",
+            "dependencies", "definitions", "$defs",
+        ] {
+            if let children = object[key] as? [String: Any],
+                children.values.contains(where: schemaContainsReservedMetadata)
+            {
+                return true
+            }
+        }
+        return false
+    }
+
     /// Marker-key evidence gate for NON-positional nodes (the tool schema
     /// roots): only maps carrying a JSON-Schema marker key receive a defaulted
     /// `type` there.
@@ -175,6 +234,31 @@ enum ToolSchemaNormalization {
         if type(of: node) == Bool.self { return true }
         guard let number = node as? NSNumber else { return false }
         return CFGetTypeID(number) == CFBooleanGetTypeID()
+    }
+
+    private static func nullableCombinatorUnion(
+        _ dict: [String: Any]
+    ) -> Bool {
+        for key in ["anyOf", "oneOf"] {
+            guard let variants = dict[key] as? [[String: Any]] else { continue }
+            var hasNull = false
+            var hasConcrete = false
+            for variant in variants {
+                hasNull = hasNull || variant["nullable"] as? Bool == true
+                let members: [String]
+                if let type = variant["type"] as? String {
+                    members = [type.lowercased()]
+                } else {
+                    members =
+                        (variant["type"] as? [Any])?
+                        .compactMap { ($0 as? String)?.lowercased() } ?? []
+                }
+                hasNull = hasNull || members.contains("null")
+                hasConcrete = hasConcrete || members.contains(where: { $0 != "null" })
+            }
+            if hasNull && hasConcrete { return true }
+        }
+        return false
     }
 
     /// Collapse a non-string `type` value (pre-extracted string members of the

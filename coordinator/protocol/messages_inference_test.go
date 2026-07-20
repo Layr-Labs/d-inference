@@ -159,6 +159,18 @@ func TestInferenceRequestCacheFieldsAreOptionalAndOuter(t *testing.T) {
 	if decoded["cache_receipt_nonce"] != "nonce" || decoded["cache_scope"] != "opaque-scope" {
 		t.Fatalf("outer cache fields missing: %s", with)
 	}
+
+	msg.ToolSchemaMetadataProtocol = 1
+	withMetadata, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(
+		withMetadata,
+		[]byte(`"tool_schema_metadata_protocol":1`),
+	) {
+		t.Fatalf("schema metadata protocol missing: %s", withMetadata)
+	}
 }
 
 func TestRegisterPrefixCacheProtocolOptional(t *testing.T) {

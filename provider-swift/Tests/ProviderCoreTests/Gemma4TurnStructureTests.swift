@@ -265,6 +265,20 @@ struct Gemma4TurnStructureTests {
         #expect(roleAndIDs(out) == ["assistant[id1]", "tool(id1)", "assistant[id2]", "tool(id2)"])
     }
 
+    @Test func gemmaModelIDFallbackAppliesWhenTypeIsUnavailable() throws {
+        let input = [
+            assistant(text: "prefix"),
+            assistant(text: "answer"),
+        ]
+        let out = try ChatTemplateFixes.normalizeMessages(
+            input,
+            context: ChatTemplateFixContext(
+                modelId: "gemma-4-26b-qat-4bit",
+                modelType: nil))
+        #expect(out.count == 1)
+        #expect((out[0]["content"] as? String) == "prefix\n\nanswer")
+    }
+
     /// …and non-gemma contexts are untouched by it (`applies(to:)` gates).
     @Test func nonGemmaContextsAreUntouched() throws {
         let input = [

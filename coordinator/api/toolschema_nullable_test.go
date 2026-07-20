@@ -187,6 +187,26 @@ func TestNormalizeToolSchemas_TypeUnionOverridesNullableFalse(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolSchemas_CombinatorUnionPreservesNullability(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "value":{"anyOf":[{"type":"string"},{"type":"null"}]},
+	    "explicit":{"type":"string","anyOf":[{"type":"string"},{"type":"null"}]}
+	  }}}}]}`)
+	properties := tsnProps(t, NormalizeToolSchemas(body))
+	value := tsnMap(t, properties["value"], "value")
+	if got := tsnType(t, value, "value"); got != "string" {
+		t.Fatalf("value type = %q, want string", got)
+	}
+	if value["nullable"] != true {
+		t.Fatalf("value nullable = %v, want true", value["nullable"])
+	}
+	explicit := tsnMap(t, properties["explicit"], "explicit")
+	if explicit["nullable"] != nil {
+		t.Fatalf("explicit parent type was widened: nullable = %v", explicit["nullable"])
+	}
+}
+
 func TestNormalizeToolSchemas_PreservesBooleanSchemaSemantics(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"allow":true,"deny":false}}}}]}`)

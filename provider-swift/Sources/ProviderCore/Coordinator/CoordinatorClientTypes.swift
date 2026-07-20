@@ -23,7 +23,8 @@ public enum CoordinatorEvent: Sendable {
         senderPublicKey: Data?,
         cacheReceiptNonce: String?,
         cacheScope: String?,
-        prefixCacheProtocol: Int?
+        prefixCacheProtocol: Int?,
+        toolSchemaMetadataProtocol: Int?
     )
     case cancel(requestId: String)
     case attestationChallenge(nonce: String, timestamp: String)

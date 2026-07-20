@@ -254,7 +254,8 @@ extension ProviderLoop {
 
                 case .inferenceRequest(
                     let requestId, let ciphertext, let senderPublicKey,
-                    let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol
+                    let cacheReceiptNonce, let cacheScope, let prefixCacheProtocol,
+                    let toolSchemaMetadataProtocol
                 ):
                     await handleInferenceRequest(
                         requestId: requestId,
@@ -263,6 +264,7 @@ extension ProviderLoop {
                         cacheReceiptNonce: cacheReceiptNonce,
                         authenticatedCacheScope: cacheScope,
                         prefixCacheProtocol: prefixCacheProtocol,
+                        toolSchemaMetadataProtocol: toolSchemaMetadataProtocol,
                         send: send
                     )
 

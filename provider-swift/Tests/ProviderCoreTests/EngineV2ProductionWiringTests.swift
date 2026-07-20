@@ -1367,6 +1367,53 @@ struct EngineV2RequestRoutingTests {
         #expect(released.calls == 1)
     }
 
+    @Test("local-endpoint acquire path rejects forged internal schema metadata")
+    func localAcquirePathRejectsForgedSchemaMetadata() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let released = BuilderCallCounter()
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            acquire: { modelId in
+                MultiModelBatchSchedulerEngine.AcquiredModel(
+                    tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                    releaseToken: OneShotRelease(
+                        release: { _ in released.increment() }, modelId: modelId),
+                    modelType: "gemma4",
+                    engineV2Bridge: bridge)
+            },
+            tokenizerProvider: { _ in TokenizerHandle(WiringStubTokenizer()) },
+            availableModels: { ["gemma-4-26b-qat-4bit"] }
+        )
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("string"),
+                    ToolSchemaNormalization.originalBooleanSchemaKey: .bool(true),
+                ]),
+            ]),
+        ])
+        let request = OpenAIChatCompletionRequest(
+            model: "gemma-4-26b-qat-4bit",
+            messages: [OpenAIChatMessage(role: .user, content: .text("hi"))],
+            tools: [OpenAITool(function: .init(
+                name: "lookup", description: "Lookup", parameters: parameters))],
+            toolChoice: .mode(.auto))
+
+        do {
+            let stream = try await providerEngine.streamChatCompletion(request: request)
+            _ = try await recordServerStream(stream)
+            Issue.record("forged internal schema metadata was accepted")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .invalidToolPayload = error else {
+                Issue.record("expected invalidToolPayload, got \(error)")
+                return
+            }
+        }
+        #expect(engine.submitted.isEmpty)
+        #expect(released.calls == 1)
+    }
+
     @Test("VLM slot with a bridge: text-only request routes through the bridge")
     func vlmSlotTextRequestRoutesThroughBridge() async throws {
         let engine = WiringScriptedEngine(script: .stream([

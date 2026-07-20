@@ -99,6 +99,7 @@ extension ProviderLoop {
         cacheReceiptNonce: String?,
         authenticatedCacheScope: String?,
         prefixCacheProtocol: Int? = nil,
+        toolSchemaMetadataProtocol: Int? = nil,
         send: SendHandle
     ) async {
         logger.info("Processing inference request: \(requestId)")
@@ -178,6 +179,22 @@ extension ProviderLoop {
                 .inferenceError(
                     requestId: requestId,
                     error: "decryption failed",
+                    statusCode: 400,
+                    errorReason: nil),
+                fallbackFailure: .policy,
+                send: send)
+            return
+        }
+
+        if toolSchemaMetadataProtocol != ToolSchemaNormalization.metadataProtocolVersion,
+            ToolSchemaNormalization.containsReservedMetadata(in: decryptedData)
+        {
+            logger.warning(
+                "[\(requestId)] rejecting unauthenticated internal tool-schema metadata")
+            lookupReceiptFinalizer.sendTerminal(
+                .inferenceError(
+                    requestId: requestId,
+                    error: "invalid request body",
                     statusCode: 400,
                     errorReason: nil),
                 fallbackFailure: .policy,

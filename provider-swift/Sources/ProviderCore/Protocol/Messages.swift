@@ -1082,6 +1082,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public var cacheReceiptNonce: String?
         public var cacheScope: String?
         public var prefixCacheProtocol: Int?
+        public var toolSchemaMetadataProtocol: Int?
 
         public init(
             requestId: String,
@@ -1089,7 +1090,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
             encryptedBody: EncryptedPayload? = nil,
             cacheReceiptNonce: String? = nil,
             cacheScope: String? = nil,
-            prefixCacheProtocol: Int? = nil
+            prefixCacheProtocol: Int? = nil,
+            toolSchemaMetadataProtocol: Int? = nil
         ) {
             self.requestId = requestId
             self.body = body
@@ -1097,6 +1099,7 @@ public enum CoordinatorMessage: Sendable, Equatable {
             self.cacheReceiptNonce = cacheReceiptNonce
             self.cacheScope = cacheScope
             self.prefixCacheProtocol = prefixCacheProtocol
+            self.toolSchemaMetadataProtocol = toolSchemaMetadataProtocol
         }
     }
 
@@ -1211,6 +1214,7 @@ extension CoordinatorMessage: Codable {
         case cacheReceiptNonce = "cache_receipt_nonce"
         case cacheScope = "cache_scope"
         case prefixCacheProtocol = "prefix_cache_protocol"
+        case toolSchemaMetadataProtocol = "tool_schema_metadata_protocol"
         case nonce, timestamp
         case verified, mismatches
         case modelId = "model_id"
@@ -1232,6 +1236,9 @@ extension CoordinatorMessage: Codable {
             try container.encodeIfPresent(r.cacheReceiptNonce, forKey: .cacheReceiptNonce)
             try container.encodeIfPresent(r.cacheScope, forKey: .cacheScope)
             try container.encodeIfPresent(r.prefixCacheProtocol, forKey: .prefixCacheProtocol)
+            try container.encodeIfPresent(
+                r.toolSchemaMetadataProtocol,
+                forKey: .toolSchemaMetadataProtocol)
 
         case .cancel(let c):
             try container.encode(TypeValue.cancel, forKey: .type)
@@ -1288,7 +1295,9 @@ extension CoordinatorMessage: Codable {
                 cacheReceiptNonce: try container.decodeIfPresent(String.self, forKey: .cacheReceiptNonce),
                 cacheScope: try container.decodeIfPresent(String.self, forKey: .cacheScope),
                 prefixCacheProtocol: try container.decodeIfPresent(
-                    Int.self, forKey: .prefixCacheProtocol)
+                    Int.self, forKey: .prefixCacheProtocol),
+                toolSchemaMetadataProtocol: try container.decodeIfPresent(
+                    Int.self, forKey: .toolSchemaMetadataProtocol)
             ))
 
         case .cancel:

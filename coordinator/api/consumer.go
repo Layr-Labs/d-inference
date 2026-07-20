@@ -4363,21 +4363,12 @@ reserveProvider:
 		return
 	}
 	timing.EncryptedAt = time.Now()
-	wireMsg := map[string]any{
-		"type":       protocol.TypeInferenceRequest,
-		"request_id": requestID,
-		"encrypted_body": map[string]string{
-			"ephemeral_public_key": encrypted.EphemeralPublicKey,
-			"ciphertext":           encrypted.Ciphertext,
-		},
-	}
-	if pr.CacheReceiptNonce != "" && pr.CacheScope != "" {
-		wireMsg["cache_receipt_nonce"] = pr.CacheReceiptNonce
-		wireMsg["cache_scope"] = pr.CacheScope
-		if pr.PrefixCacheProtocol > 0 {
-			wireMsg["prefix_cache_protocol"] = pr.PrefixCacheProtocol
-		}
-	}
+	wireMsg := providerInferenceWireMessage(
+		requestID,
+		encrypted.EphemeralPublicKey,
+		encrypted.Ciphertext,
+		pr,
+	)
 
 	pr.SessionPrivKey = &sessionKeys.PrivateKey
 	data, err := json.Marshal(wireMsg)

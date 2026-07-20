@@ -29,7 +29,8 @@ func TestProviderInferenceWireMessageCarriesPreparedV2Attempt(t *testing.T) {
 		decoded.EncryptedBody.Ciphertext != "ciphertext" ||
 		decoded.CacheReceiptNonce != pending.CacheReceiptNonce ||
 		decoded.CacheScope != pending.CacheScope ||
-		decoded.PrefixCacheProtocol != 2 {
+		decoded.PrefixCacheProtocol != 2 ||
+		decoded.ToolSchemaMetadataProtocol != 1 {
 		t.Fatalf("decoded v2 wire request lost prepared attempt fields: %+v", decoded)
 	}
 }
@@ -43,7 +44,8 @@ func TestProviderInferenceWireMessageOmitsIncompleteCacheAttempt(t *testing.T) {
 		})
 	if message.CacheReceiptNonce != "" ||
 		message.CacheScope != "" ||
-		message.PrefixCacheProtocol != 0 {
+		message.PrefixCacheProtocol != 0 ||
+		message.ToolSchemaMetadataProtocol != 1 {
 		t.Fatalf("incomplete cache attempt leaked onto wire: %+v", message)
 	}
 }

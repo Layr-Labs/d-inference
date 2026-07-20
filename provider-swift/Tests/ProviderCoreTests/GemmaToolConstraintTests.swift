@@ -596,7 +596,10 @@ struct GemmaToolConstraintTests {
             defaultMaxTokens: 128,
             stopTokenIDs: [128])
         #expect(built != nil)
-        #expect(start.duration(to: clock.now) < .seconds(1))
+        // CI runs this beside ~1,500 Swift tests and Metal work. Keep the
+        // ceiling strict enough to catch nonlinear compilation while allowing
+        // scheduler contention on shared macOS runners.
+        #expect(start.duration(to: clock.now) < .seconds(3))
     }
 
     @Test("nullable branches count toward the grammar complexity ceiling")

@@ -968,7 +968,12 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 continue
             }
             runSizes = sizes
-            runBytes = sizes.reduce(0, +)
+            runBytes = 0
+            for size in sizes {
+                let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
+                guard !overflow else { return finish(.skippedCapacity) }
+                runBytes = sum
+            }
             if runBytes <= config.maxStageBytes,
                 SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
             {
@@ -1005,8 +1010,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 shortenedByCorruption: false),
                 deviceBytes: attachedBytes)
         }
+        // Multi-block conversion temporarily holds three full representations:
+        // decrypted host Data, per-block MLX inputs, and concatenated outputs.
+        let (initialPeakBytes, initialPeakOverflow) = runBytes.multipliedReportingOverflow(by: 3)
+        guard !initialPeakOverflow else { return finish(.skippedCapacity) }
         if let kvBudget {
-            guard await kvBudget.reserveBytes(requestID: reservationKey, bytes: UInt64(runBytes))
+            guard await kvBudget.reserveBytes(
+                requestID: reservationKey,
+                bytes: UInt64(initialPeakBytes))
             else { return finish(.skippedCapacity) }
         }
 
@@ -1066,15 +1077,33 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // memory pressure ⇒ silent recompute, exactly as if the shortened
         // run had been probed first).
         var stagedRunBytes = runBytes
+        var reservedPeakBytes = initialPeakBytes
         if usableBlocks < k {
-            stagedRunBytes = runSizes.prefix(usableBlocks).reduce(0, +)
-            if let kvBudget, stagedRunBytes != runBytes {
-                await kvBudget.release(requestID: reservationKey)
-                guard stagedRunBytes > 0,
-                    await kvBudget.reserveBytes(
-                        requestID: reservationKey, bytes: UInt64(stagedRunBytes))
-                else { return finish(.skippedCapacity) }
+            stagedRunBytes = 0
+            for size in runSizes.prefix(usableBlocks) {
+                let (sum, overflow) = stagedRunBytes.addingReportingOverflow(max(0, size))
+                guard !overflow else {
+                    await releaseReservation(reservationKey)
+                    return finish(.skippedCapacity)
+                }
+                stagedRunBytes = sum
             }
+            let (shortenedPeakBytes, shortenedPeakOverflow) =
+                stagedRunBytes.multipliedReportingOverflow(by: 3)
+            guard !shortenedPeakOverflow else {
+                await releaseReservation(reservationKey)
+                return finish(.skippedCapacity)
+            }
+            if let kvBudget, shortenedPeakBytes != reservedPeakBytes {
+                guard await kvBudget.resizeReservationBytes(
+                    requestID: reservationKey,
+                    bytes: UInt64(shortenedPeakBytes))
+                else {
+                    await releaseReservation(reservationKey)
+                    return finish(.skippedCapacity)
+                }
+            }
+            reservedPeakBytes = shortenedPeakBytes
         }
 
         // Rebuild per-layer arrays: per (layer × tensor), one MLXArray per
@@ -1108,7 +1137,26 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             await releaseReservation(reservationKey)
             return finish(.missCorrupt)
         }
-        if let kvBudget, exactDeviceBytes != stagedRunBytes {
+        let (conversionPeakBytes, conversionPeakOverflow) =
+            stagedRunBytes.addingReportingOverflow(exactDeviceBytes)
+        guard !conversionPeakOverflow else {
+            await releaseReservation(reservationKey)
+            return finish(.skippedCapacity)
+        }
+        if let kvBudget, conversionPeakBytes != reservedPeakBytes {
+            guard await kvBudget.resizeReservationBytes(
+                requestID: reservationKey,
+                bytes: UInt64(conversionPeakBytes))
+            else {
+                await releaseReservation(reservationKey)
+                return finish(.skippedCapacity)
+            }
+        }
+        // The evaluated prefix owns its MLX storage. Drop decrypted host chunks
+        // before converting the provisional peak reservation to steady device
+        // residence, so no unaccounted host+device overlap remains.
+        blockPayloads.removeAll(keepingCapacity: false)
+        if let kvBudget, exactDeviceBytes != conversionPeakBytes {
             guard await kvBudget.resizeReservationBytes(
                 requestID: reservationKey,
                 bytes: UInt64(exactDeviceBytes))

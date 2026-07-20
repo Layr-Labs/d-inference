@@ -1812,6 +1812,55 @@ struct SSDPrefixCacheReservationTests {
         #expect(cache.bytesInUse == 0)
     }
 
+    @Test("conversion peak reserves host, per-block MLX, and concatenated arrays")
+    func conversionPeakReservationCoversThreeRepresentations() async throws {
+        let dir = tempDir("res-conversion-peak")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let available = BudgetAvailableBox(64 * 1_073_741_824)
+        let budget = GlobalKVCacheBudget(
+            capFraction: 0.9,
+            activationReserveBytes: 0,
+            configReserveBytes: 0,
+            memorySnapshot: {
+                GlobalKVCacheBudget.MemorySnapshot(
+                    total: 64 * 1_073_741_824,
+                    active: 0,
+                    cache: 0,
+                    systemAvailable: available.current)
+            })
+        let cache = await makeStagedCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            kvBudget: budget)
+        defer { cache.close() }
+        let fileBytes = try dbk3Files(under: dir).reduce(0) { total, url in
+            total + (try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
+        }
+        #expect(fileBytes > 0)
+        available.set(UInt64(fileBytes * 5 / 2))
+
+        let refused = await cache.stage(
+            requestID: "req-peak",
+            promptTokens: Array(0 ..< tokenCount) + [1],
+            cacheScope: "")
+        #expect(refused.disposition == .skippedCapacity)
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(cache.bytesInUse == 0)
+
+        available.set(UInt64(fileBytes * 4))
+        let staged = await cache.stage(
+            requestID: "req-peak-success",
+            promptTokens: Array(0 ..< tokenCount) + [1],
+            cacheScope: "")
+        #expect(staged.staged)
+        #expect(staged.deviceBytes > 0)
+        #expect(await budget.outstandingReservedBytes() == UInt64(staged.deviceBytes))
+        cache.completeStaging(requestID: "req-peak-success")
+        #expect(await waitForZeroOutstanding(budget))
+        #expect(cache.bytesInUse == 0)
+    }
+
     @Test("close(): open tickets drained, reservations released, files kept")
     func closeDrainsTickets() async throws {
         let dir = tempDir("res-close")

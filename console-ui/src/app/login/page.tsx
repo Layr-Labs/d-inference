@@ -9,17 +9,7 @@ function isSafeRedirect(next: string): boolean {
   if (!next.startsWith("/") || next.startsWith("//")) {
     return false;
   }
-  try {
-    const url = new URL(next, window.location.origin);
-    return (
-      url.origin === window.location.origin &&
-      !url.pathname.includes("\\") &&
-      !url.pathname.includes("%5c") &&
-      !url.protocol.includes(":")
-    );
-  } catch {
-    return false;
-  }
+  return !next.includes("\\") && !next.includes("%5c");
 }
 
 function LoginContent() {

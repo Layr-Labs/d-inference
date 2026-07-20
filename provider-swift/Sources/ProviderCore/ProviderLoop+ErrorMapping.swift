@@ -42,7 +42,7 @@ extension ProviderLoop {
         }
         if let svcErr = error as? MLXOpenAIServiceError {
             switch svcErr {
-            case .invalidResponseFormatOutput:
+            case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed:
                 return 422
             case .embeddingsNotConfigured:
                 return 501

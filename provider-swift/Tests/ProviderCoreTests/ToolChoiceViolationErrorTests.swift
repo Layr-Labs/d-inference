@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMServer
 import Testing
 
 @testable import ProviderCore
@@ -24,6 +25,9 @@ struct ToolChoiceViolationErrorTests {
                 MultiModelBatchSchedulerEngineError.toolChoiceViolation(message))
             #expect(status == 422, "\(message)")
         }
+        #expect(
+            ProviderLoop.mapInferenceErrorToStatus(
+                MLXOpenAIServiceError.multipleToolCallsNotAllowed) == 422)
     }
 
     @Test func classifiesAsToolNoncompliance() {

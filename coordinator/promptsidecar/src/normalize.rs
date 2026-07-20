@@ -487,6 +487,7 @@ fn apply_tool_choice_policy(
             .and_then(Value::as_str)
     });
     if choice.is_none() || mode == Some("auto") {
+        crate::tool_constraint::validate_auto_tool_patterns(tools.as_deref().unwrap_or_default())?;
         return Ok(());
     }
     if mode == Some("none") {
@@ -1054,6 +1055,89 @@ mod tests {
         assert_eq!(properties["allow"][ORIGINAL_BOOLEAN_SCHEMA_KEY], true);
         assert_eq!(properties["deny"]["type"], "string");
         assert_eq!(properties["deny"][ORIGINAL_BOOLEAN_SCHEMA_KEY], false);
+    }
+
+    #[test]
+    fn auto_regex_support_is_rejected_before_inference() {
+        let body = |pattern: &str| {
+            json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"lookup",
+                    "parameters":{"type":"object","properties":{
+                        "code":{"type":"string","pattern":pattern}
+                    }}
+                }}],
+                "tool_choice":"auto"
+            })
+        };
+        assert!(
+            normalize(
+                body("^city$").as_object().unwrap().clone(),
+                Some("gemma4_text")
+            )
+            .is_ok()
+        );
+        assert!(
+            normalize(
+                body("^[a-z]+$").as_object().unwrap().clone(),
+                Some("gemma4_text")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn auto_pattern_validation_distinguishes_keywords_from_property_names() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"lookup",
+                "parameters":{"type":"object","properties":{
+                    "pattern":{"type":"string","pattern":"^city$"}
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
+    }
+
+    #[test]
+    fn auto_pattern_validation_does_not_double_count_tuple_containers() {
+        let mut item = json!({"type":"string","pattern":"^city$"});
+        for _ in 0..17 {
+            item = json!({"type":"array","items":[item]});
+        }
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"lookup",
+                "parameters":{"type":"object","properties":{"value":item}}
+            }}],
+            "tool_choice":"auto"
+        });
+        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
+    }
+
+    #[test]
+    fn auto_pattern_validation_bounds_malformed_nested_tuple_arrays() {
+        let mut items = json!({"type":"string","pattern":"^city$"});
+        for _ in 0..40 {
+            items = json!([items]);
+        }
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"lookup",
+                "parameters":{"type":"array","items":items}
+            }}],
+            "tool_choice":"auto"
+        });
+        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
     }
 
     #[test]

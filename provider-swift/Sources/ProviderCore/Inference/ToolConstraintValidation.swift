@@ -11,6 +11,16 @@ import MLXLMServer
 
 private typealias ToolArgumentJSONValue = MLXLMCommon.JSONValue
 
+private indirect enum JSONSchemaValueIdentity: Hashable {
+    case null
+    case bool(Bool)
+    case string(String)
+    case integer(Int)
+    case floating(UInt64)
+    case array([JSONSchemaValueIdentity])
+    case object([JSONSchemaValueIdentity])
+}
+
 enum ToolConstraintValidation {
     private static let maxSafePatternBytes = 128
     private static let maxSafePatternCount = 32
@@ -71,6 +81,17 @@ enum ToolConstraintValidation {
                 else {
                     throw violation("tool call arguments do not satisfy the declared schema")
                 }
+            }
+        }
+    }
+
+    static func validateAutoSchemas(_ tools: [OpenAITool]?) throws {
+        for tool in tools ?? [] {
+            guard let parameters = tool.function.parameters else { continue }
+            guard autoSchemaPatternsAreSupported(parameters, depth: 0) else {
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "auto tool schemas support only bounded literal pattern and patternProperties assertions"
+                )
             }
         }
     }
@@ -280,7 +301,9 @@ enum ToolConstraintValidation {
                     return false
                 }
             }
-            if object["uniqueItems"] == .bool(true), Set(values).count != values.count {
+            if object["uniqueItems"] == .bool(true),
+                Set(values.map(jsonSchemaIdentity)).count != values.count
+            {
                 return false
             }
             return true
@@ -299,10 +322,10 @@ enum ToolConstraintValidation {
             }
             return true
 
-        case .int(let integer):
-            return validateNumber(Double(integer), object: object)
+        case .int:
+            return validateNumber(value, object: object)
         case .double(let number):
-            return number.isFinite && validateNumber(number, object: object)
+            return number.isFinite && validateNumber(value, object: object)
         case .null, .bool:
             return true
         }
@@ -316,10 +339,100 @@ enum ToolConstraintValidation {
         _ value: String,
         pattern: String
     ) -> Bool {
-        guard pattern.utf8.count <= maxSafePatternBytes,
-            value.utf8.count <= maxSafePatternInputBytes
+        guard value.utf8.count <= maxSafePatternInputBytes,
+            let components = safePatternComponents(pattern)
         else { return false }
+        switch (components.anchoredStart, components.anchoredEnd) {
+        case (true, true):
+            return value == components.literal
+        case (true, false):
+            return value.hasPrefix(components.literal)
+        case (false, true):
+            return value.hasSuffix(components.literal)
+        case (false, false):
+            return value.contains(components.literal)
+        }
+    }
 
+    private static func autoSchemaPatternsAreSupported(
+        _ schema: ToolArgumentJSONValue,
+        depth: Int
+    ) -> Bool {
+        guard depth <= 32 else { return false }
+        switch schema {
+        case .array(let values):
+            return values.allSatisfy {
+                autoSchemaPatternsAreSupported($0, depth: depth + 1)
+            }
+        case .object(let object):
+            if let pattern = object["pattern"] {
+                guard case .string(let pattern) = pattern,
+                    safePatternComponents(pattern) != nil
+                else { return false }
+            }
+            if let patternProperties = object["patternProperties"] {
+                guard case .object(let patterns) = patternProperties,
+                    patterns.count <= maxSafePatternCount,
+                    patterns.keys.allSatisfy({
+                        safePatternComponents($0) != nil
+                    })
+                else { return false }
+            }
+            for key in [
+                "additionalProperties", "additionalItems", "contains", "contentSchema",
+                "if", "then", "else", "not", "propertyNames",
+                "unevaluatedItems", "unevaluatedProperties",
+            ] {
+                if let child = object[key],
+                    !autoSchemaPatternsAreSupported(child, depth: depth + 1)
+                {
+                    return false
+                }
+            }
+            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if case .array(let children)? = object[key],
+                    !children.allSatisfy({
+                        autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                    })
+                {
+                    return false
+                }
+            }
+            if let items = object["items"] {
+                if case .array(let tuple) = items {
+                    if !tuple.allSatisfy({
+                        autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                    }) {
+                        return false
+                    }
+                } else if !autoSchemaPatternsAreSupported(
+                    items, depth: depth + 1)
+                {
+                    return false
+                }
+            }
+            for key in [
+                "properties", "patternProperties", "dependentSchemas",
+                "dependencies", "definitions", "$defs",
+            ] {
+                if case .object(let children)? = object[key],
+                    !children.values.allSatisfy({
+                        autoSchemaPatternsAreSupported($0, depth: depth + 1)
+                    })
+                {
+                    return false
+                }
+            }
+            return true
+        default:
+            return true
+        }
+    }
+
+    private static func safePatternComponents(
+        _ pattern: String
+    ) -> (anchoredStart: Bool, anchoredEnd: Bool, literal: String)? {
+        guard pattern.utf8.count <= maxSafePatternBytes else { return nil }
         var literal = pattern[...]
         let anchoredStart = literal.first == "^"
         if anchoredStart { literal.removeFirst() }
@@ -328,19 +441,8 @@ enum ToolConstraintValidation {
         let regexMetacharacters = CharacterSet(charactersIn: #"\\.^$|?*+()[]{}"#)
         guard literal.unicodeScalars.allSatisfy({
             !regexMetacharacters.contains($0)
-        }) else { return false }
-
-        let text = String(literal)
-        switch (anchoredStart, anchoredEnd) {
-        case (true, true):
-            return value == text
-        case (true, false):
-            return value.hasPrefix(text)
-        case (false, true):
-            return value.hasSuffix(text)
-        case (false, false):
-            return value.contains(text)
-        }
+        }) else { return nil }
+        return (anchoredStart, anchoredEnd, String(literal))
     }
 
     private static func schemaTypes(
@@ -379,23 +481,32 @@ enum ToolConstraintValidation {
         _ lhs: ToolArgumentJSONValue,
         _ rhs: ToolArgumentJSONValue
     ) -> Bool {
-        switch (lhs, rhs) {
-        case (.int(let lhs), .double(let rhs)):
-            return rhs.isFinite && Int(exactly: rhs) == lhs
-        case (.double(let lhs), .int(let rhs)):
-            return lhs.isFinite && Int(exactly: lhs) == rhs
-        case (.array(let lhs), .array(let rhs)):
-            return lhs.count == rhs.count
-                && zip(lhs, rhs).allSatisfy {
-                    jsonSchemaEqual($0.0, $0.1)
-                }
-        case (.object(let lhs), .object(let rhs)):
-            guard lhs.count == rhs.count else { return false }
-            return lhs.allSatisfy { key, value in
-                rhs[key].map { jsonSchemaEqual(value, $0) } ?? false
+        jsonSchemaIdentity(lhs) == jsonSchemaIdentity(rhs)
+    }
+
+    private static func jsonSchemaIdentity(
+        _ value: ToolArgumentJSONValue
+    ) -> JSONSchemaValueIdentity {
+        switch value {
+        case .null:
+            return .null
+        case .bool(let value):
+            return .bool(value)
+        case .string(let value):
+            return .string(value)
+        case .int(let value):
+            return .integer(value)
+        case .double(let value):
+            if value.isFinite, let integer = Int(exactly: value) {
+                return .integer(integer)
             }
-        default:
-            return lhs == rhs
+            return .floating(value.bitPattern)
+        case .array(let values):
+            return .array(values.map(jsonSchemaIdentity))
+        case .object(let object):
+            return .object(object.keys.sorted().flatMap {
+                [.string($0), jsonSchemaIdentity(object[$0]!)]
+            })
         }
     }
 
@@ -410,24 +521,110 @@ enum ToolConstraintValidation {
     }
 
     private static func validateNumber(
-        _ value: Double,
+        _ value: ToolArgumentJSONValue,
         object: [String: ToolArgumentJSONValue]
     ) -> Bool {
-        if let minimum = number(object["minimum"]) {
+        guard compareNumbers(value, value) != nil else { return false }
+        if let minimum = object["minimum"],
+            let comparison = compareNumbers(value, minimum)
+        {
             let exclusive = object["exclusiveMinimum"] == .bool(true)
-            if exclusive ? value <= minimum : value < minimum { return false }
+            if exclusive
+                ? comparison != .orderedDescending
+                : comparison == .orderedAscending
+            {
+                return false
+            }
         }
-        if let maximum = number(object["maximum"]) {
+        if let maximum = object["maximum"],
+            let comparison = compareNumbers(value, maximum)
+        {
             let exclusive = object["exclusiveMaximum"] == .bool(true)
-            if exclusive ? value >= maximum : value > maximum { return false }
+            if exclusive
+                ? comparison != .orderedAscending
+                : comparison == .orderedDescending
+            {
+                return false
+            }
         }
-        if let minimum = number(object["exclusiveMinimum"]), value <= minimum { return false }
-        if let maximum = number(object["exclusiveMaximum"]), value >= maximum { return false }
-        if let multiple = number(object["multipleOf"]), multiple > 0 {
+        if let minimum = object["exclusiveMinimum"],
+            let comparison = compareNumbers(value, minimum),
+            comparison != .orderedDescending
+        {
+            return false
+        }
+        if let maximum = object["exclusiveMaximum"],
+            let comparison = compareNumbers(value, maximum),
+            comparison != .orderedAscending
+        {
+            return false
+        }
+        if let value = number(value),
+            let multiple = number(object["multipleOf"]),
+            multiple > 0
+        {
             let quotient = value / multiple
             if abs(quotient - quotient.rounded()) > 1e-9 { return false }
         }
         return true
+    }
+
+    private static func compareNumbers(
+        _ lhs: ToolArgumentJSONValue,
+        _ rhs: ToolArgumentJSONValue
+    ) -> ComparisonResult? {
+        switch (lhs, rhs) {
+        case (.int(let lhs), .int(let rhs)):
+            return compareIntegers(lhs, rhs)
+        case (.double(let lhs), .double(let rhs)):
+            guard lhs.isFinite, rhs.isFinite else { return nil }
+            if lhs < rhs { return .orderedAscending }
+            if lhs > rhs { return .orderedDescending }
+            return .orderedSame
+        case (.int(let lhs), .double(let rhs)):
+            return compareInteger(lhs, to: rhs)
+        case (.double(let lhs), .int(let rhs)):
+            guard let inverse = compareInteger(rhs, to: lhs) else { return nil }
+            switch inverse {
+            case .orderedAscending:
+                return .orderedDescending
+            case .orderedDescending:
+                return .orderedAscending
+            case .orderedSame:
+                return .orderedSame
+            }
+        default:
+            return nil
+        }
+    }
+
+    private static func compareInteger(
+        _ lhs: Int,
+        to rhs: Double
+    ) -> ComparisonResult? {
+        guard rhs.isFinite else { return nil }
+        if let rhs = Int(exactly: rhs) {
+            return compareIntegers(lhs, rhs)
+        }
+        if rhs >= Double(Int.max) {
+            return .orderedAscending
+        }
+        if rhs < Double(Int.min) {
+            return .orderedDescending
+        }
+        let truncated = Int(rhs)
+        if lhs < truncated { return .orderedAscending }
+        if lhs > truncated { return .orderedDescending }
+        return Double(lhs) < rhs ? .orderedAscending : .orderedDescending
+    }
+
+    private static func compareIntegers(
+        _ lhs: Int,
+        _ rhs: Int
+    ) -> ComparisonResult {
+        if lhs < rhs { return .orderedAscending }
+        if lhs > rhs { return .orderedDescending }
+        return .orderedSame
     }
 
     private static func number(

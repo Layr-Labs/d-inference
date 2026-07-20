@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 type toolChoiceMode string
@@ -30,6 +31,9 @@ var toolFunctionNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 const (
 	maxConstrainedStopSequences = 4
 	maxConstrainedStopBytes     = 256
+	maxSafeAutoPatternBytes     = 128
+	maxSafeAutoPatternCount     = 32
+	maxAutoPatternDepth         = 32
 )
 
 type validatedToolConstraintPolicy struct {
@@ -83,7 +87,7 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 		}
 	}
 	tools, err := validateDeclaredTools(
-		root["tools"], enforceSchema, selected)
+		root["tools"], enforceSchema, selected, mode == toolChoiceAuto)
 	if err != nil {
 		return policy, err
 	}
@@ -211,6 +215,7 @@ func validateDeclaredTools(
 	raw any,
 	enforceSchema bool,
 	selected string,
+	validateAutoPatterns bool,
 ) (map[string]map[string]any, error) {
 	if raw == nil {
 		return nil, nil
@@ -242,11 +247,16 @@ func validateDeclaredTools(
 		if _, duplicate := tools[name]; duplicate {
 			return nil, invalidToolConstraint("tool function names must be unique", "tools")
 		}
-		if enforceSchema && (selected == "" || name == selected) {
-			parameters := function["parameters"]
-			if parameters == nil {
-				parameters = map[string]any{"type": "object"}
+		parameters := function["parameters"]
+		if parameters == nil {
+			parameters = map[string]any{"type": "object"}
+		}
+		if validateAutoPatterns {
+			if err := validateAutoSchemaPatterns(parameters, 0); err != nil {
+				return nil, err
 			}
+		}
+		if enforceSchema && (selected == "" || name == selected) {
 			if err := validateConstrainedSchema(parameters, true, 0, name+".parameters"); err != nil {
 				return nil, err
 			}
@@ -263,6 +273,107 @@ func validateDeclaredTools(
 		tools[name] = function
 	}
 	return tools, nil
+}
+
+func validateAutoSchemaPatterns(schema any, depth int) error {
+	if depth > maxAutoPatternDepth {
+		return unsupportedToolConstraint("auto tool schema exceeds pattern-validation depth")
+	}
+	switch value := schema.(type) {
+	case []any:
+		for _, child := range value {
+			if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		if raw, exists := value["pattern"]; exists {
+			pattern, ok := raw.(string)
+			if !ok || !safeAutoSchemaPattern(pattern) {
+				return unsupportedToolConstraint(
+					"auto tool schemas support only bounded literal pattern and patternProperties assertions")
+			}
+		}
+		if raw, exists := value["patternProperties"]; exists {
+			patterns, ok := raw.(map[string]any)
+			if !ok {
+				return unsupportedToolConstraint(
+					"auto tool schema patternProperties must be an object")
+			}
+			if len(patterns) > maxSafeAutoPatternCount {
+				return unsupportedToolConstraint(
+					"auto tool schema has too many patternProperties assertions")
+			}
+			for pattern := range patterns {
+				if !safeAutoSchemaPattern(pattern) {
+					return unsupportedToolConstraint(
+						"auto tool schemas support only bounded literal pattern and patternProperties assertions")
+				}
+			}
+		}
+		for _, key := range []string{
+			"additionalProperties", "additionalItems", "contains", "contentSchema",
+			"if", "then", "else", "not", "propertyNames",
+			"unevaluatedItems", "unevaluatedProperties",
+		} {
+			child, exists := value[key]
+			if !exists {
+				continue
+			}
+			if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+				return err
+			}
+		}
+		for _, key := range []string{"allOf", "anyOf", "oneOf", "prefixItems"} {
+			children, ok := value[key].([]any)
+			if !ok {
+				continue
+			}
+			for _, child := range children {
+				if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		if items, exists := value["items"]; exists {
+			if tuple, ok := items.([]any); ok {
+				for _, child := range tuple {
+					if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+						return err
+					}
+				}
+			} else {
+				if err := validateAutoSchemaPatterns(items, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+		for _, key := range []string{
+			"properties", "patternProperties", "dependentSchemas",
+			"dependencies", "definitions", "$defs",
+		} {
+			children, ok := value[key].(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, child := range children {
+				if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func safeAutoSchemaPattern(pattern string) bool {
+	if len([]byte(pattern)) > maxSafeAutoPatternBytes {
+		return false
+	}
+	literal := pattern
+	literal = strings.TrimPrefix(literal, "^")
+	literal = strings.TrimSuffix(literal, "$")
+	return !strings.ContainsAny(literal, `\.^$|?*+()[]{}`)
 }
 
 func invalidToolConstraint(message, param string) error {

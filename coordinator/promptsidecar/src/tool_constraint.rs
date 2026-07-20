@@ -6,6 +6,9 @@ const MAX_ARRAY_ITEMS: usize = 16;
 const MAX_GRAMMAR_COMPLEXITY: usize = 50_000;
 const SCHEMA_FIXED_COST: usize = 8;
 const NULLABLE_BRANCH_COST: usize = 4;
+const MAX_SAFE_AUTO_PATTERN_BYTES: usize = 128;
+const MAX_SAFE_AUTO_PATTERN_COUNT: usize = 32;
+const MAX_AUTO_PATTERN_DEPTH: usize = 32;
 const STRING_DELIMITERS: [&str; 6] = [
     r#"<|"|>"#,
     "<escape>",
@@ -24,6 +27,20 @@ pub(crate) fn validate_selected_constrained_tool(
     selected: &str,
 ) -> Result<(), NormalizeError> {
     validate_constrained_tools_for(tools, Some(selected))
+}
+
+pub(crate) fn validate_auto_tool_patterns(tools: &[Value]) -> Result<(), NormalizeError> {
+    for tool in tools {
+        let parameters = tool
+            .as_object()
+            .and_then(|tool| tool.get("function"))
+            .and_then(Value::as_object)
+            .and_then(|function| function.get("parameters"));
+        if let Some(parameters) = parameters {
+            validate_auto_schema_patterns(parameters, 0)?;
+        }
+    }
+    Ok(())
 }
 
 fn validate_constrained_tools_for(
@@ -166,6 +183,115 @@ fn validate_constrained_schema(
         _ => return Err(NormalizeError::InvalidTools),
     }
     Ok(())
+}
+
+fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), NormalizeError> {
+    if depth > MAX_AUTO_PATTERN_DEPTH {
+        return Err(NormalizeError::InvalidTools);
+    }
+    match schema {
+        Value::Array(values) => {
+            for child in values {
+                validate_auto_schema_patterns(child, depth + 1)?;
+            }
+        }
+        Value::Object(object) => {
+            if let Some(pattern) = object.get("pattern") {
+                let pattern = pattern.as_str().ok_or(NormalizeError::InvalidTools)?;
+                if !safe_auto_schema_pattern(pattern) {
+                    return Err(NormalizeError::InvalidTools);
+                }
+            }
+            if let Some(patterns) = object.get("patternProperties") {
+                let patterns = patterns.as_object().ok_or(NormalizeError::InvalidTools)?;
+                if patterns.len() > MAX_SAFE_AUTO_PATTERN_COUNT {
+                    return Err(NormalizeError::InvalidTools);
+                }
+                if patterns
+                    .keys()
+                    .any(|pattern| !safe_auto_schema_pattern(pattern))
+                {
+                    return Err(NormalizeError::InvalidTools);
+                }
+            }
+            for key in [
+                "additionalProperties",
+                "additionalItems",
+                "contains",
+                "contentSchema",
+                "if",
+                "then",
+                "else",
+                "not",
+                "propertyNames",
+                "unevaluatedItems",
+                "unevaluatedProperties",
+            ] {
+                if let Some(child) = object.get(key) {
+                    validate_auto_schema_patterns(child, depth + 1)?;
+                }
+            }
+            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(children) = object.get(key).and_then(Value::as_array) {
+                    for child in children {
+                        validate_auto_schema_patterns(child, depth + 1)?;
+                    }
+                }
+            }
+            if let Some(items) = object.get("items") {
+                if let Some(tuple) = items.as_array() {
+                    for child in tuple {
+                        validate_auto_schema_patterns(child, depth + 1)?;
+                    }
+                } else {
+                    validate_auto_schema_patterns(items, depth + 1)?;
+                }
+            }
+            for key in [
+                "properties",
+                "patternProperties",
+                "dependentSchemas",
+                "dependencies",
+                "definitions",
+                "$defs",
+            ] {
+                if let Some(children) = object.get(key).and_then(Value::as_object) {
+                    for child in children.values() {
+                        validate_auto_schema_patterns(child, depth + 1)?;
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn safe_auto_schema_pattern(pattern: &str) -> bool {
+    if pattern.len() > MAX_SAFE_AUTO_PATTERN_BYTES {
+        return false;
+    }
+    let literal = pattern.strip_prefix('^').unwrap_or(pattern);
+    let literal = literal.strip_suffix('$').unwrap_or(literal);
+    !literal.bytes().any(|byte| {
+        matches!(
+            byte,
+            b'\\'
+                | b'.'
+                | b'^'
+                | b'$'
+                | b'|'
+                | b'?'
+                | b'*'
+                | b'+'
+                | b'('
+                | b')'
+                | b'['
+                | b']'
+                | b'{'
+                | b'}'
+        )
+    })
 }
 
 fn validate_finite_values(

@@ -232,6 +232,105 @@ func TestNamedToolChoiceValidatesOnlySelectedSchema(t *testing.T) {
 	}
 }
 
+func TestAutoToolChoiceRejectsUnsupportedRegexBeforeDispatch(t *testing.T) {
+	body := func(pattern string) []byte {
+		return []byte(fmt.Sprintf(`{
+			"model":"m",
+			"messages":[{"role":"user","content":"x"}],
+			"tools":[{"type":"function","function":{
+				"name":"lookup",
+				"parameters":{"type":"object","properties":{
+					"code":{"type":"string","pattern":%q}
+				}}
+			}}],
+			"tool_choice":"auto"
+		}`, pattern))
+	}
+	if _, err := validateToolConstraintRequest(body("^city$")); err != nil {
+		t.Fatalf("bounded literal pattern rejected: %v", err)
+	}
+	_, err := validateToolConstraintRequest(body("^[a-z]+$"))
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusUnprocessableEntity {
+		t.Fatalf("unsupported regex was not rejected before dispatch: %T %v", err, err)
+	}
+}
+
+func TestAutoPatternValidationDistinguishesSchemaKeywordsFromPropertyNames(t *testing.T) {
+	body := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"lookup",
+			"parameters":{"type":"object","properties":{
+				"pattern":{"type":"string","pattern":"^city$"}
+			}}
+		}}],
+		"tool_choice":"auto"
+	}`)
+	if _, err := validateToolConstraintRequest(body); err != nil {
+		t.Fatalf("property named pattern was treated as a schema keyword: %v", err)
+	}
+}
+
+func TestAutoPatternValidationDoesNotDoubleCountTupleContainers(t *testing.T) {
+	var item any = map[string]any{"type": "string", "pattern": "^city$"}
+	for range 17 {
+		item = map[string]any{
+			"type":  "array",
+			"items": []any{item},
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":    "m",
+		"messages": []any{map[string]any{"role": "user", "content": "x"}},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "lookup",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"value": item},
+				},
+			},
+		}},
+		"tool_choice": "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateToolConstraintRequest(body); err != nil {
+		t.Fatalf("tuple schema containers consumed pattern depth: %v", err)
+	}
+}
+
+func TestAutoPatternValidationBoundsMalformedNestedTupleArrays(t *testing.T) {
+	var items any = map[string]any{"type": "string", "pattern": "^city$"}
+	for range 40 {
+		items = []any{items}
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":    "m",
+		"messages": []any{map[string]any{"role": "user", "content": "x"}},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "lookup",
+				"parameters": map[string]any{
+					"type": "array", "items": items,
+				},
+			},
+		}},
+		"tool_choice": "auto",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateToolConstraintRequest(body); err == nil {
+		t.Fatal("malformed nested tuple arrays bypassed pattern depth bound")
+	}
+}
+
 func TestValidateToolConstraintRequestRejectsProviderGrammarExplosion(t *testing.T) {
 	var value any = map[string]any{"type": "string"}
 	for range 4 {

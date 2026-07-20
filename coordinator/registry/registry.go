@@ -1937,15 +1937,18 @@ func (r *Registry) anyEligibleProviderCanRouteWithTraitsLocked(
 	return false
 }
 
-// providerCanRouteBuildLocked is the single source of truth for "could this
-// provider actually serve this build right now" — the same gates
-// snapshotProviderLocked applies (advertises the build + in catalog, not
-// offline/untrusted, public, trust ≥ floor, runtime verified, private-text
-// capable, fresh challenge, the dedicated-box rule, AND the model fits the
-// provider's RAM), minus the per-request capacity/headroom checks. Cold-but-
-// healthy providers pass (no warm slot required — they load on first demand).
-// Caller holds r.mu (RLock) and p.mu.
-func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
+// providerStructurallyCanRouteBuildLocked reports whether a provider has every
+// non-capacity prerequisite for serving a build. Transient load cooldowns and
+// slot states are intentionally excluded so queued requests can wait for a
+// reloading capable provider instead of being misreported as capability-
+// unavailable. Caller holds r.mu (RLock) and p.mu.
+func (r *Registry) providerStructurallyCanRouteBuildLocked(
+	p *Provider,
+	buildID string,
+	minTrust TrustLevel,
+	now time.Time,
+	allowPrivate bool,
+) bool {
 	// Catalog membership + dedicated-box isolation, mirroring
 	// providerPassesRoutingGatesLockedEx so alias routability (and rollout/drop
 	// measurement) matches actual dispatch routability: a dedicated-family build
@@ -1957,13 +1960,50 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 	if !r.providerServesRoutableModelLocked(p, buildID, allowPrivate) {
 		return false
 	}
-	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
-		return false
-	}
 	// Liveness/trust/privacy core. allowPrivate marks the owner self-route
 	// context (relax private-only admission); the trust-floor relaxation is
 	// folded into the minTrust the caller passes (TrustNone for owner routes).
 	if !r.providerLivenessGateLocked(p, minTrust, allowPrivate, now) {
+		return false
+	}
+	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
+	// migrating to a larger build than the source). totalMemory prefers the
+	// backend-reported figure, matching snapshotProviderLocked. A resident
+	// running/idle slot has already demonstrated fit and must bypass the
+	// heuristic. Owner-only off-catalog models use their advertised size.
+	totalMemoryGB := float64(p.Hardware.MemoryGB)
+	slotState := "unknown"
+	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
+		totalMemoryGB = p.BackendCapacity.TotalMemoryGB
+	}
+	if p.BackendCapacity != nil {
+		for _, slot := range p.BackendCapacity.Slots {
+			if slot.Model == buildID {
+				slotState = slot.State
+				break
+			}
+		}
+	}
+	return slotStateModelLoaded(slotState) ||
+		modelFitsHardware(
+			r.catalogMinRAMGbLocked(buildID),
+			r.modelSizeGBForFitLocked(p, buildID),
+			totalMemoryGB)
+}
+
+// providerCanRouteBuildLocked is the single source of truth for "could this
+// provider actually serve this build right now". It adds transient cooldown and
+// slot-state gates to providerStructurallyCanRouteBuildLocked, while still
+// omitting per-request capacity/headroom checks. Cold-but-healthy providers
+// pass (no warm slot required — they load on first demand). Caller holds r.mu
+// (RLock) and p.mu.
+func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minTrust TrustLevel, now time.Time, allowPrivate bool) bool {
+	if !r.providerStructurallyCanRouteBuildLocked(
+		p, buildID, minTrust, now, allowPrivate,
+	) {
+		return false
+	}
+	if r.dispatchLoadCooldownActiveLocked(p.ID, buildID, now) {
 		return false
 	}
 	if p.BackendCapacity != nil {
@@ -1977,14 +2017,7 @@ func (r *Registry) providerCanRouteBuildLocked(p *Provider, buildID string, minT
 			break
 		}
 	}
-	// Hardware fit: don't count a provider whose RAM can't hold the build (e.g.
-	// migrating to a larger build than the source). totalMemory prefers the
-	// backend-reported figure, matching snapshotProviderLocked.
-	totalMemoryGB := float64(p.Hardware.MemoryGB)
-	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
-		totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-	}
-	return modelFitsHardware(r.catalogMinRAMGbLocked(buildID), r.catalogSizeGBLocked(buildID), totalMemoryGB)
+	return true
 }
 
 // anyProviderCanRouteBuildLocked reports whether at least one provider could

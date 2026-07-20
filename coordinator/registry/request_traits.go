@@ -3,6 +3,7 @@ package registry
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // RequestTraits captures request-shape attributes that affect provider
@@ -210,7 +211,7 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials ...string) bool {
 	traits := RequestTraits{HasTools: true}
 	return r.hasToolCapableProviderForModel(
-		model, traits, "", false, allowedSerials...)
+		model, traits, "", false, false, allowedSerials...)
 }
 
 // HasToolConstraintProviderForModel is the fail-fast companion for
@@ -222,7 +223,7 @@ func (r *Registry) HasToolConstraintProviderForModel(
 ) bool {
 	traits := RequestTraits{HasTools: true, RequiresToolConstraint: true}
 	return r.hasToolCapableProviderForModel(
-		model, traits, "", false, allowedSerials...)
+		model, traits, "", false, false, allowedSerials...)
 }
 
 func (r *Registry) hasToolConstraintProviderForPending(
@@ -232,15 +233,15 @@ func (r *Registry) hasToolConstraintProviderForPending(
 	if pending == nil {
 		return r.HasToolConstraintProviderForModel(model)
 	}
-	traits := RequestTraits{
-		HasTools:               true,
-		RequiresToolConstraint: true,
-	}
+	traits := pending.Traits
+	traits.HasTools = true
+	traits.RequiresToolConstraint = true
 	return r.hasToolCapableProviderForModel(
 		model,
 		traits,
 		pending.OwnerAccountID,
 		pending.SelfRouteOnly,
+		pending.PreferOwner,
 		pending.AllowedProviderSerials...)
 }
 
@@ -249,6 +250,7 @@ func (r *Registry) hasToolCapableProviderForModel(
 	traits RequestTraits,
 	ownerAccountID string,
 	selfRouteOnly bool,
+	preferOwner bool,
 	allowedSerials ...string,
 ) bool {
 	allowedSet := make(map[string]struct{}, len(allowedSerials))
@@ -257,6 +259,7 @@ func (r *Registry) hasToolCapableProviderForModel(
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	now := time.Now()
 	for _, p := range r.providers {
 		// Allowed-serial filter first (providerMatchesAllowedSerial takes p.mu
 		// internally), mirroring the routing candidate filter and QuickCapacityCheck.
@@ -266,11 +269,18 @@ func (r *Registry) hasToolCapableProviderForModel(
 		// p.Status, p.Version, and p.Models are guarded by p.mu (writers hold
 		// it), so the whole eligibility read must happen under the provider lock.
 		p.mu.Lock()
+		owned := ownerAccountID != "" && p.AccountID == ownerAccountID
 		ownerEligible := !selfRouteOnly ||
-			(ownerAccountID != "" && p.AccountID == ownerAccountID)
+			owned
+		minTrust := r.MinTrustLevel
+		allowPrivate := false
+		if owned && (selfRouteOnly || preferOwner) {
+			minTrust = TrustNone
+			allowPrivate = true
+		}
 		eligible := ownerEligible &&
-			p.Status != StatusOffline && p.Status != StatusUntrusted &&
-			r.providerServesCatalogModelLocked(p, model) &&
+			r.providerStructurallyCanRouteBuildLocked(
+				p, model, minTrust, now, allowPrivate) &&
 			r.providerEligibleForTraitsLocked(p, model, traits)
 		p.mu.Unlock()
 		if eligible {

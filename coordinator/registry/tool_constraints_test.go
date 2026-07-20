@@ -155,6 +155,182 @@ func TestQueuedSelfRouteConstraintIgnoresUnrelatedCapableProviders(t *testing.T)
 	}
 }
 
+func TestQueuedPublicConstraintIgnoresPrivateOnlyProviders(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-private-queue"
+	private := makeSchedulerProvider(t, reg, "private-capable", model, 100)
+	setProviderVersion(private, "99.0.0")
+	private.mu.Lock()
+	private.PrivateOnly = true
+	private.ToolConstraintProtocol = ToolConstraintProtocolV1
+	private.ToolConstraintModels = map[string]struct{}{model: {}}
+	private.mu.Unlock()
+
+	request := &QueuedRequest{
+		RequestID:  "queued-public-constraint",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:          "queued-public-constraint",
+			Model:              model,
+			RequestedMaxTokens: 32,
+			Traits: RequestTraits{
+				HasTools:               true,
+				RequiresToolConstraint: true,
+			},
+		},
+	}
+	if err := reg.Queue().Enqueue(request); err != nil {
+		t.Fatal(err)
+	}
+	reg.DrainQueuedRequestsForModel(model)
+	select {
+	case selected := <-request.ResponseCh:
+		if selected != nil {
+			t.Fatalf("private-only provider received public request: %s", selected.ID)
+		}
+		if !errors.Is(request.FailureReason, ErrQueueToolConstraintUnavailable) {
+			t.Fatalf("failure = %v", request.FailureReason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("public request waited on an unroutable private-only provider")
+	}
+}
+
+func TestQueuedConstraintWaitsDuringCapableProviderReload(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-reloading-queue"
+	provider := makeSchedulerProvider(t, reg, "reloading-capable", model, 100)
+	setProviderVersion(provider, "99.0.0")
+	provider.mu.Lock()
+	provider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	provider.ToolConstraintModels = map[string]struct{}{model: {}}
+	provider.BackendCapacity.Slots[0].State = "reloading"
+	provider.mu.Unlock()
+
+	request := &QueuedRequest{
+		RequestID:  "queued-reloading-constraint",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:          "queued-reloading-constraint",
+			Model:              model,
+			RequestedMaxTokens: 32,
+			Traits: RequestTraits{
+				HasTools:               true,
+				RequiresToolConstraint: true,
+			},
+		},
+	}
+	if err := reg.Queue().Enqueue(request); err != nil {
+		t.Fatal(err)
+	}
+	reg.DrainQueuedRequestsForModel(model)
+	select {
+	case selected := <-request.ResponseCh:
+		t.Fatalf("reloading capable provider terminated waiter with %v", selected)
+	default:
+	}
+	if request.FailureReason != nil {
+		t.Fatalf("reloading capable provider set terminal failure: %v", request.FailureReason)
+	}
+}
+
+func TestConstraintAvailabilityPreservesResidentHardwareFitBypass(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-resident-oversized"
+	reg.SetModelCatalog([]CatalogEntry{{
+		ID: model, SizeGB: 100, MinRAMGB: 128,
+	}})
+	provider := makeSchedulerProvider(t, reg, "resident-capable", model, 100)
+	setProviderVersion(provider, "99.0.0")
+	provider.mu.Lock()
+	provider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	provider.ToolConstraintModels = map[string]struct{}{model: {}}
+	provider.mu.Unlock()
+
+	pending := &PendingRequest{
+		Model: model,
+		Traits: RequestTraits{
+			HasTools: true, RequiresToolConstraint: true,
+		},
+	}
+	if !reg.hasToolConstraintProviderForPending(model, pending) {
+		t.Fatal("resident capable provider was rejected by cold hardware heuristic")
+	}
+}
+
+func TestConstraintAvailabilityUsesOwnerOffCatalogModelSize(t *testing.T) {
+	reg := New(testLogger())
+	model := "owner-local-oversized"
+	reg.SetModelCatalog([]CatalogEntry{{ID: "unrelated-catalog-build"}})
+	provider := makeSchedulerProvider(t, reg, "owner-local", model, 100)
+	setProviderVersion(provider, "99.0.0")
+	provider.mu.Lock()
+	provider.AccountID = "owner"
+	provider.PrivateOnly = true
+	provider.Models[0].SizeBytes = 100 << 30
+	provider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	provider.ToolConstraintModels = map[string]struct{}{model: {}}
+	provider.BackendCapacity.Slots[0].State = "idle_shutdown"
+	provider.mu.Unlock()
+
+	pending := &PendingRequest{
+		Model:          model,
+		OwnerAccountID: "owner",
+		SelfRouteOnly:  true,
+		Traits: RequestTraits{
+			HasTools: true, RequiresToolConstraint: true,
+		},
+	}
+	if reg.hasToolConstraintProviderForPending(model, pending) {
+		t.Fatal("oversized owner-local model bypassed advertised-size hardware fit")
+	}
+}
+
+func TestQueuedConstraintPreservesPrefixProtocolFloor(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-prefix-protocol-queue"
+	provider := makeSchedulerProvider(t, reg, "protocol-zero-capable", model, 100)
+	setProviderVersion(provider, "99.0.0")
+	provider.mu.Lock()
+	provider.PrefixCacheProtocol = 0
+	provider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	provider.ToolConstraintModels = map[string]struct{}{model: {}}
+	provider.mu.Unlock()
+
+	request := &QueuedRequest{
+		RequestID:  "queued-prefix-protocol-constraint",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:          "queued-prefix-protocol-constraint",
+			Model:              model,
+			RequestedMaxTokens: 32,
+			Traits: RequestTraits{
+				HasTools:               true,
+				RequiresToolConstraint: true,
+				MinPrefixCacheProtocol: 1,
+			},
+		},
+	}
+	if err := reg.Queue().Enqueue(request); err != nil {
+		t.Fatal(err)
+	}
+	reg.DrainQueuedRequestsForModel(model)
+	select {
+	case selected := <-request.ResponseCh:
+		if selected != nil {
+			t.Fatalf("protocol-zero provider received protocol-one request: %s", selected.ID)
+		}
+		if !errors.Is(request.FailureReason, ErrQueueToolConstraintUnavailable) {
+			t.Fatalf("failure = %v", request.FailureReason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("hard prefix protocol floor was dropped from capability check")
+	}
+}
+
 func TestQueuedConstraintTerminatesWhenLastCapableProviderDisconnects(t *testing.T) {
 	reg := New(testLogger())
 	model := "gemma-4-disconnect"

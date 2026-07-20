@@ -24,6 +24,7 @@ enum ToolChoicePromptPolicy {
         let allowsParallelCalls = request.parallelToolCalls ?? true
         switch request.toolChoice {
         case nil, .mode(.auto):
+            try ToolConstraintValidation.validateAutoSchemas(request.tools)
             return Prepared(
                 messages: request.messages,
                 tools: request.tools,

@@ -763,16 +763,91 @@ struct GemmaToolConstraintTests {
             ]),
             "additionalProperties": .bool(false),
         ])
-        let unsafePrepared = try ToolChoicePromptPolicy.prepare(
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: unsafePatternSchema)],
+                    parallel: false))
+        }
+    }
+
+    @Test("unsupported auto regex fails before inference")
+    func unsupportedAutoRegexFailsDuringPreparation() {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "code": .object([
+                    "type": .string("string"),
+                    "pattern": .string("^[a-z]+$"),
+                ]),
+            ]),
+        ])
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+        }
+    }
+
+    @Test("auto pattern validation distinguishes keywords from property names")
+    func autoPatternPropertyNameIsNotAKeyword() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "pattern": .object([
+                    "type": .string("string"),
+                    "pattern": .string("^city$"),
+                ]),
+            ]),
+        ])
+        _ = try ToolChoicePromptPolicy.prepare(
             request(
                 choice: .mode(.auto),
-                tools: [tool(parameters: unsafePatternSchema)],
-                parallel: false))
+                tools: [tool(parameters: parameters)]))
+    }
+
+    @Test("auto pattern depth does not count tuple containers")
+    func autoPatternTupleContainerDepth() throws {
+        var item: MLXLMCommon.JSONValue = .object([
+            "type": .string("string"),
+            "pattern": .string("^city$"),
+        ])
+        for _ in 0 ..< 17 {
+            item = .object([
+                "type": .string("array"),
+                "items": .array([item]),
+            ])
+        }
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object(["value": item]),
+        ])
+        _ = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+    }
+
+    @Test("auto pattern depth bounds malformed nested tuple arrays")
+    func autoPatternMalformedTupleDepthIsBounded() {
+        var items: MLXLMCommon.JSONValue = .object([
+            "type": .string("string"),
+            "pattern": .string("^city$"),
+        ])
+        for _ in 0 ..< 40 {
+            items = .array([items])
+        }
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("array"),
+            "items": items,
+        ])
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            try ToolConstraintValidation.validate([
-                .init(function: .init(
-                    name: "weather", arguments: ["aaaa": .string("value")])),
-            ], prepared: unsafePrepared)
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
         }
     }
 
@@ -873,6 +948,95 @@ struct GemmaToolConstraintTests {
                         name: "weather", arguments: ["value": .double(2.0)])),
                 ], prepared: prepared)
             }
+        }
+    }
+
+    @Test("auto uniqueItems uses JSON Schema numeric equality")
+    func autoUniqueItemsUsesSchemaEquality() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "values": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("number")]),
+                    "uniqueItems": .bool(true),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["values": .array([.int(1), .double(2.0)])])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["values": .array([.int(1), .double(1.0)])])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("auto numeric bounds preserve integer precision")
+    func autoNumericBoundsPreserveIntegerPrecision() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("integer"),
+                    "maximum": .int(9_007_199_254_740_992),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["value": .int(9_007_199_254_740_992)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .int(9_007_199_254_740_993)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("auto numeric bounds support the full finite Double range")
+    func autoNumericBoundsSupportFullDoubleRange() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("number"),
+                    "minimum": .double(1e199),
+                    "maximum": .double(1e201),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["value": .double(1e200)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .double(1e202)])),
+            ], prepared: prepared)
         }
     }
 

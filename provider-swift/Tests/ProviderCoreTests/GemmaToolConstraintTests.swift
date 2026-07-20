@@ -984,6 +984,41 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("auto array contains and match bounds are enforced")
+    func autoArrayContainsValidation() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "values": .object([
+                    "type": .string("array"),
+                    "contains": .object(["const": .int(1)]),
+                    "minContains": .int(1),
+                    "maxContains": .int(1),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["values": .array([.int(1), .int(2)])])),
+        ], prepared: prepared)
+        for invalid in [
+            MLXLMCommon.JSONValue.array([.int(2)]),
+            .array([.int(1), .int(1)]),
+        ] {
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["values": invalid])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
     @Test("auto numeric bounds preserve integer precision")
     func autoNumericBoundsPreserveIntegerPrecision() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
@@ -992,6 +1027,35 @@ struct GemmaToolConstraintTests {
                 "value": .object([
                     "type": .string("integer"),
                     "maximum": .int(9_007_199_254_740_992),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["value": .int(9_007_199_254_740_992)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .int(9_007_199_254_740_993)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("auto integer multipleOf preserves precision")
+    func autoIntegerMultipleOfPreservesPrecision() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("integer"),
+                    "multipleOf": .int(2),
                 ]),
             ]),
         ])

@@ -287,6 +287,10 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 			}
 		}
 	case map[string]any:
+		if _, forged := value[originalBooleanSchemaKey]; forged {
+			return invalidToolConstraint(
+				"tool schema contains reserved internal metadata", "tools")
+		}
 		if raw, exists := value["pattern"]; exists {
 			pattern, ok := raw.(string)
 			if !ok || !safeAutoSchemaPattern(pattern) {

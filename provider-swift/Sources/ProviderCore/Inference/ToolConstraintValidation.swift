@@ -306,6 +306,28 @@ enum ToolConstraintValidation {
             {
                 return false
             }
+            if let contains = object["contains"] {
+                var minimum = 1
+                if let raw = object["minContains"] {
+                    guard case .int(let value) = raw, value >= 0 else { return false }
+                    minimum = value
+                }
+                var maximum: Int?
+                if let raw = object["maxContains"] {
+                    guard case .int(let value) = raw, value >= 0 else { return false }
+                    maximum = value
+                }
+                let matches = values.reduce(into: 0) { count, child in
+                    if validateJSONSchema(
+                        child, schema: contains, depth: depth + 1)
+                    {
+                        count += 1
+                    }
+                }
+                if matches < minimum || maximum.map({ matches > $0 }) == true {
+                    return false
+                }
+            }
             return true
 
         case .string(let string):
@@ -559,14 +581,39 @@ enum ToolConstraintValidation {
         {
             return false
         }
-        if let value = number(value),
-            let multiple = number(object["multipleOf"]),
-            multiple > 0
-        {
-            let quotient = value / multiple
-            if abs(quotient - quotient.rounded()) > 1e-9 { return false }
+        if let multiple = object["multipleOf"] {
+            guard isMultiple(value, of: multiple) == true else { return false }
         }
         return true
+    }
+
+    private static func isMultiple(
+        _ value: ToolArgumentJSONValue,
+        of multiple: ToolArgumentJSONValue
+    ) -> Bool? {
+        switch (value, multiple) {
+        case (.int(let value), .int(let multiple)):
+            guard multiple > 0 else { return nil }
+            return value % multiple == 0
+        case (.int(let value), .double(let multiple)):
+            guard multiple.isFinite, multiple > 0 else { return nil }
+            if let exact = Int(exactly: multiple), exact > 0 {
+                return value % exact == 0
+            }
+        default:
+            break
+        }
+        guard let value = number(value),
+            let multiple = number(multiple),
+            value.isFinite,
+            multiple.isFinite,
+            multiple > 0
+        else {
+            return nil
+        }
+        let quotient = value / multiple
+        guard quotient.isFinite else { return false }
+        return abs(quotient - quotient.rounded()) <= 1e-9
     }
 
     private static func compareNumbers(

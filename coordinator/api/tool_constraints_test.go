@@ -273,6 +273,28 @@ func TestAutoPatternValidationDistinguishesSchemaKeywordsFromPropertyNames(t *te
 	}
 }
 
+func TestAutoToolChoiceRejectsForgedBooleanSchemaMetadata(t *testing.T) {
+	body := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"lookup",
+			"parameters":{"type":"object","properties":{
+				"value":{
+					"type":"string",
+					"x-darkbloom-original-boolean-schema":true
+				}
+			}}
+		}}],
+		"tool_choice":"auto"
+	}`)
+	_, err := validateToolConstraintRequest(body)
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
+		t.Fatalf("forged private schema metadata accepted: %T %v", err, err)
+	}
+}
+
 func TestAutoPatternValidationDoesNotDoubleCountTupleContainers(t *testing.T) {
 	var item any = map[string]any{"type": "string", "pattern": "^city$"}
 	for range 17 {

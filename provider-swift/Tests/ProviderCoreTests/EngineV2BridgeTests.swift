@@ -1813,6 +1813,38 @@ struct EngineV2SharedBudgetTests {
         #expect(fixture.cache.bytesInUse == 0)
     }
 
+    @Test("bridge records terminal saved-prefill truth exactly once")
+    func terminalSavedPrefillUpdatesSSDStats() async throws {
+        let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("bridge-terminal-saved-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let budget = TestBudgets.ample()
+        let fixture = try await makeBridgeStagedCache(parent: parent, budget: budget)
+        defer { fixture.cache.close() }
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(
+                    promptTokens: fixture.prompt.count,
+                    completionTokens: 0,
+                    prefixCacheOutcome: .hit,
+                    prefixCacheMatchedTokens: 64,
+                    prefixCachePrefillTokensSaved: 7))
+        ]))
+        let bridge = makeBridge(
+            engine: engine,
+            ssdPrefixCache: fixture.cache)
+
+        _ = await record(await bridge.submitTokenized(
+            promptTokens: fixture.prompt,
+            request: makeRequest(maxTokens: 1),
+            requestId: "req-terminal-saved",
+            cacheScope: "scope",
+            cacheEnabled: false))
+        #expect(fixture.cache.stats().tokensSaved == 7)
+    }
+
     @Test("native request byte multiplication overflow rejects before engine submission")
     func nativeRateOverflowRejectsRequest() async {
         let engine = ScriptedCBv2Engine(script: .manual)
@@ -1884,11 +1916,13 @@ struct EngineV2SharedBudgetTests {
         let fixture = try await makeBridgeStagedCache(parent: parent, budget: budget)
         defer { fixture.cache.close() }
         let engine = ScriptedCBv2Engine(script: .manual)
+        let telemetry = TelemetrySink()
         let bridge = makeBridge(
             engine: engine,
             kvBytesPerToken: kvBytesPerToken,
             kvBudget: budget,
-            ssdPrefixCache: fixture.cache)
+            ssdPrefixCache: fixture.cache,
+            telemetry: telemetry)
         let signal = EngineV2RequestUsageSignal()
 
         let stream = await bridge.submitTokenized(
@@ -1902,6 +1936,10 @@ struct EngineV2SharedBudgetTests {
         #expect(engine.submitted.first?.prefixCacheReceiptID != nil)
         #expect(fixture.cache.bytesInUse == 0, "optional staging must be abandoned before retry")
         #expect(await budget.outstandingReservedBytes() == coldBytes)
+        #expect(telemetry.events.contains {
+            $0.fields?["reason"]?.description == "shared_kv_capacity"
+                && $0.fields?["prefix_cold_fallback"]?.description == "true"
+        })
 
         let consumer = Task { await record(stream) }
         engine.manualContinuation?.yield(.finished(

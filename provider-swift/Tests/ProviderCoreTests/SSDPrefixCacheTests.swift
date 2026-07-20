@@ -789,6 +789,9 @@ struct SSDPrefixCacheLifecycleTests {
         // Engine-side synchronous lookup hits the staging map.
         let hit = reader.lookup(tokens: prompt, layerKinds: fixtureLayerKinds, cacheSalt: nil)
         let (matched, prefix) = try #require(hit)
+        #expect(reader.stats().tokensSaved == 0, "lookup M is not terminal saved-prefill truth")
+        reader.recordPrefillTokensSaved(7)
+        #expect(reader.stats().tokensSaved == 7)
         #expect(matched == tokenCount)  // 8 whole blocks
         #expect(prefix.count == 2)
         #expect(prefix[1] == nil)  // windowed layer never cached
@@ -2674,6 +2677,23 @@ struct SSDPrefixCacheDonationGateTests {
                 tokens: Array(0 ..< 64) + [1], matched: hit.matched, cacheSalt: nil)
         }
         reader.completeStaging(requestID: "r-cap")
+    }
+
+    @Test("stage cap below hybrid benefit floor writes no unusable blocks")
+    func byteCapBelowBenefitFloorSkipsDonation() async throws {
+        let dir = tempDir("gate-bytecap-floor")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            adoptionBound: 32,
+            minEffectiveTokens: 8,
+            maxStageBytes: 3 * 512)
+        defer { cache.close() }
+
+        donate(cache, tokenCount: 64)
+        await expectNoWrites(cache, dir: dir)
     }
 
     @Test("write-behind admits one full max-size (~600 MB) donation; oversize is dropped, never stalled")

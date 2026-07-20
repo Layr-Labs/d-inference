@@ -496,6 +496,12 @@ public actor EngineV2Bridge {
                     requestID: id,
                     kvBytesPerToken: kvBytesPerToken,
                     tokenCount: worstCaseTokens)
+                if sharedKVReserved {
+                    emitPrefixCacheColdFallback(
+                        requestId: id,
+                        reason: "shared_kv_capacity",
+                        capacityRefusal: true)
+                }
             }
             guard sharedKVReserved else {
                 if ssdReuseAttempted {
@@ -876,6 +882,8 @@ public actor EngineV2Bridge {
                 usageSignal?.record(
                     usage: usage,
                     fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+                ssdPrefixCache?.recordPrefillTokensSaved(
+                    usage.prefixCachePrefillTokensSaved)
                 emitPrefixReuseTelemetry(requestId: id, usage: usage)
                 finishAndEmit(
                     id: id, reason: reason, usage: usage,

@@ -501,12 +501,19 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 return (staged.matched, staged.prefix)
             }
             if let (matched, prefix) = hit {
-                statsBox.add(hits: 1, tokensSaved: matched)
+                statsBox.add(hits: 1)
                 return (matched, prefix)
             }
         }
         statsBox.add(misses: 1)
         return nil
+    }
+
+    /// Terminal engine truth for prefill work actually skipped. Lookup knows
+    /// only M; hybrid replay still computes R and must not count it as saved.
+    func recordPrefillTokensSaved(_ tokens: Int) {
+        guard tokens > 0 else { return }
+        statsBox.add(tokensSaved: tokens)
     }
 
     // MARK: - CBv2PrefixCache: endAdoption (the staging release hook)
@@ -742,6 +749,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let durableTags = Array(tags16.prefix(maxPersistBlocks))
         let durableFullTags = Array(fullTags.prefix(maxPersistBlocks))
         let durableChainHashes = Array(hashes.prefix(maxPersistBlocks))
+        let (durableTokenCount, durableTokenOverflow) =
+            durableTags.count.multipliedReportingOverflow(by: config.blockSize)
+        guard !durableTokenOverflow, durableTokenCount > donationFloor else { return }
         let onDurable: (@Sendable () -> Void)?
         if let receiptRequestID, !durableTags.isEmpty {
             onDurable = { [weak self] in

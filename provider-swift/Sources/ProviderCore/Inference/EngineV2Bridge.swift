@@ -359,6 +359,32 @@ public actor EngineV2Bridge {
             return stream
         }
 
+        // Translate with a PLACEHOLDER engine id — the real id is minted
+        // below, AFTER the shared-budget await, in the same synchronous
+        // stretch as `engine.submit` and the `idMap` registration. Validate
+        // total token arithmetic before minting cache tickets or staging.
+        var cbv2Request = EngineV2Translation.cbv2Request(
+            id: CBv2RequestID(0),
+            promptTokens: promptTokens,
+            request: request,
+            defaultMaxTokens: defaultMaxTokens,
+            stopTokenIds: stopTokenIds,
+            cacheScope: cacheScope,
+            cacheEnabled: cacheEnabled,
+            multimodal: multimodal
+        )
+        let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
+            cbv2Request.maxTokens)
+        guard !tokenCountOverflow else {
+            usageSignal?.finalizeLookup(
+                failure: .capacity,
+                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
+            continuation.yield(.error(
+                "token_budget_exhausted: request token count overflow"))
+            continuation.finish()
+            return stream
+        }
+
         // The SSD staging ticket must be submission-unique even when seeded
         // sampling intentionally reuses a deterministic engine request id.
         // Mint it before staging and pass the same identity through
@@ -424,43 +450,7 @@ public actor EngineV2Bridge {
                 return stream
             }
         }
-
-        // Translate with a PLACEHOLDER engine id — the real id is minted
-        // below, AFTER the shared-budget await, in the same synchronous
-        // stretch as `engine.submit` and the `idMap` registration. Minting
-        // before the suspension would let two concurrent IDENTICAL seeded
-        // submissions both pass the collision check and hand the engine
-        // duplicate live ids.
-        var cbv2Request = EngineV2Translation.cbv2Request(
-            id: CBv2RequestID(0),
-            promptTokens: promptTokens,
-            request: request,
-            defaultMaxTokens: defaultMaxTokens,
-            stopTokenIds: stopTokenIds,
-            cacheScope: cacheScope,
-            cacheEnabled: cacheEnabled,
-            multimodal: multimodal
-        )
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
-        let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
-            cbv2Request.maxTokens)
-        guard !tokenCountOverflow else {
-            if let prefixCacheReceiptID {
-                if ssdStaged {
-                    await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
-                }
-                if readyReceiptRegistered {
-                    ssdPrefixCache?.discardReadyReceipt(requestID: prefixCacheReceiptID)
-                }
-            }
-            usageSignal?.finalizeLookup(
-                failure: .capacity,
-                fallbackTier: ssdPrefixCache == nil ? .memory : .ssd)
-            continuation.yield(.error(
-                "token_budget_exhausted: request token count overflow"))
-            continuation.finish()
-            return stream
-        }
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
         // footprint (prompt + maxTokens at the resolved native serving rate)

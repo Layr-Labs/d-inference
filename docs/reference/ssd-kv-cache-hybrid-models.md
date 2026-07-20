@@ -50,18 +50,25 @@ Rejected paths:
 - quantized rows: snapshots are lossy and cannot be adopted exactly;
 - unknown/invalid layouts or backend implementations.
 
-An explicit paged selection keeps hybrid reuse cold for the entire slot build,
-even if paged pool construction later degrades serving to contiguous. This is a
-deliberate fail-cold construction rule: reload with a contiguous selection to
-enable frozen replay rather than changing cache capability as a side effect of
-an unrelated backend fallback.
+An explicit paged selection derives cache capability from the resolved serving
+backend. A slot that remains paged keeps interleaved hybrid reuse cold. A kernel,
+physical-capacity, or pool-construction fallback resolves contiguous before SSD
+construction and enables frozen-full reuse in the same build
+(`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift`
+`makeProductionBundle`).
 
 Any failed invariant or capacity check falls back to cold prefill before KV
 state is published. The coordinator protocol schema is unchanged.
 
 The generic saved-token floor is 1,024. Long frozen hybrids with
-`R >= 25,600` enforce 1,536 because the final real Gemma matrix found the
-1,024-saved boundary noisy/negative while 1,536 and 7,168 were beneficial.
+`R >= 25,600` configure a 1,536-token minimum because the final real Gemma
+matrix found the 1,024-saved boundary noisy/negative while 1,536 and 7,168 were
+beneficial. Durable donation is deliberately strict and block-rounded:
+`prefixTokens > R + minimum`. With 256-token blocks and `R = 25,600`, the exact
+27,136 boundary is discarded and 27,392 is the first persisted boundary, so
+the first durable entry saves 1,792 tokens
+(`provider-swift/Sources/ProviderCore/KVCacheSSD/SSDPrefixCache.swift`
+`donate`).
 
 ## Accounting and lifecycle
 

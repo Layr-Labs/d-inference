@@ -1832,8 +1832,8 @@ struct EngineV2SharedBudgetTests {
         #expect(await budget.outstandingReservedBytes() == 0)
     }
 
-    @Test("prompt plus max-token overflow unwinds staged cache state")
-    func tokenCountOverflowUnwindsStaging() async throws {
+    @Test("prompt plus max-token overflow rejects before cache staging")
+    func tokenCountOverflowRejectsBeforeStaging() async throws {
         let parent = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("bridge-token-overflow-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -1855,6 +1855,7 @@ struct EngineV2SharedBudgetTests {
             cacheScope: "scope"))
         #expect(events == [.error("token_budget_exhausted: request token count overflow")])
         #expect(engine.submitted.isEmpty)
+        #expect(fixture.cache.stats().stages == 0)
         #expect(await waitForBudgetRelease(budget))
         #expect(fixture.cache.bytesInUse == 0)
     }

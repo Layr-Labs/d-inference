@@ -6,6 +6,10 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, Suspense } from "react";
 
 function isSafeRedirect(next: string): boolean {
+  // Must be a non-empty string
+  if (!next || typeof next !== "string") {
+    return false;
+  }
   // Must be a relative path starting with "/"
   if (!next.startsWith("/") || next.startsWith("//")) {
     return false;

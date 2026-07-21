@@ -14,6 +14,8 @@ import Foundation
 /// The default arm echoes any unrecognized reason verbatim so a new coordinator
 /// reason still reaches the operator instead of being hidden.
 public enum TrustReasonCatalog {
+    private static let fullSecurityFix = "Follow this guide and change Security Policy to \"Full Security\": https://support.apple.com/guide/mac-help/change-security-settings-startup-disk-a-mac-mchl768f7291/mac"
+
     /// Maps a trust update to operator advice. `level`/`status` give context
     /// (e.g. self_signed/online means "online but not earning").
     public static func advice(level: String, status: String, reason: String) -> DiagnosticAdvice {
@@ -27,6 +29,11 @@ public enum TrustReasonCatalog {
             return DiagnosticAdvice(
                 message: "the coordinator rejected your signed security-status payload (signature/canonical mismatch).",
                 fix: "update to the latest build with `darkbloom update`; if it persists, run `darkbloom report`.")
+        }
+        if reason.hasPrefix("MDM reports Secure Boot not full") {
+            return DiagnosticAdvice(
+                message: "Secure Boot is not set to Full Security, which is required for hardware trust.",
+                fix: fullSecurityFix)
         }
 
         switch reason {
@@ -68,7 +75,7 @@ public enum TrustReasonCatalog {
         case "Secure Boot disabled":
             return DiagnosticAdvice(
                 message: "Secure Boot is not set to Full Security, which is required for hardware trust.",
-                fix: "boot into Recovery → Startup Security Utility → set Full Security.")
+                fix: fullSecurityFix)
         case "RDMA status not reported — provider must update to v0.2.0+":
             return DiagnosticAdvice(
                 message: "your build is too old to report required security state.",

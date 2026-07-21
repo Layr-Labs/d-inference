@@ -226,12 +226,30 @@ type DeviceInfo struct {
 type SecurityInfoResponse struct {
 	UDID                             string
 	SystemIntegrityProtectionEnabled bool
-	SecureBootLevel                  string // "full", "reduced", "permissive"
+	SecureBootLevel                  string // One of the SecureBootLevel* Apple MDM values below.
 	AuthenticatedRootVolumeEnabled   bool
 	FirewallEnabled                  bool
 	FileVaultEnabled                 bool
 	IsRecoveryLockEnabled            bool
 	RemoteDesktopEnabled             bool
+}
+
+// SecureBootLevel* values are Apple's MDM SecurityInfo SecureBootLevel strings.
+// Apple docs:
+// https://developer.apple.com/documentation/devicemanagement/securityinforesponse/securityinfo-data.dictionary/secureboot-data.dictionary
+// Schema source:
+// https://github.com/apple/device-management/blob/release/mdm/commands/information.security.yaml#L432-L439
+const (
+	SecureBootLevelOff          = "off"
+	SecureBootLevelMedium       = "medium"
+	SecureBootLevelFull         = "full"
+	SecureBootLevelNotSupported = "not supported"
+)
+
+// HasFullSecureBoot reports whether Apple's typed MDM SecurityInfo
+// SecureBootLevel is the only accepted value for hardware trust.
+func (r *SecurityInfoResponse) HasFullSecureBoot() bool {
+	return r != nil && r.SecureBootLevel == SecureBootLevelFull
 }
 
 // VerificationResult from cross-checking MDM with attestation.
@@ -707,7 +725,7 @@ func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attest
 
 	// Step 4: Populate result
 	result.MDMSIPEnabled = secInfo.SystemIntegrityProtectionEnabled
-	result.MDMSecureBootFull = secInfo.SecureBootLevel == "full"
+	result.MDMSecureBootFull = secInfo.HasFullSecureBoot()
 	result.MDMAuthRootVolume = secInfo.AuthenticatedRootVolumeEnabled
 	result.MDMRecoveryLocked = secInfo.IsRecoveryLockEnabled
 
@@ -723,7 +741,7 @@ func (c *Client) VerifyProvider(ctx context.Context, serialNumber string, attest
 		result.Error = "MDM reports SIP disabled"
 		result.SecurityMismatch = true
 	} else if !result.MDMSecureBootFull {
-		result.Error = "MDM reports Secure Boot not full"
+		result.Error = fmt.Sprintf("MDM reports Secure Boot not full (level=%q)", secInfo.SecureBootLevel)
 		result.SecurityMismatch = true
 	} else if !result.SIPMatch {
 		result.Error = "attestation SIP does not match MDM SIP — provider may be lying"

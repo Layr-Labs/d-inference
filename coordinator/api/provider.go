@@ -2741,20 +2741,22 @@ func (s *Server) verifyProviderViaMDM(ctx context.Context, providerID string, pr
 // ApplyLateSecurityInfo retroactively upgrades a self_signed provider to hardware
 // when its SecurityInfo arrives AFTER the synchronous verify timed out (slow APNs
 // / Power Nap). It mirrors verifyProviderViaMDM's success path so the late path
-// doesn't drift from it: confirm posture (SIP on + Secure Boot full), match the
-// device by UDID, require a valid SE attestation, skip a provider that has since
-// become untrusted (granting would leave hardware/untrusted), and on success grant
-// hardware, clear the MDM failure reason, send a fresh hardware/online
-// trust_status (so the provider's daemon + doctor stop reporting MDM-pending), and
-// persist. Wired as the mdm.Client late-SecurityInfo callback.
+// doesn't drift from it: confirm posture (SIP on + SecureBootLevel ==
+// mdm.SecureBootLevelFull), match the device by UDID, require a valid SE
+// attestation, skip a provider that has since become untrusted (granting would
+// leave hardware/untrusted), and on success grant hardware, clear the MDM failure
+// reason, send a fresh hardware/online trust_status (so the provider's daemon +
+// doctor stop reporting MDM-pending), and persist. Wired as the mdm.Client
+// late-SecurityInfo callback.
 func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoResponse) {
 	if s.mdmClient == nil || info == nil {
 		return
 	}
-	// Posture must be good — a late response that reports SIP off / Secure Boot
-	// not full is not a basis for promotion (and the sync path would have hard-
-	// untrusted it; here we simply don't upgrade).
-	if !info.SystemIntegrityProtectionEnabled || info.SecureBootLevel != "full" {
+	// Posture must be good — a late response that reports SIP off or any MDM
+	// SecureBootLevel other than mdm.SecureBootLevelFull is not a basis for
+	// promotion (and the sync path would have hard-untrusted it; here we simply
+	// don't upgrade).
+	if !info.SystemIntegrityProtectionEnabled || !info.HasFullSecureBoot() {
 		return
 	}
 	// Collect self_signed, valid-attestation candidates under the lock, then do
@@ -2811,10 +2813,11 @@ func (s *Server) ApplyLateSecurityInfo(udid string, info *mdm.SecurityInfoRespon
 
 		// DAR-326 FIX B: cache this late grant in the trust-reuse cache too, so it
 		// gets the same restart-survivable fast-skip as the synchronous MDM path.
-		// Posture was confirmed good above (SIP on + Secure Boot full). Uses the
-		// same epoch-checked synchronous write-through (recordTrustReuse) — a
-		// concurrent hard untrust is detected and not persisted. seKey + binary hash
-		// come from the registration-bound SE attestation.
+		// Posture was confirmed good above (SIP on + SecureBootLevel ==
+		// mdm.SecureBootLevelFull). Uses the same epoch-checked synchronous
+		// write-through (recordTrustReuse) — a concurrent hard untrust is detected
+		// and not persisted. seKey + binary hash come from the registration-bound
+		// SE attestation.
 		//
 		// FIX 1: nil-guard the derivation. The candidate set guaranteed a valid
 		// attestation + non-empty serial, but NOT a non-empty SE key or binary hash

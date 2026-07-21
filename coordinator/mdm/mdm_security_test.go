@@ -57,6 +57,53 @@ func TestParseCommandUUID(t *testing.T) {
 	}
 }
 
+func TestSecurityInfoSecureBootLevelOnlyFullPasses(t *testing.T) {
+	cases := []struct {
+		name  string
+		level string
+		want  bool
+	}{
+		{name: "full", level: SecureBootLevelFull, want: true},
+		{name: "medium", level: SecureBootLevelMedium, want: false},
+		{name: "off", level: SecureBootLevelOff, want: false},
+		{name: "not supported", level: SecureBootLevelNotSupported, want: false},
+		{name: "missing", level: "", want: false},
+		{name: "localized display text", level: "Full Security", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &SecurityInfoResponse{SecureBootLevel: tc.level}
+			if got := info.HasFullSecureBoot(); got != tc.want {
+				t.Fatalf("HasFullSecureBoot(%q) = %v, want %v", tc.level, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseSecurityInfoPreservesAppleSecureBootLevelValues(t *testing.T) {
+	for _, level := range []string{
+		SecureBootLevelFull,
+		SecureBootLevelMedium,
+		SecureBootLevelOff,
+		SecureBootLevelNotSupported,
+	} {
+		t.Run(level, func(t *testing.T) {
+			plist := fmt.Sprintf(`<?xml version="1.0"?><plist version="1.0"><dict>`+
+				`<key>SecurityInfo</key><dict>`+
+				`<key>SecureBootLevel</key><string>%s</string>`+
+				`</dict></dict></plist>`, level)
+			info := parseSecurityInfoPlist([]byte(plist))
+			if info == nil {
+				t.Fatal("parseSecurityInfoPlist returned nil")
+			}
+			if info.SecureBootLevel != level {
+				t.Fatalf("SecureBootLevel = %q, want %q", info.SecureBootLevel, level)
+			}
+		})
+	}
+}
+
 // TestCommandTrackingLifecycle covers track → consume (one-shot), unknown-UUID
 // rejection, and TTL expiry.
 func TestCommandTrackingLifecycle(t *testing.T) {
@@ -94,8 +141,8 @@ func buildSecurityInfoWebhook(udid, commandUUID string) []byte {
 		`<key>Status</key><string>Acknowledged</string>`+
 		`<key>SecurityInfo</key><dict>`+
 		`<key>SystemIntegrityProtectionEnabled</key><true/>`+
-		`<key>SecureBootLevel</key><string>full</string>`+
-		`</dict></dict></plist>`, commandUUID)
+		`<key>SecureBootLevel</key><string>%s</string>`+
+		`</dict></dict></plist>`, commandUUID, SecureBootLevelFull)
 	body, _ := json.Marshal(map[string]any{
 		"topic": "mdm.Acknowledge",
 		"acknowledge_event": map[string]string{

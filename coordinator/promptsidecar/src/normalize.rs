@@ -545,7 +545,75 @@ fn inferred_schema_type(object: &Map<String, Value>) -> String {
             return "null".into();
         }
     }
+    // Likewise a typeless `{"minimum":5}` accepts 6: infer the type its
+    // assertion keywords constrain instead of the string default.
+    let families = assertion_family_types(object);
+    if families.len() == 1 {
+        return (*families.iter().next().expect("single family")).into();
+    }
     "string".into()
+}
+
+/// Type-scoped assertion keyword -> the instance type it constrains.
+const ASSERTION_FAMILY_BY_KEYWORD: [(&str, &str); 17] = [
+    ("minimum", "number"),
+    ("maximum", "number"),
+    ("exclusiveMinimum", "number"),
+    ("exclusiveMaximum", "number"),
+    ("multipleOf", "number"),
+    ("minLength", "string"),
+    ("maxLength", "string"),
+    ("pattern", "string"),
+    ("minItems", "array"),
+    ("maxItems", "array"),
+    ("uniqueItems", "array"),
+    ("contains", "array"),
+    ("minContains", "array"),
+    ("maxContains", "array"),
+    ("minProperties", "object"),
+    ("maxProperties", "object"),
+    ("required", "object"),
+];
+
+fn assertion_family_types(object: &Map<String, Value>) -> HashSet<&'static str> {
+    ASSERTION_FAMILY_BY_KEYWORD
+        .iter()
+        .filter(|(keyword, _)| object.contains_key(*keyword))
+        .map(|(_, family)| *family)
+        .collect()
+}
+
+/// Whether a node's only type evidence is assertion keywords spanning more
+/// than one type family (e.g. `{"minimum":5,"minLength":2}`). Such a node has
+/// no single renderable type: normalization would have to pick one family and
+/// silently break the others post-generation, so callers reject it before
+/// normalization. Structural, union, or finite-value evidence takes priority.
+pub(crate) fn typeless_assertion_families_ambiguous(object: &Map<String, Value>) -> bool {
+    for key in [
+        "properties",
+        "patternProperties",
+        "additionalProperties",
+        "items",
+        "prefixItems",
+    ] {
+        if object.contains_key(key) {
+            return false;
+        }
+    }
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(variants) = object.get(key).and_then(Value::as_array)
+            && variants.iter().any(|variant| {
+                variant
+                    .as_object()
+                    .and_then(|variant| variant.get("type"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind != "null")
+            })
+        {
+            return false;
+        }
+    }
+    assertion_family_types(object).len() > 1
 }
 
 /// JSON type names of a node's const/enum values: the set of concrete
@@ -1121,6 +1189,49 @@ mod tests {
         assert_eq!(properties["flag"]["type"], "boolean");
         assert_eq!(properties["tag"]["type"], "string");
         assert_eq!(properties["none"]["type"], "null");
+    }
+
+    #[test]
+    fn typeless_assertion_families_keep_original_semantics() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{
+                    "score":{"minimum":5,"maximum":10},
+                    "steps":{"multipleOf":2},
+                    "items":{"minItems":1,"uniqueItems":true},
+                    "shape":{"required":["a"]},
+                    "code":{"pattern":"^ab$"}
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let tools = normalized.tools.unwrap();
+        let properties = &tools[0]["function"]["parameters"]["properties"];
+        assert_eq!(properties["score"]["type"], "number");
+        assert_eq!(properties["steps"]["type"], "number");
+        assert_eq!(properties["items"]["type"], "array");
+        assert_eq!(properties["shape"]["type"], "object");
+        assert_eq!(properties["code"]["type"], "string");
+    }
+
+    #[test]
+    fn typeless_mixed_assertion_families_are_rejected_before_normalization() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{
+                    "value":{"minimum":5,"minLength":2}
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
     }
 
     #[test]

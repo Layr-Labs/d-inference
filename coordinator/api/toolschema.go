@@ -486,7 +486,70 @@ func inferredType(dict map[string]any) string {
 			return "null"
 		}
 	}
+	if families := assertionFamilyTypes(dict); len(families) == 1 {
+		for family := range families {
+			return family
+		}
+	}
 	return "string"
+}
+
+// assertionFamilyByKeyword maps type-scoped JSON-Schema assertion keywords to
+// the instance type they constrain. A typeless `{"minimum":5}` accepts 6, so
+// the injected render type must be "number" — the string default would make
+// every schema-valid numeric emission fail post-generation validation.
+var assertionFamilyByKeyword = map[string]string{
+	"minimum":          "number",
+	"maximum":          "number",
+	"exclusiveMinimum": "number",
+	"exclusiveMaximum": "number",
+	"multipleOf":       "number",
+	"minLength":        "string",
+	"maxLength":        "string",
+	"pattern":          "string",
+	"minItems":         "array",
+	"maxItems":         "array",
+	"uniqueItems":      "array",
+	"contains":         "array",
+	"minContains":      "array",
+	"maxContains":      "array",
+	"minProperties":    "object",
+	"maxProperties":    "object",
+	"required":         "object",
+}
+
+// assertionFamilyTypes reports the instance-type families implied by a node's
+// type-scoped assertion keywords.
+func assertionFamilyTypes(dict map[string]any) map[string]struct{} {
+	families := make(map[string]struct{}, 2)
+	for keyword, family := range assertionFamilyByKeyword {
+		if _, ok := dict[keyword]; ok {
+			families[family] = struct{}{}
+		}
+	}
+	return families
+}
+
+// typelessAssertionFamiliesAmbiguous reports whether a node's only type
+// evidence is assertion keywords spanning more than one type family (e.g.
+// `{"minimum":5,"minLength":2}`). Such a node has no single renderable type:
+// normalization would have to pick one family and silently disable the other
+// families' assertions post-generation. Callers reject these before
+// normalization; nodes with structural, union, or finite-value evidence are
+// typed by those higher-priority rules instead.
+func typelessAssertionFamiliesAmbiguous(dict map[string]any) bool {
+	for _, key := range []string{
+		"properties", "patternProperties", "additionalProperties",
+		"items", "prefixItems",
+	} {
+		if _, ok := dict[key]; ok {
+			return false
+		}
+	}
+	if _, ok := unionMemberType(dict); ok {
+		return false
+	}
+	return len(assertionFamilyTypes(dict)) > 1
 }
 
 // finiteValueTypes reports the JSON type names of a node's const/enum values:

@@ -42,7 +42,6 @@ struct ToolSchemaNormalizationCorpusTests {
             "format-only": #"{"format":"date-time"}"#,
             "pattern-only": #"{"pattern":"^a"}"#,
             "ref-only": ##"{"$ref":"#/$defs/x"}"##,
-            "minimum-only": #"{"minimum":1}"#,
             "maxLength-only": #"{"maxLength":10}"#,
         ]
         for (name, schema) in cases {
@@ -170,6 +169,24 @@ struct ToolSchemaNormalizationCorpusTests {
         #expect(level["nullable"] as? Bool == true)
         let count = try #require(props["count"] as? [String: Any])
         #expect(count["nullable"] == nil)
+    }
+
+    /// A typeless node whose only content is type-scoped assertions keeps the
+    /// family those assertions constrain: `{"minimum":5}` accepts 6, so the
+    /// injected render type must be "number", not the string default. Mirror
+    /// of the coordinator corpus test.
+    @Test func typelessAssertionFamiliesKeepOriginalSemantics() throws {
+        let props = try normalizedProps(
+            #"{"type":"object","properties":{"score":{"minimum":5,"maximum":10},"steps":{"multipleOf":2},"list":{"minItems":1,"uniqueItems":true},"shape":{"required":["a"]},"code":{"pattern":"^ab$"}}}"#)
+        for (name, want) in [
+            ("score", "number"),
+            ("steps", "number"),
+            ("list", "array"),
+            ("shape", "object"),
+            ("code", "string"),
+        ] {
+            #expect(typeOf(props[name]) == want, "\(name)")
+        }
     }
 
     @Test func emptyMapAdditionalPropertiesGainsType() throws {

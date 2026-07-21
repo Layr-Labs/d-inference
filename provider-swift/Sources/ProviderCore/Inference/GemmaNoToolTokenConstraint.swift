@@ -10,10 +10,36 @@ final class GemmaNoToolTokenConstraint: CBv2TokenConstraint, @unchecked Sendable
     let initialState = 0
 
     private let vocabulary: GemmaTokenVocabulary
-    private let forbidden = [
+    private static let forbidden = [
         Array("<|tool_call>".utf8),
         Array("<start_function_call>".utf8),
     ]
+    /// Proper prefixes of the forbidden markers (plus the empty prefix),
+    /// sorted by (length, lexicographic). Automaton states index into this
+    /// table; state 0 is the empty prefix. Built once — the transition path
+    /// consults it per byte of every candidate token.
+    private static let prefixTable: [[UInt8]] = {
+        var prefixes: [[UInt8]] = [[]]
+        for pattern in forbidden {
+            for count in 1 ..< pattern.count {
+                prefixes.append(Array(pattern.prefix(count)))
+            }
+        }
+        prefixes.sort { lhs, rhs in
+            lhs.count == rhs.count
+                ? lhs.lexicographicallyPrecedes(rhs)
+                : lhs.count < rhs.count
+        }
+        return prefixes
+    }()
+    /// Bytes -> first table index. Shared prefixes of the two markers (e.g.
+    /// `<`) appear twice in the table; lookups resolve to the FIRST
+    /// occurrence, so later duplicates are dead entries — exactly the
+    /// `firstIndex(of:)` behavior this table replaces.
+    private static let prefixIndexByBytes: [[UInt8]: Int] =
+        Dictionary(
+            prefixTable.enumerated().map { ($1, $0) },
+            uniquingKeysWith: { first, _ in first })
     private let lock = NSLock()
     private var transitionCache: [UInt64: Int] = [:]
     private var invalidTransitions = Set<UInt64>()
@@ -62,48 +88,26 @@ final class GemmaNoToolTokenConstraint: CBv2TokenConstraint, @unchecked Sendable
 
         var prefix = state
         for byte in piece {
-            let historyPrefix = longestPrefixBytes(index: prefix)
+            let historyPrefix = Self.longestPrefixBytes(index: prefix)
             var candidate = historyPrefix + [byte]
-            if forbidden.contains(where: { candidate.suffix($0.count) == $0[...] }) {
+            if Self.forbidden.contains(where: { candidate.suffix($0.count) == $0[...] }) {
                 invalidTransitions.insert(key)
                 return nil
             }
             while !candidate.isEmpty,
-                !forbidden.contains(where: { $0.starts(with: candidate) })
+                !Self.forbidden.contains(where: { $0.starts(with: candidate) })
             {
                 candidate.removeFirst()
             }
-            prefix = prefixIndex(candidate)
+            prefix = Self.prefixIndexByBytes[candidate] ?? 0
         }
         transitionCache[key] = prefix
         return prefix
     }
 
-    private func longestPrefixBytes(index: Int) -> [UInt8] {
-        var prefixes: [[UInt8]] = [[]]
-        for pattern in forbidden {
-            for count in 1 ..< pattern.count {
-                prefixes.append(Array(pattern.prefix(count)))
-            }
-        }
-        prefixes.sort { lhs, rhs in
-            lhs.count == rhs.count ? lhs.lexicographicallyPrecedes(rhs) : lhs.count < rhs.count
-        }
-        guard index >= 0, index < prefixes.count else { return [] }
-        return prefixes[index]
-    }
-
-    private func prefixIndex(_ bytes: [UInt8]) -> Int {
-        var prefixes: [[UInt8]] = [[]]
-        for pattern in forbidden {
-            for count in 1 ..< pattern.count {
-                prefixes.append(Array(pattern.prefix(count)))
-            }
-        }
-        prefixes.sort { lhs, rhs in
-            lhs.count == rhs.count ? lhs.lexicographicallyPrecedes(rhs) : lhs.count < rhs.count
-        }
-        return prefixes.firstIndex(of: bytes) ?? 0
+    private static func longestPrefixBytes(index: Int) -> [UInt8] {
+        guard index >= 0, index < prefixTable.count else { return [] }
+        return prefixTable[index]
     }
 }
 

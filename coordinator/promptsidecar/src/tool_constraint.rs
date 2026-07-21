@@ -218,15 +218,18 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
             {
                 return Err(NormalizeError::InvalidTools);
             }
-            // Mixed-type const/enum on a typeless node has no single
-            // renderable type; normalization would silently reject every
-            // member outside its picked type. Mirrors the multi-type union
-            // policy.
-            if !object.contains_key("type")
-                && let Some((concrete, _)) = crate::normalize::finite_value_types(object)
-                && concrete.len() > 1
-            {
-                return Err(NormalizeError::InvalidTools);
+            // Mixed-type const/enum or mixed-family assertions on a typeless
+            // node have no single renderable type; normalization would
+            // silently break every member outside its picked type. Mirrors
+            // the multi-type union policy.
+            if !object.contains_key("type") {
+                if let Some((concrete, _)) = crate::normalize::finite_value_types(object) {
+                    if concrete.len() > 1 {
+                        return Err(NormalizeError::InvalidTools);
+                    }
+                } else if crate::normalize::typeless_assertion_families_ambiguous(object) {
+                    return Err(NormalizeError::InvalidTools);
+                }
             }
             if let Some(types) = object.get("type").and_then(Value::as_array) {
                 let mut concrete = std::collections::HashSet::new();

@@ -311,14 +311,20 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 			}
 		}
 		// A typeless node with mixed-type const/enum values (e.g.
-		// `{"enum":["a",1]}`) has no single renderable type: normalization
-		// would have to pick one member type and silently reject the others
+		// `{"enum":["a",1]}`) or assertions spanning multiple type families
+		// (e.g. `{"minimum":5,"minLength":2}`) has no single renderable type:
+		// normalization would have to pick one and silently break the rest
 		// post-generation. Fail early instead, mirroring the multi-type
 		// union policy.
 		if _, hasType := value["type"]; !hasType {
-			if concrete, _, ok := finiteValueTypes(value); ok && len(concrete) > 1 {
+			if concrete, _, ok := finiteValueTypes(value); ok {
+				if len(concrete) > 1 {
+					return unsupportedToolConstraint(
+						"auto tool schemas require an explicit type for mixed-type enum/const values")
+				}
+			} else if typelessAssertionFamiliesAmbiguous(value) {
 				return unsupportedToolConstraint(
-					"auto tool schemas require an explicit type for mixed-type enum/const values")
+					"auto tool schemas require an explicit type for mixed-family assertions")
 			}
 		}
 		if rawTypes, ok := value["type"].([]any); ok {

@@ -316,12 +316,12 @@ enum ToolConstraintValidation {
             if let contains = object["contains"] {
                 var minimum = 1
                 if let raw = object["minContains"] {
-                    guard case .int(let value) = raw, value >= 0 else { return false }
+                    guard let value = countBound(raw), value >= 0 else { return false }
                     minimum = value
                 }
                 var maximum: Int?
                 if let raw = object["maxContains"] {
-                    guard case .int(let value) = raw, value >= 0 else { return false }
+                    guard let value = countBound(raw), value >= 0 else { return false }
                     maximum = value
                 }
                 let matches = values.reduce(into: 0) { count, child in
@@ -364,6 +364,11 @@ enum ToolConstraintValidation {
     /// backtracking regex engine can spend unbounded CPU on user-controlled
     /// schemas. Literal contains/prefix/suffix/exact patterns cover the common
     /// JSON-Schema cases while regex metacharacters fail closed.
+    ///
+    /// Comparison is by Unicode scalar sequence: Swift `String` equality and
+    /// prefix/suffix/contains use canonical equivalence, but JSON Schema regex
+    /// matching does not normalize, so a precomposed `^é$` must not match a
+    /// generated decomposed `e\u{301}`.
     private static func safePatternMatches(
         _ value: String,
         pattern: String
@@ -371,16 +376,35 @@ enum ToolConstraintValidation {
         guard value.utf8.count <= maxSafePatternInputBytes,
             let components = safePatternComponents(pattern)
         else { return false }
+        let candidate = unicodeScalarIdentity(value)
+        let literal = unicodeScalarIdentity(components.literal)
         switch (components.anchoredStart, components.anchoredEnd) {
         case (true, true):
-            return value == components.literal
+            return candidate == literal
         case (true, false):
-            return value.hasPrefix(components.literal)
+            return candidate.starts(with: literal)
         case (false, true):
-            return value.hasSuffix(components.literal)
+            return candidate.suffix(literal.count).elementsEqual(literal)
         case (false, false):
-            return value.contains(components.literal)
+            return scalarSequenceContains(candidate, literal)
         }
+    }
+
+    /// Bounded naive substring search over Unicode scalars: the literal is at
+    /// most 128 pattern bytes and the candidate at most 16 KiB, so the worst
+    /// case stays small and allocation-free.
+    private static func scalarSequenceContains(
+        _ candidate: [UInt32],
+        _ literal: [UInt32]
+    ) -> Bool {
+        guard !literal.isEmpty else { return true }
+        guard candidate.count >= literal.count else { return false }
+        for start in 0 ... (candidate.count - literal.count) {
+            if candidate[start ..< start + literal.count].elementsEqual(literal) {
+                return true
+            }
+        }
+        return false
     }
 
     private static func autoSchemaIsSupported(
@@ -416,15 +440,16 @@ enum ToolConstraintValidation {
             {
                 return false
             }
-            // Mixed-type const/enum on a typeless node has no single
-            // renderable type; normalization would silently reject every
-            // member outside its picked type. Mirrors the multi-type union
-            // policy.
-            if object["type"] == nil,
-                let concrete = finiteAutoValueTypes(object),
-                concrete.count > 1
-            {
-                return false
+            // Mixed-type const/enum or mixed-family assertions on a typeless
+            // node have no single renderable type; normalization would
+            // silently break every member outside its picked type. Mirrors
+            // the multi-type union policy.
+            if object["type"] == nil {
+                if let concrete = finiteAutoValueTypes(object) {
+                    if concrete.count > 1 { return false }
+                } else if typelessAssertionFamiliesAmbiguous(object) {
+                    return false
+                }
             }
             if case .array(let rawTypes)? = object["type"] {
                 var concrete = Set<String>()
@@ -524,6 +549,41 @@ enum ToolConstraintValidation {
         default:
             return true
         }
+    }
+
+    /// Whether a node's only type evidence is assertion keywords spanning
+    /// more than one type family (e.g. `{"minimum":5,"minLength":2}`). Such a
+    /// node has no single renderable type: normalization would have to pick
+    /// one family and silently break the others post-generation. Structural,
+    /// union, or finite-value evidence takes priority.
+    private static func typelessAssertionFamiliesAmbiguous(
+        _ object: [String: ToolArgumentJSONValue]
+    ) -> Bool {
+        for key in [
+            "properties", "patternProperties", "additionalProperties",
+            "items", "prefixItems",
+        ] where object[key] != nil {
+            return false
+        }
+        for key in ["anyOf", "oneOf", "allOf"] {
+            guard case .array(let variants)? = object[key] else { continue }
+            let hasConcreteMember = variants.contains { variant in
+                if case .object(let variant) = variant,
+                    case .string(let kind)? = variant["type"],
+                    kind != "null"
+                {
+                    return true
+                }
+                return false
+            }
+            if hasConcreteMember { return false }
+        }
+        var families = Set<String>()
+        for (keyword, family) in ToolSchemaNormalization.assertionFamilyByKeyword
+        where object[keyword] != nil {
+            families.insert(family)
+        }
+        return families.count > 1
     }
 
     /// Concrete (non-null) JSON type names of a node's const/enum values.
@@ -653,9 +713,23 @@ enum ToolConstraintValidation {
         minimum: ToolArgumentJSONValue?,
         maximum: ToolArgumentJSONValue?
     ) -> Bool {
-        if case .int(let minimum)? = minimum, count < minimum { return false }
-        if case .int(let maximum)? = maximum, count > maximum { return false }
+        if let minimum = countBound(minimum), count < minimum { return false }
+        if let maximum = countBound(maximum), count > maximum { return false }
         return true
+    }
+
+    /// JSON Schema treats numbers with zero fractional part as integers, so
+    /// count bounds like `minLength: 1.0` are valid and must be enforced —
+    /// not silently ignored because they decode as `.double`.
+    private static func countBound(_ raw: ToolArgumentJSONValue?) -> Int? {
+        switch raw {
+        case .int(let value)?:
+            return value
+        case .double(let value)? where value.isFinite:
+            return Int(exactly: value)
+        default:
+            return nil
+        }
     }
 
     private static func validateNumber(

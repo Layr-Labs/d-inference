@@ -28,10 +28,11 @@ func TestNormalizeToolSchemas_Corpus_EmptyPropertySchema(t *testing.T) {
 }
 
 // Property schemas whose ONLY content is a non-marker annotation/validation
-// key (const / default / title / format / pattern / $ref / minimum /
-// maxLength) are valid JSON Schema, carried no marker key, and previously
-// stayed typeless. Every one must gain a string type with its original key
-// preserved.
+// key (const / default / title / format / pattern / $ref / maxLength) are
+// valid JSON Schema, carried no marker key, and previously stayed typeless.
+// Every one must gain a string type with its original key preserved
+// (string-family assertions like pattern/maxLength infer "string"; annotations
+// like default/title/format fall to the string default).
 func TestNormalizeToolSchemas_Corpus_MarkerlessAnnotationOnlyNodes(t *testing.T) {
 	cases := map[string]string{
 		"const-only":     `{"const":"fixed"}`,
@@ -40,7 +41,6 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessAnnotationOnlyNodes(t *testing.T)
 		"format-only":    `{"format":"date-time"}`,
 		"pattern-only":   `{"pattern":"^a"}`,
 		"ref-only":       `{"$ref":"#/$defs/x"}`,
-		"minimum-only":   `{"minimum":1}`,
 		"maxLength-only": `{"maxLength":10}`,
 	}
 	for name, schema := range cases {
@@ -54,6 +54,32 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessAnnotationOnlyNodes(t *testing.T)
 		// The original annotation key survives beside the injected type.
 		if len(x) != 2 {
 			t.Errorf("%s: node = %#v, want original key + injected type only", name, x)
+		}
+	}
+}
+
+// A typeless node whose only content is type-scoped assertions keeps the
+// family those assertions constrain: `{"minimum":5}` accepts 6, so the
+// injected render type must be "number" — the string default would make
+// every schema-valid emission fail post-generation validation.
+func TestNormalizeToolSchemas_Corpus_TypelessAssertionFamilies(t *testing.T) {
+	cases := map[string]struct {
+		schema string
+		want   string
+	}{
+		"minimum":       {schema: `{"minimum":1}`, want: "number"},
+		"multipleOf":    {schema: `{"multipleOf":2}`, want: "number"},
+		"minItems":      {schema: `{"minItems":1,"maxItems":4}`, want: "array"},
+		"uniqueItems":   {schema: `{"uniqueItems":true}`, want: "array"},
+		"required":      {schema: `{"required":["a"]}`, want: "object"},
+		"minProperties": {schema: `{"minProperties":1}`, want: "object"},
+	}
+	for name, tc := range cases {
+		body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+		  "parameters":{"type":"object","properties":{"x":` + tc.schema + `}}}}]}`)
+		x := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["x"], name)
+		if got := tsnType(t, x, name); got != tc.want {
+			t.Errorf("%s: type = %q, want %q", name, got, tc.want)
 		}
 	}
 }
@@ -129,10 +155,14 @@ func TestNormalizeToolSchemas_Corpus_PatternProperties(t *testing.T) {
 
 	env := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["env"], "env")
 	pp := tsnMap(t, env["patternProperties"], "env.patternProperties")
-	for _, name := range []string{"^ENV_", "^NUM_", "^ANY_"} {
+	// `{}` and boolean values default to string; the minimum-bearing value
+	// keeps its assertion's number family so validation stays satisfiable.
+	for name, want := range map[string]string{
+		"^ENV_": "string", "^NUM_": "number", "^ANY_": "string",
+	} {
 		node := tsnMap(t, pp[name], name)
-		if got := tsnType(t, node, name); got != "string" {
-			t.Errorf("patternProperties[%q] type = %q, want string", name, got)
+		if got := tsnType(t, node, name); got != want {
+			t.Errorf("patternProperties[%q] type = %q, want %q", name, got, want)
 		}
 	}
 	// A typeless node whose only marker is patternProperties infers "object".

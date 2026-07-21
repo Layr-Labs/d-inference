@@ -847,6 +847,10 @@ struct GemmaToolConstraintTests {
             .object([
                 "enum": .array([.string("a"), .int(1)]),
             ]),
+            .object([
+                "minimum": .int(5),
+                "minLength": .int(2),
+            ]),
         ]
         for schema in schemas {
             let parameters: MLXLMCommon.JSONValue = .object([
@@ -1579,7 +1583,8 @@ struct GemmaToolConstraintTests {
                "properties":{
                  "count":{"const":1},
                  "level":{"enum":[1,2,null]},
-                 "tag":{"enum":["a","b"]}
+                 "tag":{"enum":["a","b"]},
+                 "score":{"minimum":5,"maximum":10}
                }}}}],
              "tool_choice":"auto"}
             """.utf8)
@@ -1590,7 +1595,8 @@ struct GemmaToolConstraintTests {
             case .object(let properties)? = root["properties"],
             case .object(let count)? = properties["count"],
             case .object(let level)? = properties["level"],
-            case .object(let tag)? = properties["tag"]
+            case .object(let tag)? = properties["tag"],
+            case .object(let score)? = properties["score"]
         else {
             Issue.record("normalized parameters lost their shape")
             return
@@ -1599,6 +1605,7 @@ struct GemmaToolConstraintTests {
         #expect(level["type"] == .string("number"))
         #expect(level["nullable"] == .bool(true))
         #expect(tag["type"] == .string("string"))
+        #expect(score["type"] == .string("number"))
 
         let prepared = try ToolChoicePromptPolicy.prepare(decoded)
         try ToolConstraintValidation.validate([
@@ -1606,12 +1613,110 @@ struct GemmaToolConstraintTests {
                 name: "pick",
                 arguments: [
                     "count": .int(1), "level": .null, "tag": .string("a"),
+                    "score": .int(6),
                 ])),
         ], prepared: prepared)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             try ToolConstraintValidation.validate([
                 .init(function: .init(
                     name: "pick", arguments: ["count": .int(2)])),
+            ], prepared: prepared)
+        }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "pick", arguments: ["score": .int(4)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("pattern literals compare by Unicode scalar sequence")
+    func patternLiteralsUseUnicodeScalars() throws {
+        let precomposed = "\u{E9}"
+        let decomposed = "e\u{301}"
+        for (pattern, value, shouldPass) in [
+            ("^\(precomposed)$", precomposed, true),
+            ("^\(precomposed)$", decomposed, false),
+            ("^\(precomposed)", "\(decomposed)tail", false),
+            ("\(precomposed)$", "head\(decomposed)", false),
+            (precomposed, "a\(decomposed)b", false),
+            (precomposed, "a\(precomposed)b", true),
+        ] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("string"),
+                        "pattern": .string(pattern),
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            let call = ToolCall(function: .init(
+                name: "weather", arguments: ["value": .string(value)]))
+            if shouldPass {
+                try ToolConstraintValidation.validate([call], prepared: prepared)
+            } else {
+                #expect(
+                    throws: MultiModelBatchSchedulerEngineError.self,
+                    "pattern \(pattern) vs \(value)"
+                ) {
+                    try ToolConstraintValidation.validate([call], prepared: prepared)
+                }
+            }
+        }
+    }
+
+    @Test("count bounds accept integral finite doubles")
+    func countBoundsAcceptIntegralDoubles() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "name": .object([
+                    "type": .string("string"),
+                    "minLength": .double(1.0),
+                ]),
+                "list": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("integer")]),
+                    "maxItems": .double(2.0),
+                    "contains": .object(["const": .int(1)]),
+                    "minContains": .double(1.0),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: [
+                    "name": .string("a"),
+                    "list": .array([.int(1), .int(2)]),
+                ])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["name": .string("")])),
+            ], prepared: prepared)
+        }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["list": .array([.int(1), .int(2), .int(3)])])),
+            ], prepared: prepared)
+        }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["list": .array([.int(2)])])),
             ], prepared: prepared)
         }
     }

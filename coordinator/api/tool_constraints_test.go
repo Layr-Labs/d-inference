@@ -356,6 +356,10 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 		"typeless mixed const union": map[string]any{
 			"enum": []any{true, "on"},
 		},
+		"typeless mixed assertion families": map[string]any{
+			"minimum":   5,
+			"minLength": 2,
+		},
 	}
 	for name, propertySchema := range schemas {
 		t.Run(name, func(t *testing.T) {
@@ -396,7 +400,8 @@ func TestAutoToolChoiceAcceptsUniformTypelessFiniteSchemas(t *testing.T) {
 			"parameters":{"type":"object","properties":{
 				"count":{"const":1},
 				"level":{"enum":[1,2,null]},
-				"tag":{"enum":["a","b"]}
+				"tag":{"enum":["a","b"]},
+				"score":{"minimum":5,"maximum":10}
 			}}
 		}}],
 		"tool_choice":"auto"

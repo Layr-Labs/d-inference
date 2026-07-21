@@ -313,7 +313,45 @@ enum ToolSchemaNormalization {
                 return "null"
             }
         }
+        // Likewise a typeless `{"minimum":5}` accepts 6: infer the type its
+        // assertion keywords constrain instead of the string default.
+        let families = assertionFamilyTypes(for: dict)
+        if families.count == 1, let family = families.first {
+            return family
+        }
         return "string"
+    }
+
+    /// Type-scoped assertion keyword -> the instance type it constrains.
+    static let assertionFamilyByKeyword: [String: String] = [
+        "minimum": "number",
+        "maximum": "number",
+        "exclusiveMinimum": "number",
+        "exclusiveMaximum": "number",
+        "multipleOf": "number",
+        "minLength": "string",
+        "maxLength": "string",
+        "pattern": "string",
+        "minItems": "array",
+        "maxItems": "array",
+        "uniqueItems": "array",
+        "contains": "array",
+        "minContains": "array",
+        "maxContains": "array",
+        "minProperties": "object",
+        "maxProperties": "object",
+        "required": "object",
+    ]
+
+    private static func assertionFamilyTypes(
+        for dict: [String: Any]
+    ) -> Set<String> {
+        var families = Set<String>()
+        for (keyword, family) in assertionFamilyByKeyword
+        where dict[keyword] != nil {
+            families.insert(family)
+        }
+        return families
     }
 
     /// JSON type names of a node's const/enum values: the set of concrete

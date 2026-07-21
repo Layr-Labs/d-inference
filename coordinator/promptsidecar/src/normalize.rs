@@ -1252,6 +1252,10 @@ mod tests {
                 "type":"object",
                 "dependentRequired":{"credit_card":["billing_address"]}
             }),
+            json!({
+                "type":"object",
+                "propertyNames":{"const":"allowed"}
+            }),
         ] {
             let body = json!({
                 "model":"gemma-4-fixture",

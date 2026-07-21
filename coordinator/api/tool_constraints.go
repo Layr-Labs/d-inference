@@ -302,11 +302,11 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 			}
 		}
 		for _, keyword := range []string{
-			"dependentSchemas", "dependentRequired", "dependencies",
+			"dependentSchemas", "dependentRequired", "dependencies", "propertyNames",
 		} {
-			if _, dependency := value[keyword]; dependency {
+			if _, unsupported := value[keyword]; unsupported {
 				return unsupportedToolConstraint(
-					"auto tool schemas do not support dependency assertions")
+					"auto tool schemas do not support dependency or property-name assertions")
 			}
 		}
 		if rawTypes, ok := value["type"].([]any); ok {

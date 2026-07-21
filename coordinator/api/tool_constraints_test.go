@@ -337,6 +337,10 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 				"credit_card": []any{"billing_address"},
 			},
 		},
+		"property names": map[string]any{
+			"type":          "object",
+			"propertyNames": map[string]any{"const": "allowed"},
+		},
 	}
 	for name, propertySchema := range schemas {
 		t.Run(name, func(t *testing.T) {

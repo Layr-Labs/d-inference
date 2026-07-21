@@ -872,6 +872,23 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("propertyNames fails before invalid tool calls can pass")
+    func propertyNamesFailsBeforeInference() {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "propertyNames": .object([
+                "const": .string("allowed"),
+            ]),
+            "additionalProperties": .bool(true),
+        ])
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+        }
+    }
+
     @Test("direct requests reject reserved boolean schema metadata")
     func directRequestRejectsReservedBooleanMetadata() {
         let parameters: MLXLMCommon.JSONValue = .object([
@@ -1001,6 +1018,40 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("empty draft-04 tuples preserve additionalItems semantics")
+    func autoEmptyTupleItemsValidation() throws {
+        for (additionalItems, shouldPass) in [
+            (MLXLMCommon.JSONValue?.none, true),
+            (.some(.bool(false)), false),
+        ] {
+            var coordinateSchema: [String: MLXLMCommon.JSONValue] = [
+                "type": .string("array"),
+                "items": .array([]),
+            ]
+            coordinateSchema["additionalItems"] = additionalItems
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "coordinates": .object(coordinateSchema),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            let call = ToolCall(function: .init(
+                name: "weather",
+                arguments: ["coordinates": .array([.int(7)])]))
+            if shouldPass {
+                try ToolConstraintValidation.validate([call], prepared: prepared)
+            } else {
+                #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                    try ToolConstraintValidation.validate([call], prepared: prepared)
+                }
+            }
+        }
+    }
+
     @Test("auto integer validation accepts only integral finite doubles")
     func autoIntegerValidationAcceptsIntegralDoubles() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
@@ -1087,6 +1138,55 @@ struct GemmaToolConstraintTests {
                     arguments: ["values": .array([.int(1), .double(1.0)])])),
             ], prepared: prepared)
         }
+    }
+
+    @Test("JSON Schema string identity uses Unicode scalar sequences")
+    func autoStringIdentityUsesUnicodeScalars() throws {
+        let precomposed = "\u{E9}"
+        let decomposed = "e\u{301}"
+        let enumParameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .string("string"),
+                    "enum": .array([.string(precomposed)]),
+                    "minLength": .int(0),
+                ]),
+            ]),
+        ])
+        let enumPrepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: enumParameters)]))
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": .string(decomposed)])),
+            ], prepared: enumPrepared)
+        }
+
+        let uniqueParameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "values": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string")]),
+                    "uniqueItems": .bool(true),
+                ]),
+            ]),
+        ])
+        let uniquePrepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: uniqueParameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: [
+                    "values": .array([.string(precomposed), .string(decomposed)]),
+                ])),
+        ], prepared: uniquePrepared)
     }
 
     @Test("auto array contains and match bounds are enforced")

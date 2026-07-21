@@ -14,7 +14,7 @@ private typealias ToolArgumentJSONValue = MLXLMCommon.JSONValue
 private indirect enum JSONSchemaValueIdentity: Hashable {
     case null
     case bool(Bool)
-    case string(String)
+    case string([UInt32])
     case integer(Int)
     case floating(UInt64)
     case array([JSONSchemaValueIdentity])
@@ -282,20 +282,20 @@ enum ToolConstraintValidation {
             } else {
                 prefix = []
             }
-            let legacyTuple: [ToolArgumentJSONValue]
+            let legacyTuple: [ToolArgumentJSONValue]?
             if prefix.isEmpty, case .array(let schemas)? = object["items"] {
                 legacyTuple = schemas
             } else {
-                legacyTuple = []
+                legacyTuple = nil
             }
             for (index, child) in values.enumerated() {
                 let childSchema: ToolArgumentJSONValue?
                 if index < prefix.count {
                     childSchema = prefix[index]
-                } else if index < legacyTuple.count {
-                    childSchema = legacyTuple[index]
-                } else if !legacyTuple.isEmpty {
-                    childSchema = object["additionalItems"]
+                } else if let legacyTuple {
+                    childSchema = index < legacyTuple.count
+                        ? legacyTuple[index]
+                        : object["additionalItems"]
                 } else if let items = object["items"] {
                     childSchema = items
                 } else {
@@ -410,6 +410,7 @@ enum ToolConstraintValidation {
                 || object["dependentSchemas"] != nil
                 || object["dependentRequired"] != nil
                 || object["dependencies"] != nil
+                || object["propertyNames"] != nil
             {
                 return false
             }
@@ -577,7 +578,7 @@ enum ToolConstraintValidation {
         case .bool(let value):
             return .bool(value)
         case .string(let value):
-            return .string(value)
+            return .string(unicodeScalarIdentity(value))
         case .int(let value):
             return .integer(value)
         case .double(let value):
@@ -588,10 +589,18 @@ enum ToolConstraintValidation {
         case .array(let values):
             return .array(values.map(jsonSchemaIdentity))
         case .object(let object):
-            return .object(object.keys.sorted().flatMap {
-                [.string($0), jsonSchemaIdentity(object[$0]!)]
+            let keys = object.keys.sorted {
+                unicodeScalarIdentity($0).lexicographicallyPrecedes(
+                    unicodeScalarIdentity($1))
+            }
+            return .object(keys.flatMap {
+                [.string(unicodeScalarIdentity($0)), jsonSchemaIdentity(object[$0]!)]
             })
         }
+    }
+
+    private static func unicodeScalarIdentity(_ value: String) -> [UInt32] {
+        value.unicodeScalars.map(\.value)
     }
 
     private static func countWithinBounds(

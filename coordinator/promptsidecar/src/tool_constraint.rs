@@ -205,9 +205,14 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
             {
                 return Err(NormalizeError::InvalidTools);
             }
-            if ["dependentSchemas", "dependentRequired", "dependencies"]
-                .iter()
-                .any(|keyword| object.contains_key(*keyword))
+            if [
+                "dependentSchemas",
+                "dependentRequired",
+                "dependencies",
+                "propertyNames",
+            ]
+            .iter()
+            .any(|keyword| object.contains_key(*keyword))
             {
                 return Err(NormalizeError::InvalidTools);
             }

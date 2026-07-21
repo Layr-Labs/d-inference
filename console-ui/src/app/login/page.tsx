@@ -26,19 +26,6 @@ function isSafeRedirect(next: string): boolean {
   if (/%[0-9a-fA-F]{2}/.test(next)) {
     return false;
   }
-  // Use URL constructor to validate the path doesn't resolve to an external origin
-  try {
-    const resolved = new URL(next, window.location.origin);
-    if (resolved.origin !== window.location.origin) {
-      return false;
-    }
-    // Ensure the pathname still starts with "/" (not redirected to base)
-    if (!resolved.pathname.startsWith("/")) {
-      return false;
-    }
-  } catch {
-    return false;
-  }
   return true;
 }
 

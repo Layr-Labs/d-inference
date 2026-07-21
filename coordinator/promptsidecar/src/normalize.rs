@@ -1234,6 +1234,24 @@ mod tests {
                 "if":{"properties":{"kind":{"const":"business"}}},
                 "then":{"required":["tax_id"]}
             }),
+            json!({
+                "type":"object",
+                "properties":{
+                    "credit_card":{"type":"string"},
+                    "billing_address":{"type":"string"}
+                },
+                "dependentSchemas":{
+                    "credit_card":{"required":["billing_address"]}
+                }
+            }),
+            json!({
+                "type":"object",
+                "dependencies":{"credit_card":["billing_address"]}
+            }),
+            json!({
+                "type":"object",
+                "dependentRequired":{"credit_card":["billing_address"]}
+            }),
         ] {
             let body = json!({
                 "model":"gemma-4-fixture",
@@ -1245,6 +1263,30 @@ mod tests {
                 "tool_choice":"auto"
             });
             assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
+    }
+
+    #[test]
+    fn supported_decimal_multiple_schemas_survive_preflight() {
+        for multiple in [
+            json!(1),
+            json!(0.1),
+            json!(2.5),
+            json!(1e-200),
+            json!(3e-40),
+        ] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"lookup",
+                    "parameters":{"type":"object","properties":{
+                        "value":{"type":"number","multipleOf":multiple}
+                    }}
+                }}],
+                "tool_choice":"auto"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
         }
     }
 

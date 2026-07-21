@@ -301,6 +301,14 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 					"auto tool schemas do not support conditional assertions")
 			}
 		}
+		for _, keyword := range []string{
+			"dependentSchemas", "dependentRequired", "dependencies",
+		} {
+			if _, dependency := value[keyword]; dependency {
+				return unsupportedToolConstraint(
+					"auto tool schemas do not support dependency assertions")
+			}
+		}
 		if rawTypes, ok := value["type"].([]any); ok {
 			concrete := make(map[string]struct{}, len(rawTypes))
 			for _, rawType := range rawTypes {

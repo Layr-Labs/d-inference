@@ -407,6 +407,9 @@ enum ToolConstraintValidation {
                 || object["if"] != nil
                 || object["then"] != nil
                 || object["else"] != nil
+                || object["dependentSchemas"] != nil
+                || object["dependentRequired"] != nil
+                || object["dependencies"] != nil
             {
                 return false
             }
@@ -491,8 +494,7 @@ enum ToolConstraintValidation {
                 }
             }
             for key in [
-                "properties", "patternProperties", "dependentSchemas",
-                "dependencies", "definitions", "$defs",
+                "properties", "patternProperties", "definitions", "$defs",
             ] {
                 if case .object(let children)? = object[key],
                     !children.values.allSatisfy({
@@ -651,51 +653,59 @@ enum ToolConstraintValidation {
         _ value: ToolArgumentJSONValue,
         of multiple: ToolArgumentJSONValue
     ) -> Bool? {
-        switch (value, multiple) {
-        case (.int(let value), .int(let multiple)):
-            guard multiple > 0 else { return nil }
-            return value % multiple == 0
-        case (.int(let value), .double(let multiple)):
-            guard multiple.isFinite, multiple > 0 else { return nil }
-            if let exact = Int(exactly: multiple), exact > 0 {
-                return value % exact == 0
-            }
-            return integerIsMultipleOfJSONDecimal(value, multiple: multiple)
-        default:
-            break
-        }
-        guard let value = number(value),
-            let multiple = number(multiple),
-            value.isFinite,
-            multiple.isFinite,
-            multiple > 0
+        guard let multipleNumber = number(multiple),
+            multipleNumber.isFinite,
+            multipleNumber > 0,
+            let valueDecimal = jsonDecimalMagnitude(value),
+            let multipleDecimal = jsonDecimalMagnitude(multiple),
+            multipleDecimal.coefficient > 0
         else {
             return nil
         }
-        let quotient = value / multiple
-        guard quotient.isFinite else { return false }
-        return abs(quotient - quotient.rounded()) <= 1e-9
+        if valueDecimal.coefficient == 0 { return true }
+        return decimalRatioIsInteger(valueDecimal, multipleDecimal)
     }
 
-    /// Exact divisibility under JSON decimal-number semantics. JSON decoding
-    /// stores the assertion as Double, but its shortest round-tripping String
-    /// recovers the decimal value clients declared (for example 0.1, not the
-    /// binary IEEE-754 fraction). The coefficient has at most 17 digits, so it
-    /// fits UInt64; exponent handling uses checked powers of ten or cancels the
-    /// denominator's 2/5 factors without constructing an unbounded integer.
-    private static func integerIsMultipleOfJSONDecimal(
-        _ value: Int,
-        multiple: Double
-    ) -> Bool {
-        if value == 0 { return true }
-        let parts = String(multiple).lowercased().split(
+    private struct JSONDecimalMagnitude {
+        var coefficient: UInt64
+        var exponent: Int
+    }
+
+    /// Swift's JSON number representation keeps integers exact and stores
+    /// non-integers as Double. A Double's shortest round-tripping String is its
+    /// canonical decoded JSON decimal value, so divisibility can be checked as
+    /// coefficient × 10^exponent without binary floating-point tolerance.
+    private static func jsonDecimalMagnitude(
+        _ value: ToolArgumentJSONValue
+    ) -> JSONDecimalMagnitude? {
+        switch value {
+        case .int(let value):
+            var coefficient = UInt64(value.magnitude)
+            var exponent = 0
+            while coefficient > 0, coefficient.isMultiple(of: 10) {
+                coefficient /= 10
+                exponent += 1
+            }
+            return .init(coefficient: coefficient, exponent: exponent)
+        case .double(let value):
+            guard value.isFinite else { return nil }
+            return parseJSONDecimalMagnitude(String(abs(value)))
+        default:
+            return nil
+        }
+    }
+
+    private static func parseJSONDecimalMagnitude(
+        _ decimal: String
+    ) -> JSONDecimalMagnitude? {
+        let parts = decimal.lowercased().split(
             separator: "e",
             maxSplits: 1,
             omittingEmptySubsequences: false)
-        guard let mantissa = parts.first else { return false }
+        guard let mantissa = parts.first else { return nil }
         let explicitExponent =
             parts.count == 2 ? Int(parts[1]) : 0
-        guard let explicitExponent else { return false }
+        guard let explicitExponent else { return nil }
         let mantissaParts = mantissa.split(
             separator: ".",
             maxSplits: 1,
@@ -704,35 +714,60 @@ enum ToolConstraintValidation {
             ? mantissaParts[1].count
             : 0
         let digits = mantissaParts.joined()
-        guard var coefficient = UInt64(digits), coefficient > 0 else {
-            return false
-        }
+        guard var coefficient = UInt64(digits) else { return nil }
         var exponent = explicitExponent - fractionalDigits
-        while coefficient.isMultiple(of: 10) {
+        while coefficient > 0, coefficient.isMultiple(of: 10) {
             coefficient /= 10
             exponent += 1
         }
+        return .init(coefficient: coefficient, exponent: exponent)
+    }
 
-        let magnitude = UInt64(value.magnitude)
-        if exponent >= 0 {
-            var divisor = coefficient
-            for _ in 0 ..< exponent {
-                let (next, overflow) = divisor.multipliedReportingOverflow(by: 10)
-                if overflow { return false }
-                divisor = next
+    private static func decimalRatioIsInteger(
+        _ numerator: JSONDecimalMagnitude,
+        _ denominator: JSONDecimalMagnitude
+    ) -> Bool {
+        let common = greatestCommonDivisor(
+            numerator.coefficient,
+            denominator.coefficient)
+        var reducedNumerator = numerator.coefficient / common
+        var reducedDenominator = denominator.coefficient / common
+        let exponentDifference = numerator.exponent - denominator.exponent
+
+        if exponentDifference >= 0 {
+            for _ in 0 ..< exponentDifference
+            where reducedDenominator.isMultiple(of: 2) {
+                reducedDenominator /= 2
             }
-            return magnitude % divisor == 0
+            for _ in 0 ..< exponentDifference
+            where reducedDenominator.isMultiple(of: 5) {
+                reducedDenominator /= 5
+            }
+            return reducedDenominator == 1
         }
 
-        let denominatorPower = -exponent
-        var requiredDivisor = coefficient
-        for _ in 0 ..< denominatorPower where requiredDivisor.isMultiple(of: 2) {
-            requiredDivisor /= 2
+        guard reducedDenominator == 1 else { return false }
+        let requiredPower = -exponentDifference
+        var twos = 0
+        while reducedNumerator > 0, reducedNumerator.isMultiple(of: 2) {
+            reducedNumerator /= 2
+            twos += 1
         }
-        for _ in 0 ..< denominatorPower where requiredDivisor.isMultiple(of: 5) {
-            requiredDivisor /= 5
+        var fives = 0
+        while reducedNumerator > 0, reducedNumerator.isMultiple(of: 5) {
+            reducedNumerator /= 5
+            fives += 1
         }
-        return magnitude % requiredDivisor == 0
+        return twos >= requiredPower && fives >= requiredPower
+    }
+
+    private static func greatestCommonDivisor(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        var lhs = lhs
+        var rhs = rhs
+        while rhs != 0 {
+            (lhs, rhs) = (rhs, lhs % rhs)
+        }
+        return lhs
     }
 
     private static func compareNumbers(

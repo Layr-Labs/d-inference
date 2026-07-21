@@ -313,6 +313,30 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 			"if":   map[string]any{"properties": map[string]any{"kind": map[string]any{"const": "business"}}},
 			"then": map[string]any{"required": []any{"tax_id"}},
 		},
+		"dependent schema": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"credit_card":     map[string]any{"type": "string"},
+				"billing_address": map[string]any{"type": "string"},
+			},
+			"dependentSchemas": map[string]any{
+				"credit_card": map[string]any{
+					"required": []any{"billing_address"},
+				},
+			},
+		},
+		"legacy dependencies": map[string]any{
+			"type": "object",
+			"dependencies": map[string]any{
+				"credit_card": []any{"billing_address"},
+			},
+		},
+		"dependent required": map[string]any{
+			"type": "object",
+			"dependentRequired": map[string]any{
+				"credit_card": []any{"billing_address"},
+			},
+		},
 	}
 	for name, propertySchema := range schemas {
 		t.Run(name, func(t *testing.T) {
@@ -341,6 +365,37 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 				t.Fatalf("unsupported auto schema accepted: %T %v", validationErr, validationErr)
 			}
 		})
+	}
+}
+
+func TestAutoToolChoiceAcceptsSupportedDecimalMultipleSchemas(t *testing.T) {
+	for _, multiple := range []float64{1, 0.1, 2.5, 1e-200, 3e-40} {
+		body, err := json.Marshal(map[string]any{
+			"model":    "m",
+			"messages": []any{map[string]any{"role": "user", "content": "x"}},
+			"tools": []any{map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "lookup",
+					"parameters": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"value": map[string]any{
+								"type":       "number",
+								"multipleOf": multiple,
+							},
+						},
+					},
+				},
+			}},
+			"tool_choice": "auto",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validateToolConstraintRequest(body); err != nil {
+			t.Fatalf("supported multipleOf %g rejected: %v", multiple, err)
+		}
 	}
 }
 

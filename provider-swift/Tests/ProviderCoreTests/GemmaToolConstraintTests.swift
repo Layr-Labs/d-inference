@@ -825,6 +825,16 @@ struct GemmaToolConstraintTests {
                     "required": .array([.string("tax_id")]),
                 ]),
             ]),
+            .object([
+                "dependentRequired": .object([
+                    "credit_card": .array([.string("billing_address")]),
+                ]),
+            ]),
+            .object([
+                "dependencies": .object([
+                    "credit_card": .array([.string("billing_address")]),
+                ]),
+            ]),
         ]
         for schema in schemas {
             let parameters: MLXLMCommon.JSONValue = .object([
@@ -837,6 +847,28 @@ struct GemmaToolConstraintTests {
                         choice: .mode(.auto),
                         tools: [tool(parameters: parameters)]))
             }
+        }
+    }
+
+    @Test("dependent schemas fail before invalid tool calls can pass")
+    func dependentSchemasFailBeforeInference() {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "credit_card": .object(["type": .string("string")]),
+                "billing_address": .object(["type": .string("string")]),
+            ]),
+            "dependentSchemas": .object([
+                "credit_card": .object([
+                    "required": .array([.string("billing_address")]),
+                ]),
+            ]),
+        ])
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
         }
     }
 
@@ -1221,6 +1253,52 @@ struct GemmaToolConstraintTests {
                     name: "weather",
                     arguments: ["value": .int(9_007_199_254_740_993)])),
             ], prepared: prepared)
+        }
+    }
+
+    @Test("floating multipleOf uses exact decoded JSON decimals")
+    func floatingMultipleOfUsesExactJSONDecimals() throws {
+        let cases: [
+            (
+                multiple: MLXLMCommon.JSONValue,
+                valid: MLXLMCommon.JSONValue,
+                invalid: MLXLMCommon.JSONValue
+            )
+        ] = [
+            (.int(1), .double(1), .double(1.0000000001)),
+            (.double(0.1), .double(0.3), .double(0.30000000000000004)),
+            (.double(1e-200), .double(1e-199), .double(1.0000000001e-199)),
+            (.double(3e-40), .double(9e-40), .double(9.000000001e-40)),
+            (.double(1e200), .double(1e200), .double(1.0000000000000001e200)),
+        ]
+
+        for testCase in cases {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "type": .string("number"),
+                        "multipleOf": testCase.multiple,
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["value": testCase.valid])),
+            ], prepared: prepared)
+            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather",
+                        arguments: ["value": testCase.invalid])),
+                ], prepared: prepared)
+            }
         }
     }
 

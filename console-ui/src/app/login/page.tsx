@@ -6,10 +6,36 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, Suspense } from "react";
 
 function isSafeRedirect(next: string): boolean {
+  // Must be a relative path starting with "/"
   if (!next.startsWith("/") || next.startsWith("//")) {
     return false;
   }
-  return !next.includes("\\") && !next.includes("%5c");
+  // Reject backslashes and encoded variants
+  if (next.includes("\\") || next.includes("%5c") || next.includes("%5C")) {
+    return false;
+  }
+  // Reject control characters and whitespace that could bypass checks
+  if (/[\x00-\x1f\x7f\s]/.test(next)) {
+    return false;
+  }
+  // Reject any URL-encoded characters that could be decoded to bypass validation
+  if (/%[0-9a-fA-F]{2}/.test(next)) {
+    return false;
+  }
+  // Use URL constructor to validate the path doesn't resolve to an external origin
+  try {
+    const resolved = new URL(next, window.location.origin);
+    if (resolved.origin !== window.location.origin) {
+      return false;
+    }
+    // Ensure the pathname still starts with "/" (not redirected to base)
+    if (!resolved.pathname.startsWith("/")) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 function LoginContent() {

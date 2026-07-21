@@ -155,11 +155,18 @@ func constrainedSchemaGrammarCost(raw any) int {
 		}
 		nullable = nullable || flag
 	}
+	values, finite := constrainedSchemaFiniteValues(schema)
+	// JSON Schema applies type and enum/const conjunctively: a nullable type
+	// admits null only when the finite value set itself contains null, so the
+	// grammar builds no null branch (and charges no branch cost) otherwise.
+	// Mirrors the Swift compiler's effective-nullable rule.
+	if finite && !constrainedValuesContainNull(values) {
+		nullable = false
+	}
 	baseCost := constrainedSchemaFixedCost
 	if nullable {
 		baseCost = constrainedGrammarAdd(baseCost, constrainedNullableBranchCost)
 	}
-	values, finite := constrainedSchemaFiniteValues(schema)
 	payloadCost := 0
 	switch kind {
 	case "object":
@@ -229,6 +236,15 @@ func constrainedSchemaFiniteValues(schema map[string]any) ([]any, bool) {
 	}
 	values, ok := schema["enum"].([]any)
 	return values, ok
+}
+
+func constrainedValuesContainNull(values []any) bool {
+	for _, value := range values {
+		if value == nil {
+			return true
+		}
+	}
+	return false
 }
 
 func constrainedGrammarAdd(lhs, rhs int) int {

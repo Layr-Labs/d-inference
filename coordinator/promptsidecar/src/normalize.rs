@@ -412,6 +412,17 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
     {
         object.insert("nullable".into(), Value::Bool(true));
     }
+    // A typeless node whose const/enum admits null beside a concrete value
+    // keeps null validity through the standard `nullable` key, exactly like
+    // the array-form type collapse below.
+    if !object.contains_key("type")
+        && let Some((concrete, saw_null)) = finite_value_types(object)
+        && saw_null
+        && !concrete.is_empty()
+        && object.get("nullable") != Some(&Value::Bool(true))
+    {
+        object.insert("nullable".into(), Value::Bool(true));
+    }
     if let Some(Value::Array(types)) = object.get("type") {
         let members = types
             .iter()
@@ -523,7 +534,57 @@ fn inferred_schema_type(object: &Map<String, Value>) -> String {
             return kind.into();
         }
     }
+    // A typeless `{"const":1}` accepts 1, so the injected render type must be
+    // "number", not "string" — the string default would make every
+    // schema-valid emission fail post-generation validation.
+    if let Some((concrete, saw_null)) = finite_value_types(object) {
+        if concrete.len() == 1 {
+            return concrete.into_iter().next().expect("single member");
+        }
+        if concrete.is_empty() && saw_null {
+            return "null".into();
+        }
+    }
     "string".into()
+}
+
+/// JSON type names of a node's const/enum values: the set of concrete
+/// (non-null) member types plus whether null appears. `None` when the node
+/// carries no const and no non-empty enum array.
+pub(crate) fn finite_value_types(object: &Map<String, Value>) -> Option<(HashSet<String>, bool)> {
+    let values: Vec<&Value> = if let Some(constant) = object.get("const") {
+        vec![constant]
+    } else if let Some(members) = object.get("enum").and_then(Value::as_array) {
+        if members.is_empty() {
+            return None;
+        }
+        members.iter().collect()
+    } else {
+        return None;
+    };
+    let mut concrete = HashSet::new();
+    let mut saw_null = false;
+    for value in values {
+        match value {
+            Value::Null => saw_null = true,
+            Value::Bool(_) => {
+                concrete.insert("boolean".to_owned());
+            }
+            Value::Number(_) => {
+                concrete.insert("number".to_owned());
+            }
+            Value::String(_) => {
+                concrete.insert("string".to_owned());
+            }
+            Value::Array(_) => {
+                concrete.insert("array".to_owned());
+            }
+            Value::Object(_) => {
+                concrete.insert("object".to_owned());
+            }
+        }
+    }
+    Some((concrete, saw_null))
 }
 
 fn apply_tool_choice_policy(
@@ -1025,9 +1086,76 @@ mod tests {
         assert_eq!(parameters["type"], "object");
         assert_eq!(parameters["properties"]["city"]["type"], "string");
         assert_eq!(parameters["properties"]["days"]["type"], "array");
-        assert_eq!(parameters["properties"]["days"]["items"]["type"], "string");
+        // A typeless enum node keeps its value semantics: `[1,2]` is a number
+        // enum, so the injected render type must be "number" — the old string
+        // default made every schema-valid numeric emission fail validation.
+        assert_eq!(parameters["properties"]["days"]["items"]["type"], "number");
         assert_eq!(parameters["properties"]["optional"]["type"], "string");
         assert_eq!(parameters["properties"]["optional"]["nullable"], true);
+    }
+
+    #[test]
+    fn typeless_finite_values_keep_original_semantics() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{
+                    "count":{"const":1},
+                    "level":{"enum":[1,2,null]},
+                    "flag":{"const":true},
+                    "tag":{"enum":["a","b"]},
+                    "none":{"const":null}
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let tools = normalized.tools.unwrap();
+        let properties = &tools[0]["function"]["parameters"]["properties"];
+        assert_eq!(properties["count"]["type"], "number");
+        assert!(properties["count"].get("nullable").is_none());
+        assert_eq!(properties["level"]["type"], "number");
+        assert_eq!(properties["level"]["nullable"], true);
+        assert_eq!(properties["flag"]["type"], "boolean");
+        assert_eq!(properties["tag"]["type"], "string");
+        assert_eq!(properties["none"]["type"], "null");
+    }
+
+    #[test]
+    fn typeless_mixed_finite_values_are_rejected_before_normalization() {
+        for value in [json!({"enum":["a",1]}), json!({"enum":[true,"on"]})] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"pick",
+                    "parameters":{"type":"object","properties":{"value":value}}
+                }}],
+                "tool_choice":"auto"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
+    }
+
+    #[test]
+    fn unevaluated_assertions_are_rejected_before_inference() {
+        for value in [
+            json!({"type":"object","unevaluatedProperties":false}),
+            json!({"type":"array","items":{"type":"string"},"unevaluatedItems":false}),
+        ] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"pick",
+                    "parameters":{"type":"object","properties":{"value":value}}
+                }}],
+                "tool_choice":"auto"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
     }
 
     #[test]

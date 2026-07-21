@@ -296,6 +296,18 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 			*changed = true
 		}
 	}
+	// A typeless node whose const/enum admits null beside a concrete value
+	// (e.g. `{"enum":[1,null]}`) keeps null validity through the standard
+	// `nullable` key, exactly like the array-form type collapse below —
+	// the injected concrete type alone would reject a schema-valid null.
+	if dict["type"] == nil {
+		if concrete, sawNull, ok := finiteValueTypes(dict); ok && sawNull && len(concrete) > 0 {
+			if nullable, _ := dict["nullable"].(bool); !nullable {
+				dict["nullable"] = true
+				*changed = true
+			}
+		}
+	}
 
 	// A type that is PRESENT but not a string crashes `| upper` just like a
 	// missing one. The common real-world shape is the JSON-Schema array form
@@ -445,7 +457,11 @@ func looksLikeSchemaNode(dict map[string]any) bool {
 // when it has properties / patternProperties / additionalProperties, array
 // when it has items / prefixItems, a union member's type when it is an
 // anyOf/oneOf/allOf (skipping "null" — mislabelling a union as a string would
-// be wrong), otherwise string.
+// be wrong), the single concrete type of its const/enum values when the node
+// declares finite values (a typeless `{"const":1}` accepts 1, so the injected
+// render type must be "number", not "string" — the string default would make
+// every schema-valid emission fail post-generation validation), otherwise
+// string.
 func inferredType(dict map[string]any) string {
 	for _, key := range []string{"properties", "patternProperties", "additionalProperties"} {
 		if _, ok := dict[key]; ok {
@@ -460,7 +476,63 @@ func inferredType(dict map[string]any) string {
 	if t, ok := unionMemberType(dict); ok {
 		return t
 	}
+	if concrete, sawNull, ok := finiteValueTypes(dict); ok {
+		if len(concrete) == 1 {
+			for name := range concrete {
+				return name
+			}
+		}
+		if len(concrete) == 0 && sawNull {
+			return "null"
+		}
+	}
 	return "string"
+}
+
+// finiteValueTypes reports the JSON type names of a node's const/enum values:
+// the set of concrete (non-null) member types plus whether null appears.
+// ok is false when the node carries no const and no non-empty enum array.
+func finiteValueTypes(dict map[string]any) (concrete map[string]struct{}, sawNull bool, ok bool) {
+	var values []any
+	if constant, present := dict["const"]; present {
+		values = []any{constant}
+	} else if members, isArray := dict["enum"].([]any); isArray && len(members) > 0 {
+		values = members
+	} else {
+		return nil, false, false
+	}
+	concrete = make(map[string]struct{}, 2)
+	for _, value := range values {
+		name := jsonValueTypeName(value)
+		if name == "null" {
+			sawNull = true
+			continue
+		}
+		concrete[name] = struct{}{}
+	}
+	return concrete, sawNull, true
+}
+
+// jsonValueTypeName maps a decoded JSON value to its JSON-Schema type name.
+// Integral and fractional numbers both report "number" — "number" admits
+// integers under raw validation, so the coarser name is always safe.
+func jsonValueTypeName(value any) string {
+	switch value.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case json.Number, float64:
+		return "number"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "string"
+	}
 }
 
 // unionMemberType derives a representative `type` for a union node from the

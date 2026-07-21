@@ -331,6 +331,48 @@ func TestQueuedConstraintPreservesPrefixProtocolFloor(t *testing.T) {
 	}
 }
 
+func TestQueuedConstraintTerminatesWhenLastCapableProviderIsExcluded(t *testing.T) {
+	reg := New(testLogger())
+	model := "gemma-4-excluded"
+	provider := makeSchedulerProvider(t, reg, "capable-excluded", model, 100)
+	setProviderVersion(provider, "99.0.0")
+	provider.mu.Lock()
+	provider.ToolConstraintProtocol = ToolConstraintProtocolV1
+	provider.ToolConstraintModels = map[string]struct{}{model: {}}
+	provider.mu.Unlock()
+
+	request := &QueuedRequest{
+		RequestID:  "queued-excluded-constraint",
+		Model:      model,
+		ResponseCh: make(chan *Provider, 1),
+		Pending: &PendingRequest{
+			RequestID:           "queued-excluded-constraint",
+			Model:               model,
+			RequestedMaxTokens:  32,
+			ExcludedProviderIDs: []string{provider.ID},
+			Traits: RequestTraits{
+				HasTools:               true,
+				RequiresToolConstraint: true,
+			},
+		},
+	}
+	if err := reg.Queue().Enqueue(request); err != nil {
+		t.Fatal(err)
+	}
+	reg.DrainQueuedRequestsForModel(model)
+	select {
+	case selected := <-request.ResponseCh:
+		if selected != nil {
+			t.Fatalf("excluded provider received constrained request: %s", selected.ID)
+		}
+		if !errors.Is(request.FailureReason, ErrQueueToolConstraintUnavailable) {
+			t.Fatalf("failure = %v", request.FailureReason)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("excluded-only capability kept constrained request queued")
+	}
+}
+
 func TestQueuedConstraintTerminatesWhenLastCapableProviderDisconnects(t *testing.T) {
 	reg := New(testLogger())
 	model := "gemma-4-disconnect"

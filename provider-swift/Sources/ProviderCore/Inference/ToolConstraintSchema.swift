@@ -236,8 +236,16 @@ enum ToolConstraintSchemaCompiler {
             object["nullable"], default: false, path: "\(path).nullable")
         let (kind, typeNullable) = try schemaType(
             object, path: "\(path).type")
-        let nullable = explicitNullable || typeNullable
+        var nullable = explicitNullable || typeNullable
         let enumValues = try finiteValues(object: object, path: path)
+        // JSON Schema applies `type` and `enum`/`const` conjunctively: a
+        // nullable type admits null only when the finite value set itself
+        // contains null. Without this the grammar would build a null branch —
+        // and the post-validator would accept null — for values the declared
+        // enum excludes (e.g. `{"type":["string","null"],"enum":["ok"]}`).
+        if let enumValues, !enumValues.contains(.null) {
+            nullable = false
+        }
 
         switch kind {
         case "object":

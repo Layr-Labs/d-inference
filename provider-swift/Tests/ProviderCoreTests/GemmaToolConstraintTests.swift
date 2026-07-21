@@ -835,6 +835,18 @@ struct GemmaToolConstraintTests {
                     "credit_card": .array([.string("billing_address")]),
                 ]),
             ]),
+            .object([
+                "type": .string("object"),
+                "unevaluatedProperties": .bool(false),
+            ]),
+            .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("string")]),
+                "unevaluatedItems": .bool(false),
+            ]),
+            .object([
+                "enum": .array([.string("a"), .int(1)]),
+            ]),
         ]
         for schema in schemas {
             let parameters: MLXLMCommon.JSONValue = .object([
@@ -1554,6 +1566,120 @@ struct GemmaToolConstraintTests {
                 }
             }
         }
+    }
+
+    @Test("typeless finite schemas keep original semantics through normalization")
+    func typelessFiniteSchemasSurviveNormalization() throws {
+        let body = Data(
+            """
+            {"model":"gemma-4-test",
+             "messages":[{"role":"user","content":"pick"}],
+             "tools":[{"type":"function","function":{"name":"pick","parameters":{
+               "type":"object",
+               "properties":{
+                 "count":{"const":1},
+                 "level":{"enum":[1,2,null]},
+                 "tag":{"enum":["a","b"]}
+               }}}}],
+             "tool_choice":"auto"}
+            """.utf8)
+        let decoded = try ProviderLoop.decodeOpenAIRequest(body)
+        let normalized = try #require(
+            decoded.tools?.first?.function.parameters)
+        guard case .object(let root) = normalized,
+            case .object(let properties)? = root["properties"],
+            case .object(let count)? = properties["count"],
+            case .object(let level)? = properties["level"],
+            case .object(let tag)? = properties["tag"]
+        else {
+            Issue.record("normalized parameters lost their shape")
+            return
+        }
+        #expect(count["type"] == .string("number"))
+        #expect(level["type"] == .string("number"))
+        #expect(level["nullable"] == .bool(true))
+        #expect(tag["type"] == .string("string"))
+
+        let prepared = try ToolChoicePromptPolicy.prepare(decoded)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "pick",
+                arguments: [
+                    "count": .int(1), "level": .null, "tag": .string("a"),
+                ])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "pick", arguments: ["count": .int(2)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("nullable enum grammars admit null only when the enum contains null")
+    func nullableEnumWithoutNullRejectsNull() throws {
+        let withoutNull: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .array([.string("string"), .string("null")]),
+                    "enum": .array([.string("ok")]),
+                ]),
+            ]),
+            "required": .array([.string("value")]),
+            "additionalProperties": .bool(false),
+        ])
+        let enumRequest = request(
+            choice: .mode(.required), tools: [tool(parameters: withoutNull)])
+        let prepared = try ToolChoicePromptPolicy.prepare(enumRequest)
+        #expect(prepared.compiledTools != nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["value": .string("ok")])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["value": .null])),
+            ], prepared: prepared)
+        }
+
+        // The compiled automaton must not open a null branch at the value
+        // position: after `value:` only the enum's `<|"|>` opener is legal.
+        let constraint = try #require(try ToolConstraintFactory.make(
+            prepared: prepared,
+            request: enumRequest,
+            tokenizer: tokenizer,
+            modelContext: .init(
+                modelId: enumRequest.model, modelType: "gemma4_text"),
+            defaultMaxTokens: 128,
+            stopTokenIDs: [128]))
+        var state = constraint.initialState
+        for token in "<|tool_call>call:weather{value:".utf8.map(Int.init) {
+            state = try #require(
+                constraint.nextState(state: state, tokenID: token))
+        }
+        let allowed = constraint.allowedTokenIDs(
+            state: state, remainingTokens: 64)
+        #expect(!allowed.contains(Int(UInt8(ascii: "n"))))
+
+        let withNull: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "type": .array([.string("string"), .string("null")]),
+                    "enum": .array([.string("ok"), .null]),
+                ]),
+            ]),
+            "required": .array([.string("value")]),
+            "additionalProperties": .bool(false),
+        ])
+        let nullPrepared = try ToolChoicePromptPolicy.prepare(
+            request(choice: .mode(.required), tools: [tool(parameters: withNull)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["value": .null])),
+        ], prepared: nullPrepared)
     }
 
     @Test(

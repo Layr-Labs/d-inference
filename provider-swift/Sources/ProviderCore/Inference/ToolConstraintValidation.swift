@@ -411,6 +411,18 @@ enum ToolConstraintValidation {
                 || object["dependentRequired"] != nil
                 || object["dependencies"] != nil
                 || object["propertyNames"] != nil
+                || object["unevaluatedItems"] != nil
+                || object["unevaluatedProperties"] != nil
+            {
+                return false
+            }
+            // Mixed-type const/enum on a typeless node has no single
+            // renderable type; normalization would silently reject every
+            // member outside its picked type. Mirrors the multi-type union
+            // policy.
+            if object["type"] == nil,
+                let concrete = finiteAutoValueTypes(object),
+                concrete.count > 1
             {
                 return false
             }
@@ -512,6 +524,39 @@ enum ToolConstraintValidation {
         default:
             return true
         }
+    }
+
+    /// Concrete (non-null) JSON type names of a node's const/enum values.
+    /// nil when the node carries no const and no enum array.
+    private static func finiteAutoValueTypes(
+        _ object: [String: ToolArgumentJSONValue]
+    ) -> Set<String>? {
+        let values: [ToolArgumentJSONValue]
+        if let constant = object["const"] {
+            values = [constant]
+        } else if case .array(let members)? = object["enum"] {
+            values = members
+        } else {
+            return nil
+        }
+        var concrete = Set<String>()
+        for value in values {
+            switch value {
+            case .null:
+                continue
+            case .bool:
+                concrete.insert("boolean")
+            case .int, .double:
+                concrete.insert("number")
+            case .string:
+                concrete.insert("string")
+            case .array:
+                concrete.insert("array")
+            case .object:
+                concrete.insert("object")
+            }
+        }
+        return concrete
     }
 
     private static func safePatternComponents(

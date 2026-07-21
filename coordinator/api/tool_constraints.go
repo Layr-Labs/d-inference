@@ -303,10 +303,22 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 		}
 		for _, keyword := range []string{
 			"dependentSchemas", "dependentRequired", "dependencies", "propertyNames",
+			"unevaluatedItems", "unevaluatedProperties",
 		} {
 			if _, unsupported := value[keyword]; unsupported {
 				return unsupportedToolConstraint(
-					"auto tool schemas do not support dependency or property-name assertions")
+					"auto tool schemas do not support dependency, property-name, or unevaluated assertions")
+			}
+		}
+		// A typeless node with mixed-type const/enum values (e.g.
+		// `{"enum":["a",1]}`) has no single renderable type: normalization
+		// would have to pick one member type and silently reject the others
+		// post-generation. Fail early instead, mirroring the multi-type
+		// union policy.
+		if _, hasType := value["type"]; !hasType {
+			if concrete, _, ok := finiteValueTypes(value); ok && len(concrete) > 1 {
+				return unsupportedToolConstraint(
+					"auto tool schemas require an explicit type for mixed-type enum/const values")
 			}
 		}
 		if rawTypes, ok := value["type"].([]any); ok {

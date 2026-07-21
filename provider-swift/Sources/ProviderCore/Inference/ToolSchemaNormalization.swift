@@ -134,6 +134,16 @@ enum ToolSchemaNormalization {
         {
             dict["nullable"] = true
         }
+        // A typeless node whose const/enum admits null beside a concrete
+        // value keeps null validity through the standard `nullable` key,
+        // exactly like the array-form type collapse below.
+        if dict["type"] == nil,
+            let finite = finiteValueTypes(for: dict),
+            finite.sawNull, !finite.concrete.isEmpty,
+            dict["nullable"] as? Bool != true
+        {
+            dict["nullable"] = true
+        }
 
         // A type that is PRESENT but not a string crashes `| upper` just like a
         // missing one. The common real-world shape is the JSON-Schema array form
@@ -279,7 +289,11 @@ enum ToolSchemaNormalization {
     /// properties / patternProperties / additionalProperties, array when it has
     /// items / prefixItems, a union member's type when it is an
     /// anyOf/oneOf/allOf (skipping "null" — mislabelling a union as a string
-    /// would be wrong), otherwise string.
+    /// would be wrong), the single concrete type of its const/enum values when
+    /// the node declares finite values (a typeless `{"const":1}` accepts 1, so
+    /// the injected render type must be "number", not "string" — the string
+    /// default would make every schema-valid emission fail post-generation
+    /// validation), otherwise string.
     private static func inferredType(for dict: [String: Any]) -> String {
         if dict["properties"] != nil || dict["patternProperties"] != nil
             || dict["additionalProperties"] != nil {
@@ -291,6 +305,55 @@ enum ToolSchemaNormalization {
         if let unionType = unionMemberType(dict) {
             return unionType
         }
+        if let finite = finiteValueTypes(for: dict) {
+            if finite.concrete.count == 1, let single = finite.concrete.first {
+                return single
+            }
+            if finite.concrete.isEmpty, finite.sawNull {
+                return "null"
+            }
+        }
+        return "string"
+    }
+
+    /// JSON type names of a node's const/enum values: the set of concrete
+    /// (non-null) member types plus whether null appears. nil when the node
+    /// carries no const and no non-empty enum array.
+    private static func finiteValueTypes(
+        for dict: [String: Any]
+    ) -> (concrete: Set<String>, sawNull: Bool)? {
+        let values: [Any]
+        if let constant = dict["const"] {
+            values = [constant]
+        } else if let members = dict["enum"] as? [Any], !members.isEmpty {
+            values = members
+        } else {
+            return nil
+        }
+        var concrete = Set<String>()
+        var sawNull = false
+        for value in values {
+            let name = jsonValueTypeName(value)
+            if name == "null" {
+                sawNull = true
+            } else {
+                concrete.insert(name)
+            }
+        }
+        return (concrete, sawNull)
+    }
+
+    /// JSON-Schema type name for a JSONSerialization value. Integral and
+    /// fractional numbers both report "number" — "number" admits integers
+    /// under raw validation, so the coarser name is always safe. The boolean
+    /// check precedes NSNumber (CFBoolean is an NSNumber; see isJSONBoolean).
+    private static func jsonValueTypeName(_ value: Any) -> String {
+        if value is NSNull { return "null" }
+        if isJSONBoolean(value) { return "boolean" }
+        if value is NSNumber { return "number" }
+        if value is String { return "string" }
+        if value is [Any] { return "array" }
+        if value is [String: Any] { return "object" }
         return "string"
     }
 

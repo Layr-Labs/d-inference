@@ -112,8 +112,11 @@ struct ToolSchemaNormalizationCorpusTests {
         #expect(pair["type"] as? String == "array")
         let members = try #require(pair["prefixItems"] as? [Any])
         #expect(members.count == 3)
-        for member in members {
-            #expect(typeOf(member) == "string")
+        // `{}` and boolean members default to string; a const member keeps
+        // its value's type ("number" for const 1) so validation stays
+        // satisfiable.
+        for (index, want) in ["string", "number", "string"].enumerated() {
+            #expect(typeOf(members[index]) == want, "prefixItems[\(index)]")
         }
     }
 
@@ -130,13 +133,43 @@ struct ToolSchemaNormalizationCorpusTests {
     @Test func markerlessUnionMembersAreSchemas() throws {
         let props = try normalizedProps(
             #"{"type":"object","properties":{"u":{"anyOf":[{},{"const":3}]},"o":{"oneOf":[{"format":"uuid"}]},"a":{"allOf":[{}]}}}"#)
-        for (name, key) in [("u", "anyOf"), ("o", "oneOf"), ("a", "allOf")] {
+        // Marker-less members default to string; the const member keeps its
+        // value's type ("number" for const 3) so validation stays satisfiable.
+        for (name, key, types) in [
+            ("u", "anyOf", ["string", "number"]),
+            ("o", "oneOf", ["string"]),
+            ("a", "allOf", ["string"]),
+        ] {
             let node = try #require(props[name] as? [String: Any], "\(name)")
             let members = try #require(node[key] as? [Any], "\(name)")
-            for member in members {
-                #expect(typeOf(member) == "string", "\(name).\(key)")
+            #expect(members.count == types.count, "\(name).\(key)")
+            for (index, want) in types.enumerated() {
+                #expect(typeOf(members[index]) == want, "\(name).\(key)[\(index)]")
             }
         }
+    }
+
+    /// A typeless node with const/enum keeps its original value semantics:
+    /// the injected render type comes from the finite values, not the string
+    /// default (which made every schema-valid non-string emission fail
+    /// post-generation validation), and a null member beside a concrete one
+    /// is preserved as nullable. Mirror of the coordinator corpus test.
+    @Test func typelessFiniteValuesKeepOriginalSemantics() throws {
+        let props = try normalizedProps(
+            #"{"type":"object","properties":{"count":{"const":1},"level":{"enum":[1,2,null]},"flag":{"const":true},"tag":{"enum":["a","b"]},"none":{"const":null}}}"#)
+        for (name, want) in [
+            ("count", "number"),
+            ("level", "number"),
+            ("flag", "boolean"),
+            ("tag", "string"),
+            ("none", "null"),
+        ] {
+            #expect(typeOf(props[name]) == want, "\(name)")
+        }
+        let level = try #require(props["level"] as? [String: Any])
+        #expect(level["nullable"] as? Bool == true)
+        let count = try #require(props["count"] as? [String: Any])
+        #expect(count["nullable"] == nil)
     }
 
     @Test func emptyMapAdditionalPropertiesGainsType() throws {

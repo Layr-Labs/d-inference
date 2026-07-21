@@ -159,10 +159,12 @@ func TestNormalizeToolSchemas_Corpus_PrefixItems(t *testing.T) {
 	if !ok || len(prefix) != 3 {
 		t.Fatalf("prefixItems = %v, want 3 members", pair["prefixItems"])
 	}
-	for i, member := range prefix {
-		node := tsnMap(t, member, "prefixItems member")
-		if got := tsnType(t, node, "prefixItems member"); got != "string" {
-			t.Errorf("prefixItems[%d] type = %q, want string", i, got)
+	// `{}` and boolean members default to string; a const member keeps its
+	// value's type ("number" for const 1) so validation stays satisfiable.
+	for i, want := range []string{"string", "number", "string"} {
+		node := tsnMap(t, prefix[i], "prefixItems member")
+		if got := tsnType(t, node, "prefixItems member"); got != want {
+			t.Errorf("prefixItems[%d] type = %q, want %q", i, got, want)
 		}
 	}
 }
@@ -195,16 +197,25 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessUnionMembers(t *testing.T) {
 	    "a":{"allOf":[{}]}}}}}]}`)
 
 	props := tsnProps(t, NormalizeToolSchemas(body))
-	for name, key := range map[string]string{"u": "anyOf", "o": "oneOf", "a": "allOf"} {
+	// Marker-less members default to string; the const member keeps its
+	// value's type ("number" for const 3) so validation stays satisfiable.
+	for name, expectations := range map[string]struct {
+		key   string
+		types []string
+	}{
+		"u": {key: "anyOf", types: []string{"string", "number"}},
+		"o": {key: "oneOf", types: []string{"string"}},
+		"a": {key: "allOf", types: []string{"string"}},
+	} {
 		node := tsnMap(t, props[name], name)
-		members, ok := node[key].([]any)
-		if !ok || len(members) == 0 {
-			t.Fatalf("%s.%s = %v, want non-empty array", name, key, node[key])
+		members, ok := node[expectations.key].([]any)
+		if !ok || len(members) != len(expectations.types) {
+			t.Fatalf("%s.%s = %v, want %d members", name, expectations.key, node[expectations.key], len(expectations.types))
 		}
-		for i, member := range members {
-			m := tsnMap(t, member, key+" member")
-			if got := tsnType(t, m, key+" member"); got != "string" {
-				t.Errorf("%s.%s[%d] type = %q, want string", name, key, i, got)
+		for i, want := range expectations.types {
+			m := tsnMap(t, members[i], expectations.key+" member")
+			if got := tsnType(t, m, expectations.key+" member"); got != want {
+				t.Errorf("%s.%s[%d] type = %q, want %q", name, expectations.key, i, got, want)
 			}
 		}
 	}
@@ -236,6 +247,43 @@ func TestNormalizeToolSchemas_Corpus_RootStaysMarkerGated(t *testing.T) {
 	out := NormalizeToolSchemas(body)
 	if !bytes.Equal(out, body) {
 		t.Fatalf("marker-less roots must not be repaired (no re-encode):\n in: %s\nout: %s", body, out)
+	}
+}
+
+// A typeless node with const/enum keeps its original value semantics: the
+// injected render type comes from the finite values, not the string default
+// (which made every schema-valid non-string emission fail post-generation
+// validation), and a null member beside a concrete one is preserved as
+// nullable.
+func TestNormalizeToolSchemas_Corpus_TypelessFiniteValues(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "count":{"const":1},
+	    "level":{"enum":[1,2,null]},
+	    "flag":{"const":true},
+	    "tag":{"enum":["a","b"]},
+	    "none":{"const":null}}}}}]}`)
+
+	props := tsnProps(t, NormalizeToolSchemas(body))
+	for name, want := range map[string]string{
+		"count": "number",
+		"level": "number",
+		"flag":  "boolean",
+		"tag":   "string",
+		"none":  "null",
+	} {
+		node := tsnMap(t, props[name], name)
+		if got := tsnType(t, node, name); got != want {
+			t.Errorf("%s type = %q, want %q", name, got, want)
+		}
+	}
+	level := tsnMap(t, props["level"], "level")
+	if level["nullable"] != true {
+		t.Errorf("level nullable = %v, want true", level["nullable"])
+	}
+	count := tsnMap(t, props["count"], "count")
+	if _, hasNullable := count["nullable"]; hasNullable {
+		t.Errorf("count gained a spurious nullable: %#v", count)
 	}
 }
 

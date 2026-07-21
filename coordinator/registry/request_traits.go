@@ -211,7 +211,7 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials ...string) bool {
 	traits := RequestTraits{HasTools: true}
 	return r.hasToolCapableProviderForModel(
-		model, traits, "", false, false, allowedSerials...)
+		model, traits, "", false, false, nil, allowedSerials...)
 }
 
 // HasToolConstraintProviderForModel is the fail-fast companion for
@@ -223,7 +223,7 @@ func (r *Registry) HasToolConstraintProviderForModel(
 ) bool {
 	traits := RequestTraits{HasTools: true, RequiresToolConstraint: true}
 	return r.hasToolCapableProviderForModel(
-		model, traits, "", false, false, allowedSerials...)
+		model, traits, "", false, false, nil, allowedSerials...)
 }
 
 func (r *Registry) hasToolConstraintProviderForPending(
@@ -242,6 +242,7 @@ func (r *Registry) hasToolConstraintProviderForPending(
 		pending.OwnerAccountID,
 		pending.SelfRouteOnly,
 		pending.PreferOwner,
+		pending.ExcludedProviderIDs,
 		pending.AllowedProviderSerials...)
 }
 
@@ -251,16 +252,28 @@ func (r *Registry) hasToolCapableProviderForModel(
 	ownerAccountID string,
 	selfRouteOnly bool,
 	preferOwner bool,
+	excludedProviderIDs []string,
 	allowedSerials ...string,
 ) bool {
 	allowedSet := make(map[string]struct{}, len(allowedSerials))
 	for _, s := range allowedSerials {
 		allowedSet[s] = struct{}{}
 	}
+	excludedSet := make(map[string]struct{}, len(excludedProviderIDs))
+	for _, id := range excludedProviderIDs {
+		excludedSet[id] = struct{}{}
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	now := time.Now()
 	for _, p := range r.providers {
+		// ReserveProviderEx categorically skips a pending request's excluded
+		// providers (pre-dispatch incompatibilities carried across queue
+		// requeues), so an excluded provider must not keep a constrained
+		// waiter alive here either — it can never be selected for it.
+		if _, excluded := excludedSet[p.ID]; excluded {
+			continue
+		}
 		// Allowed-serial filter first (providerMatchesAllowedSerial takes p.mu
 		// internally), mirroring the routing candidate filter and QuickCapacityCheck.
 		if len(allowedSet) > 0 && !providerMatchesAllowedSerial(p, allowedSet) {

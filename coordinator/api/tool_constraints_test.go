@@ -341,6 +341,21 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 			"type":          "object",
 			"propertyNames": map[string]any{"const": "allowed"},
 		},
+		"unevaluated properties": map[string]any{
+			"type":                  "object",
+			"unevaluatedProperties": false,
+		},
+		"unevaluated items": map[string]any{
+			"type":             "array",
+			"items":            map[string]any{"type": "string"},
+			"unevaluatedItems": false,
+		},
+		"typeless mixed enum": map[string]any{
+			"enum": []any{"a", 1},
+		},
+		"typeless mixed const union": map[string]any{
+			"enum": []any{true, "on"},
+		},
 	}
 	for name, propertySchema := range schemas {
 		t.Run(name, func(t *testing.T) {
@@ -369,6 +384,46 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 				t.Fatalf("unsupported auto schema accepted: %T %v", validationErr, validationErr)
 			}
 		})
+	}
+}
+
+func TestAutoToolChoiceAcceptsUniformTypelessFiniteSchemas(t *testing.T) {
+	body := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"pick",
+			"parameters":{"type":"object","properties":{
+				"count":{"const":1},
+				"level":{"enum":[1,2,null]},
+				"tag":{"enum":["a","b"]}
+			}}
+		}}],
+		"tool_choice":"auto"
+	}`)
+	if _, err := validateToolConstraintRequest(body); err != nil {
+		t.Fatalf("uniform typeless finite schema rejected: %v", err)
+	}
+}
+
+func TestConstrainedGrammarCostChargesNullBranchOnlyWhenEnumAdmitsNull(t *testing.T) {
+	nullableEnum := func(enum []any) map[string]any {
+		return map[string]any{
+			"type": []any{"string", "null"},
+			"enum": enum,
+		}
+	}
+	plain := constrainedSchemaGrammarCost(map[string]any{
+		"type": "string",
+		"enum": []any{"ok"},
+	})
+	withoutNull := constrainedSchemaGrammarCost(nullableEnum([]any{"ok"}))
+	if withoutNull != plain {
+		t.Fatalf("enum without null charged a null branch: %d != %d", withoutNull, plain)
+	}
+	withNull := constrainedSchemaGrammarCost(nullableEnum([]any{"ok", nil}))
+	if want := plain + constrainedNullableBranchCost; withNull != want {
+		t.Fatalf("enum with null lost its null branch: %d != %d", withNull, want)
 	}
 }
 

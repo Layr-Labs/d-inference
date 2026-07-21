@@ -210,9 +210,21 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
                 "dependentRequired",
                 "dependencies",
                 "propertyNames",
+                "unevaluatedItems",
+                "unevaluatedProperties",
             ]
             .iter()
             .any(|keyword| object.contains_key(*keyword))
+            {
+                return Err(NormalizeError::InvalidTools);
+            }
+            // Mixed-type const/enum on a typeless node has no single
+            // renderable type; normalization would silently reject every
+            // member outside its picked type. Mirrors the multi-type union
+            // policy.
+            if !object.contains_key("type")
+                && let Some((concrete, _)) = crate::normalize::finite_value_types(object)
+                && concrete.len() > 1
             {
                 return Err(NormalizeError::InvalidTools);
             }
@@ -461,18 +473,26 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
         Some(Value::Bool(value)) => nullable |= *value,
         Some(_) => return MAX_GRAMMAR_COMPLEXITY + 1,
     }
-    let base_cost = if nullable {
-        grammar_add(SCHEMA_FIXED_COST, NULLABLE_BRANCH_COST)
-    } else {
-        SCHEMA_FIXED_COST
-    };
-    let finite_values = if let Some(constant) = schema.get("const") {
+    let finite_values: Option<Vec<&Value>> = if let Some(constant) = schema.get("const") {
         Some(vec![constant])
     } else {
         schema
             .get("enum")
             .and_then(Value::as_array)
             .map(|values| values.iter().collect())
+    };
+    // JSON Schema applies type and enum/const conjunctively: a nullable type
+    // admits null only when the finite value set itself contains null, so
+    // the provider grammar builds no null branch (and none is charged).
+    if let Some(values) = &finite_values
+        && !values.iter().any(|value| value.is_null())
+    {
+        nullable = false;
+    }
+    let base_cost = if nullable {
+        grammar_add(SCHEMA_FIXED_COST, NULLABLE_BRANCH_COST)
+    } else {
+        SCHEMA_FIXED_COST
     };
     let payload_cost = match kind.as_str() {
         "object" => {
@@ -623,6 +643,17 @@ mod tests {
             })];
             assert!(validate_constrained_tools(&tools).is_err(), "{bound}");
         }
+    }
+
+    #[test]
+    fn charges_null_branch_only_when_enum_admits_null() {
+        let plain = constrained_schema_grammar_cost(&json!({"type":"string","enum":["ok"]}));
+        let without_null =
+            constrained_schema_grammar_cost(&json!({"type":["string","null"],"enum":["ok"]}));
+        assert_eq!(without_null, plain);
+        let with_null =
+            constrained_schema_grammar_cost(&json!({"type":["string","null"],"enum":["ok",null]}));
+        assert_eq!(with_null, plain + NULLABLE_BRANCH_COST);
     }
 
     #[test]

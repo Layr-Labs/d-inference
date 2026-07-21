@@ -6,11 +6,12 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, Suspense } from "react";
 
 function isSafeRedirect(next: string): boolean {
-  return (
-    next.startsWith("/") &&
-    !next.startsWith("//") &&
-    !/^[a-z][a-z0-9+.-]*:/i.test(next)
-  );
+  try {
+    const url = new URL(next, window.location.origin);
+    return url.origin === window.location.origin && url.pathname.startsWith("/");
+  } catch {
+    return false;
+  }
 }
 
 function LoginContent() {

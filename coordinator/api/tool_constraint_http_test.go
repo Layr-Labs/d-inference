@@ -89,3 +89,60 @@ func TestToolConstraintValidationRunsThroughEveryHTTPShape(t *testing.T) {
 		})
 	}
 }
+
+// Endpoint-native shapes the contract lowering cannot express (multi-prompt
+// completions, media-bearing messages) have always been forwarded verbatim by
+// the generic handler. Constraint validation must not turn that fallback into
+// a 400 for tool-less requests; only requests that actually carry tool policy
+// fail closed when the lowered shape is unavailable.
+func TestGenericEndpointLoweringFallbackSurvivesConstraintValidation(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.registry.SetModelCatalog([]registry.CatalogEntry{{ID: "m"}})
+
+	forwarded := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			"completions multi prompt",
+			"/v1/completions",
+			`{"model":"m","prompt":["first","second"]}`,
+		},
+		{
+			"messages media without tools",
+			"/v1/messages",
+			`{"model":"m","messages":[{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA=="}},{"type":"text","text":"x"}]}]}`,
+		},
+	}
+	for _, test := range forwarded {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(
+				http.MethodPost, test.path, strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer test-key")
+			response := httptest.NewRecorder()
+			srv.Handler().ServeHTTP(response, request)
+			if response.Code == http.StatusBadRequest ||
+				response.Code == http.StatusUnprocessableEntity {
+				t.Fatalf(
+					"tool-less unsupported-to-lower shape rejected at validation: %d %s",
+					response.Code, response.Body.String())
+			}
+		})
+	}
+
+	// Tool policy cannot be validated without the lowered shape: fail closed.
+	request := httptest.NewRequest(
+		http.MethodPost, "/v1/completions", strings.NewReader(
+			`{"model":"m","prompt":["first","second"],`+
+				`"tools":[{"type":"function","function":{"name":"safe","parameters":{"type":"object"}}}],`+
+				`"tool_choice":"required"}`))
+	request.Header.Set("Authorization", "Bearer test-key")
+	response := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"tool-bearing unsupported-to-lower shape not failed closed: %d %s",
+			response.Code, response.Body.String())
+	}
+}

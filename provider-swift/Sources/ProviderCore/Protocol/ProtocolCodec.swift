@@ -124,6 +124,9 @@ public enum ProviderProtocolCodec {
         if let version = register.prefixCacheProtocol, version != 0 {
             try fields.append(("prefix_cache_protocol", encodeValue(version)))
         }
+        if let models = register.prefixCacheV2Models, !models.isEmpty {
+            try fields.append(("prefix_cache_v2_models", encodeValue(models)))
+        }
         if let version = register.toolConstraintProtocol, version != 0 {
             try fields.append(("tool_constraint_protocol", encodeValue(version)))
         }

@@ -360,6 +360,9 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 			"minimum":   5,
 			"minLength": 2,
 		},
+		"typeless not": map[string]any{
+			"not": map[string]any{"type": "string"},
+		},
 	}
 	for name, propertySchema := range schemas {
 		t.Run(name, func(t *testing.T) {
@@ -401,7 +404,8 @@ func TestAutoToolChoiceAcceptsUniformTypelessFiniteSchemas(t *testing.T) {
 				"count":{"const":1},
 				"level":{"enum":[1,2,null]},
 				"tag":{"enum":["a","b"]},
-				"score":{"minimum":5,"maximum":10}
+				"score":{"minimum":5,"maximum":10},
+				"neg":{"type":"integer","not":{"const":3}}
 			}}
 		}}],
 		"tool_choice":"auto"

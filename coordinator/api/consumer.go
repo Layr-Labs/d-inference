@@ -3584,17 +3584,30 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// "Use my own machine, for free" opt-in (see handleChatCompletions).
 	policy := s.resolveSelfRoutePolicy(r)
 
+	// Constraint validation needs the lowered chat shape. Endpoint-native
+	// shapes the contract lowering cannot express — multi-prompt completions,
+	// media-bearing messages — have always been forwarded verbatim (see the
+	// inferenceBody fallback below), so a lowering failure is only terminal
+	// for requests that actually carry tool policy to validate; tool-less
+	// unsupported shapes keep the pre-existing native-forward behavior with
+	// the neutral auto defaults.
+	validatedPolicy := validatedToolConstraintPolicy{
+		mode: toolChoiceAuto, parallel: true,
+	}
 	constraintBody, constraintLowerErr := promptcontract.LowerProviderBody(
 		endpointKind, originalRawBody)
-	if constraintLowerErr != nil {
+	if constraintLowerErr == nil {
+		var validationErr error
+		validatedPolicy, validationErr = validateToolConstraintPolicy(constraintBody)
+		if validationErr != nil {
+			s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
+			writeToolConstraintValidationError(w, validationErr)
+			return
+		}
+	} else if _, hasToolChoice := parsed["tool_choice"]; hasToolChoice || requestHasTools(parsed) {
+		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
 		writeJSON(w, http.StatusBadRequest, errorResponse(
 			"invalid_request_error", constraintLowerErr.Error()))
-		return
-	}
-	validatedPolicy, validationErr := validateToolConstraintPolicy(constraintBody)
-	if validationErr != nil {
-		s.recordToolConstraintMetric(validatedPolicy.mode, "compile_rejection")
-		writeToolConstraintValidationError(w, validationErr)
 		return
 	}
 	validatedMode := validatedPolicy.mode

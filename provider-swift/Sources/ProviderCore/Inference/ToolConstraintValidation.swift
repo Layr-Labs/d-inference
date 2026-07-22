@@ -563,11 +563,13 @@ enum ToolConstraintValidation {
         }
     }
 
-    /// Whether a node's only type evidence is assertion keywords spanning
-    /// more than one type family (e.g. `{"minimum":5,"minLength":2}`). Such a
-    /// node has no single renderable type: normalization would have to pick
-    /// one family and silently break the others post-generation. Structural,
-    /// union, or finite-value evidence takes priority.
+    /// Whether a typeless node's assertions cannot determine a single
+    /// renderable type: either its assertion keywords span more than one type
+    /// family (e.g. `{"minimum":5,"minLength":2}`) or its only assertion is
+    /// `not` (e.g. `{"not":{"type":"string"}}`, which accepts every
+    /// non-string — no injected type can preserve that, and the string
+    /// default would make the schema unsatisfiable). Structural, union, or
+    /// finite-value evidence takes priority.
     private static func typelessAssertionFamiliesAmbiguous(
         _ object: [String: ToolArgumentJSONValue]
     ) -> Bool {
@@ -595,7 +597,8 @@ enum ToolConstraintValidation {
         where object[keyword] != nil {
             families.insert(family)
         }
-        return families.count > 1
+        if families.count > 1 { return true }
+        return families.isEmpty && object["not"] != nil
     }
 
     /// Concrete (non-null) JSON type names of a node's const/enum values.

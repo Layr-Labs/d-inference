@@ -851,6 +851,9 @@ struct GemmaToolConstraintTests {
                 "minimum": .int(5),
                 "minLength": .int(2),
             ]),
+            .object([
+                "not": .object(["type": .string("string")]),
+            ]),
         ]
         for schema in schemas {
             let parameters: MLXLMCommon.JSONValue = .object([

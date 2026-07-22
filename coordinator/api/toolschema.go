@@ -542,13 +542,14 @@ func assertionFamilyTypes(dict map[string]any) map[string]struct{} {
 	return families
 }
 
-// typelessAssertionFamiliesAmbiguous reports whether a node's only type
-// evidence is assertion keywords spanning more than one type family (e.g.
-// `{"minimum":5,"minLength":2}`). Such a node has no single renderable type:
-// normalization would have to pick one family and silently disable the other
-// families' assertions post-generation. Callers reject these before
-// normalization; nodes with structural, union, or finite-value evidence are
-// typed by those higher-priority rules instead.
+// typelessAssertionFamiliesAmbiguous reports whether a typeless node's
+// assertions cannot determine a single renderable type: either its assertion
+// keywords span more than one type family (e.g. `{"minimum":5,"minLength":2}`)
+// or its only assertion is `not` (e.g. `{"not":{"type":"string"}}`, which
+// accepts every non-string — no injected type can preserve that, and the
+// string default would make the schema unsatisfiable). Callers reject these
+// before normalization; nodes with structural, union, or finite-value
+// evidence are typed by those higher-priority rules instead.
 func typelessAssertionFamiliesAmbiguous(dict map[string]any) bool {
 	for _, key := range []string{
 		"properties", "patternProperties", "additionalProperties",
@@ -561,7 +562,14 @@ func typelessAssertionFamiliesAmbiguous(dict map[string]any) bool {
 	if _, ok := unionMemberType(dict); ok {
 		return false
 	}
-	return len(assertionFamilyTypes(dict)) > 1
+	families := assertionFamilyTypes(dict)
+	if len(families) > 1 {
+		return true
+	}
+	if _, negated := dict["not"]; negated && len(families) == 0 {
+		return true
+	}
+	return false
 }
 
 // finiteValueTypes reports the JSON type names of a node's const/enum values:

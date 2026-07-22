@@ -324,7 +324,7 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 				}
 			} else if typelessAssertionFamiliesAmbiguous(value) {
 				return unsupportedToolConstraint(
-					"auto tool schemas require an explicit type for mixed-family assertions")
+					"auto tool schemas require an explicit type when assertions cannot determine one")
 			}
 		}
 		if rawTypes, ok := value["type"].([]any); ok {

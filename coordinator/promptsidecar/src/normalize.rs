@@ -595,11 +595,13 @@ fn assertion_family_types(object: &Map<String, Value>) -> HashSet<&'static str> 
         .collect()
 }
 
-/// Whether a node's only type evidence is assertion keywords spanning more
-/// than one type family (e.g. `{"minimum":5,"minLength":2}`). Such a node has
-/// no single renderable type: normalization would have to pick one family and
-/// silently break the others post-generation, so callers reject it before
-/// normalization. Structural, union, or finite-value evidence takes priority.
+/// Whether a typeless node's assertions cannot determine a single renderable
+/// type: either its assertion keywords span more than one type family (e.g.
+/// `{"minimum":5,"minLength":2}`) or its only assertion is `not` (e.g.
+/// `{"not":{"type":"string"}}`, which accepts every non-string — no injected
+/// type can preserve that, and the string default would make the schema
+/// unsatisfiable). Callers reject these before normalization. Structural,
+/// union, or finite-value evidence takes priority.
 pub(crate) fn typeless_assertion_families_ambiguous(object: &Map<String, Value>) -> bool {
     for key in [
         "properties",
@@ -625,7 +627,11 @@ pub(crate) fn typeless_assertion_families_ambiguous(object: &Map<String, Value>)
             return false;
         }
     }
-    assertion_family_types(object).len() > 1
+    let families = assertion_family_types(object);
+    if families.len() > 1 {
+        return true;
+    }
+    families.is_empty() && object.contains_key("not")
 }
 
 /// JSON type names of a node's const/enum values: the set of concrete
@@ -1280,18 +1286,21 @@ mod tests {
 
     #[test]
     fn typeless_mixed_assertion_families_are_rejected_before_normalization() {
-        let body = json!({
-            "model":"gemma-4-fixture",
-            "messages":[{"role":"user","content":"x"}],
-            "tools":[{"type":"function","function":{
-                "name":"pick",
-                "parameters":{"type":"object","properties":{
-                    "value":{"minimum":5,"minLength":2}
-                }}
-            }}],
-            "tool_choice":"auto"
-        });
-        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        for value in [
+            json!({"minimum":5,"minLength":2}),
+            json!({"not":{"type":"string"}}),
+        ] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"pick",
+                    "parameters":{"type":"object","properties":{"value":value}}
+                }}],
+                "tool_choice":"auto"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
     }
 
     #[test]

@@ -302,6 +302,24 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 			}
 		}
 	}
+	// Boolean/empty schemas inside combinators are rewritten to render
+	// markers above. Fold combinators whose result is therefore constant
+	// before inferring a parent type; otherwise `allOf:[{}]` inherits the
+	// marker's synthetic string type and stops accepting numbers/objects.
+	// The fold is exact for the boolean identities below and retains
+	// annotation-only siblings.
+	if positional {
+		if accepts, annotations, ok := constantMarkedCombinator(dict); ok {
+			clear(dict)
+			dict["type"] = "string"
+			dict[originalBooleanSchemaKey] = accepts
+			for key, value := range annotations {
+				dict[key] = value
+			}
+			*changed = true
+			return dict
+		}
+	}
 	if dict["type"] == nil && nullableCombinatorUnion(dict) {
 		if nullable, _ := dict["nullable"].(bool); !nullable {
 			dict["nullable"] = true
@@ -372,6 +390,111 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 		}
 	}
 	return dict
+}
+
+var schemaAnnotationKeys = map[string]struct{}{
+	"$anchor":     {},
+	"$comment":    {},
+	"$id":         {},
+	"$schema":     {},
+	"default":     {},
+	"deprecated":  {},
+	"description": {},
+	"examples":    {},
+	"readOnly":    {},
+	"title":       {},
+	"writeOnly":   {},
+}
+
+// constantMarkedCombinator evaluates a single annotation-only combinator
+// whose boolean/empty members make its result constant. JSON Schema gives
+// these exact identities: allOf(false, X)=false, allOf(true...)=true,
+// anyOf(true, X)=true, anyOf(false...)=false, and oneOf is constant only
+// when every member is a known boolean schema.
+func constantMarkedCombinator(dict map[string]any) (accepts bool, annotations map[string]any, ok bool) {
+	combinator := ""
+	for key := range dict {
+		if slices.Contains(schemaUnionKeys, key) {
+			if combinator != "" {
+				return false, nil, false
+			}
+			combinator = key
+			continue
+		}
+		if _, annotation := schemaAnnotationKeys[key]; !annotation {
+			return false, nil, false
+		}
+	}
+	if combinator == "" {
+		return false, nil, false
+	}
+	variants, valid := dict[combinator].([]any)
+	if !valid || len(variants) == 0 {
+		return false, nil, false
+	}
+	knownCount := 0
+	trueCount := 0
+	for _, raw := range variants {
+		variant, isObject := raw.(map[string]any)
+		if !isObject {
+			continue
+		}
+		value, known := renderMarkerBoolean(variant)
+		if !known {
+			continue
+		}
+		knownCount++
+		if value {
+			trueCount++
+		}
+	}
+	switch combinator {
+	case "allOf":
+		if knownCount > trueCount {
+			accepts, ok = false, true
+		} else if knownCount == len(variants) {
+			accepts, ok = true, true
+		}
+	case "anyOf":
+		if trueCount > 0 {
+			accepts, ok = true, true
+		} else if knownCount == len(variants) {
+			accepts, ok = false, true
+		}
+	case "oneOf":
+		if knownCount == len(variants) {
+			accepts, ok = trueCount == 1, true
+		}
+	}
+	if !ok {
+		return false, nil, false
+	}
+	annotations = make(map[string]any, len(dict)-1)
+	for key, value := range dict {
+		if _, annotation := schemaAnnotationKeys[key]; annotation {
+			annotations[key] = value
+		}
+	}
+	return accepts, annotations, true
+}
+
+func renderMarkerBoolean(dict map[string]any) (bool, bool) {
+	if dict["type"] != "string" {
+		return false, false
+	}
+	marker, ok := dict[originalBooleanSchemaKey].(bool)
+	if !ok {
+		return false, false
+	}
+	for key := range dict {
+		if key == "type" || key == originalBooleanSchemaKey {
+			continue
+		}
+		if _, annotation := schemaAnnotationKeys[key]; !annotation {
+			return false, false
+		}
+	}
+	return marker, true
 }
 
 func nullableCombinatorUnion(dict map[string]any) bool {
@@ -630,6 +753,11 @@ func unionMemberType(dict map[string]any) (string, bool) {
 		for _, variant := range variants {
 			v, ok := variant.(map[string]any)
 			if !ok {
+				continue
+			}
+			// Marker types exist only to keep the Gemma template renderable;
+			// they carry no instance-type evidence for their parent.
+			if _, marker := renderMarkerBoolean(v); marker {
 				continue
 			}
 			if t, ok := v["type"].(string); ok && t != "null" {

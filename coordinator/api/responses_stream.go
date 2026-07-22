@@ -142,9 +142,9 @@ type responsesStreamEmitter struct {
 	messageItemID string
 	contentBuf    strings.Builder
 
-	fnCalls     map[int]*streamFnState
-	fnOrder     []int
-	sawToolCall bool
+	activeFnByIndex map[int]*streamFnState
+	fnOrder         []*streamFnState
+	sawToolCall     bool
 
 	finishReason string
 }
@@ -155,19 +155,20 @@ type streamFnState struct {
 	outputIndex int
 	itemID      string
 	callID      string
+	wireID      string
 	name        string
 	argsBuf     strings.Builder
 }
 
 func newResponsesStreamEmitter(w http.ResponseWriter, flusher http.Flusher, pr *registry.PendingRequest, responseID string, createdAt int64) *responsesStreamEmitter {
 	return &responsesStreamEmitter{
-		w:          w,
-		flusher:    flusher,
-		pr:         pr,
-		responseID: responseID,
-		createdAt:  createdAt,
-		model:      consumerModel(pr),
-		fnCalls:    map[int]*streamFnState{},
+		w:               w,
+		flusher:         flusher,
+		pr:              pr,
+		responseID:      responseID,
+		createdAt:       createdAt,
+		model:           consumerModel(pr),
+		activeFnByIndex: map[int]*streamFnState{},
 	}
 }
 
@@ -358,12 +359,27 @@ func (e *responsesStreamEmitter) closeMessage() {
 // for several calls may interleave, so each index gets its own item state and
 // reserved output_index.
 func (e *responsesStreamEmitter) appendToolCall(tc streamToolCallDelta) {
-	st, ok := e.fnCalls[tc.Index]
-	if !ok {
+	st := e.activeFnByIndex[tc.Index]
+	// The production engine emits every parallel call at wire index 0. A
+	// different non-empty ID on that active index starts a new logical call;
+	// later ID-less argument fragments continue the newest call. This is the
+	// same identity rule used by the non-streaming toolCallAccumulator.
+	if st != nil && tc.ID != "" && st.wireID != "" && tc.ID != st.wireID {
+		st = nil
+	}
+	if st == nil {
+		// Same cap as the non-streaming accumulator: past the limit the new
+		// logical call is dropped and its wire index forgotten, so the
+		// dropped call's later id-less fragments can never accumulate onto
+		// a kept call (they re-enter here and are dropped again).
+		if len(e.fnOrder) >= maxLogicalToolCalls {
+			delete(e.activeFnByIndex, tc.Index)
+			return
+		}
 		e.closeReasoning()
 		e.closeMessage()
 		e.sawToolCall = true
-		st = &streamFnState{outputIndex: e.outputIndex}
+		st = &streamFnState{outputIndex: e.outputIndex, wireID: tc.ID}
 		e.outputIndex++
 		st.itemID = responseItemID("fc", e.pr.RequestID, st.outputIndex)
 		st.callID = tc.ID
@@ -371,8 +387,8 @@ func (e *responsesStreamEmitter) appendToolCall(tc streamToolCallDelta) {
 			st.callID = responseItemID("call", e.pr.RequestID, st.outputIndex)
 		}
 		st.name = tc.Function.Name
-		e.fnCalls[tc.Index] = st
-		e.fnOrder = append(e.fnOrder, tc.Index)
+		e.activeFnByIndex[tc.Index] = st
+		e.fnOrder = append(e.fnOrder, st)
 		e.emit("response.output_item.added", map[string]any{
 			"output_index": st.outputIndex,
 			"item": map[string]any{
@@ -386,6 +402,7 @@ func (e *responsesStreamEmitter) appendToolCall(tc streamToolCallDelta) {
 		})
 	}
 	if tc.ID != "" {
+		st.wireID = tc.ID
 		st.callID = tc.ID
 	}
 	if tc.Function.Name != "" {
@@ -404,11 +421,11 @@ func (e *responsesStreamEmitter) appendToolCall(tc streamToolCallDelta) {
 // closeFunctionCalls finalizes all open function_call items in the order they
 // were opened, which matches their reserved output indexes.
 func (e *responsesStreamEmitter) closeFunctionCalls() {
-	for _, idx := range e.fnOrder {
-		e.closeFunctionCall(e.fnCalls[idx])
-		delete(e.fnCalls, idx)
+	for _, state := range e.fnOrder {
+		e.closeFunctionCall(state)
 	}
 	e.fnOrder = nil
+	clear(e.activeFnByIndex)
 }
 
 func (e *responsesStreamEmitter) closeFunctionCall(st *streamFnState) {
@@ -448,7 +465,7 @@ func (e *responsesStreamEmitter) hasToolCalls() bool {
 // (response.completed, or response.incomplete when generation was truncated).
 func (e *responsesStreamEmitter) finish(usage protocol.UsageInfo) {
 	finishReason := effectiveFinishReason(e.finishReason, e.hasToolCalls(), usage, e.pr.RequestedMaxTokens)
-	if len(e.output) == 0 && !e.messageOpen && !e.reasoningOpen && len(e.fnCalls) == 0 {
+	if len(e.output) == 0 && !e.messageOpen && !e.reasoningOpen && len(e.fnOrder) == 0 {
 		e.ensureMessageOpen()
 	}
 	e.closeOpenItems()

@@ -35,6 +35,32 @@ func TestNormalizeToolSchemas_Corpus_EmptyPropertySchema(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolSchemas_Corpus_ConstantCombinatorsPreserveBooleanSemantics(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "all":{"allOf":[{}],"description":"anything"},
+	    "any":{"anyOf":[{"type":"integer"},true]},
+	    "deny":{"allOf":[{"type":"integer"},false]},
+	    "one":{"oneOf":[true]}
+	  }}}}]}`)
+	props := tsnProps(t, NormalizeToolSchemas(body))
+	for name, want := range map[string]bool{
+		"all": true, "any": true, "deny": false, "one": true,
+	} {
+		node := tsnMap(t, props[name], name)
+		if got, ok := node[originalBooleanSchemaKey].(bool); !ok || got != want {
+			t.Errorf("%s marker = %#v, want %v", name, node, want)
+		}
+		if node["type"] != "string" {
+			t.Errorf("%s type = %#v, want render-safe string", name, node["type"])
+		}
+	}
+	all := tsnMap(t, props["all"], "all")
+	if all["description"] != "anything" {
+		t.Errorf("annotation lost during combinator fold: %#v", all)
+	}
+}
+
 // A required/named request with an empty `{}` property compiles as a free
 // string in grammar modes: the marker rewrite must survive constrained
 // re-validation instead of failing on the reserved key.
@@ -274,27 +300,24 @@ func TestNormalizeToolSchemas_Corpus_MarkerlessUnionMembers(t *testing.T) {
 	    "a":{"allOf":[{}]}}}}}]}`)
 
 	props := tsnProps(t, NormalizeToolSchemas(body))
-	// Marker-less members default to string; the const member keeps its
-	// value's type ("number" for const 3) so validation stays satisfiable.
-	for name, expectations := range map[string]struct {
-		key   string
-		types []string
-	}{
-		"u": {key: "anyOf", types: []string{"string", "number"}},
-		"o": {key: "oneOf", types: []string{"string"}},
-		"a": {key: "allOf", types: []string{"string"}},
-	} {
+	// anyOf containing allow-all and allOf containing only allow-all are
+	// themselves allow-all; preserve that instead of inheriting the marker's
+	// render-only string type.
+	for _, name := range []string{"u", "a"} {
 		node := tsnMap(t, props[name], name)
-		members, ok := node[expectations.key].([]any)
-		if !ok || len(members) != len(expectations.types) {
-			t.Fatalf("%s.%s = %v, want %d members", name, expectations.key, node[expectations.key], len(expectations.types))
+		if marker, ok := node[originalBooleanSchemaKey].(bool); !ok || !marker {
+			t.Errorf("%s = %#v, want allow-all marker", name, node)
 		}
-		for i, want := range expectations.types {
-			m := tsnMap(t, members[i], expectations.key+" member")
-			if got := tsnType(t, m, expectations.key+" member"); got != want {
-				t.Errorf("%s.%s[%d] type = %q, want %q", name, expectations.key, i, got, want)
-			}
-		}
+	}
+	// A non-constant oneOf still retains and normalizes its member.
+	o := tsnMap(t, props["o"], "o")
+	members, ok := o["oneOf"].([]any)
+	if !ok || len(members) != 1 {
+		t.Fatalf("o.oneOf = %v, want one member", o["oneOf"])
+	}
+	member := tsnMap(t, members[0], "oneOf member")
+	if got := tsnType(t, member, "oneOf member"); got != "string" {
+		t.Errorf("o.oneOf[0] type = %q, want string", got)
 	}
 }
 

@@ -816,6 +816,12 @@ struct GemmaToolConstraintTests {
                 "$ref": .string("#/$defs/Address"),
             ]),
             .object([
+                "$dynamicRef": .string("#address"),
+            ]),
+            .object([
+                "$recursiveRef": .string("#"),
+            ]),
+            .object([
                 "if": .object([
                     "properties": .object([
                         "kind": .object(["const": .string("business")]),
@@ -1641,7 +1647,10 @@ struct GemmaToolConstraintTests {
              "messages":[{"role":"user","content":"pick"}],
              "tools":[{"type":"function","function":{"name":"pick","parameters":{
                "type":"object",
-               "properties":{"blob":{}}}}}],
+               "properties":{
+                 "blob":{},
+                 "nested":{"allOf":[{}],"description":"anything"}
+               }}}}],
              "tool_choice":"auto"}
             """.utf8)
         let decoded = try ProviderLoop.decodeOpenAIRequest(body)
@@ -1653,7 +1662,9 @@ struct GemmaToolConstraintTests {
             .int(7), .object(["k": .string("v")]), .string("text"), .null,
         ] {
             try ToolConstraintValidation.validate([
-                .init(function: .init(name: "pick", arguments: ["blob": value])),
+                .init(function: .init(
+                    name: "pick",
+                    arguments: ["blob": value, "nested": value])),
             ], prepared: prepared)
         }
 
@@ -1811,6 +1822,42 @@ struct GemmaToolConstraintTests {
                 .init(function: .init(
                     name: "weather", arguments: ["list": .array([.int(2)])])),
             ], prepared: prepared)
+        }
+    }
+
+    @Test("constrained array bounds accept integral finite doubles")
+    func constrainedArrayBoundsAcceptIntegralDoubles() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "values": .object([
+                    "type": .string("array"),
+                    "items": .object(["type": .string("string")]),
+                    "minItems": .double(1.0),
+                    "maxItems": .double(2.0),
+                ]),
+            ]),
+        ])
+        _ = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.required),
+                tools: [tool(parameters: parameters)]))
+
+        var fractional = parameters
+        if case .object(var root) = fractional,
+            case .object(var properties)? = root["properties"],
+            case .object(var values)? = properties["values"]
+        {
+            values["maxItems"] = .double(1.5)
+            properties["values"] = .object(values)
+            root["properties"] = .object(properties)
+            fractional = .object(root)
+        }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.required),
+                    tools: [tool(parameters: fractional)]))
         }
     }
 

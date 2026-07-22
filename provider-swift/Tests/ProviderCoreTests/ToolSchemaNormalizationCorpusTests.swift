@@ -139,20 +139,17 @@ struct ToolSchemaNormalizationCorpusTests {
     @Test func markerlessUnionMembersAreSchemas() throws {
         let props = try normalizedProps(
             #"{"type":"object","properties":{"u":{"anyOf":[{},{"const":3}]},"o":{"oneOf":[{"format":"uuid"}]},"a":{"allOf":[{}]}}}"#)
-        // Marker-less members default to string; the const member keeps its
-        // value's type ("number" for const 3) so validation stays satisfiable.
-        for (name, key, types) in [
-            ("u", "anyOf", ["string", "number"]),
-            ("o", "oneOf", ["string"]),
-            ("a", "allOf", ["string"]),
-        ] {
+        for name in ["u", "a"] {
             let node = try #require(props[name] as? [String: Any], "\(name)")
-            let members = try #require(node[key] as? [Any], "\(name)")
-            #expect(members.count == types.count, "\(name).\(key)")
-            for (index, want) in types.enumerated() {
-                #expect(typeOf(members[index]) == want, "\(name).\(key)[\(index)]")
-            }
+            #expect(
+                node[ToolSchemaNormalization.originalBooleanSchemaKey] as? Bool
+                    == true,
+                "\(name)")
         }
+        let one = try #require(props["o"] as? [String: Any])
+        let members = try #require(one["oneOf"] as? [Any])
+        #expect(members.count == 1)
+        #expect(typeOf(members[0]) == "string")
     }
 
     /// A typeless node with const/enum keeps its original value semantics:

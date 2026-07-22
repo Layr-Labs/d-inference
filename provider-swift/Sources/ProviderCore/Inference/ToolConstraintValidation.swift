@@ -168,10 +168,14 @@ enum ToolConstraintValidation {
         guard depth <= 32 else { return false }
         if case .bool(let accepts) = schema { return accepts }
         guard case .object(let object) = schema else { return false }
-        if object.count == 2,
-            object["type"] == .string("string"),
+        if object["type"] == .string("string"),
             case .bool(let accepts)? =
-                object[ToolSchemaNormalization.originalBooleanSchemaKey]
+                object[ToolSchemaNormalization.originalBooleanSchemaKey],
+            object.keys.allSatisfy({
+                $0 == "type"
+                    || $0 == ToolSchemaNormalization.originalBooleanSchemaKey
+                    || renderOnlyAnnotationKeys.contains($0)
+            })
         {
             return accepts
         }
@@ -440,6 +444,8 @@ enum ToolConstraintValidation {
                 return false
             }
             if object["$ref"] != nil
+                || object["$dynamicRef"] != nil
+                || object["$recursiveRef"] != nil
                 || object["if"] != nil
                 || object["then"] != nil
                 || object["else"] != nil
@@ -732,6 +738,11 @@ enum ToolConstraintValidation {
         if let maximum = countBound(maximum), count > maximum { return false }
         return true
     }
+
+    private static let renderOnlyAnnotationKeys: Set<String> = [
+        "$anchor", "$comment", "$id", "$schema", "default", "deprecated",
+        "description", "examples", "readOnly", "title", "writeOnly",
+    ]
 
     /// JSON Schema treats numbers with zero fractional part as integers, so
     /// count bounds like `minLength: 1.0` are valid and must be enforced —

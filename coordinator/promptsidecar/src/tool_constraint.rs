@@ -212,7 +212,10 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
             }
         }
         Value::Object(object) => {
-            if object.contains_key("$ref") {
+            if ["$ref", "$dynamicRef", "$recursiveRef"]
+                .iter()
+                .any(|keyword| object.contains_key(*keyword))
+            {
                 return Err(NormalizeError::InvalidTools);
             }
             if ["if", "then", "else"]
@@ -527,10 +530,9 @@ fn constrained_schema_grammar_cost(schema: &Value) -> usize {
             cost
         }
         "array" => {
-            let count = schema
-                .get("maxItems")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
+            let count = constrained_nonnegative(schema.get("maxItems"))
+                .ok()
+                .flatten()
                 .unwrap_or(MAX_ARRAY_ITEMS);
             let item_cost = schema
                 .get("items")
@@ -584,13 +586,61 @@ fn grammar_multiply(lhs: usize, rhs: usize) -> usize {
 fn constrained_nonnegative(raw: Option<&Value>) -> Result<Option<usize>, NormalizeError> {
     match raw {
         None => Ok(None),
-        Some(Value::Number(value)) => value
-            .as_u64()
-            .and_then(|value| usize::try_from(value).ok())
+        Some(Value::Number(value)) => exact_nonnegative_usize(value)
             .map(Some)
             .ok_or(NormalizeError::InvalidTools),
         Some(_) => Err(NormalizeError::InvalidTools),
     }
+}
+
+// JSON Schema's integer domain is mathematical, not lexical: 1, 1.0, and
+// 1e0 are the same integer. Parse serde_json's canonical decimal spelling
+// exactly so a rounded f64 can never turn a fractional bound into an integer.
+fn exact_nonnegative_usize(value: &serde_json::Number) -> Option<usize> {
+    let raw = value.to_string();
+    if raw.starts_with('-') {
+        return None;
+    }
+    let (coefficient, exponent) = match raw.find(|ch| ch == 'e' || ch == 'E') {
+        Some(index) => (&raw[..index], raw[index + 1..].parse::<i64>().ok()?),
+        None => (raw.as_str(), 0),
+    };
+    let (whole, fraction) = coefficient
+        .split_once('.')
+        .map_or((coefficient, ""), |parts| parts);
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let mut digits = String::with_capacity(whole.len() + fraction.len());
+    digits.push_str(whole);
+    digits.push_str(fraction);
+    let scale = i64::try_from(fraction.len()).ok()?.checked_sub(exponent)?;
+    if scale > 0 {
+        let fractional_digits = usize::try_from(scale).ok()?;
+        if fractional_digits >= digits.len() {
+            if digits.bytes().any(|byte| byte != b'0') {
+                return None;
+            }
+            digits.clear();
+            digits.push('0');
+        } else {
+            let split = digits.len() - fractional_digits;
+            if digits[split..].bytes().any(|byte| byte != b'0') {
+                return None;
+            }
+            digits.truncate(split);
+        }
+    } else if scale < 0 {
+        let zeros = usize::try_from(scale.checked_neg()?).ok()?;
+        if zeros > usize::BITS as usize {
+            return None;
+        }
+        digits.extend(std::iter::repeat_n('0', zeros));
+    }
+    digits.parse().ok()
 }
 
 #[cfg(test)]
@@ -662,6 +712,38 @@ mod tests {
             })];
             assert!(validate_constrained_tools(&tools).is_err(), "{bound}");
         }
+    }
+
+    #[test]
+    fn accepts_exact_integral_decimal_array_bounds() {
+        for bounds in [
+            json!({"minItems":1.0,"maxItems":2.0}),
+            serde_json::from_str::<Value>(r#"{"minItems":1e0,"maxItems":2e0}"#)
+                .expect("scientific bounds"),
+        ] {
+            let mut array = json!({
+                "type": "array",
+                "items": {"type": "string"}
+            });
+            array
+                .as_object_mut()
+                .expect("array schema")
+                .extend(bounds.as_object().expect("bounds").clone());
+            let tools = vec![json!({
+                "type": "function",
+                "function": {
+                    "name": "expand",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"values": array}
+                    }
+                }
+            })];
+            assert!(validate_constrained_tools(&tools).is_ok());
+        }
+        assert!(
+            exact_nonnegative_usize(&serde_json::Number::from_f64(1.5).expect("number")).is_none()
+        );
     }
 
     #[test]

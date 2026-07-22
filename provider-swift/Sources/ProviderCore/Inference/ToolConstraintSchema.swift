@@ -545,7 +545,16 @@ enum ToolConstraintSchemaCompiler {
         path: String
     ) throws -> Int {
         guard let value else { return defaultValue }
-        guard case .int(let number) = value, number >= 0 else {
+        let number: Int?
+        switch value {
+        case .int(let integer):
+            number = integer
+        case .double(let decimal) where decimal.isFinite:
+            number = Int(exactly: decimal)
+        default:
+            number = nil
+        }
+        guard let number, number >= 0 else {
             throw ToolConstraintSchemaError.invalid("\(path) must be a nonnegative integer")
         }
         return number

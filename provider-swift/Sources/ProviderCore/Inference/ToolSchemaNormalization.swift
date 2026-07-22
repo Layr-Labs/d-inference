@@ -139,6 +139,14 @@ enum ToolSchemaNormalization {
                 dict[key] = variants.map { injectTypes($0, positional: true) }
             }
         }
+        if positional,
+            let constant = constantMarkedCombinator(dict)
+        {
+            var replacement = constant.annotations
+            replacement["type"] = "string"
+            replacement[originalBooleanSchemaKey] = constant.accepts
+            return replacement
+        }
         if dict["type"] == nil,
             nullableCombinatorUnion(dict),
             dict["nullable"] as? Bool != true
@@ -197,6 +205,66 @@ enum ToolSchemaNormalization {
             dict["properties"] = [String: Any]()
         }
         return dict
+    }
+
+    private static let schemaAnnotationKeys: Set<String> = [
+        "$anchor", "$comment", "$id", "$schema", "default", "deprecated",
+        "description", "examples", "readOnly", "title", "writeOnly",
+    ]
+
+    private static func renderMarkerBoolean(_ dict: [String: Any]) -> Bool? {
+        guard dict["type"] as? String == "string",
+            let rawMarker = dict[originalBooleanSchemaKey],
+            isJSONBoolean(rawMarker),
+            let marker = rawMarker as? Bool
+        else {
+            return nil
+        }
+        guard dict.keys.allSatisfy({
+            $0 == "type" || $0 == originalBooleanSchemaKey
+                || schemaAnnotationKeys.contains($0)
+        }) else {
+            return nil
+        }
+        return marker
+    }
+
+    private static func constantMarkedCombinator(
+        _ dict: [String: Any]
+    ) -> (accepts: Bool, annotations: [String: Any])? {
+        let combinators = ["anyOf", "oneOf", "allOf"].filter { dict[$0] != nil }
+        guard combinators.count == 1, let combinator = combinators.first,
+            dict.keys.allSatisfy({
+                $0 == combinator || schemaAnnotationKeys.contains($0)
+            }),
+            let variants = dict[combinator] as? [Any], !variants.isEmpty
+        else {
+            return nil
+        }
+        let known = variants.compactMap { variant -> Bool? in
+            guard let object = variant as? [String: Any] else { return nil }
+            return renderMarkerBoolean(object)
+        }
+        let trueCount = known.count(where: { $0 })
+        let accepts: Bool
+        switch combinator {
+        case "allOf" where known.contains(false):
+            accepts = false
+        case "allOf" where known.count == variants.count:
+            accepts = true
+        case "anyOf" where trueCount > 0:
+            accepts = true
+        case "anyOf" where known.count == variants.count:
+            accepts = false
+        case "oneOf" where known.count == variants.count:
+            accepts = trueCount == 1
+        default:
+            return nil
+        }
+        return (
+            accepts,
+            dict.filter { schemaAnnotationKeys.contains($0.key) }
+        )
     }
 
     private static func schemaContainsReservedMetadata(_ node: Any) -> Bool {
@@ -413,6 +481,7 @@ enum ToolSchemaNormalization {
             guard let variants = dict[key] as? [Any] else { continue }
             for variant in variants {
                 if let v = variant as? [String: Any],
+                    renderMarkerBoolean(v) == nil,
                     let t = v["type"] as? String, t != "null" {
                     return t
                 }

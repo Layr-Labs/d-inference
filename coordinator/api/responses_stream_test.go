@@ -114,6 +114,47 @@ func TestResponsesStreamInterleavedToolCalls(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamSeparatesParallelCallsSharingWireIndex(t *testing.T) {
+	e, rec := newTestEmitter(t)
+	e.start()
+	for _, chunk := range []string{
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"first","arguments":"{\"a\":"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_b","type":"function","function":{"name":"second","arguments":"{\"b\":"}}]}}]}`,
+		`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"2}"}}]}}]}`,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
+	} {
+		e.handleChunk(chunk)
+	}
+	e.finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 10})
+
+	events := parseSSEEvents(t, rec.Body.String())
+	var output []any
+	for _, event := range events {
+		if event.Type == "response.completed" {
+			response := event.Data["response"].(map[string]any)
+			output = response["output"].([]any)
+		}
+	}
+	if len(output) != 2 {
+		t.Fatalf("output items = %d, want 2: %#v", len(output), output)
+	}
+	wants := []struct {
+		id, name, arguments string
+	}{
+		{"call_a", "first", `{"a":1}`},
+		{"call_b", "second", `{"b":2}`},
+	}
+	for index, want := range wants {
+		item := output[index].(map[string]any)
+		if item["call_id"] != want.id ||
+			item["name"] != want.name ||
+			item["arguments"] != want.arguments {
+			t.Errorf("output[%d] = %#v, want %+v", index, item, want)
+		}
+	}
+}
+
 func TestResponsesStreamEmptyOutputSynthesizesMessage(t *testing.T) {
 	e, rec := newTestEmitter(t)
 	e.start()

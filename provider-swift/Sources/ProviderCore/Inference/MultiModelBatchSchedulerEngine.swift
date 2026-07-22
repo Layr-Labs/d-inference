@@ -649,6 +649,12 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                                                 ))
                                         return
                                     }
+                                    // Auto prose remains genuinely streaming. Tool-call bytes
+                                    // stay withheld and parsed calls are emitted only after the
+                                    // validation boundary below; a later invalid call therefore
+                                    // becomes a normal in-band stream error without exposing the
+                                    // invalid call. Buffering this prose would turn every
+                                    // tool-enabled auto stream into a non-streaming response.
                                     continuation.yield(.content(visible))
                                 }
                             } else {

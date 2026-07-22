@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -309,6 +310,12 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 		"reference": map[string]any{
 			"$ref": "#/$defs/Address",
 		},
+		"dynamic reference": map[string]any{
+			"$dynamicRef": "#address",
+		},
+		"recursive reference": map[string]any{
+			"$recursiveRef": "#",
+		},
 		"conditional": map[string]any{
 			"if":   map[string]any{"properties": map[string]any{"kind": map[string]any{"const": "business"}}},
 			"then": map[string]any{"required": []any{"tax_id"}},
@@ -412,6 +419,77 @@ func TestAutoToolChoiceAcceptsUniformTypelessFiniteSchemas(t *testing.T) {
 	}`)
 	if _, err := validateToolConstraintRequest(body); err != nil {
 		t.Fatalf("uniform typeless finite schema rejected: %v", err)
+	}
+}
+
+func TestAutoAndNoneToolChoicePreserveHostedToolCompatibility(t *testing.T) {
+	for _, choice := range []string{"auto", "none"} {
+		body := []byte(fmt.Sprintf(`{
+			"model":"m",
+			"messages":[{"role":"user","content":"search"}],
+			"tools":[
+				{"type":"web_search"},
+				{"type":"custom","custom":{"name":"raw"}},
+				{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}
+			],
+			"tool_choice":%q
+		}`, choice))
+		if _, err := validateToolConstraintRequest(body); err != nil {
+			t.Fatalf("%s rejected hosted-tool compatibility request: %v", choice, err)
+		}
+	}
+
+	required := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"search"}],
+		"tools":[{"type":"web_search"}],
+		"tool_choice":"required"
+	}`)
+	if _, err := validateToolConstraintRequest(required); err == nil {
+		t.Fatal("required mode silently dropped its only hosted tool")
+	}
+}
+
+// Alternate tool spellings the PROVIDER renders (top-level name, misc
+// type + function dict — InboundChatNormalization.isRepresentableTool) must
+// get the same pre-dispatch validation function tools get; only genuinely
+// unrepresentable entries (no function dict, no name) are forwarded
+// untouched for the provider to drop.
+func TestAutoToolChoiceValidatesRepresentableAlternateSpellings(t *testing.T) {
+	rejected := map[string]string{
+		"bad top-level name": `{"name":"bad name","parameters":{"type":"object"}}`,
+		"duplicate across spellings": `{"name":"lookup","parameters":{"type":"object"}},
+			{"type":"function","function":{"name":"lookup"}}`,
+		"ref in top-level parameters": `{"name":"probe","parameters":{
+			"type":"object","properties":{"v":{"$ref":"#/$defs/x"}}}}`,
+		"ref in custom input_schema": `{"type":"custom","name":"probe","input_schema":{
+			"type":"object","properties":{"v":{"$ref":"#/$defs/x"}}}}`,
+	}
+	for name, entry := range rejected {
+		t.Run(name, func(t *testing.T) {
+			body := []byte(`{
+				"model":"m",
+				"messages":[{"role":"user","content":"x"}],
+				"tools":[` + entry + `],
+				"tool_choice":"auto"
+			}`)
+			if _, err := validateToolConstraintRequest(body); err == nil {
+				t.Fatal("representable alternate spelling bypassed validation")
+			}
+		})
+	}
+
+	accepted := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[
+			{"name":"flat_spelling","parameters":{"type":"object"}},
+			{"type":"custom","name":"anthropic_spelling","input_schema":{"type":"object"}}
+		],
+		"tool_choice":"auto"
+	}`)
+	if _, err := validateToolConstraintRequest(accepted); err != nil {
+		t.Fatalf("valid alternate spellings rejected: %v", err)
 	}
 }
 
@@ -586,6 +664,85 @@ func TestValidateToolConstraintRequestRejectsNullArrayBounds(t *testing.T) {
 			var typed *toolConstraintRequestError
 			if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
 				t.Fatalf("null %s accepted: %T %v", bound, err, err)
+			}
+		})
+	}
+}
+
+func TestValidateToolConstraintRequestAcceptsIntegralDecimalArrayBounds(t *testing.T) {
+	for _, bounds := range []string{
+		`"minItems":1.0,"maxItems":2.0`,
+		`"minItems":1e0,"maxItems":2e0`,
+	} {
+		body := []byte(fmt.Sprintf(`{
+			"model":"m",
+			"messages":[{"role":"user","content":"x"}],
+			"tools":[{"type":"function","function":{
+				"name":"expand",
+				"parameters":{"type":"object","properties":{
+					"values":{"type":"array","items":{"type":"string"},%s}
+				}}
+			}}],
+			"tool_choice":"required"
+		}`, bounds))
+		if _, err := validateToolConstraintRequest(body); err != nil {
+			t.Fatalf("integral decimal bounds %s rejected: %v", bounds, err)
+		}
+	}
+
+	fractional := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"expand",
+			"parameters":{"type":"object","properties":{
+				"values":{"type":"array","items":{"type":"string"},"maxItems":1.5}
+			}}
+		}}],
+		"tool_choice":"required"
+	}`)
+	if _, err := validateToolConstraintRequest(fractional); err == nil {
+		t.Fatal("fractional array bound accepted")
+	}
+}
+
+// The exact-integer parse must stay LINEAR in the literal length: json.Number
+// carries raw request bytes unbounded, so a bignum-backed parse would hand an
+// attacker free coordinator CPU per oversized literal.
+func TestConstrainedExactNonnegativeIntBoundsAdversarialLiterals(t *testing.T) {
+	longDigits := strings.Repeat("9", 4_000_000)
+	cases := map[string]struct {
+		literal string
+		want    int
+		wantErr bool
+	}{
+		"plain":                     {literal: "3", want: 3},
+		"integral decimal":          {literal: "2.0", want: 2},
+		"integral exponent":         {literal: "2e0", want: 2},
+		"scaled exponent":           {literal: "1.6e1", want: 16},
+		"zero with long fraction":   {literal: "0." + strings.Repeat("0", 100), want: 0},
+		"fractional":                {literal: "1.5", wantErr: true},
+		"negative":                  {literal: "-1", wantErr: true},
+		"huge exponent":             {literal: "1e1000000", wantErr: true},
+		"huge negative exponent":    {literal: "1e-1000000", wantErr: true},
+		"multi-megabyte digits":     {literal: longDigits, wantErr: true},
+		"multi-megabyte fractional": {literal: "1." + longDigits, wantErr: true},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			start := time.Now()
+			got, err := constrainedExactNonnegativeInt(tc.literal)
+			if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+				t.Fatalf("parse took %v — superlinear parse regression", elapsed)
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("literal accepted: %d", got)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("parse = %d, %v; want %d", got, err, tc.want)
 			}
 		})
 	}

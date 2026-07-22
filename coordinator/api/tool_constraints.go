@@ -232,6 +232,37 @@ func validateDeclaredTools(
 	for index, rawTool := range values {
 		tool, ok := rawTool.(map[string]any)
 		if !ok || tool["type"] != "function" {
+			// Auto/none preserve the provider's established compatibility
+			// behavior (InboundChatNormalization.isRepresentableTool):
+			// hosted/custom tools with no function dict and no top-level
+			// name are dropped provider-side, so they forward untouched;
+			// representable alternate spellings (top-level name, misc
+			// type + function dict) render provider-side and get the same
+			// name/duplicate/pattern validation function tools get, just
+			// via their own schema home. Required/named enforcement cannot
+			// silently drop a requested tool because doing so would weaken
+			// the caller's constraint.
+			if !enforceSchema {
+				name, parameters, representable := representableToolSpelling(tool)
+				if !representable {
+					continue
+				}
+				if !toolFunctionNamePattern.MatchString(name) {
+					return nil, invalidToolConstraint(
+						"tool function names must match ^[a-zA-Z0-9_-]{1,64}$",
+						fmt.Sprintf("tools[%d].name", index))
+				}
+				if _, duplicate := tools[name]; duplicate {
+					return nil, invalidToolConstraint("tool function names must be unique", "tools")
+				}
+				if validateAutoPatterns && parameters != nil {
+					if err := validateAutoSchemaPatterns(parameters, 0); err != nil {
+						return nil, err
+					}
+				}
+				tools[name] = map[string]any{"name": name, "parameters": parameters}
+				continue
+			}
 			return nil, invalidToolConstraint("only function tools are supported", fmt.Sprintf("tools[%d]", index))
 		}
 		function, ok := tool["function"].(map[string]any)
@@ -275,6 +306,27 @@ func validateDeclaredTools(
 	return tools, nil
 }
 
+// representableToolSpelling mirrors the provider's
+// InboundChatNormalization.isRepresentableTool for non-`type:function`
+// entries: an object function dict or a top-level name string makes the tool
+// renderable provider-side; anything else is dropped there. The returned
+// parameters value is the schema home the entry actually carries
+// (function.parameters, top-level parameters, or input_schema).
+func representableToolSpelling(tool map[string]any) (name string, parameters any, ok bool) {
+	if function, isObject := tool["function"].(map[string]any); isObject {
+		name, _ = function["name"].(string)
+		return name, function["parameters"], true
+	}
+	if topLevel, isString := tool["name"].(string); isString {
+		parameters = tool["parameters"]
+		if parameters == nil {
+			parameters = tool["input_schema"]
+		}
+		return topLevel, parameters, true
+	}
+	return "", nil, false
+}
+
 func validateAutoSchemaPatterns(schema any, depth int) error {
 	if depth > maxAutoPatternDepth {
 		return unsupportedToolConstraint("auto tool schema exceeds pattern-validation depth")
@@ -291,9 +343,11 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 			return invalidToolConstraint(
 				"tool schema contains reserved internal metadata", "tools")
 		}
-		if _, hasReference := value["$ref"]; hasReference {
-			return unsupportedToolConstraint(
-				"auto tool schemas do not support $ref")
+		for _, keyword := range []string{"$ref", "$dynamicRef", "$recursiveRef"} {
+			if _, hasReference := value[keyword]; hasReference {
+				return unsupportedToolConstraint(
+					"auto tool schemas do not support schema references")
+			}
 		}
 		for _, keyword := range []string{"if", "then", "else"} {
 			if _, conditional := value[keyword]; conditional {

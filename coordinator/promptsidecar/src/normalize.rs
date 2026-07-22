@@ -418,6 +418,13 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
             }
         }
     }
+    if positional && let Some((accepts, annotations)) = constant_marked_combinator(object) {
+        object.clear();
+        object.insert("type".into(), Value::String("string".into()));
+        object.insert(ORIGINAL_BOOLEAN_SCHEMA_KEY.into(), Value::Bool(accepts));
+        object.extend(annotations);
+        return;
+    }
     if !object.contains_key("type")
         && nullable_combinator_union(object)
         && object.get("nullable") != Some(&Value::Bool(true))
@@ -490,6 +497,77 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
     }
 }
 
+const SCHEMA_ANNOTATION_KEYS: [&str; 11] = [
+    "$anchor",
+    "$comment",
+    "$id",
+    "$schema",
+    "default",
+    "deprecated",
+    "description",
+    "examples",
+    "readOnly",
+    "title",
+    "writeOnly",
+];
+
+fn is_schema_annotation(key: &str) -> bool {
+    SCHEMA_ANNOTATION_KEYS.contains(&key)
+}
+
+fn render_marker_boolean(object: &Map<String, Value>) -> Option<bool> {
+    if object.get("type").and_then(Value::as_str) != Some("string") {
+        return None;
+    }
+    let marker = object
+        .get(ORIGINAL_BOOLEAN_SCHEMA_KEY)
+        .and_then(Value::as_bool)?;
+    if object.keys().any(|key| {
+        key != "type" && key != ORIGINAL_BOOLEAN_SCHEMA_KEY && !is_schema_annotation(key)
+    }) {
+        return None;
+    }
+    Some(marker)
+}
+
+fn constant_marked_combinator(object: &Map<String, Value>) -> Option<(bool, Map<String, Value>)> {
+    let mut combinator = None;
+    for key in object.keys() {
+        if ["anyOf", "oneOf", "allOf"].contains(&key.as_str()) {
+            if combinator.replace(key.as_str()).is_some() {
+                return None;
+            }
+        } else if !is_schema_annotation(key) {
+            return None;
+        }
+    }
+    let combinator = combinator?;
+    let variants = object.get(combinator)?.as_array()?;
+    if variants.is_empty() {
+        return None;
+    }
+    let known = variants
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(render_marker_boolean)
+        .collect::<Vec<_>>();
+    let true_count = known.iter().filter(|value| **value).count();
+    let accepts = match combinator {
+        "allOf" if known.iter().any(|value| !value) => false,
+        "allOf" if known.len() == variants.len() => true,
+        "anyOf" if true_count > 0 => true,
+        "anyOf" if known.len() == variants.len() => false,
+        "oneOf" if known.len() == variants.len() => true_count == 1,
+        _ => return None,
+    };
+    let annotations = object
+        .iter()
+        .filter(|(key, _)| is_schema_annotation(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    Some((accepts, annotations))
+}
+
 fn nullable_combinator_union(object: &Map<String, Value>) -> bool {
     for key in ["anyOf", "oneOf"] {
         let Some(variants) = object.get(key).and_then(Value::as_array) else {
@@ -536,11 +614,11 @@ fn inferred_schema_type(object: &Map<String, Value>) -> String {
     for key in ["anyOf", "oneOf", "allOf"] {
         if let Some(variants) = object.get(key).and_then(Value::as_array)
             && let Some(kind) = variants.iter().find_map(|variant| {
-                variant
-                    .as_object()?
-                    .get("type")?
-                    .as_str()
-                    .filter(|kind| *kind != "null")
+                let variant = variant.as_object()?;
+                if render_marker_boolean(variant).is_some() {
+                    return None;
+                }
+                variant.get("type")?.as_str().filter(|kind| *kind != "null")
             })
         {
             return kind.into();
@@ -1229,6 +1307,33 @@ mod tests {
     }
 
     #[test]
+    fn constant_combinators_keep_boolean_schema_semantics() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{
+                    "all":{"allOf":[{}],"description":"anything"},
+                    "deny":{"allOf":[{"type":"integer"},false]}
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let tools = normalized.tools.unwrap();
+        let properties = &tools[0]["function"]["parameters"]["properties"];
+        for (name, accepts) in [("all", true), ("deny", false)] {
+            assert_eq!(properties[name]["type"], "string", "{name}");
+            assert_eq!(
+                properties[name][ORIGINAL_BOOLEAN_SCHEMA_KEY], accepts,
+                "{name}"
+            );
+        }
+        assert_eq!(properties["all"]["description"], "anything");
+    }
+
+    #[test]
     fn constrained_mode_accepts_normalized_empty_schema_marker() {
         let body = json!({
             "model":"gemma-4-fixture",
@@ -1324,6 +1429,25 @@ mod tests {
         for value in [
             json!({"type":"object","unevaluatedProperties":false}),
             json!({"type":"array","items":{"type":"string"},"unevaluatedItems":false}),
+        ] {
+            let body = json!({
+                "model":"gemma-4-fixture",
+                "messages":[{"role":"user","content":"x"}],
+                "tools":[{"type":"function","function":{
+                    "name":"pick",
+                    "parameters":{"type":"object","properties":{"value":value}}
+                }}],
+                "tool_choice":"auto"
+            });
+            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        }
+    }
+
+    #[test]
+    fn dynamic_and_recursive_references_are_rejected_before_inference() {
+        for value in [
+            json!({"$dynamicRef":"#address"}),
+            json!({"$recursiveRef":"#"}),
         ] {
             let body = json!({
                 "model":"gemma-4-fixture",

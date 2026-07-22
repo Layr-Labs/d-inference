@@ -184,6 +184,9 @@ public enum CoordinatorClientCodec {
         case .modelsUpdate(let models):
             return .modelsUpdate(ProviderMessage.ModelsUpdate(models: models))
 
+        case .lmStudioModelsUpdate(let models):
+            return .lmStudioModelsUpdate(ProviderMessage.LMStudioModelsUpdate(models: models))
+
         case .prefixCacheLookup(
             let requestId, let nonce, let outcome, let tier,
             let cachedTokens, let prefillTokensSaved, let stageMs

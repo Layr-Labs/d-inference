@@ -357,6 +357,12 @@ public actor ProviderLoop {
     /// `installPrefetchCoordinatorForTesting`.
     internal var outboundSend: SendHandle?
 
+    /// Optional loopback bridge for text models the owner has loaded in LM
+    /// Studio. Dynamic inventory is kept separate from native MLX slots.
+    internal let lmStudioClient = LMStudioClient()
+    internal var lmStudioModels: [String: LMStudioLoadedModel] = [:]
+    internal var lmStudioMonitorTask: Task<Void, Never>?
+
     /// Tracks coordinator-driven preload tasks so they can be cancelled on shutdown.
     internal var preloadTasks: [String: Task<Void, Never>] = [:]
 

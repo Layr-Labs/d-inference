@@ -1,6 +1,9 @@
 package registry
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // routing_eligibility.go holds the composable primitives shared by every
 // provider-eligibility decision. Five functions historically re-implemented
@@ -73,6 +76,11 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 // alias routability, warm detection, and the load planner so the catalog +
 // dedicated decision cannot drift across them. Caller holds r.mu and p.mu.
 func (r *Registry) providerServesRoutableModelLocked(p *Provider, model string, allowDedicated bool) bool {
+	// LM Studio is an explicit owner convenience, never public fleet capacity.
+	// Keep the namespace private even if a future catalog entry uses the same ID.
+	if strings.HasPrefix(model, lmStudioModelPrefix) && !allowDedicated {
+		return false
+	}
 	var serves bool
 	if allowDedicated {
 		serves = r.providerServesOwnedRoutableModelLocked(p, model)

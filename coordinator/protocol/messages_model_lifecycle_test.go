@@ -201,6 +201,22 @@ func TestProviderMessageUnmarshalModelsUpdate(t *testing.T) {
 	}
 }
 
+func TestProviderMessageUnmarshalLMStudioModelsUpdate(t *testing.T) {
+	data := []byte(`{"type":"lmstudio_models_update","models":[{"id":"lmstudio/laguna","size_bytes":1024,"model_type":"chat","quantization":"4bit"}]}`)
+
+	var msg ProviderMessage
+	if err := json.Unmarshal(data, &msg); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if msg.Type != TypeLMStudioModelsUpdate {
+		t.Fatalf("Type=%q, want %q", msg.Type, TypeLMStudioModelsUpdate)
+	}
+	update, ok := msg.Payload.(*LMStudioModelsUpdateMessage)
+	if !ok || len(update.Models) != 1 || update.Models[0].ID != "lmstudio/laguna" {
+		t.Fatalf("decoded update = %#v", msg.Payload)
+	}
+}
+
 func TestPrefetchModelStatusVerifiedRoundTrip(t *testing.T) {
 	msg := PrefetchModelStatusMessage{
 		Type:    TypePrefetchModelStatus,

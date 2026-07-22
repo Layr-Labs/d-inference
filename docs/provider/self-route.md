@@ -45,6 +45,21 @@ In the console UI: the **My Machine** toggle in the chat composer sends
 `prefer` (prioritized, never stuck), and the **"My Machine only — free"**
 checkbox on an API key sets the strict `self_route_only` ceiling.
 
+### Using models loaded in LM Studio
+
+Darkbloom also watches LM Studio's default local server at
+`127.0.0.1:1234`. When both apps are running, any text model you load in LM
+Studio appears automatically in your self-route model list as
+`lmstudio/<lm-studio-model-key>`; unloading it removes it again. No Darkbloom
+restart or model copy is needed.
+
+For example, loading `laguna-s-2.1-nvfp4-mlx` in LM Studio exposes
+`lmstudio/laguna-s-2.1-nvfp4-mlx`. Use that exact model id with
+`X-Darkbloom-Route: self`. These models are never advertised to the public
+fleet. The coordinator still sees only encrypted request and response data;
+the signed provider decrypts locally and passes the request over loopback to
+LM Studio.
+
 The policy resolution is server-side in `coordinator/api/self_route.go:49-65`.
 
 ### Exclusive vs prefer

@@ -607,6 +607,7 @@ public final class MockCoordinator: @unchecked Sendable {
             case .loadModelStatus(let s):    captured.loadModelStatuses.append(s)
             case .prefetchModelStatus(let s): captured.prefetchModelStatuses.append(s)
             case .modelsUpdate(let u):       captured.modelsUpdates.append(u)
+            case .lmStudioModelsUpdate:      break
             case .prefixCacheLookup(let r):  captured.prefixCacheLookups.append(r)
             case .prefixCacheReady(let r):   captured.prefixCacheReady.append(r)
             case .prefixCacheLookupV2(let r): captured.prefixCacheLookupsV2.append(r)

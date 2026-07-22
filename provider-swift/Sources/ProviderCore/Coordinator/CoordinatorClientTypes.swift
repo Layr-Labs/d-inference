@@ -151,6 +151,8 @@ public enum OutboundMessage: Sendable {
     /// (e.g. a verified prefetch), carrying full `ModelInfo` including the
     /// computed weight hash so the coordinator can cross-check before routing.
     case modelsUpdate(models: [ModelInfo])
+    /// Replaces the linked provider's owner-only LM Studio inventory.
+    case lmStudioModelsUpdate(models: [ModelInfo])
     case prefixCacheLookup(
         requestId: String,
         cacheReceiptNonce: String,

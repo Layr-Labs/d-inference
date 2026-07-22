@@ -98,6 +98,23 @@ extension ProviderLoop {
             totalActive += engineV2.activeRequests
         }
 
+        for model in lmStudioModels.values.sorted(by: { $0.darkbloomID < $1.darkbloomID }) {
+            let running = requestToModel.values.reduce(into: 0) { count, modelID in
+                if modelID == model.darkbloomID { count += 1 }
+            }
+            allSlots.append(BackendSlotCapacity(
+                model: model.darkbloomID,
+                state: running > 0 ? "running" : "idle",
+                numRunning: UInt32(clamping: running),
+                numWaiting: 0,
+                activeTokens: 0,
+                maxTokensPotential: model.contextLength,
+                maxConcurrency: model.maxConcurrency,
+                activeTokenBudgetMax: model.contextLength * Int64(model.maxConcurrency)
+            ))
+            totalActive += running
+        }
+
         let gbDivisor = 1024.0 * 1024.0 * 1024.0
         let totalMem = ProcessInfo.processInfo.physicalMemory
 

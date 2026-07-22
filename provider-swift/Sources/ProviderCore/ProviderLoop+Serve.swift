@@ -234,6 +234,7 @@ extension ProviderLoop {
         startIdleMonitor()
         startCapacityRefreshMonitor()
         startAutoUpdateMonitor()
+        startLMStudioMonitor(send: send)
 
         logger.info("Coordinator client started, entering event loop")
 
@@ -245,6 +246,7 @@ extension ProviderLoop {
                 switch event {
                 case .connected:
                     logger.info("Connected to coordinator")
+                    await refreshLMStudioModels(send: send, force: true)
 
                 case .disconnected:
                     logger.warning("Disconnected from coordinator")
@@ -323,6 +325,8 @@ extension ProviderLoop {
         autoUpdateTask = nil
         autoReportTask?.cancel()
         autoReportTask = nil
+        lmStudioMonitorTask?.cancel()
+        lmStudioMonitorTask = nil
         // Cancel any scheduled desired-build prefetch retries before tearing
         // the prefetch subsystem down.
         for task in desiredPrefetchRetryTasks.values { task.cancel() }
@@ -389,9 +393,10 @@ extension ProviderLoop {
     }
 
     private func privacyCapabilitiesForRegistration() -> PrivacyCapabilities {
-        // textBackendInprocess + textProxyDisabled: always true on the Swift
-        //   provider -- inference runs in-process via mlx-swift-lm, no HTTP
-        //   proxy is involved.
+        // textBackendInprocess + textProxyDisabled describe the public Swift
+        // backend, which always runs in-process via mlx-swift-lm. The optional
+        // LM Studio loopback bridge advertises only reserved, owner-only model
+        // IDs and is never eligible for public routing.
         // pythonRuntimeLocked + dangerousModulesBlocked: report false. There
         //   is no Python runtime to lock anymore. Coordinator's Swift-runtime
         //   trust path (registry.BackendUsesSwiftRuntime) doesn't read these.

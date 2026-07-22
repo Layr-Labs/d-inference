@@ -43,6 +43,7 @@ const (
 	TypeLoadModelStatus         = "load_model_status"
 	TypePrefetchModelStatus     = "prefetch_model_status"
 	TypeModelsUpdate            = "models_update"
+	TypeLMStudioModelsUpdate    = "lmstudio_models_update"
 	TypePrefixCacheLookup       = "prefix_cache_lookup"
 	TypePrefixCacheReady        = "prefix_cache_ready"
 	TypePrefixCacheLookupV2     = "prefix_cache_lookup_v2"
@@ -561,6 +562,14 @@ type ModelsUpdateMessage struct {
 	Models []ModelInfo `json:"models"`
 }
 
+// LMStudioModelsUpdateMessage is the authoritative set of LM Studio model
+// instances currently loaded on a linked provider Mac. These models are
+// owner-only and use the reserved "lmstudio/" namespace.
+type LMStudioModelsUpdateMessage struct {
+	Type   string      `json:"type"`
+	Models []ModelInfo `json:"models"`
+}
+
 // PrefetchModelStatusMessage is the provider's progress/terminal reply to a
 // PrefetchModelMessage. Status is one of PrefetchModelStatusStarted,
 // PrefetchModelStatusDownloading, PrefetchModelStatusVerified,
@@ -779,6 +788,13 @@ func (pm *ProviderMessage) UnmarshalJSON(data []byte) error {
 		var msg ModelsUpdateMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
 			return fmt.Errorf("protocol: failed to unmarshal models_update: %w", err)
+		}
+		pm.Payload = &msg
+
+	case TypeLMStudioModelsUpdate:
+		var msg LMStudioModelsUpdateMessage
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return fmt.Errorf("protocol: failed to unmarshal lmstudio_models_update: %w", err)
 		}
 		pm.Payload = &msg
 

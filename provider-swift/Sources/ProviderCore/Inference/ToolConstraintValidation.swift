@@ -226,9 +226,17 @@ enum ToolConstraintValidation {
 
         switch value {
         case .object(let values):
+            // Property names compare by Unicode scalar sequence: Swift
+            // dictionary lookup uses canonical equivalence, but JSON Schema
+            // treats a precomposed declared "é" and a generated decomposed
+            // "e\u{301}" key as DISTINCT names — the latter is an additional
+            // property and does not satisfy `required`.
+            let presentKeys = Set(values.keys.map(unicodeScalarIdentity))
             if case .array(let required)? = object["required"] {
                 for member in required {
-                    guard case .string(let name) = member, values[name] != nil else {
+                    guard case .string(let name) = member,
+                        presentKeys.contains(unicodeScalarIdentity(name))
+                    else {
                         return false
                     }
                 }
@@ -239,6 +247,9 @@ enum ToolConstraintValidation {
             } else {
                 properties = [:]
             }
+            let declared: [[UInt32]: ToolArgumentJSONValue] = Dictionary(
+                properties.map { (unicodeScalarIdentity($0.key), $0.value) },
+                uniquingKeysWith: { first, _ in first })
             let patterns: [String: ToolArgumentJSONValue]
             if case .object(let raw)? = object["patternProperties"] {
                 patterns = raw
@@ -247,7 +258,8 @@ enum ToolConstraintValidation {
             }
             guard patterns.count <= maxSafePatternCount else { return false }
             for (name, child) in values {
-                if let schema = properties[name],
+                let nameIdentity = unicodeScalarIdentity(name)
+                if let schema = declared[nameIdentity],
                     !validateJSONSchema(child, schema: schema, depth: depth + 1)
                 {
                     return false
@@ -258,7 +270,7 @@ enum ToolConstraintValidation {
                 }) {
                     return false
                 }
-                if properties[name] == nil, matching.isEmpty,
+                if declared[nameIdentity] == nil, matching.isEmpty,
                     let additional = object["additionalProperties"],
                     !validateJSONSchema(child, schema: additional, depth: depth + 1)
                 {

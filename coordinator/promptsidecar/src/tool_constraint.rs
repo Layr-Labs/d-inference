@@ -88,6 +88,22 @@ fn validate_constrained_schema(
         return Err(NormalizeError::InvalidTools);
     }
     let schema = schema.as_object().ok_or(NormalizeError::InvalidTools)?;
+    // Normalization rewrites the allow-all `{}` / `true` schemas into a
+    // render-safe marker shape that grammar modes compile as the free string
+    // the original `{}` compiled to. Only that exact shape is accepted; any
+    // other marker-bearing schema fails closed. Mirrors the Swift compiler.
+    if let Some(marker) = schema.get(crate::normalize::ORIGINAL_BOOLEAN_SCHEMA_KEY) {
+        // The parameters root must stay an object schema (mirrors the Swift
+        // compiler, whose root guard rejects the string-shaped marker).
+        if !root
+            && marker == &Value::Bool(true)
+            && schema.len() == 2
+            && schema.get("type") == Some(&Value::String("string".into()))
+        {
+            return Ok(());
+        }
+        return Err(NormalizeError::InvalidTools);
+    }
     let supported = [
         "type",
         "properties",

@@ -2,7 +2,7 @@ use serde_json::{Map, Value, json};
 use std::collections::HashSet;
 use thiserror::Error;
 
-const ORIGINAL_BOOLEAN_SCHEMA_KEY: &str = "x-darkbloom-original-boolean-schema";
+pub(crate) const ORIGINAL_BOOLEAN_SCHEMA_KEY: &str = "x-darkbloom-original-boolean-schema";
 
 #[derive(Clone, Debug)]
 pub struct NormalizedRequest {
@@ -366,6 +366,18 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
         *node = json!({
             "type": "string",
             (ORIGINAL_BOOLEAN_SCHEMA_KEY): accepts
+        });
+        return;
+    }
+    // An EMPTY positional map is the `{}` "anything" schema — semantically
+    // identical to the boolean `true` schema, so it gets the same render-safe
+    // rewrite: a string type for the template plus the marker so provider
+    // auto validation restores allow-all semantics instead of enforcing the
+    // synthetic string type.
+    if positional && node.as_object().is_some_and(Map::is_empty) {
+        *node = json!({
+            "type": "string",
+            (ORIGINAL_BOOLEAN_SCHEMA_KEY): true
         });
         return;
     }
@@ -1189,6 +1201,54 @@ mod tests {
         assert_eq!(properties["flag"]["type"], "boolean");
         assert_eq!(properties["tag"]["type"], "string");
         assert_eq!(properties["none"]["type"], "null");
+    }
+
+    #[test]
+    fn empty_positional_schemas_become_boolean_true_markers() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{"blob":{}}}
+            }}],
+            "tool_choice":"auto"
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        let tools = normalized.tools.unwrap();
+        let blob = &tools[0]["function"]["parameters"]["properties"]["blob"];
+        assert_eq!(blob["type"], "string");
+        assert_eq!(blob[ORIGINAL_BOOLEAN_SCHEMA_KEY], true);
+        assert_eq!(blob.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn constrained_mode_accepts_normalized_empty_schema_marker() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{"blob":{}}}
+            }}],
+            "tool_choice":"required"
+        });
+        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
+
+        // Any marker-bearing shape other than the exact rewrite fails closed.
+        let forged = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"pick",
+                "parameters":{"type":"object","properties":{"blob":{
+                    "type":"string",
+                    "x-darkbloom-original-boolean-schema":false
+                }}}
+            }}],
+            "tool_choice":"required"
+        });
+        assert!(normalize(forged.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
     }
 
     #[test]

@@ -103,6 +103,17 @@ enum ToolSchemaNormalization {
             return arr.map { injectTypes($0, positional: positional) }
         }
         guard var dict = node as? [String: Any] else { return node }
+        // An EMPTY positional map is the `{}` "anything" schema — semantically
+        // identical to the boolean `true` schema, so it gets the same
+        // render-safe rewrite: a string type for the template plus the marker
+        // so auto validation restores allow-all semantics instead of
+        // enforcing the synthetic string type.
+        if positional, dict.isEmpty {
+            return [
+                "type": "string",
+                originalBooleanSchemaKey: true,
+            ] as [String: Any]
+        }
 
         for key in ["properties", "patternProperties"] {
             if let props = dict[key] as? [String: Any] {

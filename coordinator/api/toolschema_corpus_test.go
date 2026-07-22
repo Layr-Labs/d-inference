@@ -16,14 +16,61 @@ import (
 // anyOf / oneOf / allOf IS a schema and is guaranteed a string `type`.
 
 // A property schema that is a bare `{}` — the "anything" schema, valid and
-// emitted by real SDKs for untyped params — must gain {"type":"string"}.
+// emitted by real SDKs for untyped params — is semantically the boolean
+// `true` schema, so it gets the same render-safe rewrite: a string type for
+// the template plus the original-boolean-schema marker so provider-side auto
+// validation restores allow-all semantics instead of enforcing the synthetic
+// string type.
 func TestNormalizeToolSchemas_Corpus_EmptyPropertySchema(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
 	  "parameters":{"type":"object","properties":{"x":{}}}}}]}`)
 
 	x := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["x"], "x")
-	if got := tsnType(t, x, "x"); got != "string" {
-		t.Errorf("x type = %q, want string", got)
+	expected := map[string]any{
+		"type":                   "string",
+		originalBooleanSchemaKey: true,
+	}
+	if !reflect.DeepEqual(x, expected) {
+		t.Errorf("x = %#v, want %#v", x, expected)
+	}
+}
+
+// A required/named request with an empty `{}` property compiles as a free
+// string in grammar modes: the marker rewrite must survive constrained
+// re-validation instead of failing on the reserved key.
+func TestConstrainedValidationAcceptsNormalizedEmptySchemaMarker(t *testing.T) {
+	body := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"lookup",
+			"parameters":{"type":"object","properties":{"x":{}}}
+		}}],
+		"tool_choice":"required"
+	}`)
+	if _, err := validateToolConstraintRequest(body); err != nil {
+		t.Fatalf("pre-normalization validation: %v", err)
+	}
+	normalized := NormalizeToolSchemas(body)
+	if _, err := validateToolConstraintRequest(normalized); err != nil {
+		t.Fatalf("post-normalization validation: %v\n%s", err, normalized)
+	}
+
+	// Any marker-bearing shape other than the exact rewrite fails closed.
+	forged := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"lookup",
+			"parameters":{"type":"object","properties":{"x":{
+				"type":"string",
+				"x-darkbloom-original-boolean-schema":false
+			}}}
+		}}],
+		"tool_choice":"required"
+	}`)
+	if _, err := validateToolConstraintRequest(forged); err == nil {
+		t.Fatal("non-canonical marker shape accepted in constrained mode")
 	}
 }
 

@@ -1630,6 +1630,96 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("empty schemas keep allow-all semantics through normalization")
+    func emptySchemasKeepAllowAllSemantics() throws {
+        let body = Data(
+            """
+            {"model":"gemma-4-test",
+             "messages":[{"role":"user","content":"pick"}],
+             "tools":[{"type":"function","function":{"name":"pick","parameters":{
+               "type":"object",
+               "properties":{"blob":{}}}}}],
+             "tool_choice":"auto"}
+            """.utf8)
+        let decoded = try ProviderLoop.decodeOpenAIRequest(body)
+        let prepared = try ToolChoicePromptPolicy.prepare(decoded)
+        // The render-only string rewrite must not become an authoritative
+        // compiled grammar: auto falls back to raw allow-all validation.
+        #expect(prepared.compiledTools == nil)
+        for value: MLXLMCommon.JSONValue in [
+            .int(7), .object(["k": .string("v")]), .string("text"), .null,
+        ] {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(name: "pick", arguments: ["blob": value])),
+            ], prepared: prepared)
+        }
+
+        // Direct (un-normalized) `{}` behaves identically.
+        let direct = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: .object([
+                    "type": .string("object"),
+                    "properties": .object(["blob": .object([:])]),
+                ]))]))
+        #expect(direct.compiledTools == nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["blob": .int(7)])),
+        ], prepared: direct)
+
+        // Grammar modes keep compiling the marker rewrite as the free string
+        // the original `{}` compiled to before the marker existed.
+        let requiredBody = Data(
+            """
+            {"model":"gemma-4-test",
+             "messages":[{"role":"user","content":"pick"}],
+             "tools":[{"type":"function","function":{"name":"pick","parameters":{
+               "type":"object",
+               "properties":{"blob":{}}}}}],
+             "tool_choice":"required"}
+            """.utf8)
+        let requiredPrepared = try ToolChoicePromptPolicy.prepare(
+            try ProviderLoop.decodeOpenAIRequest(requiredBody))
+        #expect(requiredPrepared.compiledTools != nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "pick", arguments: ["blob": .string("text")])),
+        ], prepared: requiredPrepared)
+    }
+
+    @Test("property names compare by Unicode scalar sequence")
+    func propertyNamesUseUnicodeScalars() throws {
+        let precomposed = "\u{E9}"
+        let decomposed = "e\u{301}"
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                precomposed: .object(["type": .string("string")]),
+            ]),
+            "required": .array([.string(precomposed)]),
+            "additionalProperties": .bool(false),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: [precomposed: .string("ok")])),
+        ], prepared: prepared)
+        // A decomposed key is a DIFFERENT JSON property name: it neither
+        // satisfies `required` nor escapes additionalProperties:false.
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: [decomposed: .string("ok")])),
+            ], prepared: prepared)
+        }
+    }
+
     @Test("pattern literals compare by Unicode scalar sequence")
     func patternLiteralsUseUnicodeScalars() throws {
         let precomposed = "\u{E9}"

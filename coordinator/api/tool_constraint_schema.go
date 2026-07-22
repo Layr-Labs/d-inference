@@ -31,6 +31,19 @@ func validateConstrainedSchema(raw any, root bool, depth int, path string) error
 	if !ok {
 		return invalidToolConstraint(path+" must be a schema object", "tools")
 	}
+	// Normalization rewrites the allow-all `{}` / `true` schemas into a
+	// render-safe marker shape that grammar modes compile as the free string
+	// the original `{}` compiled to. Only that exact non-root shape is
+	// accepted; any other marker-bearing schema fails closed. Mirrors the
+	// Swift compiler and the Rust sidecar validator. (Production validates
+	// the pre-normalization body, where the marker never legitimately
+	// appears; this keeps re-validation of normalized bodies symmetric.)
+	if marker, present := schema[originalBooleanSchemaKey]; present {
+		if !root && marker == true && len(schema) == 2 && schema["type"] == "string" {
+			return nil
+		}
+		return unsupportedToolConstraint(path + " uses reserved schema metadata")
+	}
 	for key := range schema {
 		switch key {
 		case "type", "properties", "required", "additionalProperties", "items",

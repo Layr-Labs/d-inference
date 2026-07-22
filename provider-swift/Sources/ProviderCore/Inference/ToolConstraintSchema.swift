@@ -128,7 +128,9 @@ enum ToolConstraintSchemaCompiler {
                     "tool function names must be unique")
             }
             let raw = tool.function.parameters ?? .object(["type": .string("object")])
-            let schema = try compileSchema(raw, depth: 0, path: "\(name).parameters")
+            let schema = try compileSchema(
+                raw, depth: 0, path: "\(name).parameters",
+                allowRenderMetadata: mode.requiresInferenceGrammar)
             guard case .object = schema else {
                 throw ToolConstraintSchemaError.invalid(
                     "\(name).parameters must have type object")
@@ -212,7 +214,8 @@ enum ToolConstraintSchemaCompiler {
     private static func compileSchema(
         _ raw: SchemaJSONValue,
         depth: Int,
-        path: String
+        path: String,
+        allowRenderMetadata: Bool
     ) throws -> ToolValueSchema {
         guard depth <= maxDepth else {
             throw ToolConstraintSchemaError.unsupported(
@@ -220,6 +223,34 @@ enum ToolConstraintSchemaCompiler {
         }
         guard case .object(let object) = raw else {
             throw ToolConstraintSchemaError.invalid("\(path) must be a schema object")
+        }
+
+        // Normalization rewrites the allow-all `{}` / `true` schemas into a
+        // render-safe marker shape. In grammar modes (required/named) that
+        // shape compiles to the free string the original `{}` compiled to
+        // before normalization carried the marker. In auto mode the marker
+        // stays unsupported so compilation falls back to raw validation,
+        // which restores the exact allow-all semantics — a compiled string
+        // grammar would wrongly reject schema-valid non-string values.
+        if let marker = object[ToolSchemaNormalization.originalBooleanSchemaKey] {
+            guard allowRenderMetadata,
+                marker == .bool(true),
+                object.count == 2,
+                object["type"] == .string("string")
+            else {
+                throw ToolConstraintSchemaError.unsupported(
+                    "\(path) uses reserved schema metadata")
+            }
+            return .string(values: nil, nullable: false)
+        }
+
+        // A DIRECT (un-normalized) empty `{}` schema is the same allow-all
+        // case: grammar modes keep compiling it as a free string, but auto
+        // must fall back to raw validation instead of letting the inferred
+        // string type reject schema-valid non-string values.
+        if !allowRenderMetadata, object.isEmpty {
+            throw ToolConstraintSchemaError.unsupported(
+                "\(path) empty schemas accept any value")
         }
 
         let supported: Set<String> = [
@@ -251,7 +282,8 @@ enum ToolConstraintSchemaCompiler {
         case "object":
             return try compileObject(
                 object, finiteValues: enumValues, nullable: nullable,
-                depth: depth, path: path)
+                depth: depth, path: path,
+                allowRenderMetadata: allowRenderMetadata)
         case "array":
             guard enumValues == nil else {
                 throw ToolConstraintSchemaError.unsupported(
@@ -273,7 +305,8 @@ enum ToolConstraintSchemaCompiler {
             }
             return .array(
                 items: try compileSchema(
-                    items, depth: depth + 1, path: "\(path).items"),
+                    items, depth: depth + 1, path: "\(path).items",
+                    allowRenderMetadata: allowRenderMetadata),
                 minItems: minItems,
                 maxItems: maxItems,
                 nullable: nullable)
@@ -341,7 +374,8 @@ enum ToolConstraintSchemaCompiler {
         finiteValues: [SchemaJSONValue]?,
         nullable: Bool,
         depth: Int,
-        path: String
+        path: String,
+        allowRenderMetadata: Bool
     ) throws -> ToolValueSchema {
         guard finiteValues == nil else {
             throw ToolConstraintSchemaError.unsupported(
@@ -404,7 +438,8 @@ enum ToolConstraintSchemaCompiler {
             properties.append(.init(
                 name: name,
                 schema: try compileSchema(
-                    raw, depth: depth + 1, path: "\(path).properties.\(name)"),
+                    raw, depth: depth + 1, path: "\(path).properties.\(name)",
+                    allowRenderMetadata: allowRenderMetadata),
                 required: required.contains(name)))
         }
         return .object(

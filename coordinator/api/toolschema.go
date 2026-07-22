@@ -257,6 +257,18 @@ func injectTypes(node any, depth int, changed *bool, positional bool) any {
 // nothing moved. positional is this NODE's own slot kind (see injectTypes);
 // values under the schema-container keys below are always positional.
 func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool, positional bool) map[string]any {
+	// An EMPTY positional map is the `{}` "anything" schema — semantically
+	// identical to the boolean `true` schema, so it gets the same render-safe
+	// rewrite: a string type for the template plus the original-boolean-schema
+	// marker so provider-side auto validation restores allow-all semantics
+	// instead of enforcing the synthetic string type.
+	if positional && len(dict) == 0 {
+		*changed = true
+		return map[string]any{
+			"type":                   "string",
+			originalBooleanSchemaKey: true,
+		}
+	}
 	for _, key := range []string{"properties", "patternProperties"} {
 		if props, ok := dict[key].(map[string]any); ok {
 			for k, v := range props {

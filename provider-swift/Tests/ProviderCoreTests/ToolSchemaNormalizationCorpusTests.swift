@@ -29,9 +29,16 @@ struct ToolSchemaNormalizationCorpusTests {
         (node as? [String: Any])?["type"] as? String
     }
 
+    /// A bare `{}` property is the "anything" schema — semantically the
+    /// boolean `true` schema — so it gets the same render-safe rewrite with
+    /// the marker, letting auto validation restore allow-all semantics.
     @Test func emptyPropertySchemaGainsStringType() throws {
         let props = try normalizedProps(#"{"type":"object","properties":{"x":{}}}"#)
-        #expect(typeOf(props["x"]) == "string")
+        let x = try #require(props["x"] as? [String: Any])
+        #expect(x["type"] as? String == "string")
+        #expect(
+            x[ToolSchemaNormalization.originalBooleanSchemaKey] as? Bool == true)
+        #expect(x.count == 2)
     }
 
     @Test func markerlessAnnotationOnlyNodesGainStringType() throws {

@@ -601,7 +601,7 @@ fn exact_nonnegative_usize(value: &serde_json::Number) -> Option<usize> {
     if raw.starts_with('-') {
         return None;
     }
-    let (coefficient, exponent) = match raw.find(|ch| ch == 'e' || ch == 'E') {
+    let (coefficient, exponent) = match raw.find(['e', 'E']) {
         Some(index) => (&raw[..index], raw[index + 1..].parse::<i64>().ok()?),
         None => (raw.as_str(), 0),
     };

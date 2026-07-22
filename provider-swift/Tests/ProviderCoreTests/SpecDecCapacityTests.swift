@@ -195,18 +195,28 @@ struct SpecDecLoadGateTests {
                 == .max)
     }
 
-    @Test("assistant admission boundary is exact and malformed inputs fail closed")
-    func assistantAdmissionBoundary() {
-        let oneGiB: UInt64 = 1_073_741_824
-        #expect(ProviderLoop.assistantMemoryFits(
-            availableGb: 11, targetRequiredGb: 10, assistantBytes: oneGiB))
-        #expect(!ProviderLoop.assistantMemoryFits(
-            availableGb: 10.999, targetRequiredGb: 10,
-            assistantBytes: oneGiB))
-        #expect(!ProviderLoop.assistantMemoryFits(
-            availableGb: .nan, targetRequiredGb: 10, assistantBytes: oneGiB))
-        #expect(!ProviderLoop.assistantMemoryFits(
-            availableGb: 11, targetRequiredGb: .infinity, assistantBytes: oneGiB))
+    @Test("assistant growth is atomic against concurrent reservations")
+    func assistantAdmissionBoundary() async {
+        let unit: UInt64 = 1_073_741_824
+        let budget = GlobalKVCacheBudget(
+            capFraction: 1.0,
+            activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(
+                    total: 10 * unit, active: 0, cache: 0,
+                    systemAvailable: 10 * unit)
+            })
+        await budget.reservePendingLoad(requestID: "target", bytes: 6 * unit)
+        #expect(await budget.reserveBytes(
+            requestID: "concurrent", bytes: unit))
+        #expect(!(await budget.increaseReservationIfAvailable(
+            requestID: "target", additionalBytes: 2 * unit)))
+        #expect(await budget.outstandingReservedBytes() == 7 * unit)
+
+        await budget.release(requestID: "concurrent")
+        #expect(await budget.increaseReservationIfAvailable(
+            requestID: "target", additionalBytes: 2 * unit))
+        #expect(await budget.outstandingReservedBytes() == 8 * unit)
     }
 
     @Test("pending reservation atomically transfers from target+assistant to assistant only")

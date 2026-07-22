@@ -222,12 +222,11 @@ darkbloom beta disable <feature>    # turn off
 | Feature | Effect |
 |---------|--------|
 | `kv-quant` | Forward-compatibility toggle; v0.7.5 warns and continues with fp16 KV |
-| `mtp` | Default-off Gemma 4 MTP code path; requires a separately published and verified `spec_dec` artifact, which production does not currently have |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
-beta list` also accepts `--json`. Installing a provider release does not enable
-MTP, and local parity results are not a blanket M1–M3/unknown-chip certification.
+beta list` also accepts `--json`. MTP is production-default and is intentionally
+not part of this beta workflow.
 
 ## `darkbloom fan` (experimental)
 
@@ -360,6 +359,14 @@ These are the standard `ExitCode` values used by the ArgumentParser-based CLI.
 | Variable | Description |
 |----------|-------------|
 | `DARKBLOOM_NO_UPDATE_CHECK` | Skip the update banner at CLI startup |
+| `DARKBLOOM_CBV2_MTP=0` | Force target-only Gemma 4 serving. Install it persistently with `darkbloom stop && DARKBLOOM_CBV2_MTP=0 darkbloom start`; subsequent launchd/watchdog restarts retain it |
 
 There is no `DARKBLOOM_LOG_LEVEL` or `DARKBLOOM_CONFIG` environment variable;
 use `--config` and the TOML file for configuration.
+
+Supported Gemma 4 catalog builds otherwise fetch and verify their `spec_dec`
+assistant automatically on first load. MTP is advertised active only after the
+replacement runtime confirms activation and memory headroom. Failures stay
+target-only; an assistant that arrives later promotes the idle slot without a
+second restart. A persistent non-environment opt-out is `mtp = false` under
+`[backend]`; a missing key means default-on.

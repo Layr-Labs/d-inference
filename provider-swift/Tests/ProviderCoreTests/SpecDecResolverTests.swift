@@ -148,6 +148,22 @@ private final class OneShotPortBox: @unchecked Sendable {
     }
 }
 
+private actor SpecDecStaticCatalog: SpecDecCatalogLooking {
+    var modelValue: CatalogModel
+    private(set) var freshCalls = 0
+
+    init(_ model: CatalogModel) {
+        self.modelValue = model
+    }
+
+    func cachedModel(id: String) -> CatalogModel? { modelValue }
+    func model(id: String) async throws -> CatalogModel? { modelValue }
+    func freshModel(id: String) async throws -> CatalogModel? {
+        freshCalls += 1
+        return modelValue
+    }
+}
+
 // MARK: - Fixture helpers
 
 private func sha256Hex(_ data: Data) -> String {
@@ -316,6 +332,60 @@ struct SpecDecResolverTests {
         let remaining = try FileManager.default.contentsOfDirectory(
             at: storeRoot, includingPropertiesForKeys: nil)
         #expect(!remaining.contains { $0.lastPathComponent.hasPrefix(".staging-") })
+    }
+
+    @Test("fresh empty cache downloads and returns active candidate in one load")
+    func oneLoadDownloadsVerifiedCandidate() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-one-load/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let catalog = SpecDecStaticCatalog(
+            try makePinnedModel(id: "gemma-4", fixture: fixture))
+        let funnel = SpecDecArtifactFunnel(
+            resolver: SpecDecResolver(
+                storeRoot: root, cdnBaseURL: baseURL.absoluteString),
+            catalog: catalog)
+
+        let prepared = await funnel.prepareForLoad(.init(
+            modelId: "gemma-4", modelType: "gemma4", enabled: true,
+            localPath: nil, allowDownload: true, environment: [:]))
+
+        #expect(prepared.artifact?.revision == "v1")
+        #expect(prepared.status.reason == nil)
+        #expect(await catalog.freshCalls == 1)
+        #expect(server.requestedPaths().filter { $0.hasSuffix("manifest.json") }.count == 1)
+        await funnel.shutdown()
+    }
+
+    @Test("verified cached assistant activates in one load with no CDN access")
+    func oneLoadUsesVerifiedCacheOffline() async throws {
+        let server = SpecDecFileServer()
+        let baseURL = try await server.start()
+        defer { Task { await server.shutdown() } }
+        let fixture = DrafterFixture(prefix: "v2-specdec/gemma4-one-load-cached/v1")
+        server.setFiles(try fixture.served())
+        let root = makeTempStoreRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let model = try makePinnedModel(id: "gemma-4", fixture: fixture)
+        let resolver = SpecDecResolver(
+            storeRoot: root, cdnBaseURL: baseURL.absoluteString)
+        _ = try #require(await resolver.prefetch(model: model).artifact)
+        server.clearRequested()
+        server.setFiles([:])
+        let funnel = SpecDecArtifactFunnel(
+            resolver: resolver, catalog: SpecDecStaticCatalog(model))
+
+        let prepared = await funnel.prepareForLoad(.init(
+            modelId: "gemma-4", modelType: "gemma4", enabled: true,
+            localPath: nil, allowDownload: true, environment: [:]))
+
+        #expect(prepared.artifact?.revision == "v1")
+        #expect(server.requestedPaths().isEmpty)
+        await funnel.shutdown()
     }
 
     @Test("corrupt file (SHA mismatch after retries) fails open: nil, nothing published")
@@ -840,7 +910,7 @@ struct SpecDecResolverTests {
         let result = await resolver.prefetch(model: model)
         #expect(ContinuousClock.now - started < .milliseconds(300))
         #expect(result.artifact == nil)
-        #expect(result.reason == .fileDownloadFailed)
+        #expect(result.reason == .downloadTimedOut)
         let contents = (try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil)) ?? []
         #expect(!contents.contains { $0.lastPathComponent.hasPrefix(".staging-") })

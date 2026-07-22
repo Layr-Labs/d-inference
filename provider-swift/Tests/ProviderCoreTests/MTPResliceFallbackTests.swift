@@ -141,6 +141,17 @@ private final class MTPFloorEngine: CBv2Engine, @unchecked Sendable {
         let held = lock.withLock { () -> [AsyncStream<CBv2Event>.Continuation] in
             let held = continuations
             continuations.removeAll()
+            submitted = 0
+            return held
+        }
+        for continuation in held { continuation.finish() }
+    }
+
+    func finishHeld() {
+        let held = lock.withLock { () -> [AsyncStream<CBv2Event>.Continuation] in
+            let held = continuations
+            continuations.removeAll()
+            submitted = 0
             return held
         }
         for continuation in held { continuation.finish() }
@@ -150,6 +161,7 @@ private final class MTPFloorEngine: CBv2Engine, @unchecked Sendable {
 private final class MTPRecoveryEngineFactory: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
+    private var engines: [MTPFloorEngine] = []
     private let blockRecovery: Bool
     private let recoveryStarted = DispatchSemaphore(value: 0)
     private let recoveryResume = DispatchSemaphore(value: 0)
@@ -170,7 +182,9 @@ private final class MTPRecoveryEngineFactory: @unchecked Sendable {
             recoveryStarted.signal()
             recoveryResume.wait()
         }
-        return MTPFloorEngine(capacityBytes: grant, hangs: index == 0)
+        let engine = MTPFloorEngine(capacityBytes: grant, hangs: index == 0)
+        lock.withLock { engines.append(engine) }
+        return engine
     }
 
     func waitForRecoveryStart() -> Bool {
@@ -178,6 +192,27 @@ private final class MTPRecoveryEngineFactory: @unchecked Sendable {
     }
 
     func resumeRecovery() { recoveryResume.signal() }
+
+    func finishFirstEngine() {
+        lock.withLock { engines.first }?.finishHeld()
+    }
+}
+
+private final class MTPFailingPromotionEngineFactory: @unchecked Sendable {
+    struct Failure: Error {}
+    private let lock = NSLock()
+    private var count = 0
+
+    var buildCount: Int { lock.withLock { count } }
+
+    func make(grant: Int) throws -> any CBv2Engine {
+        let index = lock.withLock { () -> Int in
+            defer { count += 1 }
+            return count
+        }
+        if index > 0 { throw Failure() }
+        return MTPFloorEngine(capacityBytes: grant)
+    }
 }
 
 private final class MTPFloorPrepared: CBv2MTPPreparedCapture {}
@@ -218,14 +253,72 @@ private struct MTPFloorAssistantLoader: ProviderMTPAssistantLoading {
     }
 }
 
-private func mtpFloorArtifact() throws -> SpecDecArtifact {
+private actor MTPPromotionLoadGate {
+    private var entered = false
+    private var enteredWaiters: [CheckedContinuation<Void, Never>] = []
+    private var continuation: CheckedContinuation<Void, any Error>?
+
+    func waitUntilEntered() async {
+        if entered { return }
+        await withCheckedContinuation { enteredWaiters.append($0) }
+    }
+
+    func wait() async throws {
+        entered = true
+        let waiters = enteredWaiters
+        enteredWaiters.removeAll()
+        for waiter in waiters { waiter.resume() }
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                self.continuation = $0
+            }
+        } onCancel: {
+            Task { await self.cancel() }
+        }
+    }
+
+    private func cancel() {
+        continuation?.resume(throwing: CancellationError())
+        continuation = nil
+    }
+}
+
+private final class MTPPromotionWeakOwner: @unchecked Sendable {
+    private let lock = NSLock()
+    private weak var owner: AnyObject?
+
+    func record(_ owner: AnyObject) {
+        lock.withLock { self.owner = owner }
+    }
+
+    var isAlive: Bool { lock.withLock { owner != nil } }
+}
+
+private struct MTPGatedAssistantLoader: ProviderMTPAssistantLoading {
+    let gate: MTPPromotionLoadGate
+    let ownerProbe: MTPPromotionWeakOwner
+
+    func loadAndBind(
+        artifact: SpecDecArtifact,
+        target: any LanguageModel
+    ) async throws -> ProviderMTPAssistantHandle {
+        let owner = NSObject()
+        ownerProbe.record(owner)
+        let handle = ProviderMTPAssistantHandle(
+            owner: owner, drafter: MTPFloorDrafter())
+        try await gate.wait()
+        return handle
+    }
+}
+
+private func mtpFloorArtifact(fill: UInt8 = 0x5a) throws -> SpecDecArtifact {
     let directory = FileManager.default.temporaryDirectory
         .appendingPathComponent("mtp-floor-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     try Data(#"{"model_type":"gemma4_assistant"}"#.utf8)
         .write(to: directory.appendingPathComponent("config.json"))
     let weightURL = directory.appendingPathComponent("model.safetensors")
-    try Data(repeating: 0x5a, count: 4096).write(to: weightURL)
+    try Data(repeating: fill, count: 4096).write(to: weightURL)
     return try #require(SpecDecStore.inspectLocalArtifact(path: directory.path))
 }
 
@@ -271,7 +364,7 @@ private func mtpFloorLoop(
                 backend: .init(
                     idleTimeoutMins: 0,
                     maxModelSlots: 3,
-                    mtp: mtpDrafterPath != nil,
+                    mtp: true,
                     mtpDrafterPath: mtpDrafterPath),
                 coordinator: .init(heartbeatIntervalSecs: 60))),
         purgeLegacyFiles: false,
@@ -541,6 +634,398 @@ struct MTPResliceFallbackTests {
         #expect(await server.debugOutstandingKVReservationBytes() == 0)
         await bridge.shutdown()
         await server.stopAndWait()
+    }
+
+    @Test("verified background artifact promotes an idle target-only slot without restart")
+    func backgroundArtifactPromotesIdleSlot() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let factory = MTPRecoveryEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorAssistantLoader(),
+            makeEngine: { _, grant in factory.make(grant: grant) }))
+
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+        let oldBridge = initial.bundle.bridge
+
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+        #expect(await loop.specDecPromotionTaskCountForTesting() == 1)
+        for _ in 0..<400 {
+            if await loop.slotMTPStatusForTesting(modelId: mtpFloorNewID)?.active == true {
+                break
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        let promoted = try #require(
+            await loop.slotBridgeForTesting(modelId: mtpFloorNewID))
+        #expect(promoted !== oldBridge)
+        #expect(await loop.slotMTPStatusForTesting(modelId: mtpFloorNewID)?.active == true)
+        #expect(await loop.slotSizingForTesting(modelId: mtpFloorNewID)?
+            .auxiliaryWeightBytes == Int(artifact.residentBytes))
+        #expect(factory.buildCount == 2, "duplicate signals must coalesce")
+        #expect(await runtime.bridge(forModel: mtpFloorNewID) === promoted)
+        await loop.unloadModel(mtpFloorNewID)
+    }
+
+    @Test("promotion construction failure preserves the old serving engine")
+    func promotionFailurePreservesServingTarget() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let factory = MTPFailingPromotionEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorAssistantLoader(),
+            makeEngine: { _, grant in try factory.make(grant: grant) }))
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+        let oldBridge = initial.bundle.bridge
+
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+        for _ in 0..<400 {
+            if await loop.specDecPromotionTaskCountForTesting() == 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) === oldBridge)
+        #expect(await runtime.bridge(forModel: mtpFloorNewID) === oldBridge)
+        #expect(await loop.slotMTPStatusForTesting(modelId: mtpFloorNewID)?.active == false)
+        #expect(await loop.slotSizingForTesting(modelId: mtpFloorNewID)?
+            .auxiliaryWeightBytes == 0)
+        #expect(factory.buildCount == 2)
+
+        // The same immutable artifact gets at most three promotion attempts.
+        // Periodic catalog refreshes cannot create an endless rebuild loop.
+        for _ in 0..<3 {
+            await loop.specDecArtifactBecameReady(
+                modelId: mtpFloorNewID, artifact: artifact)
+            for _ in 0..<400 {
+                if await loop.specDecPromotionTaskCountForTesting() == 0 { break }
+                try await Task.sleep(nanoseconds: 5_000_000)
+            }
+        }
+        #expect(factory.buildCount == 4)
+
+        let revised = try mtpFloorArtifact(fill: 0x6b)
+        defer { try? FileManager.default.removeItem(at: revised.directory) }
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: revised)
+        for _ in 0..<400 {
+            if await loop.specDecPromotionTaskCountForTesting() == 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(factory.buildCount == 5, "a new assistant identity resets the bounded ledger")
+        await loop.unloadModel(mtpFloorNewID)
+    }
+
+    @Test("active work delays promotion and continues on the old engine")
+    func activeWorkDelaysPromotion() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let factory = MTPRecoveryEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorAssistantLoader(),
+            makeEngine: { _, grant in factory.make(grant: grant) }))
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+        let oldBridge = initial.bundle.bridge
+        await loop.reserveLocalModelForTesting(mtpFloorNewID)
+
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(factory.buildCount == 1)
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) === oldBridge)
+
+        await loop.releaseLocalModelForTesting(mtpFloorNewID)
+        for _ in 0..<400 {
+            if await loop.slotMTPStatusForTesting(modelId: mtpFloorNewID)?.active == true {
+                break
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(factory.buildCount == 2)
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) !== oldBridge)
+        await loop.unloadModel(mtpFloorNewID)
+    }
+
+    @Test("shutdown cancellation leaves a waiting promotion target-only")
+    func shutdownCancelsWaitingPromotion() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let factory = MTPRecoveryEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorAssistantLoader(),
+            makeEngine: { _, grant in factory.make(grant: grant) }))
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+        let oldBridge = initial.bundle.bridge
+        await loop.reserveLocalModelForTesting(mtpFloorNewID)
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+
+        await loop.beginShutdownForTesting()
+        await loop.cancelSpecDecPromotions()
+        await loop.releaseLocalModelForTesting(mtpFloorNewID)
+        for _ in 0..<100 {
+            if await loop.specDecPromotionTaskCountForTesting() == 0 { break }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+
+        #expect(factory.buildCount == 1)
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) === oldBridge)
+        #expect(await loop.slotMTPStatusForTesting(modelId: mtpFloorNewID)?.active == false)
+        #expect(await loop.specDecPromotionAttemptCountForTesting(
+            modelId: mtpFloorNewID) == 0)
+        await loop.unloadModel(mtpFloorNewID)
+    }
+
+    @Test("engine rows must drain after outer request ownership clears")
+    func engineQuiescenceDelaysPromotion() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let factory = MTPRecoveryEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorAssistantLoader(),
+            makeEngine: { _, grant in factory.make(grant: grant) }))
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+        let oldBridge = initial.bundle.bridge
+        _ = await oldBridge.submitTokenized(
+            promptTokens: [1, 2, 3],
+            request: ChatCompletionRequest(
+                model: mtpFloorNewID,
+                messages: [.init(role: "user", content: "hi")]),
+            requestId: "mtp-engine-quiescence")
+
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(factory.buildCount == 1)
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) === oldBridge)
+
+        factory.finishFirstEngine()
+        for _ in 0..<400 {
+            if await loop.slotMTPStatusForTesting(modelId: mtpFloorNewID)?.active == true {
+                break
+            }
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        #expect(factory.buildCount == 2)
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) !== oldBridge)
+        await loop.unloadModel(mtpFloorNewID)
+    }
+
+    @Test("unload cancels a waiting promotion without constructing an engine")
+    func unloadCancelsWaitingPromotion() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let factory = MTPRecoveryEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPFloorAssistantLoader(),
+            makeEngine: { _, grant in factory.make(grant: grant) }))
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+        await loop.reserveLocalModelForTesting(mtpFloorNewID)
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+
+        await loop.unloadModel(mtpFloorNewID)
+        await loop.releaseLocalModelForTesting(mtpFloorNewID)
+
+        #expect(factory.buildCount == 1)
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) == nil)
+        #expect(await loop.specDecPromotionTaskCountForTesting() == 0)
+    }
+
+    @Test("unload awaits cancellation during assistant construction")
+    func unloadAwaitsAssistantConstructionCancellation() async throws {
+        let artifact = try mtpFloorArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+        let gate = MTPPromotionLoadGate()
+        let ownerProbe = MTPPromotionWeakOwner()
+        let factory = MTPRecoveryEngineFactory()
+        let loop = try mtpFloorLoop(models: [
+            .init(
+                id: mtpFloorNewID, modelType: "gemma4",
+                sizeBytes: 1, estimatedMemoryGb: 1),
+        ])
+        await loop.setEngineV2RuntimeForTesting(EngineV2Runtime())
+        await loop.setEngineV2SlotHooksForTesting(.init(
+            physicalMemoryBytes: mtpFloorPhysical,
+            assistantLoader: MTPGatedAssistantLoader(
+                gate: gate, ownerProbe: ownerProbe),
+            makeEngine: { _, grant in factory.make(grant: grant) }))
+        let container = mtpFloorContainer()
+        let initial = try await loop.resliceAndBuildEngineV2BundleForTesting(
+            modelId: mtpFloorNewID,
+            modelType: "gemma4",
+            newcomer: EngineV2NewcomerBox(container),
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: mtpFloorSizing(weightsGiB: 15),
+            specDecPreparation: .init(
+                artifact: nil,
+                status: .disabled(.artifactNotCached, configured: true)))
+        await loop.installModelBundleForTesting(
+            modelId: mtpFloorNewID,
+            bundle: initial.bundle,
+            container: container,
+            tokenizer: TokenizerHandle(MTPFloorTokenizer()),
+            sizing: initial.sizing,
+            modelType: "gemma4")
+
+        await loop.specDecArtifactBecameReady(
+            modelId: mtpFloorNewID, artifact: artifact)
+        await gate.waitUntilEntered()
+        #expect(ownerProbe.isAlive)
+        #expect(await initial.bundle.bridge.backendSlotCapacity().state == "reloading")
+        await loop.unloadModel(mtpFloorNewID)
+
+        #expect(await loop.slotBridgeForTesting(modelId: mtpFloorNewID) == nil)
+        #expect(await loop.specDecPromotionTaskCountForTesting() == 0)
+        #expect(await loop.outstandingKVReservationBytesForTesting() == 0)
+        #expect(!ownerProbe.isAlive)
+        #expect(factory.buildCount == 1)
     }
 
     @Test("liveness rebuild revalidates cached artifact and recovers target-only")

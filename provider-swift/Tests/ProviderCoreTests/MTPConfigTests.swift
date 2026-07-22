@@ -1,10 +1,7 @@
 // Copyright © 2026 Eigen Labs.
 //
-// MTP config + hygiene surface (Gemma 4 MTP plan §4 D5): the `[backend]`
-// `mtp` / `mtp_drafter_path` TOML keys, the `mtp` beta-feature registry
-// entry (`darkbloom beta enable mtp` is registry-driven, zero CLI code),
-// and the `gemma4_assistant` supported-set carve-out (a hand-downloaded
-// drafter checkpoint must never be advertised as a servable chat model).
+// MTP config + hygiene surface: production-default policy, persistent opt-out,
+// environment kill-switch precedence, and assistant namespace exclusion.
 
 import Testing
 
@@ -30,8 +27,18 @@ struct MTPConfigKeyTests {
         #expect(MTPAutomaticVerificationPolicy.initialDraftTokens == 1)
     }
 
+    @Test("active MTP forces transactional contiguous KV")
+    func mtpForcesContiguousKV() {
+        #expect(EngineV2SlotFactory.mtpCompatibleKVBackend(
+            .paged, assistantActive: true) == .contiguous)
+        #expect(EngineV2SlotFactory.mtpCompatibleKVBackend(
+            .paged, assistantActive: false) == .paged)
+        #expect(EngineV2SlotFactory.mtpCompatibleKVBackend(
+            .contiguous, assistantActive: true) == .contiguous)
+    }
 
-    @Test("absent keys default to mtp=false, no drafter path")
+
+    @Test("old configs without keys migrate to mtp=true")
     func defaultsWhenAbsent() {
         let config = ConfigManager.parse(
             """
@@ -42,7 +49,7 @@ struct MTPConfigKeyTests {
             port = 8100
             """)
 
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtp == true)
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -54,11 +61,11 @@ struct MTPConfigKeyTests {
             name = "test-provider"
 
             [backend]
-            mtp = true
+            mtp = false
             mtp_drafter_path = "/opt/drafters/gemma4-assistant-4bit"
             """)
 
-        #expect(config.backend.mtp == true)
+        #expect(config.backend.mtp == false)
         #expect(config.backend.mtpDrafterPath == "/opt/drafters/gemma4-assistant-4bit")
     }
 
@@ -79,9 +86,9 @@ struct MTPConfigKeyTests {
 
     // ConfigManager.parse falls back to a full default config on any decode
     // failure (documented behavior: a malformed provider.toml must never
-    // brick a provider) — so a wrongly-typed value yields the safe default
-    // (MTP off), never a crash or a half-parsed config.
-    @Test("wrongly-typed mtp value falls back to defaults (off)")
+    // brick a provider) — so a wrongly-typed value yields the production
+    // default, never a crash or a half-parsed config.
+    @Test("wrongly-typed mtp value falls back to production default")
     func invalidMTPValueFallsBack() {
         let config = ConfigManager.parse(
             """
@@ -92,7 +99,7 @@ struct MTPConfigKeyTests {
             mtp = "yes"
             """)
 
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtp == true)
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -108,7 +115,7 @@ struct MTPConfigKeyTests {
             mtp_drafter_path = 42
             """)
 
-        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtp == true)
         #expect(config.backend.mtpDrafterPath == nil)
     }
 
@@ -143,74 +150,33 @@ struct MTPConfigKeyTests {
     }
 }
 
-// MARK: - Beta feature
+@Suite("MTP production policy")
+struct MTPProductionPolicyTests {
+    @Test("MTP is not exposed through the beta workflow")
+    func betaEntryRemoved() {
+        #expect(BetaFeatures.feature(id: "mtp") == nil)
+        #expect(!BetaFeatures.all.contains { $0.id == "mtp" })
+    }
 
-@Suite("MTP beta feature")
-struct MTPBetaFeatureTests {
-
-    private func freshConfig() -> ProviderConfig {
-        ProviderConfig(
+    @Test("explicit config opt-out survives serialization")
+    func explicitOptOutRoundTrips() {
+        let original = ProviderConfig(
             provider: ProviderSettings(name: "test-provider"),
-            backend: BackendSettings(),
-            coordinator: CoordinatorSettings()
-        )
+            backend: BackendSettings(mtp: false),
+            coordinator: CoordinatorSettings())
+        let decoded = ConfigManager.parse(ConfigManager.serialize(original))
+        #expect(decoded.backend.mtp == false)
     }
 
-    @Test("registry exposes mtp, restart-required, default off")
-    func registryEntry() throws {
-        let feature = try #require(BetaFeatures.feature(id: "mtp"))
-        #expect(feature.id == "mtp")
-        #expect(feature.requiresRestart == true)
-        #expect(feature.isEnabled(in: freshConfig()) == false)
-        // Case-insensitive lookup, like every other beta id.
-        #expect(BetaFeatures.feature(id: "MTP")?.id == "mtp")
-    }
-
-    @Test("apply toggles config.backend.mtp both ways")
-    func applyTogglesField() {
-        let feature = BetaFeatures.feature(id: "mtp")!
-        var config = freshConfig()
-
-        feature.apply(true, to: &config)
-        #expect(config.backend.mtp == true)
-        #expect(feature.isEnabled(in: config) == true)
-        #expect(BetaFeatures.enabledIDs(in: config) == ["mtp"])
-
-        feature.apply(false, to: &config)
-        #expect(config.backend.mtp == false)
-        #expect(feature.isEnabled(in: config) == false)
-        #expect(BetaFeatures.enabledIDs(in: config).isEmpty)
-    }
-
-    @Test("apply only mutates its mapped field")
-    func applyIsScoped() {
-        let feature = BetaFeatures.feature(id: "mtp")!
-        var config = freshConfig()
-        let before = config
-
-        feature.apply(true, to: &config)
-
-        #expect(config.backend.kvQuant == before.backend.kvQuant)
-        #expect(config.backend.mtpDrafterPath == before.backend.mtpDrafterPath)
-        #expect(config.backend.port == before.backend.port)
-        #expect(config.provider == before.provider)
-        #expect(config.coordinator == before.coordinator)
-    }
-
-    // `darkbloom beta enable mtp` = apply(true) + ConfigManager.save; the
-    // daemon reads the TOML back on restart. This round-trip is the whole
-    // enable path, minus the file I/O.
-    @Test("toggle survives a TOML round-trip")
-    func roundTripsThroughTOML() {
-        let feature = BetaFeatures.feature(id: "mtp")!
-        var config = freshConfig()
-        feature.apply(true, to: &config)
-
-        let toml = ConfigManager.serialize(config)
-        let decoded = ConfigManager.parse(toml)
-
-        #expect(toml.contains("mtp = true"))
-        #expect(feature.isEnabled(in: decoded) == true)
+    @Test("environment kill switch is persisted into the launchd service")
+    func killSwitchSurvivesLaunchdRestarts() {
+        let persisted = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_CBV2_MTP": "0",
+            "UNRELATED": "secret",
+        ])
+        #expect(persisted == ["DARKBLOOM_CBV2_MTP": "0"])
+        #expect(!SpecDecArtifactFunnel.killSwitchEnabled(environment: persisted))
+        #expect(SpecDecArtifactFunnel.killSwitchEnabled(environment: [:]))
     }
 }
 

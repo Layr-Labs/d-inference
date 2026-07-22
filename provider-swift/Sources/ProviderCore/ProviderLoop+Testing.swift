@@ -399,6 +399,26 @@ extension ProviderLoop {
         modelSlots[modelId]?.engineBundle.mtpStatus
     }
 
+    func specDecPromotionTaskCountForTesting() -> Int {
+        specDecPromotionTasks.count
+    }
+
+    func specDecPromotionInProgressForTesting(modelId: String) -> Bool {
+        modelsPromotingSpecDec.contains(modelId)
+    }
+
+    func specDecPromotionAttemptCountForTesting(modelId: String) -> Int {
+        specDecPromotionAttempts[modelId]?.attempts ?? 0
+    }
+
+    func reserveLocalModelForTesting(_ modelId: String) {
+        localReservations.reserve(modelId)
+    }
+
+    func releaseLocalModelForTesting(_ modelId: String) {
+        localReservations.release(modelId)
+    }
+
     /// Test seam: the live bridge for a loaded slot.
     func slotBridgeForTesting(modelId: String) -> EngineV2Bridge? {
         modelSlots[modelId]?.engineV2

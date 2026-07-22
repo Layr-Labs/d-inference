@@ -26,6 +26,12 @@ import MLXLMCommon
 import ProviderCoreFoundation
 
 enum EngineV2SlotFactory {
+    static func mtpCompatibleKVBackend(
+        _ selection: EngineV2KVBackendSelection,
+        assistantActive: Bool
+    ) -> EngineV2KVBackendSelection {
+        assistantActive && selection == .paged ? .contiguous : selection
+    }
 
     /// Narrow assembly seams for production-order regression tests. Normal
     /// callers use the empty value and execute only concrete production code.
@@ -183,7 +189,7 @@ enum EngineV2SlotFactory {
             selection: parsedKVBackend.selection,
             isVLM: isVLM,
             kvQuantConfigured: kvQuantConfigured)
-        let kvBackendSelection = vetoed.selection
+        var kvBackendSelection = vetoed.selection
         if let veto = vetoed.veto {
             logInfo(
                 "engine_v2: \(modelId) paged KV backend forced to contiguous "
@@ -221,6 +227,14 @@ enum EngineV2SlotFactory {
         let servingModel = prepared.servingModel
         let assistantHandle = prepared.assistant
         let mtpStatus = prepared.mtpStatus
+        let mtpKVBackend = mtpCompatibleKVBackend(
+            kvBackendSelection, assistantActive: assistantHandle != nil)
+        if mtpKVBackend != kvBackendSelection {
+            kvBackendSelection = mtpKVBackend
+            logInfo(
+                "engine_v2: \(modelId) paged KV backend forced to contiguous "
+                    + "(MTP requires transactional sliding-window rollback)")
+        }
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: environment)
         let mtpConfig = CBv2MTPConfig(

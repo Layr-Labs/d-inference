@@ -225,7 +225,8 @@ public struct SpecDecResolver: Sendable {
     private func boundedDownload(
         reference: SpecDecArtifactReference
     ) async -> SpecDecResolution {
-        await withTaskGroup(of: SpecDecResolution.self) { group in
+        let started = ContinuousClock.now
+        let result = await withTaskGroup(of: SpecDecResolution.self) { group in
             group.addTask {
                 await downloadAndPublish(reference: reference)
             }
@@ -233,11 +234,11 @@ public struct SpecDecResolver: Sendable {
                 do {
                     try await taskSleep(prefetchTimeout)
                     return .fallback(
-                        .fileDownloadFailed,
+                        .downloadTimedOut,
                         detail: "MTP prefetch exceeded its owned deadline")
                 } catch {
                     return .fallback(
-                        .fileDownloadFailed,
+                        .downloadCancelled,
                         detail: "MTP prefetch was cancelled")
                 }
             }
@@ -246,6 +247,14 @@ public struct SpecDecResolver: Sendable {
             group.cancelAll()
             return result
         }
+        let elapsed = ContinuousClock.now - started
+        let milliseconds = Int64(max(
+            0,
+            Double(elapsed.components.seconds) * 1_000
+                + Double(elapsed.components.attoseconds) / 1e15))
+        Self.logger.info(
+            "spec-dec: revision=\(reference.revision) download_verify_ms=\(milliseconds) result=\(result.reason?.rawValue ?? "ready")")
+        return result
     }
 
     private func resolutionKey(

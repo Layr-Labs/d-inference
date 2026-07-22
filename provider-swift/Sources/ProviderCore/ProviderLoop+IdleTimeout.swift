@@ -58,7 +58,11 @@ extension ProviderLoop {
         var candidates: [String] = []
         let modelsWithInflight = Set(requestToModel.values)
         for (modelId, slot) in modelSlots {
-            if modelsUnloading.contains(modelId) { continue }
+            if modelsUnloading.contains(modelId)
+                || modelsPromotingSpecDec.contains(modelId)
+            {
+                continue
+            }
             let elapsed = now - slot.lastInferenceAt
             let hasInflight = modelsWithInflight.contains(modelId) || hasLocalReservation(modelId)
             if IdleTimeoutPolicy.shouldUnload(
@@ -76,6 +80,7 @@ extension ProviderLoop {
             guard !currentInflight.contains(modelId),
                   !hasLocalReservation(modelId),
                   !modelsUnloading.contains(modelId),
+                  !modelsPromotingSpecDec.contains(modelId),
                   let slot = modelSlots[modelId] else { continue }
 
             let elapsed = ContinuousClock.now - slot.lastInferenceAt

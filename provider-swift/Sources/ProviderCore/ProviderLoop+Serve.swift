@@ -86,16 +86,22 @@ extension ProviderLoop {
         // 1. Apply security hardening
         try await applySecurityHardening()
 
-        // MTP catalog metadata is process-local. Give it one short, owned
-        // prewarm before either startup preloads or the unified local endpoint
-        // can perform the first normal cold target load. This never downloads
-        // assistant bytes and fails open on timeout.
-        await prewarmSpecDecCatalog()
+        // Artifact completion is a lifecycle event: a verified assistant that
+        // arrives after a target-only slot was published promotes that retained
+        // target at the next idle boundary. Initial cold loads await the same
+        // bounded funnel and normally activate before publication.
+        await specDecFunnel.setArtifactReadyHandler {
+            [weak self] modelId, artifact, generation in
+            await self?.specDecArtifactBecameReady(
+                modelId: modelId,
+                artifact: artifact,
+                generation: generation)
+        }
 
         // Unified mode: also expose a local OpenAI endpoint off the same loaded
-        // models. It starts after the bounded metadata prewarm, but still before
-        // the coordinator connection, so local serving keeps coordinator
-        // independence while a cached assistant can join the first target load.
+        // models. It starts before the coordinator connection; local serving
+        // remains coordinator-independent and may use an explicit local
+        // assistant path.
         if let localEndpoint = loopConfig.localEndpoint {
             startLocalEndpoint(localEndpoint)
         }
@@ -317,6 +323,7 @@ extension ProviderLoop {
 
         logger.info("Event stream ended, shutting down")
         isShuttingDown = true
+        cancelSpecDecPromotions()
         idleMonitorTask?.cancel()
         idleMonitorTask = nil
         capacityRefreshTask?.cancel()

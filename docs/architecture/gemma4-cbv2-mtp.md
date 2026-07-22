@@ -5,9 +5,10 @@
 implementation in mlx-swift-lm PR
 [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74), plus the exact
 automatic-verifier repair in mlx-swift-lm PR
-[#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). The code is included
-in the v0.7.11 candidate but remains default-off. Production has no `spec_dec`
-assistant artifact, and release publication is not MTP activation.
+[#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). Supported Gemma 4
+catalog builds now use verified MTP assistants by default. The QAT target has
+an immutable `spec_dec` pointer; activation remains runtime-confirmed rather
+than inferred from release or catalog publication.
 
 The recorded parity matrix is implementation evidence, not universal
 certification for every M1, M2, M3, or unknown Apple chip/model combination.
@@ -54,9 +55,10 @@ The production branch now includes:
   paged hybrids fail cold during typed capability derivation
   (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift:127-153`).
 - Provider local/catalog resolution, mandatory immutable catalog anchors,
-  bounded nonblocking prefetch, assistant-owned quantization, exact target
-  binding, fail-open target-only fallback, memory accounting, slot lifetime,
-  rebuild posture preservation, metrics, and kill switch.
+  bounded fetch and retry, assistant-owned quantization, exact target binding,
+  fail-open target-only fallback, one-load activation, idle atomic promotion,
+  memory accounting, slot lifetime, rebuild posture preservation, metrics,
+  and a launchd-persistent kill switch.
 - A production-backed cache-only validation and benchmark harness with process
   supervision, raw-token parity, release performance mode, bounded inventory,
   secure output handling, and explicit coverage labels.
@@ -132,8 +134,8 @@ unprofitable shapes.
 
 The short adaptive cases begin with an untrained controller and mostly select
 depth zero. They validate safe exploration and fallback, not convergence.
-Production-duration traffic replay remains required before setting controller
-seeds or enabling MTP by default.
+Production-duration traffic replay remains required before changing controller
+seeds or expanding beyond the shipped conservative fixed depth.
 
 The sanitized schema-v4 release reports are stored in the gitignored run
 directories beginning `tmp/mtp-20260714T030432Z-` (QAT-4bit assistant) and
@@ -166,7 +168,8 @@ supervisor; same-user mutation after catalog verification remains a general
 path/fd TOCTOU concern; official cross-runtime tensor fixtures, real
 long-prefix validation, video, structured output, and production-duration
 controller convergence remain unimplemented. These do not weaken the completed
-target-authority matrices, but they block a default-on production rollout.
+target-authority matrices or the conservative default-on greedy path; they
+block broader stochastic, paged-window, and depth-envelope expansion.
 
 ## Scope
 
@@ -240,7 +243,7 @@ read-only source worktree `.worktrees/mtp-build`:
 | engine `13a726e` | Scheduler `1+k` planning, speculative KV contracts, window staging, rectangular attention, Gemma model and drafter seams |
 | engine `e11a108` | Seed/draft/verify step, finalize-time accept walk, lifecycle integration, metrics |
 | parent `c228c257` | `spec_dec` R2 artifact resolver and store |
-| parent `37f785b0` | Provider config, beta switch, assistant advertisement exclusion |
+| parent `37f785b0` | Historical provider config switch and assistant advertisement exclusion |
 | parent `5040e86b` | Drafter memory-accounting and slot-lifetime scaffolding |
 
 Those commits were based on older parent and engine revisions. They are
@@ -275,6 +278,44 @@ flowchart LR
 The coordinator performs no speculation. Existing free-form catalog metadata
 provides an immutable pointer to an assistant artifact. Old providers ignore
 that metadata and continue target-only serving.
+
+### Production-default lifecycle
+
+Policy precedence is exact:
+
+1. `DARKBLOOM_CBV2_MTP=0` forces target-only behavior. `darkbloom start`
+   copies it into the launchd plist, so watchdog/login/restart relaunches keep
+   the rollback.
+2. Explicit `[backend] mtp = false` is the persistent config opt-out.
+3. Explicit `true` and an absent key are default-on. This makes pre-v0.7.12
+   configs migrate without a rewrite.
+4. Non-Gemma targets are always target-only.
+
+For a cold Gemma load, `SpecDecArtifactFunnel.prepareForLoad` fetches fresh
+catalog identity before any model-load or re-slice gate, validates all
+`spec_dec` trust anchors, verifies a cached artifact without network access or
+performs one bounded download, and returns only an immutable verified
+candidate. Target plus assistant memory is reserved before assistant load.
+The slot is published MTP-active only after the concrete engine reports
+`mtp.active=true` and post-build headroom passes.
+
+Optional fleet-wide artifact work never sits ahead of daemon liveness, the
+local endpoint, or coordinator registration. Only a demanded Gemma cold load
+awaits its bounded artifact preparation; failures immediately preserve the
+target-only path and enter backoff.
+
+Failures publish a target-only slot with one stable reason. The funnel retries
+network/catalog failures on a bounded backoff and periodically re-reads catalog
+identity. A newly verified or revised artifact emits one deduplicated
+artifact-ready event. `ProviderLoop+MTPPromotion` waits for remote and local
+work to drain, blocks new work for that model, reuses the retained target
+container, reserves assistant memory, computes replacement fleet grants,
+builds an unregistered replacement, and verifies activation and headroom. It
+then swaps the slot and runtime registration before retiring the old bridge.
+Any failure releases the candidate exactly once, restores prior grants, and
+leaves the old engine serving. Promotion is capped at three attempts per
+immutable assistant identity; a changed revision/hash resets that ledger.
+Unload, shutdown, and update drain cancel owned promotion work.
 
 ## Stable Interfaces
 
@@ -560,7 +601,7 @@ full-suite verification, independent review, and final refactor.
 
 ### Provider Tests
 
-- Config absent, present, invalid, beta toggle, and serialization.
+- Config absent/default-on, explicit opt-out, invalid, and serialization.
 - Local assistant path precedence.
 - Catalog metadata resolution and shared-prefix reuse.
 - Manifest digest, size, file-count, path, and hash rejection.
@@ -854,8 +895,8 @@ teach `EngineLoopV2` a parallel sampling stack:
 Artifact resolution, assistant ownership, and memory sizing do not change.
 The provider continues to pass the bound drafter and `CBv2MTPConfig` through
 the single production factory (`EngineV2SlotFactory.swift:317-440` and
-`EngineV2Factory+Production.swift:365-394`). A new stochastic mode flag belongs
-in that config and defaults off independently of the existing MTP beta switch.
+`EngineV2Factory+Production.swift:365-394`). A future stochastic mode flag
+belongs in that config and defaults off independently of production greedy MTP.
 
 #### Device And Host-Sync Plan
 
@@ -1306,7 +1347,7 @@ When implementation is review-ready:
 
 1. Open the engine PR with before/after behavior and code diagrams.
 2. Pin its exact commit in the parent provider PR.
-3. Ship provider support default-off.
+3. Ship provider support with a launchd-persistent emergency kill switch.
 4. Publish one immutable verified assistant artifact.
 5. Attach `spec_dec` metadata to existing target builds.
 6. Run owned-box HTTP and routed canaries.

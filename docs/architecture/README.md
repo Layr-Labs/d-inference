@@ -45,6 +45,7 @@ This directory is the source of truth for how Darkbloom works. The code in `coor
 | Doc | Topic |
 |---|---|
 | [inference.md](inference.md) | How inference requests are decoded, batched, and served |
+| [gemma4-cbv2-mtp.md](gemma4-cbv2-mtp.md) | Default-on verified Gemma 4 MTP, target-only fallback, promotion, memory, and rollout |
 | [cache-aware-routing.md](cache-aware-routing.md) | Provider-confirmed prefix-cache routing, receipts, scoring, and rollout |
 | [prompt-contract-sidecar.md](prompt-contract-sidecar.md) | Local prompt planning, artifact identity, binary block hashing, and failure isolation |
 | [request-outcome-observability.md](request-outcome-observability.md) | Request outcome taxonomy across client, provider, and billing paths |

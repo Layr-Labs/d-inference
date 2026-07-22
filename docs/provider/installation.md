@@ -97,6 +97,27 @@ url = "wss://api.darkbloom.dev/ws/provider"
 private_only = false
 ```
 
+Supported Gemma 4 catalog builds use multi-token prediction by default. On the
+first ordinary start, the provider reads the build's fresh `metadata.spec_dec`,
+downloads and cryptographically verifies the immutable assistant, accounts for
+target plus assistant memory, and publishes MTP only after the runtime reports
+it active. Any catalog, download, verification, memory, or construction failure
+keeps the target-only engine available. A download that finishes after a
+target-only slot was published promotes that retained target automatically at
+an idle boundary; no second restart is required.
+
+Emergency rollback has highest precedence:
+
+```bash
+darkbloom stop
+DARKBLOOM_CBV2_MTP=0 darkbloom start
+```
+
+The start command stores the allowlisted variable in the launchd plist, so the
+opt-out survives ordinary `darkbloom restart`, watchdog relaunches, and login.
+Alternatively, `mtp = false` under `[backend]` is a persistent config opt-out.
+An absent `mtp` key migrates to default-on; explicit `false` stays off.
+
 ## Updating the provider
 
 ```bash

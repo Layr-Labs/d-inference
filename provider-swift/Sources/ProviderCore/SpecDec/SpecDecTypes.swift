@@ -22,6 +22,8 @@ public enum MTPFallbackReason: String, Sendable, Equatable {
     case fileTypeDisallowed = "file_type_disallowed"
     case pathInvalid = "path_invalid"
     case fileDownloadFailed = "file_download_failed"
+    case downloadTimedOut = "download_timed_out"
+    case downloadCancelled = "download_cancelled"
     case fileDigestMismatch = "file_digest_mismatch"
     case warmArtifactCorrupt = "warm_artifact_corrupt"
     case publicationFailed = "publication_failed"
@@ -30,6 +32,8 @@ public enum MTPFallbackReason: String, Sendable, Equatable {
     case assistantMemoryUnavailable = "assistant_memory_unavailable"
     case assistantResliceFloor = "assistant_reslice_floor"
     case assistantPostBuildHeadroom = "assistant_post_build_headroom"
+    case promotionBusyTimeout = "promotion_busy_timeout"
+    case promotionConstructionFailed = "promotion_construction_failed"
     case engineInactive = "engine_inactive"
 }
 

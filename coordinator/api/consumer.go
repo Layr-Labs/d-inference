@@ -2587,9 +2587,11 @@ func toolCallWireIndex(tc map[string]any) int {
 
 // toolCallAccumulator reconstructs logical tool calls from streamed deltas.
 // Logical calls are kept in ARRIVAL order (calls) because a wire index is
-// NOT unique: our engine emits every parallel call with index 0 (E6), so
-// index-keyed storage alone would let a second call overwrite the first's
-// id/name and concatenate both argument streams into one corrupted call.
+// NOT unique: legacy provider builds emit every parallel call with index 0
+// (E6; the engine at this branch's pin assigns distinct indices, but the
+// fleet updates slowly), so index-keyed storage alone would let a second
+// call overwrite the first's id/name and concatenate both argument streams
+// into one corrupted call.
 // activeByIndex maps each wire index to the position (in calls) of its
 // CURRENT logical call — the one still receiving that index's id-less
 // argument fragments; a delta whose non-empty id DIFFERS from that entry's

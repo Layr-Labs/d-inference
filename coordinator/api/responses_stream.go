@@ -360,8 +360,10 @@ func (e *responsesStreamEmitter) closeMessage() {
 // reserved output_index.
 func (e *responsesStreamEmitter) appendToolCall(tc streamToolCallDelta) {
 	st := e.activeFnByIndex[tc.Index]
-	// The production engine emits every parallel call at wire index 0. A
-	// different non-empty ID on that active index starts a new logical call;
+	// Legacy provider builds emit every parallel call at wire index 0 (the
+	// engine at this branch's pin assigns distinct indices — see
+	// MLXOpenAIService.nextToolCallIndex — but the fleet updates slowly). A
+	// different non-empty ID on an active index starts a new logical call;
 	// later ID-less argument fragments continue the newest call. This is the
 	// same identity rule used by the non-streaming toolCallAccumulator.
 	if st != nil && tc.ID != "" && st.wireID != "" && tc.ID != st.wireID {

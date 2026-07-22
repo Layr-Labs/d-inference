@@ -2,6 +2,9 @@ import Foundation
 
 private struct LMStudioRelayEncryptionError: Error {}
 
+private let lmStudioActivePollNanoseconds: UInt64 = 2_000_000_000
+private let lmStudioIdlePollNanoseconds: UInt64 = 10_000_000_000
+
 extension ProviderLoop {
     internal func startLMStudioMonitor(send: SendHandle) {
         lmStudioMonitorTask?.cancel()
@@ -9,9 +12,16 @@ extension ProviderLoop {
             guard let self else { return }
             while !Task.isCancelled {
                 await self.refreshLMStudioModels(send: send)
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let interval = await self.lmStudioPollIntervalNanoseconds()
+                try? await Task.sleep(nanoseconds: interval)
             }
         }
+    }
+
+    private func lmStudioPollIntervalNanoseconds() -> UInt64 {
+        lmStudioModels.isEmpty
+            ? lmStudioIdlePollNanoseconds
+            : lmStudioActivePollNanoseconds
     }
 
     internal func refreshLMStudioModels(send: SendHandle, force: Bool = false) async {

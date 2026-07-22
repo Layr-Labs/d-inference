@@ -76,7 +76,7 @@ Notes and caveats:
 
 ### `mtp` — Gemma 4 multi-token prediction code path
 
-The v0.7.11 provider contains the default-off MTP implementation, but shipping
+The v0.7.12 provider contains the default-off MTP implementation, but shipping
 that code does not activate speculative decoding:
 
 ```bash
@@ -85,8 +85,9 @@ darkbloom restart
 ```
 
 Activation additionally requires a verified `spec_dec` assistant artifact in
-the model catalog. Production has no such artifact as of the v0.7.11 release
-preparation, so an enabled provider still falls back to target-only decoding.
+the model catalog. Production publishes that artifact for
+`gemma-4-26b-qat-4bit`; other models and providers without the explicit beta
+setting continue with target-only decoding.
 
 The implementation has target-authoritative verification and focused parity
 coverage. That is not a universal certification of token-identical behavior on

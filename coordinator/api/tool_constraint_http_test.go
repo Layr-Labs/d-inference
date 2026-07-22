@@ -90,6 +90,32 @@ func TestToolConstraintValidationRunsThroughEveryHTTPShape(t *testing.T) {
 	}
 }
 
+func TestPreferOwnerConstraintFailsBeforeQueueWithoutCapableFallback(t *testing.T) {
+	srv, _ := testServer(t)
+	response := httptest.NewRecorder()
+
+	handled := srv.visionToolsFailFast(
+		response,
+		"model-build",
+		"public-model",
+		false,
+		true,
+		true,
+		false,
+		selfRoutePolicy{prefer: true, ownerAccountID: "owner"},
+		nil,
+	)
+	if !handled {
+		t.Fatal("incapable prefer-owner request was allowed to enter the queue")
+	}
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "inference-time tool_choice enforcement") {
+		t.Fatalf("wrong capability error: %s", response.Body.String())
+	}
+}
+
 // Endpoint-native shapes the contract lowering cannot express (multi-prompt
 // completions, media-bearing messages) have always been forwarded verbatim by
 // the generic handler. Constraint validation must not turn that fallback into

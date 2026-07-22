@@ -221,9 +221,22 @@ func (r *Registry) HasToolConstraintProviderForModel(
 	model string,
 	allowedSerials ...string,
 ) bool {
+	return r.HasToolConstraintProviderForRouting(
+		model, "", false, false, allowedSerials...)
+}
+
+// HasToolConstraintProviderForRouting applies the same owner and serial
+// constraints as dispatch. Prefer-owner considers both the owned pool and its
+// public fallback; self-route-only considers owned providers exclusively.
+func (r *Registry) HasToolConstraintProviderForRouting(
+	model, ownerAccountID string,
+	selfRouteOnly, preferOwner bool,
+	allowedSerials ...string,
+) bool {
 	traits := RequestTraits{HasTools: true, RequiresToolConstraint: true}
 	return r.hasToolCapableProviderForModel(
-		model, traits, "", false, false, nil, allowedSerials...)
+		model, traits, ownerAccountID, selfRouteOnly, preferOwner, nil,
+		allowedSerials...)
 }
 
 func (r *Registry) hasToolConstraintProviderForPending(

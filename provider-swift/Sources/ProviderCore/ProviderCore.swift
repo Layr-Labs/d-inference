@@ -141,5 +141,9 @@ public enum ProviderCore {
     // eagerly commit only an independently capped physical plan, report pool
     // truth through existing heartbeat fields, and map terminal exhaustion to
     // retryable capacity. VLM and kv-quant slots stay contiguous.
-    public static let version = "0.7.11"
+    // 0.7.12 restores exact hybrid-attention SSD prefix reuse through
+    // frozen-full tail replay and enforces Gemma tool choices during decoding.
+    // Constrained requests advertise an explicit per-model protocol capability
+    // so mixed fleets fail closed instead of silently routing to old providers.
+    public static let version = "0.7.12"
 }

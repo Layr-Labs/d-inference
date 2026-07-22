@@ -502,6 +502,18 @@ func TestAliasResolutionFallsBackToConstraintCapablePreviousBuild(t *testing.T) 
 			build, isAlias, ok, previous)
 	}
 
+	previousProvider.mu.Lock()
+	previousProvider.BackendCapacity.Slots[0].State = "reloading"
+	previousProvider.mu.Unlock()
+	build, isAlias, ok = reg.ResolveModelConstrainedWithTraits(
+		"gemma-4", nil, "", false, false,
+		RequestTraits{HasTools: true, RequiresToolConstraint: true})
+	if !ok || !isAlias || build != previous {
+		t.Fatalf(
+			"reloading capable previous resolved to build=%q alias=%v ok=%v, want %q",
+			build, isAlias, ok, previous)
+	}
+
 	build, _, ok = reg.ResolveModelConstrainedWithTraits(
 		"gemma-4", nil, "", false, false, RequestTraits{})
 	if !ok || build != desired {

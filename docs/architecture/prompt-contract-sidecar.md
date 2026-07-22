@@ -25,6 +25,10 @@ semaphore, 1,048,576-token limit, eight-contract artifact cache, one-second
 request deadline, and 1 GiB address-space limit bound resource consumption.
 Completed connection tasks are reaped continuously.
 
+Prompt artifacts live at `/mnt/disks/userdata/prompt-contracts`. The verified
+artifact loader rejects symlinks in every path component, so `/data`—a runtime
+symlink to the persistent disk—must never be used as the artifact root.
+
 `POST /v1/plan` accepts:
 
 ```json
@@ -141,7 +145,7 @@ cd coordinator/promptsidecar
 cargo run --locked --release --bin prompt-fixtures -- \
   --manifest /immutable/catalog/model-a.json \
   --manifest /immutable/catalog/model-b.json \
-  --artifact-root /data/prompt-contracts \
+  --artifact-root /mnt/disks/userdata/prompt-contracts \
   --cases ../../fixtures/prompt-contract/v1/corpus.json \
   --output ../../fixtures/prompt-contract/v1/generated.json
 ```

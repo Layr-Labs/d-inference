@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -357,7 +358,7 @@ func TestDetectMediaRequirementAnthropicImageBlock(t *testing.T) {
 // a provider below penaltySafeProviderVersion. Fixed providers and text requests
 // keep their penalties. See bodyForProvider.
 func TestBodyForProviderPenaltyGating(t *testing.T) {
-	visionBody := []byte(`{"model":"gemma-4-26b","temperature":1.0,"repetition_penalty":1.0,` +
+	visionBody := []byte(`{"model":"gemma-4-26b","temperature":1.0,"precision_probe":9007199254740993,"repetition_penalty":1.0,` +
 		`"presence_penalty":0.0,"frequency_penalty":0.0,"messages":[{"role":"user","content":[` +
 		`{"type":"text","text":"what is this?"},` +
 		`{"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}]}]}`)
@@ -383,6 +384,9 @@ func TestBodyForProviderPenaltyGating(t *testing.T) {
 	}
 	if !has(out, "temperature") || !has(out, "messages") {
 		t.Fatal("pre-fix vision provider: non-penalty fields must be preserved")
+	}
+	if !bytes.Contains(out, []byte("9007199254740993")) {
+		t.Fatalf("pre-fix vision provider: field stripping rounded an exact numeric literal: %s", out)
 	}
 
 	// Vision + provider with unknown version → stripped (conservative).

@@ -17,6 +17,7 @@ while IFS= read -r key; do
 done < "$REQUIRED"
 printf 'UNLISTED_SECRET=do-not-print-or-drop\n' >> "$ENV_FILE"
 printf 'EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true\n' >> "$ENV_FILE"
+printf 'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/data/prompt-contracts\n' >> "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
 before_secret=$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")
@@ -33,6 +34,7 @@ SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$ENV_FILE" \
 [ "$(awk -F= '$1=="UNLISTED_SECRET" { print substr($0, index($0, "=") + 1) }' "$ENV_FILE")" = "$before_secret" ]
 [ "$(awk -F= '$1=="EIGENINFERENCE_PROMPT_SIDECAR_ENABLED" { print $2 }' "$ENV_FILE")" = "true" ]
 grep -Fxq 'EIGENINFERENCE_CACHE_ROUTING_MODE=off' "$ENV_FILE"
+grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts' "$ENV_FILE"
 [ "$(ls "$ENV_DIR"/env.bak.* | wc -l | tr -d ' ')" -eq 1 ]
 
 missing="$TEST_ROOT/missing.env"
@@ -55,6 +57,19 @@ then
     echo "refresh accepted a duplicate key" >&2
     exit 1
 fi
+
+custom="$ENV_DIR/custom.env"
+cp "$ENV_FILE" "$custom"
+awk -F= '$1=="EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT" {
+    print $1 "=/mnt/disks/userdata/custom-prompt-contracts"
+    next
+} { print }' "$custom" > "$custom.tmp"
+mv "$custom.tmp" "$custom"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$custom" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+grep -Fxq \
+    'EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/custom-prompt-contracts' \
+    "$custom"
 
 marker="$TEST_ROOT/path-injection-ran"
 if SKIP_PERSISTENCE_CHECK=1 \

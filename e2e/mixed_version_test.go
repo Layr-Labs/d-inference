@@ -15,12 +15,12 @@ import (
 	"github.com/eigeninference/d-inference/e2e/testbed"
 )
 
-func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
+func TestIntegrationMixedVersionReleasedV0711Provider(t *testing.T) {
 	if os.Getenv("DARKBLOOM_MIXED_VERSION") != "1" {
-		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.10 binary")
+		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.11 binary")
 	}
 	if output, err := exec.Command("/usr/bin/csrutil", "status").CombinedOutput(); err != nil || !strings.Contains(string(output), "status: enabled") {
-		t.Skip("released v0.7.10 enforces SIP; this runner cannot execute it")
+		t.Skip("released v0.7.11 enforces SIP; this runner cannot execute it")
 	}
 	require.NotEmpty(t, os.Getenv("DARKBLOOM_PROVIDER_BINARY"))
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
@@ -36,7 +36,7 @@ func TestIntegrationMixedVersionReleasedV0710Provider(t *testing.T) {
 	cacheProtocol := providers[0].PrefixCacheProtocol
 	toolConstraintProtocol := providers[0].ToolConstraintProtocol
 	providers[0].Mu().Unlock()
-	require.Equal(t, "0.7.10", version)
+	require.Equal(t, "0.7.11", version)
 	require.Less(t, cacheProtocol, 2, "released provider unexpectedly advertised candidate protocol v2")
 	require.Zero(t, toolConstraintProtocol,
 		"released provider unexpectedly advertised inference-time tool constraints")

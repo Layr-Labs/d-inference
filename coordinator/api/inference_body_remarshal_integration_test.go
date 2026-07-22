@@ -93,7 +93,7 @@ func TestAliasCapacityFallbackForwardsUnescapedBody(t *testing.T) {
 	const angleRun = 2048 // 2 KiB of '<'; ~12 KiB escaped, ~16 KiB sealed frame
 	content := strings.Repeat("<", angleRun)
 	chatBody := fmt.Sprintf(
-		`{"model":%q,"messages":[{"role":"user","content":%q}],"stream":true,"max_tokens":64}`,
+		`{"model":%q,"messages":[{"role":"user","content":%q}],"stream":true,"max_tokens":64,"precision_probe":9007199254740993}`,
 		alias, content)
 
 	status, respBody, err := postChat(ctx, ts.URL, "test-key", chatBody)
@@ -122,6 +122,9 @@ func TestAliasCapacityFallbackForwardsUnescapedBody(t *testing.T) {
 	}
 	if !bytes.Contains(got, bytes.Repeat([]byte("<"), 64)) {
 		t.Fatalf("forwarded body is missing the raw '<' run (len=%d)", len(got))
+	}
+	if !bytes.Contains(got, []byte("9007199254740993")) {
+		t.Fatalf("forwarded body rounded a precision-sensitive numeric literal: %s", got)
 	}
 	// The unescaped body tracks the input; the escaped form would be ~6x larger.
 	if len(got) > angleRun+8192 {

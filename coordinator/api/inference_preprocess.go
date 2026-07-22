@@ -145,12 +145,33 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 // error and returning ok=false on failure. Split out so both the prelude and any
 // re-parse site share one error shape.
 func parseJSONBody(w http.ResponseWriter, rawBody []byte) (map[string]any, bool) {
-	var parsed map[string]any
-	if err := json.Unmarshal(rawBody, &parsed); err != nil {
+	parsed, err := decodeInferenceJSONObject(rawBody)
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
 		return nil, false
 	}
 	return parsed, true
+}
+
+// decodeInferenceJSONObject preserves every JSON number as json.Number. The
+// handlers re-marshal requests when they resolve aliases, lower endpoints,
+// normalize stop sequences, or strip legacy-only fields. Decoding through
+// float64 first would silently change precision-sensitive tool-schema values
+// before the provider compiles them (for example, 2^53+1 becomes 2^53).
+func decodeInferenceJSONObject(rawBody []byte) (map[string]any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(rawBody))
+	decoder.UseNumber()
+	var parsed map[string]any
+	if err := decoder.Decode(&parsed); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, errors.New("multiple JSON values")
+		}
+		return nil, err
+	}
+	return parsed, nil
 }
 
 // visionToolsFailFast is the shared media/tools capability fast-fail (mirrored
@@ -209,17 +230,23 @@ func (s *Server) visionToolsFailFast(
 	// route. Without this gate it passes the trait-blind QuickCapacityCheck
 	// preflight, queues for up to 120s, and dies with a misleading capacity 429.
 	// Constrained to allowedProviderSerials so a public tool-capable provider
-	// can't satisfy an allowlist-pinned request; skipped for self-route/prefer
-	// whose owned set is matched by ownerAccountID, not serials (those paths
-	// handle availability themselves — never wrongly block them).
+	// can't satisfy an allowlist-pinned request. The inference-time constraint
+	// gate below is owner-aware so self-route checks only owned machines while
+	// prefer-owner checks both the owned pool and its public fallback.
 	if hasTools && !policy.enabled && !policy.prefer && !s.registry.HasToolCapableProviderForModel(model, allowedProviderSerials...) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
 			withParam("model")))
 		return true
 	}
-	if requiresToolConstraint && !policy.enabled && !policy.prefer &&
-		!s.registry.HasToolConstraintProviderForModel(model, allowedProviderSerials...) {
+	if requiresToolConstraint &&
+		!s.registry.HasToolConstraintProviderForRouting(
+			model,
+			policy.ownerAccountID,
+			policy.enabled,
+			policy.prefer,
+			allowedProviderSerials...,
+		) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q advertises inference-time tool_choice enforcement", publicModel),
 			withParam("model")))

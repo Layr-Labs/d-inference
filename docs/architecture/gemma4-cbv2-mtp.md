@@ -6,8 +6,10 @@ implementation in mlx-swift-lm PR
 [#74](https://github.com/Layr-Labs/mlx-swift-lm/pull/74), plus the exact
 automatic-verifier repair in mlx-swift-lm PR
 [#75](https://github.com/Layr-Labs/mlx-swift-lm/pull/75). The code is included
-in the v0.7.11 candidate but remains default-off. Production has no `spec_dec`
-assistant artifact, and release publication is not MTP activation.
+in v0.7.12 but remains default-off. Production now publishes a verified
+`spec_dec` assistant for `gemma-4-26b-qat-4bit`; only providers explicitly
+enabled with `DARKBLOOM_CBV2_MTP=1` use it. Release publication is not fleet-wide
+MTP activation.
 
 The recorded parity matrix is implementation evidence, not universal
 certification for every M1, M2, M3, or unknown Apple chip/model combination.

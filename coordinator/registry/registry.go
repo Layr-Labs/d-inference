@@ -1847,37 +1847,57 @@ func (r *Registry) ResolveModelConstrainedWithTraits(
 	now := time.Now()
 	hardConstrained := len(allowed) > 0 || selfRouteOnly
 	if preferOwner && ownerAccountID != "" {
-		if r.anyEligibleProviderCanRouteWithTraitsLocked(
-			t.Desired, nil, ownerAccountID, true, true, now, traits,
+		if r.anyProviderCanServeAliasWithTraitsLocked(
+			t.Desired, nil, ownerAccountID, true, true, now, traits, false,
 		) {
 			return t.Desired, true, true
 		}
-		if t.Previous != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
-			t.Previous, nil, ownerAccountID, true, true, now, traits,
+		if t.Previous != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+			t.Previous, nil, ownerAccountID, true, true, now, traits, false,
 		) {
 			return t.Previous, true, true
 		}
 	}
 	if !hardConstrained {
-		if r.anyEligibleProviderCanRouteWithTraitsLocked(
-			t.Desired, nil, "", false, false, now, traits,
+		if r.anyProviderCanServeAliasWithTraitsLocked(
+			t.Desired, nil, "", false, false, now, traits, false,
 		) {
 			return t.Desired, true, true
 		}
-		if t.Previous != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
-			t.Previous, nil, "", false, false, now, traits,
+		if t.Previous != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+			t.Previous, nil, "", false, false, now, traits, false,
+		) {
+			return t.Previous, true, true
+		}
+		if r.anyProviderCanServeAliasWithTraitsLocked(
+			t.Desired, nil, "", false, false, now, traits, true,
+		) {
+			return t.Desired, true, true
+		}
+		if t.Previous != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+			t.Previous, nil, "", false, false, now, traits, true,
 		) {
 			return t.Previous, true, true
 		}
 		return t.Desired, true, true
 	}
-	if t.Desired != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
-		t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits,
+	if t.Desired != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+		t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits, false,
 	) {
 		return t.Desired, true, true
 	}
-	if t.Previous != "" && r.anyEligibleProviderCanRouteWithTraitsLocked(
-		t.Previous, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits,
+	if t.Previous != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+		t.Previous, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits, false,
+	) {
+		return t.Previous, true, true
+	}
+	if t.Desired != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+		t.Desired, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits, true,
+	) {
+		return t.Desired, true, true
+	}
+	if t.Previous != "" && r.anyProviderCanServeAliasWithTraitsLocked(
+		t.Previous, allowed, ownerAccountID, selfRouteOnly, preferOwner, now, traits, true,
 	) {
 		return t.Previous, true, true
 	}
@@ -1890,17 +1910,20 @@ func (r *Registry) ResolveModelConstrainedWithTraits(
 	return "", true, false
 }
 
-// anyEligibleProviderCanRouteWithTraitsLocked reports whether some provider
+// anyProviderCanServeAliasWithTraitsLocked reports whether some provider
 // matches the request's routing constraints and exact capability traits.
+// structural=true ignores transient slot/cooldown state so alias resolution can
+// queue against a capable build instead of falling back to an incapable one.
 // Self-route to an owned machine relaxes trust and allows private-only
 // providers, mirroring snapshotProviderLocked. Caller holds r.mu.
-func (r *Registry) anyEligibleProviderCanRouteWithTraitsLocked(
+func (r *Registry) anyProviderCanServeAliasWithTraitsLocked(
 	buildID string,
 	allowedSerials map[string]struct{},
 	ownerAccountID string,
 	selfRouteOnly, preferOwner bool,
 	now time.Time,
 	traits RequestTraits,
+	structural bool,
 ) bool {
 	for _, p := range r.providers {
 		p.mu.Lock()
@@ -1926,8 +1949,13 @@ func (r *Registry) anyEligibleProviderCanRouteWithTraitsLocked(
 				minTrust = TrustNone
 				allowPrivate = true
 			}
-			return r.providerCanRouteBuildLocked(p, buildID, minTrust, now, allowPrivate) &&
-				r.providerEligibleForTraitsLocked(p, buildID, traits)
+			canRoute := r.providerCanRouteBuildLocked(
+				p, buildID, minTrust, now, allowPrivate)
+			if structural {
+				canRoute = r.providerStructurallyCanRouteBuildLocked(
+					p, buildID, minTrust, now, allowPrivate)
+			}
+			return canRoute && r.providerEligibleForTraitsLocked(p, buildID, traits)
 		}()
 		p.mu.Unlock()
 		if ok {

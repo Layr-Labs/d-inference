@@ -714,6 +714,58 @@ struct GemmaToolConstraintTests {
         }
     }
 
+    @Test("mathematical integer constants accept decimal and exponent spellings")
+    func mathematicalIntegerConstantSyntaxIsAccepted() throws {
+        for literal in [
+            "1.0", "1e0", "-2.0", "-2e0", "9007199254740993.0",
+        ] {
+            let body = """
+                {
+                  "model":"gemma-4-test",
+                  "messages":[{"role":"user","content":"x"}],
+                  "tools":[{"type":"function","function":{
+                    "name":"calculate",
+                    "parameters":{
+                      "type":"object",
+                      "properties":{"value":{"type":"integer","const":\(literal)}}
+                    }
+                  }}],
+                  "tool_choice":"required"
+                }
+                """
+            let decoded = try JSONDecoder().decode(
+                OpenAIChatCompletionRequest.self,
+                from: Data(body.utf8))
+            _ = try ToolChoicePromptPolicy.prepare(decoded)
+        }
+    }
+
+    @Test("auto finite decimals fail before rounded identity comparison")
+    func autoFiniteDecimalsAreRejected() throws {
+        let body = """
+            {
+              "model":"gemma-4-test",
+              "messages":[{"role":"user","content":"x"}],
+              "tools":[{"type":"function","function":{
+                "name":"calculate",
+                "parameters":{
+                  "type":"object",
+                  "properties":{
+                    "value":{"type":"number","enum":[0.10000000000000001]}
+                  }
+                }
+              }}],
+              "tool_choice":"auto"
+            }
+            """
+        let decoded = try JSONDecoder().decode(
+            OpenAIChatCompletionRequest.self,
+            from: Data(body.utf8))
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(decoded)
+        }
+    }
+
     @Test("parallel policy and schema validator reject invalid auto output")
     func outputValidation() throws {
         let baseRequest = request(choice: .mode(.auto), parallel: false)

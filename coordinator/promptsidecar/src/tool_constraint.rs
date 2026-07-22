@@ -237,6 +237,9 @@ fn validate_auto_schema_patterns(schema: &Value, depth: usize) -> Result<(), Nor
             {
                 return Err(NormalizeError::InvalidTools);
             }
+            if !auto_finite_number_identity_is_exact(object) {
+                return Err(NormalizeError::InvalidTools);
+            }
             // Mixed-type const/enum or mixed-family assertions on a typeless
             // node have no single renderable type; normalization would
             // silently break every member outside its picked type. Mirrors
@@ -437,7 +440,7 @@ fn validate_finite_values(
         let matches = match kind {
             "string" => value.is_string(),
             "boolean" => value.is_boolean(),
-            "integer" => value.as_i64().is_some(),
+            "integer" => json_number_is_integer(value),
             "number" => value.as_f64().is_some_and(f64::is_finite),
             "null" => value.is_null(),
             _ => false,
@@ -447,6 +450,27 @@ fn validate_finite_values(
         }
     }
     Ok(())
+}
+
+fn auto_finite_number_identity_is_exact(schema: &serde_json::Map<String, Value>) -> bool {
+    let constant = schema.get("const").into_iter();
+    let enumeration = schema
+        .get("enum")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    constant
+        .chain(enumeration)
+        .all(|value| !value.is_number() || json_number_is_integer(value))
+}
+
+fn json_number_is_integer(value: &Value) -> bool {
+    if value.as_i64().is_some() {
+        return true;
+    }
+    value.as_f64().is_some_and(|number| {
+        number.is_finite() && number.fract() == 0.0 && number.abs() < 9_007_199_254_740_992.0
+    })
 }
 
 fn constrained_schema_type(
@@ -598,12 +622,16 @@ fn constrained_nonnegative(raw: Option<&Value>) -> Result<Option<usize>, Normali
 // exactly so a rounded f64 can never turn a fractional bound into an integer.
 fn exact_nonnegative_usize(value: &serde_json::Number) -> Option<usize> {
     let raw = value.to_string();
+    exact_nonnegative_literal(&raw)
+}
+
+fn exact_nonnegative_literal(raw: &str) -> Option<usize> {
     if raw.starts_with('-') {
         return None;
     }
     let (coefficient, exponent) = match raw.find(['e', 'E']) {
         Some(index) => (&raw[..index], raw[index + 1..].parse::<i64>().ok()?),
-        None => (raw.as_str(), 0),
+        None => (raw, 0),
     };
     let (whole, fraction) = coefficient
         .split_once('.')
@@ -744,6 +772,67 @@ mod tests {
         assert!(
             exact_nonnegative_usize(&serde_json::Number::from_f64(1.5).expect("number")).is_none()
         );
+    }
+
+    #[test]
+    fn accepts_mathematical_integer_finite_values() {
+        for literal in ["1.0", "1e0", "-2.0", "-2e0"] {
+            let tools: Vec<Value> = serde_json::from_str(&format!(
+                r#"[{{"type":"function","function":{{
+                    "name":"calculate",
+                    "parameters":{{"type":"object","properties":{{
+                        "value":{{"type":"integer","const":{literal}}}
+                    }}}}
+                }}}}]"#
+            ))
+            .expect("integer tool schema");
+            assert!(validate_constrained_tools(&tools).is_ok(), "{literal}");
+        }
+    }
+
+    #[test]
+    fn rejects_inexact_auto_finite_values() {
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "calculate",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "value": {
+                            "type": "number",
+                            "enum": [0.10000000000000001_f64]
+                        }
+                    }
+                }
+            }
+        })];
+        assert!(validate_auto_tool_patterns(&tools).is_err());
+    }
+
+    #[test]
+    fn rejects_integer_decimal_outside_exact_double_range() {
+        // The coordinator and Swift provider can retain wider integral values,
+        // but serde_json's render-safe number representation cannot preserve a
+        // decimal spelling outside the exact f64 range. Prompt planning therefore
+        // rejects this rare shape and fails cold instead of deriving a wrong cache
+        // key; ordinary inference remains available.
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "calculate",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "value": {
+                            "type": "integer",
+                            "const": 9_007_199_254_740_992.0_f64
+                        }
+                    }
+                }
+            }
+        })];
+        assert!(validate_constrained_tools(&tools).is_err());
     }
 
     #[test]

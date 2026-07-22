@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	DefaultArtifactRoot    = "/data/prompt-contracts"
+	DefaultArtifactRoot    = "/mnt/disks/userdata/prompt-contracts"
 	maxMetadataBytes       = 1 << 20
 	maxArtifactBytes       = 128 << 20
 	maxContractBytes       = 512 << 20

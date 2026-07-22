@@ -2,10 +2,10 @@
 set -euo pipefail
 
 CACHE_DIR=${1:-${DARKBLOOM_RELEASE_TEST_CACHE:-${TMPDIR:-/tmp}/darkbloom-release-test-cache}}
-VERSION=0.7.10
-URL=https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev/releases/v0.7.10/darkbloom-bundle-macos-arm64.tar.gz
-BUNDLE_SHA256=c5f5a2fe2b183983a6135fa37e994f99fee3fe13e5786d33da9d1a85cee37c8b
-BINARY_SHA256=56830def0ae47b8d3db2f8d71125c3e6db42fe8c2257f30eb30e14af0a1c71a0
+VERSION=0.7.11
+URL=https://pub-3d1cb668259340eeb2276e1d375c846d.r2.dev/releases/v0.7.11/darkbloom-bundle-macos-arm64.tar.gz
+BUNDLE_SHA256=b1c8f8e052da20b943c099c911ae09fc2a077ef9c211d5e974ddcdf5d5c292d7
+BINARY_SHA256=324b1a497224b04255d19e3fe9c19229d95e3f5827f6628367329a888f8aa292
 METALLIB_SHA256=e2d5853b79925b3661861fed79f30b1aeb636a52ebbde15b054711ce865edfaa
 
 ARCHIVE="$CACHE_DIR/v$VERSION/darkbloom-bundle-macos-arm64.tar.gz"

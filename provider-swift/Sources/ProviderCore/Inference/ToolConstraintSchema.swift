@@ -342,7 +342,19 @@ enum ToolConstraintSchemaCompiler {
             let values = try enumValues.map { values in
                 try values.compactMap { value -> Int? in
                     if value == .null, nullable { return nil }
-                    guard case .int(let integer) = value else {
+                    let integer: Int?
+                    switch value {
+                    case .int(let value):
+                        integer = value
+                    case .double(let value)
+                    where value.isFinite
+                        && value.rounded() == value
+                        && abs(value) < 9_007_199_254_740_992.0:
+                        integer = Int(exactly: value)
+                    default:
+                        integer = nil
+                    }
+                    guard let integer else {
                         throw ToolConstraintSchemaError.invalid(
                             "\(path) enum/const does not match type integer")
                     }

@@ -37,31 +37,37 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 
 The live host still has stale Caddy `/acme/*` routing and lacks
 `stream_close_delay 5m`. Those are separate Caddy-maintenance changes. Do not
-reload Caddy during the v0.7.11 coordinator swap because that reconnects the
+reload Caddy during the v0.7.12 coordinator swap because that reconnects the
 provider fleet; the static certificate and loaded config remain in place.
 
-## v0.7.11 release order
+## v0.7.12 release order
 
 Shipping code and activating optimizations are separate operations:
 
-1. Human deploys the coordinator with
-   `EIGENINFERENCE_CACHE_ROUTING_MODE=off` and
-   `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=false`.
-2. After ordinary traffic and all four endpoint response shapes are healthy,
-   human enables the sidecar only. Routing stays off. `/v1/cache/status` must
-   show `sidecar.ready=true`, bounded RSS, no restart loop, and prompt artifacts
-   converging without failures.
-3. Install v0.7.11 on owned provider canaries with MTP left off. Keep v0.7.10
-   eligible; do not raise `EIGENINFERENCE_MIN_PROVIDER_VERSION`.
+1. Publish the signed/notarized v0.7.12 provider while the v0.7.11 coordinator
+   remains deployed. The old coordinator ignores the additive capability
+   advertisement, and the mixed-version integration gate proves candidate
+   inference still works.
+2. Wait for enough routable v0.7.12 providers per public model. The v0.7.12
+   coordinator intentionally fails `none`, `required`, and exact named tool
+   choices closed on older providers; deploying it first would create avoidable
+   503s.
+3. Deploy the v0.7.12 coordinator with
+   `EIGENINFERENCE_CACHE_ROUTING_MODE=off`,
+   `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true`, and
+   `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`.
+   `/data` is a symlink and is invalid for the symlink-rejecting artifact loader.
 4. Exercise chat completions, completions, Responses, and Anthropic Messages,
-   including tools, stop sequences, body limits, and cold fallback.
-5. Publish the signed/notarized provider only after canary acceptance.
-6. Keep exact-cache routing off. Current production models do not advertise a
-   reusable v2 layout. Activation requires a genuinely eligible model, a real
-   positive-hit proof, stable telemetry, and a new independent 256-bit
+   including auto/none/required/named tools, stop sequences, body limits, and
+   mixed-version cold fallback.
+5. Require `/v1/cache/status` to show routing off, `sidecar.ready=true`, bounded
+   RSS, no restart loop, and all active prompt artifacts ready with zero
+   failures.
+6. Keep exact-cache routing off. Activation requires a real positive-hit proof,
+   stable telemetry, and a new independent 256-bit
    `EIGENINFERENCE_CACHE_MASTER_KEY`.
-7. MTP remains a later rollout. Production has no `spec_dec` artifact and the
-   provider default is off.
+7. MTP default-on remains out of v0.7.12. Keep the existing default-off
+   implementation canary-only until its separate rollout is reviewed.
 
 The GitHub `benchmarks` environment approval is a human release gate. Do not
 bypass or weaken it.
@@ -70,7 +76,19 @@ bypass or weaken it.
 
 ### 1. Confirm the image is built
 
-Cloud Build builds every master push automatically. Confirm your commit's image exists:
+Cloud Build builds every master push automatically. Before trusting that image,
+require the production trigger to use the checked-in provenance-aware build
+configuration. Empty output here means the trigger is still using its legacy
+inline Docker step ([#554](https://github.com/Layr-Labs/d-inference/issues/554))
+and blocks the coordinator deploy:
+
+```bash
+gcloud builds triggers describe prod-build \
+  --project=darkbloom-mainnet \
+  --format='value(filename)' | grep -Fx 'deploy/gcp/cloudbuild-prod.yaml'
+```
+
+Then confirm your commit's image exists:
 
 ```bash
 gcloud builds list --project darkbloom-mainnet --limit 5 \
@@ -174,15 +192,18 @@ sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
 ```
 
-The check prints only safe additions, never existing values. The apply step
+The check prints only safe key names, never existing values. The apply step
 writes a same-directory temporary file, verifies that no existing key would be
 dropped, keeps a root-only timestamped backup, and atomically renames the new
-file. It never fetches or rewrites secrets. The installed oneshot validates and
-extends the persistent file before Docker starts on every reboot; a missing
-required variable fails the unit instead of constructing a truncated file.
+file. It never fetches or rewrites secrets. v0.7.12 has one bounded migration:
+the exact broken `/data/prompt-contracts` artifact root becomes
+`/mnt/disks/userdata/prompt-contracts`; every custom value is preserved. The
+installed oneshot validates and extends the persistent file before Docker starts
+on every reboot; a missing required variable fails the unit instead of
+constructing a truncated file.
 
-New env vars take effect only on container start. The first v0.7.11 swap must
-leave both sidecar and routing disabled.
+New env vars take effect only on container start. The v0.7.12 swap runs the
+sidecar with the physical persistent path while cache routing remains off.
 
 ### 4. Swap
 
@@ -223,10 +244,16 @@ pg_terminate_backend(<pid>)`); do **not** restart the container again.
 curl -s localhost:8080/health
 # Require the deployed commit/version/date embedded by cloudbuild-prod.yaml.
 curl -s localhost:8080/health | jq -e \
-  '.version == "0.7.11" and
+  '.version == "0.7.12" and
    (.build_commit | test("^[0-9a-f]{40}$")) and
    .build_date != "unknown"'
-curl -s localhost:8080/v1/cache/status | jq .
+curl -s localhost:8080/v1/cache/status | jq -e \
+  '.routing_mode == "off" and
+   .sidecar.enabled == true and
+   .sidecar.ready == true and
+   .prompt_artifacts.ready > 0 and
+   .prompt_artifacts.pending == 0 and
+   .prompt_artifacts.failed == 0'
 
 # Trust rebuild: hardware upgrades should dominate within ~2 minutes.
 sudo docker logs coordinator 2>&1 | grep -c "upgraded to hardware trust"
@@ -322,7 +349,7 @@ exists** — fixed by registering the release, not by bumping code.
 Before a tag exists, run:
 
 ```bash
-./scripts/check-release-version.sh 0.7.11
+./scripts/check-release-version.sh 0.7.12
 ./scripts/sync-install-embed.sh check
 ```
 
@@ -331,7 +358,7 @@ final archived CLI, and app plist. It does not mutate source to manufacture
 agreement.
 
 ```bash
-git tag -a v0.7.11 -m "Release v0.7.11"
+git tag -a v0.7.12 -m "Release v0.7.12"
 git push origin master --tags
 ```
 
@@ -384,7 +411,7 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
-| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle and resource bounds. First deploy `ENABLED=false`; sidecar-only canary flips only this flag. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle and resource bounds. v0.7.12 deploys it enabled with the physical artifact root while routing remains off; follow the release-specific order above. |
 | `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off` for coordinator deploy, sidecar canary, provider canary, and provider publication. |
 | `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required only for a later routing activation; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |

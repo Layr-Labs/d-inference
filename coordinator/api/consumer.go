@@ -999,8 +999,8 @@ func bodyForProvider(rawBody []byte, requiresVision bool, provider *registry.Pro
 	if provider.Version != "" && !semverLess(provider.Version, penaltySafeProviderVersion) {
 		return rawBody // fixed provider — pass penalties through
 	}
-	var parsed map[string]any
-	if json.Unmarshal(rawBody, &parsed) != nil {
+	parsed, err := decodeInferenceJSONObject(rawBody)
+	if err != nil {
 		return rawBody
 	}
 	changed := false

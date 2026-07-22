@@ -306,6 +306,24 @@ func validateDeclaredTools(
 	return tools, nil
 }
 
+func validateAutoFiniteNumberIdentity(schema map[string]any) error {
+	var values []any
+	if constant, exists := schema["const"]; exists {
+		values = append(values, constant)
+	}
+	if enumeration, ok := schema["enum"].([]any); ok {
+		values = append(values, enumeration...)
+	}
+	for _, value := range values {
+		number, ok := value.(json.Number)
+		if ok && !constrainedJSONInteger(number) {
+			return unsupportedToolConstraint(
+				"auto numeric enum/const values require an exactly representable integer")
+		}
+	}
+	return nil
+}
+
 // representableToolSpelling mirrors the provider's
 // InboundChatNormalization.isRepresentableTool for non-`type:function`
 // entries: an object function dict or a top-level name string makes the tool
@@ -363,6 +381,9 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 				return unsupportedToolConstraint(
 					"auto tool schemas do not support dependency, property-name, or unevaluated assertions")
 			}
+		}
+		if err := validateAutoFiniteNumberIdentity(value); err != nil {
+			return err
 		}
 		// A typeless node with mixed-type const/enum values (e.g.
 		// `{"enum":["a",1]}`) or assertions spanning multiple type families

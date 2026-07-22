@@ -81,6 +81,29 @@ tmp=$(mktemp "$ENV_DIR/.env.release.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 cp "$ENV_FILE" "$tmp"
 
+migrated=0
+migrate_exact_value() {
+    local key=$1
+    local old_value=$2
+    local new_value=$3
+    local current
+    current=$(awk -F= -v key="$key" '$1 == key { print substr($0, index($0, "=") + 1) }' "$tmp")
+    [ "$current" = "$old_value" ] || return 0
+
+    awk -F= -v key="$key" -v value="$new_value" \
+        '$1 == key { print key "=" value; next } { print }' "$tmp" > "$tmp.migrated"
+    mv "$tmp.migrated" "$tmp"
+    printf 'MIGRATE %s\n' "$key"
+    migrated=$((migrated + 1))
+}
+
+# /data is a runtime symlink. The prompt artifact cache rejects every symlinked
+# path component, so the v0.7.11 default could never provision a contract.
+migrate_exact_value \
+    EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT \
+    /data/prompt-contracts \
+    /mnt/disks/userdata/prompt-contracts
+
 added=0
 while IFS= read -r line; do
     case "$line" in ""|\#*) continue ;; esac
@@ -104,10 +127,10 @@ dropped=$(comm -23 "$old_keys" "$new_keys")
 [ -z "$dropped" ] || fail "generation would drop existing keys: $(printf '%s' "$dropped" | tr '\n' ' ')"
 
 if [ "$MODE" = "--check" ]; then
-    if [ "$added" -eq 0 ]; then
+    if [ "$added" -eq 0 ] && [ "$migrated" -eq 0 ]; then
         echo "prod env refresh: no changes"
     else
-        echo "prod env refresh: $added safe defaults would be added"
+        echo "prod env refresh: $added safe defaults and $migrated migrations would be applied"
     fi
     exit 0
 fi
@@ -121,4 +144,4 @@ fi
 mv -f "$tmp" "$ENV_FILE"
 trap 'rm -f "$old_keys" "$new_keys"' EXIT
 sync "$ENV_FILE" "$ENV_DIR" 2>/dev/null || sync
-echo "prod env refresh: applied $added additions; backup=$backup"
+echo "prod env refresh: applied $added additions and $migrated migrations; backup=$backup"

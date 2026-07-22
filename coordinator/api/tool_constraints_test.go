@@ -49,7 +49,7 @@ func TestInferencePreludeNormalizesSingleStopForSwiftProtocol(t *testing.T) {
 		http.MethodPost,
 		"/v1/chat/completions",
 		strings.NewReader(
-			`{"model":"m","messages":[{"role":"user","content":"x"}],"stop":"END"}`))
+			`{"model":"m","messages":[{"role":"user","content":"x"}],"stop":"END","metadata":{"exact":9007199254740993,"decimal":0.10000000000000001}}`))
 	response := httptest.NewRecorder()
 	prelude, ok := srv.parseInferencePrelude(response, request)
 	if !ok {
@@ -62,6 +62,11 @@ func TestInferencePreludeNormalizesSingleStopForSwiftProtocol(t *testing.T) {
 	stops, ok := forwarded["stop"].([]any)
 	if !ok || len(stops) != 1 || stops[0] != "END" {
 		t.Fatalf("forwarded stop = %#v", forwarded["stop"])
+	}
+	for _, literal := range []string{"9007199254740993", "0.10000000000000001"} {
+		if !bytes.Contains(prelude.rawBody, []byte(literal)) {
+			t.Fatalf("forwarded body lost exact numeric literal %s: %s", literal, prelude.rawBody)
+		}
 	}
 }
 
@@ -200,6 +205,24 @@ func TestValidateToolConstraintRequestAcceptsNormalizedSubset(t *testing.T) {
 	}`)
 	if mode, err := validateToolConstraintRequest(body); err != nil || mode != toolChoiceRequired {
 		t.Fatalf("valid supported schema rejected: mode=%q err=%v", mode, err)
+	}
+}
+
+func TestValidateToolHistoryAllowsTrailingAssistantContinuation(t *testing.T) {
+	body := []byte(`{
+		"model":"m",
+		"messages":[{
+			"role":"assistant",
+			"content":"",
+			"tool_calls":[{
+				"id":"c",
+				"type":"function",
+				"function":{"name":"safe","arguments":"{}"}
+			}]
+		}]
+	}`)
+	if _, err := validateToolConstraintRequest(body); err != nil {
+		t.Fatalf("trailing assistant continuation rejected: %v", err)
 	}
 }
 
@@ -703,6 +726,47 @@ func TestValidateToolConstraintRequestAcceptsIntegralDecimalArrayBounds(t *testi
 	}`)
 	if _, err := validateToolConstraintRequest(fractional); err == nil {
 		t.Fatal("fractional array bound accepted")
+	}
+}
+
+func TestValidateToolConstraintRequestAcceptsMathematicalIntegerFiniteValues(t *testing.T) {
+	for _, literal := range []string{
+		"1.0", "1e0", "-2.0", "-2e0", "9007199254740993.0",
+	} {
+		body := []byte(fmt.Sprintf(`{
+			"model":"m",
+			"messages":[{"role":"user","content":"x"}],
+			"tools":[{"type":"function","function":{
+				"name":"calculate",
+				"parameters":{"type":"object","properties":{
+					"value":{"type":"integer","const":%s}
+				}}
+			}}],
+			"tool_choice":"required"
+		}`, literal))
+		if _, err := validateToolConstraintRequest(body); err != nil {
+			t.Fatalf("mathematical integer %s rejected: %v", literal, err)
+		}
+	}
+}
+
+func TestValidateToolConstraintRequestRejectsInexactAutoFiniteValues(t *testing.T) {
+	body := []byte(`{
+		"model":"m",
+		"messages":[{"role":"user","content":"x"}],
+		"tools":[{"type":"function","function":{
+			"name":"calculate",
+			"parameters":{"type":"object","properties":{
+				"value":{"type":"number","enum":[0.10000000000000001]}
+			}}
+		}}],
+		"tool_choice":"auto"
+	}`)
+	_, err := validateToolConstraintRequest(body)
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) ||
+		typed.status != http.StatusUnprocessableEntity {
+		t.Fatalf("inexact auto finite value accepted: %T %v", err, err)
 	}
 }
 

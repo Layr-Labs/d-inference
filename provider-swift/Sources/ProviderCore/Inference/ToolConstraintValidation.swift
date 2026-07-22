@@ -25,6 +25,7 @@ enum ToolConstraintValidation {
     private static let maxSafePatternBytes = 128
     private static let maxSafePatternCount = 32
     private static let maxSafePatternInputBytes = 16 * 1024
+    private static let exactDoubleIntegerLimit = 9_007_199_254_740_992.0
 
     static func validate(
         _ calls: [ToolCall],
@@ -144,7 +145,10 @@ enum ToolConstraintValidation {
         case (.integer(let allowed, _), .int(let value)):
             return allowed?.contains(value) ?? true
         case (.integer(let allowed, _), .double(let value)):
-            guard value.isFinite, let integer = Int(exactly: value) else { return false }
+            guard value.isFinite,
+                abs(value) < exactDoubleIntegerLimit,
+                let integer = Int(exactly: value)
+            else { return false }
             return allowed?.contains(integer) ?? true
         case (.number(let allowed, _), .int(let value)):
             return allowed?.contains(Double(value)) ?? true
@@ -458,6 +462,9 @@ enum ToolConstraintValidation {
             {
                 return false
             }
+            if !autoFiniteNumberIdentityIsExact(object) {
+                return false
+            }
             // Mixed-type const/enum or mixed-family assertions on a typeless
             // node have no single renderable type; normalization would
             // silently break every member outside its picked type. Mirrors
@@ -566,6 +573,28 @@ enum ToolConstraintValidation {
             return true
         default:
             return true
+        }
+    }
+
+    private static func autoFiniteNumberIdentityIsExact(
+        _ schema: [String: ToolArgumentJSONValue]
+    ) -> Bool {
+        var values: [ToolArgumentJSONValue] = []
+        if let constant = schema["const"] {
+            values.append(constant)
+        }
+        if case .array(let enumeration)? = schema["enum"] {
+            values.append(contentsOf: enumeration)
+        }
+        return values.allSatisfy {
+            switch $0 {
+            case .double(let value):
+                value.isFinite
+                    && value.rounded() == value
+                    && abs(value) < exactDoubleIntegerLimit
+            default:
+                true
+            }
         }
     }
 

@@ -343,8 +343,7 @@ func constrainedValueMatchesType(value any, kind string) bool {
 		if !ok {
 			return false
 		}
-		_, err := number.Int64()
-		return err == nil
+		return constrainedJSONInteger(number)
 	case "number":
 		number, ok := value.(json.Number)
 		if !ok {
@@ -359,6 +358,22 @@ func constrainedValueMatchesType(value any, kind string) bool {
 	default:
 		return false
 	}
+}
+
+// constrainedJSONInteger accepts JSON Schema's mathematical integer domain.
+// Foundation decodes integral JSON decimal/exponent spellings into exact Int
+// values, while the coordinator retains the source literal in json.Number.
+func constrainedJSONInteger(number json.Number) bool {
+	raw := number.String()
+	if !strings.ContainsAny(raw, ".eE") {
+		_, err := number.Int64()
+		return err == nil
+	}
+	if strings.HasPrefix(raw, "-") {
+		raw = strings.TrimPrefix(raw, "-")
+	}
+	_, err := constrainedExactNonnegativeInt(raw)
+	return err == nil
 }
 
 func constrainedSchemaType(schema map[string]any) (string, bool, error) {

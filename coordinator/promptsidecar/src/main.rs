@@ -10,7 +10,7 @@ use std::time::Duration;
 struct Args {
     #[arg(long)]
     socket: PathBuf,
-    #[arg(long, default_value = "/data/prompt-contracts")]
+    #[arg(long, default_value = "/mnt/disks/userdata/prompt-contracts")]
     artifact_root: PathBuf,
     #[arg(long, default_value_t = 4_194_304)]
     max_body_bytes: usize,

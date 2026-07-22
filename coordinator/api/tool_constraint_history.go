@@ -77,6 +77,9 @@ func validateToolHistory(raw any) error {
 			lastDeclaration = index
 		}
 	}
+	// A terminal assistant tool-call turn is a supported continuation shape:
+	// Gemma's template has an explicit tool-call-terminal branch. Once any
+	// later message exists, every declared call must already have a result.
 	if len(outstanding) > 0 && lastDeclaration != len(messages)-1 {
 		return invalidToolConstraint("assistant tool calls are missing tool results", "messages")
 	}

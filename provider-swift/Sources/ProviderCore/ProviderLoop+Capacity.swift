@@ -98,19 +98,26 @@ extension ProviderLoop {
             totalActive += engineV2.activeRequests
         }
 
+        var lmStudioRunning: [String: Int] = [:]
+        for modelID in requestToModel.values where modelID.hasPrefix("lmstudio/") {
+            lmStudioRunning[modelID, default: 0] += 1
+        }
         for model in lmStudioModels.values.sorted(by: { $0.darkbloomID < $1.darkbloomID }) {
-            let running = requestToModel.values.reduce(into: 0) { count, modelID in
-                if modelID == model.darkbloomID { count += 1 }
-            }
+            let running = lmStudioRunning[model.darkbloomID, default: 0]
+            let contextLength = max(0, model.contextLength)
+            let (potential, potentialOverflow) = contextLength.multipliedReportingOverflow(
+                by: Int64(clamping: running))
+            let (budget, budgetOverflow) = contextLength.multipliedReportingOverflow(
+                by: Int64(model.maxConcurrency))
             allSlots.append(BackendSlotCapacity(
                 model: model.darkbloomID,
                 state: running > 0 ? "running" : "idle",
                 numRunning: UInt32(clamping: running),
                 numWaiting: 0,
                 activeTokens: 0,
-                maxTokensPotential: model.contextLength,
+                maxTokensPotential: potentialOverflow ? .max : potential,
                 maxConcurrency: model.maxConcurrency,
-                activeTokenBudgetMax: model.contextLength * Int64(model.maxConcurrency)
+                activeTokenBudgetMax: budgetOverflow ? .max : budget
             ))
             totalActive += running
         }

@@ -40,7 +40,10 @@ func (r *Registry) ReplaceLMStudioModels(providerID string, models []protocol.Mo
 
 	seen := make(map[string]struct{})
 	for _, model := range models {
-		if len(seen) >= maxLMStudioModels || !strings.HasPrefix(model.ID, lmStudioModelPrefix) || model.ID == lmStudioModelPrefix {
+		if len(seen) >= maxLMStudioModels {
+			break
+		}
+		if !strings.HasPrefix(model.ID, lmStudioModelPrefix) || model.ID == lmStudioModelPrefix {
 			continue
 		}
 		if _, duplicate := seen[model.ID]; duplicate {

@@ -25,10 +25,16 @@ extension ProviderLoop {
             discovered = []
         }
 
-        let next = Dictionary(uniqueKeysWithValues: discovered.map { ($0.darkbloomID, $0) })
+        var next: [String: LMStudioLoadedModel] = [:]
+        for model in discovered {
+            next[model.darkbloomID] = model
+        }
         guard force || next != lmStudioModels else { return }
         lmStudioModels = next
-        send.send(.lmStudioModelsUpdate(models: discovered.map(\.modelInfo)))
+        let models = next.values
+            .sorted { $0.darkbloomID < $1.darkbloomID }
+            .map(\.modelInfo)
+        send.send(.lmStudioModelsUpdate(models: models))
         await updateAggregateCapacity()
     }
 

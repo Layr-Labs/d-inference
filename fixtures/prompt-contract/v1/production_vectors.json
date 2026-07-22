@@ -360,7 +360,8 @@
                     "type": "object",
                     "properties": {
                       "city": {
-                        "type": "string"
+                        "type": "string",
+                        "x-darkbloom-original-boolean-schema": true
                       },
                       "unit": {
                         "anyOf": [
@@ -1183,7 +1184,8 @@
                     "type": "object",
                     "patternProperties": {
                       "^city$": {
-                        "type": "string"
+                        "type": "string",
+                        "x-darkbloom-original-boolean-schema": true
                       }
                     },
                     "properties": {},
@@ -1207,7 +1209,8 @@
                       "options": {
                         "prefixItems": [
                           {
-                            "type": "string"
+                            "type": "string",
+                            "x-darkbloom-original-boolean-schema": true
                           },
                           {
                             "type": "string",
@@ -3980,7 +3983,8 @@
                     "type": "object",
                     "properties": {
                       "city": {
-                        "type": "string"
+                        "type": "string",
+                        "x-darkbloom-original-boolean-schema": true
                       },
                       "unit": {
                         "anyOf": [
@@ -4803,7 +4807,8 @@
                     "type": "object",
                     "patternProperties": {
                       "^city$": {
-                        "type": "string"
+                        "type": "string",
+                        "x-darkbloom-original-boolean-schema": true
                       }
                     },
                     "properties": {},
@@ -4827,7 +4832,8 @@
                       "options": {
                         "prefixItems": [
                           {
-                            "type": "string"
+                            "type": "string",
+                            "x-darkbloom-original-boolean-schema": true
                           },
                           {
                             "type": "string",
@@ -7600,7 +7606,8 @@
                     "type": "object",
                     "properties": {
                       "city": {
-                        "type": "string"
+                        "type": "string",
+                        "x-darkbloom-original-boolean-schema": true
                       },
                       "unit": {
                         "anyOf": [
@@ -8423,7 +8430,8 @@
                     "type": "object",
                     "patternProperties": {
                       "^city$": {
-                        "type": "string"
+                        "type": "string",
+                        "x-darkbloom-original-boolean-schema": true
                       }
                     },
                     "properties": {},
@@ -8447,7 +8455,8 @@
                       "options": {
                         "prefixItems": [
                           {
-                            "type": "string"
+                            "type": "string",
+                            "x-darkbloom-original-boolean-schema": true
                           },
                           {
                             "type": "string",

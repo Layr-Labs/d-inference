@@ -801,7 +801,7 @@ mod tests {
                     "properties": {
                         "value": {
                             "type": "number",
-                            "enum": [0.10000000000000001_f64]
+                            "enum": [0.1_f64]
                         }
                     }
                 }

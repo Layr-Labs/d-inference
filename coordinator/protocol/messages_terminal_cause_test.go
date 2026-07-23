@@ -93,7 +93,10 @@ func TestInferenceErrorUnknownCauseDecodesVerbatim(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &pm); err != nil {
 		t.Fatalf("envelope unmarshal: %v", err)
 	}
-	msg := pm.Payload.(*InferenceErrorMessage)
+	msg, ok := pm.Payload.(*InferenceErrorMessage)
+	if !ok {
+		t.Fatalf("payload type = %T, want *InferenceErrorMessage", pm.Payload)
+	}
 	if msg.TerminalCause != "lease_reaped" {
 		t.Errorf("terminal_cause = %q, want lease_reaped (verbatim)", msg.TerminalCause)
 	}

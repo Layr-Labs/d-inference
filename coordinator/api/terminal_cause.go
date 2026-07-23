@@ -80,6 +80,18 @@ func classifyTerminalCause(cause string) (class terminalCauseClass, known bool) 
 	}
 }
 
+// isTypedTimeout504Cause reports whether cause is one of the KNOWN typed
+// causes the provider maps to a 504 status (safety_deadline,
+// backpressure_timeout). The dispatch wait loops use it to tell a typed
+// provider 504 from a coordinator-synthesized timeout 504. An UNKNOWN
+// future cause value deliberately does NOT count: consistent with
+// classifyTerminalCause's unknown→legacy rule, an off-vocabulary 504 keeps
+// the legacy synthetic-timeout route classification during mixed-version
+// rollouts instead of being guessed into provider_error/admitted_but_failed.
+func isTypedTimeout504Cause(cause string) bool {
+	return cause == terminalCauseSafetyDeadline || cause == terminalCauseBackpressureTimeout
+}
+
 // metricTypedTerminal counts every provider inference_error terminal that
 // carried a typed terminal_cause, tagged with the cause only (low
 // cardinality: the 8 closed-vocabulary values plus "unknown"). Never tagged

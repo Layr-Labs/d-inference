@@ -177,7 +177,7 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 		AttemptUsage: &protocol.UsageInfo{PromptTokens: 11, CompletionTokens: 2},
 	})
 	// The exact discriminator the wait-loop defers use:
-	if d.lastErrCode == 504 && d.lastErrTerminalCause == "" {
+	if d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
 		t.Fatal("typed 504 must NOT satisfy the synthetic-timeout discriminator")
 	}
 	out := d.providerFailedRoutingOutcomeFor(pr)
@@ -190,7 +190,27 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 
 	// Untyped (synthetic) 504 still satisfies the timeout discriminator.
 	d.setLastError("timeout waiting for first response", 504)
-	if !(d.lastErrCode == 504 && d.lastErrTerminalCause == "") {
+	if !(d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause)) {
 		t.Fatal("synthetic 504 must satisfy the synthetic-timeout discriminator")
+	}
+
+	// An UNKNOWN future cause on a 504 also stays on the legacy
+	// synthetic-timeout path — mirroring classifyTerminalCause's
+	// unknown→legacy rule — so mixed-version rollouts cannot corrupt the
+	// first_chunk/accepted timeout route telemetry.
+	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
+		RequestID: "req-504", Error: "graceful_exit: node shutting down",
+		StatusCode: 504, TerminalCause: "graceful_exit",
+	})
+	if !(d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause)) {
+		t.Fatal("unknown-cause 504 must stay on the synthetic-timeout (legacy) path")
+	}
+	// And the two known typed 504 causes are exactly the exception set.
+	if !isTypedTimeout504Cause(terminalCauseSafetyDeadline) ||
+		!isTypedTimeout504Cause(terminalCauseBackpressureTimeout) {
+		t.Fatal("safety_deadline and backpressure_timeout must be the typed 504 exceptions")
+	}
+	if isTypedTimeout504Cause(terminalCauseAdmissionTimeout) || isTypedTimeout504Cause("") {
+		t.Fatal("only the two known 504 causes may bypass the timeout classification")
 	}
 }

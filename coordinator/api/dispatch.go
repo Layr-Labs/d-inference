@@ -1494,13 +1494,16 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		case outcomeCommitted:
 			d.updateRoutingOutcomeForAttempt(target, d.successRoutingOutcomeFor(target.pending))
 		case outcomeRetry:
-			// A 504 here is a coordinator-synthesized first-chunk timeout ONLY
-			// when there is no typed terminal cause: a typed provider 504
-			// (safety_deadline / backpressure_timeout) is a real provider
-			// terminal and must keep its provider-error route class and its
-			// attempt usage (setLastError clears the cause for synthetic
-			// timeouts, so the discriminator cannot go stale).
-			if d.lastErrCode == http.StatusGatewayTimeout && d.lastErrTerminalCause == "" {
+			// A 504 here is a coordinator-synthesized first-chunk timeout
+			// unless it carries a KNOWN typed 504 cause (safety_deadline /
+			// backpressure_timeout) — those are real provider terminals and
+			// keep their provider-error route class and attempt usage.
+			// setLastError clears the cause for synthetic timeouts (so the
+			// discriminator cannot go stale), and an UNKNOWN cause value
+			// stays on this legacy timeout path, mirroring
+			// classifyTerminalCause's unknown→legacy rule for mixed-version
+			// rollouts.
+			if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
 				d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "first_chunk_timeout", d.lastErrCode))
 			} else {
 				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
@@ -2329,9 +2332,10 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 		case outcomeCommitted:
 			d.updateRoutingOutcomeForAttempt(target, d.successRoutingOutcomeFor(target.pending))
 		case outcomeRetry:
-			// Synthetic-timeout 504s only when untyped — a typed provider 504
-			// keeps its provider-error class + usage (see waitFirstChunk).
-			if d.lastErrCode == http.StatusGatewayTimeout && d.lastErrTerminalCause == "" {
+			// Synthetic-timeout 504s unless a KNOWN typed 504 cause — a typed
+			// provider 504 keeps its provider-error class + usage; unknown
+			// causes stay legacy (see waitFirstChunk).
+			if d.lastErrCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(d.lastErrTerminalCause) {
 				if d.preambleLiveness {
 					d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "preamble_liveness_timeout", d.lastErrCode))
 				} else {

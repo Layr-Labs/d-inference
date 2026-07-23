@@ -9,8 +9,11 @@ import (
 )
 
 const (
-	maxPrefixCacheStatuses         = 16
-	maxPrefixCacheDonationOutcomes = 13
+	maxPrefixCacheStatuses = 16
+	// The aggregate vocabulary remains the 13 known outcomes below. The raw
+	// wire cap leaves 19 slots for future-version outcomes while bounding all
+	// duplicate/filter work to a small fixed array.
+	maxPrefixCacheDonationOutcomeEntries = 32
 )
 
 var (
@@ -214,7 +217,7 @@ func sanitizePrefixCacheDonationOutcomes(
 	if outcomes == nil {
 		return nil
 	}
-	if len(*outcomes) > maxPrefixCacheDonationOutcomes {
+	if len(*outcomes) > maxPrefixCacheDonationOutcomeEntries {
 		*outcomes = []protocol.PrefixCacheDonationOutcomeCount{}
 		return map[string]uint64{}
 	}

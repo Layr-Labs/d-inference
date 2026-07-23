@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -48,6 +49,132 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 				t.Fatalf("enum values=%q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestDonationOutcomeForwardVersionHeadroomPreservesKnownCounters(t *testing.T) {
+	knownOutcomes := PrefixCacheDonationOutcomes()
+	if len(knownOutcomes) != 13 {
+		t.Fatalf("known outcome buckets=%d, want 13", len(knownOutcomes))
+	}
+	knownCounters := func(offset uint64) []protocol.PrefixCacheDonationOutcomeCount {
+		result := make(
+			[]protocol.PrefixCacheDonationOutcomeCount,
+			0,
+			len(knownOutcomes),
+		)
+		for index, outcome := range knownOutcomes {
+			result = append(result, protocol.PrefixCacheDonationOutcomeCount{
+				Outcome: outcome,
+				Count:   uint64(index+1) + offset,
+			})
+		}
+		return result
+	}
+	withFuture := func(
+		known []protocol.PrefixCacheDonationOutcomeCount,
+		futureCount int,
+	) []protocol.PrefixCacheDonationOutcomeCount {
+		result := append([]protocol.PrefixCacheDonationOutcomeCount(nil), known...)
+		for index := range futureCount {
+			result = append(result, protocol.PrefixCacheDonationOutcomeCount{
+				Outcome: fmt.Sprintf("future_outcome_%d", index),
+				Count:   uint64(index + 1),
+			})
+		}
+		return result
+	}
+
+	reg := cacheEligibilityTestRegistry()
+	allKnownPlusOneFuture := withFuture(knownCounters(0), 1)
+	registration := protocol.RegisterMessage{
+		Models:                      []protocol.ModelInfo{{ID: "model"}},
+		PrefixCacheDonationOutcomes: &allKnownPlusOneFuture,
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&registration); err != nil {
+		t.Fatalf("known+future registration became fatal: %v", err)
+	}
+	if got := len(*registration.PrefixCacheDonationOutcomes); got != len(knownOutcomes) {
+		t.Fatalf("known+future sanitized entries=%d, want %d", got, len(knownOutcomes))
+	}
+
+	atCap := withFuture(
+		knownCounters(0),
+		maxPrefixCacheDonationOutcomeEntries-len(knownOutcomes),
+	)
+	atCapRegistration := protocol.RegisterMessage{
+		Models:                      []protocol.ModelInfo{{ID: "model"}},
+		PrefixCacheDonationOutcomes: &atCap,
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&atCapRegistration); err != nil {
+		t.Fatalf("at-cap registration became fatal: %v", err)
+	}
+	if got := len(*atCapRegistration.PrefixCacheDonationOutcomes); got != len(knownOutcomes) {
+		t.Fatalf("at-cap sanitized entries=%d, want %d", got, len(knownOutcomes))
+	}
+
+	overCap := append(
+		withFuture(
+			knownCounters(0),
+			maxPrefixCacheDonationOutcomeEntries-len(knownOutcomes),
+		),
+		protocol.PrefixCacheDonationOutcomeCount{
+			Outcome: "future_outcome_over_cap", Count: 1,
+		},
+	)
+	overCapRegistration := protocol.RegisterMessage{
+		Models:                      []protocol.ModelInfo{{ID: "model"}},
+		PrefixCacheDonationOutcomes: &overCap,
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&overCapRegistration); err != nil {
+		t.Fatalf("over-cap optional telemetry became fatal: %v", err)
+	}
+	if got := len(*overCapRegistration.PrefixCacheDonationOutcomes); got != 0 {
+		t.Fatalf("over-cap snapshot retained %d entries, want 0", got)
+	}
+
+	baseline := knownCounters(0)
+	provider := reg.Register("provider", nil, &protocol.RegisterMessage{
+		Models:                      []protocol.ModelInfo{{ID: "model"}},
+		PrefixCacheDonationOutcomes: &baseline,
+	})
+	updated := withFuture(knownCounters(10), 1)
+	if err := reg.UpdatePrefixCacheTelemetry(provider.ID, nil, &updated); err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range knownOutcomes {
+		if got := reg.CacheRoutingLifecycleStatus().DonationOutcomes[outcome]; got != 10 {
+			t.Fatalf("%s delta=%d, want 10", outcome, got)
+		}
+	}
+
+	overCapHeartbeat := append(
+		withFuture(
+			knownCounters(20),
+			maxPrefixCacheDonationOutcomeEntries-len(knownOutcomes),
+		),
+		protocol.PrefixCacheDonationOutcomeCount{
+			Outcome: "future_outcome_over_cap", Count: 1,
+		},
+	)
+	if err := reg.UpdatePrefixCacheTelemetry(
+		provider.ID, nil, &overCapHeartbeat); err != nil {
+		t.Fatalf("over-cap heartbeat became fatal: %v", err)
+	}
+	for _, outcome := range knownOutcomes {
+		if got := reg.CacheRoutingLifecycleStatus().DonationOutcomes[outcome]; got != 10 {
+			t.Fatalf("%s changed after over-cap snapshot: %d", outcome, got)
+		}
+	}
+
+	recovered := withFuture(knownCounters(30), 1)
+	if err := reg.UpdatePrefixCacheTelemetry(provider.ID, nil, &recovered); err != nil {
+		t.Fatal(err)
+	}
+	for _, outcome := range knownOutcomes {
+		if got := reg.CacheRoutingLifecycleStatus().DonationOutcomes[outcome]; got != 30 {
+			t.Fatalf("%s recovered total=%d, want 30", outcome, got)
+		}
 	}
 }
 
@@ -163,8 +290,11 @@ func TestPrefixCacheTelemetryStructuralAbuseDropsWholeOptionalSnapshot(t *testin
 			},
 		},
 		{
-			name:     "oversized",
-			outcomes: make([]protocol.PrefixCacheDonationOutcomeCount, maxPrefixCacheDonationOutcomes+1),
+			name: "oversized",
+			outcomes: make(
+				[]protocol.PrefixCacheDonationOutcomeCount,
+				maxPrefixCacheDonationOutcomeEntries+1,
+			),
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -511,7 +641,7 @@ func TestPrefixCacheDonationDeltasAndModelUpdateCleanup(t *testing.T) {
 	}
 	oversized := make(
 		[]protocol.PrefixCacheDonationOutcomeCount,
-		maxPrefixCacheDonationOutcomes+1,
+		maxPrefixCacheDonationOutcomeEntries+1,
 	)
 	if err := reg.UpdatePrefixCacheTelemetry("provider", nil, &oversized); err != nil {
 		t.Fatalf("oversized optional outcomes became fatal: %v", err)

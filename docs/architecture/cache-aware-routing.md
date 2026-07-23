@@ -159,8 +159,10 @@ owner-local/off-catalog models are valid. Unknown future enum values, invalid
 state/reason tuples, unadvertised status models, unknown donation outcomes, and
 invalid counts drop only the affected entry while known entries still
 aggregate. To keep processing bounded and ambiguity-free, an array beyond its
-fixed cap (16 statuses or 13 outcomes), duplicate model/outcome keys, or a
-blank/non-canonical status model ID drops that whole optional snapshot.
+fixed cap (16 statuses or 32 raw outcome entries), duplicate model/outcome
+keys, or a blank/non-canonical status model ID drops that whole optional
+snapshot. Donation aggregation still has exactly 13 known buckets; the raw cap
+reserves 19 entries for future outcomes, which are filtered individually.
 A dropped/present status snapshot becomes authoritative empty and clears stale
 status; a dropped donation snapshot preserves the prior monotonic counter
 baseline. Field omission preserves the prior mixed-version behavior.

@@ -79,7 +79,9 @@ deltas, and exports aggregate outcomes through `/v1/cache/status`, Prometheus,
 and Datadog. Optional status/outcome fields are forward-compatible and
 non-fatal: unknown entries are dropped, structurally ambiguous/oversized
 snapshots are discarded within fixed bounds, and provider registration remains
-available. Routing capability fields remain independently strict.
+available. Donation input accepts at most 32 raw entries while aggregating only
+the 13 known outcomes, leaving fixed forward-version headroom without adding
+metric buckets. Routing capability fields remain independently strict.
 
 ## Environment variables
 

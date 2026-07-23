@@ -106,6 +106,49 @@ public struct WeightHasher: Sendable {
         return hashFilesWithRelativeKey(keyed)
     }
 
+    /// Combine already-known per-file SHA-256 digests into the manifest
+    /// aggregate hash WITHOUT reading any file bytes.
+    ///
+    /// Byte-identical to `hashFilesWithRelativeKey` for the same
+    /// (path → digest) inputs, and to the Go coordinator's
+    /// `aggregateManifestFileHashes`: digests are decoded from hex, sorted by
+    /// path (lexicographic; ties broken on the digest hex, matching
+    /// `ManifestBuilder`), concatenated as raw 32-byte digests, and SHA-256'd.
+    ///
+    /// Used by the republish flow, where a new manifest is derived from an old
+    /// manifest's per-file digests plus one new small file — the multi-GB
+    /// weight shards are never downloaded.
+    ///
+    /// Returns nil when any digest is not a valid 64-character hex string.
+    public static func aggregateFromDigests(_ files: [(path: String, sha256Hex: String)]) -> String? {
+        let sorted = files.sorted {
+            if $0.path != $1.path { return $0.path < $1.path }
+            return $0.sha256Hex < $1.sha256Hex
+        }
+        var finalHasher = SHA256()
+        for entry in sorted {
+            guard let digest = decodeHexDigest(entry.sha256Hex), digest.count == 32 else {
+                return nil
+            }
+            digest.withUnsafeBytes { finalHasher.update(bufferPointer: $0) }
+        }
+        return finalHasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func decodeHexDigest(_ hex: String) -> Data? {
+        guard hex.count == 64 else { return nil }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(32)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index ..< next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return Data(bytes)
+    }
+
     /// Hash files in sorted order of the caller-supplied sort key, combining per-file
     /// digests into a final hash. Used by both the legacy attestation path (sort key =
     /// absolute path) and the manifest builder (sort key = relative POSIX path).

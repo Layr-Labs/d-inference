@@ -135,7 +135,18 @@ type dispatchState struct {
 	// budget" rejection as deterministic (budget >= context) vs transient
 	// (budget < context — this node was memory-pressured).
 	lastErrProviderBudget int64
-	committed             bool
+	// lastErrTerminalCause is the typed terminal_cause from the last provider
+	// error ("" for legacy providers). shouldStopFailover trusts a typed
+	// admission_timeout as transient capacity directly — the provider's engine
+	// TOLD us it was busy — instead of inferring from error-string substrings
+	// that the fixed "admission_timeout: …" text would never match.
+	lastErrTerminalCause string
+	// lastErrAttemptUsage is the typed partial usage from the last provider
+	// error (nil for legacy providers), applied to the failed attempt's route
+	// row by providerFailedRoutingOutcomeFor so pre-content typed failures on
+	// the ordinary dispatch path keep their observability data.
+	lastErrAttemptUsage *protocol.UsageInfo
+	committed           bool
 	// keepalive emits SSE keepalive comments during a long prefill once the
 	// request has been dispatched, committing HTTP 200 early so the consumer
 	// connection does not time out. nil when disabled or non-streaming.
@@ -604,6 +615,8 @@ func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg p
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
 	d.lastErrProviderBudget = providerReportedBudget(provider, d.model)
+	d.lastErrTerminalCause = msg.TerminalCause
+	d.lastErrAttemptUsage = msg.AttemptUsage
 }
 
 // providerReportedBudget reads a provider's reported token budget for a model,
@@ -637,8 +650,11 @@ func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequ
 		// the admission-mismatch gauge — keyed on the SAME vocabulary as the
 		// reputation and breaker exemptions (isNonProviderFaultErrorReason).
 		// The structured reason survives on the row (see
-		// routeOutcomeUsesProviderErrorText).
-		return d.errorRoutingOutcomeFor(pr, "error", errorClassClientError, d.lastErrCode)
+		// routeOutcomeUsesProviderErrorText). Typed partial usage (if any)
+		// still lands on the row — observability only, no billing effect.
+		out := d.errorRoutingOutcomeFor(pr, "error", errorClassClientError, d.lastErrCode)
+		applyAttemptUsage(out, d.lastErrAttemptUsage)
+		return out
 	}
 	class := "provider_error"
 	if providerDisconnectedError(d.lastErr, d.lastErrCode) {
@@ -646,6 +662,12 @@ func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequ
 	}
 	out := d.errorRoutingOutcomeFor(pr, "error", class, d.lastErrCode)
 	out.AdmittedButFailed = true
+	// Pre-content typed failures on the ordinary dispatch path flow through
+	// the deferred route update via this builder (not the standalone
+	// preResponse/postCommit constructors), so the typed attempt_usage
+	// retained by setLastInferenceError must be applied here too or the row
+	// records null token counts for the most common failure path.
+	applyAttemptUsage(out, d.lastErrAttemptUsage)
 	return out
 }
 
@@ -1349,7 +1371,19 @@ func (d *dispatchState) shouldStopFailover() bool {
 	if d.latchJinjaTerminalReject(d.lastErrReason, "") {
 		return true
 	}
-	switch classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext) {
+	// Typed-cause override (highest-fidelity signal): a provider that attaches
+	// terminal_cause=admission_timeout is TELLING us its engine was too busy to
+	// admit the request within the admission lease — definitionally a
+	// this-node transient-capacity condition (a healthier/idler provider may
+	// serve). Without this, the fixed "admission_timeout: …" error text falls
+	// through the legacy capacity substrings, gets classified as a generic
+	// fault, and walks the unbounded fault-failover ladder to a final 503
+	// instead of the bounded capacity retries and uptime-neutral 429.
+	kind := classifyRejection(d.lastErrReason, d.lastErr, d.lastErrProviderBudget, d.modelMaxContext)
+	if d.lastErrTerminalCause == terminalCauseAdmissionTimeout {
+		kind = rejectionTransientCapacity
+	}
+	switch kind {
 	case rejectionDeterministicUnservable:
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true

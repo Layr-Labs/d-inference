@@ -308,6 +308,8 @@ func platformTerminalStatusMapping() {
         (.prefillStall, 500),
         (.decodeStall, 500),
         (.watchdog, 500),
+        (.cancelled, 499),
+        (.engineError, 500),
     ]
     for (cause, expected) in cases {
         let err = MultiModelBatchSchedulerEngineError.platformTerminal(

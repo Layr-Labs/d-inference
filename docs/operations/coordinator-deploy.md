@@ -317,6 +317,14 @@ curl -s localhost:8080/health   # note the provider count for post-swap comparis
 curl -s localhost:8080/v1/cache/status | jq -S \
   '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}' \
   > /tmp/darkbloom-cache-controls.before.json
+sudo sh -c 'umask 077
+  awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ ||
+             $1 == "EIGENINFERENCE_CACHE_MASTER_KEY" { print }'\'' \
+    /etc/d-inference/env |
+    LC_ALL=C sort |
+    sha256sum |
+    awk '\''{ print $1 }'\'' \
+    > /tmp/darkbloom-cache-env.pre-refresh.sha256'
 ```
 
 ### 3. Env changes (if any)
@@ -358,8 +366,9 @@ sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
 # authoritative; do not proceed if the refresh changed an approved value.
 sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
-# Snapshot every cache-routing value after approved env changes and immediately
-# before the swap. Only the digest is emitted; the master key is never printed.
+# Snapshot every cache-routing value after refresh and immediately before the
+# swap. This provider release permits no cache-control edit, so require equality
+# with the pre-refresh digest. Only digests are emitted; the key is never printed.
 sudo sh -c 'umask 077
   awk -F= '\''$1 ~ /^EIGENINFERENCE_CACHE_ROUTING_/ ||
              $1 == "EIGENINFERENCE_CACHE_MASTER_KEY" { print }'\'' \
@@ -367,7 +376,9 @@ sudo sh -c 'umask 077
     LC_ALL=C sort |
     sha256sum |
     awk '\''{ print $1 }'\'' \
-    > /tmp/darkbloom-cache-env.before.sha256'
+    > /tmp/darkbloom-cache-env.pre-swap.sha256'
+sudo cmp /tmp/darkbloom-cache-env.pre-refresh.sha256 \
+  /tmp/darkbloom-cache-env.pre-swap.sha256
 ```
 
 The check prints only safe key names, never existing values. The apply step
@@ -438,7 +449,7 @@ sudo sh -c 'umask 077
     sha256sum |
     awk '\''{ print $1 }'\'' \
     > /tmp/darkbloom-cache-env.after.sha256'
-sudo cmp /tmp/darkbloom-cache-env.before.sha256 \
+sudo cmp /tmp/darkbloom-cache-env.pre-swap.sha256 \
   /tmp/darkbloom-cache-env.after.sha256
 curl -s localhost:8080/v1/cache/status | jq -e \
   '.sidecar.enabled == true and

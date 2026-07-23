@@ -75,23 +75,23 @@ jobs:
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
             -run 'TestIntegration|TestProfile'
 
-      - name: Verify current coordinator with released v0.7.11 provider
+      - name: Verify current coordinator with released v0.7.12 provider
         run: |
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
-          RELEASED_PROVIDER=$(./scripts/fetch-v0711-provider.sh "$RUNNER_TEMP/released-providers")
+          RELEASED_PROVIDER=$(./scripts/fetch-v0712-provider.sh "$RUNNER_TEMP/released-providers")
           DARKBLOOM_MIXED_VERSION=1 \
           DARKBLOOM_PROVIDER_BINARY="$RELEASED_PROVIDER" \
             go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-              -run TestIntegrationMixedVersionReleasedV0711Provider
+              -run TestIntegrationMixedVersionReleasedV0712Provider
 
-      - name: Verify released coordinator with candidate v0.7.12 provider
+      - name: Verify released coordinator with candidate v0.7.13 provider
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
-          RELEASED_COORDINATOR="$RUNNER_TEMP/d-inference-v0.7.11"
-          git worktree add --detach "$RELEASED_COORDINATOR" v0.7.11
+          RELEASED_COORDINATOR="$RUNNER_TEMP/d-inference-v0.7.12"
+          git worktree add --detach "$RELEASED_COORDINATOR" v0.7.12
           trap 'git worktree remove --force "$RELEASED_COORDINATOR"' EXIT
           (
             cd "$RELEASED_COORDINATOR"

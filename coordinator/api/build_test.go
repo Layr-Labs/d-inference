@@ -11,7 +11,7 @@ import (
 
 func TestHealthExposesCoordinatorBuildIdentity(t *testing.T) {
 	originalVersion, originalCommit, originalDate := BuildVersion, BuildCommit, BuildDate
-	BuildVersion = "0.7.12"
+	BuildVersion = "0.7.13"
 	BuildCommit = "0123456789abcdef"
 	BuildDate = "2026-07-17T23:45:00Z"
 	t.Cleanup(func() {

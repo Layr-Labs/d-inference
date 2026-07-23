@@ -76,8 +76,8 @@ Notes and caveats:
 
 ### `mtp` — Gemma 4 multi-token prediction code path
 
-The v0.7.12 provider contains the default-off MTP implementation, but shipping
-that code does not activate speculative decoding:
+Providers v0.7.12 and later contain the default-off MTP implementation, but
+shipping that code does not activate speculative decoding:
 
 ```bash
 darkbloom beta enable mtp

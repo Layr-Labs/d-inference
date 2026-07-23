@@ -145,5 +145,8 @@ public enum ProviderCore {
     // frozen-full tail replay and enforces Gemma tool choices during decoding.
     // Constrained requests advertise an explicit per-model protocol capability
     // so mixed fleets fail closed instead of silently routing to old providers.
-    public static let version = "0.7.12"
+    // 0.7.13 adds bounded, privacy-safe cache eligibility and donation outcome
+    // snapshots. The optional fields are forward-compatible and never gate
+    // registration; strict v2 routing capabilities remain independently validated.
+    public static let version = "0.7.13"
 }

@@ -37,38 +37,30 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 
 The live host still has stale Caddy `/acme/*` routing and lacks
 `stream_close_delay 5m`. Those are separate Caddy-maintenance changes. Do not
-reload Caddy during the v0.7.12 coordinator swap because that reconnects the
+reload Caddy during a coordinator swap because that reconnects the
 provider fleet; the static certificate and loaded config remain in place.
 
-## v0.7.12 release order
+## v0.7.13 release order
 
 Shipping code and activating optimizations are separate operations:
 
-1. Publish the signed/notarized v0.7.12 provider while the v0.7.11 coordinator
-   remains deployed. The old coordinator ignores the additive capability
-   advertisement, and the mixed-version integration gate proves candidate
-   inference still works.
-2. Wait for enough routable v0.7.12 providers per public model. The v0.7.12
-   coordinator intentionally fails `none`, `required`, and exact named tool
-   choices closed on older providers; deploying it first would create avoidable
-   503s.
-3. Deploy the v0.7.12 coordinator with
-   `EIGENINFERENCE_CACHE_ROUTING_MODE=off`,
-   `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true`, and
-   `EIGENINFERENCE_PROMPT_SIDECAR_ARTIFACT_ROOT=/mnt/disks/userdata/prompt-contracts`.
-   `/data` is a symlink and is invalid for the symlink-rejecting artifact loader.
-4. Exercise chat completions, completions, Responses, and Anthropic Messages,
+1. Deploy the v0.7.13-compatible coordinator first. The new provider fields are
+   optional observability; v0.7.12 providers omit them and remain routable.
+2. Publish the signed/notarized v0.7.13 provider. A pre-v0.7.13 coordinator
+   ignores the additive telemetry, but coordinator-first preserves each
+   provider's initial registration snapshot.
+3. Wait for enough routable v0.7.13 providers per public model. Require
+   `/v1/cache/status` to move loaded models from `unreported_loaded_models` into
+   bounded state/reason/backend/replay-strategy aggregates without registration
+   churn.
+4. Verify donation outcome counters and holder removal reasons remain monotonic,
+   identity-free, and consistent with SSD lookup/donation lifecycle totals.
+5. Exercise chat completions, completions, Responses, and Anthropic Messages,
    including auto/none/required/named tools, stop sequences, body limits, and
-   mixed-version cold fallback.
-5. Require `/v1/cache/status` to show routing off, `sidecar.ready=true`,
-   `preload.ready=true`, matching nonzero child/preload generations, bounded
-   RSS, no restart loop, and all active prompt artifacts ready with zero
-   failures.
-6. Keep exact-cache routing off. Activation requires a real positive-hit proof,
-   stable telemetry, and a new independent 256-bit
-   `EIGENINFERENCE_CACHE_MASTER_KEY`.
-7. MTP default-on remains out of v0.7.12. Keep the existing default-off
-   implementation canary-only until its separate rollout is reviewed.
+   mixed-version fallback.
+6. Provider publication must not change the current operator-selected cache
+   routing percentage, plan-QPS cap, holder TTL, or master key.
+7. MTP remains default-off and is a separate rollout.
 
 The GitHub `benchmarks` environment approval is a human release gate. Do not
 bypass or weaken it.
@@ -413,7 +405,7 @@ pg_terminate_backend(<pid>)`); do **not** restart the container again.
 curl -s localhost:8080/health
 # Require the deployed commit/version/date embedded by cloudbuild-prod.yaml.
 curl -s localhost:8080/health | jq -e \
-  '.version == "0.7.12" and
+  '.version == "0.7.13" and
    (.build_commit | test("^[0-9a-f]{40}$")) and
    .build_date != "unknown"'
 curl -s localhost:8080/v1/cache/status | jq -e \
@@ -538,7 +530,7 @@ exists** — fixed by registering the release, not by bumping code.
 Before a tag exists, run:
 
 ```bash
-./scripts/check-release-version.sh 0.7.12
+./scripts/check-release-version.sh 0.7.13
 ./scripts/sync-install-embed.sh check
 ```
 
@@ -547,7 +539,7 @@ final archived CLI, and app plist. It does not mutate source to manufacture
 agreement.
 
 ```bash
-git tag -a v0.7.12 -m "Release v0.7.12"
+git tag -a v0.7.13 -m "Release v0.7.13"
 git push origin master --tags
 ```
 

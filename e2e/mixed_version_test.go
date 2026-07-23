@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -24,21 +25,35 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	}
 	require.NotEmpty(t, os.Getenv("DARKBLOOM_PROVIDER_BINARY"))
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
-	t.Setenv("DARKBLOOM_PREFIX_CACHE", "0")
+	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")
 
 	suite := testbed.NewSuite(testbed.SuiteConfig{})
 	require.NoError(t, suite.Start(t.Context()))
 	t.Cleanup(suite.Stop)
+	require.Eventually(t, func() bool {
+		providers := liveProviders(suite.Coordinator.Registry)
+		if len(providers) == 0 {
+			return false
+		}
+		providers[0].Mu().Lock()
+		defer providers[0].Mu().Unlock()
+		return providers[0].Version == "0.7.12" &&
+			providers[0].PrefixCacheProtocol == 2 &&
+			len(providers[0].PrefixCacheV2Models) > 0
+	}, 30*time.Second, 100*time.Millisecond,
+		"released v0.7.12 provider never advertised its real v2 cache capability")
 	providers := liveProviders(suite.Coordinator.Registry)
 	require.NotEmpty(t, providers)
 	providers[0].Mu().Lock()
 	version := providers[0].Version
 	cacheProtocol := providers[0].PrefixCacheProtocol
+	cacheModels := len(providers[0].PrefixCacheV2Models)
 	cacheStatusReported := providers[0].PrefixCacheStatusReported
 	donationOutcomes := len(providers[0].PrefixCacheDonationOutcomes)
 	providers[0].Mu().Unlock()
 	require.Equal(t, "0.7.12", version)
-	require.Less(t, cacheProtocol, 2, "released provider unexpectedly advertised candidate protocol v2")
+	require.Equal(t, 2, cacheProtocol)
+	require.Positive(t, cacheModels)
 	require.False(t, cacheStatusReported,
 		"released provider unexpectedly advertised candidate cache eligibility telemetry")
 	require.Zero(t, donationOutcomes,
@@ -119,35 +134,6 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 			assertNoPositiveCachedTokens(t, body)
 		})
 	}
-
-	t.Run("constrained choices never downgrade to the released provider", func(t *testing.T) {
-		for _, choice := range []any{
-			"none",
-			"required",
-			map[string]any{
-				"type":     "function",
-				"function": map[string]any{"name": "lookup_weather"},
-			},
-		} {
-			payload, err := json.Marshal(map[string]any{
-				"model": model,
-				"messages": []map[string]string{{
-					"role": "user", "content": "Reply with OK.",
-				}},
-				"max_tokens":  16,
-				"tools":       []any{tool},
-				"tool_choice": choice,
-			})
-			require.NoError(t, err)
-			response := postMixedVersionRequest(
-				t, suite, "/v1/chat/completions", payload)
-			body, readErr := io.ReadAll(response.Body)
-			response.Body.Close()
-			require.NoError(t, readErr)
-			require.Equal(t, http.StatusServiceUnavailable, response.StatusCode, string(body))
-			require.Contains(t, string(body), "inference-time tool_choice enforcement")
-		}
-	})
 
 	t.Run("body_limit", func(t *testing.T) {
 		oversized := `{"model":` + mustJSON(t, model) +

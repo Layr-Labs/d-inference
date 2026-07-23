@@ -44,8 +44,11 @@ provider fleet; the static certificate and loaded config remain in place.
 
 Shipping code and activating optimizations are separate operations:
 
-1. Deploy the v0.7.13-compatible coordinator first. The new provider fields are
-   optional observability; v0.7.12 providers omit them and remain routable.
+1. Confirm the deployed coordinator already exposes
+   `providers.unreported_loaded_models`, `lifecycle.donation_outcomes`, and
+   `lifecycle.holder_removed` in `/v1/cache/status`. Do not redeploy it solely
+   for this provider release. The new fields are optional observability;
+   v0.7.12 providers omit them and remain routable.
 2. Publish the signed/notarized v0.7.13 provider. A pre-v0.7.13 coordinator
    ignores the additive telemetry, but coordinator-first preserves each
    provider's initial registration snapshot.
@@ -310,6 +313,9 @@ Then, on the VM: pull the image and snapshot current health.
 ```bash
 sudo docker pull us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<TAG>
 curl -s localhost:8080/health   # note the provider count for post-swap comparison
+curl -s localhost:8080/v1/cache/status | jq -S \
+  '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}' \
+  > /tmp/darkbloom-cache-controls.before.json
 ```
 
 ### 3. Env changes (if any)
@@ -408,11 +414,13 @@ curl -s localhost:8080/health | jq -e \
   '.version == "0.7.13" and
    (.build_commit | test("^[0-9a-f]{40}$")) and
    .build_date != "unknown"'
+# Cache controls are operator state, not release defaults. Require byte-for-byte
+# preservation across the swap.
+diff -u /tmp/darkbloom-cache-controls.before.json \
+  <(curl -s localhost:8080/v1/cache/status | jq -S \
+    '{routing_mode, percent:.activation.percent, max_plan_qps:.activation.max_plan_qps}')
 curl -s localhost:8080/v1/cache/status | jq -e \
-  '.routing_mode == "off" and
-   .activation.percent == 1 and
-   .activation.max_plan_qps == 1 and
-   .sidecar.enabled == true and
+  '.sidecar.enabled == true and
    .sidecar.ready == true and
    .sidecar.restarts == 0 and
    .sidecar.restart_suppressed == false and

@@ -39,6 +39,15 @@ METALLIB="$EXTRACTED.tmp/Darkbloom.app/Contents/MacOS/mlx.metallib"
     echo "released v$VERSION binary SHA-256 mismatch" >&2
     exit 1
 }
+# These optional wire fields first ship in v0.7.13. Proving their marker strings
+# are absent from the hash-pinned v0.7.12 executable distinguishes true omission
+# from an authoritative empty telemetry snapshot.
+for marker in prefix_cache_statuses prefix_cache_donation_outcomes; do
+    if LC_ALL=C grep -a -q -F "$marker" "$BIN"; then
+        echo "released v$VERSION unexpectedly contains candidate telemetry marker $marker" >&2
+        exit 1
+    fi
+done
 [ "$(sha256 "$METALLIB")" = "$METALLIB_SHA256" ] || {
     echo "released v$VERSION metallib SHA-256 mismatch" >&2
     exit 1

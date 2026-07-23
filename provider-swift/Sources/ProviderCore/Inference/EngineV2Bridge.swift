@@ -120,6 +120,7 @@ public actor EngineV2Bridge {
     /// (`completeStaging`), and shutdown. nil means caching is disabled or
     /// SSD initialization was unavailable.
     nonisolated let ssdPrefixCache: SSDPrefixCache?
+    nonisolated let prefixCacheBaseStatus: PrefixCacheModelStatus
     nonisolated let prefixCacheEvidenceSequencer: PrefixCacheEvidenceSequencer?
     /// Periodic prefix-cache stats logger (v2 analog of the legacy
     /// checkpoint-tier logger). Started by the slot factory when an active
@@ -235,6 +236,7 @@ public actor EngineV2Bridge {
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
+        prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
@@ -253,6 +255,12 @@ public actor EngineV2Bridge {
         self.kvBytesPerToken = kvBytesPerToken
         self.kvBudget = kvBudget
         self.ssdPrefixCache = ssdPrefixCache
+        self.prefixCacheBaseStatus = prefixCacheStatus ?? PrefixCacheModelStatus(
+            modelId: modelId,
+            backend: PrefixCacheStatusBackend(kvBackendKind),
+            replayStrategy: .unknown,
+            state: ssdPrefixCache == nil ? .disabled : .pending,
+            reason: ssdPrefixCache == nil ? .unsupportedBackend : .scanPending)
         self.prefixCacheEvidenceSequencer = ssdPrefixCache.map {
             PrefixCacheEvidenceSequencer(cache: $0)
         }

@@ -375,6 +375,11 @@ struct EngineV2KVBackendGateTests {
         #expect(bundle.bridge.ssdPrefixCache === cache)
         #expect(capture.capability?.strategy == .frozenFullReplay)
         #expect(capture.capability?.backend == .contiguousUnquantized)
+        let status = bundle.bridge.prefixCacheModelStatus()
+        #expect(status.backend == .contiguous)
+        #expect(status.replayStrategy == .frozenFull)
+        #expect(status.state == .pending)
+        #expect(status.reason == .scanPending)
         await bundle.bridge.shutdown()
     }
 
@@ -434,6 +439,9 @@ struct EngineV2KVBackendGateTests {
         #expect(backendKind == .contiguous)
         #expect(nativeRate == expectedRate)
         #expect(heartbeat.kvBytesPerToken == Int64(expectedRate))
+        let status = bundle.bridge.prefixCacheModelStatus()
+        #expect(status.state == .disabled)
+        #expect(status.reason == .configDisabled)
         await bundle.bridge.shutdown()
     }
 }

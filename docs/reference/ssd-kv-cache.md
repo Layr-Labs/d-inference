@@ -43,6 +43,46 @@ hybrids, quantized rows, and unknown layouts fail cold. Eligible layouts persist
 a donation only when it also clears the configured effective-token floor. See
 [`ssd-kv-cache-hybrid-models.md`](./ssd-kv-cache-hybrid-models.md).
 
+## Eligibility and donation telemetry
+
+Each loaded provider slot produces a bounded `prefix_cache_statuses` entry from
+its actual cache-construction state. `ready` is emitted only after the startup
+disk scan and cache epoch are usable. Before that the slot is
+`pending/scan_pending`; scan failure is `error/scan_failed`. Configuration,
+weight identity, layout/backend support, disk setup, and initialization failures
+use the fixed reason vocabulary documented in
+[`cache-aware-routing.md`](../architecture/cache-aware-routing.md). A provider
+advertises exact protocol v2 only when at least one slot is actually ready; the
+status snapshot still explains every loaded v1 slot. Ready status and v2
+capability are published from one reconciled snapshot: ready requires a
+concrete backend and replay strategy, and each capability requires one ready
+status when optional telemetry is present. Unloaded models emit no status.
+
+Every call into the SSD donation path settles exactly one process-local outcome:
+
+`donated`, `below_effective_token_floor`, `no_complete_block`,
+`lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`,
+`write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`,
+`cache_closed`, `disk_unavailable`, or `write_failed`.
+
+If cache teardown races a write already executing, a successful durable write
+is classified `cache_closed` for both correlated and uncorrelated donations
+because ready-receipt delivery can no longer complete. A real write failure
+remains `write_failed`; ordinary successful completion remains `donated`. The
+per-opportunity settlement box still records exactly one outcome.
+
+These are cumulative counters, not per-request events. The provider sends only
+the fixed enum and count. No model/request/provider identifier, path, token,
+prompt, cache scope, hash, epoch, account, serial, or free-form error is retained
+or sent. The coordinator baselines registration, consumes monotonic heartbeat
+deltas, and exports aggregate outcomes through `/v1/cache/status`, Prometheus,
+and Datadog. Optional status/outcome fields are forward-compatible and
+non-fatal: unknown entries are dropped, structurally ambiguous/oversized
+snapshots are discarded within fixed bounds, and provider registration remains
+available. Donation input accepts at most 32 raw entries while aggregating only
+the 13 known outcomes, leaving fixed forward-version headroom without adding
+metric buckets. Routing capability fields remain independently strict.
+
 ## Environment variables
 
 | Variable | Default | Meaning |

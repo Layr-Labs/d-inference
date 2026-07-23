@@ -25,10 +25,19 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	reg.Register("private-provider-v0", nil, &protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{{ID: "private-model-v0"}},
 	})
+	v1Statuses := []protocol.PrefixCacheModelStatus{{
+		ModelID: "private-model-v1", Backend: "paged", ReplayStrategy: "none",
+		State: "disabled", Reason: "paged_hybrid_unsupported",
+	}}
 	reg.Register("private-provider-v1", nil, &protocol.RegisterMessage{
 		PrefixCacheProtocol: 1,
 		Models:              []protocol.ModelInfo{{ID: "private-model-v1"}},
+		PrefixCacheStatuses: &v1Statuses,
 	})
+	v2Statuses := []protocol.PrefixCacheModelStatus{{
+		ModelID: "private-model-v2", Backend: "contiguous", ReplayStrategy: "frozen_full",
+		State: "ready", Reason: "ready",
+	}}
 	v2 := reg.Register("private-provider-v2", nil, &protocol.RegisterMessage{
 		PrefixCacheProtocol: 2,
 		Models: []protocol.ModelInfo{{
@@ -42,6 +51,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 			CacheEpoch:       "11111111-1111-1111-1111-111111111111",
 			Enabled:          true, Ready: true,
 		}},
+		PrefixCacheStatuses: &v2Statuses,
 	})
 	if v2 == nil {
 		t.Fatal("register v2 provider")
@@ -60,6 +70,13 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	if status.Providers.V0 != 1 || status.Providers.V1 != 1 ||
 		status.Providers.V2 != 1 || status.Providers.V2ReadyModels != 1 {
 		t.Fatalf("provider protocol status=%+v", status.Providers)
+	}
+	if status.Providers.LoadedModels != 2 ||
+		status.Providers.ReportedLoadedModels != 2 ||
+		status.Providers.ExcludedModels != 1 ||
+		status.Providers.ByReason["paged_hybrid_unsupported"] != 1 ||
+		status.Providers.ByReplayStrategy["frozen_full"] != 1 {
+		t.Fatalf("provider eligibility status=%+v", status.Providers)
 	}
 	if status.RoutingMode != registry.CacheRoutingOff {
 		t.Fatalf("routing mode=%q, want off", status.RoutingMode)
@@ -117,15 +134,61 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_provider_protocol{version=1}",
 		"exact_cache_provider_protocol{version=2}",
 		"exact_cache_v2_ready_models",
+		"exact_cache_loaded_models",
+		"exact_cache_reported_loaded_models",
+		"exact_cache_unreported_loaded_models",
+		"exact_cache_excluded_models",
+		"exact_cache_eligibility_state{state=ready}",
+		"exact_cache_eligibility_state{state=disabled}",
+		"exact_cache_eligibility_reason{reason=paged_hybrid_unsupported}",
+		"exact_cache_eligibility_reason{reason=scan_failed}",
+		"exact_cache_eligibility_backend{backend=contiguous}",
+		"exact_cache_eligibility_backend{backend=paged}",
+		"exact_cache_eligibility_strategy{strategy=frozen_full}",
+		"exact_cache_eligibility_strategy{strategy=tail_replay}",
 		"exact_cache_holders",
 		"exact_cache_attempts",
 		"exact_cache_ssd_lifecycle{event=lookup}",
 		"exact_cache_ssd_lifecycle{event=miss}",
 		"exact_cache_ssd_lifecycle{event=hit}",
 		"exact_cache_ssd_lifecycle{event=donation}",
+		"exact_cache_holder_added",
+		"exact_cache_holder_removed{reason=ttl}",
+		"exact_cache_holder_removed{reason=capability_change}",
+		"exact_cache_donation_outcome{outcome=donated}",
+		"exact_cache_donation_outcome{outcome=write_queue_full}",
 	} {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)
+		}
+	}
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	ddClient := newTestDD(t, collector)
+	defer ddClient.Close()
+	srv.SetDatadog(ddClient)
+	srv.emitExactCacheDDGauges()
+	_ = ddClient.Statsd.Flush()
+	packets := collector.drain()
+	for _, metric := range []string{
+		"exact_cache.eligibility_state",
+		"exact_cache.eligibility_reason",
+		"exact_cache.eligibility_backend",
+		"exact_cache.eligibility_strategy",
+		"exact_cache.holder_removed",
+		"exact_cache.donation_outcome",
+	} {
+		if !hasMetric(packets, metric) {
+			t.Fatalf("missing Datadog gauge %q in %v", metric, packets)
+		}
+	}
+	encodedPackets := strings.Join(packets, "\n")
+	for _, sensitive := range []string{
+		"private-provider", "private-model", strings.Repeat("a", 64),
+		strings.Repeat("b", 64), "11111111-1111-1111-1111-111111111111",
+	} {
+		if strings.Contains(encodedPackets, sensitive) {
+			t.Fatalf("Datadog cache gauges leaked %q: %s", sensitive, encodedPackets)
 		}
 	}
 }

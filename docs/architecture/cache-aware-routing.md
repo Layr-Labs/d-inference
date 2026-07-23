@@ -135,14 +135,60 @@ tags only.
 lifecycle counters; sidecar enabled/running/ready, child generation, categorical
 restart reason, failure streak, timeouts/overloads/RSS, cold/warm contract loads,
 and planner outcomes; preload generation/counts; prompt artifact
-ready/pending/failed counts; protocol 0/1/2 provider counts; ready v2
-provider-model count; and bounded holder/attempt counts. It never includes model
-IDs, provider IDs, accounts, scopes, prompts, tokens, or chain hashes.
+ready/pending/failed counts; protocol 0/1/2 provider counts; and bounded
+holder/attempt counts. Current providers also report one bounded status for each
+concrete loaded model slot. The coordinator publishes only counts by
+`state`, `reason`, `backend`, and `replay_strategy`, plus reported/unreported
+loaded totals. This makes a v1 slot attributable without exposing the model:
+
+- state: `ready`, `pending`, `disabled`, or `error`;
+- reasons: `ready`, `config_disabled`, `weight_hash_unavailable`,
+  `runtime_identity_unavailable`,
+  `unsupported_layout`, `unsupported_backend`,
+  `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`,
+  `disk_unavailable`, or `cache_init_failed`;
+- backend: `contiguous`, `paged`, or `unknown`;
+- replay strategy: `direct`, `frozen_full`, `tail_replay`, `none`, or
+  `unknown`.
+
+Old providers omit the field and contribute only to
+`unreported_loaded_models`; omission is never interpreted as a reason.
+These fields are optional observability, never provider-admission policy.
+Status model IDs are checked only against that provider's advertised inventory;
+owner-local/off-catalog models are valid. Unknown future enum values, invalid
+state/reason tuples, unadvertised status models, unknown donation outcomes, and
+invalid counts drop only the affected entry while known entries still
+aggregate. To keep processing bounded and ambiguity-free, an array beyond its
+fixed cap (16 statuses or 32 raw outcome entries), duplicate model/outcome
+keys, or a blank/non-canonical status model ID drops that whole optional
+snapshot. Donation aggregation still has exactly 13 known buckets; the raw cap
+reserves 19 entries for future outcomes, which are filtered individually.
+A dropped/present status snapshot becomes authoritative empty and clears stale
+status; a dropped donation snapshot preserves the prior monotonic counter
+baseline. Field omission preserves the prior mixed-version behavior.
+Authoritative `prefix_cache_v2_models` validation remains strict and can still
+reject registration or quarantine malformed routing evidence.
+Because statuses describe loaded slots, there is no unloaded-slot reason. A
+`ready/ready` status is retained only when the same resulting snapshot has a
+v2 capability for that concrete model, a concrete backend
+(`contiguous|paged`), and a supported replay strategy
+(`direct|frozen_full|tail_replay`). Conversely, once a provider has supplied
+the optional status field, every v2 capability must have exactly one matching
+ready status. Registration, heartbeat capability/status replacement, and model
+updates reconcile these views under one provider lock. Contradictory optional
+status becomes unreported; routing capability is never weakened. Providers that
+omit the optional field retain backward-compatible v2 capability behavior.
+Provider SSD donation opportunities are cumulative fixed-enum counters, and
+holder additions/removals are counted by `ttl`, `disconnect`, `epoch_change`,
+`capability_change`, `miss_invalidation`, or `capacity_eviction`. The response
+never includes model IDs, provider IDs, accounts, scopes, paths, hashes, epochs,
+prompts, token IDs, request IDs, or cache keys.
 The response and gauge projection are implemented in
 `coordinator/api/exact_cache_status.go` and `exact_cache_metrics.go`; bounded artifact aggregation lives in
-`coordinator/promptcontract/provisioner.go:Counts`, protocol distribution in
-`coordinator/registry/cache_status.go:PrefixCacheProtocolStatus`, and holder /
-attempt counts in `coordinator/registry/cache_routing.go:CacheRoutingStateCounts`.
+`coordinator/promptcontract/provisioner.go:Counts`, protocol/eligibility
+aggregation in `coordinator/registry/cache_status.go:PrefixCacheProtocolStatus`,
+and holder/attempt lifecycle counts in
+`coordinator/registry/cache_routing.go`.
 
 For each selected hint, terminal correlation stays on the in-memory
 `PendingRequest` and emits bounded tags:
@@ -190,6 +236,14 @@ as protocol-v2 models only after SSD scan readiness
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift:27-36`);
 paged hybrid slots remain v1/cold
 (`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift:110-129`).
+Registration and every current-provider heartbeat carry an optional
+`prefix_cache_statuses` replacement snapshot and cumulative
+`prefix_cache_donation_outcomes`. An explicit empty status array clears the
+connection's prior snapshot; absence preserves mixed-version compatibility.
+Unsupported future observability is sanitized under the non-fatal rules above;
+it never closes registration.
+Model removal, unload heartbeats, capability changes, and disconnects remove
+connection-scoped status/evidence so stale slots cannot remain in aggregates.
 Production activation is still a separate operational decision:
 positive durable-hit evidence, stable correlation telemetry, healthy prompt
 artifacts, routing-mode enablement, and a separately provisioned 256-bit cache

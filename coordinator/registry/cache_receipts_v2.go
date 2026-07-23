@@ -177,7 +177,8 @@ func (r *Registry) disablePrefixCacheV2Model(providerID, modelID string) {
 	if ok {
 		if tracker != nil {
 			tracker.rejectCapability(providerID, modelID, capability)
-			tracker.invalidateProviderModel(providerID, modelID)
+			tracker.invalidateProviderModel(
+				providerID, modelID, cacheHolderRemovalCapabilityChange)
 		}
 		provider.prefixCacheRevision++
 	}
@@ -309,6 +310,7 @@ func (t *cacheRoutingTracker) applyLookupV2Result(
 			t.removeHolderLocked(
 				cacheBoundaryKey(routeKey, attempt.Plan, capability.CacheEpoch, anchor),
 				providerID,
+				cacheHolderRemovalMissInvalidation,
 			)
 		}
 	}

@@ -98,7 +98,8 @@ private func makeCache(
     kvBudget: GlobalKVCacheBudget? = nil,
     diskBudget: SSDDiskBudget = SSDDiskBudget(),
     epochStore: SSDCacheEpochStore? = nil,
-    maintainWholeRoot: (@Sendable () -> Void)? = nil
+    maintainWholeRoot: (@Sendable () -> Void)? = nil,
+    donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared
 ) -> SSDPrefixCache {
     let config = SSDPrefixCache.Config(
         modelId: "test-model",
@@ -119,7 +120,8 @@ private func makeCache(
         config: config, kekKey: kek, kvBudget: kvBudget, diskBudget: diskBudget,
         maxWriteBytesPerDay: maxWriteBytesPerDay, strictFsync: false,
         diskBudgetBytes: { diskBudgetBytes },
-        maintainWholeRoot: maintainWholeRoot)
+        maintainWholeRoot: maintainWholeRoot,
+        donationRecorder: donationRecorder)
 }
 
 /// Poll until the cache's index holds `count` entries (write-behind is
@@ -467,6 +469,14 @@ struct SSDBlockStoreTests {
         defer { cache.close() }
         cache.scanOnDisk()
         #expect(cache.index.count == 0)
+        let scanStatus = cache.prefixCacheModelStatus(base: PrefixCacheModelStatus(
+            modelId: "test-model",
+            backend: .contiguous,
+            replayStrategy: .direct,
+            state: .pending,
+            reason: .scanPending))
+        #expect(scanStatus.state == .error)
+        #expect(scanStatus.reason == .scanFailed)
         let escapedFile = outsideFanout.appendingPathComponent(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.dbk3")
         try Data("must-survive".utf8).write(to: escapedFile)
@@ -1096,7 +1106,16 @@ struct SSDPrefixCacheLifecycleTests {
         var enteredIterator = entered.makeAsyncIterator()
         _ = await enteredIterator.next()
 
-        #expect(cache.prefixCacheV2Capability() == nil)
+        let mutationAdvertisement = cache.prefixCacheAdvertisement(
+            base: PrefixCacheModelStatus(
+                modelId: "test-model",
+                backend: .contiguous,
+                replayStrategy: .direct,
+                state: .pending,
+                reason: .scanPending))
+        #expect(mutationAdvertisement.capability == nil)
+        #expect(mutationAdvertisement.status.state == .pending)
+        #expect(mutationAdvertisement.status.reason == .scanPending)
         #expect(
             cache.takeNextPrefixCacheV2Sequence(expectedEpoch: original.cacheEpoch) == nil)
 
@@ -1480,6 +1499,23 @@ struct SSDReadyWriteBarrierTests {
         }
     }
 
+    private final class OutcomeBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [PrefixCacheDonationOutcome] = []
+
+        func set(_ outcome: PrefixCacheDonationOutcome) {
+            lock.withLock { values.append(outcome) }
+        }
+
+        var outcome: PrefixCacheDonationOutcome? {
+            lock.withLock { values.last }
+        }
+
+        var count: Int {
+            lock.withLock { values.count }
+        }
+    }
+
     private enum InjectedWriteError: Error { case failed }
 
     private func block(_ byte: UInt8) -> SSDBlockWrite {
@@ -1535,49 +1571,130 @@ struct SSDReadyWriteBarrierTests {
 
         let lowCounter = Counter()
         let lowSettled = Counter()
+        let lowOutcome = OutcomeBox()
         let low = pipeline(
             dir: dir,
             volumeSpace: { (free: 0, capacity: 1) },
             onBlockSettled: { _ in lowSettled.increment() })
         #expect(low.submit(.init(
-            blocks: [block(1)], totalBytes: 1, onDurable: lowCounter.increment)))
+            blocks: [block(1)], totalBytes: 1,
+            onDurable: { lowCounter.increment(); return true },
+            onOutcome: lowOutcome.set)))
         #expect(await lowSettled.waitForCount(1))
         low.close()
         await low.waitUntilDrained()
         #expect(lowCounter.count == 0)
+        #expect(lowOutcome.outcome == .diskUnavailable)
 
         let errorCounter = Counter()
         let errorSettled = Counter()
+        let errorOutcome = OutcomeBox()
         let generic = pipeline(
             dir: dir,
             writeBlock: { _, _ in throw InjectedWriteError.failed },
             onBlockSettled: { _ in errorSettled.increment() })
         #expect(generic.submit(.init(
-            blocks: [block(2)], totalBytes: 1, onDurable: errorCounter.increment)))
+            blocks: [block(2)], totalBytes: 1,
+            onDurable: { errorCounter.increment(); return true },
+            onOutcome: errorOutcome.set)))
         #expect(await errorSettled.waitForCount(1))
         generic.close()
         await generic.waitUntilDrained()
         #expect(errorCounter.count == 0)
+        #expect(errorOutcome.outcome == .writeFailed)
 
         let enospcCounter = Counter()
         let enospcSettled = Counter()
+        let enospcOutcome = OutcomeBox()
         let enospc = pipeline(
             dir: dir,
             writeBlock: { _, _ in throw POSIXError(.ENOSPC) },
             onBlockSettled: { _ in enospcSettled.increment() })
         #expect(enospc.submit(.init(
-            blocks: [block(3)], totalBytes: 1, onDurable: enospcCounter.increment)))
+            blocks: [block(3)], totalBytes: 1,
+            onDurable: { enospcCounter.increment(); return true },
+            onOutcome: enospcOutcome.set)))
         #expect(await enospcSettled.waitForCount(1))
         enospc.close()
         await enospc.waitUntilDrained()
         #expect(enospcCounter.count == 0)
+        #expect(enospcOutcome.outcome == .diskUnavailable)
 
         let closedCounter = Counter()
         let closed = pipeline(dir: dir)
         closed.close()
-        #expect(!closed.submit(.init(
-            blocks: [block(4)], totalBytes: 1, onDurable: closedCounter.increment)))
+        #expect(closed.submitWithResult(.init(
+            blocks: [block(4)], totalBytes: 1,
+            onDurable: { closedCounter.increment(); return true })) == .closed)
         #expect(closedCounter.count == 0)
+    }
+
+    @Test("in-flight close classifies correlated and uncorrelated durable writes as cache_closed")
+    func inFlightCloseOutcome() async throws {
+        for correlated in [false, true] {
+            let dir = tempDir("inflight-close-\(correlated)")
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            let settled = Counter()
+            let readyAttempted = Counter()
+            let outcome = OutcomeBox()
+            let writer = pipeline(
+                dir: dir,
+                writeBlock: { _, _ in
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + 5)
+                    return 1
+                },
+                onBlockSettled: { _ in settled.increment() })
+            let onDurable: (@Sendable () -> Bool)?
+            if correlated {
+                onDurable = { @Sendable in
+                    readyAttempted.increment()
+                    return false
+                }
+            } else {
+                onDurable = nil
+            }
+
+            #expect(writer.submit(.init(
+                blocks: [block(correlated ? 0xA1 : 0xB2)],
+                totalBytes: 1,
+                onDurable: onDurable,
+                onOutcome: outcome.set)))
+            #expect(await waitForSemaphore(entered, timeout: .now() + 5) == .success)
+            writer.close()
+            release.signal()
+            await writer.waitUntilDrained()
+
+            #expect(settled.count == 1)
+            #expect(readyAttempted.count == (correlated ? 1 : 0))
+            #expect(outcome.outcome == .cacheClosed)
+            #expect(outcome.count == 1)
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        let failedDir = tempDir("inflight-close-write-failure")
+        let failedEntered = DispatchSemaphore(value: 0)
+        let failedRelease = DispatchSemaphore(value: 0)
+        let failedOutcome = OutcomeBox()
+        let failedWriter = pipeline(
+            dir: failedDir,
+            writeBlock: { _, _ in
+                failedEntered.signal()
+                _ = failedRelease.wait(timeout: .now() + 5)
+                throw InjectedWriteError.failed
+            })
+        #expect(failedWriter.submit(.init(
+            blocks: [block(0xC3)],
+            totalBytes: 1,
+            onOutcome: failedOutcome.set)))
+        #expect(await waitForSemaphore(failedEntered, timeout: .now() + 5) == .success)
+        failedWriter.close()
+        failedRelease.signal()
+        await failedWriter.waitUntilDrained()
+        #expect(failedOutcome.outcome == .writeFailed)
+        #expect(failedOutcome.count == 1)
+        try? FileManager.default.removeItem(at: failedDir)
     }
 
     @Test("queue overflow drops the new receipt job without blocking")
@@ -1600,8 +1717,9 @@ struct SSDReadyWriteBarrierTests {
         #expect(enteredResult == .success)
         #expect(pipeline.submit(.init(blocks: [block(2)], totalBytes: 1)))
         let dropped = Counter()
-        #expect(!pipeline.submit(.init(
-            blocks: [block(3)], totalBytes: 1, onDurable: dropped.increment)))
+        #expect(pipeline.submitWithResult(.init(
+            blocks: [block(3)], totalBytes: 1,
+            onDurable: { dropped.increment(); return true })) == .queueFull)
         #expect(dropped.count == 0)
         release.signal()
         #expect(await settled.waitForCount(2))
@@ -2752,5 +2870,163 @@ struct SSDPrefixCacheDonationGateTests {
         // A job larger than the whole cap is rejected IMMEDIATELY
         // (deterministic regardless of consumer state) — drop, not stall.
         #expect(!writeBehind.submit(syntheticJob(tagByte: 0xB2, claimedBytes: effectiveCap + 1)))
+    }
+}
+
+private final class DonationOutcomeRecorder: PrefixCacheDonationRecording, @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [PrefixCacheDonationOutcome: Int] = [:]
+
+    func record(_ outcome: PrefixCacheDonationOutcome) {
+        lock.withLock { counts[outcome, default: 0] += 1 }
+    }
+
+    func count(_ outcome: PrefixCacheDonationOutcome) -> Int {
+        lock.withLock { counts[outcome, default: 0] }
+    }
+}
+
+@Suite("SSD prefix cache: donation outcomes", .serialized)
+struct SSDPrefixCacheDonationOutcomeTests {
+    @Test("every donation opportunity settles one bounded outcome")
+    func branchOutcomes() async throws {
+        let root = tempDir("donation-outcomes")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recorder = DonationOutcomeRecorder()
+
+        let noBlock = makeCache(
+            dir: root.appendingPathComponent("no-block"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            donationRecorder: recorder)
+        noBlock.donate(
+            tokens: Array(0 ..< 7),
+            snapshots: fixtureSnapshots(tokenCount: 7),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        let belowFloor = makeCache(
+            dir: root.appendingPathComponent("floor"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            adoptionBound: 8,
+            minEffectiveTokens: 8,
+            donationRecorder: recorder)
+        belowFloor.donate(
+            tokens: Array(0 ..< 16),
+            snapshots: fixtureSnapshots(tokenCount: 16),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        let incomplete = makeCache(
+            dir: root.appendingPathComponent("incomplete"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            donationRecorder: recorder)
+        incomplete.donate(
+            tokens: Array(0 ..< 16),
+            snapshots: [nil, nil],
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        let stageCapped = makeCache(
+            dir: root.appendingPathComponent("stage-cap"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            maxStageBytes: 512,
+            donationRecorder: recorder)
+        stageCapped.donate(
+            tokens: Array(0 ..< 16),
+            snapshots: fixtureSnapshots(tokenCount: 16),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        let rateLimited = makeCache(
+            dir: root.appendingPathComponent("rate"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            maxWriteBytesPerDay: 1,
+            donationRecorder: recorder)
+        rateLimited.donate(
+            tokens: Array(0 ..< 16),
+            snapshots: fixtureSnapshots(tokenCount: 16),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        let lossy = makeCache(
+            dir: root.appendingPathComponent("lossy"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            donationRecorder: recorder)
+        let quantized = CBv2QuantizedSequenceKV(
+            promptLength: 16,
+            maxLength: 32,
+            kvHeads: fixtureKVHeads,
+            headDim: 64,
+            groupSize: 64,
+            bits: 4)
+        lossy.donate(
+            tokens: Array(0 ..< 16),
+            state: [quantized, nil],
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        let closed = makeCache(
+            dir: root.appendingPathComponent("closed"),
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            donationRecorder: recorder)
+        closed.close()
+        closed.donate(
+            tokens: Array(0 ..< 16),
+            snapshots: fixtureSnapshots(tokenCount: 16),
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+
+        #expect(recorder.count(.noCompleteBlock) == 1)
+        #expect(recorder.count(.belowEffectiveTokenFloor) == 1)
+        #expect(recorder.count(.incompleteLayerState) == 1)
+        #expect(recorder.count(.stageSizeExceeded) == 1)
+        #expect(recorder.count(.writeRateLimited) == 1)
+        #expect(recorder.count(.lossySnapshot) == 1)
+        #expect(recorder.count(.cacheClosed) == 1)
+
+        for cache in [noBlock, belowFloor, incomplete, stageCapped, rateLimited, lossy] {
+            cache.close()
+        }
+    }
+
+    @Test("durable and deduplicated donations settle distinctly")
+    func durableOutcomes() async throws {
+        let dir = tempDir("donation-durable")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let recorder = DonationOutcomeRecorder()
+        let cache = makeCache(
+            dir: dir,
+            kek: SymmetricKey(size: .bits256),
+            clock: ClockBox(10_000),
+            donationRecorder: recorder)
+        defer { cache.close() }
+
+        let tokens = Array(0 ..< 16)
+        let snapshots = fixtureSnapshots(tokenCount: tokens.count)
+        cache.donate(
+            tokens: tokens,
+            snapshots: snapshots,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+        await cache.waitForWritesForTesting()
+        #expect(recorder.count(.donated) == 1)
+
+        cache.donate(
+            tokens: tokens,
+            snapshots: snapshots,
+            layerKinds: fixtureLayerKinds,
+            cacheSalt: nil)
+        #expect(recorder.count(.alreadyDurable) == 1)
+        let total = PrefixCacheDonationOutcome.allCases.reduce(0) {
+            $0 + recorder.count($1)
+        }
+        #expect(total == 2)
     }
 }

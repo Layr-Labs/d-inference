@@ -33,7 +33,9 @@ extension CoordinatorClient {
             modelWeightHashOverrides: modelWeightHashOverrides,
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
-                ? prefixCache.models : nil
+                ? prefixCache.models : nil,
+            prefixCacheStatuses: prefixCache.statuses,
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
@@ -102,7 +104,9 @@ extension CoordinatorClient {
             apnsEnvironment: effectiveEnv,
             prefixCacheProtocol: prefixCache.protocolVersion,
             prefixCacheV2Models: prefixCache.protocolVersion == 2
-                ? prefixCache.models : nil
+                ? prefixCache.models : nil,
+            prefixCacheStatuses: prefixCache.statuses,
+            prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )
 
         do {

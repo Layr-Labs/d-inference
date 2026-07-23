@@ -293,7 +293,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
-			if err := registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
+			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				s.logger.Warn("rejecting malformed provider cache capabilities",
 					"provider_id", providerID, "error", err)
 				s.ddIncr("routing.cache_capability_rejected", []string{"source:register"})
@@ -467,19 +467,40 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
-			if hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil {
-				capabilities := []protocol.PrefixCacheV2Capability(nil)
+			replaceCacheCapabilities :=
+				hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil
+			if replaceCacheCapabilities ||
+				hbMsg.PrefixCacheStatuses != nil ||
+				hbMsg.PrefixCacheDonationOutcomes != nil {
+				var capabilities []protocol.PrefixCacheV2Capability
 				if hbMsg.PrefixCacheV2Models != nil {
 					capabilities = *hbMsg.PrefixCacheV2Models
 				}
-				if err := s.registry.UpdatePrefixCacheCapabilities(
-					providerID, hbMsg.PrefixCacheProtocol, capabilities,
-				); err != nil {
+				_, err := s.registry.UpdatePrefixCacheSnapshot(
+					providerID,
+					replaceCacheCapabilities,
+					hbMsg.PrefixCacheProtocol,
+					capabilities,
+					hbMsg.PrefixCacheStatuses,
+					hbMsg.PrefixCacheDonationOutcomes,
+				)
+				if err != nil && replaceCacheCapabilities {
 					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
 						"provider_id", providerID, "error", err)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
 					// Malformed refreshes cannot leave stale v2 evidence live.
-					_ = s.registry.UpdatePrefixCacheCapabilities(providerID, 1, nil)
+					_, _ = s.registry.UpdatePrefixCacheSnapshot(
+						providerID,
+						true,
+						1,
+						nil,
+						hbMsg.PrefixCacheStatuses,
+						hbMsg.PrefixCacheDonationOutcomes,
+					)
+				} else if err != nil {
+					s.logger.Warn("failed to apply heartbeat cache telemetry",
+						"provider_id", providerID, "error", err)
+					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
 			s.registry.Heartbeat(providerID, hbMsg)

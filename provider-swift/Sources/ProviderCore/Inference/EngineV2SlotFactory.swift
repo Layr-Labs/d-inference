@@ -287,7 +287,13 @@ enum EngineV2SlotFactory {
         // family with no derivable kinds gets no cache (it would throw
         // unsupportedModel at engine build anyway).
         var ssdPrefixCache: SSDPrefixCache?
-        if makeEngineOverride == nil, PrefixCachePolicy.isEnabled(environment: environment) {
+        var cacheCapability: CBv2PrefixReuseCapability?
+        var cacheConstructionStatus = PrefixCacheConstructionStatus.configDisabled
+        let cacheConstructionStatusBox = PrefixCacheConstructionStatusBox()
+        if makeEngineOverride != nil {
+            cacheConstructionStatus = PrefixCacheConstructionStatus(
+                state: .disabled, reason: .unsupportedBackend)
+        } else if PrefixCachePolicy.isEnabled(environment: environment) {
             if let preparedBackend {
                 let ssdLayerKinds = preparedBackend.layerKinds
                 let resolvedSelection: EngineV2KVBackendSelection =
@@ -295,10 +301,15 @@ enum EngineV2SlotFactory {
                 let prefixReuseCapability = PrefixCachePolicy.prefixReuseCapability(
                     layerKinds: ssdLayerKinds,
                     backendSelection: resolvedSelection)
+                cacheCapability = prefixReuseCapability
                 if let promptContractID {
                     if let makePrefixCache = assemblyOverrides.makePrefixCache {
                         ssdPrefixCache = await makePrefixCache(
                             ssdLayerKinds, prefixReuseCapability)
+                        cacheConstructionStatus = ssdPrefixCache == nil
+                            ? PrefixCacheConstructionStatus(
+                                state: .error, reason: .cacheInitFailed)
+                            : .scanPending
                     } else {
                         ssdPrefixCache = await SSDPrefixCacheFactory.make(
                             modelId: modelId,
@@ -309,14 +320,23 @@ enum EngineV2SlotFactory {
                             kvBudget: kvBudget,
                             environment: environment,
                             onConstructionFailure: { failure in
+                                cacheConstructionStatusBox.record(
+                                    failure: failure, capability: prefixReuseCapability)
                                 Self.emitPrefixCacheConstructionFailure(
                                     modelId: modelId,
                                     capability: prefixReuseCapability,
                                     failure: failure,
                                     emitTelemetry: emitTelemetry)
                             })
+                        cacheConstructionStatus = ssdPrefixCache == nil
+                            ? (cacheConstructionStatusBox.snapshot
+                                ?? PrefixCacheConstructionStatus(
+                                    state: .error, reason: .cacheInitFailed))
+                            : .scanPending
                     }
                 } else {
+                    cacheConstructionStatus = PrefixCacheConstructionStatus(
+                        state: .error, reason: .cacheInitFailed)
                     Self.emitPrefixCacheConstructionFailure(
                         modelId: modelId,
                         capability: prefixReuseCapability,
@@ -330,6 +350,9 @@ enum EngineV2SlotFactory {
                 let unavailableCapability = PrefixCachePolicy.prefixReuseCapability(
                     layerKinds: [],
                     backendSelection: .contiguous)
+                cacheCapability = unavailableCapability
+                cacheConstructionStatus = PrefixCacheConstructionStatus(
+                    state: .disabled, reason: .unsupportedLayout)
                 Self.emitPrefixCacheConstructionFailure(
                     modelId: modelId,
                     capability: unavailableCapability,
@@ -341,6 +364,18 @@ enum EngineV2SlotFactory {
             }
         }
 
+        let cacheBackend: PrefixCacheStatusBackend
+        if let preparedBackend {
+            cacheBackend = preparedBackend.kind == .paged ? .paged : .contiguous
+        } else {
+            cacheBackend = .unknown
+        }
+        let prefixCacheStatus = PrefixCacheModelStatus(
+            modelId: modelId,
+            backend: cacheBackend,
+            replayStrategy: PrefixCacheReplayStrategy(cacheCapability),
+            state: cacheConstructionStatus.state,
+            reason: cacheConstructionStatus.reason)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild
@@ -400,6 +435,7 @@ enum EngineV2SlotFactory {
             // release backstops, and shutdown (closed by `makeBridge` on
             // an engine-init failure so background tasks never leak).
             ssdPrefixCache: ssdPrefixCache,
+            prefixCacheStatus: prefixCacheStatus,
             emitTelemetry: emitTelemetry,
             makeEngine: makeEngine)
 

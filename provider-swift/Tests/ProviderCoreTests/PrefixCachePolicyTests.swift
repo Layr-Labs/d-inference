@@ -71,6 +71,8 @@ struct PrefixCachePolicyTests {
             layerKinds: [full, full], backendSelection: .contiguous).strategy == .direct)
         #expect(PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [full, windowed], backendSelection: .paged).strategy == .tailReplay)
+        #expect(PrefixCacheReplayStrategy(PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [full, windowed], backendSelection: .paged)) == .tailReplay)
         #expect(PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, sharedFull],
             backendSelection: .contiguous).unsupportedReason == .invalidLayout)
@@ -174,6 +176,36 @@ struct PrefixCachePolicyTests {
             environment: [
                 SSDPrefixCachePolicy.minEffectiveTokensFlag: "2048"
             ]) == 2_048)
+    }
+
+    @Test("construction failures map to bounded eligibility reasons")
+    func constructionFailureReasons() {
+        let windowed = CBv2LayerKind(
+            attention: .slidingWindow(128),
+            headDim: 64,
+            kvHeads: 8,
+            queryHeads: 64)
+        let full = CBv2LayerKind(
+            attention: .full,
+            headDim: 64,
+            kvHeads: 8,
+            queryHeads: 64)
+        let pagedHybrid = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [windowed, full],
+            backendSelection: .paged)
+        let box = PrefixCacheConstructionStatusBox()
+
+        box.record(failure: .unsupportedPlan, capability: pagedHybrid)
+        #expect(box.snapshot?.state == .disabled)
+        #expect(box.snapshot?.reason == .pagedHybridUnsupported)
+
+        box.record(failure: .missingWeightHash, capability: pagedHybrid)
+        #expect(box.snapshot?.state == .disabled)
+        #expect(box.snapshot?.reason == .weightHashUnavailable)
+
+        box.record(failure: .unsafePath, capability: pagedHybrid)
+        #expect(box.snapshot?.state == .error)
+        #expect(box.snapshot?.reason == .diskUnavailable)
     }
 
 }

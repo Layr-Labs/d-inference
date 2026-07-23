@@ -42,18 +42,28 @@ struct SSDBlockWrite: Sendable {
 struct SSDDonationJob: Sendable {
     let blocks: [SSDBlockWrite]
     let totalBytes: Int
-    /// Called only after every block succeeded and post-write TTL/budget
-    /// maintenance completed. Never called for drops or partial failures.
-    let onDurable: (@Sendable () -> Void)?
+    /// Re-probes the durable leading run after at least one block landed (or an
+    /// all-deduped job) and post-write maintenance completed. Returns true only
+    /// when the surviving run still clears the effective-token floor.
+    let onDurable: (@Sendable () -> Bool)?
+    let onOutcome: @Sendable (PrefixCacheDonationOutcome) -> Void
 
     init(
         blocks: [SSDBlockWrite], totalBytes: Int,
-        onDurable: (@Sendable () -> Void)? = nil
+        onDurable: (@Sendable () -> Bool)? = nil,
+        onOutcome: @escaping @Sendable (PrefixCacheDonationOutcome) -> Void = { _ in }
     ) {
         self.blocks = blocks
         self.totalBytes = totalBytes
         self.onDurable = onDurable
+        self.onOutcome = onOutcome
     }
+}
+
+enum SSDDonationSubmitResult: Sendable, Equatable {
+    case accepted
+    case queueFull
+    case closed
 }
 
 // MARK: - Endurance rate limiter
@@ -145,6 +155,7 @@ final class SSDWriteBehind: @unchecked Sendable {
     private var queuedBytes = 0
     /// Jobs admitted but not yet picked up by the consumer (see `submit`).
     private var queuedJobs = 0
+    private var closed = false
     private var enospcCooldownUntil: Int64 = 0
     private var pipeline: BoundedSingleConsumerPipeline<SSDDonationJob>!
 
@@ -170,9 +181,20 @@ final class SSDWriteBehind: @unchecked Sendable {
         self.onBlockSettled = onBlockSettled
         self.sweepExpired = sweepExpired
         self.pipeline = BoundedSingleConsumerPipeline<SSDDonationJob>(
-            capacity: max(1, config.maxJobs)
+            capacity: max(1, config.maxJobs),
+            onDropped: { [weak self] job in
+                guard let self else {
+                    job.onOutcome(.cacheClosed)
+                    return
+                }
+                self.settleDroppedOnClose(job)
+            }
         ) { [weak self] job in
-            self?.consume(job)
+            guard let self else {
+                job.onOutcome(.cacheClosed)
+                return
+            }
+            self.consume(job)
         }
     }
 
@@ -197,24 +219,30 @@ final class SSDWriteBehind: @unchecked Sendable {
     /// could never be rewritten). With the pre-count, a full queue drops
     /// THIS donation instead — whose tags the caller settles immediately.
     func submit(_ job: SSDDonationJob) -> Bool {
-        let admitted = queuedBytesLock.withLock { () -> Bool in
+        submitWithResult(job) == .accepted
+    }
+
+    func submitWithResult(_ job: SSDDonationJob) -> SSDDonationSubmitResult {
+        let admission = queuedBytesLock.withLock { () -> SSDDonationSubmitResult in
+            guard !closed else { return .closed }
             guard queuedJobs < config.maxJobs,
                 queuedBytes + job.totalBytes <= config.maxQueuedBytes
-            else { return false }
+            else { return .queueFull }
             queuedJobs += 1
             queuedBytes += job.totalBytes
-            return true
+            return .accepted
         }
-        guard admitted else { return false }
+        guard admission == .accepted else { return admission }
         guard pipeline.submit(job) else {
             // Pipeline shut down (never a capacity eviction — see above).
-            queuedBytesLock.withLock {
+            let result: SSDDonationSubmitResult = queuedBytesLock.withLock {
                 queuedJobs -= 1
                 queuedBytes -= job.totalBytes
+                return closed ? .closed : .queueFull
             }
-            return false
+            return result
         }
-        return true
+        return .accepted
     }
 
     /// Stop accepting and cancel the consumer. In-flight write completes;
@@ -222,6 +250,7 @@ final class SSDWriteBehind: @unchecked Sendable {
     /// owner's `close()` clearing the whole set). On-disk files remain —
     /// they are the product.
     func close() {
+        queuedBytesLock.withLock { closed = true }
         pipeline.shutdown()
     }
 
@@ -240,7 +269,9 @@ final class SSDWriteBehind: @unchecked Sendable {
         // Empty jobs represent all-deduped, already-durable donations. For a
         // real job, at least one successful write allows settlement to reprobe
         // a shorter leading contiguous run after all attempts complete.
-        var maySettleDurable = job.blocks.isEmpty
+        var durableWriteSucceeded = job.blocks.isEmpty
+        var rateLimited = false
+        var diskUnavailable = false
         defer {
             // Opportunistic maintenance on the serial consumer: TTL sweep +
             // box-wide LRU budget enforcement (unlink-only, spec §4.1).
@@ -251,11 +282,30 @@ final class SSDWriteBehind: @unchecked Sendable {
             } else {
                 diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
             }
-            if maySettleDurable { job.onDurable?() }
+            let readyReceiptSettled = durableWriteSucceeded ? job.onDurable?() : nil
+            let closedAtSettlement = queuedBytesLock.withLock { closed }
+            let outcome: PrefixCacheDonationOutcome
+            if job.blocks.isEmpty {
+                outcome = .alreadyDurable
+            } else if !durableWriteSucceeded && rateLimited {
+                outcome = .writeRateLimited
+            } else if !durableWriteSucceeded && diskUnavailable {
+                outcome = .diskUnavailable
+            } else if !durableWriteSucceeded {
+                outcome = .writeFailed
+            } else if closedAtSettlement {
+                outcome = .cacheClosed
+            } else if job.onDurable != nil && readyReceiptSettled != true {
+                outcome = .writeFailed
+            } else {
+                outcome = .donated
+            }
+            job.onOutcome(outcome)
         }
 
         let now = config.nowSeconds()
         if now < queuedBytesLock.withLock({ enospcCooldownUntil }) {
+            diskUnavailable = true
             settleAll(job, dropped: job.blocks.count)
             return
         }
@@ -263,6 +313,7 @@ final class SSDWriteBehind: @unchecked Sendable {
         if let space = config.volumeSpace() {
             let floor = SSDPrefixCachePolicy.lowDiskFloorBytes(volumeCapacityBytes: space.capacity)
             if space.free < floor {
+                diskUnavailable = true
                 settleAll(job, dropped: job.blocks.count)
                 return
             }
@@ -271,6 +322,7 @@ final class SSDWriteBehind: @unchecked Sendable {
         for block in job.blocks {
             defer { onBlockSettled(block.tag16) }
             guard rateLimiter.tryConsume(bytes: block.plaintextBytes) else {
+                rateLimited = true
                 stats.add(donationsDropped: 1, writeRateLimited: 1)
                 continue
             }
@@ -285,7 +337,7 @@ final class SSDWriteBehind: @unchecked Sendable {
                     fileBytes = try writeBlock(block, url)
                     index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
                     stats.add(blocksWritten: 1, bytesWritten: fileBytes)
-                    maySettleDurable = true
+                    durableWriteSucceeded = true
                     continue
                 }
                 fileBytes = try SSDBlockStore.write(
@@ -294,6 +346,7 @@ final class SSDWriteBehind: @unchecked Sendable {
             } catch {
                 stats.add(donationsDropped: 1)
                 if isENOSPC(error) {
+                    diskUnavailable = true
                     queuedBytesLock.withLock {
                         enospcCooldownUntil = now + SSDPrefixCachePolicy.enospcCooldownSeconds
                     }
@@ -307,13 +360,22 @@ final class SSDWriteBehind: @unchecked Sendable {
             // Index LAST, after the durable rename (spec §3.2 step 7).
             index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
             stats.add(blocksWritten: 1, bytesWritten: fileBytes)
-            maySettleDurable = true
+            durableWriteSucceeded = true
         }
     }
 
     private func settleAll(_ job: SSDDonationJob, dropped: Int) {
         for block in job.blocks { onBlockSettled(block.tag16) }
         stats.add(donationsDropped: dropped)
+    }
+
+    private func settleDroppedOnClose(_ job: SSDDonationJob) {
+        queuedBytesLock.withLock {
+            queuedJobs = max(0, queuedJobs - 1)
+            queuedBytes = max(0, queuedBytes - job.totalBytes)
+        }
+        settleAll(job, dropped: job.blocks.count)
+        job.onOutcome(.cacheClosed)
     }
 
     private func isENOSPC(_ error: Error) -> Bool {

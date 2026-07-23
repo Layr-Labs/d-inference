@@ -530,6 +530,14 @@ type Provider struct {
 	// PrefixCacheV2Models is the validated, connection-scoped capability set
 	// keyed by concrete model ID. It is authoritative for v2 receipt identity.
 	PrefixCacheV2Models map[string]protocol.PrefixCacheV2Capability
+	// PrefixCacheStatuses is the optional, validated, connection-scoped status
+	// snapshot for concrete loaded model slots. Reported distinguishes current
+	// providers that authoritatively sent [] from old providers that omit it.
+	PrefixCacheStatuses       map[string]protocol.PrefixCacheModelStatus
+	PrefixCacheStatusReported bool
+	// PrefixCacheDonationOutcomes is the last cumulative process-local
+	// snapshot. Heartbeats contribute only monotonic deltas to central totals.
+	PrefixCacheDonationOutcomes map[string]uint64
 	// ToolConstraintProtocol advertises inference-time tool grammar support.
 	// ToolConstraintModels is the explicit concrete-model allowlist; required,
 	// named, and none choices never route by binary version inference alone.
@@ -2145,13 +2153,13 @@ func (r *Registry) mergeProviderModels(
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	// present tracks only builds that passed validation and were merged — the
 	// hard-swap drop is derived from THIS set, never from the raw message. A
 	// desired build rejected for a bad weight hash therefore does NOT cause its
 	// previous sibling to be dropped (which would strand the provider on neither
 	// build — the exact failure the hash check exists to prevent).
 	present := make(map[string]struct{}, len(models))
+	cacheStateInvalidated := make(map[string]struct{})
 	for _, m := range models {
 		if m.ID == "" {
 			continue
@@ -2180,6 +2188,12 @@ func (r *Registry) mergeProviderModels(
 		replaced := false
 		for i := range p.Models {
 			if p.Models[i].ID == m.ID {
+				if !strings.EqualFold(p.Models[i].WeightHash, m.WeightHash) {
+					delete(p.PrefixCacheStatuses, m.ID)
+					delete(p.PrefixCacheV2Models, m.ID)
+					p.prefixCacheRevision++
+					cacheStateInvalidated[m.ID] = struct{}{}
+				}
 				p.Models[i] = m
 				replaced = true
 				break
@@ -2229,11 +2243,34 @@ func (r *Registry) mergeProviderModels(
 					"provider_id", providerID, "model_id", m.ID)
 				dropped = append(dropped, m.ID)
 				delete(p.ToolConstraintModels, m.ID)
+				delete(p.PrefixCacheStatuses, m.ID)
+				delete(p.PrefixCacheV2Models, m.ID)
+				p.prefixCacheRevision++
+				cacheStateInvalidated[m.ID] = struct{}{}
 				continue
 			}
 			kept = append(kept, m)
 		}
 		p.Models = kept
+	}
+	p.PrefixCacheStatuses, p.PrefixCacheStatusReported =
+		reconcilePrefixCacheStatuses(
+			p.PrefixCacheProtocol,
+			p.PrefixCacheV2Models,
+			p.PrefixCacheStatuses,
+			p.PrefixCacheStatusReported,
+		)
+	p.mu.Unlock()
+	if len(cacheStateInvalidated) > 0 {
+		r.mu.RLock()
+		tracker := r.cacheRouting
+		r.mu.RUnlock()
+		if tracker != nil {
+			for modelID := range cacheStateInvalidated {
+				tracker.invalidateProviderModel(
+					providerID, modelID, cacheHolderRemovalCapabilityChange)
+			}
+		}
 	}
 	return merged, dropped
 }
@@ -2754,6 +2791,18 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	models := msg.Models
+	modelInventory, _ := uniqueProviderModels(models)
+	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
+		msg.PrefixCacheStatuses, modelInventory)
+	cacheDonationOutcomes := sanitizePrefixCacheDonationOutcomes(
+		msg.PrefixCacheDonationOutcomes)
+	cacheCapabilities := prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models)
+	cacheStatuses, cacheStatusReported = reconcilePrefixCacheStatuses(
+		msg.PrefixCacheProtocol,
+		cacheCapabilities,
+		cacheStatuses,
+		cacheStatusReported,
+	)
 
 	// Validate X25519 public key if provided.
 	// Reject invalid keys at registration rather than failing at encryption time.
@@ -2770,35 +2819,38 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 	}
 
 	p := &Provider{
-		ID:                      id,
-		Hardware:                msg.Hardware,
-		Models:                  models,
-		Backend:                 msg.Backend,
-		PublicKey:               pubKey,
-		EncryptedResponseChunks: msg.EncryptedResponseChunks,
-		PrivateOnly:             msg.PrivateOnly,
-		APNsDeviceToken:         msg.APNsDeviceToken,
-		APNsEnvironment:         msg.APNsEnvironment,
-		PrefillTPS:              msg.PrefillTPS,
-		DecodeTPS:               msg.DecodeTPS,
-		PrefixCacheProtocol:     msg.PrefixCacheProtocol,
-		PrefixCacheV2Models:     prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models),
-		ToolConstraintProtocol:  msg.ToolConstraintProtocol,
-		ToolConstraintModels:    toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
-		TrustLevel:              TrustNone,
-		RuntimeVerified:         true,  // default to verified; API layer sets false when manifest check fails
-		RuntimeManifestChecked:  true,  // default to true; API layer sets false when no manifest is configured
-		ChallengeVerifiedSIP:    false, // starts false; set true by attestation challenge handler after SIP check
-		PrivacyCapabilities:     msg.PrivacyCapabilities,
-		TemplateHashes:          CloneStringMap(msg.TemplateHashes),
-		Status:                  StatusOnline,
-		Conn:                    conn,
-		writer:                  newProviderWriter(conn),
-		LastHeartbeat:           time.Now(),
-		Reputation:              NewReputation(),
-		pendingReqs:             make(map[string]*PendingRequest),
-		challengeSettled:        make(chan struct{}, 1),
-		registry:                r,
+		ID:                          id,
+		Hardware:                    msg.Hardware,
+		Models:                      models,
+		Backend:                     msg.Backend,
+		PublicKey:                   pubKey,
+		EncryptedResponseChunks:     msg.EncryptedResponseChunks,
+		PrivateOnly:                 msg.PrivateOnly,
+		APNsDeviceToken:             msg.APNsDeviceToken,
+		APNsEnvironment:             msg.APNsEnvironment,
+		PrefillTPS:                  msg.PrefillTPS,
+		DecodeTPS:                   msg.DecodeTPS,
+		PrefixCacheProtocol:         msg.PrefixCacheProtocol,
+		PrefixCacheV2Models:         cacheCapabilities,
+		PrefixCacheStatuses:         cacheStatuses,
+		PrefixCacheStatusReported:   cacheStatusReported,
+		PrefixCacheDonationOutcomes: cacheDonationOutcomes,
+		ToolConstraintProtocol:      msg.ToolConstraintProtocol,
+		ToolConstraintModels:        toolConstraintModelSet(msg.ToolConstraintModels, msg.Models),
+		TrustLevel:                  TrustNone,
+		RuntimeVerified:             true,  // default to verified; API layer sets false when manifest check fails
+		RuntimeManifestChecked:      true,  // default to true; API layer sets false when no manifest is configured
+		ChallengeVerifiedSIP:        false, // starts false; set true by attestation challenge handler after SIP check
+		PrivacyCapabilities:         msg.PrivacyCapabilities,
+		TemplateHashes:              CloneStringMap(msg.TemplateHashes),
+		Status:                      StatusOnline,
+		Conn:                        conn,
+		writer:                      newProviderWriter(conn),
+		LastHeartbeat:               time.Now(),
+		Reputation:                  NewReputation(),
+		pendingReqs:                 make(map[string]*PendingRequest),
+		challengeSettled:            make(chan struct{}, 1),
+		registry:                    r,
 	}
 
 	// Connection-scope the challenge-settled signal (DAR-326 FIX 4c): the channel is
@@ -3802,7 +3854,7 @@ func (r *Registry) Disconnect(id string) {
 	r.drainQueuedRequestsForModels(disconnectedModels)
 	// Cache holders and nonce-bound attempts are connection-scoped. Clear them
 	// after releasing registry/provider locks.
-	r.cacheRouting.disconnect(id)
+	r.cacheRouting.disconnect(id, cacheHolderRemovalDisconnect)
 
 	// Close all pending request channels so consumers get errors. Pending
 	// requests created by tests may leave these channels nil, and consumer

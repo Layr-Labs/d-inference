@@ -97,6 +97,7 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
     ///     consumer Task, one payload at a time.
     init(
         capacity: Int,
+        onDropped: (@Sendable (Payload) -> Void)? = nil,
         consume: @escaping @Sendable (Payload) async -> Void
     ) {
         let cap = max(1, capacity)
@@ -126,6 +127,8 @@ final class BoundedSingleConsumerPipeline<Payload: Sendable>: @unchecked Sendabl
                 // empties.
                 if !Task.isCancelled {
                     await consume(payload)
+                } else {
+                    onDropped?(payload)
                 }
                 state.completeOne()
             }

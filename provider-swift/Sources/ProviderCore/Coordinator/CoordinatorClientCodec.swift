@@ -12,7 +12,9 @@ public enum CoordinatorClientCodec {
         apnsDeviceTokenOverride: String? = nil,
         modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
-        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
+        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) -> ProviderMessage {
         // A token that arrived after the config was built (APNs slow at startup)
         // overrides the config value so a reconnect re-registers WITH it.
@@ -55,6 +57,8 @@ public enum CoordinatorClientCodec {
             apnsEnvironment: effectiveEnv,
             prefixCacheProtocol: prefixCacheProtocol,
             prefixCacheV2Models: prefixCacheV2Models,
+            prefixCacheStatuses: prefixCacheStatuses,
+            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes,
             toolConstraintProtocol: constrainedModels.isEmpty ? nil : 1,
             toolConstraintModels: constrainedModels.isEmpty ? nil : constrainedModels
         ))
@@ -68,7 +72,9 @@ public enum CoordinatorClientCodec {
         apnsDeviceTokenOverride: String? = nil,
         modelWeightHashOverrides: [String: String]? = nil,
         prefixCacheProtocol: Int = 1,
-        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
+        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) throws -> Data {
         try ProviderProtocolCodec.encodeProviderMessage(
             registrationMessage(
@@ -79,7 +85,9 @@ public enum CoordinatorClientCodec {
                 apnsDeviceTokenOverride: apnsDeviceTokenOverride,
                 modelWeightHashOverrides: modelWeightHashOverrides,
                 prefixCacheProtocol: prefixCacheProtocol,
-                prefixCacheV2Models: prefixCacheV2Models
+                prefixCacheV2Models: prefixCacheV2Models,
+                prefixCacheStatuses: prefixCacheStatuses,
+                prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
             )
         )
     }
@@ -94,7 +102,9 @@ public enum CoordinatorClientCodec {
         apnsDeviceToken: String? = nil,
         apnsEnvironment: String? = nil,
         prefixCacheProtocol: Int? = nil,
-        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
+        prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+        prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+        prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
     ) -> ProviderMessage {
         .heartbeat(ProviderMessage.Heartbeat(
             status: status,
@@ -106,7 +116,9 @@ public enum CoordinatorClientCodec {
             apnsDeviceToken: apnsDeviceToken,
             apnsEnvironment: apnsEnvironment,
             prefixCacheProtocol: prefixCacheProtocol,
-            prefixCacheV2Models: prefixCacheV2Models
+            prefixCacheV2Models: prefixCacheV2Models,
+            prefixCacheStatuses: prefixCacheStatuses,
+            prefixCacheDonationOutcomes: prefixCacheDonationOutcomes
         ))
     }
 

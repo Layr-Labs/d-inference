@@ -248,6 +248,13 @@ func TestPrefixCacheV2CapabilityEpochChangeClearsEvidence(t *testing.T) {
 		ModelID:    oldCapability.ModelID,
 		CacheEpoch: oldCapability.CacheEpoch,
 	}] = 4
+	registry.cacheRouting.upsertHolderLocked("epoch-holder", cacheHolder{
+		ProviderID: provider.ID,
+		ModelID:    oldCapability.ModelID,
+		CacheEpoch: oldCapability.CacheEpoch,
+		UpdatedAt:  time.Now(),
+		ExpiresAt:  time.Now().Add(time.Minute),
+	})
 
 	if err := registry.UpdatePrefixCacheCapabilities(
 		provider.ID, 2, []protocol.PrefixCacheV2Capability{newCapability}); err != nil {
@@ -261,5 +268,8 @@ func TestPrefixCacheV2CapabilityEpochChangeClearsEvidence(t *testing.T) {
 			"epoch refresh retained evidence: attempts=%d sequences=%d",
 			len(registry.cacheRouting.attempts),
 			len(registry.cacheRouting.v2Sequences))
+	}
+	if got := registry.cacheRouting.holderRemoved[string(cacheHolderRemovalEpochChange)]; got != 1 {
+		t.Fatalf("epoch-change holder removals=%d, want 1", got)
 	}
 }

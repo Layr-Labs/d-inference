@@ -176,6 +176,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     let index: SSDBlockIndex
     private let kvBudget: GlobalKVCacheBudget?
     private let diskBudget: SSDDiskBudget
+    private let donationRecorder: any PrefixCacheDonationRecording
     let statsBox = SSDPrefixCacheStatsBox()
     private var writeBehind: SSDWriteBehind!
 
@@ -219,6 +220,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     private let lock = NSLock()
     private var closed = false
     private var scanReady = false
+    private var scanFailed = false
+    private var cacheStatusFailure: PrefixCacheStatusReason?
     private var destructiveChangeInProgress = false
     /// tag16 of the run's TERMINAL block → staged entry.
     private var stagedEntries: [Data: StagedEntry] = [:]
@@ -258,7 +261,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         strictFsync: Bool = false,
         diskBudgetBytes: @escaping @Sendable () -> Int,
         maintainWholeRoot: (@Sendable () -> Void)? = nil,
-        cacheInstanceNamespace: String = UUID().uuidString
+        cacheInstanceNamespace: String = UUID().uuidString,
+        donationRecorder: any PrefixCacheDonationRecording = PrefixCacheDonationTelemetry.shared
     ) {
         self.config = config
         self.kekKey = kekKey
@@ -267,6 +271,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         self.index = SSDBlockIndex()
         self.kvBudget = kvBudget
         self.diskBudget = diskBudget
+        self.donationRecorder = donationRecorder
         let root = config.root
         self.writeBehind = SSDWriteBehind(
             config: SSDWriteBehind.Config(
@@ -323,24 +328,67 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     var isClosed: Bool { lock.withLock { closed } }
 
     func prefixCacheV2Capability() -> PrefixCacheV2Capability? {
+        lock.withLock { prefixCacheV2CapabilityLocked() }
+    }
+
+    func prefixCacheModelStatus(base: PrefixCacheModelStatus) -> PrefixCacheModelStatus {
+        lock.withLock { prefixCacheModelStatusLocked(base: base) }
+    }
+
+    func prefixCacheAdvertisement(base: PrefixCacheModelStatus) -> (
+        capability: PrefixCacheV2Capability?,
+        status: PrefixCacheModelStatus
+    ) {
         lock.withLock {
-            guard !closed,
-                scanReady,
-                !destructiveChangeInProgress,
-                let epoch = config.epochStore?.current,
-                config.blockSize > 0,
-                config.blockSize <= Int(UInt32.max)
-            else { return nil }
-            return PrefixCacheV2Capability(
-                modelId: config.modelId,
-                modelAggregateHash: config.weightHash,
-                promptContractId: config.promptContractID,
-                blockHashVersion: CBv2BlockHasher.version,
-                blockSize: UInt32(config.blockSize),
-                cacheEpoch: epoch,
-                enabled: true,
-                ready: true)
+            (
+                prefixCacheV2CapabilityLocked(),
+                prefixCacheModelStatusLocked(base: base)
+            )
         }
+    }
+
+    private func prefixCacheV2CapabilityLocked() -> PrefixCacheV2Capability? {
+        guard !closed,
+            scanReady,
+            !destructiveChangeInProgress,
+            let epoch = config.epochStore?.current,
+            config.blockSize > 0,
+            config.blockSize <= Int(UInt32.max)
+        else { return nil }
+        return PrefixCacheV2Capability(
+            modelId: config.modelId,
+            modelAggregateHash: config.weightHash,
+            promptContractId: config.promptContractID,
+            blockHashVersion: CBv2BlockHasher.version,
+            blockSize: UInt32(config.blockSize),
+            cacheEpoch: epoch,
+            enabled: true,
+            ready: true)
+    }
+
+    private func prefixCacheModelStatusLocked(
+        base: PrefixCacheModelStatus
+    ) -> PrefixCacheModelStatus {
+        let status: (PrefixCacheStatusState, PrefixCacheStatusReason)
+        if closed {
+            status = (.error, .cacheInitFailed)
+        } else if scanFailed {
+            status = (.error, .scanFailed)
+        } else if let cacheStatusFailure {
+            status = (.error, cacheStatusFailure)
+        } else if !scanReady || destructiveChangeInProgress {
+            status = (.pending, .scanPending)
+        } else if config.epochStore != nil && config.epochStore?.current == nil {
+            status = (.error, .cacheInitFailed)
+        } else {
+            status = (.ready, .ready)
+        }
+        return PrefixCacheModelStatus(
+            modelId: base.modelId,
+            backend: base.backend,
+            replayStrategy: base.replayStrategy,
+            state: status.0,
+            reason: status.1)
     }
 
     func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {
@@ -358,6 +406,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             guard !closed else { return false }
             closed = true
             scanReady = false
+            scanFailed = false
+            cacheStatusFailure = nil
             // Release the PER-ENTRY reservations (each resident entry holds
             // exactly one, keyed by its creator). Attaching requests already
             // released their redundant provisional reservation at attach
@@ -621,7 +671,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     public func donate(
         tokens: [Int], state: [CBv2SequenceKV?], layerKinds: [CBv2LayerKind], cacheSalt: String?
     ) {
-        guard state.count == layerKinds.count else { return }
+        let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
+        guard state.count == layerKinds.count else {
+            settlement.settle(.incompleteLayerState)
+            return
+        }
         var snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
         snapshots.reserveCapacity(layerKinds.count)
         for (i, kind) in layerKinds.enumerated() {
@@ -629,10 +683,19 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 snapshots.append(nil)
                 continue
             }
-            guard seq.snapshotIsLossless else { return }  // quantized KV never donates
+            guard seq.snapshotIsLossless else {
+                settlement.settle(.lossySnapshot)
+                return
+            }
             snapshots.append(seq.snapshot())
         }
-        donate(tokens: tokens, snapshots: snapshots, layerKinds: layerKinds, cacheSalt: cacheSalt)
+        donate(
+            tokens: tokens,
+            snapshots: snapshots,
+            layerKinds: layerKinds,
+            cacheSalt: cacheSalt,
+            receiptRequestID: nil,
+            settlement: settlement)
     }
 
     public func donate(
@@ -650,12 +713,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?
     ) {
+        let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         donate(
             tokens: tokens,
             snapshots: snapshots,
             layerKinds: layerKinds,
             cacheSalt: cacheSalt,
-            receiptRequestID: requestID)
+            receiptRequestID: requestID,
+            settlement: settlement)
     }
 
     /// Runs on the engine's donation queue. The engine holds the donor KV
@@ -668,12 +733,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?],
         layerKinds: [CBv2LayerKind], cacheSalt: String?
     ) {
+        let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
         donate(
             tokens: tokens,
             snapshots: snapshots,
             layerKinds: layerKinds,
             cacheSalt: cacheSalt,
-            receiptRequestID: nil)
+            receiptRequestID: nil,
+            settlement: settlement)
     }
 
     private func donate(
@@ -681,13 +748,24 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?],
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?,
-        receiptRequestID: CBv2RequestID?
+        receiptRequestID: CBv2RequestID?,
+        settlement: PrefixCacheDonationSettlement
     ) {
-        guard !isClosed, snapshots.count == layerKinds.count else { return }
+        guard !isClosed else {
+            settlement.settle(.cacheClosed)
+            return
+        }
+        guard snapshots.count == layerKinds.count else {
+            settlement.settle(.incompleteLayerState)
+            return
+        }
         let salt = cacheSalt ?? ""
         let hasher = hasher(cacheSalt: salt)
         let blockCount = hasher.fullBlockCount(tokenCount: tokens.count)
-        guard blockCount > 0 else { return }
+        guard blockCount > 0 else {
+            settlement.settle(.noCompleteBlock)
+            return
+        }
         let prefixTokens = blockCount * config.blockSize
 
         // PER-DONATION gate (Gaj, 2026-07-07 — replaces the binary
@@ -704,7 +782,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // model is effectively never cached, by construction.
         let (donationFloor, floorOverflow) =
             config.adoptionBoundTokens.addingReportingOverflow(config.minEffectiveTokens)
-        guard !floorOverflow, prefixTokens > donationFloor else { return }
+        guard !floorOverflow, prefixTokens > donationFloor else {
+            settlement.settle(.belowEffectiveTokenFloor)
+            return
+        }
 
         // Validate cacheable-layer coverage (PrefixCacheV2 semantics: a
         // cacheable layer with missing/short state makes the whole
@@ -716,10 +797,16 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 snap.offset >= prefixTokens,
                 snap.keys.ndim == 4, snap.keys.dim(2) >= prefixTokens,
                 snap.values.ndim == 4, snap.values.dim(2) >= prefixTokens
-            else { return }
+            else {
+                settlement.settle(.incompleteLayerState)
+                return
+            }
             cacheable.append((i, snap.keys, snap.values))
         }
-        guard !cacheable.isEmpty else { return }
+        guard !cacheable.isEmpty else {
+            settlement.settle(.incompleteLayerState)
+            return
+        }
 
         // Chain hashes + HMAC tags; dedupe BEFORE any copy (spec §3.2).
         let hashes = hasher.chainHashes(tokens: tokens, maxBlocks: blockCount)
@@ -744,22 +831,28 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             let elements = dims.reduce(1, *)
             perBlockBytes += 2 * elements * layer.keys.dtype.size
         }
-        guard perBlockBytes > 0 else { return }
+        guard perBlockBytes > 0 else {
+            settlement.settle(.incompleteLayerState)
+            return
+        }
         let maxPersistBlocks = config.maxStageBytes / perBlockBytes
         let durableTags = Array(tags16.prefix(maxPersistBlocks))
         let durableFullTags = Array(fullTags.prefix(maxPersistBlocks))
         let durableChainHashes = Array(hashes.prefix(maxPersistBlocks))
         let (durableTokenCount, durableTokenOverflow) =
             durableTags.count.multipliedReportingOverflow(by: config.blockSize)
-        guard !durableTokenOverflow, durableTokenCount > donationFloor else { return }
-        let onDurable: (@Sendable () -> Void)?
+        guard !durableTokenOverflow, durableTokenCount > donationFloor else {
+            settlement.settle(.stageSizeExceeded)
+            return
+        }
+        let onDurable: (@Sendable () -> Bool)?
         if let receiptRequestID, !durableTags.isEmpty {
             onDurable = { [weak self] in
                 self?.settleDurableDonation(
                     requestID: receiptRequestID,
                     tags16: durableTags,
                     fullTags: durableFullTags,
-                    chainHashes: durableChainHashes)
+                    chainHashes: durableChainHashes) ?? false
             }
         } else {
             onDurable = nil
@@ -767,13 +860,26 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
         let now = config.nowSeconds()
         var newBlockIndices: [Int] = []
+        var skippedInFlight = false
+        var closedDuringDedupe = false
         lock.withLock {
-            guard !closed else { return }
+            guard !closed else {
+                closedDuringDedupe = true
+                return
+            }
             for (i, tag16) in tags16.enumerated() where i < maxPersistBlocks {
-                if index.contains(tag16: tag16) || inFlightWrites.contains(tag16) { continue }
+                if index.contains(tag16: tag16) { continue }
+                if inFlightWrites.contains(tag16) {
+                    skippedInFlight = true
+                    continue
+                }
                 inFlightWrites.insert(tag16)
                 newBlockIndices.append(i)
             }
+        }
+        if closedDuringDedupe {
+            settlement.settle(.cacheClosed)
+            return
         }
         // Sliding-TTL bump for the blocks this active conversation reused —
         // index recency AND file mtimes (best-effort), so donation-only
@@ -790,9 +896,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 [.modificationDate: touchDate], at: url, under: config.root)
         }
         guard !newBlockIndices.isEmpty else {
-            // An all-deduped donation is already durable, but still pass it
-            // through the serial maintenance queue so TTL/budget enforcement
-            // completes before any ready receipt is emitted.
+            settlement.settle(skippedInFlight ? .alreadyQueued : .alreadyDurable)
+            // Every block is already durable or owned by an earlier queued
+            // write. Still pass correlated donations through the serial queue
+            // so prior writes and maintenance settle before a ready receipt.
             if onDurable != nil {
                 _ = writeBehind.submit(SSDDonationJob(
                     blocks: [], totalBytes: 0, onDurable: onDurable))
@@ -820,6 +927,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             statsBox.add(
                 donationsDropped: newBlockIndices.count,
                 writeRateLimited: newBlockIndices.count)
+            settlement.settle(.writeRateLimited)
             return
         }
 
@@ -871,15 +979,19 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     chunks: chunks, plaintextBytes: blockBytes))
         }
 
-        guard writeBehind.submit(SSDDonationJob(
-            blocks: blocks, totalBytes: totalBytes, onDurable: onDurable))
-        else {
+        let submitResult = writeBehind.submitWithResult(SSDDonationJob(
+            blocks: blocks,
+            totalBytes: totalBytes,
+            onDurable: onDurable,
+            onOutcome: { outcome in settlement.settle(outcome) }))
+        guard submitResult == .accepted else {
             // Queue overflow / byte cap / closed: drop the donation, settle
             // the in-flight tags so a later donation can retry these blocks.
             lock.withLock {
                 for block in blocks { inFlightWrites.remove(block.tag16) }
             }
             statsBox.add(donationsDropped: blocks.count)
+            settlement.settle(submitResult == .closed ? .cacheClosed : .writeQueueFull)
             return
         }
     }
@@ -1401,8 +1513,15 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     /// (weightHash / layoutEpoch / blockSize) and TTL-expired files are
     /// deleted; everything else is indexed with mtime as lastAccess.
     func scanOnDisk() {
+        lock.withLock {
+            if !closed {
+                scanReady = false
+                scanFailed = false
+            }
+        }
         guard hasSafeRoot else {
             index.removeAll()
+            markScanFailed()
             return
         }
         SSDBlockStore.sweepStaleTempFiles(under: config.root)
@@ -1411,7 +1530,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         guard let fanouts = try? fm.contentsOfDirectory(
             at: config.root, includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles])
-        else { return }
+        else {
+            markScanFailed()
+            return
+        }
         var indexed = 0
         var dropped = 0
         var expired = 0
@@ -1425,6 +1547,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     == dir.resolvingSymlinksInPath().standardizedFileURL.path
             else {
                 index.removeAll()
+                markScanFailed()
                 return
             }
             guard let files = try? fm.contentsOfDirectory(
@@ -1434,7 +1557,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     .isSymbolicLinkKey,
                 ],
                 options: [.skipsHiddenFiles])
-            else { continue }
+            else {
+                index.removeAll()
+                markScanFailed()
+                return
+            }
             for url in files where url.pathExtension == SSDBlockStore.fileExtension {
                 if isClosed { return }
                 guard let fileValues = try? url.resourceValues(
@@ -1443,6 +1570,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     SSDBlockStore.isSafeBlockURL(url, modelRoot: config.root)
                 else {
                     index.removeAll()
+                    markScanFailed()
                     return
                 }
                 let name = url.deletingPathExtension().lastPathComponent
@@ -1476,6 +1604,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         lock.withLock {
             if !closed {
                 scanReady = true
+                scanFailed = false
             }
         }
         #if canImport(os)
@@ -1506,6 +1635,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         SSDBlockStore.isSafeModelRoot(config.root, dedicatedRoot: config.dedicatedRoot)
     }
 
+    private func markScanFailed() {
+        lock.withLock {
+            guard !closed else { return }
+            scanReady = false
+            scanFailed = true
+        }
+    }
+
     /// Persist a fresh generation before deleting or forgetting durable
     /// blocks, and suppress capability publication until the mutation ends.
     private func performDestructiveChange<T>(_ body: () -> T) -> T? {
@@ -1513,7 +1650,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         defer { endDestructiveChange() }
         guard let epochStore = config.epochStore else { return body() }
         guard let result = epochStore.performOwnedDestructiveChange(body) else {
-            lock.withLock { scanReady = false }
+            lock.withLock {
+                scanReady = false
+                cacheStatusFailure = .cacheInitFailed
+            }
             return nil
         }
         return result
@@ -1569,12 +1709,12 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         tags16: [Data],
         fullTags: [Data],
         chainHashes: [Data]
-    ) {
+    ) -> Bool {
         guard tags16.count == fullTags.count,
             tags16.count == chainHashes.count,
             !tags16.isEmpty,
             !isClosed
-        else { return }
+        else { return false }
         var readableBlocks = 0
         for i in tags16.indices {
             guard index.contains(tag16: tags16[i]) else { break }
@@ -1587,20 +1727,20 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     metadata.layoutEpoch == config.layoutEpoch,
                     metadata.blockSize == config.blockSize,
                     metadata.lookupTag == SSDLookupKeys.hex(fullTags[i])
-                else { return }
+                else { return false }
                 readableBlocks += 1
             } catch {
                 // A durable-ready receipt must never attest through corruption,
                 // a torn write, stale binding, or unreadable ciphertext.
-                return
+                return false
             }
         }
         let readyTokens = readableBlocks * config.blockSize
         let recompute = min(config.adoptionBoundTokens, readyTokens)
         let expectedSaved = max(0, readyTokens - recompute)
-        guard expectedSaved >= config.minEffectiveTokens else { return }
+        guard expectedSaved >= config.minEffectiveTokens else { return false }
         guard let durableSizes = index.fileBytes(tags16: tags16.prefix(readableBlocks))
-        else { return }
+        else { return false }
         let durableBytes = durableSizes.reduce(0) { total, next in
             let (sum, overflow) = total.addingReportingOverflow(max(0, next))
             return overflow ? Int.max : sum
@@ -1627,7 +1767,10 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                             }.joined(),
                             tokenCount: UInt64(readyTokens))))
             }
-        if let delivery { delivery.0(delivery.1) }
+        if let delivery {
+            delivery.0(delivery.1)
+        }
+        return true
     }
 
     /// Must be called with `lock` held. Returns the retired entry's

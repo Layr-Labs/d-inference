@@ -170,6 +170,11 @@ public final class EngineV2RequestUsageSignal: @unchecked Sendable {
 
 extension EngineV2Bridge {
 
+    nonisolated func prefixCacheModelStatus() -> PrefixCacheModelStatus {
+        guard let ssdPrefixCache else { return prefixCacheBaseStatus }
+        return ssdPrefixCache.prefixCacheModelStatus(base: prefixCacheBaseStatus)
+    }
+
     func emitPrefixCacheColdFallback(
         requestId: String,
         reason: String,

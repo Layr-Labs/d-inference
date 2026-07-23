@@ -168,41 +168,39 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
 ) error {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	provider := r.providers[providerID]
-	r.mu.RUnlock()
-	if provider == nil {
-		return fmt.Errorf("%w: provider is not registered", errInvalidPrefixCacheCapability)
-	}
+	_, err := r.UpdatePrefixCacheSnapshot(
+		providerID,
+		true,
+		version,
+		capabilities,
+		nil,
+		nil,
+	)
+	return err
+}
 
-	provider.mu.Lock()
-	models, err := uniqueProviderModels(provider.Models)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
+func prefixCacheCapabilityRemovalReason(
+	previous, current map[string]protocol.PrefixCacheV2Capability,
+) cacheHolderRemovalReason {
+	if len(previous) == 0 || len(previous) != len(current) {
+		return cacheHolderRemovalCapabilityChange
 	}
-	validated, err := validatePrefixCacheCapabilities(version, capabilities, models)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
+	epochChanged := false
+	for modelID, before := range previous {
+		after, ok := current[modelID]
+		if !ok {
+			return cacheHolderRemovalCapabilityChange
+		}
+		if before.CacheEpoch != after.CacheEpoch {
+			epochChanged = true
+			before.CacheEpoch = after.CacheEpoch
+		}
+		if before != after {
+			return cacheHolderRemovalCapabilityChange
+		}
 	}
-	changed := provider.PrefixCacheProtocol != version ||
-		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, validated)
-	if changed {
-		provider.PrefixCacheProtocol = version
-		provider.PrefixCacheV2Models = validated
-		provider.prefixCacheRevision++
+	if epochChanged {
+		return cacheHolderRemovalEpochChange
 	}
-	provider.mu.Unlock()
-
-	r.mu.RLock()
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if changed && tracker != nil {
-		tracker.disconnect(providerID)
-	}
-	return nil
+	return cacheHolderRemovalCapabilityChange
 }

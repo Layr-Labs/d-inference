@@ -490,7 +490,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
 		State: "pending", Reason: "scan_pending",
 	}}
-	if _, err := reg.UpdatePrefixCacheSnapshot(
+	if err := reg.UpdatePrefixCacheSnapshot(
 		provider.ID, false, 0, nil, &pending, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -503,7 +503,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 	provider.mu.Unlock()
 
 	restored := []protocol.PrefixCacheModelStatus{ready}
-	if _, err := reg.UpdatePrefixCacheSnapshot(
+	if err := reg.UpdatePrefixCacheSnapshot(
 		provider.ID, false, 0, nil, &restored, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
 	provider.mu.Unlock()
 
 	readyOnV1 := []protocol.PrefixCacheModelStatus{ready}
-	if _, err := reg.UpdatePrefixCacheSnapshot(
+	if err := reg.UpdatePrefixCacheSnapshot(
 		provider.ID, true, 1, nil, &readyOnV1, nil); err != nil {
 		t.Fatal(err)
 	}

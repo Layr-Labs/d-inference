@@ -1,32 +1,10 @@
 package registry
 
-import "github.com/eigeninference/d-inference/coordinator/protocol"
+import (
+	"maps"
 
-func clonePrefixCacheCapabilities(
-	in map[string]protocol.PrefixCacheV2Capability,
-) map[string]protocol.PrefixCacheV2Capability {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]protocol.PrefixCacheV2Capability, len(in))
-	for modelID, capability := range in {
-		out[modelID] = capability
-	}
-	return out
-}
-
-func clonePrefixCacheStatuses(
-	in map[string]protocol.PrefixCacheModelStatus,
-) map[string]protocol.PrefixCacheModelStatus {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make(map[string]protocol.PrefixCacheModelStatus, len(in))
-	for modelID, status := range in {
-		out[modelID] = status
-	}
-	return out
-}
+	"github.com/eigeninference/d-inference/coordinator/protocol"
+)
 
 // UpdatePrefixCacheSnapshot atomically applies the resulting authoritative
 // capability and optional observability state from one heartbeat. Strict
@@ -40,37 +18,39 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 	capabilities []protocol.PrefixCacheV2Capability,
 	statuses *[]protocol.PrefixCacheModelStatus,
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
-) (bool, error) {
+) error {
 	if r == nil {
-		return false, nil
+		return nil
 	}
 	r.mu.RLock()
 	provider := r.providers[providerID]
 	r.mu.RUnlock()
 	if provider == nil {
-		return false, errInvalidPrefixCacheCapability
+		return errInvalidPrefixCacheCapability
 	}
 
 	provider.mu.Lock()
 	models, err := uniqueProviderModels(provider.Models)
 	if err != nil {
 		provider.mu.Unlock()
-		return false, err
+		return err
 	}
 
+	// The stored maps are only read below; every write path assigns a freshly
+	// built map (validate/reconcile), so no defensive copies are needed.
 	resultVersion := provider.PrefixCacheProtocol
-	resultCapabilities := clonePrefixCacheCapabilities(provider.PrefixCacheV2Models)
+	resultCapabilities := provider.PrefixCacheV2Models
 	if replaceCapabilities {
 		resultCapabilities, err = validatePrefixCacheCapabilities(
 			version, capabilities, models)
 		if err != nil {
 			provider.mu.Unlock()
-			return false, err
+			return err
 		}
 		resultVersion = version
 	}
 
-	resultStatuses := clonePrefixCacheStatuses(provider.PrefixCacheStatuses)
+	resultStatuses := provider.PrefixCacheStatuses
 	statusReported := provider.PrefixCacheStatusReported
 	if statuses != nil {
 		resultStatuses, statusReported = sanitizePrefixCacheStatuses(statuses, models)
@@ -85,50 +65,55 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		}
 	}
 
+	// Fold monotonic donation counters: only strictly advancing counters
+	// produce deltas; equal counters are no-ops and regressions preserve the
+	// prior baseline, so no map rebuild happens on an unchanged heartbeat.
 	validatedOutcomes := sanitizePrefixCacheDonationOutcomes(outcomes)
-	deltas := make(map[string]uint64)
-	nextOutcomes := provider.PrefixCacheDonationOutcomes
-	if outcomes != nil {
-		nextOutcomes = make(
+	var deltas map[string]uint64
+	for outcome, current := range validatedOutcomes {
+		if current <= provider.PrefixCacheDonationOutcomes[outcome] {
+			continue
+		}
+		if deltas == nil {
+			deltas = make(map[string]uint64, len(validatedOutcomes))
+		}
+		deltas[outcome] = current - provider.PrefixCacheDonationOutcomes[outcome]
+	}
+	if len(deltas) > 0 {
+		nextOutcomes := make(
 			map[string]uint64,
-			len(provider.PrefixCacheDonationOutcomes)+len(validatedOutcomes),
+			len(provider.PrefixCacheDonationOutcomes)+len(deltas),
 		)
-		for outcome, previous := range provider.PrefixCacheDonationOutcomes {
-			nextOutcomes[outcome] = previous
+		maps.Copy(nextOutcomes, provider.PrefixCacheDonationOutcomes)
+		for outcome := range deltas {
+			nextOutcomes[outcome] = validatedOutcomes[outcome]
 		}
-		for outcome, current := range validatedOutcomes {
-			previous := provider.PrefixCacheDonationOutcomes[outcome]
-			if current >= previous {
-				deltas[outcome] = current - previous
-				nextOutcomes[outcome] = current
-			}
-		}
+		provider.PrefixCacheDonationOutcomes = nextOutcomes
 	}
 
 	capabilitiesChanged := provider.PrefixCacheProtocol != resultVersion ||
 		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, resultCapabilities)
-	removalReason := prefixCacheCapabilityRemovalReason(
-		provider.PrefixCacheV2Models, resultCapabilities)
+	var removalReason cacheHolderRemovalReason
 	if capabilitiesChanged {
+		removalReason = prefixCacheCapabilityRemovalReason(
+			provider.PrefixCacheV2Models, resultCapabilities)
 		provider.PrefixCacheProtocol = resultVersion
 		provider.PrefixCacheV2Models = resultCapabilities
 		provider.prefixCacheRevision++
 	}
 	provider.PrefixCacheStatuses = resultStatuses
 	provider.PrefixCacheStatusReported = statusReported
-	if outcomes != nil {
-		provider.PrefixCacheDonationOutcomes = nextOutcomes
-	}
 	provider.mu.Unlock()
 
 	r.mu.RLock()
 	tracker := r.cacheRouting
 	r.mu.RUnlock()
-	if capabilitiesChanged && tracker != nil {
+	if tracker == nil {
+		return nil
+	}
+	if capabilitiesChanged {
 		tracker.disconnect(providerID, removalReason)
 	}
-	if tracker != nil {
-		tracker.recordDonationOutcomes(deltas)
-	}
-	return capabilitiesChanged, nil
+	tracker.recordDonationOutcomes(deltas)
+	return nil
 }

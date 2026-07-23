@@ -224,8 +224,10 @@ public final class ProviderState: @unchecked Sendable {
             statuses.lazy.filter(\.isConcreteReady).map(\.modelId))
         models.removeAll { !readyModels.contains($0.modelId) }
         models.sort { $0.modelId < $1.modelId }
+        // A missing runtime identity already emptied `models` above, so the
+        // advertised protocol version follows from capability presence alone.
         return (
-            models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,
+            models.isEmpty ? 1 : 2,
             models,
             statuses,
             PrefixCacheDonationTelemetry.shared.snapshot()

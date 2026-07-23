@@ -61,7 +61,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		PrefixCacheStatuses:         &initialStatuses,
 		PrefixCacheDonationOutcomes: &initialOutcomes,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return reg.ProviderCount() == 1 &&
 			status.ReportedLoadedModels == 1 &&
@@ -82,7 +82,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		PrefixCacheStatuses:         &replacement,
 		PrefixCacheDonationOutcomes: &fiveOutcomes,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return status.ByReason["scan_pending"] == 1 &&
 			reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] == 3
@@ -99,7 +99,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		PrefixCacheStatuses:         &oversizedStatuses,
 		PrefixCacheDonationOutcomes: &duplicateOutcomes,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		return reg.ProviderCount() == 1 &&
 			reg.PrefixCacheProtocolStatus().ReportedLoadedModels == 0 &&
 			reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] == 3
@@ -114,7 +114,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		PrefixCacheStatuses:         &replacement,
 		PrefixCacheDonationOutcomes: &sixOutcomes,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		return reg.ProviderCount() == 1 &&
 			reg.PrefixCacheProtocolStatus().ByReason["scan_pending"] == 1 &&
 			reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] == 4
@@ -127,7 +127,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		PrefixCacheStatuses:         &empty,
 		PrefixCacheDonationOutcomes: &sixOutcomes,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		return reg.PrefixCacheProtocolStatus().ReportedLoadedModels == 0
 	})
 
@@ -143,7 +143,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	if err := conn.Close(websocket.StatusNormalClosure, "done"); err != nil {
 		t.Fatal(err)
 	}
-	waitCacheCondition(t, func() bool { return reg.ProviderCount() == 0 })
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool { return reg.ProviderCount() == 0 })
 	if got := reg.PrefixCacheProtocolStatus().LoadedModels; got != 0 {
 		t.Fatalf("disconnect retained loaded status: %d", got)
 	}
@@ -182,7 +182,7 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 		PrefixCacheStatuses:         &oversizedStatuses,
 		PrefixCacheDonationOutcomes: &duplicateOutcomes,
 	})
-	waitCacheCondition(t, func() bool { return reg.ProviderCount() == 1 })
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool { return reg.ProviderCount() == 1 })
 	status := reg.PrefixCacheProtocolStatus()
 	if status.ReportedLoadedModels != 0 ||
 		reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] != 0 {
@@ -235,7 +235,7 @@ func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
 		PrefixCacheStatuses: &statuses,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return status.V2ReadyModels == 1 && status.ByState["ready"] == 1
 	})
@@ -251,7 +251,7 @@ func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
 		PrefixCacheStatuses: &pending, BackendCapacity: capacity,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return status.V2ReadyModels == 1 &&
 			status.ReportedLoadedModels == 0 &&
@@ -263,7 +263,7 @@ func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
 		PrefixCacheStatuses: &restored, BackendCapacity: capacity,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		return reg.PrefixCacheProtocolStatus().ByState["ready"] == 1
 	})
 
@@ -276,7 +276,7 @@ func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
 		PrefixCacheStatuses: &readyOnV1,
 		BackendCapacity:     capacity,
 	})
-	waitCacheCondition(t, func() bool {
+	waitFor(t, 2*time.Second, "cache telemetry state", func() bool {
 		status := reg.PrefixCacheProtocolStatus()
 		return status.V1 == 1 &&
 			status.V2ReadyModels == 0 &&
@@ -306,16 +306,4 @@ func writeProviderJSON(t *testing.T, ctx context.Context, conn *websocket.Conn, 
 	if err := conn.Write(ctx, websocket.MessageText, data); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func waitCacheCondition(t *testing.T, condition func() bool) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for cache telemetry state")
 }

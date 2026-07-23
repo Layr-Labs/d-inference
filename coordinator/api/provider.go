@@ -476,7 +476,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				if hbMsg.PrefixCacheV2Models != nil {
 					capabilities = *hbMsg.PrefixCacheV2Models
 				}
-				_, err := s.registry.UpdatePrefixCacheSnapshot(
+				err := s.registry.UpdatePrefixCacheSnapshot(
 					providerID,
 					replaceCacheCapabilities,
 					hbMsg.PrefixCacheProtocol,
@@ -489,7 +489,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 						"provider_id", providerID, "error", err)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
 					// Malformed refreshes cannot leave stale v2 evidence live.
-					_, _ = s.registry.UpdatePrefixCacheSnapshot(
+					_ = s.registry.UpdatePrefixCacheSnapshot(
 						providerID,
 						true,
 						1,

@@ -149,28 +149,39 @@ func (t *cacheRoutingTracker) disconnect(
 	}
 }
 
-func (t *cacheRoutingTracker) invalidateProviderModel(
-	providerID, modelID string,
+// invalidateProviderModels drops all cache evidence for the given
+// (provider, model) pairs in one pass over the tracker state, so invalidating
+// several models from one merge does not repeat the full holder/attempt scan
+// per model under the routing-path lock.
+func (t *cacheRoutingTracker) invalidateProviderModels(
+	providerID string,
+	modelIDs map[string]struct{},
 	reason cacheHolderRemovalReason,
 ) {
-	if t == nil || providerID == "" || modelID == "" {
+	if t == nil || providerID == "" || len(modelIDs) == 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for key, holders := range t.holders {
-		if holder, exists := holders[providerID]; exists && holder.ModelID == modelID {
-			t.removeHolderLocked(key, providerID, reason)
+		if holder, exists := holders[providerID]; exists {
+			if _, invalid := modelIDs[holder.ModelID]; invalid {
+				t.removeHolderLocked(key, providerID, reason)
+			}
 		}
 	}
 	for nonce, attempt := range t.attempts {
-		if attempt.ProviderID == providerID && attempt.Model == modelID {
-			t.removeAttemptLocked(nonce)
+		if attempt.ProviderID == providerID {
+			if _, invalid := modelIDs[attempt.Model]; invalid {
+				t.removeAttemptLocked(nonce)
+			}
 		}
 	}
 	for key := range t.v2Sequences {
-		if key.ProviderID == providerID && key.ModelID == modelID {
-			delete(t.v2Sequences, key)
+		if key.ProviderID == providerID {
+			if _, invalid := modelIDs[key.ModelID]; invalid {
+				delete(t.v2Sequences, key)
+			}
 		}
 	}
 }

@@ -177,8 +177,10 @@ func (r *Registry) disablePrefixCacheV2Model(providerID, modelID string) {
 	if ok {
 		if tracker != nil {
 			tracker.rejectCapability(providerID, modelID, capability)
-			tracker.invalidateProviderModel(
-				providerID, modelID, cacheHolderRemovalCapabilityChange)
+			tracker.invalidateProviderModels(
+				providerID,
+				map[string]struct{}{modelID: {}},
+				cacheHolderRemovalCapabilityChange)
 		}
 		provider.prefixCacheRevision++
 	}

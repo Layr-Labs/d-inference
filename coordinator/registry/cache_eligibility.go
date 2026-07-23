@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -104,10 +105,10 @@ func sanitizePrefixCacheStatuses(
 		if _, ok := models[status.ModelID]; !ok {
 			continue
 		}
-		if !containsFixed(prefixCacheStatusStates, status.State) ||
-			!containsFixed(prefixCacheStatusReasons, status.Reason) ||
-			!containsFixed(prefixCacheStatusBackends, status.Backend) ||
-			!containsFixed(prefixCacheReplayStrategies, status.ReplayStrategy) ||
+		// validPrefixCacheStateReason only accepts (state, reason) tuples drawn
+		// from the fixed vocabularies, so no separate membership checks needed.
+		if !slices.Contains(prefixCacheStatusBackends, status.Backend) ||
+			!slices.Contains(prefixCacheReplayStrategies, status.ReplayStrategy) ||
 			!validPrefixCacheStateReason(status.State, status.Reason) {
 			continue
 		}
@@ -234,7 +235,7 @@ func sanitizePrefixCacheDonationOutcomes(
 	result := make(map[string]uint64, len(*outcomes))
 	sanitized := make([]protocol.PrefixCacheDonationOutcomeCount, 0, len(*outcomes))
 	for _, outcome := range *outcomes {
-		if !containsFixed(prefixCacheDonationOutcomes, outcome.Outcome) ||
+		if !slices.Contains(prefixCacheDonationOutcomes, outcome.Outcome) ||
 			outcome.Count == 0 || outcome.Count > math.MaxInt64 {
 			continue
 		}
@@ -243,15 +244,6 @@ func sanitizePrefixCacheDonationOutcomes(
 	}
 	*outcomes = sanitized
 	return result
-}
-
-func containsFixed(values []string, candidate string) bool {
-	for _, value := range values {
-		if value == candidate {
-			return true
-		}
-	}
-	return false
 }
 
 // ValidatePrefixCacheRegistration keeps authoritative routing capability
@@ -281,27 +273,4 @@ func (r *Registry) ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage
 	}
 	sanitizePrefixCacheDonationOutcomes(msg.PrefixCacheDonationOutcomes)
 	return nil
-}
-
-// UpdatePrefixCacheTelemetry replaces the optional connection-scoped status
-// snapshot and folds monotonic donation-counter deltas into central aggregate
-// counters. Omitted fields preserve mixed-version behavior; a present empty
-// status array authoritatively clears loaded-model status.
-func (r *Registry) UpdatePrefixCacheTelemetry(
-	providerID string,
-	statuses *[]protocol.PrefixCacheModelStatus,
-	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
-) error {
-	if r == nil || (statuses == nil && outcomes == nil) {
-		return nil
-	}
-	_, err := r.UpdatePrefixCacheSnapshot(
-		providerID,
-		false,
-		0,
-		nil,
-		statuses,
-		outcomes,
-	)
-	return err
 }

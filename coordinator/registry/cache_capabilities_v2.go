@@ -11,21 +11,6 @@ import (
 
 var errInvalidPrefixCacheCapability = errors.New("invalid prefix-cache capability")
 
-// ValidatePrefixCacheRegistration rejects ambiguous model inventories and
-// malformed v2 capability sets before a provider is admitted to the registry.
-func ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage) error {
-	if msg == nil {
-		return fmt.Errorf("%w: missing registration", errInvalidPrefixCacheCapability)
-	}
-	models, err := uniqueProviderModels(msg.Models)
-	if err != nil {
-		return err
-	}
-	_, err = validatePrefixCacheCapabilities(
-		msg.PrefixCacheProtocol, msg.PrefixCacheV2Models, models)
-	return err
-}
-
 func uniqueProviderModels(models []protocol.ModelInfo) (map[string]protocol.ModelInfo, error) {
 	result := make(map[string]protocol.ModelInfo, len(models))
 	for _, model := range models {
@@ -159,24 +144,6 @@ func equalPrefixCacheCapabilities(
 		}
 	}
 	return true
-}
-
-// UpdatePrefixCacheCapabilities atomically replaces the live connection
-// capability set. Any change invalidates all connection-scoped cache evidence.
-func (r *Registry) UpdatePrefixCacheCapabilities(
-	providerID string,
-	version int,
-	capabilities []protocol.PrefixCacheV2Capability,
-) error {
-	_, err := r.UpdatePrefixCacheSnapshot(
-		providerID,
-		true,
-		version,
-		capabilities,
-		nil,
-		nil,
-	)
-	return err
 }
 
 func prefixCacheCapabilityRemovalReason(

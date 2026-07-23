@@ -37,12 +37,9 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
             return PrefixCacheConstructionStatus(
                 state: .disabled, reason: .weightHashUnavailable)
         case .unsupportedPlan:
-            let reason: PrefixCacheStatusReason
-            if capability.unsupportedReason?.rawValue == "paged_hybrid_requires_dual_cursor" {
-                reason = .pagedHybridUnsupported
-            } else {
-                reason = .unsupportedLayout
-            }
+            let reason: PrefixCacheStatusReason =
+                capability.unsupportedReason == .pagedHybridRequiresDualCursor
+                ? .pagedHybridUnsupported : .unsupportedLayout
             return PrefixCacheConstructionStatus(state: .disabled, reason: reason)
         case .layoutUnavailable:
             return PrefixCacheConstructionStatus(
@@ -75,19 +72,20 @@ extension PrefixCacheReplayStrategy {
             self = .unknown
             return
         }
-        guard capability.isSupported else {
+        // isSupported implies a non-nil strategy; the exhaustive switch makes
+        // any future engine strategy a compile error instead of a silent
+        // .unknown, forcing a conscious wire-vocabulary mapping.
+        guard capability.isSupported, let strategy = capability.strategy else {
             self = .none
             return
         }
-        switch capability.strategy?.rawValue {
-        case "direct":
+        switch strategy {
+        case .direct:
             self = .direct
-        case "frozen_full_replay":
+        case .frozenFullReplay:
             self = .frozenFull
-        case "tail_replay":
+        case .tailReplay:
             self = .tailReplay
-        default:
-            self = .unknown
         }
     }
 }

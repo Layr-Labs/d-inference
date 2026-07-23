@@ -20,10 +20,10 @@ type PrefixCacheProtocolStatus struct {
 
 func (r *Registry) PrefixCacheProtocolStatus() PrefixCacheProtocolStatus {
 	status := PrefixCacheProtocolStatus{
-		ByState:          zeroIntBuckets(prefixCacheStatusStates),
-		ByReason:         zeroIntBuckets(prefixCacheStatusReasons),
-		ByBackend:        zeroIntBuckets(prefixCacheStatusBackends),
-		ByReplayStrategy: zeroIntBuckets(prefixCacheReplayStrategies),
+		ByState:          zeroBuckets[int](prefixCacheStatusStates),
+		ByReason:         zeroBuckets[int](prefixCacheStatusReasons),
+		ByBackend:        zeroBuckets[int](prefixCacheStatusBackends),
+		ByReplayStrategy: zeroBuckets[int](prefixCacheReplayStrategies),
 	}
 	if r == nil {
 		return status
@@ -70,17 +70,24 @@ func (r *Registry) PrefixCacheProtocolStatus() PrefixCacheProtocolStatus {
 	return status
 }
 
-func zeroIntBuckets(values []string) map[string]int {
-	result := make(map[string]int, len(values))
+// zeroBuckets pre-fills a fixed metric vocabulary so gauges report explicit
+// zeros instead of omitting quiet buckets.
+func zeroBuckets[N int | uint64](values []string) map[string]N {
+	result := make(map[string]N, len(values))
 	for _, value := range values {
 		result[value] = 0
 	}
 	return result
 }
 
+// loadedProviderModelsLocked counts models occupying memory for telemetry.
+// This is deliberately wider than the scheduler's warm-for-routing detection
+// ("running"/"idle" only): a reloading or crashed slot still holds a model
+// whose cache-eligibility status operators need attributed. Do not unify the
+// two state sets.
 func loadedProviderModelsLocked(provider *Provider) map[string]struct{} {
-	loaded := make(map[string]struct{})
 	if provider.BackendCapacity != nil {
+		loaded := make(map[string]struct{}, len(provider.BackendCapacity.Slots))
 		for _, slot := range provider.BackendCapacity.Slots {
 			if slot.Model == "" {
 				continue
@@ -92,6 +99,7 @@ func loadedProviderModelsLocked(provider *Provider) map[string]struct{} {
 		}
 		return loaded
 	}
+	loaded := make(map[string]struct{}, len(provider.WarmModels)+1)
 	for _, modelID := range provider.WarmModels {
 		if modelID != "" {
 			loaded[modelID] = struct{}{}

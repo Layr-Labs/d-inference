@@ -364,12 +364,8 @@ enum EngineV2SlotFactory {
             }
         }
 
-        let cacheBackend: PrefixCacheStatusBackend
-        if let preparedBackend {
-            cacheBackend = preparedBackend.kind == .paged ? .paged : .contiguous
-        } else {
-            cacheBackend = .unknown
-        }
+        let cacheBackend =
+            preparedBackend.map { PrefixCacheStatusBackend($0.kind) } ?? .unknown
         let prefixCacheStatus = PrefixCacheModelStatus(
             modelId: modelId,
             backend: cacheBackend,

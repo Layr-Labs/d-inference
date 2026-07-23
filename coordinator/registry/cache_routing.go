@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -317,13 +318,15 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	if tracker == nil {
 		return CacheRoutingLifecycleStatus{}
 	}
+	// Build the zero-filled vocabularies before taking the tracker lock, which
+	// sits on the cache-routing dispatch path.
+	holderRemoved := zeroBuckets[uint64](CacheHolderRemovalReasons())
+	donationOutcomes := zeroBuckets[uint64](prefixCacheDonationOutcomes)
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
-	holderRemoved := zeroUint64Buckets(CacheHolderRemovalReasons())
 	for reason, count := range tracker.holderRemoved {
 		holderRemoved[reason] = count
 	}
-	donationOutcomes := zeroUint64Buckets(prefixCacheDonationOutcomes)
 	for outcome, count := range tracker.donationOutcomes {
 		donationOutcomes[outcome] = count
 	}
@@ -335,14 +338,11 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	}
 }
 
-func zeroUint64Buckets(values []string) map[string]uint64 {
-	result := make(map[string]uint64, len(values))
-	for _, value := range values {
-		result[value] = 0
-	}
-	return result
-}
-
+// recordDonationOutcomes folds donation-counter deltas into the central
+// aggregates, saturating at MaxUint64. The caller (UpdatePrefixCacheSnapshot)
+// only produces positive deltas for vocabulary outcomes that already passed
+// sanitizePrefixCacheDonationOutcomes, so no re-validation happens under the
+// routing-path lock.
 func (t *cacheRoutingTracker) recordDonationOutcomes(deltas map[string]uint64) {
 	if t == nil || len(deltas) == 0 {
 		return
@@ -350,12 +350,9 @@ func (t *cacheRoutingTracker) recordDonationOutcomes(deltas map[string]uint64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	for outcome, delta := range deltas {
-		if delta == 0 || !containsFixed(prefixCacheDonationOutcomes, outcome) {
-			continue
-		}
 		current := t.donationOutcomes[outcome]
-		if ^uint64(0)-current < delta {
-			t.donationOutcomes[outcome] = ^uint64(0)
+		if delta > math.MaxUint64-current {
+			t.donationOutcomes[outcome] = math.MaxUint64
 		} else {
 			t.donationOutcomes[outcome] = current + delta
 		}

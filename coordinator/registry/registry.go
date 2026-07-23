@@ -2265,12 +2265,8 @@ func (r *Registry) mergeProviderModels(
 		r.mu.RLock()
 		tracker := r.cacheRouting
 		r.mu.RUnlock()
-		if tracker != nil {
-			for modelID := range cacheStateInvalidated {
-				tracker.invalidateProviderModel(
-					providerID, modelID, cacheHolderRemovalCapabilityChange)
-			}
-		}
+		tracker.invalidateProviderModels(
+			providerID, cacheStateInvalidated, cacheHolderRemovalCapabilityChange)
 	}
 	return merged, dropped
 }

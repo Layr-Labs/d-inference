@@ -27,12 +27,15 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
 	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")
 
+	const model = "mlx-community/gemma-4-e2b-it-4bit"
 	suite := testbed.NewSuite(testbed.SuiteConfig{
+		ModelSpecs: []testbed.ModelSpec{{
+			ModelID: model, NumProviders: 1,
+		}},
 		EnableEphemeralPrefixCache: true,
 	})
 	require.NoError(t, suite.Start(t.Context()))
 	t.Cleanup(suite.Stop)
-	model := suite.PrimaryModelID()
 	warmup, err := json.Marshal(map[string]any{
 		"model": model,
 		"messages": []map[string]string{{

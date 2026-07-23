@@ -566,6 +566,14 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	// fault): clear any budget captured from a prior attempt so it never bleeds
 	// into a later classification.
 	d.lastErrProviderBudget = 0
+	// Same bleed-through rule for the typed terminal fields: a coordinator-
+	// synthesized error is not a provider terminal, so a stale typed cause from
+	// a prior attempt must not reclassify it (shouldStopFailover trusts a typed
+	// admission_timeout as transient capacity) and stale usage must not land on
+	// its route row. An empty cause here is also what lets the wait loops'
+	// 504 branches tell a synthetic timeout from a typed provider 504.
+	d.lastErrTerminalCause = ""
+	d.lastErrAttemptUsage = nil
 }
 
 func (d *dispatchState) noteProviderBodyTooLarge(errText string, bodyBytes int) {
@@ -1486,7 +1494,13 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		case outcomeCommitted:
 			d.updateRoutingOutcomeForAttempt(target, d.successRoutingOutcomeFor(target.pending))
 		case outcomeRetry:
-			if d.lastErrCode == http.StatusGatewayTimeout {
+			// A 504 here is a coordinator-synthesized first-chunk timeout ONLY
+			// when there is no typed terminal cause: a typed provider 504
+			// (safety_deadline / backpressure_timeout) is a real provider
+			// terminal and must keep its provider-error route class and its
+			// attempt usage (setLastError clears the cause for synthetic
+			// timeouts, so the discriminator cannot go stale).
+			if d.lastErrCode == http.StatusGatewayTimeout && d.lastErrTerminalCause == "" {
 				d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "first_chunk_timeout", d.lastErrCode))
 			} else {
 				// Post-dispatch provider failure (incl. OOM/model-load): admitted but failed.
@@ -2315,7 +2329,9 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 		case outcomeCommitted:
 			d.updateRoutingOutcomeForAttempt(target, d.successRoutingOutcomeFor(target.pending))
 		case outcomeRetry:
-			if d.lastErrCode == http.StatusGatewayTimeout {
+			// Synthetic-timeout 504s only when untyped — a typed provider 504
+			// keeps its provider-error class + usage (see waitFirstChunk).
+			if d.lastErrCode == http.StatusGatewayTimeout && d.lastErrTerminalCause == "" {
 				if d.preambleLiveness {
 					d.updateRoutingOutcomeForAttempt(target, d.errorRoutingOutcomeFor(target.pending, "timeout", "preamble_liveness_timeout", d.lastErrCode))
 				} else {

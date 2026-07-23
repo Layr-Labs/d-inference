@@ -128,3 +128,69 @@ func TestProviderFailedRoutingOutcomeCarriesTypedAttemptUsage(t *testing.T) {
 		t.Fatalf("legacy follow-up must clear stale usage, got %+v", out)
 	}
 }
+
+// TestSetLastErrorClearsTypedTerminalFields: a coordinator-synthesized error
+// (timeout / no-provider / coordinator fault) replacing a typed provider
+// terminal must clear the retained cause and usage — otherwise
+// shouldStopFailover reclassifies the unrelated later failure as transient
+// capacity (stale admission_timeout) and can latch the 429 path after mixed
+// failures while more providers remain, and stale usage lands on the wrong
+// attempt's route row.
+func TestSetLastErrorClearsTypedTerminalFields(t *testing.T) {
+	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
+	msg := typedAdmissionTimeoutMsg()
+	msg.AttemptUsage = &protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 3}
+	d.setLastInferenceError(nil, msg)
+	if d.lastErrTerminalCause == "" || d.lastErrAttemptUsage == nil {
+		t.Fatal("premise: typed fields must be retained from the provider terminal")
+	}
+
+	d.setLastError("timeout waiting for first response", 504)
+	if d.lastErrTerminalCause != "" {
+		t.Fatalf("synthetic error must clear the typed cause, got %q", d.lastErrTerminalCause)
+	}
+	if d.lastErrAttemptUsage != nil {
+		t.Fatalf("synthetic error must clear the typed usage, got %+v", d.lastErrAttemptUsage)
+	}
+	// And the synthetic timeout must NOT classify as transient capacity.
+	if d.shouldStopFailover() {
+		t.Fatal("a synthetic timeout after a typed capacity terminal must keep fault failover")
+	}
+	if d.capacityRetries != 0 {
+		t.Fatalf("capacityRetries = %d, want 0 — stale cause must not count capacity retries", d.capacityRetries)
+	}
+}
+
+// TestTypedProvider504KeepsProviderErrorRouteClass: the wait loops' route
+// defers use `504 && no typed cause` to mean a coordinator-synthesized
+// timeout. A typed provider 504 (safety_deadline / backpressure_timeout) must
+// instead flow through providerFailedRoutingOutcomeFor — keeping the
+// provider_error class and its attempt usage — while an untyped 504 keeps the
+// synthetic-timeout classification bit-for-bit.
+func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
+	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
+	pr := &registry.PendingRequest{RequestID: "req-504", Model: "m"}
+
+	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
+		RequestID: "req-504", Error: "safety_deadline: safety ceiling expired",
+		StatusCode: 504, TerminalCause: terminalCauseSafetyDeadline,
+		AttemptUsage: &protocol.UsageInfo{PromptTokens: 11, CompletionTokens: 2},
+	})
+	// The exact discriminator the wait-loop defers use:
+	if d.lastErrCode == 504 && d.lastErrTerminalCause == "" {
+		t.Fatal("typed 504 must NOT satisfy the synthetic-timeout discriminator")
+	}
+	out := d.providerFailedRoutingOutcomeFor(pr)
+	if out.ErrorClass != "provider_error" {
+		t.Fatalf("typed 504 route class = %q, want provider_error", out.ErrorClass)
+	}
+	if out.PromptTokens != 11 || out.CompletionTokens != 2 || !out.CompletionTokensSet {
+		t.Fatalf("typed 504 must carry attempt usage, got %+v", out)
+	}
+
+	// Untyped (synthetic) 504 still satisfies the timeout discriminator.
+	d.setLastError("timeout waiting for first response", 504)
+	if !(d.lastErrCode == 504 && d.lastErrTerminalCause == "") {
+		t.Fatal("synthetic 504 must satisfy the synthetic-timeout discriminator")
+	}
+}

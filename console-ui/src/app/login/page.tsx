@@ -6,7 +6,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, Suspense } from "react";
 
 function isSafeNext(next: string): boolean {
-  return next.startsWith("/") && !next.startsWith("//");
+  return next.startsWith("/") && !next.startsWith("//") && !/^[a-z][a-z0-9+.-]*:/i.test(next);
 }
 
 function LoginContent() {

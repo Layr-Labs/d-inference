@@ -20,9 +20,10 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	if os.Getenv("DARKBLOOM_MIXED_VERSION") != "1" {
 		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.12 binary")
 	}
-	if output, err := exec.Command("/usr/bin/csrutil", "status").CombinedOutput(); err != nil || !strings.Contains(string(output), "status: enabled") {
-		t.Skip("released v0.7.12 enforces SIP; this runner cannot execute it")
-	}
+	output, err := exec.Command("/usr/bin/csrutil", "status").CombinedOutput()
+	require.NoError(t, err, "mandatory v0.7.12 compatibility gate requires SIP")
+	require.Contains(t, string(output), "status: enabled",
+		"mandatory v0.7.12 compatibility gate cannot silently skip without SIP")
 	require.NotEmpty(t, os.Getenv("DARKBLOOM_PROVIDER_BINARY"))
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
 	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")

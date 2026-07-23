@@ -61,8 +61,11 @@ Shipping code and activating optimizations are separate operations:
 5. Exercise chat completions, completions, Responses, and Anthropic Messages,
    including auto/none/required/named tools, stop sequences, body limits, and
    mixed-version fallback.
-6. Provider publication must not change the current operator-selected cache
-   routing percentage, plan-QPS cap, holder TTL, or master key.
+6. Provider publication must not change any operator-selected cache control:
+   routing mode, activation percentage, plan-QPS cap, holder TTL, maximum
+   holders, maximum discount, maximum cost fraction, or master key. Use the
+   complete root-only before/after environment digest in the deploy procedure,
+   not a partial visible-field comparison.
 7. MTP remains default-off and is a separate rollout.
 
 The GitHub `benchmarks` environment approval is a human release gate. Do not

@@ -68,6 +68,26 @@ jobs:
           /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
           /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-e2b-it-4bit', revision=os.environ['EXACT_CACHE_MODEL_REVISION'], token=False)"
 
+      - name: Pin exact-cache model snapshot selection
+        run: |
+          /tmp/mlxvenv/bin/python <<'PY'
+          import os
+          from pathlib import Path
+
+          snapshots = (
+              Path.home()
+              / ".cache/huggingface/hub/models--mlx-community--gemma-4-e2b-it-4bit/snapshots"
+          )
+          selected = snapshots / os.environ["EXACT_CACHE_MODEL_REVISION"]
+          if not selected.is_dir():
+              raise SystemExit(f"pinned exact-cache snapshot missing: {selected}")
+          for candidate in snapshots.iterdir():
+              if candidate.is_dir():
+                  os.utime(candidate, (1, 1))
+          os.utime(selected, None)
+          print(f"Pinned exact-cache snapshot: {selected.name}")
+          PY
+
       - name: Run integration + profile tests
         run: |
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"

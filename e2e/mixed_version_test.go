@@ -26,6 +26,7 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	require.NotEmpty(t, os.Getenv("DARKBLOOM_PROVIDER_BINARY"))
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
 	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")
+	t.Setenv("DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL", "1")
 
 	suite := testbed.NewSuite(testbed.SuiteConfig{})
 	require.NoError(t, suite.Start(t.Context()))

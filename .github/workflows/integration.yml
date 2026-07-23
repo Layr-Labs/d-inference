@@ -98,6 +98,7 @@ jobs:
             DARKBLOOM_REPO_ROOT="$GITHUB_WORKSPACE" \
             TESTBED_PROVIDER_CONFIG=debug \
             DARKBLOOM_CBV2_MTP=0 \
+            DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 \
               go test ./e2e -count=1 -v -timeout 15m -p=1 \
                 -run 'TestIntegration_(NonStreamingInference|StreamingInference)'
           )

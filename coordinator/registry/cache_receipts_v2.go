@@ -312,6 +312,13 @@ func (t *cacheRoutingTracker) applyLookupV2Result(
 			)
 		}
 	}
+	t.ssdLookups++
+	switch msg.Outcome {
+	case "hit":
+		t.ssdHits++
+	case "miss_absent", "miss_corrupt":
+		t.ssdMisses++
+	}
 	return true, false
 }
 
@@ -402,6 +409,7 @@ func (t *cacheRoutingTracker) applyReadyV2Result(
 			ExpiresAt:               now.Add(t.ttl),
 		})
 	}
+	t.ssdDonations++
 	return true, false
 }
 

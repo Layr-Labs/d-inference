@@ -64,6 +64,9 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	if status.RoutingMode != registry.CacheRoutingOff {
 		t.Fatalf("routing mode=%q, want off", status.RoutingMode)
 	}
+	if status.Activation.Percent != 100 || status.Activation.MaxPlanQPS != 0 {
+		t.Fatalf("activation status=%+v", status.Activation)
+	}
 	if !status.Sidecar.Enabled || status.Sidecar.Running || status.Sidecar.Ready {
 		t.Fatalf("sidecar status=%+v", status.Sidecar)
 	}
@@ -80,9 +83,33 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	for _, key := range []string{
 		"exact_cache_routing_mode{mode=off}",
 		"exact_cache_routing_mode{mode=on}",
+		"exact_cache_activation_percent",
+		"exact_cache_activation_max_plan_qps",
+		"exact_cache_activation{outcome=admitted}",
+		"exact_cache_activation{outcome=sampled_out}",
+		"exact_cache_activation{outcome=rate_limited}",
+		"exact_cache_activation{outcome=cold_only}",
 		"exact_cache_sidecar_enabled",
 		"exact_cache_sidecar_running",
 		"exact_cache_sidecar_ready",
+		"exact_cache_sidecar_restart_reason{reason=none}",
+		"exact_cache_sidecar_restart_suppressed",
+		"exact_cache_sidecar_child_generation",
+		"exact_cache_sidecar_consecutive_health_failures",
+		"exact_cache_sidecar_health_timeouts",
+		"exact_cache_sidecar_preload_timeouts",
+		"exact_cache_preload_ready",
+		"exact_cache_preload_contracts",
+		"exact_cache_preload_runs",
+		"exact_cache_preload_failures",
+		"exact_cache_preload_results{state=warm}",
+		"exact_cache_preload_results{state=cold}",
+		"exact_cache_sidecar_plans{outcome=succeeded}",
+		"exact_cache_sidecar_plans{outcome=cold_only}",
+		"exact_cache_sidecar_plans{outcome=overload}",
+		"exact_cache_sidecar_plans{outcome=timeout}",
+		"exact_cache_sidecar_contract_loads{state=cold}",
+		"exact_cache_sidecar_contract_loads{state=warm}",
 		"exact_cache_prompt_artifacts{state=ready}",
 		"exact_cache_prompt_artifacts{state=pending}",
 		"exact_cache_prompt_artifacts{state=failed}",
@@ -92,6 +119,10 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_v2_ready_models",
 		"exact_cache_holders",
 		"exact_cache_attempts",
+		"exact_cache_ssd_lifecycle{event=lookup}",
+		"exact_cache_ssd_lifecycle{event=miss}",
+		"exact_cache_ssd_lifecycle{event=hit}",
+		"exact_cache_ssd_lifecycle{event=donation}",
 	} {
 		if _, ok := gauges[key]; !ok {
 			t.Fatalf("missing exact-cache gauge %q", key)

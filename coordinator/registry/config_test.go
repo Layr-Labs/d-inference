@@ -91,7 +91,10 @@ func TestReadConfigWarmPoolCanBeDisabled(t *testing.T) {
 }
 
 func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
-	base := CacheRoutingConfig{TTL: 10 * time.Minute, MaxHolders: 4, MaxDiscountMs: 1000, MaxCostFraction: .35}
+	base := CacheRoutingConfig{
+		ActivationPct: 100, TTL: 10 * time.Minute, MaxHolders: 4,
+		MaxDiscountMs: 1000, MaxCostFraction: .35,
+	}
 	base.Mode = CacheRoutingOff
 	if err := base.Check(); err != nil {
 		t.Fatalf("off mode required a key: %v", err)
@@ -115,7 +118,7 @@ func TestCacheRoutingConfigFailsClosedUnlessOff(t *testing.T) {
 }
 
 func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
-	for _, suffix := range []string{"MODE", "TTL", "MAX_HOLDERS", "MAX_DISCOUNT_MS", "MAX_COST_FRACTION", "CACHE_MASTER_KEY"} {
+	for _, suffix := range []string{"MODE", "PERCENT", "MAX_PLAN_QPS", "TTL", "MAX_HOLDERS", "MAX_DISCOUNT_MS", "MAX_COST_FRACTION", "CACHE_MASTER_KEY"} {
 		key := env.EnvPrefix + "_CACHE_ROUTING_" + suffix
 		if suffix == "CACHE_MASTER_KEY" {
 			key = env.EnvPrefix + "_CACHE_MASTER_KEY"
@@ -123,14 +126,43 @@ func TestReadConfigCacheRoutingDefaultsOff(t *testing.T) {
 		t.Setenv(key, "")
 	}
 	cfg := ReadConfig().CacheRouting
-	if cfg.Mode != "" || cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 || cfg.MaxDiscountMs != 1000 || cfg.MaxCostFraction != .35 {
+	if cfg.Mode != "" || cfg.ActivationPct != 100 || cfg.MaxPlanQPS != 0 ||
+		cfg.TTL != 10*time.Minute || cfg.MaxHolders != 4 ||
+		cfg.MaxDiscountMs != 1000 || cfg.MaxCostFraction != .35 {
 		t.Fatalf("cache routing defaults = %+v", cfg)
+	}
+}
+
+func TestReadConfigCacheRoutingActivationOverrides(t *testing.T) {
+	t.Setenv(env.EnvPrefix+"_CACHE_ROUTING_PERCENT", "1")
+	t.Setenv(env.EnvPrefix+"_CACHE_ROUTING_MAX_PLAN_QPS", "1")
+	cfg := ReadConfig().CacheRouting
+	if cfg.ActivationPct != 1 || cfg.MaxPlanQPS != 1 {
+		t.Fatalf("cache routing activation overrides=%+v", cfg)
+	}
+}
+
+func TestReadConfigCacheRoutingRejectsMalformedActivationLimits(t *testing.T) {
+	for _, tc := range []struct {
+		key   string
+		value func(CacheRoutingConfig) float64
+	}{
+		{key: env.EnvPrefix + "_CACHE_ROUTING_PERCENT", value: func(c CacheRoutingConfig) float64 { return c.ActivationPct }},
+		{key: env.EnvPrefix + "_CACHE_ROUTING_MAX_PLAN_QPS", value: func(c CacheRoutingConfig) float64 { return c.MaxPlanQPS }},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			t.Setenv(tc.key, "not-a-number")
+			cfg := ReadConfig().CacheRouting
+			if !math.IsNaN(tc.value(cfg)) || cfg.Check() == nil {
+				t.Fatalf("malformed safety limit %s silently fell back: %+v", tc.key, cfg)
+			}
+		})
 	}
 }
 
 func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
 	base := CacheRoutingConfig{
-		Mode: CacheRoutingOff, TTL: time.Minute, MaxHolders: 4,
+		Mode: CacheRoutingOff, ActivationPct: 100, TTL: time.Minute, MaxHolders: 4,
 		MaxDiscountMs: 1000, MaxCostFraction: .35,
 	}
 	for _, tc := range []struct {
@@ -153,5 +185,51 @@ func TestCacheRoutingConfigRejectsNonFiniteDiscounts(t *testing.T) {
 				t.Fatalf("accepted non-finite cache routing config: %+v", cfg)
 			}
 		})
+	}
+}
+
+func TestCacheRoutingConfigValidatesOperationalActivation(t *testing.T) {
+	base := CacheRoutingConfig{
+		Mode: CacheRoutingOff, ActivationPct: 100, TTL: time.Minute,
+		MaxHolders: 4, MaxDiscountMs: 1000, MaxCostFraction: .35,
+	}
+	for _, tc := range []struct {
+		name    string
+		percent float64
+		qps     float64
+	}{
+		{name: "zero_percent", percent: 0},
+		{name: "negative_percent", percent: -1},
+		{name: "percent_over_100", percent: 100.01},
+		{name: "percent_nan", percent: math.NaN()},
+		{name: "negative_qps", percent: 100, qps: -1},
+		{name: "qps_over_limit", percent: 100, qps: maxCacheRoutingPlanQPS + 1},
+		{name: "qps_infinite", percent: 100, qps: math.Inf(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := base
+			cfg.ActivationPct = tc.percent
+			cfg.MaxPlanQPS = tc.qps
+			if err := cfg.Check(); err == nil {
+				t.Fatalf("accepted invalid activation config: %+v", cfg)
+			}
+		})
+	}
+	base.ActivationPct = 1
+	base.MaxPlanQPS = 1
+	if err := base.Check(); err != nil {
+		t.Fatalf("rejected safe 1%%/1 QPS activation: %v", err)
+	}
+}
+
+func TestConfigureCacheRoutingRejectsExplicitZeroPercent(t *testing.T) {
+	reg := New(testLogger())
+	err := reg.ConfigureCacheRouting(CacheRoutingConfig{
+		Mode: CacheRoutingOff, ActivationPct: 0,
+		TTL: time.Minute, MaxHolders: 4,
+		MaxDiscountMs: 1000, MaxCostFraction: .35,
+	})
+	if err == nil {
+		t.Fatal("ConfigureCacheRouting rewrote explicit zero percent instead of rejecting it")
 	}
 }

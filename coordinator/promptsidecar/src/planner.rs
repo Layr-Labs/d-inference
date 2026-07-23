@@ -1,29 +1,33 @@
 use crate::api::{BlockBoundary, PlanRequest, PlanResponse};
+use crate::artifact_cache::{CacheAccess, SingleflightLru};
 use crate::artifacts::{self, LoadedArtifacts};
 use crate::contract::BLOCK_SIZE;
 use crate::endpoint;
 use crate::hash;
+use crate::metrics::{Metrics, MetricsSnapshot};
 use crate::normalize;
 use crate::render;
+use serde::Serialize;
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Instant;
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
+
+mod preloading;
 
 #[derive(Clone)]
 pub struct Planner {
     artifact_root: Arc<PathBuf>,
-    cache: Arc<Mutex<ArtifactCache>>,
+    cache: Arc<SingleflightLru<LoadedArtifacts, artifacts::ArtifactError>>,
     permits: Arc<Semaphore>,
+    preload_lock: Arc<Mutex<()>>,
+    readiness: Arc<AtomicU8>,
+    metrics: Arc<Metrics>,
+    max_concurrency: u32,
     max_tokens: usize,
-}
-
-struct ArtifactCache {
-    entries: HashMap<String, Arc<LoadedArtifacts>>,
-    order: VecDeque<String>,
-    capacity: usize,
 }
 
 struct Planned {
@@ -35,6 +39,8 @@ struct Planned {
 
 #[derive(Debug, Error)]
 pub enum PlanError {
+    #[error("planner is not ready")]
+    NotReady,
     #[error("planner is at capacity")]
     AtCapacity,
     #[error("request scope is invalid")]
@@ -57,6 +63,26 @@ pub enum PlanError {
     Worker,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u8)]
+pub enum Readiness {
+    Starting = 0,
+    Ready = 1,
+    Degraded = 2,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PlannerStatus {
+    pub status: &'static str,
+    pub ready: bool,
+    pub loaded_contracts: usize,
+    pub loading_contracts: usize,
+    pub max_loaded_contracts: usize,
+    pub planning_permits_available: usize,
+    pub max_planning_concurrency: u32,
+    pub metrics: MetricsSnapshot,
+}
+
 impl Planner {
     pub fn new(
         artifact_root: PathBuf,
@@ -64,16 +90,57 @@ impl Planner {
         max_loaded_contracts: usize,
         max_tokens: usize,
     ) -> Self {
+        let max_concurrency = max_concurrency.max(1).min(u32::MAX as usize);
+        let max_concurrency_u32 = u32::try_from(max_concurrency).unwrap_or(u32::MAX);
         Self {
             artifact_root: Arc::new(artifact_root),
-            cache: Arc::new(Mutex::new(ArtifactCache {
-                entries: HashMap::new(),
-                order: VecDeque::new(),
-                capacity: max_loaded_contracts.max(1),
-            })),
-            permits: Arc::new(Semaphore::new(max_concurrency.max(1))),
+            cache: Arc::new(SingleflightLru::new(max_loaded_contracts)),
+            permits: Arc::new(Semaphore::new(max_concurrency)),
+            preload_lock: Arc::new(Mutex::new(())),
+            readiness: Arc::new(AtomicU8::new(Readiness::Ready as u8)),
+            metrics: Arc::new(Metrics::default()),
+            max_concurrency: max_concurrency_u32,
             max_tokens,
         }
+    }
+
+    pub fn mark_starting(&self) {
+        self.set_readiness(Readiness::Starting);
+    }
+
+    pub fn readiness(&self) -> Readiness {
+        match self.readiness.load(Ordering::Acquire) {
+            value if value == Readiness::Ready as u8 => Readiness::Ready,
+            value if value == Readiness::Degraded as u8 => Readiness::Degraded,
+            _ => Readiness::Starting,
+        }
+    }
+
+    pub fn status(&self) -> PlannerStatus {
+        let readiness = self.readiness();
+        let cache = self.cache.stats();
+        PlannerStatus {
+            status: match readiness {
+                Readiness::Starting => "starting",
+                Readiness::Ready => "ok",
+                Readiness::Degraded => "degraded",
+            },
+            ready: readiness == Readiness::Ready,
+            loaded_contracts: cache.loaded,
+            loading_contracts: cache.loading,
+            max_loaded_contracts: cache.capacity,
+            planning_permits_available: self.permits.available_permits(),
+            max_planning_concurrency: self.max_concurrency,
+            metrics: self.metrics.snapshot(),
+        }
+    }
+
+    pub fn record_timeout(&self, elapsed: std::time::Duration) {
+        self.metrics.plan_timed_out(elapsed);
+    }
+
+    fn set_readiness(&self, readiness: Readiness) {
+        self.readiness.store(readiness as u8, Ordering::Release);
     }
 
     pub async fn plan(&self, request: PlanRequest) -> Result<PlanResponse, PlanError> {
@@ -94,18 +161,40 @@ impl Planner {
     }
 
     async fn plan_with_tokens(&self, request: PlanRequest) -> Result<Planned, PlanError> {
+        let started = Instant::now();
+        self.metrics.plan_started();
+        if self.readiness() != Readiness::Ready {
+            self.metrics.plan_not_ready(started.elapsed());
+            return Err(PlanError::NotReady);
+        }
         if request.scope_id.is_empty() || request.scope_id.len() > 256 {
+            self.metrics.plan_finished(started.elapsed(), false);
             return Err(PlanError::InvalidScope);
         }
-        let permit = self
-            .permits
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| PlanError::AtCapacity)?;
+        let permit = match self.permits.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                self.metrics.plan_at_capacity(started.elapsed());
+                return Err(PlanError::AtCapacity);
+            }
+        };
         let planner = self.clone();
-        tokio::task::spawn_blocking(move || planner.plan_sync(request, permit))
-            .await
-            .map_err(|_| PlanError::Worker)?
+        let result =
+            match tokio::task::spawn_blocking(move || planner.plan_sync(request, permit)).await {
+                Ok(result) => result,
+                Err(_) => Err(PlanError::Worker),
+            };
+        // Record completion only after the blocking task rejoins this request
+        // future. If the HTTP deadline drops the future, the server records the
+        // timeout and the detached worker cannot double-classify the request.
+        match &result {
+            Ok(_) => self.metrics.plan_finished(started.elapsed(), true),
+            Err(PlanError::Render(render::RenderError::DynamicTime)) => {
+                self.metrics.plan_cold_only(started.elapsed());
+            }
+            Err(_) => self.metrics.plan_finished(started.elapsed(), false),
+        }
+        result
     }
 
     fn plan_sync(
@@ -113,7 +202,7 @@ impl Planner {
         request: PlanRequest,
         _permit: OwnedSemaphorePermit,
     ) -> Result<Planned, PlanError> {
-        let contract = self.load_contract(&request.prompt_contract_id)?;
+        let (contract, _) = self.load_contract(&request.prompt_contract_id)?;
         let lowered =
             endpoint::lower(request.endpoint, request.body).map_err(|_| PlanError::Endpoint)?;
         let provider_body = Value::Object(lowered.clone());
@@ -166,36 +255,29 @@ impl Planner {
         })
     }
 
-    fn load_contract(&self, contract_id: &str) -> Result<Arc<LoadedArtifacts>, PlanError> {
-        {
-            let mut cache = self.cache.lock().map_err(|_| PlanError::Contract)?;
-            if let Some(contract) = cache.entries.get(contract_id).cloned() {
-                touch(&mut cache.order, contract_id);
-                return Ok(contract);
+    fn load_contract(
+        &self,
+        contract_id: &str,
+    ) -> Result<(Arc<LoadedArtifacts>, CacheAccess), PlanError> {
+        let metrics = self.metrics.clone();
+        let root = self.artifact_root.clone();
+        let loaded = self.cache.get_or_load(contract_id, || {
+            let started = Instant::now();
+            let result = artifacts::load(&root, contract_id);
+            metrics.cold_load_finished(started.elapsed(), result.is_ok());
+            result
+        });
+        match loaded {
+            Ok((contract, CacheAccess::Warm)) => {
+                self.metrics.warm_load();
+                Ok((contract, CacheAccess::Warm))
             }
-        }
-        let loaded = Arc::new(
-            artifacts::load(&self.artifact_root, contract_id).map_err(|_| PlanError::Contract)?,
-        );
-        let mut cache = self.cache.lock().map_err(|_| PlanError::Contract)?;
-        if let Some(existing) = cache.entries.get(contract_id).cloned() {
-            touch(&mut cache.order, contract_id);
-            return Ok(existing);
-        }
-        while cache.entries.len() >= cache.capacity {
-            if let Some(oldest) = cache.order.pop_front() {
-                cache.entries.remove(&oldest);
+            Ok((contract, CacheAccess::Waited)) => {
+                self.metrics.load_wait();
+                Ok((contract, CacheAccess::Waited))
             }
+            Ok((contract, CacheAccess::Cold)) => Ok((contract, CacheAccess::Cold)),
+            Err(_) => Err(PlanError::Contract),
         }
-        cache.entries.insert(contract_id.into(), loaded.clone());
-        cache.order.push_back(contract_id.into());
-        Ok(loaded)
     }
-}
-
-fn touch(order: &mut VecDeque<String>, contract_id: &str) {
-    if let Some(index) = order.iter().position(|value| value == contract_id) {
-        order.remove(index);
-    }
-    order.push_back(contract_id.into());
 }

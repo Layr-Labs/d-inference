@@ -210,6 +210,8 @@ func main() {
 	cacheRoutingCfg := reg.CacheRoutingConfigSnapshot()
 	logger.Info("provider-confirmed cache routing configured",
 		"mode", cacheRoutingCfg.Mode,
+		"activation_percent", cacheRoutingCfg.ActivationPct,
+		"max_plan_qps", cacheRoutingCfg.MaxPlanQPS,
 		"ttl", cacheRoutingCfg.TTL.String(),
 		"max_holders", cacheRoutingCfg.MaxHolders,
 		"max_discount_ms", cacheRoutingCfg.MaxDiscountMs,
@@ -230,6 +232,7 @@ func main() {
 	//     https://pro.ip-api.com endpoint; unset falls back to the free, 45 req/min
 	//     http://ip-api.com endpoint (graceful, so dev without a key still works).
 	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
+	var promptProvisioner *promptcontract.Provisioner
 	if cfg.PromptSidecar.Enabled {
 		artifactBaseURL, err := url.Parse(cfg.PromptSidecar.ArtifactBaseURL)
 		if err != nil {
@@ -254,6 +257,7 @@ func main() {
 				if provisionErr != nil {
 					logger.Error("prompt artifact provisioner disabled", "error", provisionErr)
 				} else {
+					promptProvisioner = provisioner
 					srv.SetPromptArtifactProvisioner(provisioner)
 				}
 			}
@@ -859,6 +863,19 @@ func main() {
 		srv.SetPromptContractClient(promptSidecar.Client())
 	}
 	promptSidecar.Start(ctx)
+	if cfg.PromptSidecar.Enabled && promptProvisioner != nil {
+		promptPreloader, err := promptcontract.NewPreloadController(
+			promptProvisioner,
+			promptSidecar,
+			promptcontract.PreloadControllerConfig{},
+		)
+		if err != nil {
+			logger.Error("prompt contract preload gate disabled", "error", err)
+		} else {
+			srv.SetPromptPreloadController(promptPreloader)
+			promptPreloader.Start(ctx)
+		}
+	}
 
 	// Start listening.
 	go func() {

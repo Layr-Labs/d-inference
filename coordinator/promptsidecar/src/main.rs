@@ -47,6 +47,7 @@ async fn main() -> Result<()> {
         socket_path: args.socket,
         max_body_bytes: args.max_body_bytes,
         header_read_timeout: Duration::from_millis(args.header_read_timeout_ms),
+        body_read_timeout: Duration::from_secs(5),
         request_timeout: Duration::from_millis(args.request_timeout_ms),
         max_connections: args.max_connections,
     };

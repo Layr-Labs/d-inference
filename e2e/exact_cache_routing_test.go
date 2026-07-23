@@ -148,16 +148,27 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	supervisor := promptcontract.NewSupervisor(supervisorConfig)
 	supervisor.Start(suite.Ctx)
 	t.Cleanup(supervisor.Close)
-	waitForSidecar(t, supervisor, 15*time.Second)
+	waitForSidecarLive(t, supervisor, 15*time.Second)
+	preloader, err := promptcontract.NewPreloadController(
+		provisioner,
+		supervisor,
+		promptcontract.PreloadControllerConfig{PollInterval: 50 * time.Millisecond},
+	)
+	require.NoError(t, err)
+	preloader.Start(suite.Ctx)
+	t.Cleanup(preloader.Close)
 
 	suite.Coordinator.Server.SetPromptArtifactProvisioner(provisioner)
 	suite.Coordinator.Server.SetPromptContractClient(supervisor.Client())
+	suite.Coordinator.Server.SetPromptPreloadController(preloader)
+	waitForPreloadedContract(t, preloader, contractID, 30*time.Second)
 	suite.Coordinator.Registry.SetModelCatalog([]registry.CatalogEntry{{
 		ID: model, WeightHash: firstModel.WeightHash,
 	}})
 	require.NoError(t, suite.Coordinator.Registry.ConfigureCacheRouting(
 		registry.CacheRoutingConfig{
 			Mode:            registry.CacheRoutingOn,
+			ActivationPct:   100,
 			TTL:             10 * time.Minute,
 			MaxHolders:      4,
 			MaxDiscountMs:   1_000,
@@ -165,6 +176,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 			MasterKey:       "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
 		}))
 
+	lifecycleBefore := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
 	prompt := longExactCachePrompt()
 	first := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Zero(t, first.cachedTokens, "first request must prefill cold before donation")
@@ -178,18 +190,51 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 		return holders > 0
 	}, 2*time.Minute, 250*time.Millisecond,
 		"durable frozen-full donation did not publish a reusable cache holder")
+	require.Eventually(t, func() bool {
+		lifecycle := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
+		return lifecycle.SSDLookups > lifecycleBefore.SSDLookups &&
+			lifecycle.SSDMisses > lifecycleBefore.SSDMisses &&
+			lifecycle.SSDDonations > lifecycleBefore.SSDDonations
+	}, 2*time.Minute, 250*time.Millisecond,
+		"miss and donation lifecycle telemetry did not advance")
 
-	// Bring the second provider into the candidate set. Provider-confirmed
-	// evidence must keep the repeated request on the owner and preserve exact
-	// deterministic output through frozen-full adoption.
+	// Bring the second provider into the candidate set as a protocol-v1 peer.
+	// Force one real request through it to prove a mixed v1/v2 fleet keeps the
+	// v1 provider available for ordinary cold inference without cache hints.
 	stabilizeExactCacheRoutingCosts(providers, model)
 	providers[1].Mu().Lock()
+	providers[1].PrefixCacheProtocol = 1
+	providers[1].PrefixCacheV2Models = nil
 	providers[1].Status = registry.StatusOnline
 	providers[1].Mu().Unlock()
+	providers[0].Mu().Lock()
+	providers[0].Status = registry.StatusUntrusted
+	providers[0].Mu().Unlock()
+	mixedLifecycleBefore := suite.Coordinator.Registry.CacheRoutingLifecycleStatus()
+	mixedV1 := postExactCacheChat(
+		t, suite, suite.Users[0].APIKey, model,
+		"Serve this request through the protocol-v1 cold fallback provider.")
+	require.NotEmpty(t, mixedV1.content)
+	require.Zero(t, mixedV1.cachedTokens)
+	require.Equal(t, providers[1].ID, mixedV1.providerID,
+		"forced mixed-fleet request did not use the protocol-v1 provider")
+	require.Equal(t, mixedLifecycleBefore,
+		suite.Coordinator.Registry.CacheRoutingLifecycleStatus(),
+		"protocol-v1 cold fallback unexpectedly entered the exact-cache lifecycle")
+	providers[0].Mu().Lock()
+	providers[0].Status = registry.StatusOnline
+	providers[0].Mu().Unlock()
 
+	// Provider-confirmed evidence must keep the repeated request on the v2 owner
+	// and preserve exact deterministic output through frozen-full adoption.
 	second := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
 	require.Positive(t, second.cachedTokens)
 	require.Equal(t, first.content, second.content)
+	require.Eventually(t, func() bool {
+		return suite.Coordinator.Registry.CacheRoutingLifecycleStatus().SSDHits >
+			lifecycleBefore.SSDHits
+	}, 30*time.Second, 100*time.Millisecond,
+		"positive cache hit lifecycle telemetry did not advance")
 
 	isolated := postExactCacheChat(t, suite, suite.Users[1].APIKey, model, prompt)
 	require.Zero(t, isolated.cachedTokens,
@@ -198,6 +243,7 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	// Sidecar loss is never an inference outage. Stop the real supervised
 	// process, serve cold through the closed client, then restore a fresh
 	// supervisor over the same verified artifact directory.
+	preloader.Close()
 	supervisor.Close()
 	outage := postExactCacheChat(
 		t, suite, suite.Users[0].APIKey, model,
@@ -206,8 +252,20 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	restartedSupervisor := promptcontract.NewSupervisor(supervisorConfig)
 	restartedSupervisor.Start(suite.Ctx)
 	t.Cleanup(restartedSupervisor.Close)
-	waitForSidecar(t, restartedSupervisor, 15*time.Second)
+	waitForSidecarLive(t, restartedSupervisor, 15*time.Second)
+	restartedPreloader, err := promptcontract.NewPreloadController(
+		provisioner,
+		restartedSupervisor,
+		promptcontract.PreloadControllerConfig{PollInterval: 50 * time.Millisecond},
+	)
+	require.NoError(t, err)
+	restartedPreloader.Start(suite.Ctx)
+	t.Cleanup(restartedPreloader.Close)
 	suite.Coordinator.Server.SetPromptContractClient(restartedSupervisor.Client())
+	suite.Coordinator.Server.SetPromptPreloadController(restartedPreloader)
+	waitForPreloadedContract(t, restartedPreloader, contractID, 30*time.Second)
+	restored := postExactCacheChat(t, suite, suite.Users[0].APIKey, model, prompt)
+	require.Positive(t, restored.cachedTokens, "exact-cache routing did not reopen after re-preload")
 
 	// A live disconnect still leaves ordinary cold serving available.
 	suite.Coordinator.Registry.Disconnect(providers[0].ID)
@@ -232,6 +290,7 @@ func exactCacheRoutingTestModelID() string {
 type exactCacheResponse struct {
 	content      string
 	cachedTokens int
+	providerID   string
 }
 
 func postExactCacheChat(
@@ -280,6 +339,7 @@ func postExactCacheChat(
 	return exactCacheResponse{
 		content:      decoded.Choices[0].Message.Content,
 		cachedTokens: decoded.Usage.PromptTokensDetails.CachedTokens,
+		providerID:   response.Header.Get("X-Provider-Id"),
 	}
 }
 
@@ -365,7 +425,7 @@ func waitForProvisionedContract(
 	}, 30*time.Second, 100*time.Millisecond)
 }
 
-func waitForSidecar(
+func waitForSidecarLive(
 	t *testing.T,
 	supervisor *promptcontract.Supervisor,
 	timeout time.Duration,
@@ -373,8 +433,25 @@ func waitForSidecar(
 	t.Helper()
 	require.Eventually(t, func() bool {
 		status := supervisor.Status()
-		return status.Running && status.Ready
+		if !status.Running || status.ChildGeneration == 0 {
+			return false
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		defer cancel()
+		return supervisor.Client().Health(ctx) == nil
 	}, timeout, 100*time.Millisecond)
+}
+
+func waitForPreloadedContract(
+	t *testing.T,
+	preloader *promptcontract.PreloadController,
+	contractID string,
+	timeout time.Duration,
+) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		return preloader.ReadyFor(contractID)
+	}, timeout, 100*time.Millisecond, "active contract was not preloaded: %+v", preloader.Status())
 }
 
 func exactCacheSidecarBinary(t *testing.T) string {

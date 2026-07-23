@@ -104,6 +104,17 @@ migrate_exact_value \
     /data/prompt-contracts \
     /mnt/disks/userdata/prompt-contracts
 
+# v0.7.12 shipped one-strike-era probe timings. Migrate only those exact
+# historical defaults so explicit operator tuning remains untouched.
+migrate_exact_value \
+    EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS \
+    5000 \
+    120000
+migrate_exact_value \
+    EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS \
+    100 \
+    1000
+
 added=0
 while IFS= read -r line; do
     case "$line" in ""|\#*) continue ;; esac

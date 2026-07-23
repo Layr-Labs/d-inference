@@ -121,6 +121,7 @@ func TestOnlyActualCacheParticipationSuppressesReputationLatency(t *testing.T) {
 	reg := registry.New(quietLogger())
 	if err := reg.ConfigureCacheRouting(registry.CacheRoutingConfig{
 		Mode:            registry.CacheRoutingOn,
+		ActivationPct:   100,
 		TTL:             time.Minute,
 		MaxHolders:      4,
 		MaxDiscountMs:   1000,

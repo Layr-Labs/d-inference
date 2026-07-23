@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -65,6 +67,34 @@ func TestGaugeReadsEachCall(t *testing.T) {
 	s2 := m.Snapshot()
 	if s2.Gauges["dyn"] != 4 {
 		t.Fatalf("second: %v", s2.Gauges["dyn"])
+	}
+}
+
+func TestMetricsSnapshotHookRunsOnceForSharedGauges(t *testing.T) {
+	m := NewMetrics()
+	var refreshes atomic.Int64
+	var cached atomic.Int64
+	m.RegisterSnapshotHook(func() {
+		cached.Store(refreshes.Add(1))
+	})
+	for i := range 32 {
+		m.RegisterGauge(fmt.Sprintf("shared_%d", i), func() float64 {
+			return float64(cached.Load())
+		})
+	}
+
+	first := m.Snapshot()
+	if refreshes.Load() != 1 {
+		t.Fatalf("first snapshot refreshes=%d, want 1", refreshes.Load())
+	}
+	for _, value := range first.Gauges {
+		if value != 1 {
+			t.Fatalf("first snapshot gauge=%v, want 1", value)
+		}
+	}
+	m.Snapshot()
+	if refreshes.Load() != 2 {
+		t.Fatalf("second snapshot refreshes=%d, want 2", refreshes.Load())
 	}
 }
 

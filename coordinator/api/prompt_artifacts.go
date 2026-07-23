@@ -18,6 +18,10 @@ func (s *Server) SetPromptContractClient(client *promptcontract.Client) {
 	s.promptContract = client
 }
 
+func (s *Server) SetPromptPreloadController(controller *promptcontract.PreloadController) {
+	s.promptPreloader = controller
+}
+
 func (s *Server) PromptArtifactStatus(modelID string) (promptcontract.ProvisionStatus, bool) {
 	if s.promptArtifacts == nil {
 		return promptcontract.ProvisionStatus{}, false
@@ -25,9 +29,9 @@ func (s *Server) PromptArtifactStatus(modelID string) (promptcontract.ProvisionS
 	return s.promptArtifacts.Status(modelID)
 }
 
-func (s *Server) reconcilePromptArtifacts(records []store.ModelRegistryRecord) {
+func (s *Server) reconcilePromptArtifacts(records []store.ModelRegistryRecord) error {
 	if s.promptArtifacts == nil {
-		return
+		return nil
 	}
 	manifests := make([]promptcontract.Manifest, 0, len(records))
 	for _, record := range records {
@@ -50,9 +54,7 @@ func (s *Server) reconcilePromptArtifacts(records []store.ModelRegistryRecord) {
 			Files:           files,
 		})
 	}
-	if err := s.promptArtifacts.Reconcile(manifests); err != nil {
-		s.logger.Error("prompt artifact catalog reconcile rejected", "error", err)
-	}
+	return s.promptArtifacts.Reconcile(manifests)
 }
 
 func (s *Server) planCacheRoute(
@@ -61,18 +63,24 @@ func (s *Server) planCacheRoute(
 	body []byte,
 	hasMedia bool,
 ) registry.CachePlan {
-	if s.promptArtifacts == nil || s.promptContract == nil {
+	if s.promptArtifacts == nil || s.promptContract == nil || s.promptPreloader == nil {
 		return registry.CachePlan{}
 	}
 	status, ok := s.promptArtifacts.Status(model)
 	if !ok || !status.ArtifactReady || status.PromptContractID == "" {
 		return registry.CachePlan{}
 	}
-	return s.registry.PlanCacheRoute(ctx, s.promptContract, registry.CachePlanInput{
-		Account:          account,
-		Model:            model,
-		PromptContractID: status.PromptContractID,
-		Body:             body,
-		HasMedia:         hasMedia,
+	if !s.promptPreloader.ReadyFor(status.PromptContractID) {
+		return registry.CachePlan{}
+	}
+	result := s.registry.PlanCacheRouteWithResult(ctx, s.promptContract, registry.CachePlanInput{
+		Account:              account,
+		Model:                model,
+		PromptContractID:     status.PromptContractID,
+		ModelAggregateSHA256: status.ModelAggregateSHA256,
+		Body:                 body,
+		HasMedia:             hasMedia,
 	})
+	s.emitExactCachePlan(result)
+	return result.Plan
 }

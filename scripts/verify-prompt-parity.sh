@@ -70,3 +70,29 @@ PROMPT_PARITY_ARTIFACT_ROOT="$ARTIFACT_ROOT" \
 cargo +1.88.0 test --locked \
   --manifest-path "$ROOT/coordinator/promptsidecar/Cargo.toml" \
   --test shared_vectors production_plans_match_shared_token_vectors
+cargo +1.88.0 test --locked \
+  --manifest-path "$ROOT/coordinator/promptsidecar/Cargo.toml" \
+  --test planner_fixture concurrent_cold_contract_load_is_singleflight
+
+# Exercise the release sidecar through its real Go supervisor at the observed
+# production request rate. The harness preloads the deduplicated active
+# contracts, covers every supported vector round-robin, and fails on any plan
+# mismatch, timeout, overload, restart, child replacement, or RSS escape.
+cargo +1.88.0 build --locked --release \
+  --manifest-path "$ROOT/coordinator/promptsidecar/Cargo.toml" \
+  --bin promptsidecar
+SIDECAR_TARGET_DIRECTORY="$(
+  cargo +1.88.0 metadata --locked --no-deps --format-version 1 \
+    --manifest-path "$ROOT/coordinator/promptsidecar/Cargo.toml" |
+    jq -r '.target_directory'
+)"
+(
+  cd "$ROOT"
+  go run ./coordinator/cmd/promptsidecarloadproof \
+    --binary "$SIDECAR_TARGET_DIRECTORY/release/promptsidecar" \
+    --artifact-root "$ARTIFACT_ROOT" \
+    --vectors "$GENERATED" \
+    --duration "${PROMPT_LOAD_PROOF_DURATION:-15s}" \
+    --qps "${PROMPT_LOAD_PROOF_QPS:-25}" \
+    --max-rss-mib "${PROMPT_LOAD_PROOF_MAX_RSS_MIB:-1024}"
+)

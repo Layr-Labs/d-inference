@@ -47,6 +47,7 @@ func exactTestRegistry(t *testing.T) (*Registry, *Provider, protocol.PrefixCache
 	r := New(testLogger())
 	err := r.ConfigureCacheRouting(CacheRoutingConfig{
 		Mode:            CacheRoutingOn,
+		ActivationPct:   100,
 		TTL:             time.Minute,
 		MaxHolders:      8,
 		MaxDiscountMs:   1_000,
@@ -451,6 +452,97 @@ func TestExactRoutingV1ProviderRemainsColdBaseline(t *testing.T) {
 	}
 }
 
+func TestExactRoutingMixedV1V2FleetFallsBackToV1Inference(t *testing.T) {
+	r, original, capability := exactTestRegistry(t)
+	r.mu.Lock()
+	delete(r.providers, original.ID)
+	r.mu.Unlock()
+	v1 := makeSchedulerProvider(t, r, "mixed-v1", "model", 100)
+	v2 := makeSchedulerProvider(t, r, "mixed-v2", "model", 100)
+	v1.mu.Lock()
+	v1.PrefixCacheProtocol = 1
+	v1.mu.Unlock()
+	v2.mu.Lock()
+	v2.PrefixCacheProtocol = 2
+	v2.PrefixCacheV2Models = map[string]protocol.PrefixCacheV2Capability{"model": capability}
+	// Keep the cache-capable provider routable but more expensive. The ordinary
+	// v1 provider must remain a valid cold fallback instead of failing closed.
+	v2.BackendCapacity.Slots[0].NumWaiting = 10
+	v2.mu.Unlock()
+
+	request := &PendingRequest{
+		RequestID: "mixed-fallback", Model: "model",
+		EstimatedPromptTokens: 512, RequestedMaxTokens: 128,
+		CachePlan: exactTestPlan(exactTestAnchor(1, "d")),
+	}
+	selected, decision := r.ReserveProviderEx("model", request)
+	if selected == nil || selected.ID != v1.ID {
+		t.Fatalf("mixed fleet did not fall back to v1: provider=%v decision=%+v", selected, decision)
+	}
+	if err := r.PrepareCacheAttempt(request, selected); err != nil {
+		t.Fatal(err)
+	}
+	if request.CacheReceiptNonce != "" || request.CacheScope != "" ||
+		request.PrefixCacheProtocol != 0 || request.CacheRoutingParticipates() {
+		t.Fatalf("v1 fallback received exact-cache metadata: %+v", request)
+	}
+}
+
+func TestExactRoutingAccountsMissDonationHitLifecycle(t *testing.T) {
+	r, provider, capability := exactTestRegistry(t)
+	a1 := exactTestAnchor(1, "a")
+	a2 := exactTestAnchor(2, "b")
+	a3 := exactTestAnchor(3, "c")
+
+	miss := &PendingRequest{
+		RequestID: "lifecycle-miss", Model: "model", CachePlan: exactTestPlan(a1, a2),
+	}
+	if err := r.PrepareCacheAttempt(miss, provider); err != nil {
+		t.Fatal(err)
+	}
+	if !r.ApplyPrefixCacheLookupV2(provider.ID, &protocol.PrefixCacheLookupV2Message{
+		RequestID: miss.RequestID, CacheReceiptNonce: miss.CacheReceiptNonce,
+		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
+		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
+		CacheSeq: 1, PromptAnchor: a2, Outcome: "miss_absent", Tier: "ssd", StageMs: 1,
+	}) {
+		t.Fatal("miss receipt rejected")
+	}
+	if !r.ApplyPrefixCacheReadyV2(provider.ID, &protocol.PrefixCacheReadyV2Message{
+		RequestID: miss.RequestID, CacheReceiptNonce: miss.CacheReceiptNonce,
+		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
+		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
+		CacheSeq: 2, Outcome: "ready", Tier: "ssd",
+		ReadyAnchors:               []protocol.PrefixCacheAnchor{a2, a3},
+		ExpectedPrefillTokensSaved: a3.TokenCount,
+		StageMs:                    2,
+	}) {
+		t.Fatal("donation receipt rejected")
+	}
+
+	hit := &PendingRequest{
+		RequestID: "lifecycle-hit", Model: "model", CachePlan: exactTestPlan(a1, a2, a3),
+	}
+	if err := r.PrepareCacheAttempt(hit, provider); err != nil {
+		t.Fatal(err)
+	}
+	if !r.ApplyPrefixCacheLookupV2(provider.ID, &protocol.PrefixCacheLookupV2Message{
+		RequestID: hit.RequestID, CacheReceiptNonce: hit.CacheReceiptNonce,
+		ModelID: "model", ModelAggregateHash: capability.ModelAggregateHash,
+		PromptContractID: capability.PromptContractID, CacheEpoch: capability.CacheEpoch,
+		CacheSeq: 3, PromptAnchor: a3, Outcome: "hit", Tier: "ssd",
+		MatchedAnchor: &a3, ExpectedPrefillTokensSaved: a3.TokenCount, StageMs: 1,
+	}) {
+		t.Fatal("hit receipt rejected")
+	}
+
+	status := r.CacheRoutingLifecycleStatus()
+	if status.SSDLookups != 2 || status.SSDMisses != 1 ||
+		status.SSDDonations != 1 || status.SSDHits != 1 {
+		t.Fatalf("lifecycle status=%+v", status)
+	}
+}
+
 func TestLegacyCacheBustKeyLengthMatchesSizingContract(t *testing.T) {
 	r, provider, _ := exactTestRegistry(t)
 	provider.mu.Lock()
@@ -525,6 +617,8 @@ func TestExactV2LongestHolderChangesMultiProviderSelection(t *testing.T) {
 		t.Fatalf("routing failed: %+v", decision)
 	}
 	if selected.ID != cached.ID || decision.CacheDiscountMs <= 0 ||
+		decision.CacheEstimatedTTFTSavedMs <= 0 ||
+		next.CacheSelectionEstimatedTTFTSavedMs != decision.CacheEstimatedTTFTSavedMs ||
 		next.CacheSelectionMode != "active" || !next.CacheSelectionSelected {
 		t.Fatalf("exact holder did not win: provider=%s decision=%+v request=%+v",
 			selected.ID, decision, next)

@@ -15,6 +15,9 @@ const (
 	defaultCacheRoutingMaxHolders      = 4
 	defaultCacheRoutingMaxDiscountMs   = 1000.0
 	defaultCacheRoutingMaxCostFraction = 0.35
+	defaultCacheRoutingActivationPct   = 100.0
+	defaultCacheRoutingMaxPlanQPS      = 0.0
+	maxCacheRoutingPlanQPS             = 1_000_000.0
 	cacheRoutingAttemptTTL             = 2 * time.Minute
 	cacheRoutingInFlightAttemptTTL     = 2 * time.Hour
 	cacheRoutingSweepInterval          = 30 * time.Second
@@ -64,8 +67,9 @@ func (pr *PendingRequest) CacheRoutingTelemetryEligible() bool {
 }
 
 type cacheRouteKeys struct {
-	route []byte
-	scope []byte
+	route      []byte
+	scope      []byte
+	activation []byte
 }
 
 type cacheHolder struct {
@@ -226,6 +230,10 @@ type cacheRoutingTracker struct {
 	attemptOrderByNonce map[string]*cacheAttemptOrderEntry
 	v2Sequences         map[cacheV2SequenceKey]uint64
 	rejectedV2          map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability
+	ssdLookups          uint64
+	ssdHits             uint64
+	ssdMisses           uint64
+	ssdDonations        uint64
 }
 
 func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTracker {
@@ -260,4 +268,29 @@ func (r *Registry) CacheRoutingStateCounts() (holders, attempts int) {
 	defer tracker.mu.Unlock()
 	tracker.sweepIfDueLocked(time.Now())
 	return tracker.holderCount, len(tracker.attempts)
+}
+
+type CacheRoutingLifecycleStatus struct {
+	SSDLookups   uint64 `json:"ssd_lookups"`
+	SSDHits      uint64 `json:"ssd_hits"`
+	SSDMisses    uint64 `json:"ssd_misses"`
+	SSDDonations uint64 `json:"ssd_donations"`
+}
+
+func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
+	if r == nil {
+		return CacheRoutingLifecycleStatus{}
+	}
+	r.mu.RLock()
+	tracker := r.cacheRouting
+	r.mu.RUnlock()
+	if tracker == nil {
+		return CacheRoutingLifecycleStatus{}
+	}
+	tracker.mu.Lock()
+	defer tracker.mu.Unlock()
+	return CacheRoutingLifecycleStatus{
+		SSDLookups: tracker.ssdLookups, SSDHits: tracker.ssdHits,
+		SSDMisses: tracker.ssdMisses, SSDDonations: tracker.ssdDonations,
+	}
 }

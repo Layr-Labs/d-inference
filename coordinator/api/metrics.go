@@ -23,10 +23,11 @@ type MetricLabel struct {
 
 // Metrics is the registry of counters, histograms, and computed gauges.
 type Metrics struct {
-	mu         sync.RWMutex
-	counters   map[string]*atomic.Int64
-	histograms map[string]*Histogram
-	gauges     map[string]GaugeFunc
+	mu            sync.RWMutex
+	counters      map[string]*atomic.Int64
+	histograms    map[string]*Histogram
+	gauges        map[string]GaugeFunc
+	snapshotHooks []func()
 }
 
 // GaugeFunc returns a snapshotted gauge value computed at read time.
@@ -105,21 +106,50 @@ func (m *Metrics) RegisterGaugeLabels(name string, fn GaugeFunc, labels ...Metri
 	m.gauges[metricKey(name, labels)] = fn
 }
 
+// RegisterSnapshotHook registers bounded work that runs once before every
+// metrics snapshot. Gauges that share an expensive source can refresh one
+// cached aggregate here instead of recomputing it independently.
+func (m *Metrics) RegisterSnapshotHook(fn func()) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	m.snapshotHooks = append(m.snapshotHooks, fn)
+	m.mu.Unlock()
+}
+
 // Snapshot returns a point-in-time view of all metrics.
 func (m *Metrics) Snapshot() MetricsSnapshot {
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	hooks := append([]func(){}, m.snapshotHooks...)
+	counterSources := make(map[string]*atomic.Int64, len(m.counters))
+	for key, counter := range m.counters {
+		counterSources[key] = counter
+	}
+	histogramSources := make(map[string]*Histogram, len(m.histograms))
+	for key, histogram := range m.histograms {
+		histogramSources[key] = histogram
+	}
+	gaugeSources := make(map[string]GaugeFunc, len(m.gauges))
+	for key, gauge := range m.gauges {
+		gaugeSources[key] = gauge
+	}
+	m.mu.RUnlock()
 
-	counters := make(map[string]int64, len(m.counters))
-	for k, v := range m.counters {
+	for _, hook := range hooks {
+		hook()
+	}
+
+	counters := make(map[string]int64, len(counterSources))
+	for k, v := range counterSources {
 		counters[k] = v.Load()
 	}
-	histograms := make(map[string]HistogramSnapshot, len(m.histograms))
-	for k, v := range m.histograms {
+	histograms := make(map[string]HistogramSnapshot, len(histogramSources))
+	for k, v := range histogramSources {
 		histograms[k] = v.Snapshot()
 	}
-	gauges := make(map[string]float64, len(m.gauges))
-	for k, fn := range m.gauges {
+	gauges := make(map[string]float64, len(gaugeSources))
+	for k, fn := range gaugeSources {
 		gauges[k] = fn()
 	}
 	return MetricsSnapshot{

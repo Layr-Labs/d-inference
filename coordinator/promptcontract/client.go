@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -19,15 +20,19 @@ import (
 const (
 	DefaultSocketPath       = "/run/darkbloom/promptsidecar.sock"
 	DefaultRequestTimeout   = time.Second
+	DefaultHealthTimeout    = 250 * time.Millisecond
+	DefaultPreloadTimeout   = 2 * time.Minute
 	DefaultMaxRequestBytes  = 4 << 20
 	DefaultMaxResponseBytes = 1 << 20
 	DefaultMaxTokens        = 1_048_576
+	DefaultMaxPreloadIDs    = 128
 )
 
 var (
 	ErrSidecarUnavailable = errors.New("prompt sidecar unavailable")
 	ErrInvalidPlan        = errors.New("prompt sidecar returned an invalid plan")
 	ErrPlanTooLarge       = errors.New("prompt sidecar payload exceeded its bound")
+	ErrDynamicContract    = errors.New("prompt contract depends on dynamic time")
 )
 
 type Endpoint string
@@ -62,22 +67,35 @@ type Plan struct {
 type ClientConfig struct {
 	SocketPath       string
 	RequestTimeout   time.Duration
+	HealthTimeout    time.Duration
+	PreloadTimeout   time.Duration
 	MaxRequestBytes  int64
 	MaxResponseBytes int64
 	MaxTokens        int
+	MaxPreloadIDs    int
 }
 
 type Client struct {
-	config    ClientConfig
-	http      *http.Client
-	transport *http.Transport
-	timeouts  atomic.Uint64
-	overloads atomic.Uint64
+	config           ClientConfig
+	planHTTP         *http.Client
+	healthHTTP       *http.Client
+	controlHTTP      *http.Client
+	planTransport    *http.Transport
+	healthTransport  *http.Transport
+	controlTransport *http.Transport
+	planTimeouts     atomic.Uint64
+	healthTimeouts   atomic.Uint64
+	preloadTimeouts  atomic.Uint64
+	overloads        atomic.Uint64
+	metricsMu        sync.RWMutex
+	metrics          SidecarMetrics
 }
 
 type ClientStats struct {
-	Timeouts  uint64
-	Overloads uint64
+	Timeouts        uint64
+	HealthTimeouts  uint64
+	PreloadTimeouts uint64
+	Overloads       uint64
 }
 
 func NewClient(config ClientConfig) *Client {
@@ -86,6 +104,12 @@ func NewClient(config ClientConfig) *Client {
 	}
 	if config.RequestTimeout <= 0 {
 		config.RequestTimeout = DefaultRequestTimeout
+	}
+	if config.HealthTimeout <= 0 {
+		config.HealthTimeout = DefaultHealthTimeout
+	}
+	if config.PreloadTimeout <= 0 {
+		config.PreloadTimeout = DefaultPreloadTimeout
 	}
 	if config.MaxRequestBytes <= 0 {
 		config.MaxRequestBytes = DefaultMaxRequestBytes
@@ -96,31 +120,49 @@ func NewClient(config ClientConfig) *Client {
 	if config.MaxTokens <= 0 {
 		config.MaxTokens = DefaultMaxTokens
 	}
-	dialer := &net.Dialer{Timeout: config.RequestTimeout, KeepAlive: 30 * time.Second}
-	transport := &http.Transport{
+	if config.MaxPreloadIDs <= 0 {
+		config.MaxPreloadIDs = DefaultMaxPreloadIDs
+	}
+	planTransport := newUnixTransport(config.SocketPath, config.RequestTimeout, 16)
+	healthTransport := newUnixTransport(config.SocketPath, config.HealthTimeout, 2)
+	controlTransport := newUnixTransport(config.SocketPath, config.PreloadTimeout, 2)
+	return &Client{
+		config:           config,
+		planHTTP:         &http.Client{Transport: planTransport},
+		healthHTTP:       &http.Client{Transport: healthTransport},
+		controlHTTP:      &http.Client{Transport: controlTransport},
+		planTransport:    planTransport,
+		healthTransport:  healthTransport,
+		controlTransport: controlTransport,
+	}
+}
+
+func newUnixTransport(socketPath string, timeout time.Duration, maxConnections int) *http.Transport {
+	dialer := &net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}
+	return &http.Transport{
 		DisableCompression:    true,
 		ForceAttemptHTTP2:     false,
-		MaxIdleConns:          8,
-		MaxIdleConnsPerHost:   8,
-		MaxConnsPerHost:       16,
+		MaxIdleConns:          maxConnections,
+		MaxIdleConnsPerHost:   maxConnections,
+		MaxConnsPerHost:       maxConnections,
 		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: config.RequestTimeout,
+		ResponseHeaderTimeout: timeout,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			if err := validateSocket(config.SocketPath); err != nil {
+			if err := validateSocket(socketPath); err != nil {
 				return nil, err
 			}
-			return dialer.DialContext(ctx, "unix", config.SocketPath)
+			return dialer.DialContext(ctx, "unix", socketPath)
 		},
-	}
-	return &Client{
-		config:    config,
-		http:      &http.Client{Transport: transport},
-		transport: transport,
 	}
 }
 
 func (c *Client) Close() {
-	c.transport.CloseIdleConnections()
+	if c == nil {
+		return
+	}
+	c.planTransport.CloseIdleConnections()
+	c.healthTransport.CloseIdleConnections()
+	c.controlTransport.CloseIdleConnections()
 }
 
 func (c *Client) Stats() ClientStats {
@@ -128,21 +170,25 @@ func (c *Client) Stats() ClientStats {
 		return ClientStats{}
 	}
 	return ClientStats{
-		Timeouts:  c.timeouts.Load(),
-		Overloads: c.overloads.Load(),
+		Timeouts:        c.planTimeouts.Load(),
+		HealthTimeouts:  c.healthTimeouts.Load(),
+		PreloadTimeouts: c.preloadTimeouts.Load(),
+		Overloads:       c.overloads.Load(),
 	}
 }
 
 func (c *Client) Health(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, c.config.RequestTimeout)
+	ctx, cancel := context.WithTimeout(ctx, c.config.HealthTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://promptsidecar/health", nil)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
-	response, err := c.http.Do(request)
+	response, err := c.healthHTTP.Do(request)
 	if err != nil {
-		c.recordTransportError(err)
+		if isTimeoutError(err) {
+			c.healthTimeouts.Add(1)
+		}
 		return fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
 	defer response.Body.Close()
@@ -197,9 +243,11 @@ func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
 		return Plan{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	response, err := c.http.Do(request)
+	response, err := c.planHTTP.Do(request)
 	if err != nil {
-		c.recordTransportError(err)
+		if isTimeoutError(err) {
+			c.planTimeouts.Add(1)
+		}
 		return Plan{}, fmt.Errorf("%w: %v", ErrSidecarUnavailable, err)
 	}
 	defer response.Body.Close()
@@ -207,7 +255,17 @@ func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
 		if response.StatusCode == http.StatusServiceUnavailable {
 			c.overloads.Add(1)
 		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+		encoded, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		var sidecarError struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if response.StatusCode == http.StatusUnprocessableEntity &&
+			json.Unmarshal(encoded, &sidecarError) == nil &&
+			sidecarError.Error.Code == "dynamic_time" {
+			return Plan{}, fmt.Errorf("%w: HTTP %d", ErrDynamicContract, response.StatusCode)
+		}
 		return Plan{}, fmt.Errorf("%w: HTTP %d", ErrSidecarUnavailable, response.StatusCode)
 	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, c.config.MaxResponseBytes+1))
@@ -233,12 +291,12 @@ func (c *Client) Plan(ctx context.Context, input PlanInput) (Plan, error) {
 	return plan, nil
 }
 
-func (c *Client) recordTransportError(err error) {
+func isTimeoutError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
-		c.timeouts.Add(1)
-	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-		c.timeouts.Add(1)
+		return true
 	}
+	netErr, ok := err.(net.Error)
+	return ok && netErr.Timeout()
 }
 
 func (c *Client) PlanFailCold(ctx context.Context, input PlanInput) Plan {

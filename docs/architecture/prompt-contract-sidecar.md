@@ -1,21 +1,44 @@
 # Prompt-contract sidecar
 
-Phase 1 establishes one deterministic prompt contract without changing routing.
-The coordinator can provision immutable prompt artifacts and supervise a local
-Rust planner, but no inference path consults its output yet. A disabled,
-unhealthy, overloaded, timed-out, or malformed sidecar therefore cannot block
-inference.
+The prompt-contract sidecar derives deterministic, provider-compatible token
+boundaries for optional exact-cache routing. The inference path consults it
+only when routing mode is `on`, the request is inside the operational rollout
+cohort, every active artifact has been provisioned, and the request's contract
+has been explicitly preloaded. A disabled, unhealthy, overloaded, timed-out,
+or malformed sidecar always fails cold and cannot block ordinary inference.
 
 ## Process and lifecycle
 
 The coordinator starts `promptsidecar` as its child only when
 `EIGENINFERENCE_PROMPT_SIDECAR_ENABLED=true`. It creates the socket directory
-with mode `0700`, passes only bounded numeric settings and local paths, polls
-`GET /health`, and restarts an exited or unhealthy child with
-exponential backoff from 100 milliseconds to 5 seconds. Shutdown sends
-`SIGTERM`, waits 2 seconds, then kills a child that did not exit. On Linux the
-child also installs `PR_SET_PDEATHSIG` and verifies the supervisor PID, so a
-coordinator crash cannot leave an orphan retaining the socket.
+with mode `0700`, passes only bounded numeric settings and local paths, and uses
+separate probes and transports for liveness and readiness. `GET /health` is a
+cheap liveness probe that remains responsive while contracts load;
+`GET /ready` gates cache planning until preload succeeds. Planning, health,
+startup/preload, and shutdown have independent deadlines. A single missed
+health probe never restarts the child: the supervisor requires a configured
+consecutive-failure threshold, records the categorical restart reason and exit
+status, retains only a bounded stderr tail, and applies restart backoff/circuit
+protection. Shutdown sends `SIGTERM`, then kills a child that exceeds the
+bounded shutdown deadline. On Linux the child also installs
+`PR_SET_PDEATHSIG` and verifies the supervisor PID, so a coordinator crash
+cannot leave an orphan retaining the socket.
+
+The production safety controls are explicit:
+
+| Variable suffix after `EIGENINFERENCE_PROMPT_SIDECAR_` | Default | Purpose |
+|---|---:|---|
+| `TIMEOUT_MS` | `1000` | Per-plan deadline and planning transport |
+| `HEALTH_TIMEOUT_MS` | `250` | Liveness/readiness probe deadline on an independent transport |
+| `PRELOAD_TIMEOUT_MS` | `120000` | Complete active-set preload deadline |
+| `STARTUP_TIMEOUT_MS` | `120000` | Time allowed for the child to establish liveness; degraded readiness does not trigger a restart |
+| `HEALTH_INTERVAL_MS` | `1000` | Probe interval |
+| `HEALTH_FAILURE_THRESHOLD` | `5` | Consecutive post-liveness failures required before restart |
+| `RESTART_WINDOW_MS` / `RESTART_MAX_IN_WINDOW` | `60000` / `3` | Restart-loop circuit window and maximum |
+| `RESTART_COOLDOWN_MS` | `30000` | Minimum suppression after the circuit opens |
+| `STDERR_MAX_BYTES` | `16384` | Retained child stderr tail |
+| `MAX_LOADED_CONTRACTS` | `8` | LRU and explicit active-set bound |
+| `MEMORY_LIMIT_MIB` | `1024` | Linux address-space and observed RSS ceiling |
 
 The sidecar serves HTTP/1.1 only on
 `/run/darkbloom/promptsidecar.sock`. The socket is mode `0600`; there is no TCP
@@ -23,7 +46,22 @@ listener and no network client. Connections stay alive and the Go client pools
 them. A 4 MiB request-body limit, 64-connection limit, four-worker planning
 semaphore, 1,048,576-token limit, eight-contract artifact cache, one-second
 request deadline, and 1 GiB address-space limit bound resource consumption.
-Completed connection tasks are reaped continuously.
+Completed connection tasks are reaped continuously. Contract misses use a
+per-contract singleflight: one worker performs file verification/tokenizer
+construction and concurrent callers wait for that same result. Distinct
+contracts remain bounded by the planner semaphore and LRU capacity.
+
+At startup the sidecar binds its socket and reports live but not ready; it does
+not discover or load every directory left on disk. After asynchronous artifact
+provisioning finishes, the coordinator sends the complete, deduplicated active
+set to `POST /v1/preload`, which loads that set sequentially before traffic.
+This prevents stale contracts from consuming the bounded cache during a
+restart. The endpoint serializes preload runs, stops new plans while swapping
+readiness, rejects sets larger than the configured contract capacity, and
+reports only bounded cold/warm/failure results. The Go preload gate records the
+child generation and will not route a model until its contract succeeded in
+that generation. A fresh or stale artifact root is live but has no
+planning-eligible contract until this explicit handoff completes.
 
 Prompt artifacts live at `/mnt/disks/userdata/prompt-contracts`. The verified
 artifact loader rejects symlinks in every path component, so `/data`—a runtime
@@ -40,11 +78,10 @@ symlink to the persistent disk—must never be used as the artifact root.
 }
 ```
 
-It returns the contract identifier, final normalized request body, prompt token
-count, ordered 256-token chain boundaries, and the last lookup-eligible
-boundary. Token IDs are used transiently to hash boundaries and are not
-returned by the service. The offline fixture generator is the only interface
-that emits token IDs.
+It returns the contract identifier, prompt token count, ordered 256-token chain
+boundaries, and the last lookup-eligible boundary. The normalized body and token
+IDs remain transient and are not returned by the service. The offline fixture
+generator is the only interface that emits token IDs.
 
 ## Contract identity
 
@@ -120,8 +157,14 @@ Protected failures include malicious JSON, oversized or slow bodies, unsafe
 paths, symlinks, changed artifacts, wrong contracts, incompatible templates,
 unsupported tokenizers, child crashes, stale sockets, process hangs, and
 malformed responses. Errors contain fixed categories and never include request
-bodies, rendered prompts, token IDs, or hashes. Phase 3 must treat every such
+bodies, rendered prompts, token IDs, or hashes. Cache routing treats every such
 failure as ordinary cold routing.
+
+`GET /metrics` returns a bounded JSON snapshot for the local coordinator:
+planning success/failure/capacity/timeout counts and latency buckets,
+cold/warm/waited/failed contract loads and cold-load latency, preload runs, and
+cache occupancy. It contains no model IDs, contract IDs, accounts, scopes,
+prompts, tokens, or chain hashes. Public status projects only aggregate values.
 
 Templates that call `strftime_now` are deliberately ineligible: the pinned
 Swift renderer evaluates that function in each provider Mac's local timezone,

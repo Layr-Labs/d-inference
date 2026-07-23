@@ -21,6 +21,8 @@ type Config struct {
 
 type CacheRoutingConfig struct {
 	Mode            string
+	ActivationPct   float64
+	MaxPlanQPS      float64
 	TTL             time.Duration
 	MaxHolders      int
 	MaxDiscountMs   float64
@@ -143,6 +145,8 @@ func ReadConfig() Config {
 		},
 		CacheRouting: CacheRoutingConfig{
 			Mode:            strings.ToLower(strings.TrimSpace(os.Getenv(env.EnvPrefix + "_CACHE_ROUTING_MODE"))),
+			ActivationPct:   envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_PERCENT", defaultCacheRoutingActivationPct),
+			MaxPlanQPS:      envStrictFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_PLAN_QPS", defaultCacheRoutingMaxPlanQPS),
 			TTL:             envDuration(env.EnvPrefix+"_CACHE_ROUTING_TTL", defaultCacheRoutingTTL),
 			MaxHolders:      env.EnvInt(env.EnvPrefix+"_CACHE_ROUTING_MAX_HOLDERS", defaultCacheRoutingMaxHolders),
 			MaxDiscountMs:   env.EnvFloat(env.EnvPrefix+"_CACHE_ROUTING_MAX_DISCOUNT_MS", defaultCacheRoutingMaxDiscountMs),
@@ -163,6 +167,21 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+// envStrictFloat preserves a malformed non-empty value as NaN so Check rejects
+// startup instead of silently replacing a safety limit with its permissive
+// default. Existing best-effort performance tunables continue using EnvFloat.
+func envStrictFloat(key string, fallback float64) float64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return math.NaN()
+	}
+	return value
 }
 
 // Check validates the configuration.
@@ -193,6 +212,12 @@ func (c CacheRoutingConfig) Check() error {
 	case CacheRoutingOff, CacheRoutingOn:
 	default:
 		return fmt.Errorf("registry: invalid cache routing mode %q", c.Mode)
+	}
+	if math.IsNaN(c.ActivationPct) || math.IsInf(c.ActivationPct, 0) || c.ActivationPct <= 0 || c.ActivationPct > 100 {
+		return fmt.Errorf("registry: cache routing percentage must be greater than 0 and at most 100")
+	}
+	if math.IsNaN(c.MaxPlanQPS) || math.IsInf(c.MaxPlanQPS, 0) || c.MaxPlanQPS < 0 || c.MaxPlanQPS > maxCacheRoutingPlanQPS {
+		return fmt.Errorf("registry: cache routing max plan QPS must be between 0 and %.0f", maxCacheRoutingPlanQPS)
 	}
 	if c.TTL < 0 {
 		return fmt.Errorf("registry: cache routing ttl must be >= 0")

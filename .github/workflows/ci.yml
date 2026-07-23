@@ -70,6 +70,9 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
       - name: Install pinned Rust toolchain
         run: |
           rustup toolchain install 1.88.0 --profile minimal --component rustfmt --component clippy
@@ -82,7 +85,18 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --all-targets
       - name: Verify static Linux container build
-        run: docker build --platform=linux/amd64 --target prompt-sidecar-builder -f coordinator/Dockerfile .
+        run: docker build --platform=linux/amd64 --target prompt-sidecar-builder -t darkbloom-prompt-sidecar-ci -f coordinator/Dockerfile .
+      - name: Prove production Linux sidecar under real contract load
+        timeout-minutes: 15
+        run: |
+          container=$(docker create darkbloom-prompt-sidecar-ci)
+          trap 'docker rm -f "$container" >/dev/null 2>&1 || true' EXIT
+          docker cp \
+            "$container:/app/coordinator/promptsidecar/target/x86_64-unknown-linux-musl/release/promptsidecar" \
+            "$RUNNER_TEMP/promptsidecar-linux"
+          chmod +x "$RUNNER_TEMP/promptsidecar-linux"
+          file "$RUNNER_TEMP/promptsidecar-linux" | grep -Eq "statically linked|static-pie linked"
+          ./scripts/verify-prompt-sidecar-linux.sh "$RUNNER_TEMP/promptsidecar-linux"
 
   test-provider:
     name: Provider Tests

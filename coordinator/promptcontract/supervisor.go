@@ -2,58 +2,74 @@ package promptcontract
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
 
+const maxSupervisorReasonBytes = 512
+
 type SupervisorConfig struct {
-	Enabled            bool
-	BinaryPath         string
-	SocketPath         string
-	ArtifactRoot       string
-	ArtifactBaseURL    string
-	ArtifactTimeout    time.Duration
-	ProvisionWorkers   int
-	ProvisionMaxModels int
-	HeaderReadTimeout  time.Duration
-	RequestTimeout     time.Duration
-	StartupTimeout     time.Duration
-	HealthInterval     time.Duration
-	ShutdownTimeout    time.Duration
-	RestartBackoffMin  time.Duration
-	RestartBackoffMax  time.Duration
-	MaxBodyBytes       int
-	MaxConcurrency     int
-	MaxConnections     int
-	MaxLoadedContracts int
-	MaxTokens          int
-	MemoryLimitMiB     int
+	Enabled                bool
+	BinaryPath             string
+	SocketPath             string
+	ArtifactRoot           string
+	ArtifactBaseURL        string
+	ArtifactTimeout        time.Duration
+	ProvisionWorkers       int
+	ProvisionMaxModels     int
+	HeaderReadTimeout      time.Duration
+	RequestTimeout         time.Duration
+	HealthTimeout          time.Duration
+	PreloadTimeout         time.Duration
+	StartupTimeout         time.Duration
+	HealthInterval         time.Duration
+	HealthFailureThreshold int
+	ShutdownTimeout        time.Duration
+	RestartBackoffMin      time.Duration
+	RestartBackoffMax      time.Duration
+	RestartWindow          time.Duration
+	RestartMaxInWindow     int
+	RestartCooldown        time.Duration
+	StderrMaxBytes         int
+	MaxBodyBytes           int
+	MaxConcurrency         int
+	MaxConnections         int
+	MaxLoadedContracts     int
+	MaxTokens              int
+	MemoryLimitMiB         int
 }
 
 type SupervisorStatus struct {
-	Enabled  bool
-	Running  bool
-	Ready    bool
-	Restarts uint64
-	RSSBytes uint64
+	Enabled                   bool
+	Running                   bool
+	Ready                     bool
+	Restarts                  uint64
+	RSSBytes                  uint64
+	ChildGeneration           uint64
+	ConsecutiveHealthFailures int
+	RestartReason             string
+	LastExitReason            string
+	StderrTail                string
+	RestartSuppressedUntil    time.Time
 }
 
 type Supervisor struct {
 	config SupervisorConfig
 	client *Client
 
-	mu      sync.RWMutex
-	status  SupervisorStatus
-	cancel  context.CancelFunc
-	started bool
-	wg      sync.WaitGroup
+	mu                sync.RWMutex
+	status            SupervisorStatus
+	cancel            context.CancelFunc
+	started           bool
+	wg                sync.WaitGroup
+	lastRestartReason string
 }
 
 func NewSupervisor(config SupervisorConfig) *Supervisor {
@@ -61,19 +77,29 @@ func NewSupervisor(config SupervisorConfig) *Supervisor {
 	return &Supervisor{
 		config: config,
 		client: NewClient(ClientConfig{
-			SocketPath:     config.SocketPath,
-			RequestTimeout: config.RequestTimeout,
-			MaxTokens:      config.MaxTokens,
+			SocketPath:      config.SocketPath,
+			RequestTimeout:  config.RequestTimeout,
+			HealthTimeout:   config.HealthTimeout,
+			PreloadTimeout:  config.PreloadTimeout,
+			MaxTokens:       config.MaxTokens,
+			MaxPreloadIDs:   config.MaxLoadedContracts,
+			MaxRequestBytes: int64(config.MaxBodyBytes),
 		}),
 		status: SupervisorStatus{Enabled: config.Enabled},
 	}
 }
 
 func (s *Supervisor) Client() *Client {
+	if s == nil {
+		return nil
+	}
 	return s.client
 }
 
 func (s *Supervisor) Start(parent context.Context) {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	if s.started || !s.config.Enabled {
 		s.mu.Unlock()
@@ -88,6 +114,9 @@ func (s *Supervisor) Start(parent context.Context) {
 }
 
 func (s *Supervisor) Close() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	cancel := s.cancel
 	s.mu.Unlock()
@@ -99,6 +128,9 @@ func (s *Supervisor) Close() {
 }
 
 func (s *Supervisor) Status() SupervisorStatus {
+	if s == nil {
+		return SupervisorStatus{}
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.status
@@ -107,84 +139,106 @@ func (s *Supervisor) Status() SupervisorStatus {
 func (s *Supervisor) run(ctx context.Context) {
 	defer s.wg.Done()
 	backoff := s.config.RestartBackoffMin
-	for {
+	restartTimes := make([]time.Time, 0, s.config.RestartMaxInWindow)
+	for ctx.Err() == nil {
+		if delay := s.restartCircuitDelay(time.Now(), &restartTimes); delay > 0 {
+			s.setRestartSuppressed(time.Now().Add(delay))
+			if !sleepContext(ctx, delay) {
+				break
+			}
+			continue
+		}
+		s.setRestartSuppressed(time.Time{})
+		reason, detail, stderr, ran, stable := s.runChild(ctx)
 		if ctx.Err() != nil {
-			s.setState(false, false)
-			return
+			break
 		}
-		if err := prepareSocketDirectory(s.config.SocketPath); err != nil {
-			s.noteRestart()
-			if !sleepContext(ctx, backoff) {
-				return
-			}
+		s.noteRestart(reason, detail, stderr)
+		restartTimes = append(restartTimes, time.Now())
+		if stable {
+			backoff = s.config.RestartBackoffMin
+		} else if ran {
 			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
-			continue
-		}
-		cmd := exec.Command(s.config.BinaryPath, s.arguments()...)
-		cmd.Stdin = nil
-		cmd.Stdout = io.Discard
-		cmd.Stderr = io.Discard
-		if err := cmd.Start(); err != nil {
-			s.noteRestart()
-			if !sleepContext(ctx, backoff) {
-				return
-			}
+		} else {
 			backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
-			continue
 		}
-		s.setStateWithRSS(true, false, processRSSBytes(cmd.Process.Pid))
-		waited := make(chan error, 1)
-		go func() { waited <- cmd.Wait() }()
-		ticker := time.NewTicker(s.config.HealthInterval)
-		startup := time.NewTimer(s.config.StartupTimeout)
-		ready := false
-		restart := false
-		for !restart {
-			select {
-			case <-ctx.Done():
-				stopTimer(startup)
-				ticker.Stop()
-				s.terminate(cmd, waited)
-				s.setState(false, false)
-				return
-			case <-waited:
-				stopTimer(startup)
-				ticker.Stop()
-				s.setState(false, false)
-				restart = true
-			case <-startup.C:
-				if !ready {
-					ticker.Stop()
-					s.terminate(cmd, waited)
-					s.setState(false, false)
-					restart = true
-				}
-			case <-ticker.C:
-				healthCtx, cancel := context.WithTimeout(ctx, s.config.RequestTimeout)
-				err := s.client.Health(healthCtx)
-				cancel()
-				if err == nil {
-					if !ready {
-						ready = true
-						backoff = s.config.RestartBackoffMin
-						stopTimer(startup)
-					}
-					s.setStateWithRSS(true, true, processRSSBytes(cmd.Process.Pid))
-				} else if ready {
-					stopTimer(startup)
-					ticker.Stop()
-					s.setState(true, false)
-					s.terminate(cmd, waited)
-					s.setState(false, false)
-					restart = true
-				}
-			}
-		}
-		s.noteRestart()
 		if !sleepContext(ctx, backoff) {
-			return
+			break
 		}
-		backoff = nextBackoff(backoff, s.config.RestartBackoffMax)
+	}
+	s.setStopped()
+}
+
+// runChild returns a bounded reason/detail/stderr record and whether the child
+// started and ever answered liveness. Readiness degradation alone never ends
+// the child; it only closes the cache-routing gate.
+func (s *Supervisor) runChild(ctx context.Context) (string, string, string, bool, bool) {
+	if err := prepareSocketDirectory(s.config.SocketPath); err != nil {
+		return "socket_error", err.Error(), "", false, false
+	}
+	stderr := newTailBuffer(s.config.StderrMaxBytes)
+	cmd := exec.Command(s.config.BinaryPath, s.arguments()...)
+	cmd.Stdin = nil
+	cmd.Stdout = io.Discard
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return "start_error", err.Error(), stderr.String(), false, false
+	}
+	generation := s.noteChildStarted(processRSSBytes(cmd.Process.Pid))
+	waited := make(chan error, 1)
+	go func() { waited <- cmd.Wait() }()
+	ticker := time.NewTicker(s.config.HealthInterval)
+	defer ticker.Stop()
+	startup := time.NewTimer(s.config.StartupTimeout)
+	defer stopTimer(startup)
+	live := false
+	consecutiveFailures := 0
+	for {
+		select {
+		case <-ctx.Done():
+			s.terminate(cmd, waited)
+			return "shutdown", "", stderr.String(), true, live
+		case err := <-waited:
+			detail := childExitReason(err, cmd.ProcessState)
+			s.setChildStopped(generation)
+			return "child_exit", detail, stderr.String(), true, live
+		case <-startup.C:
+			if !live {
+				s.terminate(cmd, waited)
+				s.setChildStopped(generation)
+				return "startup_timeout", "liveness startup deadline exceeded", stderr.String(), true, false
+			}
+		case <-ticker.C:
+			rss := processRSSBytes(cmd.Process.Pid)
+			if exceedsRSSLimit(rss, s.config.MemoryLimitMiB) {
+				s.setRuntimeState(generation, true, false, rss, consecutiveFailures)
+				s.terminate(cmd, waited)
+				s.setChildStopped(generation)
+				return "rss_limit", fmt.Sprintf("RSS %d exceeded %d MiB", rss, s.config.MemoryLimitMiB), stderr.String(), true, live
+			}
+			if err := s.client.Health(ctx); err != nil {
+				if live {
+					consecutiveFailures++
+				}
+				s.setRuntimeState(generation, true, false, rss, consecutiveFailures)
+				if live && consecutiveFailures >= s.config.HealthFailureThreshold {
+					s.terminate(cmd, waited)
+					s.setChildStopped(generation)
+					return "health_failure_threshold", err.Error(), stderr.String(), true, true
+				}
+				continue
+			}
+			if !live {
+				live = true
+				stopTimer(startup)
+			}
+			consecutiveFailures = 0
+			ready, err := s.client.Ready(ctx)
+			if err != nil {
+				ready = false
+			}
+			s.setRuntimeState(generation, true, ready, rss, 0)
+		}
 	}
 }
 
@@ -231,142 +285,4 @@ func (s *Supervisor) terminate(cmd *exec.Cmd, waited <-chan error) {
 		_ = cmd.Process.Kill()
 		<-waited
 	}
-}
-
-func (s *Supervisor) setState(running, ready bool) {
-	s.setStateWithRSS(running, ready, 0)
-}
-
-func (s *Supervisor) setStateWithRSS(running, ready bool, rssBytes uint64) {
-	s.mu.Lock()
-	s.status.Running = running
-	s.status.Ready = ready
-	if running {
-		s.status.RSSBytes = rssBytes
-	} else {
-		s.status.RSSBytes = 0
-	}
-	s.mu.Unlock()
-}
-
-func (s *Supervisor) noteRestart() {
-	s.mu.Lock()
-	s.status.Restarts++
-	s.mu.Unlock()
-}
-
-func applySupervisorDefaults(config *SupervisorConfig) {
-	if config.BinaryPath == "" {
-		config.BinaryPath = "promptsidecar"
-	}
-	if config.SocketPath == "" {
-		config.SocketPath = DefaultSocketPath
-	}
-	if config.ArtifactRoot == "" {
-		config.ArtifactRoot = DefaultArtifactRoot
-	}
-	if config.ArtifactBaseURL == "" {
-		config.ArtifactBaseURL = "https://models.darkbloom.ai"
-	}
-	if config.ArtifactTimeout <= 0 {
-		config.ArtifactTimeout = defaultDownloadTimeout
-	}
-	if config.ProvisionWorkers <= 0 {
-		config.ProvisionWorkers = defaultProvisionConcurrency
-	}
-	if config.ProvisionMaxModels <= 0 {
-		config.ProvisionMaxModels = defaultProvisionMaxModels
-	}
-	if config.HeaderReadTimeout <= 0 {
-		config.HeaderReadTimeout = DefaultRequestTimeout
-	}
-	if config.RequestTimeout <= 0 {
-		config.RequestTimeout = DefaultRequestTimeout
-	}
-	if config.StartupTimeout <= 0 {
-		config.StartupTimeout = 5 * time.Second
-	}
-	if config.HealthInterval <= 0 {
-		config.HealthInterval = 100 * time.Millisecond
-	}
-	if config.ShutdownTimeout <= 0 {
-		config.ShutdownTimeout = 2 * time.Second
-	}
-	if config.RestartBackoffMin <= 0 {
-		config.RestartBackoffMin = 100 * time.Millisecond
-	}
-	if config.RestartBackoffMax < config.RestartBackoffMin {
-		config.RestartBackoffMax = 5 * time.Second
-	}
-	if config.MaxBodyBytes <= 0 {
-		config.MaxBodyBytes = DefaultMaxRequestBytes
-	}
-	if config.MaxConcurrency <= 0 {
-		config.MaxConcurrency = 4
-	}
-	if config.MaxConnections <= 0 {
-		config.MaxConnections = 64
-	}
-	if config.MaxLoadedContracts <= 0 {
-		config.MaxLoadedContracts = 8
-	}
-	if config.MaxTokens <= 0 {
-		config.MaxTokens = DefaultMaxTokens
-	}
-	if config.MemoryLimitMiB <= 0 {
-		config.MemoryLimitMiB = 1024
-	}
-}
-
-func sleepContext(ctx context.Context, duration time.Duration) bool {
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
-func nextBackoff(current, maximum time.Duration) time.Duration {
-	if current >= maximum/2 {
-		return maximum
-	}
-	return current * 2
-}
-
-func stopTimer(timer *time.Timer) {
-	if timer == nil || !timer.Stop() {
-		select {
-		case <-timer.C:
-		default:
-		}
-	}
-}
-
-func processRSSBytes(pid int) uint64 {
-	if pid <= 0 {
-		return 0
-	}
-	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/statm")
-	if err != nil {
-		return 0
-	}
-	return rssBytesFromStatm(data, os.Getpagesize())
-}
-
-func rssBytesFromStatm(data []byte, pageSize int) uint64 {
-	fields := strings.Fields(string(data))
-	if len(fields) < 2 {
-		return 0
-	}
-	residentPages, err := strconv.ParseUint(fields[1], 10, 64)
-	if err != nil {
-		return 0
-	}
-	if pageSize <= 0 || residentPages > ^uint64(0)/uint64(pageSize) {
-		return 0
-	}
-	return residentPages * uint64(pageSize)
 }

@@ -1,11 +1,14 @@
 pub mod api;
+mod artifact_cache;
 pub mod artifacts;
 pub mod contract;
 pub mod endpoint;
 mod gemma4;
 pub mod hash;
+pub mod metrics;
 pub mod normalize;
 pub mod planner;
+pub mod preload;
 pub mod render;
 pub mod server;
 mod tool_constraint;

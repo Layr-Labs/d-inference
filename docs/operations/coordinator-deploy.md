@@ -32,7 +32,7 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 | Database | AWS RDS PostgreSQL (external, `EIGENINFERENCE_DATABASE_URL`) |
 | Persistent storage | Host disk `/mnt/disks/userdata`, bind-mounted into the container. Holds the MicroMDM BoltDB (`micromdm/`), prompt artifacts, and logs. `start.sh` symlinks `/data -> /mnt/disks/userdata`. Any old `step-ca/` tree is retired migration residue; no step-ca process is running and it must not be restored as an active dependency. |
 | Images | Cloud Build trigger builds on every master push → `us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator:<SHORT_SHA>` |
-| Env file | `/etc/d-inference/env` on the VM (root-only). It must live on the boot disk, not tmpfs. [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) preserves every existing value, fails if the observed live tuning set is incomplete, and adds only absent release defaults. |
+| Env file | `/etc/d-inference/env` on the VM (root-only). It must live on the boot disk, not tmpfs. [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) preserves custom values, exact-migrates only explicitly retired defaults, fails if the observed live tuning set is incomplete, and adds absent release defaults. |
 | Fallback | The previous container is kept stopped for forensics. Restart it only when its immutable image digest is on the reviewed marker-safe allowlist; pre-`backfill_withdrawable_balance_v1` images are never rollback targets. |
 
 The live host still has stale Caddy `/acme/*` routing and lacks
@@ -60,7 +60,8 @@ Shipping code and activating optimizations are separate operations:
 4. Exercise chat completions, completions, Responses, and Anthropic Messages,
    including auto/none/required/named tools, stop sequences, body limits, and
    mixed-version cold fallback.
-5. Require `/v1/cache/status` to show routing off, `sidecar.ready=true`, bounded
+5. Require `/v1/cache/status` to show routing off, `sidecar.ready=true`,
+   `preload.ready=true`, matching nonzero child/preload generations, bounded
    RSS, no restart loop, and all active prompt artifacts ready with zero
    failures.
 6. Keep exact-cache routing off. Activation requires a real positive-hit proof,
@@ -71,6 +72,147 @@ Shipping code and activating optimizations are separate operations:
 
 The GitHub `benchmarks` environment approval is a human release gate. Do not
 bypass or weaken it.
+
+## Post-v0.7.12 exact-cache reactivation
+
+The first production activation exposed a cold-load/restart loop, so an `on`
+status by itself is not an activation gate. The next coordinator upgrade must
+be deployed with routing `off` and these checked-in operational defaults:
+
+```text
+EIGENINFERENCE_CACHE_ROUTING_PERCENT=1
+EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1
+```
+
+Before changing `MODE=on`, require all of the following:
+
+1. Every active prompt artifact is ready and the sidecar has sequentially
+   preloaded the complete active contract set. A contract that appears after
+   startup remains cold-only until that explicit preload succeeds.
+2. The production prompt-parity gate covers all four manifest snapshots and
+   every supported endpoint. The sidecar load gate sustains 25 requests/second
+   (above the 2026-07-22 six-hour observed peak of 22.1 requests/second), with
+   cold-start concurrency, zero child restarts, and bounded RSS.
+3. Mixed v1/v2 tests prove legacy providers remain cold candidates, and the
+   real v2 integration test proves miss -> durable donation -> hit.
+4. `/v1/cache/status` shows `preload.ready=true`, matching stable child/preload
+   generations, zero restarts, no preload failures, no planning timeout/overload
+   loop, and a stable RSS plateau below the configured memory limit. The
+   recorded child generation and restart reason must make any later restart
+   attributable.
+
+After a human changes `MODE=on`, hold the first stage at 1% and 1 plan/second.
+Require both a 30-minute clean window and at least 100 successful plans before
+raising either cap. A clean window has zero restarts, bounded RSS, no health
+failure streak, a negligible planner-failure rate, and positive SSD
+miss/donation/hit plus cached-token and estimated-TTFT-saved evidence. Raise
+only one cap per observation window; the intended sequence is 1%, 5%, 25%, and
+100%, with the QPS cap raised separately toward the proven 25 requests/second.
+Any restart loop, sustained timeout/overload growth, preload failure, or memory
+growth rolls back immediately by setting `MODE=off` before changing binaries.
+
+### Exact-cache activation gate
+
+Activation is a separate, human-reviewed container swap after the coordinator
+has passed the routing-off gate in step 5. Editing `/etc/d-inference/env` and
+restarting the existing container is insufficient: Docker does not reread an
+`--env-file` on restart. Change `EIGENINFERENCE_CACHE_ROUTING_MODE=on`, leave
+the first-stage caps at exactly `1` and `1`, then repeat the step 4 swap with
+the same reviewed immutable image digest. Before that swap, verify the three
+controls together:
+
+```bash
+sudo grep -E '^EIGENINFERENCE_CACHE_ROUTING_(MODE|PERCENT|MAX_PLAN_QPS)=' \
+  /etc/d-inference/env
+# Required first-live values:
+# EIGENINFERENCE_CACHE_ROUTING_MODE=on
+# EIGENINFERENCE_CACHE_ROUTING_PERCENT=1
+# EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS=1
+```
+
+After the activated container is ready, capture a protected baseline. Capture
+the same files again only after at least 30 minutes of representative traffic.
+The admin key is read without printing it and is unset immediately after use.
+
+```bash
+umask 077
+EXACT_CACHE_GATE_DIR="$(mktemp -d /tmp/exact-cache-gate.XXXXXX)"
+EXACT_CACHE_ADMIN_KEY="$(sudo sed -n 's/^EIGENINFERENCE_ADMIN_KEY=//p' /etc/d-inference/env)"
+curl -fsS localhost:8080/v1/cache/status \
+  >"$EXACT_CACHE_GATE_DIR/start-status.json"
+curl -fsS -H "Authorization: Bearer $EXACT_CACHE_ADMIN_KEY" \
+  localhost:8080/v1/admin/metrics \
+  >"$EXACT_CACHE_GATE_DIR/start-metrics.json"
+unset EXACT_CACHE_ADMIN_KEY
+
+# Hold this stage for >=30 minutes under representative traffic, then capture:
+EXACT_CACHE_ADMIN_KEY="$(sudo sed -n 's/^EIGENINFERENCE_ADMIN_KEY=//p' /etc/d-inference/env)"
+curl -fsS localhost:8080/v1/cache/status \
+  >"$EXACT_CACHE_GATE_DIR/end-status.json"
+curl -fsS -H "Authorization: Bearer $EXACT_CACHE_ADMIN_KEY" \
+  localhost:8080/v1/admin/metrics \
+  >"$EXACT_CACHE_GATE_DIR/end-metrics.json"
+unset EXACT_CACHE_ADMIN_KEY
+```
+
+This executable delta gate requires at least 100 successful plans, no new
+restart/timeout/overload/preload-failure signal, bounded memory, and a complete
+positive miss -> donation -> hit lifecycle with measurable cached-token and
+TTFT benefit. The known dynamic-time contract is reported separately as
+`cold_only`; it must never increment either real failure counter. The gate
+intentionally fails closed when any required metric is absent.
+
+```bash
+jq -e -n \
+  --slurpfile ss "$EXACT_CACHE_GATE_DIR/start-status.json" \
+  --slurpfile es "$EXACT_CACHE_GATE_DIR/end-status.json" \
+  --slurpfile sm "$EXACT_CACHE_GATE_DIR/start-metrics.json" \
+  --slurpfile em "$EXACT_CACHE_GATE_DIR/end-metrics.json" '
+  ($ss[0]) as $s | ($es[0]) as $e |
+  ($sm[0]) as $ms | ($em[0]) as $me |
+  $e.routing_mode == "on" and
+  $e.activation.percent == 1 and
+  $e.activation.max_plan_qps == 1 and
+  $e.sidecar.ready == true and $e.preload.ready == true and
+  $e.preload.child_generation == $e.sidecar.child_generation and
+  $e.preload.child_generation == $s.preload.child_generation and
+  ($e.activation.planned - $s.activation.planned) >= 100 and
+  ($e.activation.cold_only - $s.activation.cold_only) >= 0 and
+  ($e.sidecar.planner.plans.cold_only - $s.sidecar.planner.plans.cold_only) >= 0 and
+  ($e.activation.plan_failed - $s.activation.plan_failed) == 0 and
+  ($e.sidecar.restarts - $s.sidecar.restarts) == 0 and
+  $e.sidecar.restart_suppressed == false and
+  $e.sidecar.consecutive_health_failures == 0 and
+  ($e.sidecar.timeouts - $s.sidecar.timeouts) == 0 and
+  ($e.sidecar.health_timeouts - $s.sidecar.health_timeouts) == 0 and
+  ($e.sidecar.preload_timeouts - $s.sidecar.preload_timeouts) == 0 and
+  ($e.sidecar.overloads - $s.sidecar.overloads) == 0 and
+  ($e.preload.failures - $s.preload.failures) == 0 and
+  ($e.sidecar.planner.plans.failed - $s.sidecar.planner.plans.failed) == 0 and
+  ($e.sidecar.planner.plans.at_capacity - $s.sidecar.planner.plans.at_capacity) == 0 and
+  ($e.sidecar.planner.plans.not_ready - $s.sidecar.planner.plans.not_ready) == 0 and
+  ($e.sidecar.planner.plans.timed_out - $s.sidecar.planner.plans.timed_out) == 0 and
+  $e.sidecar.rss_bytes > 0 and $e.sidecar.rss_bytes <= 1073741824 and
+  ($e.sidecar.rss_bytes - $s.sidecar.rss_bytes) <= 134217728 and
+  ($e.lifecycle.ssd_lookups - $s.lifecycle.ssd_lookups) > 0 and
+  ($e.lifecycle.ssd_misses - $s.lifecycle.ssd_misses) > 0 and
+  ($e.lifecycle.ssd_donations - $s.lifecycle.ssd_donations) > 0 and
+  ($e.lifecycle.ssd_hits - $s.lifecycle.ssd_hits) > 0 and
+  (($me.counters["exact_cache_cached_tokens_total{tier=ssd}"] // 0) -
+   ($ms.counters["exact_cache_cached_tokens_total{tier=ssd}"] // 0)) > 0 and
+  (($me.counters["exact_cache_prefill_tokens_saved_total{tier=ssd}"] // 0) -
+   ($ms.counters["exact_cache_prefill_tokens_saved_total{tier=ssd}"] // 0)) > 0 and
+  (($me.histograms["exact_cache_estimated_ttft_saved_ms{tier=ssd}"].count // 0) -
+   ($ms.histograms["exact_cache_estimated_ttft_saved_ms{tier=ssd}"].count // 0)) > 0
+'
+```
+
+For every later stage, change only one of percentage or QPS, recreate the
+container from the same reviewed digest, take fresh start/end snapshots, and
+apply the same 30-minute/100-plan delta gate with the new expected cap. Advance
+the percentage through 1 -> 5 -> 25 -> 100; raise QPS separately, never above
+the proven 25 requests/second. On any gate failure, set `MODE=off` and recreate
+the container from the reviewed digest before investigating or changing code.
 
 ## Steps — coordinator deploy (prod)
 
@@ -187,8 +329,9 @@ sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
   DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults \
   /usr/local/sbin/darkbloom-refresh-env --apply
 
-# Verify only non-secret rollout controls.
-sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|PROMPT_SIDECAR_ENABLED)=' \
+# Verify every non-secret rollout control. Do not proceed if stale custom
+# throttle values survived the refresh.
+sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
 ```
 
@@ -249,8 +392,28 @@ curl -s localhost:8080/health | jq -e \
    .build_date != "unknown"'
 curl -s localhost:8080/v1/cache/status | jq -e \
   '.routing_mode == "off" and
+   .activation.percent == 1 and
+   .activation.max_plan_qps == 1 and
    .sidecar.enabled == true and
    .sidecar.ready == true and
+   .sidecar.restarts == 0 and
+   .sidecar.restart_suppressed == false and
+   .sidecar.consecutive_health_failures == 0 and
+   .sidecar.timeouts == 0 and
+   .sidecar.health_timeouts == 0 and
+   .sidecar.preload_timeouts == 0 and
+   .sidecar.overloads == 0 and
+   .sidecar.rss_bytes > 0 and
+   .sidecar.rss_bytes <= 1073741824 and
+   .preload.ready == true and
+   .preload.failures == 0 and
+   .preload.contract_count > 0 and
+   .preload.child_generation > 0 and
+   .preload.child_generation == .sidecar.child_generation and
+   .sidecar.planner.plans.failed == 0 and
+   .sidecar.planner.plans.at_capacity == 0 and
+   .sidecar.planner.plans.not_ready == 0 and
+   .sidecar.planner.plans.timed_out == 0 and
    .prompt_artifacts.ready > 0 and
    .prompt_artifacts.pending == 0 and
    .prompt_artifacts.failed == 0'
@@ -411,8 +574,9 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
-| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle and resource bounds. v0.7.12 deploys it enabled with the physical artifact root while routing remains off; follow the release-specific order above. |
-| `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off` for coordinator deploy, sidecar canary, provider canary, and provider publication. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle, independent health/planning deadlines, failure threshold, diagnostics, preload, and resource bounds. Deploy it enabled with the physical artifact root while routing remains off. |
+| `EIGENINFERENCE_CACHE_ROUTING_MODE` | Strict product switch: `off` or `on`; keep `off` through coordinator/provider deployment and preload verification. |
+| `EIGENINFERENCE_CACHE_ROUTING_PERCENT`, `_MAX_PLAN_QPS` | Independent operational caps inside `on`; production starts at deterministic 1% and 1 plan/second. |
 | `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required only for a later routing activation; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 

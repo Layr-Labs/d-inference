@@ -21,7 +21,7 @@ RUN if [ "$BUILDARCH" != "$TARGETARCH" ]; then \
     trap 'kill -TERM "$pid" 2>/dev/null || true' EXIT; \
     for attempt in 1 2 3 4 5 6 7 8 9 10; do \
       if curl --fail --silent --unix-socket /run/prompt-sidecar-test/prompt.sock \
-        http://promptsidecar/health | grep -q '"status":"ok"'; then break; fi; \
+        http://promptsidecar/health | grep -q '"status":"starting","ready":false'; then break; fi; \
       [ "$attempt" -lt 10 ]; \
       sleep 0.1; \
     done; \

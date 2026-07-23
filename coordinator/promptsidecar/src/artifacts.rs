@@ -151,6 +151,10 @@ fn load_chat_template(
         .ok_or(ArtifactError::Incomplete)
 }
 
+pub fn is_valid_contract_id(contract_id: &str) -> bool {
+    validate_contract_id(contract_id).is_ok()
+}
+
 fn validate_contract_id(contract_id: &str) -> Result<(), ArtifactError> {
     if contract_id.len() != 64
         || contract_id

@@ -183,9 +183,13 @@ type PendingRequest struct {
 	CacheSelectionMode       string
 	CacheSelectionTier       string
 	CacheSelectionDiscountMs float64
-	CacheSelectionSelected   bool
-	cacheRoutingHints        map[string]cacheRoutingHint
-	cacheRoutingParticipates atomic.Bool
+	// CacheSelectionEstimatedTTFTSavedMs is the selected cache holder's
+	// estimated prefill time saved minus its reported SSD stage time. It is
+	// aggregate numeric telemetry only and contains no cache identity.
+	CacheSelectionEstimatedTTFTSavedMs float64
+	CacheSelectionSelected             bool
+	cacheRoutingHints                  map[string]cacheRoutingHint
+	cacheRoutingParticipates           atomic.Bool
 	// TokenAdmission records the output-token charge admitted at request time so
 	// successful completion can reconcile any positive actual-output delta.
 	TokenAdmission TokenAdmission
@@ -1482,6 +1486,7 @@ type Registry struct {
 	evictStrikes map[string]int
 
 	cacheRouting                *cacheRoutingTracker
+	cacheActivation             *cacheActivationGate
 	cacheRoutingMode            string
 	cacheRouteKeys              cacheRouteKeys
 	cacheRoutingMaxDiscountMs   float64
@@ -1568,6 +1573,7 @@ func New(logger *slog.Logger) *Registry {
 		faultKeyBySession:              make(map[string]string),
 		evictStrikes:                   make(map[string]int),
 		cacheRouting:                   newCacheRoutingTracker(defaultCacheRoutingTTL, defaultCacheRoutingMaxHolders),
+		cacheActivation:                newCacheActivationGate(defaultCacheRoutingActivationPct, defaultCacheRoutingMaxPlanQPS),
 		cacheRoutingMode:               CacheRoutingOff,
 		cacheRoutingMaxDiscountMs:      defaultCacheRoutingMaxDiscountMs,
 		cacheRoutingMaxCostFraction:    defaultCacheRoutingMaxCostFraction,
@@ -1598,8 +1604,10 @@ func (r *Registry) ConfigureCacheRouting(cfg CacheRoutingConfig) error {
 		keys = deriveCacheKeys(master)
 	}
 	tracker := newCacheRoutingTracker(cfg.TTL, cfg.MaxHolders)
+	activation := newCacheActivationGate(cfg.ActivationPct, cfg.MaxPlanQPS)
 	r.mu.Lock()
 	r.cacheRouting = tracker
+	r.cacheActivation = activation
 	r.cacheRoutingMode = cfg.Mode
 	r.cacheRouteKeys = keys
 	r.cacheRoutingMaxDiscountMs = cfg.MaxDiscountMs
@@ -1613,6 +1621,8 @@ func (r *Registry) CacheRoutingConfigSnapshot() CacheRoutingConfig {
 	defer r.mu.RUnlock()
 	return CacheRoutingConfig{
 		Mode:            r.cacheRoutingMode,
+		ActivationPct:   r.cacheActivation.percent,
+		MaxPlanQPS:      r.cacheActivation.maxQPS,
 		TTL:             r.cacheRouting.ttl,
 		MaxHolders:      r.cacheRouting.maxHolders,
 		MaxDiscountMs:   r.cacheRoutingMaxDiscountMs,

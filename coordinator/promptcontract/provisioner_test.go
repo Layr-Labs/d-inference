@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -133,14 +134,46 @@ func TestProvisionerCancelsObsoleteCatalogPass(t *testing.T) {
 }
 
 func TestProvisionerCountsAllStatesWithoutIdentity(t *testing.T) {
-	provisioner := &Provisioner{statuses: map[string]ProvisionStatus{
-		"private-ready":   {ArtifactReady: true},
+	sharedContract := strings.Repeat("a", 64)
+	provisioner := &Provisioner{generation: 7, statuses: map[string]ProvisionStatus{
+		"private-ready":   {ArtifactReady: true, PromptContractID: sharedContract},
+		"private-shared":  {ArtifactReady: true, PromptContractID: sharedContract},
 		"private-pending": {},
 		"private-failed":  {LastError: "private filesystem detail"},
 	}}
 	counts := provisioner.Counts()
-	if counts.Ready != 1 || counts.Pending != 1 || counts.Failed != 1 {
+	if counts.Ready != 2 || counts.Pending != 1 || counts.Failed != 1 {
 		t.Fatalf("counts=%+v", counts)
+	}
+	snapshot := provisioner.Snapshot()
+	if snapshot.Generation != 7 || snapshot.Counts != counts ||
+		len(snapshot.ContractIDs) != 1 || snapshot.ContractIDs[0] != sharedContract {
+		t.Fatalf("snapshot=%+v", snapshot)
+	}
+}
+
+func TestProvisionerRejectClosesPreviousCatalogGeneration(t *testing.T) {
+	contractID := strings.Repeat("a", 64)
+	provisioner := &Provisioner{
+		maxModels:  8,
+		generation: 4,
+		statuses: map[string]ProvisionStatus{
+			"old-model": {
+				ArtifactReady: true, PromptContractID: contractID,
+				ModelAggregateSHA256: strings.Repeat("b", 64),
+			},
+		},
+	}
+	if err := provisioner.Reconcile([]Manifest{{ModelID: "invalid"}}); err == nil {
+		t.Fatal("invalid replacement catalog was accepted")
+	}
+	if _, ok := provisioner.Status("old-model"); ok {
+		t.Fatal("old ready contract survived rejected catalog")
+	}
+	snapshot := provisioner.Snapshot()
+	if snapshot.Generation != 5 || snapshot.Counts.Failed != 1 ||
+		snapshot.Counts.Ready != 0 || len(snapshot.ContractIDs) != 0 {
+		t.Fatalf("rejected catalog snapshot=%+v", snapshot)
 	}
 }
 

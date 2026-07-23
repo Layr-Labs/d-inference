@@ -22,6 +22,7 @@ async fn unix_server_is_private_persistent_and_bounded() {
             socket_path: socket.clone(),
             max_body_bytes: 64,
             header_read_timeout: Duration::from_millis(80),
+            body_read_timeout: Duration::from_millis(100),
             request_timeout: Duration::from_millis(100),
             max_connections: 2,
         },
@@ -46,7 +47,17 @@ async fn unix_server_is_private_persistent_and_bounded() {
         .unwrap();
     let first = read_response(&mut stream).await;
     assert!(first.starts_with("HTTP/1.1 200"));
-    assert!(first.ends_with(r#"{"status":"ok"}"#));
+    assert!(first.contains(r#""status":"starting""#));
+    assert!(first.contains(r#""ready":false"#));
+
+    stream
+        .get_mut()
+        .write_all(b"GET /ready HTTP/1.1\r\nHost: local\r\n\r\n")
+        .await
+        .unwrap();
+    let readiness = read_response(&mut stream).await;
+    assert!(readiness.starts_with("HTTP/1.1 503"));
+    assert!(readiness.contains(r#""ready":false"#));
 
     stream
         .get_mut()
@@ -126,8 +137,8 @@ async fn unix_server_is_private_persistent_and_bounded() {
         tokio::time::timeout(Duration::from_millis(250), read_response(&mut body_stalled))
             .await
             .expect("partial body did not reach the request deadline");
-    assert!(stalled_response.starts_with("HTTP/1.1 504"));
-    assert!(stalled_response.contains("deadline_exceeded"));
+    assert!(stalled_response.starts_with("HTTP/1.1 408"));
+    assert!(stalled_response.contains("body_deadline_exceeded"));
 
     drop(stream);
     shutdown_tx.send(()).unwrap();

@@ -1,12 +1,6 @@
-use crate::api::{ErrorResponse, PlanRequest};
-use crate::planner::{PlanError, Planner};
-use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
-use hyper::header::{CONTENT_LENGTH, CONTENT_TYPE};
+use crate::planner::Planner;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::{TokioIo, TokioTimer};
 use std::convert::Infallible;
 use std::fs;
@@ -20,13 +14,16 @@ use tokio::net::UnixListener;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-type ResponseBody = Full<Bytes>;
+mod handler;
+
+use handler::handle;
 
 #[derive(Clone)]
 pub struct ServerConfig {
     pub socket_path: PathBuf,
     pub max_body_bytes: usize,
     pub header_read_timeout: Duration,
+    pub body_read_timeout: Duration,
     pub request_timeout: Duration,
     pub max_connections: usize,
 }
@@ -44,6 +41,7 @@ pub async fn run(
     planner: Planner,
     shutdown: impl Future<Output = ()>,
 ) -> Result<(), ServerError> {
+    planner.mark_starting();
     prepare_socket(&config.socket_path)?;
     let listener = UnixListener::bind(&config.socket_path)?;
     fs::set_permissions(&config.socket_path, fs::Permissions::from_mode(0o600))?;
@@ -78,19 +76,14 @@ pub async fn run(
                         let planner = planner.clone();
                         let config = config.clone();
                         async move {
-                            let response = match tokio::time::timeout(
+                            let response = handle(
+                                request,
+                                planner,
+                                config.max_body_bytes,
+                                config.body_read_timeout,
                                 config.request_timeout,
-                                handle(request, planner, config.max_body_bytes),
                             )
-                            .await
-                            {
-                                Ok(response) => response,
-                                Err(_) => error_response(
-                                    StatusCode::GATEWAY_TIMEOUT,
-                                    "deadline_exceeded",
-                                    "prompt planning deadline exceeded",
-                                ),
-                            };
+                            .await;
                             Ok::<_, Infallible>(response)
                         }
                     });
@@ -116,147 +109,6 @@ pub async fn run(
     }
     drop(socket_guard);
     Ok(())
-}
-
-async fn handle(
-    request: Request<Incoming>,
-    planner: Planner,
-    max_body_bytes: usize,
-) -> Response<ResponseBody> {
-    match (request.method(), request.uri().path()) {
-        (&Method::GET, "/health") => json_response(StatusCode::OK, br#"{"status":"ok"}"#.to_vec()),
-        (&Method::POST, "/v1/plan") => {
-            if request
-                .headers()
-                .get(CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<usize>().ok())
-                .is_some_and(|length| length > max_body_bytes)
-            {
-                return error_response(
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "body_too_large",
-                    "request body exceeded its bound",
-                );
-            }
-            let bytes = match collect_bounded(request.into_body(), max_body_bytes).await {
-                Ok(bytes) => bytes,
-                Err(CollectError::TooLarge) => {
-                    return error_response(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "body_too_large",
-                        "request body exceeded its bound",
-                    );
-                }
-                Err(CollectError::Read) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "malformed_body",
-                        "request body could not be read",
-                    );
-                }
-            };
-            let plan_request: PlanRequest = match serde_json::from_slice(&bytes) {
-                Ok(request) => request,
-                Err(_) => {
-                    return error_response(
-                        StatusCode::BAD_REQUEST,
-                        "malformed_json",
-                        "request body is not a valid plan request",
-                    );
-                }
-            };
-            match planner.plan(plan_request).await {
-                Ok(plan) => match serde_json::to_vec(&plan) {
-                    Ok(body) => json_response(StatusCode::OK, body),
-                    Err(_) => error_response(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal_error",
-                        "prompt plan could not be encoded",
-                    ),
-                },
-                Err(error) => plan_error_response(error),
-            }
-        }
-        _ => error_response(StatusCode::NOT_FOUND, "not_found", "endpoint not found"),
-    }
-}
-
-enum CollectError {
-    TooLarge,
-    Read,
-}
-
-async fn collect_bounded(
-    mut body: Incoming,
-    max_body_bytes: usize,
-) -> Result<Vec<u8>, CollectError> {
-    let mut output = Vec::with_capacity(max_body_bytes.min(64 * 1024));
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| CollectError::Read)?;
-        let Ok(data) = frame.into_data() else {
-            continue;
-        };
-        if output.len().saturating_add(data.len()) > max_body_bytes {
-            return Err(CollectError::TooLarge);
-        }
-        output.extend_from_slice(&data);
-    }
-    Ok(output)
-}
-
-fn plan_error_response(error: PlanError) -> Response<ResponseBody> {
-    match error {
-        PlanError::AtCapacity => error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "at_capacity",
-            "prompt planner is at capacity",
-        ),
-        PlanError::TooManyTokens => error_response(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "prompt_too_large",
-            "prompt token count exceeded its bound",
-        ),
-        PlanError::Contract => error_response(
-            StatusCode::FAILED_DEPENDENCY,
-            "contract_unavailable",
-            "prompt contract is unavailable",
-        ),
-        PlanError::Worker => error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "worker_failure",
-            "prompt planner worker failed",
-        ),
-        PlanError::InvalidScope
-        | PlanError::Endpoint
-        | PlanError::Normalize
-        | PlanError::Render(_)
-        | PlanError::Tokenize
-        | PlanError::BlockHash => error_response(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "planning_failed",
-            "request could not be planned",
-        ),
-    }
-}
-
-fn error_response(
-    status: StatusCode,
-    code: &'static str,
-    message: &'static str,
-) -> Response<ResponseBody> {
-    let body = serde_json::to_vec(&ErrorResponse::new(code, message)).unwrap_or_else(|_| {
-        br#"{"error":{"code":"internal_error","message":"internal error"}}"#.to_vec()
-    });
-    json_response(status, body)
-}
-
-fn json_response(status: StatusCode, body: Vec<u8>) -> Response<ResponseBody> {
-    Response::builder()
-        .status(status)
-        .header(CONTENT_TYPE, "application/json")
-        .body(Full::new(Bytes::from(body)))
-        .expect("valid static HTTP response")
 }
 
 fn prepare_socket(path: &Path) -> Result<(), ServerError> {

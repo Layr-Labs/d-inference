@@ -131,13 +131,15 @@ Cache-participating attempts are excluded from cold-prefill calibration and
 full-prefill reputation samples. Terminal cache metrics use bounded categorical
 tags only.
 
-`GET /v1/cache/status` exposes only aggregate rollout state: sidecar
-enabled/running/ready/restarts/timeouts/overloads/RSS, prompt artifact
-ready/pending/failed counts, protocol 0/1/2 provider counts, ready v2
-provider-model count, and bounded holder/attempt counts. It never includes model
+`GET /v1/cache/status` exposes only aggregate rollout state: activation and
+lifecycle counters; sidecar enabled/running/ready, child generation, categorical
+restart reason, failure streak, timeouts/overloads/RSS, cold/warm contract loads,
+and planner outcomes; preload generation/counts; prompt artifact
+ready/pending/failed counts; protocol 0/1/2 provider counts; ready v2
+provider-model count; and bounded holder/attempt counts. It never includes model
 IDs, provider IDs, accounts, scopes, prompts, tokens, or chain hashes.
 The response and gauge projection are implemented in
-`coordinator/api/exact_cache_status.go`; bounded artifact aggregation lives in
+`coordinator/api/exact_cache_status.go` and `exact_cache_metrics.go`; bounded artifact aggregation lives in
 `coordinator/promptcontract/provisioner.go:Counts`, protocol distribution in
 `coordinator/registry/cache_status.go:PrefixCacheProtocolStatus`, and holder /
 attempt counts in `coordinator/registry/cache_routing.go:CacheRoutingStateCounts`.
@@ -155,6 +157,8 @@ identifier as a metric tag
 | Environment variable | Default | Purpose |
 |---|---:|---|
 | `EIGENINFERENCE_CACHE_ROUTING_MODE` | `off` | `off` or `on` |
+| `EIGENINFERENCE_CACHE_ROUTING_PERCENT` | `100` | Deterministic percentage of otherwise eligible requests admitted to planning while mode is `on` |
+| `EIGENINFERENCE_CACHE_ROUTING_MAX_PLAN_QPS` | `0` | Process-local sidecar planning cap while mode is `on`; `0` is unlimited |
 | `EIGENINFERENCE_CACHE_ROUTING_TTL` | `10m` | Holder lifetime |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_HOLDERS` | `4` | Holders per boundary |
 | `EIGENINFERENCE_CACHE_ROUTING_MAX_DISCOUNT_MS` | `1000` | Absolute discount cap |
@@ -162,13 +166,21 @@ identifier as a metric tag
 | `EIGENINFERENCE_CACHE_MASTER_KEY` | none | 32-byte base64 or hex HMAC key |
 
 `on` fails startup when the master key is missing or malformed. `off` requires no
-key and clears all in-memory evidence when applied. Provider caching has one
-local kill switch, `DARKBLOOM_PREFIX_CACHE`; unset defaults to encrypted SSD on.
+key and clears all in-memory evidence when applied. The product mode remains
+strictly binary: percentage and QPS are operational caps inside `on`, not extra
+modes. Sampling is a keyed, deterministic cohort over account, resolved model,
+and provider-bound request body. Repeating the same exact request therefore
+stays in the same cohort, allowing a sampled cold miss to donate and later hit,
+without logging or exporting the cohort input. The QPS cap only declines cache
+planning; ordinary inference continues cold. Provider caching has one local kill
+switch, `DARKBLOOM_PREFIX_CACHE`; unset defaults to encrypted SSD on.
 
 Rollout starts with coordinator routing `off`. Verify sidecar health, contract
 parity, provider capability identity, and proof mismatch rate before enabling
-`on` in an isolated development or canary environment. Rollback always sets
-routing to `off` before rolling back binaries.
+`on` in an isolated development or canary environment. The first production
+activation uses `PERCENT=1` and `MAX_PLAN_QPS=1`; raise one bound at a time only
+after a clean observation window. Rollback always sets routing to `off` before
+rolling back binaries.
 
 The v0.7.12 release does not activate routing. Providers with
 `cbv2-frozen-full-3` contiguous native-float support can advertise Gemma 4 and GPT-OSS

@@ -187,6 +187,12 @@ type Server struct {
 	promptArtifacts               *promptcontract.Provisioner
 	promptContract                *promptcontract.Client
 	promptSupervisor              *promptcontract.Supervisor
+	promptPreloader               *promptcontract.PreloadController
+	exactCacheGaugeMu             sync.RWMutex
+	exactCacheGaugeStatus         ExactCacheStatus
+	exactCacheStatusCacheMu       sync.Mutex
+	exactCacheStatusCache         ExactCacheStatus
+	exactCacheStatusCacheExpires  time.Time
 	codeAttestor                  apns.CodeIdentityAttestor // APNs code-identity attestor (nil = disabled; v0.6.0)
 	codeAttestThrottle            *codeAttestThrottle       // per-device APNs push budget + reuse cache (v0.6.0)
 	trustReuseCache               *trustReuseCache          // per-device trust-reuse cache: skip a fleet-wide live MDM herd on restart (DAR-326)
@@ -749,6 +755,9 @@ func (s *Server) submitTelemetry(name string, fn func()) {
 
 // Close releases background resources owned by the Server.
 func (s *Server) Close() {
+	if s.promptPreloader != nil {
+		s.promptPreloader.Close()
+	}
 	if s.promptArtifacts != nil {
 		s.promptArtifacts.Close()
 	}
@@ -984,9 +993,14 @@ func (s *Server) SyncModelCatalog() {
 			MinRAMGB:   row.MinRAMGB,
 		})
 	}
+	// Advance the prompt-artifact generation before publishing new routing
+	// hashes. Cache planning also carries and compares the aggregate hash, so
+	// either side of this handoff is fail-cold under concurrent requests.
+	if err := s.reconcilePromptArtifacts(registryRows); err != nil {
+		s.logger.Error("prompt artifact catalog reconcile rejected", "error", err)
+	}
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
-	s.reconcilePromptArtifacts(registryRows)
 
 	s.syncModelAliases()
 	s.invalidateCatalogCache()

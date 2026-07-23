@@ -2,28 +2,52 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
+const exactCacheStatusCacheTTL = time.Second
+
 type ExactCacheStatus struct {
-	RoutingMode     string                             `json:"routing_mode"`
-	Sidecar         ExactCacheSidecarStatus            `json:"sidecar"`
-	PromptArtifacts ExactCachePromptArtifactStatus     `json:"prompt_artifacts"`
-	Providers       registry.PrefixCacheProtocolStatus `json:"providers"`
-	Holders         int                                `json:"holders"`
-	Attempts        int                                `json:"attempts"`
+	RoutingMode     string                                `json:"routing_mode"`
+	Activation      registry.CacheRoutingActivationStatus `json:"activation"`
+	Sidecar         ExactCacheSidecarStatus               `json:"sidecar"`
+	Preload         ExactCachePreloadStatus               `json:"preload"`
+	PromptArtifacts ExactCachePromptArtifactStatus        `json:"prompt_artifacts"`
+	Providers       registry.PrefixCacheProtocolStatus    `json:"providers"`
+	Lifecycle       registry.CacheRoutingLifecycleStatus  `json:"lifecycle"`
+	Holders         int                                   `json:"holders"`
+	Attempts        int                                   `json:"attempts"`
 }
 
 type ExactCacheSidecarStatus struct {
-	Enabled   bool   `json:"enabled"`
-	Running   bool   `json:"running"`
-	Ready     bool   `json:"ready"`
-	Restarts  uint64 `json:"restarts"`
-	Timeouts  uint64 `json:"timeouts"`
-	Overloads uint64 `json:"overloads"`
-	RSSBytes  uint64 `json:"rss_bytes"`
+	Enabled                   bool                          `json:"enabled"`
+	Running                   bool                          `json:"running"`
+	Ready                     bool                          `json:"ready"`
+	Restarts                  uint64                        `json:"restarts"`
+	RestartReason             string                        `json:"restart_reason,omitempty"`
+	RestartSuppressed         bool                          `json:"restart_suppressed"`
+	ChildGeneration           uint64                        `json:"child_generation"`
+	ConsecutiveHealthFailures int                           `json:"consecutive_health_failures"`
+	Timeouts                  uint64                        `json:"timeouts"`
+	HealthTimeouts            uint64                        `json:"health_timeouts"`
+	PreloadTimeouts           uint64                        `json:"preload_timeouts"`
+	Overloads                 uint64                        `json:"overloads"`
+	RSSBytes                  uint64                        `json:"rss_bytes"`
+	Planner                   promptcontract.SidecarMetrics `json:"planner"`
+}
+
+type ExactCachePreloadStatus struct {
+	Ready             bool   `json:"ready"`
+	CatalogGeneration uint64 `json:"catalog_generation"`
+	ChildGeneration   uint64 `json:"child_generation"`
+	ContractCount     int    `json:"contract_count"`
+	Runs              uint64 `json:"runs"`
+	Failures          uint64 `json:"failures"`
+	Warm              uint64 `json:"warm"`
+	Cold              uint64 `json:"cold"`
 }
 
 type ExactCachePromptArtifactStatus struct {
@@ -46,7 +70,9 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 	}
 	status := ExactCacheStatus{
 		RoutingMode: routingMode,
+		Activation:  s.registry.CacheRoutingActivationStatus(),
 		Providers:   s.registry.PrefixCacheProtocolStatus(),
+		Lifecycle:   s.registry.CacheRoutingLifecycleStatus(),
 	}
 	status.Holders, status.Attempts = s.registry.CacheRoutingStateCounts()
 	if s.promptSupervisor != nil {
@@ -55,12 +81,27 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 		status.Sidecar.Running = supervisor.Running
 		status.Sidecar.Ready = supervisor.Ready
 		status.Sidecar.Restarts = supervisor.Restarts
+		status.Sidecar.RestartReason = supervisor.RestartReason
+		status.Sidecar.RestartSuppressed = !supervisor.RestartSuppressedUntil.IsZero()
+		status.Sidecar.ChildGeneration = supervisor.ChildGeneration
+		status.Sidecar.ConsecutiveHealthFailures = supervisor.ConsecutiveHealthFailures
 		status.Sidecar.RSSBytes = supervisor.RSSBytes
 	}
 	if s.promptContract != nil {
 		client := s.promptContract.Stats()
 		status.Sidecar.Timeouts = client.Timeouts
+		status.Sidecar.HealthTimeouts = client.HealthTimeouts
+		status.Sidecar.PreloadTimeouts = client.PreloadTimeouts
 		status.Sidecar.Overloads = client.Overloads
+		status.Sidecar.Planner = s.promptContract.SidecarMetrics()
+	}
+	if s.promptPreloader != nil {
+		preload := s.promptPreloader.Status()
+		status.Preload = ExactCachePreloadStatus{
+			Ready: preload.Ready, CatalogGeneration: preload.CatalogGeneration,
+			ChildGeneration: preload.ChildGeneration, ContractCount: preload.ContractCount,
+			Runs: preload.Runs, Failures: preload.Failures, Warm: preload.Warm, Cold: preload.Cold,
+		}
 	}
 	if s.promptArtifacts != nil {
 		counts := s.promptArtifacts.Counts()
@@ -71,94 +112,23 @@ func (s *Server) ExactCacheStatusSnapshot() ExactCacheStatus {
 	return status
 }
 
-func (s *Server) handleExactCacheStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, s.ExactCacheStatusSnapshot())
-}
-
-func (s *Server) registerExactCacheGauges() {
-	gauge := func(value func(ExactCacheStatus) float64) GaugeFunc {
-		return func() float64 { return value(s.ExactCacheStatusSnapshot()) }
+// cachedExactCacheStatusSnapshot bounds the fleet-wide provider scan used by
+// the public rollout surface. Concurrent scrapes share one short-lived
+// aggregate, so observability cannot repeatedly contend with routing and
+// heartbeat locks.
+func (s *Server) cachedExactCacheStatusSnapshot() ExactCacheStatus {
+	s.exactCacheStatusCacheMu.Lock()
+	defer s.exactCacheStatusCacheMu.Unlock()
+	now := time.Now()
+	if now.Before(s.exactCacheStatusCacheExpires) {
+		return s.exactCacheStatusCache
 	}
-	for _, mode := range []string{registry.CacheRoutingOff, registry.CacheRoutingOn} {
-		mode := mode
-		s.metrics.RegisterGaugeLabels("exact_cache_routing_mode", gauge(func(s ExactCacheStatus) float64 {
-			return boolGauge(s.RoutingMode == mode)
-		}), MetricLabel{"mode", mode})
-	}
-	s.metrics.RegisterGauge("exact_cache_sidecar_enabled", gauge(func(s ExactCacheStatus) float64 {
-		return boolGauge(s.Sidecar.Enabled)
-	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_running", gauge(func(s ExactCacheStatus) float64 {
-		return boolGauge(s.Sidecar.Running)
-	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_ready", gauge(func(s ExactCacheStatus) float64 {
-		return boolGauge(s.Sidecar.Ready)
-	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_restarts", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Sidecar.Restarts)
-	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_timeouts", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Sidecar.Timeouts)
-	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_overloads", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Sidecar.Overloads)
-	}))
-	s.metrics.RegisterGauge("exact_cache_sidecar_rss_bytes", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Sidecar.RSSBytes)
-	}))
-	s.metrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.PromptArtifacts.Ready)
-	}), MetricLabel{"state", "ready"})
-	s.metrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.PromptArtifacts.Pending)
-	}), MetricLabel{"state", "pending"})
-	s.metrics.RegisterGaugeLabels("exact_cache_prompt_artifacts", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.PromptArtifacts.Failed)
-	}), MetricLabel{"state", "failed"})
-	s.metrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Providers.V0)
-	}), MetricLabel{"version", "0"})
-	s.metrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Providers.V1)
-	}), MetricLabel{"version", "1"})
-	s.metrics.RegisterGaugeLabels("exact_cache_provider_protocol", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Providers.V2)
-	}), MetricLabel{"version", "2"})
-	s.metrics.RegisterGauge("exact_cache_v2_ready_models", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Providers.V2ReadyModels)
-	}))
-	s.metrics.RegisterGauge("exact_cache_holders", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Holders)
-	}))
-	s.metrics.RegisterGauge("exact_cache_attempts", gauge(func(s ExactCacheStatus) float64 {
-		return float64(s.Attempts)
-	}))
-}
-
-func (s *Server) emitExactCacheDDGauges() {
 	status := s.ExactCacheStatusSnapshot()
-	s.ddGauge("exact_cache.routing_mode", 1, []string{"mode:" + status.RoutingMode})
-	s.ddGauge("exact_cache.sidecar.enabled", boolGauge(status.Sidecar.Enabled), nil)
-	s.ddGauge("exact_cache.sidecar.running", boolGauge(status.Sidecar.Running), nil)
-	s.ddGauge("exact_cache.sidecar.ready", boolGauge(status.Sidecar.Ready), nil)
-	s.ddGauge("exact_cache.sidecar.restarts", float64(status.Sidecar.Restarts), nil)
-	s.ddGauge("exact_cache.sidecar.timeouts", float64(status.Sidecar.Timeouts), nil)
-	s.ddGauge("exact_cache.sidecar.overloads", float64(status.Sidecar.Overloads), nil)
-	s.ddGauge("exact_cache.sidecar.rss_bytes", float64(status.Sidecar.RSSBytes), nil)
-	s.ddGauge("exact_cache.prompt_artifacts", float64(status.PromptArtifacts.Ready), []string{"state:ready"})
-	s.ddGauge("exact_cache.prompt_artifacts", float64(status.PromptArtifacts.Pending), []string{"state:pending"})
-	s.ddGauge("exact_cache.prompt_artifacts", float64(status.PromptArtifacts.Failed), []string{"state:failed"})
-	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V0), []string{"version:0"})
-	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V1), []string{"version:1"})
-	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V2), []string{"version:2"})
-	s.ddGauge("exact_cache.v2_ready_models", float64(status.Providers.V2ReadyModels), nil)
-	s.ddGauge("exact_cache.holders", float64(status.Holders), nil)
-	s.ddGauge("exact_cache.attempts", float64(status.Attempts), nil)
+	s.exactCacheStatusCache = status
+	s.exactCacheStatusCacheExpires = time.Now().Add(exactCacheStatusCacheTTL)
+	return status
 }
 
-func boolGauge(value bool) float64 {
-	if value {
-		return 1
-	}
-	return 0
+func (s *Server) handleExactCacheStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, s.cachedExactCacheStatusSnapshot())
 }

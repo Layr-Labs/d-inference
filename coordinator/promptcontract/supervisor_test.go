@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -89,16 +90,18 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 	t.Setenv("PROMPT_SIDECAR_HELPER_MARKER", marker)
 
 	supervisor := NewSupervisor(SupervisorConfig{
-		Enabled:           true,
-		BinaryPath:        script,
-		SocketPath:        socket,
-		ArtifactRoot:      temp,
-		RequestTimeout:    50 * time.Millisecond,
-		StartupTimeout:    time.Second,
-		HealthInterval:    10 * time.Millisecond,
-		ShutdownTimeout:   500 * time.Millisecond,
-		RestartBackoffMin: 10 * time.Millisecond,
-		RestartBackoffMax: 20 * time.Millisecond,
+		Enabled:                true,
+		BinaryPath:             script,
+		SocketPath:             socket,
+		ArtifactRoot:           temp,
+		RequestTimeout:         50 * time.Millisecond,
+		HealthTimeout:          50 * time.Millisecond,
+		StartupTimeout:         time.Second,
+		HealthInterval:         10 * time.Millisecond,
+		HealthFailureThreshold: 3,
+		ShutdownTimeout:        500 * time.Millisecond,
+		RestartBackoffMin:      10 * time.Millisecond,
+		RestartBackoffMax:      20 * time.Millisecond,
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
@@ -133,16 +136,18 @@ func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
 	t.Setenv("PROMPT_SIDECAR_HELPER_MARKER", marker)
 	t.Setenv("PROMPT_SIDECAR_HELPER_UNHEALTHY", unhealthy)
 	supervisor := NewSupervisor(SupervisorConfig{
-		Enabled:           true,
-		BinaryPath:        script,
-		SocketPath:        filepath.Join(temp, "sidecar.sock"),
-		ArtifactRoot:      temp,
-		RequestTimeout:    30 * time.Millisecond,
-		StartupTimeout:    time.Second,
-		HealthInterval:    10 * time.Millisecond,
-		ShutdownTimeout:   100 * time.Millisecond,
-		RestartBackoffMin: 10 * time.Millisecond,
-		RestartBackoffMax: 20 * time.Millisecond,
+		Enabled:                true,
+		BinaryPath:             script,
+		SocketPath:             filepath.Join(temp, "sidecar.sock"),
+		ArtifactRoot:           temp,
+		RequestTimeout:         30 * time.Millisecond,
+		HealthTimeout:          30 * time.Millisecond,
+		StartupTimeout:         time.Second,
+		HealthInterval:         10 * time.Millisecond,
+		HealthFailureThreshold: 3,
+		ShutdownTimeout:        100 * time.Millisecond,
+		RestartBackoffMin:      10 * time.Millisecond,
+		RestartBackoffMax:      20 * time.Millisecond,
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
@@ -172,11 +177,92 @@ func TestRSSBytesFromStatm(t *testing.T) {
 	}
 }
 
+func TestSupervisorTransientHealthFailureDoesNotRestart(t *testing.T) {
+	supervisor, unhealthy := startSupervisorHelper(t)
+	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool { return status.Ready })
+	before := supervisor.Status().Restarts
+	if err := os.WriteFile(unhealthy, []byte("transient"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && supervisor.Client().Stats().HealthTimeouts == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if supervisor.Client().Stats().HealthTimeouts == 0 {
+		t.Fatal("transient health timeout was not observed")
+	}
+	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
+		return status.Ready
+	})
+	if after := supervisor.Status().Restarts; after != before {
+		t.Fatalf("one transient health failure restarted child: before=%d after=%d", before, after)
+	}
+}
+
+func TestSupervisorReadinessDegradationDoesNotRestart(t *testing.T) {
+	supervisor, _ := startSupervisorHelper(t)
+	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool { return status.Ready })
+	before := supervisor.Status().Restarts
+	notReady := os.Getenv("PROMPT_SIDECAR_HELPER_NOT_READY")
+	if err := os.WriteFile(notReady, []byte("degraded"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool { return !status.Ready })
+	time.Sleep(100 * time.Millisecond)
+	if after := supervisor.Status().Restarts; after != before {
+		t.Fatalf("readiness degradation restarted child: before=%d after=%d", before, after)
+	}
+	if err := os.Remove(notReady); err != nil {
+		t.Fatal(err)
+	}
+	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool { return status.Ready })
+}
+
+func TestSupervisorRestartCircuitAndBoundedStderr(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := realPromptTempDir(t, "prompt-supervisor-circuit-")
+	script := filepath.Join(temp, "sidecar-helper")
+	scriptBody := "#!/bin/sh\nexec \"" + executable + "\" -test.run=TestSupervisorHelperProcess -- \"$@\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PROMPT_SIDECAR_HELPER", "1")
+	t.Setenv("PROMPT_SIDECAR_HELPER_ALWAYS_EXIT", "1")
+	t.Setenv("PROMPT_SIDECAR_HELPER_STDERR", strings.Repeat("diagnostic-", 512))
+	supervisor := NewSupervisor(SupervisorConfig{
+		Enabled: true, BinaryPath: script, SocketPath: filepath.Join(temp, "sidecar.sock"),
+		ArtifactRoot: temp, HealthTimeout: 20 * time.Millisecond, StartupTimeout: time.Second,
+		HealthInterval: 10 * time.Millisecond, ShutdownTimeout: 50 * time.Millisecond,
+		RestartBackoffMin: time.Millisecond, RestartBackoffMax: 2 * time.Millisecond,
+		RestartWindow: time.Second, RestartMaxInWindow: 2, RestartCooldown: 200 * time.Millisecond,
+		StderrMaxBytes: 128,
+	})
+	supervisor.Start(context.Background())
+	defer supervisor.Close()
+	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
+		return status.Restarts >= 2 && !status.RestartSuppressedUntil.IsZero()
+	})
+	status := supervisor.Status()
+	if status.RestartReason != "restart_cooldown" || status.LastExitReason == "" ||
+		len(status.StderrTail) == 0 || len(status.StderrTail) > 128 {
+		t.Fatalf("bounded restart diagnostics=%+v", status)
+	}
+}
+
 func TestSupervisorHelperProcess(t *testing.T) {
 	if os.Getenv("PROMPT_SIDECAR_HELPER") != "1" {
 		return
 	}
 	marker := os.Getenv("PROMPT_SIDECAR_HELPER_MARKER")
+	if stderr := os.Getenv("PROMPT_SIDECAR_HELPER_STDERR"); stderr != "" {
+		_, _ = os.Stderr.WriteString(stderr)
+	}
+	if os.Getenv("PROMPT_SIDECAR_HELPER_ALWAYS_EXIT") == "1" {
+		os.Exit(29)
+	}
 	if _, err := os.Stat(marker); os.IsNotExist(err) {
 		if writeErr := os.WriteFile(marker, []byte("started"), 0o600); writeErr != nil {
 			os.Exit(24)
@@ -196,22 +282,70 @@ func TestSupervisorHelperProcess(t *testing.T) {
 		os.Exit(27)
 	}
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			if notReady := os.Getenv("PROMPT_SIDECAR_HELPER_NOT_READY"); notReady != "" {
+				if _, err := os.Stat(notReady); err == nil {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"status":"not_ready","ready":false}`))
+					return
+				}
+			}
+			_, _ = w.Write([]byte(`{"status":"ok","ready":true}`))
+			return
+		}
 		if r.URL.Path != "/health" {
 			http.NotFound(w, r)
 			return
 		}
 		if unhealthy := os.Getenv("PROMPT_SIDECAR_HELPER_UNHEALTHY"); unhealthy != "" {
-			if _, err := os.Stat(unhealthy); err == nil {
+			if data, err := os.ReadFile(unhealthy); err == nil {
+				if string(data) == "transient" {
+					_ = os.Remove(unhealthy)
+				}
 				<-r.Context().Done()
 				return
 			}
 		}
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok","ready":true}`))
 	})}
 	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 		os.Exit(28)
 	}
 	os.Exit(0)
+}
+
+func startSupervisorHelper(t *testing.T) (*Supervisor, string) {
+	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	temp := realPromptTempDir(t, "prompt-supervisor-transient-")
+	script := filepath.Join(temp, "sidecar-helper")
+	scriptBody := "#!/bin/sh\nexec \"" + executable + "\" -test.run=TestSupervisorHelperProcess -- \"$@\"\n"
+	if err := os.WriteFile(script, []byte(scriptBody), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(temp, "first-start")
+	if err := os.WriteFile(marker, []byte("started"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unhealthy := filepath.Join(temp, "unhealthy")
+	notReady := filepath.Join(temp, "not-ready")
+	t.Setenv("PROMPT_SIDECAR_HELPER", "1")
+	t.Setenv("PROMPT_SIDECAR_HELPER_MARKER", marker)
+	t.Setenv("PROMPT_SIDECAR_HELPER_UNHEALTHY", unhealthy)
+	t.Setenv("PROMPT_SIDECAR_HELPER_NOT_READY", notReady)
+	supervisor := NewSupervisor(SupervisorConfig{
+		Enabled: true, BinaryPath: script, SocketPath: filepath.Join(temp, "sidecar.sock"),
+		ArtifactRoot: temp, RequestTimeout: 100 * time.Millisecond, HealthTimeout: 30 * time.Millisecond,
+		StartupTimeout: time.Second, HealthInterval: 20 * time.Millisecond,
+		HealthFailureThreshold: 3, ShutdownTimeout: 100 * time.Millisecond,
+		RestartBackoffMin: 10 * time.Millisecond, RestartBackoffMax: 20 * time.Millisecond,
+	})
+	supervisor.Start(context.Background())
+	t.Cleanup(supervisor.Close)
+	return supervisor, unhealthy
 }
 
 func waitForSupervisor(t *testing.T, supervisor *Supervisor, predicate func(SupervisorStatus) bool) {

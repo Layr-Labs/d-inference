@@ -518,6 +518,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupMessage)
 			if s.registry.ApplyPrefixCacheLookup(providerID, lookupMsg) {
 				s.ddIncr("routing.cache_lookup_receipt", []string{"outcome:" + lookupMsg.Outcome, "tier:" + lowCardinalityCacheTier(lookupMsg.Tier)})
+				s.emitExactCacheSSDLookup("v1", lookupMsg.Outcome, lookupMsg.StageMs)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup"})
 			}
@@ -526,6 +527,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			readyMsg := msg.Payload.(*protocol.PrefixCacheReadyMessage)
 			if s.registry.ApplyPrefixCacheReady(providerID, readyMsg) {
 				s.ddIncr("routing.cache_ready_receipt", []string{"tier:" + lowCardinalityCacheTier(readyMsg.Tier)})
+				s.emitExactCacheSSDDonation("v1", readyMsg.StageMs, readyMsg.ReadyTokens)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready"})
 			}
@@ -538,6 +540,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"outcome:" + lookupMsg.Outcome,
 					"tier:" + lowCardinalityCacheTier(lookupMsg.Tier),
 				})
+				s.emitExactCacheSSDLookup("v2", lookupMsg.Outcome, lookupMsg.StageMs)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:lookup_v2"})
 			}
@@ -549,6 +552,11 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					"protocol:v2",
 					"tier:" + lowCardinalityCacheTier(readyMsg.Tier),
 				})
+				donatedTokens := 0
+				if len(readyMsg.ReadyAnchors) > 0 {
+					donatedTokens = readyMsg.ReadyAnchors[len(readyMsg.ReadyAnchors)-1].TokenCount
+				}
+				s.emitExactCacheSSDDonation("v2", readyMsg.StageMs, donatedTokens)
 			} else {
 				s.ddIncr("routing.cache_receipt_rejected", []string{"type:ready_v2"})
 			}
@@ -705,6 +713,7 @@ func (s *Server) emitCacheSelectionTerminal(pr *registry.PendingRequest, usage p
 			s.ddIncr("routing.cache_selection_precision", tags)
 		}
 	}
+	s.emitExactCacheEstimatedTTFTSaved(pr, tags)
 	return true
 }
 
@@ -1780,6 +1789,8 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddCount("routing.cache_tokens", int64(msg.Usage.CachedTokens), tags)
 		s.ddCount("routing.cache_prefill_tokens_saved", int64(msg.Usage.PrefillTokensSaved), tags)
 		s.ddHistogram("routing.cache_stage_ms", msg.Usage.CacheStageMs, tags)
+		s.emitExactCacheUsage(msg.Usage.CacheOutcome, lowCardinalityCacheTier(msg.Usage.CacheTier),
+			msg.Usage.CachedTokens, msg.Usage.PrefillTokensSaved, msg.Usage.CacheStageMs)
 	}
 	cacheTerminalClaimed := s.emitCacheSelectionTerminal(pr, msg.Usage, cacheUsageValid, cacheUsagePresent)
 	s.reconcileOutputAdmission(pr, msg.Usage.CompletionTokens)

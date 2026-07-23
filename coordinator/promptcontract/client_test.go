@@ -3,6 +3,7 @@ package promptcontract
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"os"
@@ -45,6 +46,11 @@ func TestClientUsesPersistentUnixHTTPAndFailsCold(t *testing.T) {
 			_ = json.NewDecoder(r.Body).Decode(&request)
 			if request.ScopeID == "overloaded" {
 				http.Error(w, "at capacity", http.StatusServiceUnavailable)
+				return
+			}
+			if request.ScopeID == "dynamic" {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = w.Write([]byte(`{"error":{"code":"dynamic_time","message":"cold only"}}`))
 				return
 			}
 			if request.ScopeID == "slow" {
@@ -120,6 +126,10 @@ func TestClientUsesPersistentUnixHTTPAndFailsCold(t *testing.T) {
 	}
 	if stats := client.Stats(); stats.Timeouts != 1 || stats.Overloads != 1 {
 		t.Fatalf("client stats=%+v, want one timeout and one overload", stats)
+	}
+	input.ScopeID = "dynamic"
+	if _, err := client.Plan(context.Background(), input); !errors.Is(err, ErrDynamicContract) {
+		t.Fatalf("dynamic contract error=%v", err)
 	}
 	if err := server.Close(); err != nil {
 		t.Fatal(err)

@@ -161,8 +161,9 @@ type routingCandidate struct {
 	// capacityRejectRate is the pair's windowed capacity-503 rate
 	// (capacity_rate.go), captured at candidate build so the winning
 	// RoutingDecision can expose it. 0 when no rejects are in the window.
-	capacityRejectRate float64
-	cacheTier          string
+	capacityRejectRate        float64
+	cacheTier                 string
+	cacheEstimatedTTFTSavedMs float64
 }
 
 // candidateRejection enumerates why a provider that passed structural
@@ -292,6 +293,10 @@ type RoutingDecision struct {
 	TTFTMs          float64
 	CacheTier       string
 	CacheDiscountMs float64
+	// CacheEstimatedTTFTSavedMs is the uncapped estimated prefill-time benefit
+	// net of SSD stage time. CacheDiscountMs remains separately bounded by the
+	// routing cost safety caps.
+	CacheEstimatedTTFTSavedMs float64
 
 	// Phase-0 shadow TTFT admission/spread evaluation (see ttft_shadow.go).
 	// Populated ONLY when EIGENINFERENCE_TTFT_ADMISSION_MODE != off and a
@@ -347,6 +352,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 	pr.CacheSelectionMode = ""
 	pr.CacheSelectionTier = ""
 	pr.CacheSelectionDiscountMs = 0
+	pr.CacheSelectionEstimatedTTFTSavedMs = 0
 	pr.CacheSelectionSelected = false
 	if pr.CachePlan.present() && cacheMode == CacheRoutingOn {
 		pr.CacheSelectionMode = "active"
@@ -441,6 +447,7 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		pr.CacheSelectionMode = "active"
 		pr.CacheSelectionTier = selected.cacheTier
 		pr.CacheSelectionDiscountMs = bd.CacheDiscountMs
+		pr.CacheSelectionEstimatedTTFTSavedMs = selected.cacheEstimatedTTFTSavedMs
 		pr.CacheSelectionSelected = pr.CacheSelectionMode == "active"
 	}
 	pr.ProviderID = p.ID
@@ -468,29 +475,30 @@ func (r *Registry) ReserveProviderEx(model string, pr *PendingRequest, excludeID
 		ttftCalibration.notePrediction(pr.RequestID, pr.Attempt, model, selected.snapshot.chipFamily, bd.RawTTFTMs)
 	}
 	decision := RoutingDecision{
-		ProviderID:              p.ID,
-		Model:                   model,
-		CostMs:                  bd.Total,
-		StateMs:                 bd.StateMs,
-		QueueMs:                 bd.QueueMs,
-		PendingMs:               bd.PendingMs,
-		BacklogMs:               bd.BacklogMs,
-		ThisReqMs:               bd.ThisReqMs,
-		HealthMs:                bd.HealthMs,
-		CapacityRateMs:          bd.CapacityRateMs,
-		CapacityRejectRate:      selected.capacityRejectRate,
-		EffectiveQueue:          selected.effectiveQueue,
-		CandidateCount:          candidateCount,
-		CapacityRejections:      capacityRejections,
-		ModelTooLargeRejections: tooLargeRejections,
-		VisionRejections:        visionRejections,
-		TTFTRejections:          ttftRejections,
-		BestTTFTMs:              bestTTFTMs,
-		TTFTMs:                  bd.TTFTMs,
-		CacheTier:               selected.cacheTier,
-		CacheDiscountMs:         bd.CacheDiscountMs,
-		EffectiveTPS:            selected.effectiveTPS,
-		StaticTPS:               selected.snapshot.decodeTPS,
+		ProviderID:                p.ID,
+		Model:                     model,
+		CostMs:                    bd.Total,
+		StateMs:                   bd.StateMs,
+		QueueMs:                   bd.QueueMs,
+		PendingMs:                 bd.PendingMs,
+		BacklogMs:                 bd.BacklogMs,
+		ThisReqMs:                 bd.ThisReqMs,
+		HealthMs:                  bd.HealthMs,
+		CapacityRateMs:            bd.CapacityRateMs,
+		CapacityRejectRate:        selected.capacityRejectRate,
+		EffectiveQueue:            selected.effectiveQueue,
+		CandidateCount:            candidateCount,
+		CapacityRejections:        capacityRejections,
+		ModelTooLargeRejections:   tooLargeRejections,
+		VisionRejections:          visionRejections,
+		TTFTRejections:            ttftRejections,
+		BestTTFTMs:                bestTTFTMs,
+		TTFTMs:                    bd.TTFTMs,
+		CacheTier:                 selected.cacheTier,
+		CacheDiscountMs:           bd.CacheDiscountMs,
+		CacheEstimatedTTFTSavedMs: selected.cacheEstimatedTTFTSavedMs,
+		EffectiveTPS:              selected.effectiveTPS,
+		StaticTPS:                 selected.snapshot.decodeTPS,
 	}
 	shadowEval.applyTo(&decision)
 	return p, decision
@@ -722,12 +730,13 @@ func (r *Registry) scanCandidatesLocked(model string, pr *PendingRequest, ignore
 			if prefillTPS > 0 && !math.IsNaN(prefillTPS) && !math.IsInf(prefillTPS, 0) {
 				savedTokens := hint.PrefillTokensSaved
 				netSavedMs := float64(savedTokens)/prefillTPS*1000 - hint.StageMs
-				if netSavedMs > 0 {
+				if netSavedMs > 0 && !math.IsNaN(netSavedMs) && !math.IsInf(netSavedMs, 0) {
 					capMs := math.Min(r.cacheRoutingMaxDiscountMs, candidate.costMs*r.cacheRoutingMaxCostFraction)
 					discount := math.Min(netSavedMs, capMs)
 					if discount > 0 {
 						candidate.breakdown.CacheDiscountMs = discount
 						candidate.cacheTier = "ssd"
+						candidate.cacheEstimatedTTFTSavedMs = netSavedMs
 						candidate.costMs -= discount
 						candidate.breakdown.Total = candidate.costMs
 					}

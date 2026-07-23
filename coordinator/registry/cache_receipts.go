@@ -118,7 +118,10 @@ func validCacheOutcome(outcome string) bool {
 	}
 }
 
-func (t *cacheRoutingTracker) disconnect(providerID string) {
+func (t *cacheRoutingTracker) disconnect(
+	providerID string,
+	reason cacheHolderRemovalReason,
+) {
 	if t == nil || providerID == "" {
 		return
 	}
@@ -126,7 +129,7 @@ func (t *cacheRoutingTracker) disconnect(providerID string) {
 	defer t.mu.Unlock()
 	for key, holders := range t.holders {
 		if _, exists := holders[providerID]; exists {
-			t.removeHolderLocked(key, providerID)
+			t.removeHolderLocked(key, providerID, reason)
 		}
 	}
 	for nonce, attempt := range t.attempts {
@@ -146,7 +149,10 @@ func (t *cacheRoutingTracker) disconnect(providerID string) {
 	}
 }
 
-func (t *cacheRoutingTracker) invalidateProviderModel(providerID, modelID string) {
+func (t *cacheRoutingTracker) invalidateProviderModel(
+	providerID, modelID string,
+	reason cacheHolderRemovalReason,
+) {
 	if t == nil || providerID == "" || modelID == "" {
 		return
 	}
@@ -154,7 +160,7 @@ func (t *cacheRoutingTracker) invalidateProviderModel(providerID, modelID string
 	defer t.mu.Unlock()
 	for key, holders := range t.holders {
 		if holder, exists := holders[providerID]; exists && holder.ModelID == modelID {
-			t.removeHolderLocked(key, providerID)
+			t.removeHolderLocked(key, providerID, reason)
 		}
 	}
 	for nonce, attempt := range t.attempts {
@@ -200,6 +206,7 @@ func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder)
 	}
 	if _, exists := holders[holder.ProviderID]; !exists {
 		t.holderCount++
+		t.holderAdded++
 	}
 	holders[holder.ProviderID] = holder
 	t.trackHolderOrderLocked(key, holder.ProviderID, holder.UpdatedAt)
@@ -213,7 +220,7 @@ func (t *cacheRoutingTracker) upsertHolderLocked(key string, holder cacheHolder)
 				oldestUpdatedAt = candidate.UpdatedAt
 			}
 		}
-		t.removeHolderLocked(key, oldestProviderID)
+		t.removeHolderLocked(key, oldestProviderID, cacheHolderRemovalCapacityEviction)
 	}
 	t.enforceCapLocked()
 }
@@ -229,7 +236,7 @@ func (t *cacheRoutingTracker) activeHolderLocked(
 	if now.Before(holder.ExpiresAt) {
 		return holder, true
 	}
-	t.removeHolderLocked(key, providerID)
+	t.removeHolderLocked(key, providerID, cacheHolderRemovalTTL)
 	return cacheHolder{}, false
 }
 
@@ -260,12 +267,16 @@ func (t *cacheRoutingTracker) trackHolderOrderLocked(
 	t.holderOrderByRef[ref] = entry
 }
 
-func (t *cacheRoutingTracker) removeHolderLocked(key, providerID string) {
+func (t *cacheRoutingTracker) removeHolderLocked(
+	key, providerID string,
+	reason cacheHolderRemovalReason,
+) {
 	ref := cacheHolderRef{key: key, providerID: providerID}
 	if holders := t.holders[key]; holders != nil {
 		if _, exists := holders[providerID]; exists {
 			delete(holders, providerID)
 			t.holderCount--
+			t.holderRemoved[string(reason)]++
 		}
 		if len(holders) == 0 {
 			delete(t.holders, key)
@@ -281,7 +292,7 @@ func (t *cacheRoutingTracker) sweepLocked(now time.Time) {
 	for key, holders := range t.holders {
 		for providerID, holder := range holders {
 			if !now.Before(holder.ExpiresAt) {
-				t.removeHolderLocked(key, providerID)
+				t.removeHolderLocked(key, providerID, cacheHolderRemovalTTL)
 			}
 		}
 	}
@@ -302,7 +313,10 @@ func (t *cacheRoutingTracker) sweepIfDueLocked(now time.Time) {
 
 func (t *cacheRoutingTracker) enforceCapLocked() {
 	for t.holderCount > t.maxEntries {
-		t.removeHolderLocked(t.holderOrder[0].ref.key, t.holderOrder[0].ref.providerID)
+		t.removeHolderLocked(
+			t.holderOrder[0].ref.key,
+			t.holderOrder[0].ref.providerID,
+			cacheHolderRemovalCapacityEviction)
 	}
 }
 

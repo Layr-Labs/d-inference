@@ -138,15 +138,17 @@ extension ProviderLoop {
             freeForLoadGb: freeForLoadGb
         )
         state.inferenceActive = totalActive > 0
-        if binaryHash?.isEmpty == false {
-            state.setPrefixCacheV2Sources(
-                Dictionary(uniqueKeysWithValues: modelSlots.compactMap { modelId, slot in
-                    guard advertisedModels[modelId] != nil else { return nil }
-                    return slot.engineV2.ssdPrefixCache.map { (modelId, $0) }
-                }))
-        } else {
-            state.setPrefixCacheV2Sources([:])
+        let loadedSlots = modelSlots.compactMap { modelId, slot
+            -> (String, EngineV2Bridge)? in
+            guard advertisedModels[modelId] != nil else { return nil }
+            return (modelId, slot.engineV2)
         }
+        state.setPrefixCacheSnapshot(
+            sources: Dictionary(uniqueKeysWithValues: loadedSlots.compactMap { modelId, bridge in
+                bridge.ssdPrefixCache.map { (modelId, $0) }
+            }),
+            statuses: loadedSlots.map { _, bridge in bridge.prefixCacheModelStatus() },
+            runtimeIdentityAvailable: binaryHash?.isEmpty == false)
     }
 
 }

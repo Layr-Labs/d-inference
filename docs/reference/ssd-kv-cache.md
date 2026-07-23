@@ -43,6 +43,32 @@ hybrids, quantized rows, and unknown layouts fail cold. Eligible layouts persist
 a donation only when it also clears the configured effective-token floor. See
 [`ssd-kv-cache-hybrid-models.md`](./ssd-kv-cache-hybrid-models.md).
 
+## Eligibility and donation telemetry
+
+Each loaded provider slot produces a bounded `prefix_cache_statuses` entry from
+its actual cache-construction state. `ready` is emitted only after the startup
+disk scan and cache epoch are usable. Before that the slot is
+`pending/scan_pending`; scan failure is `error/scan_failed`. Configuration,
+weight identity, layout/backend support, disk setup, and initialization failures
+use the fixed reason vocabulary documented in
+[`cache-aware-routing.md`](../architecture/cache-aware-routing.md). A provider
+advertises exact protocol v2 only when at least one slot is actually ready; the
+status snapshot still explains every loaded v1 slot.
+
+Every call into the SSD donation path settles exactly one process-local outcome:
+
+`donated`, `below_effective_token_floor`, `no_complete_block`,
+`lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`,
+`write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`,
+`cache_closed`, `disk_unavailable`, or `write_failed`.
+
+These are cumulative counters, not per-request events. The provider sends only
+the fixed enum and count. No model/request/provider identifier, path, token,
+prompt, cache scope, hash, epoch, account, serial, or free-form error is retained
+or sent. The coordinator baselines registration, consumes monotonic heartbeat
+deltas, and exports aggregate outcomes through `/v1/cache/status`, Prometheus,
+and Datadog.
+
 ## Environment variables
 
 | Variable | Default | Meaning |

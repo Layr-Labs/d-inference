@@ -134,6 +134,7 @@ public enum EngineV2Factory {
         kvBytesPerToken: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
+        prefixCacheStatus: PrefixCacheModelStatus? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngine: () throws -> EngineV2Factory.ProductionBuild
     ) throws -> EngineV2Bridge {
@@ -158,6 +159,7 @@ public enum EngineV2Factory {
                 // pre-submit staging hook + release backstops + shutdown
                 // over the SAME instance the engine holds as its cache.
                 ssdPrefixCache: ssdPrefixCache,
+                prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
                 emitTelemetry: emitTelemetry
             )

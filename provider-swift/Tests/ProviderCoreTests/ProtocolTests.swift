@@ -39,6 +39,81 @@ import Testing
     #expect(decoded.prefixCacheV2Models == [capability])
 }
 
+@Test func prefixCacheTelemetrySnapshotsAreOptionalBoundedWireEnums() throws {
+    let legacy = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(
+            memoryPressure: 0, cpuUsage: 0, thermalState: .nominal)))
+    let legacyObject = try jsonObject(
+        try ProviderProtocolCodec.encodeProviderMessage(legacy))
+    #expect(legacyObject["prefix_cache_statuses"] == nil)
+    #expect(legacyObject["prefix_cache_donation_outcomes"] == nil)
+
+    let status = PrefixCacheModelStatus(
+        modelId: "model",
+        backend: .contiguous,
+        replayStrategy: .frozenFull,
+        state: .disabled,
+        reason: .weightHashUnavailable)
+    let current = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(
+            memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        prefixCacheProtocol: 1,
+        prefixCacheV2Models: [],
+        prefixCacheStatuses: [status],
+        prefixCacheDonationOutcomes: [
+            PrefixCacheDonationOutcomeCount(outcome: .writeQueueFull, count: 3)
+        ]))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(current)
+    let object = try jsonObject(data)
+    let statusObject = try #require(
+        (object["prefix_cache_statuses"] as? [[String: Any]])?.first)
+    #expect(statusObject["replay_strategy"] as? String == "frozen_full")
+    #expect(statusObject["reason"] as? String == "weight_hash_unavailable")
+    let outcomeObject = try #require(
+        (object["prefix_cache_donation_outcomes"] as? [[String: Any]])?.first)
+    #expect(outcomeObject["outcome"] as? String == "write_queue_full")
+    #expect(outcomeObject["count"] as? Int == 3)
+
+    guard case .heartbeat(let decoded) =
+        try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decoded.prefixCacheStatuses == [status])
+    #expect(decoded.prefixCacheDonationOutcomes == [
+        PrefixCacheDonationOutcomeCount(outcome: .writeQueueFull, count: 3)
+    ])
+}
+
+@Test func prefixCacheTelemetryEnumCasingIsPinned() {
+    #expect(Set(PrefixCacheStatusState.allCases.map(\.rawValue)) == [
+        "ready", "pending", "disabled", "error",
+    ])
+    #expect(Set(PrefixCacheStatusReason.allCases.map(\.rawValue)) == [
+        "ready", "config_disabled", "no_loaded_slot",
+        "weight_hash_unavailable", "runtime_identity_unavailable",
+        "unsupported_layout", "unsupported_backend",
+        "paged_hybrid_unsupported", "scan_pending", "scan_failed",
+        "disk_unavailable", "cache_init_failed",
+    ])
+    #expect(Set(PrefixCacheStatusBackend.allCases.map(\.rawValue)) == [
+        "contiguous", "paged", "unknown",
+    ])
+    #expect(Set(PrefixCacheReplayStrategy.allCases.map(\.rawValue)) == [
+        "direct", "frozen_full", "none", "unknown",
+    ])
+    #expect(Set(PrefixCacheDonationOutcome.allCases.map(\.rawValue)) == [
+        "donated", "below_effective_token_floor", "no_complete_block",
+        "lossy_snapshot", "incomplete_layer_state", "stage_size_exceeded",
+        "write_rate_limited", "write_queue_full", "already_durable",
+        "already_queued", "cache_closed", "disk_unavailable", "write_failed",
+    ])
+}
+
 @Test func prefixCacheV2MessagesRemainDistinctAndBoundReadyAnchors() throws {
     let prompt = PrefixCacheAnchor(
         chainHash: String(repeating: "c", count: 64), tokenCount: 256)
@@ -206,6 +281,14 @@ import Testing
         cacheEpoch: "11111111-1111-1111-1111-111111111111",
         enabled: true,
         ready: true)
+    let cacheStatus = PrefixCacheModelStatus(
+        modelId: "model",
+        backend: .contiguous,
+        replayStrategy: .direct,
+        state: .ready,
+        reason: .ready)
+    let donationOutcome = PrefixCacheDonationOutcomeCount(
+        outcome: .donated, count: 7)
     let message = ProviderMessage.register(ProviderMessage.Register(
         hardware: sampleHardware(),
         models: [sampleModel()],
@@ -216,6 +299,8 @@ import Testing
         apnsEnvironment: "production",
         prefixCacheProtocol: 2,
         prefixCacheV2Models: [capability],
+        prefixCacheStatuses: [cacheStatus],
+        prefixCacheDonationOutcomes: [donationOutcome],
         toolConstraintProtocol: 1,
         toolConstraintModels: ["model"]
     ))
@@ -226,6 +311,8 @@ import Testing
     #expect(object["private_only"] as? Bool == true)
     #expect(object["prefix_cache_protocol"] as? Int == 2)
     #expect((object["prefix_cache_v2_models"] as? [[String: Any]])?.count == 1)
+    #expect((object["prefix_cache_statuses"] as? [[String: Any]])?.count == 1)
+    #expect((object["prefix_cache_donation_outcomes"] as? [[String: Any]])?.count == 1)
     #expect(object["tool_constraint_protocol"] as? Int == 1)
     #expect(object["tool_constraint_models"] as? [String] == ["model"])
     // Raw attestation bytes preserved verbatim (the reason this path exists).
@@ -238,6 +325,8 @@ import Testing
     #expect(r.apnsEnvironment == "production")
     #expect(r.privateOnly == true)
     #expect(r.prefixCacheV2Models == [capability])
+    #expect(r.prefixCacheStatuses == [cacheStatus])
+    #expect(r.prefixCacheDonationOutcomes == [donationOutcome])
     #expect(r.toolConstraintProtocol == 1)
     #expect(r.toolConstraintModels == ["model"])
 }

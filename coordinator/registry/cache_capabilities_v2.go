@@ -191,6 +191,8 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 	}
 	changed := provider.PrefixCacheProtocol != version ||
 		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, validated)
+	removalReason := prefixCacheCapabilityRemovalReason(
+		provider.PrefixCacheV2Models, validated)
 	if changed {
 		provider.PrefixCacheProtocol = version
 		provider.PrefixCacheV2Models = validated
@@ -202,7 +204,33 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 	tracker := r.cacheRouting
 	r.mu.RUnlock()
 	if changed && tracker != nil {
-		tracker.disconnect(providerID)
+		tracker.disconnect(providerID, removalReason)
 	}
 	return nil
+}
+
+func prefixCacheCapabilityRemovalReason(
+	previous, current map[string]protocol.PrefixCacheV2Capability,
+) cacheHolderRemovalReason {
+	if len(previous) == 0 || len(previous) != len(current) {
+		return cacheHolderRemovalCapabilityChange
+	}
+	epochChanged := false
+	for modelID, before := range previous {
+		after, ok := current[modelID]
+		if !ok {
+			return cacheHolderRemovalCapabilityChange
+		}
+		if before.CacheEpoch != after.CacheEpoch {
+			epochChanged = true
+			before.CacheEpoch = after.CacheEpoch
+		}
+		if before != after {
+			return cacheHolderRemovalCapabilityChange
+		}
+	}
+	if epochChanged {
+		return cacheHolderRemovalEpochChange
+	}
+	return cacheHolderRemovalCapabilityChange
 }

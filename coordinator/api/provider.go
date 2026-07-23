@@ -293,7 +293,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		switch msg.Type {
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
-			if err := registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
+			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
 				s.logger.Warn("rejecting malformed provider cache capabilities",
 					"provider_id", providerID, "error", err)
 				s.ddIncr("routing.cache_capability_rejected", []string{"source:register"})
@@ -467,6 +467,21 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeHeartbeat:
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
+			if hbMsg.PrefixCacheStatuses != nil ||
+				hbMsg.PrefixCacheDonationOutcomes != nil {
+				if err := s.registry.UpdatePrefixCacheTelemetry(
+					providerID,
+					hbMsg.PrefixCacheStatuses,
+					hbMsg.PrefixCacheDonationOutcomes,
+				); err != nil {
+					s.logger.Warn("rejecting malformed heartbeat cache telemetry",
+						"provider_id", providerID, "error", err)
+					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
+					if hbMsg.PrefixCacheStatuses != nil {
+						s.registry.ClearPrefixCacheStatuses(providerID)
+					}
+				}
+			}
 			if hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil {
 				capabilities := []protocol.PrefixCacheV2Capability(nil)
 				if hbMsg.PrefixCacheV2Models != nil {

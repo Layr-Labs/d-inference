@@ -165,6 +165,42 @@ func (s *Server) registerExactCacheGauges() {
 	s.metrics.RegisterGauge("exact_cache_v2_ready_models", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Providers.V2ReadyModels)
 	}))
+	s.metrics.RegisterGauge("exact_cache_loaded_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Providers.LoadedModels)
+	}))
+	s.metrics.RegisterGauge("exact_cache_reported_loaded_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Providers.ReportedLoadedModels)
+	}))
+	s.metrics.RegisterGauge("exact_cache_unreported_loaded_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Providers.UnreportedLoadedModels)
+	}))
+	s.metrics.RegisterGauge("exact_cache_excluded_models", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Providers.ExcludedModels)
+	}))
+	for _, state := range registry.PrefixCacheStatusStates() {
+		state := state
+		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_state", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Providers.ByState[state])
+		}), MetricLabel{"state", state})
+	}
+	for _, reason := range registry.PrefixCacheStatusReasons() {
+		reason := reason
+		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_reason", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Providers.ByReason[reason])
+		}), MetricLabel{"reason", reason})
+	}
+	for _, backend := range registry.PrefixCacheStatusBackends() {
+		backend := backend
+		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_backend", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Providers.ByBackend[backend])
+		}), MetricLabel{"backend", backend})
+	}
+	for _, strategy := range registry.PrefixCacheReplayStrategies() {
+		strategy := strategy
+		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_strategy", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Providers.ByReplayStrategy[strategy])
+		}), MetricLabel{"strategy", strategy})
+	}
 	s.metrics.RegisterGauge("exact_cache_holders", gauge(func(s ExactCacheStatus) float64 {
 		return float64(s.Holders)
 	}))
@@ -184,6 +220,21 @@ func (s *Server) registerExactCacheGauges() {
 		s.metrics.RegisterGaugeLabels("exact_cache_ssd_lifecycle", gauge(func(s ExactCacheStatus) float64 {
 			return float64(lifecycle.value(s.Lifecycle))
 		}), MetricLabel{"event", lifecycle.name})
+	}
+	s.metrics.RegisterGauge("exact_cache_holder_added", gauge(func(s ExactCacheStatus) float64 {
+		return float64(s.Lifecycle.HolderAdded)
+	}))
+	for _, reason := range registry.CacheHolderRemovalReasons() {
+		reason := reason
+		s.metrics.RegisterGaugeLabels("exact_cache_holder_removed", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Lifecycle.HolderRemoved[reason])
+		}), MetricLabel{"reason", reason})
+	}
+	for _, outcome := range registry.PrefixCacheDonationOutcomes() {
+		outcome := outcome
+		s.metrics.RegisterGaugeLabels("exact_cache_donation_outcome", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Lifecycle.DonationOutcomes[outcome])
+		}), MetricLabel{"outcome", outcome})
 	}
 }
 
@@ -249,12 +300,41 @@ func (s *Server) emitExactCacheDDGauges() {
 	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V1), []string{"version:1"})
 	s.ddGauge("exact_cache.provider_protocol", float64(status.Providers.V2), []string{"version:2"})
 	s.ddGauge("exact_cache.v2_ready_models", float64(status.Providers.V2ReadyModels), nil)
+	s.ddGauge("exact_cache.loaded_models", float64(status.Providers.LoadedModels), nil)
+	s.ddGauge("exact_cache.reported_loaded_models", float64(status.Providers.ReportedLoadedModels), nil)
+	s.ddGauge("exact_cache.unreported_loaded_models", float64(status.Providers.UnreportedLoadedModels), nil)
+	s.ddGauge("exact_cache.excluded_models", float64(status.Providers.ExcludedModels), nil)
+	for _, state := range registry.PrefixCacheStatusStates() {
+		s.ddGauge("exact_cache.eligibility_state", float64(status.Providers.ByState[state]),
+			[]string{"state:" + state})
+	}
+	for _, reason := range registry.PrefixCacheStatusReasons() {
+		s.ddGauge("exact_cache.eligibility_reason", float64(status.Providers.ByReason[reason]),
+			[]string{"reason:" + reason})
+	}
+	for _, backend := range registry.PrefixCacheStatusBackends() {
+		s.ddGauge("exact_cache.eligibility_backend", float64(status.Providers.ByBackend[backend]),
+			[]string{"backend:" + backend})
+	}
+	for _, strategy := range registry.PrefixCacheReplayStrategies() {
+		s.ddGauge("exact_cache.eligibility_strategy", float64(status.Providers.ByReplayStrategy[strategy]),
+			[]string{"strategy:" + strategy})
+	}
 	s.ddGauge("exact_cache.holders", float64(status.Holders), nil)
 	s.ddGauge("exact_cache.attempts", float64(status.Attempts), nil)
 	s.ddGauge("exact_cache.ssd_lifecycle", float64(status.Lifecycle.SSDLookups), []string{"event:lookup"})
 	s.ddGauge("exact_cache.ssd_lifecycle", float64(status.Lifecycle.SSDHits), []string{"event:hit"})
 	s.ddGauge("exact_cache.ssd_lifecycle", float64(status.Lifecycle.SSDMisses), []string{"event:miss"})
 	s.ddGauge("exact_cache.ssd_lifecycle", float64(status.Lifecycle.SSDDonations), []string{"event:donation"})
+	s.ddGauge("exact_cache.holder_added", float64(status.Lifecycle.HolderAdded), nil)
+	for _, reason := range registry.CacheHolderRemovalReasons() {
+		s.ddGauge("exact_cache.holder_removed", float64(status.Lifecycle.HolderRemoved[reason]),
+			[]string{"reason:" + reason})
+	}
+	for _, outcome := range registry.PrefixCacheDonationOutcomes() {
+		s.ddGauge("exact_cache.donation_outcome", float64(status.Lifecycle.DonationOutcomes[outcome]),
+			[]string{"outcome:" + outcome})
+	}
 }
 
 func boolGauge(value bool) float64 {

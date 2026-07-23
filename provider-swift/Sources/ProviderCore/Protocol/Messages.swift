@@ -1,5 +1,96 @@
 import Foundation
 
+public enum PrefixCacheStatusBackend: String, Codable, Sendable, Equatable, CaseIterable {
+    case contiguous
+    case paged
+    case unknown
+}
+
+public enum PrefixCacheReplayStrategy: String, Codable, Sendable, Equatable, CaseIterable {
+    case direct
+    case frozenFull = "frozen_full"
+    case none
+    case unknown
+}
+
+public enum PrefixCacheStatusState: String, Codable, Sendable, Equatable, CaseIterable {
+    case ready
+    case pending
+    case disabled
+    case error
+}
+
+public enum PrefixCacheStatusReason: String, Codable, Sendable, Equatable, CaseIterable {
+    case ready
+    case configDisabled = "config_disabled"
+    case noLoadedSlot = "no_loaded_slot"
+    case weightHashUnavailable = "weight_hash_unavailable"
+    case runtimeIdentityUnavailable = "runtime_identity_unavailable"
+    case unsupportedLayout = "unsupported_layout"
+    case unsupportedBackend = "unsupported_backend"
+    case pagedHybridUnsupported = "paged_hybrid_unsupported"
+    case scanPending = "scan_pending"
+    case scanFailed = "scan_failed"
+    case diskUnavailable = "disk_unavailable"
+    case cacheInitFailed = "cache_init_failed"
+}
+
+public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
+    public let modelId: String
+    public let backend: PrefixCacheStatusBackend
+    public let replayStrategy: PrefixCacheReplayStrategy
+    public let state: PrefixCacheStatusState
+    public let reason: PrefixCacheStatusReason
+
+    public init(
+        modelId: String,
+        backend: PrefixCacheStatusBackend,
+        replayStrategy: PrefixCacheReplayStrategy,
+        state: PrefixCacheStatusState,
+        reason: PrefixCacheStatusReason
+    ) {
+        self.modelId = modelId
+        self.backend = backend
+        self.replayStrategy = replayStrategy
+        self.state = state
+        self.reason = reason
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case modelId = "model_id"
+        case backend
+        case replayStrategy = "replay_strategy"
+        case state
+        case reason
+    }
+}
+
+public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, CaseIterable {
+    case donated
+    case belowEffectiveTokenFloor = "below_effective_token_floor"
+    case noCompleteBlock = "no_complete_block"
+    case lossySnapshot = "lossy_snapshot"
+    case incompleteLayerState = "incomplete_layer_state"
+    case stageSizeExceeded = "stage_size_exceeded"
+    case writeRateLimited = "write_rate_limited"
+    case writeQueueFull = "write_queue_full"
+    case alreadyDurable = "already_durable"
+    case alreadyQueued = "already_queued"
+    case cacheClosed = "cache_closed"
+    case diskUnavailable = "disk_unavailable"
+    case writeFailed = "write_failed"
+}
+
+public struct PrefixCacheDonationOutcomeCount: Codable, Sendable, Equatable {
+    public let outcome: PrefixCacheDonationOutcome
+    public let count: UInt64
+
+    public init(outcome: PrefixCacheDonationOutcome, count: UInt64) {
+        self.outcome = outcome
+        self.count = count
+    }
+}
+
 public struct PrefixCacheV2Capability: Codable, Sendable, Equatable {
     public let modelId: String
     public let modelAggregateHash: String
@@ -103,6 +194,8 @@ public enum ProviderMessage: Sendable, Equatable {
         /// providers; only version 2 carries exact, provider-proven ownership.
         public var prefixCacheProtocol: Int?
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
+        public var prefixCacheStatuses: [PrefixCacheModelStatus]?
+        public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
         /// Inference-time tool grammar capability. Protocol 1 is advertised
         /// only with concrete model IDs whose Gemma contract is enforced.
         public var toolConstraintProtocol: Int?
@@ -129,6 +222,8 @@ public enum ProviderMessage: Sendable, Equatable {
             apnsEnvironment: String? = nil,
             prefixCacheProtocol: Int? = nil,
             prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+            prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil,
             toolConstraintProtocol: Int? = nil,
             toolConstraintModels: [String]? = nil
         ) {
@@ -152,6 +247,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsEnvironment = apnsEnvironment
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
+            self.prefixCacheStatuses = prefixCacheStatuses
+            self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
             self.toolConstraintProtocol = toolConstraintProtocol
             self.toolConstraintModels = toolConstraintModels
         }
@@ -175,6 +272,8 @@ public enum ProviderMessage: Sendable, Equatable {
         public var apnsEnvironment: String?
         public var prefixCacheProtocol: Int?
         public var prefixCacheV2Models: [PrefixCacheV2Capability]?
+        public var prefixCacheStatuses: [PrefixCacheModelStatus]?
+        public var prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]?
 
         public init(
             status: ProviderStatus,
@@ -186,7 +285,9 @@ public enum ProviderMessage: Sendable, Equatable {
             apnsDeviceToken: String? = nil,
             apnsEnvironment: String? = nil,
             prefixCacheProtocol: Int? = nil,
-            prefixCacheV2Models: [PrefixCacheV2Capability]? = nil
+            prefixCacheV2Models: [PrefixCacheV2Capability]? = nil,
+            prefixCacheStatuses: [PrefixCacheModelStatus]? = nil,
+            prefixCacheDonationOutcomes: [PrefixCacheDonationOutcomeCount]? = nil
         ) {
             self.status = status
             self.activeModel = activeModel
@@ -198,6 +299,8 @@ public enum ProviderMessage: Sendable, Equatable {
             self.apnsEnvironment = apnsEnvironment
             self.prefixCacheProtocol = prefixCacheProtocol
             self.prefixCacheV2Models = prefixCacheV2Models
+            self.prefixCacheStatuses = prefixCacheStatuses
+            self.prefixCacheDonationOutcomes = prefixCacheDonationOutcomes
         }
     }
 
@@ -598,6 +701,8 @@ extension ProviderMessage: Codable {
         case apnsEnvironment = "apns_environment"
         case prefixCacheProtocol = "prefix_cache_protocol"
         case prefixCacheV2Models = "prefix_cache_v2_models"
+        case prefixCacheStatuses = "prefix_cache_statuses"
+        case prefixCacheDonationOutcomes = "prefix_cache_donation_outcomes"
         case toolConstraintProtocol = "tool_constraint_protocol"
         case toolConstraintModels = "tool_constraint_models"
         // Heartbeat
@@ -687,6 +792,9 @@ extension ProviderMessage: Codable {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
             try container.encodeIfPresent(r.prefixCacheV2Models, forKey: .prefixCacheV2Models)
+            try container.encodeIfPresent(r.prefixCacheStatuses, forKey: .prefixCacheStatuses)
+            try container.encodeIfPresent(
+                r.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
             if let version = r.toolConstraintProtocol, version != 0 {
                 try container.encode(version, forKey: .toolConstraintProtocol)
             }
@@ -710,6 +818,9 @@ extension ProviderMessage: Codable {
                 try container.encode(version, forKey: .prefixCacheProtocol)
             }
             try container.encodeIfPresent(h.prefixCacheV2Models, forKey: .prefixCacheV2Models)
+            try container.encodeIfPresent(h.prefixCacheStatuses, forKey: .prefixCacheStatuses)
+            try container.encodeIfPresent(
+                h.prefixCacheDonationOutcomes, forKey: .prefixCacheDonationOutcomes)
 
         case .inferenceAccepted(let a):
             try container.encode(TypeValue.inferenceAccepted, forKey: .type)
@@ -880,6 +991,11 @@ extension ProviderMessage: Codable {
                 prefixCacheProtocol: try container.decodeIfPresent(Int.self, forKey: .prefixCacheProtocol),
                 prefixCacheV2Models: try container.decodeIfPresent(
                     [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models),
+                prefixCacheStatuses: try container.decodeIfPresent(
+                    [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
+                prefixCacheDonationOutcomes: try container.decodeIfPresent(
+                    [PrefixCacheDonationOutcomeCount].self,
+                    forKey: .prefixCacheDonationOutcomes),
                 toolConstraintProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .toolConstraintProtocol),
                 toolConstraintModels: try container.decodeIfPresent(
@@ -899,7 +1015,12 @@ extension ProviderMessage: Codable {
                 prefixCacheProtocol: try container.decodeIfPresent(
                     Int.self, forKey: .prefixCacheProtocol),
                 prefixCacheV2Models: try container.decodeIfPresent(
-                    [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models)
+                    [PrefixCacheV2Capability].self, forKey: .prefixCacheV2Models),
+                prefixCacheStatuses: try container.decodeIfPresent(
+                    [PrefixCacheModelStatus].self, forKey: .prefixCacheStatuses),
+                prefixCacheDonationOutcomes: try container.decodeIfPresent(
+                    [PrefixCacheDonationOutcomeCount].self,
+                    forKey: .prefixCacheDonationOutcomes)
             ))
 
         case .inferenceAccepted:

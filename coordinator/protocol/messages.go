@@ -155,28 +155,50 @@ type PrefixCacheV2Capability struct {
 	Ready              bool   `json:"ready"`
 }
 
+// PrefixCacheModelStatus is a content-free status for one concrete loaded
+// model slot. Every dimension is a fixed enum validated at the coordinator
+// boundary; no cache identity, provider identity, path, hash, or request data
+// is carried.
+type PrefixCacheModelStatus struct {
+	ModelID        string `json:"model_id"`
+	Backend        string `json:"backend"`
+	ReplayStrategy string `json:"replay_strategy"`
+	State          string `json:"state"`
+	Reason         string `json:"reason"`
+}
+
+// PrefixCacheDonationOutcomeCount is one cumulative, process-local counter
+// from the provider's SSD donation path. Outcome is a fixed enum; Count is
+// monotonic for the lifetime of the provider process.
+type PrefixCacheDonationOutcomeCount struct {
+	Outcome string `json:"outcome"`
+	Count   uint64 `json:"count"`
+}
+
 // ---------------------------------------------------------------------------
 // Provider → Coordinator messages
 // ---------------------------------------------------------------------------
 
 // RegisterMessage is sent when a provider first connects.
 type RegisterMessage struct {
-	Type                    string                    `json:"type"`
-	Hardware                Hardware                  `json:"hardware"`
-	Models                  []ModelInfo               `json:"models"`
-	Backend                 string                    `json:"backend"`
-	Version                 string                    `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
-	PublicKey               string                    `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
-	EncryptedResponseChunks bool                      `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
-	Attestation             json.RawMessage           `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
-	PrefillTPS              float64                   `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
-	DecodeTPS               float64                   `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
-	AuthToken               string                    `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
-	PrivateOnly             bool                      `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
-	PrefixCacheProtocol     int                       `json:"prefix_cache_protocol,omitempty"`     // provider-confirmed prefix-cache protocol version
-	PrefixCacheV2Models     []PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
-	ToolConstraintProtocol  int                       `json:"tool_constraint_protocol,omitempty"` // inference-time tool grammar protocol version
-	ToolConstraintModels    []string                  `json:"tool_constraint_models,omitempty"`   // concrete model IDs enforced by this provider
+	Type                        string                             `json:"type"`
+	Hardware                    Hardware                           `json:"hardware"`
+	Models                      []ModelInfo                        `json:"models"`
+	Backend                     string                             `json:"backend"`
+	Version                     string                             `json:"version,omitempty"`                   // provider binary version (e.g. "0.2.31")
+	PublicKey                   string                             `json:"public_key,omitempty"`                // base64-encoded X25519 public key for E2E encryption
+	EncryptedResponseChunks     bool                               `json:"encrypted_response_chunks,omitempty"` // true when text response chunks are returned encrypted to the coordinator
+	Attestation                 json.RawMessage                    `json:"attestation,omitempty"`               // signed Secure Enclave attestation blob
+	PrefillTPS                  float64                            `json:"prefill_tps,omitempty"`               // benchmark: prefill tokens per second
+	DecodeTPS                   float64                            `json:"decode_tps,omitempty"`                // benchmark: decode tokens per second
+	AuthToken                   string                             `json:"auth_token,omitempty"`                // device-linked provider token (from darkbloom login)
+	PrivateOnly                 bool                               `json:"private_only,omitempty"`              // when true, this machine serves only its owner's self-route requests, never the public fleet
+	PrefixCacheProtocol         int                                `json:"prefix_cache_protocol,omitempty"`     // provider-confirmed prefix-cache protocol version
+	PrefixCacheV2Models         []PrefixCacheV2Capability          `json:"prefix_cache_v2_models,omitempty"`
+	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
+	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
+	ToolConstraintProtocol      int                                `json:"tool_constraint_protocol,omitempty"` // inference-time tool grammar protocol version
+	ToolConstraintModels        []string                           `json:"tool_constraint_models,omitempty"`   // concrete model IDs enforced by this provider
 
 	// APNs code-identity attestation (v0.6.0): the device token the coordinator
 	// pushes the E_K(nonce) code-identity challenge to, and which APNs environment
@@ -221,6 +243,10 @@ type HeartbeatMessage struct {
 	// v2 capabilities and a v2 provider authoritatively clearing its live set.
 	PrefixCacheProtocol int                        `json:"prefix_cache_protocol,omitempty"`
 	PrefixCacheV2Models *[]PrefixCacheV2Capability `json:"prefix_cache_v2_models,omitempty"`
+	// Optional pointers preserve old-provider omission versus an authoritative
+	// empty snapshot/counter set from a current provider.
+	PrefixCacheStatuses         *[]PrefixCacheModelStatus          `json:"prefix_cache_statuses,omitempty"`
+	PrefixCacheDonationOutcomes *[]PrefixCacheDonationOutcomeCount `json:"prefix_cache_donation_outcomes,omitempty"`
 
 	// APNs code-identity attestation (W5 Fix 2): a provider that only obtained
 	// its APNs device token AFTER registration (headless/late-token Mac) — or

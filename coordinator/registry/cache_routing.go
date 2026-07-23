@@ -128,6 +128,28 @@ type cacheRoutingCapability struct {
 	CapabilityRevision uint64
 }
 
+type cacheHolderRemovalReason string
+
+const (
+	cacheHolderRemovalTTL              cacheHolderRemovalReason = "ttl"
+	cacheHolderRemovalDisconnect       cacheHolderRemovalReason = "disconnect"
+	cacheHolderRemovalEpochChange      cacheHolderRemovalReason = "epoch_change"
+	cacheHolderRemovalCapabilityChange cacheHolderRemovalReason = "capability_change"
+	cacheHolderRemovalMissInvalidation cacheHolderRemovalReason = "miss_invalidation"
+	cacheHolderRemovalCapacityEviction cacheHolderRemovalReason = "capacity_eviction"
+)
+
+func CacheHolderRemovalReasons() []string {
+	return []string{
+		string(cacheHolderRemovalTTL),
+		string(cacheHolderRemovalDisconnect),
+		string(cacheHolderRemovalEpochChange),
+		string(cacheHolderRemovalCapabilityChange),
+		string(cacheHolderRemovalMissInvalidation),
+		string(cacheHolderRemovalCapacityEviction),
+	}
+}
+
 type cacheAttemptOrderEntry struct {
 	nonce     string
 	createdAt time.Time
@@ -234,6 +256,9 @@ type cacheRoutingTracker struct {
 	ssdHits             uint64
 	ssdMisses           uint64
 	ssdDonations        uint64
+	holderAdded         uint64
+	holderRemoved       map[string]uint64
+	donationOutcomes    map[string]uint64
 }
 
 func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTracker {
@@ -247,8 +272,10 @@ func newCacheRoutingTracker(ttl time.Duration, maxHolders int) *cacheRoutingTrac
 		ttl: ttl, maxHolders: maxHolders, maxEntries: cacheRoutingMaxEntries, maxAttempts: cacheRoutingMaxAttempts,
 		holders: make(map[string]map[string]cacheHolder), attempts: make(map[string]cacheAttempt),
 		holderOrderByRef: make(map[cacheHolderRef]*cacheHolderOrderEntry), attemptOrderByNonce: make(map[string]*cacheAttemptOrderEntry),
-		v2Sequences: make(map[cacheV2SequenceKey]uint64),
-		rejectedV2:  make(map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability),
+		v2Sequences:      make(map[cacheV2SequenceKey]uint64),
+		rejectedV2:       make(map[cacheV2ProviderModelKey]protocol.PrefixCacheV2Capability),
+		holderRemoved:    make(map[string]uint64),
+		donationOutcomes: make(map[string]uint64),
 	}
 }
 
@@ -271,10 +298,13 @@ func (r *Registry) CacheRoutingStateCounts() (holders, attempts int) {
 }
 
 type CacheRoutingLifecycleStatus struct {
-	SSDLookups   uint64 `json:"ssd_lookups"`
-	SSDHits      uint64 `json:"ssd_hits"`
-	SSDMisses    uint64 `json:"ssd_misses"`
-	SSDDonations uint64 `json:"ssd_donations"`
+	SSDLookups       uint64            `json:"ssd_lookups"`
+	SSDHits          uint64            `json:"ssd_hits"`
+	SSDMisses        uint64            `json:"ssd_misses"`
+	SSDDonations     uint64            `json:"ssd_donations"`
+	HolderAdded      uint64            `json:"holder_added"`
+	HolderRemoved    map[string]uint64 `json:"holder_removed"`
+	DonationOutcomes map[string]uint64 `json:"donation_outcomes"`
 }
 
 func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
@@ -289,8 +319,45 @@ func (r *Registry) CacheRoutingLifecycleStatus() CacheRoutingLifecycleStatus {
 	}
 	tracker.mu.Lock()
 	defer tracker.mu.Unlock()
+	holderRemoved := zeroUint64Buckets(CacheHolderRemovalReasons())
+	for reason, count := range tracker.holderRemoved {
+		holderRemoved[reason] = count
+	}
+	donationOutcomes := zeroUint64Buckets(prefixCacheDonationOutcomes)
+	for outcome, count := range tracker.donationOutcomes {
+		donationOutcomes[outcome] = count
+	}
 	return CacheRoutingLifecycleStatus{
 		SSDLookups: tracker.ssdLookups, SSDHits: tracker.ssdHits,
 		SSDMisses: tracker.ssdMisses, SSDDonations: tracker.ssdDonations,
+		HolderAdded: tracker.holderAdded, HolderRemoved: holderRemoved,
+		DonationOutcomes: donationOutcomes,
+	}
+}
+
+func zeroUint64Buckets(values []string) map[string]uint64 {
+	result := make(map[string]uint64, len(values))
+	for _, value := range values {
+		result[value] = 0
+	}
+	return result
+}
+
+func (t *cacheRoutingTracker) recordDonationOutcomes(deltas map[string]uint64) {
+	if t == nil || len(deltas) == 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for outcome, delta := range deltas {
+		if delta == 0 || !containsFixed(prefixCacheDonationOutcomes, outcome) {
+			continue
+		}
+		current := t.donationOutcomes[outcome]
+		if ^uint64(0)-current < delta {
+			t.donationOutcomes[outcome] = ^uint64(0)
+		} else {
+			t.donationOutcomes[outcome] = current + delta
+		}
 	}
 }

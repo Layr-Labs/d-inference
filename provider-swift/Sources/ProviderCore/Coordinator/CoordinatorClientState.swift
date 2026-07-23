@@ -141,6 +141,8 @@ public final class ProviderState: @unchecked Sendable {
     private var _currentModelHash: String? = nil
     private var _backendCapacity: BackendCapacity? = nil
     private var _prefixCacheV2Sources: [String: SSDPrefixCache] = [:]
+    private var _prefixCacheStatuses: [PrefixCacheModelStatus] = []
+    private var _prefixCacheRuntimeIdentityAvailable = true
 
     public init() {}
 
@@ -169,18 +171,54 @@ public final class ProviderState: @unchecked Sendable {
         set { lock.withLock { _backendCapacity = newValue } }
     }
 
-    func setPrefixCacheV2Sources(_ sources: [String: SSDPrefixCache]) {
-        lock.withLock { _prefixCacheV2Sources = sources }
+    func setPrefixCacheSnapshot(
+        sources: [String: SSDPrefixCache],
+        statuses: [PrefixCacheModelStatus],
+        runtimeIdentityAvailable: Bool
+    ) {
+        lock.withLock {
+            _prefixCacheV2Sources = sources
+            _prefixCacheStatuses = statuses
+            _prefixCacheRuntimeIdentityAvailable = runtimeIdentityAvailable
+        }
     }
 
     func prefixCacheV2Advertisement() -> (
         protocolVersion: Int,
-        models: [PrefixCacheV2Capability]
+        models: [PrefixCacheV2Capability],
+        statuses: [PrefixCacheModelStatus],
+        donationOutcomes: [PrefixCacheDonationOutcomeCount]
     ) {
-        let sources = lock.withLock { _prefixCacheV2Sources }
-        let models = sources.values.compactMap { $0.prefixCacheV2Capability() }
-            .sorted { $0.modelId < $1.modelId }
-        return (models.isEmpty ? 1 : 2, models)
+        let snapshot = lock.withLock {
+            (
+                sources: _prefixCacheV2Sources,
+                statuses: _prefixCacheStatuses,
+                runtimeIdentityAvailable: _prefixCacheRuntimeIdentityAvailable
+            )
+        }
+        let sources = snapshot.sources
+        var models: [PrefixCacheV2Capability] = []
+        let statuses = snapshot.statuses.map { status in
+            let current: PrefixCacheModelStatus
+            if let source = sources[status.modelId] {
+                let advertisement = source.prefixCacheAdvertisement(base: status)
+                if let capability = advertisement.capability {
+                    models.append(capability)
+                }
+                current = advertisement.status
+            } else {
+                current = status
+            }
+            return snapshot.runtimeIdentityAvailable
+                ? current : current.withoutRuntimeIdentity()
+        }.sorted { $0.modelId < $1.modelId }
+        models.sort { $0.modelId < $1.modelId }
+        return (
+            models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,
+            models,
+            statuses,
+            PrefixCacheDonationTelemetry.shared.snapshot()
+        )
     }
 }
 

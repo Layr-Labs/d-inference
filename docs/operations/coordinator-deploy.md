@@ -99,7 +99,31 @@ Before changing `MODE=on`, require all of the following:
    generations, zero restarts, no preload failures, no planning timeout/overload
    loop, and a stable RSS plateau below the configured memory limit. The
    recorded child generation and restart reason must make any later restart
-   attributable.
+   attributable. Under `providers`, require
+   `loaded_models == reported_loaded_models`,
+   `unreported_loaded_models == 0`, and inspect `by_reason` before treating
+   protocol-v1 capacity as a rollout-version problem.
+
+Interpret provider eligibility in this order:
+
+1. `scan_pending` is transient after load; sustained growth means scans are not
+   reaching readiness.
+2. `config_disabled`, `weight_hash_unavailable`,
+   `runtime_identity_unavailable`, `unsupported_layout`,
+   `unsupported_backend`, and `paged_hybrid_unsupported` are deterministic
+   exclusions. A binary-version upgrade alone does not make them ready.
+3. `scan_failed`, `disk_unavailable`, and `cache_init_failed` require provider
+   disk/key/cache initialization investigation.
+4. Donation outcomes explain durable-ready absence: policy/shape outcomes
+   (`below_effective_token_floor`, `no_complete_block`, `lossy_snapshot`,
+   `incomplete_layer_state`, `stage_size_exceeded`) differ from pressure/failure
+   outcomes (`write_rate_limited`, `write_queue_full`, `cache_closed`,
+   `disk_unavailable`, `write_failed`). `already_durable` is successful dedupe,
+   and `already_queued` means an earlier write for the same blocks is still in
+   flight; neither is a failed donation.
+5. Holder removals are expected under `ttl`, `disconnect`, `epoch_change`,
+   `capability_change`, `miss_invalidation`, and `capacity_eviction`; compare
+   their deltas before diagnosing unexplained holder loss.
 
 After a human changes `MODE=on`, hold the first stage at 1% and 1 plan/second.
 Require both a 30-minute clean window and at least 100 successful plans before
@@ -198,6 +222,8 @@ jq -e -n \
   ($e.lifecycle.ssd_misses - $s.lifecycle.ssd_misses) > 0 and
   ($e.lifecycle.ssd_donations - $s.lifecycle.ssd_donations) > 0 and
   ($e.lifecycle.ssd_hits - $s.lifecycle.ssd_hits) > 0 and
+  (($e.lifecycle.donation_outcomes.donated // 0) -
+   ($s.lifecycle.donation_outcomes.donated // 0)) > 0 and
   (($me.counters["exact_cache_cached_tokens_total{tier=ssd}"] // 0) -
    ($ms.counters["exact_cache_cached_tokens_total{tier=ssd}"] // 0)) > 0 and
   (($me.counters["exact_cache_prefill_tokens_saved_total{tier=ssd}"] // 0) -

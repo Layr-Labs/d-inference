@@ -135,14 +135,34 @@ tags only.
 lifecycle counters; sidecar enabled/running/ready, child generation, categorical
 restart reason, failure streak, timeouts/overloads/RSS, cold/warm contract loads,
 and planner outcomes; preload generation/counts; prompt artifact
-ready/pending/failed counts; protocol 0/1/2 provider counts; ready v2
-provider-model count; and bounded holder/attempt counts. It never includes model
-IDs, provider IDs, accounts, scopes, prompts, tokens, or chain hashes.
+ready/pending/failed counts; protocol 0/1/2 provider counts; and bounded
+holder/attempt counts. Current providers also report one bounded status for each
+concrete loaded model slot. The coordinator publishes only counts by
+`state`, `reason`, `backend`, and `replay_strategy`, plus reported/unreported
+loaded totals. This makes a v1 slot attributable without exposing the model:
+
+- state: `ready`, `pending`, `disabled`, or `error`;
+- reasons: `ready`, `config_disabled`, `no_loaded_slot`,
+  `weight_hash_unavailable`, `runtime_identity_unavailable`,
+  `unsupported_layout`, `unsupported_backend`,
+  `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`,
+  `disk_unavailable`, or `cache_init_failed`;
+- backend: `contiguous`, `paged`, or `unknown`;
+- replay strategy: `direct`, `frozen_full`, `none`, or `unknown`.
+
+Old providers omit the field and contribute only to
+`unreported_loaded_models`; omission is never interpreted as a reason.
+Provider SSD donation opportunities are cumulative fixed-enum counters, and
+holder additions/removals are counted by `ttl`, `disconnect`, `epoch_change`,
+`capability_change`, `miss_invalidation`, or `capacity_eviction`. The response
+never includes model IDs, provider IDs, accounts, scopes, paths, hashes, epochs,
+prompts, token IDs, request IDs, or cache keys.
 The response and gauge projection are implemented in
 `coordinator/api/exact_cache_status.go` and `exact_cache_metrics.go`; bounded artifact aggregation lives in
-`coordinator/promptcontract/provisioner.go:Counts`, protocol distribution in
-`coordinator/registry/cache_status.go:PrefixCacheProtocolStatus`, and holder /
-attempt counts in `coordinator/registry/cache_routing.go:CacheRoutingStateCounts`.
+`coordinator/promptcontract/provisioner.go:Counts`, protocol/eligibility
+aggregation in `coordinator/registry/cache_status.go:PrefixCacheProtocolStatus`,
+and holder/attempt lifecycle counts in
+`coordinator/registry/cache_routing.go`.
 
 For each selected hint, terminal correlation stays on the in-memory
 `PendingRequest` and emits bounded tags:
@@ -190,6 +210,12 @@ as protocol-v2 models only after SSD scan readiness
 `provider-swift/Sources/ProviderCore/Coordinator/CoordinatorClient+Registration.swift:27-36`);
 paged hybrid slots remain v1/cold
 (`provider-swift/Sources/ProviderCore/Inference/PrefixCachePolicy.swift:110-129`).
+Registration and every current-provider heartbeat carry an optional
+`prefix_cache_statuses` replacement snapshot and cumulative
+`prefix_cache_donation_outcomes`. An explicit empty status array clears the
+connection's prior snapshot; absence preserves mixed-version compatibility.
+Model removal, unload heartbeats, capability changes, and disconnects remove
+connection-scoped status/evidence so stale slots cannot remain in aggregates.
 Production activation is still a separate operational decision:
 positive durable-hit evidence, stable correlation telemetry, healthy prompt
 artifacts, routing-mode enablement, and a separately provisioned 256-bit cache

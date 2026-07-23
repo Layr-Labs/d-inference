@@ -225,6 +225,11 @@ func TestExactV2ReadyCreatesLongestPrefixHolderAndMissInvalidates(t *testing.T) 
 	); len(hints) != 0 {
 		t.Fatalf("miss left stale exact holders: %+v", hints)
 	}
+	lifecycle := r.CacheRoutingLifecycleStatus()
+	if lifecycle.HolderAdded != 2 ||
+		lifecycle.HolderRemoved[string(cacheHolderRemovalMissInvalidation)] != 2 {
+		t.Fatalf("miss lifecycle counters = %+v", lifecycle)
+	}
 }
 
 func TestExactV2CoordinatorRestartDropsEphemeralRoutingState(t *testing.T) {
@@ -750,9 +755,34 @@ func TestExactRoutingExpiryAndDisconnectRemoveConnectionEvidence(t *testing.T) {
 		UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
 	})
 	r.cacheRouting.mu.Unlock()
-	r.cacheRouting.disconnect(provider.ID)
+	r.cacheRouting.disconnect(provider.ID, cacheHolderRemovalDisconnect)
 	if len(r.cacheRouting.hints(
 		plan, capabilities, r.cacheRouteKeys.route, CacheRoutingOn, now)) != 0 {
 		t.Fatal("disconnect left connection-scoped holder evidence")
+	}
+	lifecycle := r.CacheRoutingLifecycleStatus()
+	if lifecycle.HolderAdded != 2 ||
+		lifecycle.HolderRemoved[string(cacheHolderRemovalTTL)] != 1 ||
+		lifecycle.HolderRemoved[string(cacheHolderRemovalDisconnect)] != 1 {
+		t.Fatalf("expiry/disconnect lifecycle counters = %+v", lifecycle)
+	}
+}
+
+func TestExactRoutingHolderCapacityEvictionIsCounted(t *testing.T) {
+	tracker := newCacheRoutingTracker(time.Minute, 1)
+	now := time.Now()
+	tracker.mu.Lock()
+	tracker.upsertHolderLocked("boundary", cacheHolder{
+		ProviderID: "first", UpdatedAt: now, ExpiresAt: now.Add(time.Minute),
+	})
+	tracker.upsertHolderLocked("boundary", cacheHolder{
+		ProviderID: "second", UpdatedAt: now.Add(time.Second), ExpiresAt: now.Add(time.Minute),
+	})
+	added := tracker.holderAdded
+	removed := tracker.holderRemoved[string(cacheHolderRemovalCapacityEviction)]
+	count := tracker.holderCount
+	tracker.mu.Unlock()
+	if added != 2 || removed != 1 || count != 1 {
+		t.Fatalf("capacity lifecycle added=%d removed=%d holders=%d", added, removed, count)
 	}
 }

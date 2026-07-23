@@ -27,6 +27,12 @@ enum SSDPrefixCacheConstructionFailure: String, Sendable {
     case ephemeralKeyUnavailable = "ephemeral_key_unavailable"
     case blockContractMismatch = "block_contract_mismatch"
     case epochUnavailable = "epoch_unavailable"
+    // Discriminated prompt-contract sub-causes (the dominant production
+    // cache_init_failed source): manifest gap vs design exclusion vs render
+    // bug. promptContractUnavailable remains the residual bucket.
+    case templateArtifactMissing = "template_artifact_missing"
+    case templateDynamicDate = "template_dynamic_date"
+    case templateRenderFailed = "template_render_failed"
     case promptContractUnavailable = "prompt_contract_unavailable"
     case layoutUnavailable = "layout_unavailable"
 }

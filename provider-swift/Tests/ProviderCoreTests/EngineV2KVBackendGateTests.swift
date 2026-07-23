@@ -93,6 +93,17 @@ private final class GateCacheCapture: @unchecked Sendable {
     var capability: CBv2PrefixReuseCapability? { lock.withLock { _capability } }
 }
 
+private final class TelemetryEventCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _events: [TelemetryEvent] = []
+
+    func append(_ event: TelemetryEvent) {
+        lock.withLock { _events.append(event) }
+    }
+
+    var snapshot: [TelemetryEvent] { lock.withLock { _events } }
+}
+
 private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
 
 private func makeBuild(
@@ -380,6 +391,81 @@ struct EngineV2KVBackendGateTests {
         #expect(status.replayStrategy == .frozenFull)
         #expect(status.state == .pending)
         #expect(status.reason == .scanPending)
+        await bundle.bridge.shutdown()
+    }
+
+    @Test("slot factory discriminates the missing-template prompt-contract failure")
+    func slotFactoryDiscriminatesMissingTemplateContract() async throws {
+        // A snapshot dir WITHOUT a standalone chat_template.jinja (template
+        // embedded in tokenizer_config.json — the dominant production
+        // cache_init_failed shape) must surface template_artifact_missing in
+        // BOTH the eligibility status detail and the construction-failure
+        // telemetry event, via the real makeProductionBundle do/catch path.
+        let snapshot = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "slot-factory-embedded-template-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: snapshot, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: snapshot) }
+        try Data(#"{"model_type":"fixture"}"#.utf8).write(
+            to: snapshot.appendingPathComponent("config.json"))
+        try Data(#"{"version":"1.0"}"#.utf8).write(
+            to: snapshot.appendingPathComponent("tokenizer.json"))
+        try Data(#"{"chat_template":"{{ messages }}"}"#.utf8).write(
+            to: snapshot.appendingPathComponent("tokenizer_config.json"))
+
+        let model = try tinyGPTOSS()
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: "tiny/gpt-oss"),
+                model: model,
+                processor: GateProcessor(),
+                tokenizer: tokenizer))
+        let preparedModel = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: model,
+                eosTokenIds: [1],
+                extraEOSTokens: []),
+            servingModel: model,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+        let events = TelemetryEventCapture()
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: "tiny-gpt-oss",
+            modelType: "gpt_oss",
+            isVLM: false,
+            modelDirectory: snapshot,
+            container: container,
+            tokenizer: TokenizerHandle(tokenizer),
+            sizing: SlotSizingSnapshot(
+                weightsBytes: 1,
+                fp16KVBytesPerToken: 100_000,
+                maxContextLength: 2_048,
+                defaultMaxTokens: 32),
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBudget: nil,
+            kvQuantConfigured: false,
+            kvBackendConfig: "contiguous",
+            weightHash: String(repeating: "c", count: 64),
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            preparedModel: preparedModel,
+            environment: [:],
+            emitTelemetry: { events.append($0) })
+        #expect(bundle.bridge.ssdPrefixCache == nil)
+        let status = bundle.bridge.prefixCacheModelStatus()
+        #expect(status.state == .error)
+        #expect(status.reason == .cacheInitFailed)
+        #expect(status.initFailure == .templateArtifactMissing)
+        let failureEvent = try #require(events.snapshot.first { event in
+            event.fields?["prefix_construction_failure"] != nil
+        })
+        #expect(
+            failureEvent.fields?["prefix_construction_failure"]?.description
+                == "template_artifact_missing")
         await bundle.bridge.shutdown()
     }
 

@@ -40,7 +40,9 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
         lock.withLock { value }
     }
 
-    private static func status(
+    /// Single source of the failure → (state, reason, detail) mapping —
+    /// also used directly by the slot factory's no-prompt-contract path.
+    static func status(
         failure: SSDPrefixCacheConstructionFailure,
         capability: CBv2PrefixReuseCapability
     ) -> PrefixCacheConstructionStatus {
@@ -74,6 +76,15 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
         case .epochUnavailable:
             return PrefixCacheConstructionStatus(
                 state: .error, reason: .cacheInitFailed, detail: .epochUnavailable)
+        case .templateArtifactMissing:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .templateArtifactMissing)
+        case .templateDynamicDate:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .templateDynamicDate)
+        case .templateRenderFailed:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .templateRenderFailed)
         case .promptContractUnavailable:
             return PrefixCacheConstructionStatus(
                 state: .error, reason: .cacheInitFailed, detail: .promptContractUnavailable)

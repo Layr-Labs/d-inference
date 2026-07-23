@@ -46,6 +46,11 @@ public enum PrefixCacheInitFailureDetail: String, Codable, Sendable, Equatable, 
     case blockContractMismatch = "block_contract_mismatch"
     case epochUnavailable = "epoch_unavailable"
     case promptContractUnavailable = "prompt_contract_unavailable"
+    // Discriminated prompt-contract sub-causes (0.7.14+): manifest gap vs
+    // deliberate determinism exclusion vs render self-check failure.
+    case templateArtifactMissing = "template_artifact_missing"
+    case templateDynamicDate = "template_dynamic_date"
+    case templateRenderFailed = "template_render_failed"
     case epochLost = "epoch_lost"
     case cacheClosed = "cache_closed"
     case unknown

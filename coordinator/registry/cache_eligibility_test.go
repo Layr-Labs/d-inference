@@ -40,7 +40,8 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 		"init failure details": {
 			got: PrefixCacheInitFailureDetails(),
 			want: "key_unavailable,ephemeral_key_unavailable,block_contract_mismatch," +
-				"epoch_unavailable,prompt_contract_unavailable,epoch_lost,cache_closed,unknown",
+				"epoch_unavailable,prompt_contract_unavailable,template_artifact_missing," +
+				"template_dynamic_date,template_render_failed,epoch_lost,cache_closed,unknown",
 		},
 		"donation outcomes": {
 			got: PrefixCacheDonationOutcomes(),
@@ -252,6 +253,14 @@ func TestPrefixCacheInitFailureDetailSanitizationKeepsEntries(t *testing.T) {
 			},
 			want: "key_unavailable",
 		},
+		"discriminated template detail preserved": {
+			status: protocol.PrefixCacheModelStatus{
+				ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
+				State: "error", Reason: "cache_init_failed",
+				InitFailure: "template_artifact_missing",
+			},
+			want: "template_artifact_missing",
+		},
 		"unknown future detail stripped entry kept": {
 			status: protocol.PrefixCacheModelStatus{
 				ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
@@ -318,13 +327,19 @@ func TestPrefixCacheInitFailureAggregationBreakdown(t *testing.T) {
 			State: "error", Reason: "cache_init_failed",
 		},
 		{
+			ModelID: "gpt-oss-dynamic", Backend: "contiguous", ReplayStrategy: "none",
+			State: "error", Reason: "cache_init_failed",
+			InitFailure: "template_dynamic_date",
+		},
+		{
 			ModelID: "healthy", Backend: "contiguous", ReplayStrategy: "unknown",
 			State: "pending", Reason: "scan_pending",
 		},
 	}
 	msg := protocol.RegisterMessage{
 		Models: []protocol.ModelInfo{
-			{ID: "key-lost"}, {ID: "epoch-lost"}, {ID: "old-provider"}, {ID: "healthy"},
+			{ID: "key-lost"}, {ID: "epoch-lost"}, {ID: "old-provider"},
+			{ID: "gpt-oss-dynamic"}, {ID: "healthy"},
 		},
 		PrefixCacheStatuses: &statuses,
 	}
@@ -338,19 +353,20 @@ func TestPrefixCacheInitFailureAggregationBreakdown(t *testing.T) {
 	aggregate := reg.PrefixCacheProtocolStatus()
 	// The plain reason total keeps its meaning: detail-less entries from old
 	// providers still count, so the detail buckets sum to at most the total.
-	if aggregate.ByReason["cache_init_failed"] != 3 {
-		t.Fatalf("cache_init_failed total=%d, want 3", aggregate.ByReason["cache_init_failed"])
+	if aggregate.ByReason["cache_init_failed"] != 4 {
+		t.Fatalf("cache_init_failed total=%d, want 4", aggregate.ByReason["cache_init_failed"])
 	}
 	if aggregate.ByInitFailure["key_unavailable"] != 1 ||
-		aggregate.ByInitFailure["epoch_lost"] != 1 {
+		aggregate.ByInitFailure["epoch_lost"] != 1 ||
+		aggregate.ByInitFailure["template_dynamic_date"] != 1 {
 		t.Fatalf("detail breakdown=%+v", aggregate.ByInitFailure)
 	}
 	detailTotal := 0
 	for _, count := range aggregate.ByInitFailure {
 		detailTotal += count
 	}
-	if detailTotal != 2 {
-		t.Fatalf("detail bucket sum=%d, want 2 (old provider has no detail)", detailTotal)
+	if detailTotal != 3 {
+		t.Fatalf("detail bucket sum=%d, want 3 (old provider has no detail)", detailTotal)
 	}
 	for _, detail := range PrefixCacheInitFailureDetails() {
 		if _, ok := aggregate.ByInitFailure[detail]; !ok {

@@ -148,8 +148,9 @@ import Testing
     ])
     #expect(Set(PrefixCacheInitFailureDetail.allCases.map(\.rawValue)) == [
         "key_unavailable", "ephemeral_key_unavailable", "block_contract_mismatch",
-        "epoch_unavailable", "prompt_contract_unavailable", "epoch_lost",
-        "cache_closed", "unknown",
+        "epoch_unavailable", "prompt_contract_unavailable",
+        "template_artifact_missing", "template_dynamic_date", "template_render_failed",
+        "epoch_lost", "cache_closed", "unknown",
     ])
     #expect(Set(PrefixCacheDonationOutcome.allCases.map(\.rawValue)) == [
         "donated", "below_effective_token_floor", "no_complete_block",

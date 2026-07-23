@@ -38,12 +38,19 @@ var (
 	// prefixCacheInitFailureDetails is the granular sub-cause vocabulary for
 	// reason == "cache_init_failed" (optional `init_failure` wire field,
 	// 0.7.14+ providers). Mirror of the Swift PrefixCacheInitFailureDetail.
+	// The template_* values discriminate the prompt-contract path (the
+	// dominant production source): missing standalone chat_template.jinja vs
+	// strftime_now determinism exclusion vs render self-check failure;
+	// prompt_contract_unavailable remains the residual bucket.
 	prefixCacheInitFailureDetails = []string{
 		"key_unavailable",
 		"ephemeral_key_unavailable",
 		"block_contract_mismatch",
 		"epoch_unavailable",
 		"prompt_contract_unavailable",
+		"template_artifact_missing",
+		"template_dynamic_date",
+		"template_render_failed",
 		"epoch_lost",
 		"cache_closed",
 		"unknown",

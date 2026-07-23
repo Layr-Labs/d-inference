@@ -4,6 +4,7 @@
 
 import Foundation
 import MLXLMCommon
+import ProviderCoreFoundation
 import Testing
 
 @testable import ProviderCore
@@ -214,6 +215,9 @@ struct PrefixCachePolicyTests {
                 (.ephemeralKeyUnavailable, .error, .cacheInitFailed, .ephemeralKeyUnavailable),
                 (.blockContractMismatch, .error, .cacheInitFailed, .blockContractMismatch),
                 (.epochUnavailable, .error, .cacheInitFailed, .epochUnavailable),
+                (.templateArtifactMissing, .error, .cacheInitFailed, .templateArtifactMissing),
+                (.templateDynamicDate, .error, .cacheInitFailed, .templateDynamicDate),
+                (.templateRenderFailed, .error, .cacheInitFailed, .templateRenderFailed),
                 (.promptContractUnavailable, .error, .cacheInitFailed, .promptContractUnavailable),
             ]
         for test in expected {
@@ -221,6 +225,28 @@ struct PrefixCachePolicyTests {
             #expect(box.snapshot?.state == test.state, "\(test.failure)")
             #expect(box.snapshot?.reason == test.reason, "\(test.failure)")
             #expect(box.snapshot?.detail == test.detail, "\(test.failure)")
+        }
+    }
+
+    @Test("prompt-contract errors map to discriminated construction failures")
+    func promptContractErrorMapping() {
+        struct UnrelatedError: Error {}
+        let expected:
+            [(error: any Error, failure: SSDPrefixCacheConstructionFailure)] = [
+                (
+                    PromptContractIdentity.Error.templateArtifactMissing,
+                    .templateArtifactMissing
+                ),
+                (PromptContractIdentity.Error.templateDynamicDate, .templateDynamicDate),
+                (PromptContractIdentity.Error.templateRenderFailed, .templateRenderFailed),
+                (PromptContractIdentity.Error.invalidArtifact, .promptContractUnavailable),
+                (UnrelatedError(), .promptContractUnavailable),
+            ]
+        for test in expected {
+            #expect(
+                EngineV2SlotFactory.promptContractConstructionFailure(test.error)
+                    == test.failure,
+                "\(test.error)")
         }
     }
 

@@ -95,12 +95,15 @@ jobs:
           trap 'git worktree remove --force "$RELEASED_COORDINATOR"' EXIT
           (
             cd "$RELEASED_COORDINATOR"
-            DARKBLOOM_REPO_ROOT="$GITHUB_WORKSPACE" \
-            TESTBED_PROVIDER_CONFIG=debug \
-            DARKBLOOM_CBV2_MTP=0 \
-            DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 \
-              go test ./e2e -count=1 -v -timeout 15m -p=1 \
-                -run 'TestIntegration_(NonStreamingInference|StreamingInference)'
+            for test_name in NonStreamingInference StreamingInference; do
+              DARKBLOOM_REPO_ROOT="$GITHUB_WORKSPACE" \
+              TESTBED_PROVIDER_CONFIG=debug \
+              DARKBLOOM_CBV2_MTP=0 \
+              DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 \
+              DARKBLOOM_PREFIX_CACHE_TEST_ROOT="$RUNNER_TEMP/v0713-reverse-cache-$test_name" \
+                go test ./e2e -count=1 -v -timeout 15m -p=1 \
+                  -run "^TestIntegration_${test_name}$"
+            done
           )
 
   benchmark:

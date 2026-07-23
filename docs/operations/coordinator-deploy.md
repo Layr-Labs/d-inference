@@ -351,8 +351,8 @@ sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
   DEFAULTS_FILE=/usr/local/lib/darkbloom-env/release-env-defaults \
   /usr/local/sbin/darkbloom-refresh-env --apply
 
-# Verify every non-secret rollout control. Do not proceed if stale custom
-# throttle values survived the refresh.
+# Verify every non-secret rollout control. Custom production values are
+# authoritative; do not proceed if the refresh changed an approved value.
 sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
 # Snapshot every cache-routing value after approved env changes and immediately
@@ -618,10 +618,10 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
-| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle, independent health/planning deadlines, failure threshold, diagnostics, preload, and resource bounds. Deploy it enabled with the physical artifact root while routing remains off. |
-| `EIGENINFERENCE_CACHE_ROUTING_MODE` | Strict product switch: `off` or `on`; keep `off` through coordinator/provider deployment and preload verification. |
-| `EIGENINFERENCE_CACHE_ROUTING_PERCENT`, `_MAX_PLAN_QPS` | Independent operational caps inside `on`; production starts at deterministic 1% and 1 plan/second. |
-| `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required only for a later routing activation; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
+| `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle, independent health/planning deadlines, failure threshold, diagnostics, preload, and resource bounds. Keep it enabled at the physical artifact root; provider releases must not alter its operator-selected values. |
+| `EIGENINFERENCE_CACHE_ROUTING_MODE` | Strict product switch: `off` or `on`. The live env value is authoritative and must survive unrelated deploys unchanged. |
+| `EIGENINFERENCE_CACHE_ROUTING_PERCENT`, `_MAX_PLAN_QPS` | Independent staged-rollout caps inside `on`. Preserve the current approved production stage; defaults apply only when bootstrapping a fresh environment. |
+| `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required whenever routing is `on`. Preserve it byte-for-byte across releases; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
 
 ## Troubleshooting

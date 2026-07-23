@@ -56,4 +56,42 @@ struct ProviderLogSubsystemsTests {
             unregistered.isEmpty,
             "subsystems logged but not collected by report/logs: \(unregistered.sorted())")
     }
+
+    /// Second drift pass: a `Logger(subsystem: someConstant, ...)` call site
+    /// evades the literal scan silently, so any NON-literal subsystem
+    /// argument must be an explicitly allowlisted pass-through wrapper.
+    /// Adding a new indirect call site fails here: either use an inline
+    /// string literal or extend the wrapper allowlist consciously.
+    @Test("non-literal Logger subsystem arguments are allowlisted wrappers")
+    func indirectSubsystemArgumentsAreAllowlisted() throws {
+        let allowedWrapperFiles: Set<String> = ["ProviderLogger.swift"]
+
+        let sourcesDirectory = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources", isDirectory: true)
+        let enumerator = try #require(FileManager.default.enumerator(
+            at: sourcesDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey]))
+        // A Logger/os.Logger construction whose subsystem argument does NOT
+        // start with a string literal (i.e. an identifier/member reference).
+        let regex = try NSRegularExpression(
+            pattern: #"Logger\(\s*subsystem:\s*([A-Za-z_][A-Za-z0-9_.]*)"#)
+
+        var offenders: [String] = []
+        for case let url as URL in enumerator where url.pathExtension == "swift" {
+            guard let contents = try? String(contentsOf: url, encoding: .utf8) else {
+                continue
+            }
+            let range = NSRange(contents.startIndex..., in: contents)
+            guard !regex.matches(in: contents, range: range).isEmpty else { continue }
+            if !allowedWrapperFiles.contains(url.lastPathComponent) {
+                offenders.append(url.lastPathComponent)
+            }
+        }
+        #expect(
+            offenders.isEmpty,
+            "indirect Logger subsystem arguments outside the wrapper allowlist (use an inline literal so the drift scan sees it): \(offenders.sorted())")
+    }
 }

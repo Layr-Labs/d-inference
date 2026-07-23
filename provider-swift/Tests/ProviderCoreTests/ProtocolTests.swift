@@ -129,6 +129,29 @@ import Testing
     #expect(decoded.prefixCacheStatuses == [plain, detailed])
 }
 
+@Test func prefixCacheInitFailureDetailDecodeToleratesUnknownValues() throws {
+    // Forward compatibility mirror of the Go side: an unknown future detail
+    // string must decode to nil (field dropped), never reject the message.
+    let json = """
+        {"model_id":"m","backend":"contiguous","replay_strategy":"frozen_full",\
+        "state":"error","reason":"cache_init_failed",\
+        "init_failure":"some_future_detail_value"}
+        """
+    let decoded = try JSONDecoder().decode(
+        PrefixCacheModelStatus.self, from: Data(json.utf8))
+    #expect(decoded.initFailure == nil)
+    #expect(decoded.reason == .cacheInitFailed)
+
+    let known = """
+        {"model_id":"m","backend":"contiguous","replay_strategy":"frozen_full",\
+        "state":"error","reason":"cache_init_failed",\
+        "init_failure":"template_dynamic_date"}
+        """
+    let decodedKnown = try JSONDecoder().decode(
+        PrefixCacheModelStatus.self, from: Data(known.utf8))
+    #expect(decodedKnown.initFailure == .templateDynamicDate)
+}
+
 @Test func prefixCacheTelemetryEnumCasingIsPinned() {
     #expect(Set(PrefixCacheStatusState.allCases.map(\.rawValue)) == [
         "ready", "pending", "disabled", "error",

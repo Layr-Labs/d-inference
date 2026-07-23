@@ -91,6 +91,22 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
         case reason
         case initFailure = "init_failure"
     }
+
+    /// Custom decode ONLY to make the optional detail forward-tolerant: an
+    /// unknown future `init_failure` string decodes to nil instead of
+    /// rejecting the whole message (the detail is diagnostic garnish; the
+    /// (state, reason) tuple is the signal). Encoding stays synthesized.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelId = try container.decode(String.self, forKey: .modelId)
+        backend = try container.decode(PrefixCacheStatusBackend.self, forKey: .backend)
+        replayStrategy = try container.decode(
+            PrefixCacheReplayStrategy.self, forKey: .replayStrategy)
+        state = try container.decode(PrefixCacheStatusState.self, forKey: .state)
+        reason = try container.decode(PrefixCacheStatusReason.self, forKey: .reason)
+        initFailure = (try container.decodeIfPresent(String.self, forKey: .initFailure))
+            .flatMap(PrefixCacheInitFailureDetail.init(rawValue:))
+    }
 }
 
 public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, CaseIterable {

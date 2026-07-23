@@ -28,7 +28,7 @@ struct ProductionPromptParityTests {
             if !model.cacheRoutingEligible {
                 #expect(model.ineligibilityReason == "dynamic_time")
                 #expect(model.cases.isEmpty)
-                #expect(throws: PromptContractIdentity.Error.invalidArtifact) {
+                #expect(throws: PromptContractIdentity.Error.templateDynamicDate) {
                     try PromptContractIdentity.compute(modelDirectory: modelDirectory)
                 }
                 continue

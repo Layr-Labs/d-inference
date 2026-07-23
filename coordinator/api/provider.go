@@ -501,18 +501,30 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeInferenceComplete:
 			completeMsg := msg.Payload.(*protocol.InferenceCompleteMessage)
-			// Run completion handling (billing settlement) off the read loop.
-			// Billing does synchronous DB calls (GetModelPrice, Credit, Charge)
-			// that can block for seconds under DB pressure. If the read loop is
-			// blocked, attestation challenge responses can't be read from the
-			// WebSocket, causing challenge timeouts and provider derouting.
-			saferun.Go(s.logger, "handleComplete", func() {
-				s.handleComplete(providerID, provider, completeMsg)
-			})
+			// Claim the attempt's terminal SYNCHRONOUSLY, in wire order, before
+			// launching the slow billing work — this is the fix for incident
+			// race #1. The first terminal decoded for an attempt wins under the
+			// actor mutex; a later-decoded error can no longer beat this
+			// completion just because its billing goroutine was scheduled first.
+			// Only after the claim is accepted do we run completion handling
+			// (billing settlement) off the read loop: billing does synchronous DB
+			// calls that can block for seconds under DB pressure, which would
+			// otherwise stall attestation challenge reads on this socket.
+			if s.acceptProviderTerminal(providerID, provider, completeMsg.RequestID, terminalComplete) {
+				saferun.Go(s.logger, "handleComplete", func() {
+					s.handleComplete(providerID, provider, completeMsg)
+				})
+			}
 
 		case protocol.TypeInferenceError:
 			errMsg := msg.Payload.(*protocol.InferenceErrorMessage)
-			s.handleInferenceError(providerID, provider, errMsg)
+			// Same synchronous, wire-ordered terminal claim (race #1). A superseded
+			// error (an earlier completion/timeout already won the attempt) is
+			// dropped to telemetry by acceptProviderTerminal after transport
+			// cleanup, so a late error can never overturn an earlier terminal.
+			if s.acceptProviderTerminal(providerID, provider, errMsg.RequestID, terminalError) {
+				s.handleInferenceError(providerID, provider, errMsg)
+			}
 
 		case protocol.TypePrefixCacheLookup:
 			lookupMsg := msg.Payload.(*protocol.PrefixCacheLookupMessage)

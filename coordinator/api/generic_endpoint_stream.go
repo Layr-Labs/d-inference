@@ -95,6 +95,12 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 			return
 
 		case <-timer.C:
+			if !s.actorAcceptsClientTimeout(pr) {
+				// Provider terminal already won — do not contradict billing with a
+				// timeout; consume the real terminal instead (race #2).
+				timer.Reset(inferenceTimeout)
+				continue
+			}
 			markInferenceOutcome(r.Context(), pr.Model, requestClassTimeout)
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})

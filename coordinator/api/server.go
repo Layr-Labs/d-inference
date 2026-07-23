@@ -288,6 +288,10 @@ type Server struct {
 	// mid-stream, so a late provider terminal can settle them (or the reservation
 	// is refunded on grace expiry). See settlement.go.
 	settlements *settlementHolder
+	// actors maps a provider attempt (request) ID to the per-logical-request
+	// requestActor that owns its terminal/winner/retry arbitration. See
+	// request_actor.go.
+	actors *actorTable
 	// settleGrace overrides defaultTerminalSettleGrace (tests set it small).
 	settleGrace time.Duration
 	// zombieCanceller throttles cancels for chunks on abandoned streams. See zombie_stream.go.
@@ -705,6 +709,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		codeAttestThrottle:   newCodeAttestThrottle(),
 		trustReuseCache:      newTrustReuseCache(),
 		settlements:          newSettlementHolder(),
+		actors:               newActorTable(),
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),

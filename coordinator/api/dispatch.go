@@ -136,6 +136,12 @@ type dispatchState struct {
 	// (budget < context — this node was memory-pressured).
 	lastErrProviderBudget int64
 	committed             bool
+	// actor is the per-logical-request serialization point for terminal, winner,
+	// and retry decisions shared with the provider read loop and the client
+	// delivery timers. Every provider attempt this dispatch creates (primary,
+	// queued, speculative backup, retry) is registered under it. See
+	// request_actor.go.
+	actor *requestActor
 	// keepalive emits SSE keepalive comments during a long prefill once the
 	// request has been dispatched, committing HTTP 200 early so the consumer
 	// connection does not time out. nil when disabled or non-streaming.
@@ -476,6 +482,12 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 // backup win, the primary otherwise. MarkFirstChunkArrived is kept (idempotent:
 // it preserves an earlier preamble's first-byte time for dispatch_to_first_chunk_ms).
 func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk string) {
+	// Select the durable logical winner BEFORE any attempt-specific client write
+	// (the fix for incident race #3 and the speculative winner race). This is the
+	// single compare-and-set that atomically marks every other active attempt a
+	// speculative_loser, so a loser's later provider terminal is rejected by the
+	// read loop (acceptProviderTerminal) and can never settle or write.
+	d.actor.selectWinner(pr.RequestID)
 	d.firstChunk = chunk
 	pr.MarkFirstChunkArrived()
 	pr.MarkFirstContentArrived()
@@ -496,6 +508,29 @@ func (d *dispatchState) commitFirstContent(pr *registry.PendingRequest, chunk st
 	if d.s.registry.RecordCapacityAccept(pr.ProviderID, pr.Model) {
 		pr.MarkRateOutcomeCounted()
 	}
+}
+
+// registerAttempt binds a freshly dispatched provider attempt to the request
+// actor so the provider read loop can arbitrate its terminal and so it
+// participates in winner selection. role is "primary" or "backup". No-op when the
+// actor is disabled/absent.
+//
+// Ordering: callers invoke this in the dispatch goroutine immediately after the
+// provider write returns, before that goroutine reads any provider frame and
+// long before the provider can round-trip a response. A provider terminal
+// therefore cannot be decoded on the read loop before the attempt is bound; the
+// legacy fallback in acceptProviderTerminal is a safety net, not a live window.
+func (d *dispatchState) registerAttempt(provider *registry.Provider, pr *registry.PendingRequest, role string) {
+	if d.actor == nil || pr == nil {
+		return
+	}
+	providerID := ""
+	if provider != nil {
+		providerID = provider.ID
+	} else {
+		providerID = pr.ProviderID
+	}
+	d.actor.registerAttempt(pr.RequestID, providerID, role, pr.Attempt)
 }
 
 func (d *dispatchState) successRoutingOutcomeFor(pr *registry.PendingRequest) *store.InferenceRouteOutcome {
@@ -1676,6 +1711,10 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 	}
 	if backupPR != nil {
 		backupPR.UsedBackup = true
+		// Register the speculative backup as a second active attempt under the
+		// same request actor so exactly one of {primary, backup} can win and the
+		// loser's later provider terminal is rejected (never settles).
+		d.registerAttempt(backupProvider, backupPR, "backup")
 	}
 	s.logger.Info("speculative_dispatch",
 		"request_id", d.requestID,
@@ -2434,6 +2473,12 @@ func (d *dispatchState) run() {
 	// nil-safe (no-op when keepalives are disabled or the writer already took over).
 	defer func() { d.keepalive.takeOver() }()
 
+	// Unbind this request's attempts from the actor table once the handler has
+	// fully delivered its response. A still-later provider terminal then falls
+	// back to the legacy path (which no-ops on an unknown request), exactly as
+	// before the actor existed.
+	defer d.actor.close()
+
 	for attempt := range maxDispatchAttempts {
 		d.attempt = attempt
 		// Deadline-bounded failover: after the first attempt, stop failing over
@@ -2461,6 +2506,11 @@ func (d *dispatchState) run() {
 		}
 
 		d.requestID = d.pr.RequestID
+		// Register this attempt with the request actor now that it has been
+		// dispatched: the provider read loop can now arbitrate its terminal, and
+		// it can win/lose the logical request. Covers both the direct and queued
+		// primary paths (both reach here with d.pr set).
+		d.registerAttempt(d.provider, d.pr, "primary")
 		// d.pr.Attempt is already stamped at PendingRequest construction in
 		// dispatchOneProvider (and on the queued path), before the provider send —
 		// so it is never written here, where it would race handleComplete.
@@ -2702,6 +2752,15 @@ exhausted:
 	// from pre-dispatch rejections).
 	if d.stream {
 		s.recordRequestOutcomeForContext(r.Context(), d.model, orClassSuccess)
+	}
+
+	// Catch-all durable winner selection before any client write. commitFirstContent
+	// already selects the winner for content commits; this idempotently covers the
+	// empty-completion / clean-close commits (which set committed without content),
+	// so the committed attempt is always the actor's recorded winner before the
+	// response is handed to the delivery writer.
+	if d.pr != nil {
+		d.actor.selectWinner(d.pr.RequestID)
 	}
 
 	d.writeCommittedResponse()

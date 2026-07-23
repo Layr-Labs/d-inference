@@ -67,7 +67,10 @@ the fixed enum and count. No model/request/provider identifier, path, token,
 prompt, cache scope, hash, epoch, account, serial, or free-form error is retained
 or sent. The coordinator baselines registration, consumes monotonic heartbeat
 deltas, and exports aggregate outcomes through `/v1/cache/status`, Prometheus,
-and Datadog.
+and Datadog. Optional status/outcome fields are forward-compatible and
+non-fatal: unknown entries are dropped, structurally ambiguous/oversized
+snapshots are discarded within fixed bounds, and provider registration remains
+available. Routing capability fields remain independently strict.
 
 ## Environment variables
 

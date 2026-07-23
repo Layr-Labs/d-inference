@@ -3,6 +3,7 @@ package registry
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -57,49 +58,60 @@ func PrefixCacheDonationOutcomes() []string {
 	return append([]string(nil), prefixCacheDonationOutcomes...)
 }
 
-func validatePrefixCacheStatuses(
+// sanitizePrefixCacheStatuses projects optional provider observability into the
+// fixed vocabulary this coordinator understands. Telemetry is never an
+// admission policy:
+//   - nil preserves old-provider omission;
+//   - oversized arrays, duplicate model IDs, or blank/non-canonical model IDs
+//     drop the whole snapshot to an authoritative empty set;
+//   - unknown future enums, invalid tuples, and models absent from this
+//     provider's own advertised inventory drop only that entry.
+//
+// The length check runs before iteration, and accepted arrays are capped at 16,
+// so hostile optional telemetry cannot create unbounded work.
+func sanitizePrefixCacheStatuses(
 	statuses *[]protocol.PrefixCacheModelStatus,
 	models map[string]protocol.ModelInfo,
-	catalog map[string]struct{},
-) (map[string]protocol.PrefixCacheModelStatus, bool, error) {
+) (map[string]protocol.PrefixCacheModelStatus, bool) {
 	if statuses == nil {
-		return nil, false, nil
+		return nil, false
 	}
 	if len(*statuses) > maxPrefixCacheStatuses {
-		return nil, false, fmt.Errorf(
-			"%w: too many prefix-cache statuses", errInvalidPrefixCacheCapability)
+		*statuses = []protocol.PrefixCacheModelStatus{}
+		return map[string]protocol.PrefixCacheModelStatus{}, true
 	}
-	result := make(map[string]protocol.PrefixCacheModelStatus, len(*statuses))
+
+	seen := make(map[string]struct{}, len(*statuses))
 	for _, status := range *statuses {
-		if status.ModelID == "" {
-			return nil, false, fmt.Errorf(
-				"%w: blank prefix-cache status model", errInvalidPrefixCacheCapability)
+		if status.ModelID == "" || strings.TrimSpace(status.ModelID) != status.ModelID {
+			*statuses = []protocol.PrefixCacheModelStatus{}
+			return map[string]protocol.PrefixCacheModelStatus{}, true
 		}
+		if _, duplicate := seen[status.ModelID]; duplicate {
+			*statuses = []protocol.PrefixCacheModelStatus{}
+			return map[string]protocol.PrefixCacheModelStatus{}, true
+		}
+		seen[status.ModelID] = struct{}{}
+	}
+
+	result := make(map[string]protocol.PrefixCacheModelStatus, len(*statuses))
+	sanitized := make([]protocol.PrefixCacheModelStatus, 0, len(*statuses))
+	for _, status := range *statuses {
 		if _, ok := models[status.ModelID]; !ok {
-			return nil, false, fmt.Errorf(
-				"%w: status model %q is not advertised", errInvalidPrefixCacheCapability, status.ModelID)
-		}
-		if catalog != nil {
-			if _, ok := catalog[status.ModelID]; !ok {
-				return nil, false, fmt.Errorf(
-					"%w: status model %q is not in catalog", errInvalidPrefixCacheCapability, status.ModelID)
-			}
-		}
-		if _, duplicate := result[status.ModelID]; duplicate {
-			return nil, false, fmt.Errorf(
-				"%w: duplicate status model %q", errInvalidPrefixCacheCapability, status.ModelID)
+			continue
 		}
 		if !containsFixed(prefixCacheStatusStates, status.State) ||
 			!containsFixed(prefixCacheStatusReasons, status.Reason) ||
 			!containsFixed(prefixCacheStatusBackends, status.Backend) ||
 			!containsFixed(prefixCacheReplayStrategies, status.ReplayStrategy) ||
 			!validPrefixCacheStateReason(status.State, status.Reason) {
-			return nil, false, fmt.Errorf(
-				"%w: invalid status tuple for %q", errInvalidPrefixCacheCapability, status.ModelID)
+			continue
 		}
 		result[status.ModelID] = status
+		sanitized = append(sanitized, status)
 	}
-	return result, true, nil
+	*statuses = sanitized
+	return result, true
 }
 
 func validPrefixCacheStateReason(state, reason string) bool {
@@ -124,30 +136,43 @@ func validPrefixCacheStateReason(state, reason string) bool {
 	return false
 }
 
-func validatePrefixCacheDonationOutcomes(
+// sanitizePrefixCacheDonationOutcomes applies the same non-fatal policy to
+// cumulative donation counters. Oversized or duplicate snapshots are ignored
+// wholesale; unknown future outcomes and invalid counts are dropped entry-wise.
+// On heartbeat, an empty sanitized map preserves the provider's prior monotonic
+// baseline, so malformed optional counters cannot manufacture a reset delta.
+func sanitizePrefixCacheDonationOutcomes(
 	outcomes *[]protocol.PrefixCacheDonationOutcomeCount,
-) (map[string]uint64, error) {
+) map[string]uint64 {
 	if outcomes == nil {
-		return nil, nil
+		return nil
 	}
 	if len(*outcomes) > maxPrefixCacheDonationOutcomes {
-		return nil, fmt.Errorf(
-			"%w: too many prefix-cache donation outcomes", errInvalidPrefixCacheCapability)
+		*outcomes = []protocol.PrefixCacheDonationOutcomeCount{}
+		return map[string]uint64{}
 	}
+
+	seen := make(map[string]struct{}, len(*outcomes))
+	for _, outcome := range *outcomes {
+		if _, duplicate := seen[outcome.Outcome]; duplicate {
+			*outcomes = []protocol.PrefixCacheDonationOutcomeCount{}
+			return map[string]uint64{}
+		}
+		seen[outcome.Outcome] = struct{}{}
+	}
+
 	result := make(map[string]uint64, len(*outcomes))
+	sanitized := make([]protocol.PrefixCacheDonationOutcomeCount, 0, len(*outcomes))
 	for _, outcome := range *outcomes {
 		if !containsFixed(prefixCacheDonationOutcomes, outcome.Outcome) ||
 			outcome.Count == 0 || outcome.Count > math.MaxInt64 {
-			return nil, fmt.Errorf(
-				"%w: invalid donation outcome %q", errInvalidPrefixCacheCapability, outcome.Outcome)
-		}
-		if _, duplicate := result[outcome.Outcome]; duplicate {
-			return nil, fmt.Errorf(
-				"%w: duplicate donation outcome %q", errInvalidPrefixCacheCapability, outcome.Outcome)
+			continue
 		}
 		result[outcome.Outcome] = outcome.Count
+		sanitized = append(sanitized, outcome)
 	}
-	return result, nil
+	*outcomes = sanitized
+	return result
 }
 
 func containsFixed(values []string, candidate string) bool {
@@ -159,9 +184,10 @@ func containsFixed(values []string, candidate string) bool {
 	return false
 }
 
-// ValidatePrefixCacheRegistration validates all optional cache observability
-// snapshots against both the provider inventory and the live catalog. A nil
-// catalog preserves development/test behavior.
+// ValidatePrefixCacheRegistration keeps authoritative routing capability
+// validation fail-closed, then sanitizes optional observability in place.
+// Optional telemetry never closes registration and is scoped only to the
+// provider's advertised inventory; owner-local/off-catalog models are valid.
 func (r *Registry) ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage) error {
 	if err := ValidatePrefixCacheRegistration(msg); err != nil {
 		return err
@@ -170,22 +196,9 @@ func (r *Registry) ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage
 	if err != nil {
 		return err
 	}
-	var catalog map[string]struct{}
-	if r != nil {
-		r.mu.RLock()
-		if r.modelCatalog != nil {
-			catalog = make(map[string]struct{}, len(r.modelCatalog))
-			for modelID := range r.modelCatalog {
-				catalog[modelID] = struct{}{}
-			}
-		}
-		r.mu.RUnlock()
-	}
-	if _, _, err := validatePrefixCacheStatuses(msg.PrefixCacheStatuses, models, catalog); err != nil {
-		return err
-	}
-	_, err = validatePrefixCacheDonationOutcomes(msg.PrefixCacheDonationOutcomes)
-	return err
+	sanitizePrefixCacheStatuses(msg.PrefixCacheStatuses, models)
+	sanitizePrefixCacheDonationOutcomes(msg.PrefixCacheDonationOutcomes)
+	return nil
 }
 
 // UpdatePrefixCacheTelemetry replaces the optional connection-scoped status
@@ -202,13 +215,6 @@ func (r *Registry) UpdatePrefixCacheTelemetry(
 	}
 	r.mu.RLock()
 	provider := r.providers[providerID]
-	var catalog map[string]struct{}
-	if r.modelCatalog != nil {
-		catalog = make(map[string]struct{}, len(r.modelCatalog))
-		for modelID := range r.modelCatalog {
-			catalog[modelID] = struct{}{}
-		}
-	}
 	r.mu.RUnlock()
 	if provider == nil {
 		return fmt.Errorf("%w: provider is not registered", errInvalidPrefixCacheCapability)
@@ -220,16 +226,8 @@ func (r *Registry) UpdatePrefixCacheTelemetry(
 		provider.mu.Unlock()
 		return err
 	}
-	validatedStatuses, reported, err := validatePrefixCacheStatuses(statuses, models, catalog)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
-	}
-	validatedOutcomes, err := validatePrefixCacheDonationOutcomes(outcomes)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
-	}
+	validatedStatuses, reported := sanitizePrefixCacheStatuses(statuses, models)
+	validatedOutcomes := sanitizePrefixCacheDonationOutcomes(outcomes)
 	if reported {
 		provider.PrefixCacheStatuses = validatedStatuses
 		provider.PrefixCacheStatusReported = true

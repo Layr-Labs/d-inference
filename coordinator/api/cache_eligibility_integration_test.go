@@ -18,6 +18,7 @@ import (
 func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T) {
 	logger := slog.New(slog.DiscardHandler)
 	reg := registry.New(logger)
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "public-model"}})
 	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
 	httpServer := httptest.NewServer(srv.Handler())
 	defer httpServer.Close()
@@ -34,16 +35,26 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
-	initialStatuses := []protocol.PrefixCacheModelStatus{{
-		ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
-		State: "disabled", Reason: "weight_hash_unavailable",
-	}}
-	initialOutcomes := []protocol.PrefixCacheDonationOutcomeCount{{
-		Outcome: "donated", Count: 2,
-	}}
+	initialStatuses := []protocol.PrefixCacheModelStatus{
+		{
+			ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
+			State: "disabled", Reason: "weight_hash_unavailable",
+		},
+		{
+			ModelID: "future-model", Backend: "future_backend", ReplayStrategy: "future_strategy",
+			State: "warming", Reason: "future_reason",
+		},
+	}
+	initialOutcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 2},
+		{Outcome: "future_outcome", Count: 100},
+	}
 	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
-		Type:                        protocol.TypeRegister,
-		Models:                      []protocol.ModelInfo{{ID: "model"}},
+		Type: protocol.TypeRegister,
+		Models: []protocol.ModelInfo{
+			{ID: "model"},
+			{ID: "future-model"},
+		},
 		Backend:                     "mlx-swift",
 		PrefixCacheProtocol:         1,
 		PrefixCacheStatuses:         &initialStatuses,
@@ -51,7 +62,8 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	})
 	waitCacheCondition(t, func() bool {
 		status := reg.PrefixCacheProtocolStatus()
-		return status.ReportedLoadedModels == 1 &&
+		return reg.ProviderCount() == 1 &&
+			status.ReportedLoadedModels == 1 &&
 			status.ByReason["weight_hash_unavailable"] == 1
 	})
 
@@ -59,9 +71,10 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 		ModelID: "model", Backend: "contiguous", ReplayStrategy: "direct",
 		State: "pending", Reason: "scan_pending",
 	}}
-	fiveOutcomes := []protocol.PrefixCacheDonationOutcomeCount{{
-		Outcome: "donated", Count: 5,
-	}}
+	fiveOutcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 5},
+		{Outcome: "future_outcome", Count: 101},
+	}
 	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle",
 		Stats:                       protocol.HeartbeatStats{},
@@ -74,12 +87,44 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 			reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] == 3
 	})
 
+	oversizedStatuses := make([]protocol.PrefixCacheModelStatus, 17)
+	duplicateOutcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 6},
+		{Outcome: "donated", Count: 7},
+	}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		Stats:                       protocol.HeartbeatStats{},
+		PrefixCacheStatuses:         &oversizedStatuses,
+		PrefixCacheDonationOutcomes: &duplicateOutcomes,
+	})
+	waitCacheCondition(t, func() bool {
+		return reg.ProviderCount() == 1 &&
+			reg.PrefixCacheProtocolStatus().ReportedLoadedModels == 0 &&
+			reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] == 3
+	})
+
+	sixOutcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 6},
+	}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle",
+		Stats:                       protocol.HeartbeatStats{},
+		PrefixCacheStatuses:         &replacement,
+		PrefixCacheDonationOutcomes: &sixOutcomes,
+	})
+	waitCacheCondition(t, func() bool {
+		return reg.ProviderCount() == 1 &&
+			reg.PrefixCacheProtocolStatus().ByReason["scan_pending"] == 1 &&
+			reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] == 4
+	})
+
 	empty := []protocol.PrefixCacheModelStatus{}
 	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
 		Type: protocol.TypeHeartbeat, Status: "idle",
 		Stats:                       protocol.HeartbeatStats{},
 		PrefixCacheStatuses:         &empty,
-		PrefixCacheDonationOutcomes: &fiveOutcomes,
+		PrefixCacheDonationOutcomes: &sixOutcomes,
 	})
 	waitCacheCondition(t, func() bool {
 		return reg.PrefixCacheProtocolStatus().ReportedLoadedModels == 0
@@ -100,6 +145,57 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	waitCacheCondition(t, func() bool { return reg.ProviderCount() == 0 })
 	if got := reg.PrefixCacheProtocolStatus().LoadedModels; got != 0 {
 		t.Fatalf("disconnect retained loaded status: %d", got)
+	}
+}
+
+func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	reg := registry.New(logger)
+	reg.SetModelCatalog([]registry.CatalogEntry{{ID: "public-model"}})
+	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	httpServer := httptest.NewServer(srv.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(
+		ctx,
+		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/provider",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	oversizedStatuses := make([]protocol.PrefixCacheModelStatus, 17)
+	duplicateOutcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 1},
+		{Outcome: "donated", Count: 2},
+	}
+	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
+		Type:                        protocol.TypeRegister,
+		Models:                      []protocol.ModelInfo{{ID: "owner-local"}},
+		Backend:                     "mlx-swift",
+		PrefixCacheProtocol:         1,
+		PrefixCacheStatuses:         &oversizedStatuses,
+		PrefixCacheDonationOutcomes: &duplicateOutcomes,
+	})
+	waitCacheCondition(t, func() bool { return reg.ProviderCount() == 1 })
+	status := reg.PrefixCacheProtocolStatus()
+	if status.ReportedLoadedModels != 0 ||
+		reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"] != 0 {
+		t.Fatalf("structural telemetry was not dropped: providers=%+v lifecycle=%+v",
+			status, reg.CacheRoutingLifecycleStatus())
+	}
+
+	// A subsequent heartbeat proves the provider socket remained usable.
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
+	})
+	time.Sleep(25 * time.Millisecond)
+	if reg.ProviderCount() != 1 {
+		t.Fatal("optional structural telemetry closed provider registration")
 	}
 }
 

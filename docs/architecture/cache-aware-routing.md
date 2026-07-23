@@ -152,6 +152,19 @@ loaded totals. This makes a v1 slot attributable without exposing the model:
 
 Old providers omit the field and contribute only to
 `unreported_loaded_models`; omission is never interpreted as a reason.
+These fields are optional observability, never provider-admission policy.
+Status model IDs are checked only against that provider's advertised inventory;
+owner-local/off-catalog models are valid. Unknown future enum values, invalid
+state/reason tuples, unadvertised status models, unknown donation outcomes, and
+invalid counts drop only the affected entry while known entries still
+aggregate. To keep processing bounded and ambiguity-free, an array beyond its
+fixed cap (16 statuses or 13 outcomes), duplicate model/outcome keys, or a
+blank/non-canonical status model ID drops that whole optional snapshot.
+A dropped/present status snapshot becomes authoritative empty and clears stale
+status; a dropped donation snapshot preserves the prior monotonic counter
+baseline. Field omission preserves the prior mixed-version behavior.
+Authoritative `prefix_cache_v2_models` validation remains strict and can still
+reject registration or quarantine malformed routing evidence.
 Provider SSD donation opportunities are cumulative fixed-enum counters, and
 holder additions/removals are counted by `ttl`, `disconnect`, `epoch_change`,
 `capability_change`, `miss_invalidation`, or `capacity_eviction`. The response
@@ -214,6 +227,8 @@ Registration and every current-provider heartbeat carry an optional
 `prefix_cache_statuses` replacement snapshot and cumulative
 `prefix_cache_donation_outcomes`. An explicit empty status array clears the
 connection's prior snapshot; absence preserves mixed-version compatibility.
+Unsupported future observability is sanitized under the non-fatal rules above;
+it never closes registration.
 Model removal, unload heartbeats, capability changes, and disconnects remove
 connection-scoped status/evidence so stale slots cannot remain in aggregates.
 Production activation is still a separate operational decision:

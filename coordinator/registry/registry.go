@@ -2785,9 +2785,9 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 
 	models := msg.Models
 	modelInventory, _ := uniqueProviderModels(models)
-	cacheStatuses, cacheStatusReported, _ := validatePrefixCacheStatuses(
-		msg.PrefixCacheStatuses, modelInventory, nil)
-	cacheDonationOutcomes, _ := validatePrefixCacheDonationOutcomes(
+	cacheStatuses, cacheStatusReported := sanitizePrefixCacheStatuses(
+		msg.PrefixCacheStatuses, modelInventory)
+	cacheDonationOutcomes := sanitizePrefixCacheDonationOutcomes(
 		msg.PrefixCacheDonationOutcomes)
 
 	// Validate X25519 public key if provided.

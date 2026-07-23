@@ -50,81 +50,158 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 	}
 }
 
-func TestPrefixCacheStatusValidationRejectsUnboundedOrAmbiguousSnapshots(t *testing.T) {
+func TestPrefixCacheTelemetrySanitizesOptionalCompatibility(t *testing.T) {
 	reg := cacheEligibilityTestRegistry()
-	reg.SetModelCatalog([]CatalogEntry{{ID: "model"}})
-	base := protocol.RegisterMessage{
-		Models: []protocol.ModelInfo{{ID: "model"}},
+	reg.SetModelCatalog([]CatalogEntry{{ID: "public-model"}})
+	statuses := []protocol.PrefixCacheModelStatus{
+		{
+			ModelID: "owner-local", Backend: "unknown", ReplayStrategy: "none",
+			State: "disabled", Reason: "config_disabled",
+		},
+		{
+			ModelID: "future-model", Backend: "future_backend", ReplayStrategy: "future_strategy",
+			State: "warming", Reason: "future_reason",
+		},
+		{
+			ModelID: "not-advertised", Backend: "contiguous", ReplayStrategy: "direct",
+			State: "ready", Reason: "ready",
+		},
 	}
+	outcomes := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 7},
+		{Outcome: "future_donation_outcome", Count: 9},
+		{Outcome: "write_failed", Count: 0},
+	}
+	msg := protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{
+			{ID: "owner-local"},
+			{ID: "future-model"},
+		},
+		PrefixCacheStatuses:         &statuses,
+		PrefixCacheDonationOutcomes: &outcomes,
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&msg); err != nil {
+		t.Fatalf("optional telemetry closed owner-local registration: %v", err)
+	}
+	if msg.PrefixCacheStatuses == nil || len(*msg.PrefixCacheStatuses) != 1 ||
+		(*msg.PrefixCacheStatuses)[0].ModelID != "owner-local" {
+		t.Fatalf("status sanitization = %+v, want owner-local known entry", msg.PrefixCacheStatuses)
+	}
+	if msg.PrefixCacheDonationOutcomes == nil ||
+		len(*msg.PrefixCacheDonationOutcomes) != 1 ||
+		(*msg.PrefixCacheDonationOutcomes)[0].Outcome != "donated" {
+		t.Fatalf("donation sanitization = %+v, want donated known entry", msg.PrefixCacheDonationOutcomes)
+	}
+	provider := reg.Register("owner", nil, &msg)
+	if provider == nil {
+		t.Fatal("owner-local provider was not registered")
+	}
+	aggregate := reg.PrefixCacheProtocolStatus()
+	if aggregate.ReportedLoadedModels != 1 ||
+		aggregate.ByReason["config_disabled"] != 1 {
+		t.Fatalf("known owner-local aggregate = %+v", aggregate)
+	}
+}
+
+func TestPrefixCacheTelemetryStructuralAbuseDropsWholeOptionalSnapshot(t *testing.T) {
+	reg := cacheEligibilityTestRegistry()
 	valid := protocol.PrefixCacheModelStatus{
 		ModelID: "model", Backend: "contiguous", ReplayStrategy: "direct",
 		State: "ready", Reason: "ready",
 	}
-	validStatuses := []protocol.PrefixCacheModelStatus{valid}
-	base.PrefixCacheStatuses = &validStatuses
-	if err := reg.ValidatePrefixCacheRegistration(&base); err != nil {
-		t.Fatalf("valid snapshot rejected: %v", err)
-	}
-
 	for _, test := range []struct {
-		name   string
-		mutate func(*protocol.PrefixCacheModelStatus)
+		name     string
+		statuses []protocol.PrefixCacheModelStatus
 	}{
-		{name: "state", mutate: func(s *protocol.PrefixCacheModelStatus) { s.State = "warming" }},
-		{name: "reason", mutate: func(s *protocol.PrefixCacheModelStatus) { s.Reason = "free-form" }},
-		{name: "backend", mutate: func(s *protocol.PrefixCacheModelStatus) { s.Backend = "metal" }},
-		{name: "strategy", mutate: func(s *protocol.PrefixCacheModelStatus) { s.ReplayStrategy = "tail" }},
-		{name: "state reason mismatch", mutate: func(s *protocol.PrefixCacheModelStatus) {
-			s.State = "error"
-		}},
-		{name: "inventory", mutate: func(s *protocol.PrefixCacheModelStatus) { s.ModelID = "other" }},
+		{
+			name:     "duplicate model ids",
+			statuses: []protocol.PrefixCacheModelStatus{valid, valid},
+		},
+		{
+			name: "blank model id",
+			statuses: []protocol.PrefixCacheModelStatus{{
+				Backend: "contiguous", ReplayStrategy: "direct", State: "ready", Reason: "ready",
+			}},
+		},
+		{
+			name: "non-canonical model id",
+			statuses: []protocol.PrefixCacheModelStatus{{
+				ModelID: " model ", Backend: "contiguous", ReplayStrategy: "direct",
+				State: "ready", Reason: "ready",
+			}},
+		},
+		{
+			name:     "oversized",
+			statuses: make([]protocol.PrefixCacheModelStatus, maxPrefixCacheStatuses+1),
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			candidate := valid
-			test.mutate(&candidate)
-			statuses := []protocol.PrefixCacheModelStatus{candidate}
-			msg := base
-			msg.PrefixCacheStatuses = &statuses
-			if err := reg.ValidatePrefixCacheRegistration(&msg); err == nil {
-				t.Fatal("invalid status snapshot accepted")
+			statuses := append([]protocol.PrefixCacheModelStatus(nil), test.statuses...)
+			msg := protocol.RegisterMessage{
+				Models:              []protocol.ModelInfo{{ID: "model"}},
+				PrefixCacheStatuses: &statuses,
+			}
+			if err := reg.ValidatePrefixCacheRegistration(&msg); err != nil {
+				t.Fatalf("structural optional telemetry closed registration: %v", err)
+			}
+			if msg.PrefixCacheStatuses == nil || len(*msg.PrefixCacheStatuses) != 0 {
+				t.Fatalf("structural snapshot was not dropped: %+v", msg.PrefixCacheStatuses)
 			}
 		})
 	}
 
-	duplicates := []protocol.PrefixCacheModelStatus{valid, valid}
-	msg := base
-	msg.PrefixCacheStatuses = &duplicates
-	if err := reg.ValidatePrefixCacheRegistration(&msg); err == nil {
-		t.Fatal("duplicate status model accepted")
+	for _, test := range []struct {
+		name     string
+		outcomes []protocol.PrefixCacheDonationOutcomeCount
+	}{
+		{
+			name: "duplicate outcomes",
+			outcomes: []protocol.PrefixCacheDonationOutcomeCount{
+				{Outcome: "donated", Count: 1},
+				{Outcome: "donated", Count: 2},
+			},
+		},
+		{
+			name:     "oversized",
+			outcomes: make([]protocol.PrefixCacheDonationOutcomeCount, maxPrefixCacheDonationOutcomes+1),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			outcomes := append([]protocol.PrefixCacheDonationOutcomeCount(nil), test.outcomes...)
+			msg := protocol.RegisterMessage{
+				Models:                      []protocol.ModelInfo{{ID: "model"}},
+				PrefixCacheDonationOutcomes: &outcomes,
+			}
+			if err := reg.ValidatePrefixCacheRegistration(&msg); err != nil {
+				t.Fatalf("structural optional telemetry closed registration: %v", err)
+			}
+			if msg.PrefixCacheDonationOutcomes == nil ||
+				len(*msg.PrefixCacheDonationOutcomes) != 0 {
+				t.Fatalf("structural outcome snapshot was not dropped: %+v", msg.PrefixCacheDonationOutcomes)
+			}
+		})
 	}
-	tooMany := make([]protocol.PrefixCacheModelStatus, maxPrefixCacheStatuses+1)
-	for index := range tooMany {
-		tooMany[index] = valid
-		tooMany[index].ModelID = "model"
+}
+
+func TestPrefixCacheTelemetryOmissionAndRoutingCapabilityStrictness(t *testing.T) {
+	reg := cacheEligibilityTestRegistry()
+	legacy := protocol.RegisterMessage{Models: []protocol.ModelInfo{{ID: "model"}}}
+	if err := reg.ValidatePrefixCacheRegistration(&legacy); err != nil {
+		t.Fatal(err)
 	}
-	msg.PrefixCacheStatuses = &tooMany
-	if err := reg.ValidatePrefixCacheRegistration(&msg); err == nil {
-		t.Fatal("oversized status snapshot accepted")
+	if legacy.PrefixCacheStatuses != nil || legacy.PrefixCacheDonationOutcomes != nil {
+		t.Fatal("old-provider omission was converted into a reported snapshot")
 	}
 
-	offCatalog := base
-	offCatalog.Models = []protocol.ModelInfo{{ID: "off-catalog"}}
-	offCatalogStatuses := []protocol.PrefixCacheModelStatus{{
-		ModelID: "off-catalog", Backend: "unknown", ReplayStrategy: "none",
-		State: "disabled", Reason: "config_disabled",
-	}}
-	offCatalog.PrefixCacheStatuses = &offCatalogStatuses
-	if err := reg.ValidatePrefixCacheRegistration(&offCatalog); err == nil {
-		t.Fatal("off-catalog status accepted")
+	badCapability := protocol.RegisterMessage{
+		Models:              []protocol.ModelInfo{{ID: "model"}},
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{{
+			ModelID: "not-advertised",
+		}},
 	}
-
-	badOutcome := []protocol.PrefixCacheDonationOutcomeCount{{
-		Outcome: "request_specific_failure", Count: 1,
-	}}
-	msg = base
-	msg.PrefixCacheDonationOutcomes = &badOutcome
-	if err := reg.ValidatePrefixCacheRegistration(&msg); err == nil {
-		t.Fatal("free-form donation outcome accepted")
+	if err := reg.ValidatePrefixCacheRegistration(&badCapability); err == nil {
+		t.Fatal("authoritative routing capability validation became fail-open")
 	}
 }
 
@@ -222,12 +299,25 @@ func TestPrefixCacheDonationDeltasAndModelUpdateCleanup(t *testing.T) {
 	})
 	reg.cacheRouting.mu.Unlock()
 
-	five := []protocol.PrefixCacheDonationOutcomeCount{{Outcome: "donated", Count: 5}}
+	five := []protocol.PrefixCacheDonationOutcomeCount{
+		{Outcome: "donated", Count: 5},
+		{Outcome: "future_outcome", Count: 99},
+	}
 	if err := reg.UpdatePrefixCacheTelemetry("provider", nil, &five); err != nil {
 		t.Fatal(err)
 	}
 	if got := reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"]; got != 3 {
 		t.Fatalf("donation delta = %d, want 3", got)
+	}
+	oversized := make(
+		[]protocol.PrefixCacheDonationOutcomeCount,
+		maxPrefixCacheDonationOutcomes+1,
+	)
+	if err := reg.UpdatePrefixCacheTelemetry("provider", nil, &oversized); err != nil {
+		t.Fatalf("oversized optional outcomes became fatal: %v", err)
+	}
+	if got := reg.CacheRoutingLifecycleStatus().DonationOutcomes["donated"]; got != 3 {
+		t.Fatalf("dropped structural snapshot changed aggregate: %d", got)
 	}
 	decreased := []protocol.PrefixCacheDonationOutcomeCount{{Outcome: "donated", Count: 1}}
 	if err := reg.UpdatePrefixCacheTelemetry("provider", nil, &decreased); err != nil {

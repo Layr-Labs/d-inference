@@ -35,25 +35,47 @@ public enum PrefixCacheStatusReason: String, Codable, Sendable, Equatable, CaseI
     case cacheInitFailed = "cache_init_failed"
 }
 
+/// Granular sub-cause carried ONLY alongside `reason == .cacheInitFailed`.
+/// A separate optional detail — never a new `PrefixCacheStatusReason` value —
+/// because already-deployed coordinators drop status entries with unknown
+/// reasons entry-wise; a new reason enum would make failing providers
+/// invisible to them, while an unknown extra key is simply ignored.
+public enum PrefixCacheInitFailureDetail: String, Codable, Sendable, Equatable, CaseIterable {
+    case keyUnavailable = "key_unavailable"
+    case ephemeralKeyUnavailable = "ephemeral_key_unavailable"
+    case blockContractMismatch = "block_contract_mismatch"
+    case epochUnavailable = "epoch_unavailable"
+    case promptContractUnavailable = "prompt_contract_unavailable"
+    case epochLost = "epoch_lost"
+    case cacheClosed = "cache_closed"
+    case unknown
+}
+
 public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
     public let modelId: String
     public let backend: PrefixCacheStatusBackend
     public let replayStrategy: PrefixCacheReplayStrategy
     public let state: PrefixCacheStatusState
     public let reason: PrefixCacheStatusReason
+    /// Optional granular detail; populated only when `reason == .cacheInitFailed`.
+    /// Synthesized Codable uses encodeIfPresent/decodeIfPresent for optionals,
+    /// so nil omits the `init_failure` key entirely (old-coordinator safe).
+    public let initFailure: PrefixCacheInitFailureDetail?
 
     public init(
         modelId: String,
         backend: PrefixCacheStatusBackend,
         replayStrategy: PrefixCacheReplayStrategy,
         state: PrefixCacheStatusState,
-        reason: PrefixCacheStatusReason
+        reason: PrefixCacheStatusReason,
+        initFailure: PrefixCacheInitFailureDetail? = nil
     ) {
         self.modelId = modelId
         self.backend = backend
         self.replayStrategy = replayStrategy
         self.state = state
         self.reason = reason
+        self.initFailure = initFailure
     }
 
     enum CodingKeys: String, CodingKey {
@@ -62,6 +84,7 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
         case replayStrategy = "replay_strategy"
         case state
         case reason
+        case initFailure = "init_failure"
     }
 }
 

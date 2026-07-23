@@ -308,7 +308,8 @@ enum EngineV2SlotFactory {
                             ssdLayerKinds, prefixReuseCapability)
                         cacheConstructionStatus = ssdPrefixCache == nil
                             ? PrefixCacheConstructionStatus(
-                                state: .error, reason: .cacheInitFailed)
+                                state: .error, reason: .cacheInitFailed,
+                                detail: .unknown)
                             : .scanPending
                     } else {
                         ssdPrefixCache = await SSDPrefixCacheFactory.make(
@@ -331,12 +332,14 @@ enum EngineV2SlotFactory {
                         cacheConstructionStatus = ssdPrefixCache == nil
                             ? (cacheConstructionStatusBox.snapshot
                                 ?? PrefixCacheConstructionStatus(
-                                    state: .error, reason: .cacheInitFailed))
+                                    state: .error, reason: .cacheInitFailed,
+                                    detail: .unknown))
                             : .scanPending
                     }
                 } else {
                     cacheConstructionStatus = PrefixCacheConstructionStatus(
-                        state: .error, reason: .cacheInitFailed)
+                        state: .error, reason: .cacheInitFailed,
+                        detail: .promptContractUnavailable)
                     Self.emitPrefixCacheConstructionFailure(
                         modelId: modelId,
                         capability: prefixReuseCapability,
@@ -375,7 +378,8 @@ enum EngineV2SlotFactory {
             backend: cacheBackend,
             replayStrategy: PrefixCacheReplayStrategy(cacheCapability),
             state: cacheConstructionStatus.state,
-            reason: cacheConstructionStatus.reason)
+            reason: cacheConstructionStatus.reason,
+            initFailure: cacheConstructionStatus.detail)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild

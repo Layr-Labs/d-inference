@@ -178,7 +178,7 @@ struct PrefixCachePolicyTests {
             ]) == 2_048)
     }
 
-    @Test("construction failures map to bounded eligibility reasons")
+    @Test("construction failures map to bounded eligibility reasons and details")
     func constructionFailureReasons() {
         let windowed = CBv2LayerKind(
             attention: .slidingWindow(128),
@@ -195,17 +195,33 @@ struct PrefixCachePolicyTests {
             backendSelection: .paged)
         let box = PrefixCacheConstructionStatusBox()
 
-        box.record(failure: .unsupportedPlan, capability: pagedHybrid)
-        #expect(box.snapshot?.state == .disabled)
-        #expect(box.snapshot?.reason == .pagedHybridUnsupported)
-
-        box.record(failure: .missingWeightHash, capability: pagedHybrid)
-        #expect(box.snapshot?.state == .disabled)
-        #expect(box.snapshot?.reason == .weightHashUnavailable)
-
-        box.record(failure: .unsafePath, capability: pagedHybrid)
-        #expect(box.snapshot?.state == .error)
-        #expect(box.snapshot?.reason == .diskUnavailable)
+        // Every construction failure maps to exactly one (state, reason,
+        // init-failure detail) triple; detail is non-nil ONLY under
+        // `.cacheInitFailed`, where it disambiguates the five sub-causes
+        // v0.7.13 collapsed into one bucket.
+        let expected:
+            [(
+                failure: SSDPrefixCacheConstructionFailure,
+                state: PrefixCacheStatusState,
+                reason: PrefixCacheStatusReason,
+                detail: PrefixCacheInitFailureDetail?
+            )] = [
+                (.unsupportedPlan, .disabled, .pagedHybridUnsupported, nil),
+                (.missingWeightHash, .disabled, .weightHashUnavailable, nil),
+                (.layoutUnavailable, .disabled, .unsupportedLayout, nil),
+                (.unsafePath, .error, .diskUnavailable, nil),
+                (.keyUnavailable, .error, .cacheInitFailed, .keyUnavailable),
+                (.ephemeralKeyUnavailable, .error, .cacheInitFailed, .ephemeralKeyUnavailable),
+                (.blockContractMismatch, .error, .cacheInitFailed, .blockContractMismatch),
+                (.epochUnavailable, .error, .cacheInitFailed, .epochUnavailable),
+                (.promptContractUnavailable, .error, .cacheInitFailed, .promptContractUnavailable),
+            ]
+        for test in expected {
+            box.record(failure: test.failure, capability: pagedHybrid)
+            #expect(box.snapshot?.state == test.state, "\(test.failure)")
+            #expect(box.snapshot?.reason == test.reason, "\(test.failure)")
+            #expect(box.snapshot?.detail == test.detail, "\(test.failure)")
+        }
     }
 
 }

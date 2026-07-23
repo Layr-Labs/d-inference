@@ -63,3 +63,55 @@ func TestPrefixCacheTelemetryOptionalWireCompatibility(t *testing.T) {
 		t.Fatalf("authoritative empty snapshots were omitted: %s", empty)
 	}
 }
+
+// TestPrefixCacheInitFailureDetailWireSymmetry pins the "init_failure" JSON
+// key to the Swift PrefixCacheInitFailureDetail CodingKey. The detail is a
+// pure additive field: Swift omits it when nil (encodeIfPresent), Go mirrors
+// with omitempty, and a status without the key decodes to "" — so pre-0.7.14
+// providers and coordinators stay wire-compatible in both directions.
+func TestPrefixCacheInitFailureDetailWireSymmetry(t *testing.T) {
+	plain := []PrefixCacheModelStatus{{
+		ModelID: "model", Backend: "contiguous", ReplayStrategy: "direct",
+		State: "disabled", Reason: "weight_hash_unavailable",
+	}}
+	encodedPlain, err := json.Marshal(HeartbeatMessage{
+		Type: TypeHeartbeat, PrefixCacheStatuses: &plain,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedPlain), "init_failure") {
+		t.Fatalf("empty detail leaked onto the wire: %s", encodedPlain)
+	}
+	var decodedPlain HeartbeatMessage
+	if err := json.Unmarshal(encodedPlain, &decodedPlain); err != nil {
+		t.Fatal(err)
+	}
+	if (*decodedPlain.PrefixCacheStatuses)[0].InitFailure != "" {
+		t.Fatalf("omitted detail decoded non-empty: %s", encodedPlain)
+	}
+
+	detailed := []PrefixCacheModelStatus{{
+		ModelID: "model", Backend: "contiguous", ReplayStrategy: "direct",
+		State: "error", Reason: "cache_init_failed",
+		InitFailure: "key_unavailable",
+	}}
+	encoded, err := json.Marshal(HeartbeatMessage{
+		Type: TypeHeartbeat, PrefixCacheStatuses: &detailed,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"init_failure":"key_unavailable"`) {
+		t.Fatalf("detail key drifted from the Swift mirror: %s", encoded)
+	}
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.PrefixCacheStatuses == nil ||
+		len(*decoded.PrefixCacheStatuses) != 1 ||
+		(*decoded.PrefixCacheStatuses)[0] != detailed[0] {
+		t.Fatalf("detailed status did not round-trip: %s", encoded)
+	}
+}

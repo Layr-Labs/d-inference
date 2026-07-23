@@ -165,6 +165,13 @@ type PrefixCacheModelStatus struct {
 	ReplayStrategy string `json:"replay_strategy"`
 	State          string `json:"state"`
 	Reason         string `json:"reason"`
+	// InitFailure is the optional granular sub-cause, populated by 0.7.14+
+	// providers only when Reason == "cache_init_failed". It is a detail
+	// field rather than a new Reason value so deployed coordinators (which
+	// drop unknown-reason entries entry-wise) keep seeing failing providers;
+	// omitted (empty) from older providers. Mirror of the Swift
+	// PrefixCacheInitFailureDetail enum.
+	InitFailure string `json:"init_failure,omitempty"`
 }
 
 // PrefixCacheDonationOutcomeCount is one cumulative, process-local counter

@@ -137,7 +137,10 @@ enum SSDPrefixCacheFactory {
         guard prefixReuseCapability.isSupported else {
             onConstructionFailure?(.unsupportedPlan)
             #if canImport(os)
-            logger.info(
+            // .notice (not .info): info lines live in the memory ring buffer
+            // only and rarely survive to the `log show --last 24h` that
+            // `darkbloom report` runs — lifecycle lines must persist to disk.
+            logger.notice(
                 "ssd prefix cache disabled for \(modelId, privacy: .public): prefix reuse unsupported (\(prefixReuseCapability.unsupportedReason?.rawValue ?? "unknown", privacy: .public), backend=\(prefixReuseCapability.backend.rawValue, privacy: .public))")
             #endif
             return nil
@@ -290,7 +293,7 @@ enum SSDPrefixCacheFactory {
         cache.startBackgroundTasks()
         startWholeRootMaintenance(environment: environment)
         #if canImport(os)
-        logger.info(
+        logger.notice(
             "ssd prefix cache active for \(modelId, privacy: .public) at \(dir.path, privacy: .public): strategy \(prefixReuseCapability.strategy?.rawValue ?? "none", privacy: .public), backend \(prefixReuseCapability.backend.rawValue, privacy: .public), ttl \(config.ttlSeconds)s sliding, box-wide disk budget \(PrefixCachePolicy.ssdDiskBudgetBytes(environment: environment, freeBytes: PrefixCachePolicy.volumeFreeBytes(at: dir))) B, replay bound \(config.adoptionBoundTokens) tok — HMAC-keyed names (T-041 leak #2 closed), no memory carve")
         #endif
         return cache

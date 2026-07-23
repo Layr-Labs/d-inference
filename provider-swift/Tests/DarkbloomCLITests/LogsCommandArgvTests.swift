@@ -1,3 +1,4 @@
+import ProviderCore
 import Testing
 
 @testable import darkbloom
@@ -10,8 +11,9 @@ import Testing
 ///      historical (`showArgv`) and live (`streamArgv`) phases.
 @Suite("Logs argv builders")
 struct LogsCommandArgvTests {
-    /// Matches the subsystem predicate the command builds internally.
-    static let predicate = #"subsystem == "dev.darkbloom.provider""#
+    /// Matches the all-subsystems predicate the command builds internally
+    /// (the exact string is pinned by ProviderLogSubsystemsTests).
+    static let predicate = ProviderLogSubsystems.unifiedLogPredicate()
 
     // MARK: - streamArgv
 

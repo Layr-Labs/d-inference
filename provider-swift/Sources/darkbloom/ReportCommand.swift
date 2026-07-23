@@ -6,8 +6,8 @@ struct Report: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Upload recent unified logs to the coordinator for troubleshooting.",
         discussion: """
-        Collects the last 24 hours of macOS unified logs for the
-        dev.darkbloom.provider subsystem and uploads them to the coordinator.
+        Collects the last 24 hours of macOS unified logs for all Darkbloom
+        provider log subsystems and uploads them to the coordinator.
         The uploaded report can be retrieved by the Darkbloom team using
         your device's serial number.
 
@@ -104,7 +104,7 @@ struct Report: AsyncParsableCommand {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
         process.arguments = [
             "show",
-            "--predicate", "subsystem == \"dev.darkbloom.provider\"",
+            "--predicate", ProviderLogSubsystems.unifiedLogPredicate(),
             "--style", "ndjson",
             "--last", last,
             "--info",

@@ -1617,7 +1617,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             }
         }
         #if canImport(os)
-        Self.logger.info(
+        // .notice: once-per-load lifecycle summary that must persist for
+        // `darkbloom report` (info stays in the memory ring buffer).
+        Self.logger.notice(
             "ssd prefix cache (\(self.config.modelId, privacy: .public)): startup scan indexed \(indexed) blocks (\(self.index.totalBytes) B), dropped \(dropped) stale, \(expired) expired")
         #endif
     }

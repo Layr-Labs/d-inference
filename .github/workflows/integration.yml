@@ -112,7 +112,7 @@ jobs:
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       TESTBED_PROVIDER_CONFIG: debug
-      BENCHMARK_MD_PATH: /tmp/benchmark-results.md
+      BENCHMARK_MD_PATH: ${{ github.workspace }}/benchmark-results.md
       RUNNER_DESC: macos-15 (M1 Virtual)
       GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
       GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
@@ -159,14 +159,219 @@ jobs:
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
             -run 'TestBenchmark'
 
-      - name: Post benchmark results
-        if: always()
+      - name: Generate compact summary + CSV
+        if: always() && hashFiles('benchmark-results.md') != ''
+        env:
+          GH_SHA: ${{ github.sha }}
+          BENCH_CDN: ${{ vars.BENCHMARK_CDN_URL || 'https://storage.googleapis.com/darkbloom-benchmarks' }}
         run: |
-          if [ ! -f /tmp/benchmark-results.md ]; then
-            echo "No benchmark results file found"
-            exit 0
+          python3 << 'PYEOF'
+          import re, os, sys, csv
+
+          md = open("benchmark-results.md").read()
+
+          # Parse runner line
+          runner = "unknown"
+          for line in md.splitlines():
+              if line.startswith("Runner:"):
+                  runner = line
+                  break
+
+          # Parse timestamp from runner line for CSV
+          ts_match = re.search(r'Date:\s*(.+)', runner)
+          timestamp = ts_match.group(1) if ts_match else ""
+
+          # Extract scenario sections
+          sections = re.split(r'\n## ', '\n' + md)[1:]  # skip anything before first ##
+
+          sha = os.environ.get("GH_SHA", "")
+          short_sha = sha[:7]
+          cdn = os.environ.get("BENCH_CDN", "https://storage.googleapis.com/darkbloom-benchmarks")
+
+          scenarios = []
+          csv_rows = []
+
+          for sec in sections:
+              lines = sec.strip().splitlines()
+              name = lines[0].strip()
+
+              # Parse config line: "N providers, N users, N requests, concurrency=N, streaming=true|false"
+              config_match = re.match(
+                  r'(\d+)\s+providers?,\s*(\d+)\s+users?,\s*(\d+)\s+requests?,\s*concurrency=(\d+),\s*streaming=(true|false)',
+                  lines[1] if len(lines) > 1 else "")
+
+              n_providers = n_users = n_requests = concurrency = streaming = ""
+              if config_match:
+                  n_providers = config_match.group(1)
+                  n_users = config_match.group(2)
+                  n_requests = config_match.group(3)
+                  concurrency = config_match.group(4)
+                  streaming = config_match.group(5)
+
+              # Parse latency decomposition table — all segments
+              seg_stats = {}
+              in_decomp = False
+              for l in lines:
+                  if l == "### Latency Decomposition":
+                      in_decomp = True
+                      continue
+                  if in_decomp and l.startswith("| ") and not l.startswith("| Segment"):
+                      parts = [p.strip() for p in l.split("|") if p.strip()]
+                      if len(parts) >= 5:
+                          seg_name = parts[0]  # e.g. total_e2e, parse, reserve, ...
+                          seg_stats[seg_name] = {
+                              'count': parts[1], 'mean': parts[2],
+                              'p50': parts[3], 'p95': parts[4],
+                              'max': parts[5] if len(parts) > 5 else ''
+                          }
+                  elif in_decomp and not l.startswith("|"):
+                      in_decomp = False
+
+              # E2E p50/p95 for compact summary
+              e2e = seg_stats.get('total_e2e', {})
+              p50_e2e = e2e.get('p50', '')
+              p95_e2e = e2e.get('p95', '')
+
+              # Extract aggregate metrics
+              reqs = succ = errs = thrpt = total_duration = ""
+              for l in lines:
+                  m = re.match(r'\|\s*Total Requests\s*\|\s*(\S+)\s*\|', l)
+                  if m: reqs = m.group(1)
+                  m = re.match(r'\|\s*Success\s*\|\s*(\S+)\s*\|', l)
+                  if m: succ = m.group(1)
+                  m = re.match(r'\|\s*Errors\s*\|\s*(\S+)\s*\|', l)
+                  if m: errs = m.group(1)
+                  m = re.match(r'\|\s*Total Duration\s*\|\s*(.+)\s*\|', l)
+                  if m: total_duration = m.group(1)
+                  m = re.match(r'\|\s*Throughput\s*\|\s*([\d.]+)\s*req/s\s*\|', l)
+                  if m: thrpt = f"{m.group(1)}/s"
+
+              # Assertion result
+              assertion = ""
+              for l in lines:
+                  m = re.match(r'###\s*Assertion Report:\s*(PASS|FAIL)', l)
+                  if m:
+                      assertion = m.group(1)
+                      break
+
+              # Collect assertion details
+              assertion_details = []
+              in_assert = False
+              for l in lines:
+                  if l.startswith('### Assertion Report:'):
+                      in_assert = True
+                      continue
+                  if in_assert:
+                      if l.startswith('| ') and 'Result' not in l and '---' not in l:
+                          parts = [p.strip() for p in l.split('|') if p.strip()]
+                          if len(parts) >= 2:
+                              assertion_details.append(f"{parts[0]}:{parts[1]}")
+                      elif not l.startswith('|'):
+                          in_assert = False
+
+              icon = "✅" if assertion == "PASS" else "❌" if assertion == "FAIL" else "—"
+              scenarios.append((name, reqs, succ, thrpt, p50_e2e, p95_e2e, icon))
+
+              # Build CSV row
+              row = {
+                  'sha': sha,
+                  'short_sha': short_sha,
+                  'timestamp': timestamp,
+                  'runner': runner.replace('Runner: ', '').split(' |')[0].strip('`').strip(),
+                  'scenario': name,
+                  'providers': n_providers,
+                  'users': n_users,
+                  'requests': n_requests,
+                  'concurrency': concurrency,
+                  'streaming': streaming,
+                  'success': succ,
+                  'errors': errs,
+                  'throughput_rps': thrpt.replace('/s', '') if thrpt else '',
+                  'total_duration': total_duration,
+                  'assertion': assertion,
+                  'assertion_details': '; '.join(assertion_details),
+              }
+
+              # Add per-segment latency stats
+              for seg_name in ['total_e2e', 'parse', 'reserve', 'route',
+                               'queue_wait', 'encrypt', 'dispatch',
+                               'coordinator_to_provider', 'ttft']:
+                  ss = seg_stats.get(seg_name, {})
+                  row[f'{seg_name}_count'] = ss.get('count', '')
+                  row[f'{seg_name}_mean'] = ss.get('mean', '')
+                  row[f'{seg_name}_p50'] = ss.get('p50', '')
+                  row[f'{seg_name}_p95'] = ss.get('p95', '')
+                  row[f'{seg_name}_max'] = ss.get('max', '')
+
+              csv_rows.append(row)
+
+          # --- Write CSV ---
+          if csv_rows:
+              fieldnames = [
+                  'sha', 'short_sha', 'timestamp', 'runner', 'scenario',
+                  'providers', 'users', 'requests', 'concurrency', 'streaming',
+                  'success', 'errors', 'throughput_rps', 'total_duration',
+                  'total_e2e_count', 'total_e2e_mean', 'total_e2e_p50', 'total_e2e_p95', 'total_e2e_max',
+                  'parse_count', 'parse_mean', 'parse_p50', 'parse_p95', 'parse_max',
+                  'reserve_count', 'reserve_mean', 'reserve_p50', 'reserve_p95', 'reserve_max',
+                  'route_count', 'route_mean', 'route_p50', 'route_p95', 'route_max',
+                  'queue_wait_count', 'queue_wait_mean', 'queue_wait_p50', 'queue_wait_p95', 'queue_wait_max',
+                  'encrypt_count', 'encrypt_mean', 'encrypt_p50', 'encrypt_p95', 'encrypt_max',
+                  'dispatch_count', 'dispatch_mean', 'dispatch_p50', 'dispatch_p95', 'dispatch_max',
+                  'coordinator_to_provider_count', 'coordinator_to_provider_mean',
+                  'coordinator_to_provider_p50', 'coordinator_to_provider_p95', 'coordinator_to_provider_max',
+                  'ttft_count', 'ttft_mean', 'ttft_p50', 'ttft_p95', 'ttft_max',
+                  'assertion', 'assertion_details',
+              ]
+              with open("benchmark-results.csv", "w", newline='') as f:
+                  writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+                  writer.writeheader()
+                  writer.writerows(csv_rows)
+              print(f"CSV generated: {len(csv_rows)} rows")
+          else:
+              print("No scenarios found, skipping CSV")
+
+          # --- Write compact markdown summary ---
+          summary = "## ⚡ E2E Benchmarks\n\n"
+          summary += f"{runner}\n\n"
+          summary += "| Scenario | Req | OK | Thrpt | P50 e2e | P95 e2e | |\n"
+          summary += "|---|---|---|---|---|---|---|\n"
+          for (name, reqs, succ, thrpt, p50, p95, icon) in scenarios:
+              summary += f"| {name} | {reqs} | {succ} | {thrpt} | {p50} | {p95} | {icon} |\n"
+
+          summary += (
+              f"\n[📋 Full results]({cdn}/{short_sha}.md)"
+              f" &middot; [📊 CSV]({cdn}/{short_sha}.csv)\n"
+          )
+
+          with open("benchmark-summary.md", "w") as f:
+              f.write(summary)
+          print("Summary generated")
+          PYEOF
+
+      - name: Upload to GCS
+        if: always() && hashFiles('benchmark-results.md') != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.GCS_HMAC_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.GCS_HMAC_SECRET }}
+        run: |
+          # Upload CSV (primary data format for long-term analysis)
+          if [ -f benchmark-results.csv ]; then
+            aws s3 cp benchmark-results.csv \
+              "s3://darkbloom-benchmarks/${{ github.sha }}.csv" \
+              --endpoint-url "https://storage.googleapis.com" \
+              --content-type "text/csv"
           fi
-          BODY=$(cat /tmp/benchmark-results.md)
+          # Upload full markdown (human-readable reference)
+          aws s3 cp benchmark-results.md \
+            "s3://darkbloom-benchmarks/${{ github.sha }}.md" \
+            --endpoint-url "https://storage.googleapis.com" \
+            --content-type "text/markdown"
+
+      - name: Post benchmark summary
+        if: always() && hashFiles('benchmark-summary.md') != ''
+        run: |
+          BODY=$(cat benchmark-summary.md)
           gh pr comment ${{ github.event.pull_request.number }} \
             --body "$BODY" \
             --edit-last \

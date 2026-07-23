@@ -26,11 +26,28 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	require.NotEmpty(t, os.Getenv("DARKBLOOM_PROVIDER_BINARY"))
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
 	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")
-	t.Setenv("DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL", "1")
 
-	suite := testbed.NewSuite(testbed.SuiteConfig{})
+	suite := testbed.NewSuite(testbed.SuiteConfig{
+		EnableEphemeralPrefixCache: true,
+	})
 	require.NoError(t, suite.Start(t.Context()))
 	t.Cleanup(suite.Stop)
+	model := suite.PrimaryModelID()
+	warmup, err := json.Marshal(map[string]any{
+		"model": model,
+		"messages": []map[string]string{{
+			"role": "user", "content": "Reply with OK.",
+		}},
+		"max_tokens": 8, "temperature": 0,
+	})
+	require.NoError(t, err)
+	warmupResponse := postMixedVersionRequest(
+		t, suite, "/v1/chat/completions", warmup)
+	warmupBody, err := io.ReadAll(warmupResponse.Body)
+	warmupResponse.Body.Close()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, warmupResponse.StatusCode, string(warmupBody))
+
 	require.Eventually(t, func() bool {
 		providers := liveProviders(suite.Coordinator.Registry)
 		if len(providers) == 0 {
@@ -60,7 +77,6 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	require.Zero(t, donationOutcomes,
 		"released provider unexpectedly advertised candidate donation telemetry")
 
-	model := suite.PrimaryModelID()
 	tool := map[string]any{
 		"type": "function",
 		"function": map[string]any{

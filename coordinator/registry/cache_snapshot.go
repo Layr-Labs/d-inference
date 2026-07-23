@@ -36,8 +36,10 @@ func (r *Registry) UpdatePrefixCacheSnapshot(
 		return err
 	}
 
-	// The stored maps are only read below; every write path assigns a freshly
-	// built map (validate/reconcile), so no defensive copies are needed.
+	// The stored maps are only read below and republished as freshly built
+	// maps (validate/reconcile), so no defensive copies are needed here. All
+	// access to these fields — including mergeProviderModels' in-place deletes
+	// — happens under provider.mu; never retain a reference past the unlock.
 	resultVersion := provider.PrefixCacheProtocol
 	resultCapabilities := provider.PrefixCacheV2Models
 	if replaceCapabilities {

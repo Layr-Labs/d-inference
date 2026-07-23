@@ -1,20 +1,9 @@
-Looking at the reviewer's feedback, they mention removing a `!url.protocol.includes(":")` check. However, the current file content doesn't contain any URL validation with that check - the `isSafeNext` function uses a simple string-based check (`startsWith("/")` and `!startsWith("//")`) without using the URL constructor at all.
-
-The current implementation is already safe and doesn't have the redundant check mentioned in the review. The `isSafeNext` function properly prevents open redirect attacks by ensuring the path starts with a single `/` but not `//` (which could be interpreted as a protocol-relative URL).
-
-Since the code doesn't contain the issue described in the review, no changes are needed. Here's the complete file content unchanged:
-
-```
 "use client";
 
 import { trackEvent } from "@/lib/google-analytics";
 import { useAuth } from "@/hooks/useAuth";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, Suspense } from "react";
-
-function isSafeNext(next: string): boolean {
-  return next.startsWith("/") && !next.startsWith("//");
-}
 
 function LoginContent() {
   const { ready, authenticated, login } = useAuth();
@@ -24,7 +13,7 @@ function LoginContent() {
   useEffect(() => {
     if (ready && authenticated) {
       const next = searchParams.get("next") || "/";
-      const safeNext = isSafeNext(next) ? next : "/";
+      const safeNext = next.startsWith("/") && !next.startsWith("//") ? next : "/";
       router.replace(safeNext);
     }
   }, [ready, authenticated, router, searchParams]);
@@ -81,4 +70,3 @@ export default function LoginPage() {
     </Suspense>
   );
 }
-```

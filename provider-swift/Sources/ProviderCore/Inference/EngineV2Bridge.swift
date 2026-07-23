@@ -984,6 +984,26 @@ public actor EngineV2Bridge {
                 ))
             }
             continuation.yield(.error("request cancelled"))
+        case .terminal(let cbCause, let message):
+            // Typed platform/engine terminal (a monotonic deadline lease or
+            // the step watchdog). Reconcile usage the same way as any other
+            // non-natural finish, then carry BOTH the machine-readable cause
+            // AND that usage through — instead of flattening the deadline into
+            // a generic string with zero usage (the incident behavior).
+            let final = recordFinish(id: id, usage: usage, success: false)
+            emitInferenceErrorTelemetry(requestId: id)
+            if let wireCause = Self.wireTerminalCause(cbCause) {
+                continuation.yield(.terminal(
+                    cause: wireCause,
+                    message: message,
+                    promptTokens: final.prompt,
+                    completionTokens: final.completion))
+            } else {
+                // No wire mapping (the `.legacyRequestTimeout` kill-switch, or
+                // any future engine cause): fall back to the legacy string
+                // shape byte-for-byte — never guess a typed cause.
+                continuation.yield(.error(message))
+            }
         case .error(let message):
             _ = recordFinish(id: id, usage: usage, success: false)
             emitInferenceErrorTelemetry(requestId: id)
@@ -1003,6 +1023,26 @@ public actor EngineV2Bridge {
         }
         if !sawFirstToken {
             wedgeMonitor.recordTerminalWithoutFirstToken()
+        }
+    }
+
+    /// Map an engine terminal cause to its wire vocabulary, or nil when there
+    /// is no mapping (the request then falls back to the legacy `.error(String)`
+    /// shape — NEVER guess a cause). Only the six lease/watchdog causes have a
+    /// wire mapping; `.legacyRequestTimeout` (the rollback kill-switch) and any
+    /// future engine case stay untyped, matching the pre-fix behavior exactly.
+    private static func wireTerminalCause(
+        _ cause: CBv2TerminalCause
+    ) -> InferenceTerminalCause? {
+        switch cause {
+        case .admissionTimeout: return .admissionTimeout
+        case .prefillStall: return .prefillStall
+        case .decodeStall: return .decodeStall
+        case .safetyDeadline: return .safetyDeadline
+        case .backpressureTimeout: return .backpressureTimeout
+        case .watchdog: return .watchdog
+        case .legacyRequestTimeout: return nil
+        @unknown default: return nil
         }
     }
 

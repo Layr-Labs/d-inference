@@ -2311,6 +2311,15 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// attempted provider must not eat a reputation strike for what the model
 	// generated). A plain 422 with no structured reason still counts —
 	// only the typed vocabulary exonerates.
+	// Typed terminal cause (new providers). Classify once and emit the typed
+	// terminal metrics; neutral (safety_deadline / backpressure_timeout /
+	// cancelled — platform policy or consumer behavior) and capacity
+	// (admission_timeout — healthy but busy) causes are exempt from the fault
+	// recorder below regardless of status/string shape. Absent, engine_error,
+	// or unknown causes keep the legacy heuristics bit-for-bit.
+	causeClass := s.noteTypedTerminalCause(msg.TerminalCause)
+	causeNeutralForHealth := causeClass == causeClassNeutral || causeClass == causeClassCapacity
+
 	loweredErr := strings.ToLower(msg.Error)
 	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
 		msg.StatusCode == http.StatusTooManyRequests ||
@@ -2319,7 +2328,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	cancelTerminal := msg.StatusCode == 499 ||
 		strings.Contains(loweredErr, "request cancelled")
 	nonProviderFault := isNonProviderFaultErrorReason(msg.ErrorReason)
-	if !capacityRejection && !cancelTerminal && !nonProviderFault {
+	if !capacityRejection && !cancelTerminal && !nonProviderFault && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
 	}
 
@@ -2332,7 +2341,14 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// attracting 100% of the alias traffic as repeated 500s — cooling the pair
 	// makes the desired build unroutable so alias resolution falls back to the
 	// previous build.
-	if isModelLoadFailure(loweredErr) {
+	// A typed fully-neutral cause (safety_deadline / backpressure_timeout /
+	// cancelled) is strictly neutral, and a typed capacity cause
+	// (admission_timeout) feeds ONLY the capacity cooldown recorded in
+	// noteInferenceError — neither may feed the load cooldown. Their error
+	// text never carries the load-failure vocabulary anyway; the explicit
+	// allowlist (legacy or fault only) makes both guarantees unconditional
+	// rather than dependent on provider error-string phrasing.
+	if (causeClass == causeClassLegacy || causeClass == causeClassFault) && isModelLoadFailure(loweredErr) {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,
@@ -2362,6 +2378,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		if !cancelTerminal {
 			outcome.AdmittedButFailed = true
 		}
+		applyAttemptUsage(outcome, msg.AttemptUsage)
 		s.updateInferenceRouteOutcomeForPending(pr, outcome)
 		// Consumer disconnected — no reader for the channels; settle by
 		// refunding, OFF the read loop (a store Credit can block for seconds
@@ -2394,6 +2411,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		"provider_id", providerID,
 		"error", msg.Error,
 		"status_code", msg.StatusCode,
+		"terminal_cause", msg.TerminalCause,
 	)
 }
 

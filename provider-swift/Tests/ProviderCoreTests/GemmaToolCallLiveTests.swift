@@ -176,7 +176,7 @@ struct GemmaToolCallLiveTests {
         for await event in stream {
             switch event {
             case .chunk(let t): text += t
-            case .info, .error: break
+            case .info, .error, .terminal: break
             }
         }
 

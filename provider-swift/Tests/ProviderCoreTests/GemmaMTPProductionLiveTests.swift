@@ -275,6 +275,9 @@ struct GemmaMTPProductionLiveTests {
         case .error:
             throw MTPBenchmarkError.unsuccessfulTerminal(
                 row: 0, reason: "engine_error")
+        case .terminal(let cause, _):
+            throw MTPBenchmarkError.unsuccessfulTerminal(
+                row: 0, reason: "terminal_\(cause)")
         }
         guard !tokens.isEmpty else { throw MTPBenchmarkError.emptyTokenStream(row: 0) }
         return tokens

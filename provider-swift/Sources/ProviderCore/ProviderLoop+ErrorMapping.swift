@@ -90,6 +90,29 @@ extension ProviderLoop {
                 return 400
             case .generationFailed:
                 return 500
+            case .platformTerminal(let cause, _, _):
+                // Client-facing status only — the coordinator's HEALTH
+                // decisions key off `terminal_cause`, not this code. NEVER 429:
+                // the incident report forbids relabeling a policy timeout as a
+                // rate limit.
+                switch cause {
+                case .admissionTimeout:
+                    // Capacity wait before engine admission — retry once
+                    // capacity frees (matches the token-budget 503 posture).
+                    return 503
+                case .safetyDeadline, .backpressureTimeout:
+                    // Time-bound platform terminals → gateway timeout.
+                    return 504
+                case .prefillStall, .decodeStall, .watchdog:
+                    // Engine progress faults → server error.
+                    return 500
+                case .cancelled:
+                    // Client-closed request (defense-in-depth; the provider
+                    // tags cancels 499 directly, not via this enum).
+                    return 499
+                case .engineError:
+                    return 500
+                }
             }
         }
         // VLM inline-media decode errors. All but the temp-file write are
@@ -111,6 +134,22 @@ extension ProviderLoop {
             }
         }
         return 500
+    }
+
+    /// Extract the typed terminal cause and engine-reconciled usage from an
+    /// inference error, for the optional `terminal_cause`/`attempt_usage`
+    /// fields on the outgoing `inference_error`. Only a CBv2 platform/engine
+    /// terminal carries them; every other error returns (nil, nil) so the wire
+    /// message stays byte-identical to the legacy shape.
+    static func inferenceTerminalMetadata(
+        from error: Error
+    ) -> (cause: InferenceTerminalCause?, usage: UsageInfo?) {
+        if let engErr = error as? MultiModelBatchSchedulerEngineError,
+            case .platformTerminal(let cause, _, let usage) = engErr
+        {
+            return (cause, usage)
+        }
+        return (nil, nil)
     }
 
     static func isStreamClosedWithoutTerminal(_ error: Error) -> Bool {

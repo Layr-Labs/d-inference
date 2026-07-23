@@ -84,7 +84,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			emitter.emitError("provider_error", errMsg.Error)

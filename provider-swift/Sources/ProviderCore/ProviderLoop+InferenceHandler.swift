@@ -575,7 +575,13 @@ extension ProviderLoop {
                             requestId: requestId,
                             error: "request cancelled",
                             statusCode: 499,
-                            errorReason: nil),
+                            errorReason: nil,
+                            // Pre-output client cancellation — tag it so the
+                            // coordinator classifies this health-neutral (never
+                            // a provider fault). Nothing was delivered, so no
+                            // attempt usage rides along (the coordinator refunds).
+                            terminalCause: .cancelled,
+                            attemptUsage: nil),
                         fallbackFailure: .policy,
                         send: send)
                     return
@@ -610,12 +616,18 @@ extension ProviderLoop {
                         )
                     }
                 }
+                // Defense-in-depth: a typed platform terminal normally surfaces
+                // mid-stream, but if one is thrown synchronously at stream start
+                // carry its cause + usage too (non-terminal errors → nil, nil).
+                let terminal = Self.inferenceTerminalMetadata(from: error)
                 lookupReceiptFinalizer.sendTerminal(
                     .inferenceError(
                         requestId: requestId,
                         error: error.localizedDescription,
                         statusCode: statusCode,
-                        errorReason: reason),
+                        errorReason: reason,
+                        terminalCause: terminal.cause,
+                        attemptUsage: terminal.usage),
                     fallbackFailure: statusCode == 503 ? .capacity : .policy,
                     send: send)
                 return
@@ -807,6 +819,11 @@ extension ProviderLoop {
                         providerStats.incrementStreamClosedWithoutTerminal()
                     }
                     let statusCode = Self.mapInferenceErrorToStatus(error)
+                    // A CBv2 platform/engine terminal (deadline lease / step
+                    // watchdog) carries a typed cause + engine-reconciled usage;
+                    // every other error yields (nil, nil) and the wire message
+                    // stays byte-identical to the legacy shape.
+                    let terminal = Self.inferenceTerminalMetadata(from: error)
                     // Mid-stream generation errors use typed classification only:
                     // tool-choice violations are request/model-output faults, while
                     // string-based Jinja classification remains confined to stream
@@ -817,7 +834,9 @@ extension ProviderLoop {
                             requestId: requestId,
                             error: error.localizedDescription,
                             statusCode: statusCode,
-                            errorReason: classifyTypedInferenceErrorReason(error)),
+                            errorReason: classifyTypedInferenceErrorReason(error),
+                            terminalCause: terminal.cause,
+                            attemptUsage: terminal.usage),
                         fallbackFailure: statusCode == 503 ? .capacity : .policy,
                         send: send)
                     return
@@ -873,7 +892,13 @@ extension ProviderLoop {
                             requestId: requestId,
                             error: "request cancelled",
                             statusCode: 499,
-                            errorReason: nil),
+                            errorReason: nil,
+                            // Pre-output client cancellation — tag it so the
+                            // coordinator classifies this health-neutral (never
+                            // a provider fault). Nothing was delivered, so no
+                            // attempt usage rides along (the coordinator refunds).
+                            terminalCause: .cancelled,
+                            attemptUsage: nil),
                         fallbackFailure: .policy,
                         send: send)
                     return

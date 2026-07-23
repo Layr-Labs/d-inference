@@ -71,6 +71,17 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
     /// never transient capacity — so it surfaces as 400, not a retry
     /// signal.
     case multimodalRejected(String)
+    /// A typed CBv2 platform/engine terminal (a monotonic deadline lease or
+    /// the step watchdog) fired mid-generation. Unlike `.generationFailed`,
+    /// this carries the machine-readable `cause` AND the engine-reconciled
+    /// `attemptUsage` (partial generation included), so the provider can emit
+    /// an `inference_error` with `terminal_cause`/`attempt_usage` and the
+    /// coordinator can classify health/retry from the cause instead of parsing
+    /// a string. Status is cause-derived (`mapInferenceErrorToStatus`); never
+    /// 429 (a policy deadline must not be relabeled a rate limit). `message`
+    /// already includes the cause for the human-readable `error` field.
+    case platformTerminal(
+        cause: InferenceTerminalCause, message: String, attemptUsage: UsageInfo)
 
     public var errorDescription: String? {
         switch self {
@@ -96,6 +107,8 @@ public enum MultiModelBatchSchedulerEngineError: Error, LocalizedError, Equatabl
             return
                 "Model '\(id)' does not support image or video input on this provider"
         case .multimodalRejected(let message):
+            return message
+        case .platformTerminal(_, let message, _):
             return message
         }
     }

@@ -844,6 +844,12 @@ public enum MTPBenchmarkRunner {
                 case .error:
                     throw MTPBenchmarkError.unsuccessfulTerminal(
                         row: row, reason: "engine_error")
+                case .terminal(let cause, _):
+                    // A typed platform/engine terminal (deadline lease / step
+                    // watchdog) is an unsuccessful benchmark terminal, same as
+                    // a plain engine error — surface the cause for triage.
+                    throw MTPBenchmarkError.unsuccessfulTerminal(
+                        row: row, reason: "terminal_\(cause)")
                 case .stop:
                     finishReason = "stop"
                 case .length:

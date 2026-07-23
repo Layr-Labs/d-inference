@@ -117,6 +117,7 @@ struct EngineV2PagedParityLiveTests {
             case .chunk(let chunk): text += chunk
             case .info(_, let completionTokens, _, _): completion = completionTokens
             case .error(let message): error = message
+            case .terminal(_, let message, _, _): error = message
             }
         }
         return (text, completion, error)

@@ -217,6 +217,23 @@ func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) 
 	return r.recordCapacityReject(providerID, modelID, false, false)
 }
 
+// RecordCapacityRejectBusy records a typed admission-timeout capacity signal
+// (InferenceErrorMessage terminal_cause=admission_timeout): the provider
+// accepted the dispatch but its engine could not admit the request before the
+// admission lease expired — a healthy-but-busy statement, never a fault and
+// never a token-budget-honesty statement. It feeds ONLY the black-hole
+// cooldown strike (the zero-interleaved-accepts discriminator keeps a serving
+// box safe): a pair that admission-times-out EVERYTHING with zero accepts is
+// a routing black hole exactly like a 100%-capacity-rejecting one. It arms
+// NEITHER gray-box tracker — not the budget clamp (an admission timeout says
+// nothing about the reported token budget, and a false clamp blocks the very
+// dispatches whose accepts prove release) and not the no-accept-reset
+// capacity-503 rate window (transient load would accumulate a false reject
+// rate against a healthy pair).
+func (r *Registry) RecordCapacityRejectBusy(providerID, modelID string) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, false, false)
+}
+
 // recordCapacityReject is the shared implementation. deratePair gates the
 // gray-box capacity-503 rate window (true only for genuine capacity rejects);
 // armClamp gates the budget clamp (false only for request-deterministic

@@ -6,8 +6,9 @@
 //
 //   * `EngineV2RequestUsageSignal` — per-request out-of-band carrier for
 //     the engine's terminal `prefixCacheHitTokens` (the logprobs-channel
-//     pattern: `GenerationEvent.info` deliberately stays `.chunk/.info/
-//     .error`, so usage DETAIL rides beside the stream, not inside it).
+//     pattern: `GenerationEvent.info` carries no prefix-cache DETAIL — the
+//     shared event stays `.chunk/.info/.error/.terminal` — so usage DETAIL
+//     rides beside the stream, not inside it).
 //     The coordinator frames loop splices it into the trailing SSE usage
 //     chunk as OpenAI-standard `prompt_tokens_details.cached_tokens`.
 //

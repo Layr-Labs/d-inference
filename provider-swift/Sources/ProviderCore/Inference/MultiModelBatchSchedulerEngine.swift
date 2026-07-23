@@ -615,6 +615,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 var lastTokenAt: Date?
                 var stopReason: String = "stop"
                 var failed: String?
+                // Typed platform/engine terminal (deadline lease / watchdog),
+                // carrying the cause + reconciled usage so they survive the
+                // throw instead of being flattened into a string by `failed`.
+                var failedTerminal: MultiModelBatchSchedulerEngineError?
                 startedAt = Date()
 
                 for await event in upstream {
@@ -672,7 +676,28 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         if let reason { stopReason = reason }
                     case .error(let message):
                         failed = message
+                    case .terminal(let cause, let message, let p, let c):
+                        // Preserve the machine-readable cause AND the
+                        // engine-reconciled usage (partial generation included)
+                        // so the provider can emit terminal_cause/attempt_usage
+                        // instead of a generic string with zero usage. The
+                        // human-readable message is cause-prefixed so the wire
+                        // `error` field is informative on its own.
+                        failedTerminal = .platformTerminal(
+                            cause: cause,
+                            message: "\(cause.rawValue): \(message)",
+                            attemptUsage: UsageInfo(
+                                promptTokens: UInt64(max(0, p)),
+                                completionTokens: UInt64(max(0, c))))
                     }
+                }
+
+                if let failedTerminal {
+                    // A typed terminal wins over any legacy string: it carries
+                    // the cause + usage the status mapper and coordinator need.
+                    await releaseBox.fire()
+                    continuation.finish(throwing: failedTerminal)
+                    return
                 }
 
                 if let failed {

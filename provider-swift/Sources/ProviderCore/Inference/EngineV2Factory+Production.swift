@@ -447,6 +447,27 @@ extension EngineV2Factory {
         return contiguousPreparation()
     }
 
+    /// Emergency rollback kill-switch for the monotonic deadline leases. Set
+    /// `DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT` to `1`/`true`/`yes`/`on` to
+    /// restore the legacy single total-lifetime wall
+    /// (`CBv2EngineLoopConfig.useLegacyRequestTimeout = true`) — the incident
+    /// behavior — for one release cycle while a regression is investigated.
+    /// Absent or any other value keeps the new-lease default: a typo must never
+    /// silently re-arm the flat 120s wall. Opposite polarity to the
+    /// `DARKBLOOM_CBV2_PAGED_KV` kill-switch (that one is on by default).
+    static let legacyRequestTimeoutEnvKey = "DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT"
+
+    /// True only when the kill-switch env var is set to an affirmative value.
+    static func legacyRequestTimeoutEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let raw = environment[legacyRequestTimeoutEnvKey] else { return false }
+        switch raw.trimmingCharacters(in: .whitespaces).lowercased() {
+        case "1", "true", "yes", "on": return true
+        default: return false
+        }
+    }
+
     /// Final engine assembly over an already resolved backend. This method has
     /// no backend fallback path, so its cache capability cannot drift.
     static func assembleProductionBuild(
@@ -473,7 +494,12 @@ extension EngineV2Factory {
                 caches: caches,
                 schedulerConfig: schedulerConfig,
                 prefixCache: prefixCache,
-                loopConfig: CBv2EngineLoopConfig(),
+                // New monotonic phase leases are on by default
+                // (`useLegacyRequestTimeout` defaults false). The ONLY override
+                // is the emergency rollback kill-switch below — production never
+                // otherwise touches the lease config.
+                loopConfig: CBv2EngineLoopConfig(
+                    useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
                 mtpDrafter: mtpDrafter,
                 mtpConfig: mtpConfig),
             kvBackendKind: preparedBackend.kind,

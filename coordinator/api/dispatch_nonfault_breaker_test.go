@@ -84,7 +84,7 @@ func TestNoteDispatchRetry_JinjaSkipsProviderFaultBreakers(t *testing.T) {
 	d := &dispatchState{s: srv, model: pr.Model}
 	for range breakerStrikeRounds {
 		d.noteDispatchRetry(provider, pr, http.StatusInternalServerError,
-			"Runtime error: upper filter requires string", "jinja_template", nil)
+			"Runtime error: upper filter requires string", "jinja_template", "", nil)
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
 }
@@ -100,7 +100,7 @@ func TestNoteProviderError_JinjaKeepsRefundAndHeldDiscard(t *testing.T) {
 	d := &dispatchState{s: srv, model: pr.Model}
 	held := []string{`data: {"choices":[{"delta":{"role":"assistant"}}]}`}
 	if !d.noteProviderError(provider, pr, http.StatusInternalServerError,
-		"Runtime error: upper filter requires string", "jinja_template", &held) {
+		"Runtime error: upper filter requires string", "jinja_template", "", &held) {
 		t.Error("held boilerplate must still be discarded (return true) for an exempt reason")
 	}
 	if len(held) != 0 {
@@ -122,7 +122,7 @@ func TestNoteDispatchRetry_ToolNoncomplianceSkipsProviderFaultBreakers(t *testin
 	d := &dispatchState{s: srv, model: pr.Model}
 	for range breakerStrikeRounds {
 		d.noteDispatchRetry(provider, pr, http.StatusUnprocessableEntity,
-			"model did not emit the required tool call", "tool_noncompliance", nil)
+			"model did not emit the required tool call", "tool_noncompliance", "", nil)
 	}
 	assertBreakerStates(t, reg, provider, pr, false)
 }
@@ -135,7 +135,7 @@ func TestNoteProviderError_Plain500StillFeedsBreakers(t *testing.T) {
 	srv, reg, provider, pr := newBreakerExemptionHarness(t, "plain-500")
 	d := &dispatchState{s: srv, model: pr.Model}
 	for range breakerStrikeRounds {
-		d.noteProviderError(provider, pr, http.StatusInternalServerError, "boom", "", nil)
+		d.noteProviderError(provider, pr, http.StatusInternalServerError, "boom", "", "", nil)
 	}
 	assertBreakerStates(t, reg, provider, pr, true)
 }
@@ -151,7 +151,7 @@ func TestNoteProviderError_Capacity503StillFeedsCapacityCooldown(t *testing.T) {
 	// accepts; feed a couple beyond it.
 	for range 7 {
 		d.noteProviderError(provider, pr, http.StatusServiceUnavailable,
-			"token_budget_exhausted: insufficient KV headroom", "token_budget_exhausted", nil)
+			"token_budget_exhausted: insufficient KV headroom", "token_budget_exhausted", "", nil)
 	}
 	if !reg.CapacityCooldownActive(provider.ID, pr.Model) {
 		t.Error("capacity-reject cooldown must still trip for capacity-class 503s (reason gate must key on jinja_*/tool_noncompliance only)")

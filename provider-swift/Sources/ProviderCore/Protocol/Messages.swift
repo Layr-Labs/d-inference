@@ -353,12 +353,33 @@ public enum ProviderMessage: Sendable, Equatable {
         /// provider cannot confidently classify the failure (the coordinator then
         /// derives a reason from status/class). Omitted on the wire when nil.
         public var errorReason: String?
+        /// Typed terminal cause for this error (closed vocabulary, mirrored by
+        /// the coordinator's Go `terminal_cause` field). Present for CBv2
+        /// platform/engine terminals (deadline leases, step watchdog) and the
+        /// provider's own pre-output cancellation; nil for every legacy string
+        /// error. Omitted on the wire when nil so the legacy shape stays
+        /// byte-identical.
+        public var terminalCause: InferenceTerminalCause?
+        /// Engine-reconciled token usage of the failed attempt at its terminal
+        /// (partial generation included). OBSERVABILITY ONLY — the coordinator
+        /// persists/telemeters it but never bills from it. Omitted on the wire
+        /// when nil (legacy providers, or a terminal with no usage).
+        public var attemptUsage: UsageInfo?
 
-        public init(requestId: String, error: String, statusCode: UInt16, errorReason: String? = nil) {
+        public init(
+            requestId: String,
+            error: String,
+            statusCode: UInt16,
+            errorReason: String? = nil,
+            terminalCause: InferenceTerminalCause? = nil,
+            attemptUsage: UsageInfo? = nil
+        ) {
             self.requestId = requestId
             self.error = error
             self.statusCode = statusCode
             self.errorReason = errorReason
+            self.terminalCause = terminalCause
+            self.attemptUsage = attemptUsage
         }
     }
 
@@ -726,6 +747,8 @@ extension ProviderMessage: Codable {
         case error
         case statusCode = "status_code"
         case errorReason = "error_reason"
+        case terminalCause = "terminal_cause"
+        case attemptUsage = "attempt_usage"
         // AttestationResponse
         case nonce, signature
         case statusSignature = "status_signature"
@@ -848,6 +871,10 @@ extension ProviderMessage: Codable {
             try container.encode(e.error, forKey: .error)
             try container.encode(e.statusCode, forKey: .statusCode)
             try container.encodeIfPresent(e.errorReason, forKey: .errorReason)
+            // Optional typed-terminal additions; omitted when nil so the legacy
+            // wire shape is byte-identical (mirrors Go `omitempty`).
+            try container.encodeIfPresent(e.terminalCause?.rawValue, forKey: .terminalCause)
+            try container.encodeIfPresent(e.attemptUsage, forKey: .attemptUsage)
 
         case .attestationResponse(let a):
             try container.encode(TypeValue.attestationResponse, forKey: .type)
@@ -1045,11 +1072,18 @@ extension ProviderMessage: Codable {
             ))
 
         case .inferenceError:
+            // Unknown terminal_cause strings decode to nil (tolerant): a newer
+            // provider value must never crash an older decoder — it falls back to
+            // the legacy string/status heuristics, exactly like an absent field.
+            let terminalCause = (try container.decodeIfPresent(String.self, forKey: .terminalCause))
+                .flatMap(InferenceTerminalCause.init(rawValue:))
             self = .inferenceError(InferenceError(
                 requestId: try container.decode(String.self, forKey: .requestId),
                 error: try container.decode(String.self, forKey: .error),
                 statusCode: try container.decode(UInt16.self, forKey: .statusCode),
-                errorReason: try container.decodeIfPresent(String.self, forKey: .errorReason)
+                errorReason: try container.decodeIfPresent(String.self, forKey: .errorReason),
+                terminalCause: terminalCause,
+                attemptUsage: try container.decodeIfPresent(UsageInfo.self, forKey: .attemptUsage)
             ))
 
         case .attestationResponse:

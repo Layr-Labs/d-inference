@@ -369,6 +369,10 @@ func collect(
             collected.info = (prompt, completion, tps)
         case .error(let message):
             collected.error = message
+        case .terminal(_, let message, _, _):
+            // A typed platform/engine terminal is an error terminal for this
+            // generic collector — record its (cause-prefixed) message.
+            collected.error = message
         }
     }
     return collected

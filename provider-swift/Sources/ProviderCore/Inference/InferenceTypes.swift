@@ -25,7 +25,21 @@ public enum GenerationEvent: Sendable {
     case info(
         promptTokens: Int, completionTokens: Int, tokensPerSecond: Double,
         finishReason: String?)
+    /// Legacy string-only error terminal (engine faults, teardown sentinel,
+    /// capacity markers). Carries no machine-readable cause or usage.
     case error(String)
+    /// Typed platform/engine terminal (a CBv2 monotonic deadline lease or the
+    /// step watchdog), carrying the machine-readable cause AND the
+    /// engine-reconciled usage generated before it fired — so a policy
+    /// deadline is no longer flattened into an indistinguishable string error
+    /// with zero usage. `cause` is already the wire vocabulary; the bridge
+    /// only ever produces the six engine lease/watchdog causes (any other
+    /// CBv2 cause, e.g. the legacy-timeout kill-switch, stays a `.error`).
+    /// Reasoning tokens are always 0 here (the engine does not classify
+    /// reasoning); the provider fills that in on the success path only.
+    case terminal(
+        cause: InferenceTerminalCause, message: String,
+        promptTokens: Int, completionTokens: Int)
 }
 
 /// Model-architecture fields read from `config.json`, used by

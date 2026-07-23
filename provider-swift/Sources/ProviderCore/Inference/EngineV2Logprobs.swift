@@ -13,8 +13,9 @@
 //
 // The upstream SSE encoder (`MLXOpenAIService.streamChatCompletionFrames` /
 // `OpenAIChatCompletionChunk`) has no logprobs field, and the provider's
-// `GenerationEvent` deliberately stays `.chunk/.info/.error` (extending it
-// would broaden the shared event contract). So the
+// `GenerationEvent` deliberately carries NO logprobs case (it stays
+// `.chunk/.info/.error/.terminal`; a logprobs case would broaden the shared
+// event contract). So the
 // entries travel OUT-OF-BAND: the bridge pump converts each delta's
 // logprobs (`EngineV2Translation.sseTokenLogprobs`) and appends them to a
 // per-request `EngineV2LogprobsChannel`; the coordinator inference handler

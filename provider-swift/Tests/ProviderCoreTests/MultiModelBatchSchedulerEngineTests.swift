@@ -296,6 +296,68 @@ func fromSchedulerMessageFallsThroughToGenerationFailed() {
     #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 500)
 }
 
+@Test("platformTerminal maps each cause to its client status, never 429")
+func platformTerminalStatusMapping() {
+    // Client-facing status only — the coordinator's HEALTH decisions key off
+    // terminal_cause, not this code. The incident report forbids 429 for any
+    // policy deadline.
+    let cases: [(InferenceTerminalCause, UInt16)] = [
+        (.admissionTimeout, 503),
+        (.safetyDeadline, 504),
+        (.backpressureTimeout, 504),
+        (.prefillStall, 500),
+        (.decodeStall, 500),
+        (.watchdog, 500),
+    ]
+    for (cause, expected) in cases {
+        let err = MultiModelBatchSchedulerEngineError.platformTerminal(
+            cause: cause, message: "\(cause.rawValue): x",
+            attemptUsage: UsageInfo(promptTokens: 1, completionTokens: 2))
+        let status = ProviderLoop.mapInferenceErrorToStatus(err)
+        #expect(status == expected, "cause \(cause.rawValue) → \(status), expected \(expected)")
+        #expect(status != 429, "a policy deadline must never be relabeled a rate limit")
+    }
+}
+
+@Test("platformTerminal carries cause + usage to the handler; legacy errors do not")
+func platformTerminalMetadataExtraction() {
+    let usage = UsageInfo(promptTokens: 9, completionTokens: 4)
+    let terminal = MultiModelBatchSchedulerEngineError.platformTerminal(
+        cause: .decodeStall, message: "decode_stall: no progress", attemptUsage: usage)
+    let meta = ProviderLoop.inferenceTerminalMetadata(from: terminal)
+    #expect(meta.cause == .decodeStall)
+    #expect(meta.usage?.promptTokens == 9)
+    #expect(meta.usage?.completionTokens == 4)
+    // The human-readable error stays informative (cause-prefixed).
+    #expect(terminal.errorDescription == "decode_stall: no progress")
+
+    // Mixed-version: a legacy string error yields today's exact wire shape —
+    // no typed cause, no attempt usage, still 500.
+    let legacy = MultiModelBatchSchedulerEngineError.generationFailed("boom")
+    let legacyMeta = ProviderLoop.inferenceTerminalMetadata(from: legacy)
+    #expect(legacyMeta.cause == nil)
+    #expect(legacyMeta.usage == nil)
+    #expect(ProviderLoop.mapInferenceErrorToStatus(legacy) == 500)
+}
+
+@Test("legacy-request-timeout kill-switch: only affirmative values enable it")
+func legacyRequestTimeoutKillSwitchParse() {
+    let key = EngineV2Factory.legacyRequestTimeoutEnvKey
+    // Absent → new-lease default (kill-switch off).
+    #expect(EngineV2Factory.legacyRequestTimeoutEnabled(environment: [:]) == false)
+    for on in ["1", "true", "TRUE", "yes", "on", " On "] {
+        #expect(
+            EngineV2Factory.legacyRequestTimeoutEnabled(environment: [key: on]) == true,
+            "\(on) should enable the kill-switch")
+    }
+    // A typo must not silently re-arm the flat 120s wall.
+    for off in ["0", "false", "no", "off", "", "garbage"] {
+        #expect(
+            EngineV2Factory.legacyRequestTimeoutEnabled(environment: [key: off]) == false,
+            "\(off) must not enable the kill-switch")
+    }
+}
+
 @Test("invalidRole maps to 400 (P2 #5)")
 func invalidRoleMapsToBadRequest() {
     let err = MultiModelBatchSchedulerEngineError.invalidRole("developer")

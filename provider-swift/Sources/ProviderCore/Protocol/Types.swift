@@ -270,6 +270,28 @@ public enum PrefixCacheTier: String, Codable, Sendable, Equatable {
     case ssd
 }
 
+/// Closed wire vocabulary for `inference_error.terminal_cause`. Mirrors the
+/// coordinator's Go `InferenceErrorMessage.TerminalCause` string field
+/// (`coordinator/protocol/messages.go`) EXACTLY — the raw values ARE the wire
+/// contract, so they must not drift. Omitted on the wire when nil (legacy
+/// providers send no terminal cause and the coordinator falls back to its
+/// historical string/status heuristics).
+///
+/// The provider only ever EMITS the six engine lease/watchdog causes (mapped
+/// from `CBv2TerminalCause`) plus `cancelled` (tagged by the provider's own
+/// pre-output cancellation path). `engineError` is part of the closed
+/// vocabulary the coordinator recognizes but the provider never emits it.
+public enum InferenceTerminalCause: String, Codable, Sendable, Equatable, CaseIterable {
+    case admissionTimeout = "admission_timeout"
+    case prefillStall = "prefill_stall"
+    case decodeStall = "decode_stall"
+    case safetyDeadline = "safety_deadline"
+    case backpressureTimeout = "backpressure_timeout"
+    case watchdog
+    case cancelled
+    case engineError = "engine_error"
+}
+
 public struct UsageInfo: Codable, Sendable, Equatable {
     public var promptTokens: UInt64
     public var completionTokens: UInt64

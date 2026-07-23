@@ -464,6 +464,23 @@ type InferenceErrorMessage struct {
 	Error       string `json:"error"`
 	StatusCode  int    `json:"status_code"`
 	ErrorReason string `json:"error_reason,omitempty"`
+	// TerminalCause is the provider's typed terminal cause for this error
+	// (closed vocabulary, mirrored by the Swift provider): admission_timeout,
+	// prefill_stall, decode_stall, safety_deadline, backpressure_timeout,
+	// watchdog, cancelled, engine_error. Optional: absent/empty means a legacy
+	// provider and the coordinator applies its historical string/status
+	// heuristics; an unknown value is treated as absent (plus a drift metric).
+	// The coordinator classifies provider health from this cause
+	// (api/terminal_cause.go) — platform-policy terminals (safety_deadline,
+	// backpressure_timeout, cancelled) and capacity waits (admission_timeout)
+	// must not strike health breakers.
+	TerminalCause string `json:"terminal_cause,omitempty"`
+	// AttemptUsage carries the engine-reconciled token usage of the failed
+	// attempt at its terminal (partial generation included). Optional; legacy
+	// providers omit it. OBSERVABILITY ONLY on the coordinator: it is persisted
+	// on the route row and emitted in telemetry, but it never feeds billing,
+	// refunds, reservations, provider earnings, or payouts.
+	AttemptUsage *UsageInfo `json:"attempt_usage,omitempty"`
 }
 
 // ---------------------------------------------------------------------------

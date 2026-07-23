@@ -237,12 +237,33 @@ func providerDisconnectedError(errorText string, statusCode int) bool {
 	return statusCode == 502 && strings.EqualFold(strings.TrimSpace(errorText), "provider disconnected")
 }
 
+// applyAttemptUsage copies a typed error terminal's provider-reported partial
+// usage (InferenceErrorMessage.AttemptUsage, new providers only) onto the
+// route row for OBSERVABILITY. This is the fix for the deadline incident's
+// "every strict route had null prompt_tokens / completion_tokens" finding: the
+// engine reconciles partial usage at the terminal, and the route row now keeps
+// it. CompletionTokensSet force-persists an authoritative 0 (vs NULL).
+// Strictly telemetry: billing, refunds, reservations, provider earnings, and
+// payouts never read these route fields on an error terminal, and this helper
+// deliberately never touches CostMicroUSD.
+func applyAttemptUsage(out *store.InferenceRouteOutcome, usage *protocol.UsageInfo) {
+	if out == nil || usage == nil {
+		return
+	}
+	out.PromptTokens = usage.PromptTokens
+	out.CompletionTokens = usage.CompletionTokens
+	out.CompletionTokensSet = true
+	out.ReasoningTokens = usage.ReasoningTokens
+}
+
 func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
 	class := "provider_error_after_commit"
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_after_commit"
 	}
-	return providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	applyAttemptUsage(out, msg.AttemptUsage)
+	return out
 }
 
 func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -250,7 +271,9 @@ func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.I
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_before_response"
 	}
-	return providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	applyAttemptUsage(out, msg.AttemptUsage)
+	return out
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
@@ -265,13 +288,17 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 		// vocabulary as the reputation and breaker exemptions
 		// (isNonProviderFaultErrorReason) so the lists cannot drift.
 		// msg.ErrorReason is threaded through so rows keep their reason.
-		return pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
+		out := pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
+		applyAttemptUsage(out, msg.AttemptUsage)
+		return out
 	}
 	class := "provider_error"
 	if providerDisconnectedError(msg.Error, msg.StatusCode) {
 		class = "provider_disconnect_pre_commit"
 	}
-	return providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	applyAttemptUsage(out, msg.AttemptUsage)
+	return out
 }
 
 func postCommitProviderIncompleteOutcome(pr *registry.PendingRequest) *store.InferenceRouteOutcome {

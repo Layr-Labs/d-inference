@@ -172,12 +172,15 @@ private enum RecordedEvent: Equatable, CustomStringConvertible {
     case chunk(String)
     case info(prompt: Int, completion: Int)
     case error(String)
+    case terminal(cause: InferenceTerminalCause, prompt: Int, completion: Int)
 
     var description: String {
         switch self {
         case .chunk(let s): return "chunk(\(s))"
         case .info(let p, let c): return "info(\(p),\(c))"
         case .error(let m): return "error(\(m))"
+        case .terminal(let cause, let p, let c):
+            return "terminal(\(cause.rawValue),\(p),\(c))"
         }
     }
 }
@@ -196,6 +199,8 @@ private func record(
             tps.append(tokensPerSecond)
         case .error(let message):
             events.append(.error(message))
+        case .terminal(let cause, _, let prompt, let completion):
+            events.append(.terminal(cause: cause, prompt: prompt, completion: completion))
         }
     }
     return (events, tps)
@@ -659,6 +664,41 @@ struct EngineV2EventFramingTests {
         let bridge = makeBridge(engine: engine)
         let (events, _) = await record(await bridge.submit(request: makeRequest()))
         #expect(events == [.chunk("x"), .info(prompt: 5, completion: 1)])
+    }
+
+    /// Deadline-first-principles regression: a typed platform/engine terminal
+    /// used to be flattened into a generic string error with ZERO usage. It now
+    /// surfaces as `.terminal` carrying the machine-readable cause AND the
+    /// engine-reconciled usage the watchdog observed before firing.
+    @Test("typed platform terminal surfaces as .terminal with cause + reconciled usage")
+    func typedTerminalCarriesCauseAndUsage() async {
+        // Watchdog-style: no deltas, the engine reports the real counts it saw.
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .terminal(cause: .decodeStall, message: "decode made no progress"),
+                usage: CBv2Usage(promptTokens: 11, completionTokens: 5)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (events, _) = await record(await bridge.submit(request: makeRequest()))
+        #expect(events == [.terminal(cause: .decodeStall, prompt: 11, completion: 5)])
+        // It is NOT flattened into a legacy string error.
+        #expect(!events.contains { if case .error = $0 { return true }; return false })
+    }
+
+    /// `.legacyRequestTimeout` (the rollback kill-switch's terminal) has NO wire
+    /// cause — the bridge must fall back to the legacy `.error(String)` shape
+    /// byte-for-byte, never guess a typed cause.
+    @Test(".legacyRequestTimeout has no wire cause → legacy .error string")
+    func legacyTimeoutTerminalStaysLegacyError() async {
+        let engine = ScriptedCBv2Engine(script: .stream([
+            .finished(
+                reason: .terminal(
+                    cause: .legacyRequestTimeout, message: "request exceeded 120s deadline"),
+                usage: CBv2Usage(promptTokens: 3, completionTokens: 0)),
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (events, _) = await record(await bridge.submit(request: makeRequest()))
+        #expect(events == [.error("request exceeded 120s deadline")])
     }
 
     /// Regression: the v2 bridge used to flatten `.length` into the same

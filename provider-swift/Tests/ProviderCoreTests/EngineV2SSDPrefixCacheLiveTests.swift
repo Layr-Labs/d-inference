@@ -291,6 +291,8 @@ struct EngineV2SSDPrefixCacheLiveTests {
                 break
             case .error(let message):
                 streamError = message
+            case .terminal(_, let message, _, _):
+                streamError = message
             }
         }
         if let streamError {

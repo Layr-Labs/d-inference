@@ -460,6 +460,64 @@ import Testing
     #expect(e2.errorReason == nil)
 }
 
+@Test func inferenceErrorEncodesTypedTerminalFieldsOnlyWhenPresent() throws {
+    // Deadline-first-principles: the optional `terminal_cause` + `attempt_usage`
+    // fields ride the existing inference_error message and mirror the Go side
+    // (`coordinator/protocol/messages.go`) exactly.
+    //
+    // Present → snake_case keys on the wire, round-trip back to the values.
+    let withTerminal = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-term",
+        error: "decode_stall: decode made no confirmed token progress",
+        statusCode: 500,
+        terminalCause: .decodeStall,
+        attemptUsage: UsageInfo(promptTokens: 7, completionTokens: 42)
+    ))
+    let withData = try ProviderProtocolCodec.encodeProviderMessage(withTerminal)
+    let withObject = try jsonObject(withData)
+    #expect(withObject["terminal_cause"] as? String == "decode_stall")
+    let usageObject = withObject["attempt_usage"] as? [String: Any]
+    #expect(usageObject?["prompt_tokens"] as? Int == 7)
+    #expect(usageObject?["completion_tokens"] as? Int == 42)
+    // reasoning_tokens is 0 here → omitted (mirrors Go `omitempty`).
+    #expect(usageObject?["reasoning_tokens"] == nil)
+
+    let decodedWith = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
+    #expect(decodedWith == withTerminal)
+    guard case .inferenceError(let e) = decodedWith else { throw TestFailure.unexpectedMessage }
+    #expect(e.terminalCause == .decodeStall)
+    #expect(e.attemptUsage?.promptTokens == 7)
+    #expect(e.attemptUsage?.completionTokens == 42)
+
+    // Absent (legacy) → BOTH keys omitted AND the full serialized shape is
+    // byte-identical to the pre-fix message (the Go side asserts the same
+    // legacy bytes). Encoder uses sorted keys, so the string is deterministic.
+    let legacy = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+        requestId: "req-error",
+        error: "model not loaded",
+        statusCode: 503
+    ))
+    let legacyData = try ProviderProtocolCodec.encodeProviderMessage(legacy)
+    let legacyString = String(data: legacyData, encoding: .utf8)
+    #expect(
+        legacyString
+            == #"{"error":"model not loaded","request_id":"req-error","status_code":503,"type":"inference_error"}"#)
+    let legacyObject = try jsonObject(legacyData)
+    #expect(legacyObject["terminal_cause"] == nil)
+    #expect(legacyObject["attempt_usage"] == nil)
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: legacyData) == legacy)
+
+    // Unknown terminal_cause string → tolerant decode (nil), never a throw; a
+    // newer provider value must not crash an older decoder.
+    let unknownJSON = #"{"type":"inference_error","request_id":"r","error":"x","status_code":500,"terminal_cause":"some_future_cause"}"#
+    let decodedUnknown = try ProviderProtocolCodec.decodeProviderMessage(from: unknownJSON)
+    guard case .inferenceError(let unknown) = decodedUnknown else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(unknown.terminalCause == nil)
+    #expect(unknown.statusCode == 500)
+}
+
 @Test func loadModelMessagesRoundTripWithCoordinator() throws {
     // Coordinator → provider preload request
     let goLoadRequest = #"{"type":"load_model","model_id":"mlx-community/Qwen3-0.6B-8bit"}"#

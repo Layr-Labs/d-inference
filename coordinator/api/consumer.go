@@ -293,7 +293,14 @@ func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protoco
 // InferenceErrorMessage.ErrorReason ("" for synthetic timeouts and legacy
 // providers) — the reason feeds the gray-box request-shape classification the
 // same way the dispatch failover trusts it (classifyRejection P1).
-func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int, errStr, errReason string) {
+// terminalCause is the provider's typed InferenceErrorMessage.TerminalCause
+// ("" for synthetic terminals and legacy providers): a typed NEUTRAL cause
+// (safety_deadline / backpressure_timeout / cancelled — platform policy or
+// consumer behavior) feeds NOTHING here, strike or clear; a typed CAPACITY
+// cause (admission_timeout — healthy but busy) feeds only the black-hole
+// capacity cooldown. Absent/engine_error/unknown causes keep the legacy
+// status/string funnels bit-for-bit (see api/terminal_cause.go).
+func (s *Server) noteInferenceError(providerID string, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string) {
 	if providerID == "" || pr == nil {
 		return
 	}
@@ -308,6 +315,31 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 	// pre-commit provider errors. Capacity-class rejections never carry these
 	// reasons, so the capacity-reject cooldown feed below is unaffected.
 	if isNonProviderFaultErrorReason(errReason) {
+		return
+	}
+	// Typed terminal-cause gate (the deadline-incident fix): the provider told
+	// us WHY the attempt died, so the status/string heuristics below must not
+	// misread a platform-policy terminal as sickness. Neutral causes touch no
+	// tracker at all — strictly neutral, never a success/clear either.
+	// admission_timeout records exactly one capacity-signal strike (the
+	// black-hole cooldown, whose zero-interleaved-accepts discriminator keeps
+	// serving boxes safe) and skips every fault breaker. All other causes —
+	// absent (legacy/synthetic), engine_error, the fault causes
+	// (prefill_stall / decode_stall / watchdog), and unknown drift values —
+	// fall through to the unchanged legacy funnels.
+	switch class, _ := classifyTerminalCause(terminalCause); class {
+	case causeClassNeutral:
+		return
+	case causeClassCapacity:
+		if s.registry.RecordCapacityRejectBusy(providerID, pr.Model) {
+			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})
+			s.logger.Warn("capacity-reject cooldown tripped: provider+model admission-timing-out with zero interleaved accepts — routing will skip the pair until the cooldown expires",
+				"provider_id", providerID,
+				"model", pr.Model,
+				"status_code", statusCode,
+				"terminal_cause", terminalCause,
+			)
+		}
 		return
 	}
 	if s.registry.RecordInferenceError(providerID, pr.Model, statusCode, pr.Traits.CooldownShape()) {
@@ -486,9 +518,9 @@ func (s *Server) noteInferenceSuccess(pr *registry.PendingRequest) {
 // so arms where cancelDispatch did refund are safe, and a failed pre-commit
 // attempt never reaches settlement (its channels are closed and it is neither
 // pending nor parked), so this can never double-credit against a settle.
-func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason string, held *[]string) (discardedHeld bool) {
+func (s *Server) noteDispatchProviderError(provider *registry.Provider, pr *registry.PendingRequest, statusCode int, errStr, errReason, terminalCause string, held *[]string) (discardedHeld bool) {
 	if provider != nil {
-		s.noteInferenceError(provider.ID, pr, statusCode, errStr, errReason)
+		s.noteInferenceError(provider.ID, pr, statusCode, errStr, errReason, terminalCause)
 	}
 	s.refundProviderExtra(pr)
 	if held == nil || len(*held) == 0 {
@@ -1907,7 +1939,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 						s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 						errData, _ := json.Marshal(map[string]any{
@@ -2052,7 +2084,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			errData, _ := json.Marshal(map[string]any{
@@ -2143,7 +2175,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			emitter.emitError("provider_error", errMsg.Error)
@@ -2185,7 +2217,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 						s.writeGenericProviderError(w, errMsg)
 						return
@@ -2334,7 +2366,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 				continue
 			}
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
 			s.writeGenericProviderError(w, errMsg)
 			return
@@ -4464,7 +4496,7 @@ reserveProvider:
 				s.sendProviderCancel(provider, requestID)
 				refundExtra()
 				refundReservation()
-				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+				s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 				s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 				s.writeGenericProviderError(w, errMsg)
 				return
@@ -4479,7 +4511,7 @@ reserveProvider:
 		s.sendProviderCancel(provider, requestID)
 		refundExtra()
 		refundReservation()
-		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+		s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 		s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 		s.writeGenericProviderError(w, errMsg)
 		return
@@ -4531,7 +4563,7 @@ reserveProvider:
 					s.sendProviderCancel(provider, requestID)
 					refundExtra()
 					refundReservation()
-					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+					s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 					s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 					s.writeGenericProviderError(w, errMsg)
 					return
@@ -4546,7 +4578,7 @@ reserveProvider:
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
-			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+			s.noteInferenceError(provider.ID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.updateInferenceRouteOutcomeForPending(pr, preCommitProviderErrorOutcome(pr, errMsg))
 			s.writeGenericProviderError(w, errMsg)
 			return
@@ -4560,7 +4592,7 @@ reserveProvider:
 			// breaker (single-attempt path: no retry here, but repeated
 			// stalls must still accumulate into the routing cooldown). No
 			// provider message on this synthetic timeout, so errStr is "".
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "")
+			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
 			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))

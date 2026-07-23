@@ -347,6 +347,8 @@ struct EngineV2SlotBuildTests {
                 sawInfo = true
             case .error(let message):
                 Issue.record("unexpected error event: \(message)")
+            case .terminal(let cause, let message, _, _):
+                Issue.record("unexpected terminal event: \(cause.rawValue) \(message)")
             }
         }
         #expect(sawChunk)

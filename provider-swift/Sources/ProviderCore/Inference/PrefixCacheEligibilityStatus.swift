@@ -84,6 +84,8 @@ extension PrefixCacheReplayStrategy {
             self = .direct
         case "frozen_full_replay":
             self = .frozenFull
+        case "tail_replay":
+            self = .tailReplay
         default:
             self = .unknown
         }
@@ -91,6 +93,18 @@ extension PrefixCacheReplayStrategy {
 }
 
 extension PrefixCacheModelStatus {
+    var isConcreteReady: Bool {
+        guard state == .ready, reason == .ready,
+            backend == .contiguous || backend == .paged
+        else { return false }
+        switch replayStrategy {
+        case .direct, .frozenFull, .tailReplay:
+            return true
+        case .none, .unknown:
+            return false
+        }
+    }
+
     func withoutRuntimeIdentity() -> PrefixCacheModelStatus {
         guard state == .ready || state == .pending else { return self }
         return PrefixCacheModelStatus(

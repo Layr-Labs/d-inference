@@ -94,7 +94,7 @@ import Testing
         "ready", "pending", "disabled", "error",
     ])
     #expect(Set(PrefixCacheStatusReason.allCases.map(\.rawValue)) == [
-        "ready", "config_disabled", "no_loaded_slot",
+        "ready", "config_disabled",
         "weight_hash_unavailable", "runtime_identity_unavailable",
         "unsupported_layout", "unsupported_backend",
         "paged_hybrid_unsupported", "scan_pending", "scan_failed",
@@ -104,7 +104,7 @@ import Testing
         "contiguous", "paged", "unknown",
     ])
     #expect(Set(PrefixCacheReplayStrategy.allCases.map(\.rawValue)) == [
-        "direct", "frozen_full", "none", "unknown",
+        "direct", "frozen_full", "tail_replay", "none", "unknown",
     ])
     #expect(Set(PrefixCacheDonationOutcome.allCases.map(\.rawValue)) == [
         "donated", "below_effective_token_floor", "no_complete_block",

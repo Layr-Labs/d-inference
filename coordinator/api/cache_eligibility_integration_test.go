@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -196,6 +197,103 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 	time.Sleep(25 * time.Millisecond)
 	if reg.ProviderCount() != 1 {
 		t.Fatal("optional structural telemetry closed provider registration")
+	}
+}
+
+func TestReadyCacheStatusHeartbeatReconcilesWithCapabilities(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	reg := registry.New(logger)
+	srv := NewServer(reg, store.NewMemory(store.Config{}), ServerConfig{}, logger)
+	httpServer := httptest.NewServer(srv.Handler())
+	defer httpServer.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(
+		ctx,
+		"ws"+strings.TrimPrefix(httpServer.URL, "http")+"/ws/provider",
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	capability := cacheEligibilityV2Capability("model")
+	ready := protocol.PrefixCacheModelStatus{
+		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
+		State: "ready", Reason: "ready",
+	}
+	statuses := []protocol.PrefixCacheModelStatus{ready}
+	writeProviderJSON(t, ctx, conn, protocol.RegisterMessage{
+		Type: protocol.TypeRegister,
+		Models: []protocol.ModelInfo{{
+			ID: capability.ModelID, WeightHash: capability.ModelAggregateHash,
+		}},
+		Backend:             "mlx-swift",
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
+		PrefixCacheStatuses: &statuses,
+	})
+	waitCacheCondition(t, func() bool {
+		status := reg.PrefixCacheProtocolStatus()
+		return status.V2ReadyModels == 1 && status.ByState["ready"] == 1
+	})
+
+	capacity := &protocol.BackendCapacity{Slots: []protocol.BackendSlotCapacity{{
+		Model: capability.ModelID, State: "idle",
+	}}}
+	pending := []protocol.PrefixCacheModelStatus{{
+		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
+		State: "pending", Reason: "scan_pending",
+	}}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
+		PrefixCacheStatuses: &pending, BackendCapacity: capacity,
+	})
+	waitCacheCondition(t, func() bool {
+		status := reg.PrefixCacheProtocolStatus()
+		return status.V2ReadyModels == 1 &&
+			status.ReportedLoadedModels == 0 &&
+			status.UnreportedLoadedModels == 1
+	})
+
+	restored := []protocol.PrefixCacheModelStatus{ready}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
+		PrefixCacheStatuses: &restored, BackendCapacity: capacity,
+	})
+	waitCacheCondition(t, func() bool {
+		return reg.PrefixCacheProtocolStatus().ByState["ready"] == 1
+	})
+
+	emptyCapabilities := []protocol.PrefixCacheV2Capability{}
+	readyOnV1 := []protocol.PrefixCacheModelStatus{ready}
+	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
+		Type: protocol.TypeHeartbeat, Status: "idle", Stats: protocol.HeartbeatStats{},
+		PrefixCacheProtocol: 1,
+		PrefixCacheV2Models: &emptyCapabilities,
+		PrefixCacheStatuses: &readyOnV1,
+		BackendCapacity:     capacity,
+	})
+	waitCacheCondition(t, func() bool {
+		status := reg.PrefixCacheProtocolStatus()
+		return status.V1 == 1 &&
+			status.V2ReadyModels == 0 &&
+			status.ReportedLoadedModels == 0
+	})
+}
+
+func cacheEligibilityV2Capability(modelID string) protocol.PrefixCacheV2Capability {
+	return protocol.PrefixCacheV2Capability{
+		ModelID:            modelID,
+		ModelAggregateHash: strings.Repeat("a", 64),
+		PromptContractID:   strings.Repeat("b", 64),
+		BlockHashVersion:   promptcontract.BlockHashVersion,
+		BlockSize:          promptcontract.BlockSize,
+		CacheEpoch:         "11111111-1111-1111-1111-111111111111",
+		Enabled:            true,
+		Ready:              true,
 	}
 }
 

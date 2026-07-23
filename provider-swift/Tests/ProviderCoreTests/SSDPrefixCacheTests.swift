@@ -1501,14 +1501,18 @@ struct SSDReadyWriteBarrierTests {
 
     private final class OutcomeBox: @unchecked Sendable {
         private let lock = NSLock()
-        private var value: PrefixCacheDonationOutcome?
+        private var values: [PrefixCacheDonationOutcome] = []
 
         func set(_ outcome: PrefixCacheDonationOutcome) {
-            lock.withLock { value = outcome }
+            lock.withLock { values.append(outcome) }
         }
 
         var outcome: PrefixCacheDonationOutcome? {
-            lock.withLock { value }
+            lock.withLock { values.last }
+        }
+
+        var count: Int {
+            lock.withLock { values.count }
         }
     }
 
@@ -1623,6 +1627,74 @@ struct SSDReadyWriteBarrierTests {
             blocks: [block(4)], totalBytes: 1,
             onDurable: { closedCounter.increment(); return true })) == .closed)
         #expect(closedCounter.count == 0)
+    }
+
+    @Test("in-flight close classifies correlated and uncorrelated durable writes as cache_closed")
+    func inFlightCloseOutcome() async throws {
+        for correlated in [false, true] {
+            let dir = tempDir("inflight-close-\(correlated)")
+            let entered = DispatchSemaphore(value: 0)
+            let release = DispatchSemaphore(value: 0)
+            let settled = Counter()
+            let readyAttempted = Counter()
+            let outcome = OutcomeBox()
+            let writer = pipeline(
+                dir: dir,
+                writeBlock: { _, _ in
+                    entered.signal()
+                    _ = release.wait(timeout: .now() + 5)
+                    return 1
+                },
+                onBlockSettled: { _ in settled.increment() })
+            let onDurable: (@Sendable () -> Bool)?
+            if correlated {
+                onDurable = { @Sendable in
+                    readyAttempted.increment()
+                    return false
+                }
+            } else {
+                onDurable = nil
+            }
+
+            #expect(writer.submit(.init(
+                blocks: [block(correlated ? 0xA1 : 0xB2)],
+                totalBytes: 1,
+                onDurable: onDurable,
+                onOutcome: outcome.set)))
+            #expect(await waitForSemaphore(entered, timeout: .now() + 5) == .success)
+            writer.close()
+            release.signal()
+            await writer.waitUntilDrained()
+
+            #expect(settled.count == 1)
+            #expect(readyAttempted.count == (correlated ? 1 : 0))
+            #expect(outcome.outcome == .cacheClosed)
+            #expect(outcome.count == 1)
+            try? FileManager.default.removeItem(at: dir)
+        }
+
+        let failedDir = tempDir("inflight-close-write-failure")
+        let failedEntered = DispatchSemaphore(value: 0)
+        let failedRelease = DispatchSemaphore(value: 0)
+        let failedOutcome = OutcomeBox()
+        let failedWriter = pipeline(
+            dir: failedDir,
+            writeBlock: { _, _ in
+                failedEntered.signal()
+                _ = failedRelease.wait(timeout: .now() + 5)
+                throw InjectedWriteError.failed
+            })
+        #expect(failedWriter.submit(.init(
+            blocks: [block(0xC3)],
+            totalBytes: 1,
+            onOutcome: failedOutcome.set)))
+        #expect(await waitForSemaphore(failedEntered, timeout: .now() + 5) == .success)
+        failedWriter.close()
+        failedRelease.signal()
+        await failedWriter.waitUntilDrained()
+        #expect(failedOutcome.outcome == .writeFailed)
+        #expect(failedOutcome.count == 1)
+        try? FileManager.default.removeItem(at: failedDir)
     }
 
     @Test("queue overflow drops the new receipt job without blocking")

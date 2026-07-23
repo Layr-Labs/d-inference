@@ -25,7 +25,7 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 		},
 		"reasons": {
 			got: PrefixCacheStatusReasons(),
-			want: "ready,config_disabled,no_loaded_slot,weight_hash_unavailable," +
+			want: "ready,config_disabled,weight_hash_unavailable," +
 				"runtime_identity_unavailable,unsupported_layout,unsupported_backend," +
 				"paged_hybrid_unsupported,scan_pending,scan_failed,disk_unavailable,cache_init_failed",
 		},
@@ -33,7 +33,8 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 			got: PrefixCacheStatusBackends(), want: "contiguous,paged,unknown",
 		},
 		"strategies": {
-			got: PrefixCacheReplayStrategies(), want: "direct,frozen_full,none,unknown",
+			got:  PrefixCacheReplayStrategies(),
+			want: "direct,frozen_full,tail_replay,none,unknown",
 		},
 		"donation outcomes": {
 			got: PrefixCacheDonationOutcomes(),
@@ -205,6 +206,199 @@ func TestPrefixCacheTelemetryOmissionAndRoutingCapabilityStrictness(t *testing.T
 	}
 }
 
+func TestPrefixCacheReadyStatusCapabilityReconciliation(t *testing.T) {
+	const epoch = "11111111-1111-1111-1111-111111111111"
+	capability := testV2Capability(epoch)
+	model := protocol.ModelInfo{
+		ID: capability.ModelID, WeightHash: capability.ModelAggregateHash,
+	}
+	ready := protocol.PrefixCacheModelStatus{
+		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
+		State: "ready", Reason: "ready",
+	}
+
+	for _, test := range []struct {
+		name         string
+		version      int
+		capabilities []protocol.PrefixCacheV2Capability
+		statuses     []protocol.PrefixCacheModelStatus
+		wantReported bool
+		wantCount    int
+	}{
+		{
+			name:    "protocol one ready is dropped",
+			version: 1, statuses: []protocol.PrefixCacheModelStatus{ready},
+			wantReported: true,
+		},
+		{
+			name:    "ready unknown backend makes v2 status unreported",
+			version: 2, capabilities: []protocol.PrefixCacheV2Capability{capability},
+			statuses: []protocol.PrefixCacheModelStatus{{
+				ModelID: capability.ModelID, Backend: "unknown", ReplayStrategy: "direct",
+				State: "ready", Reason: "ready",
+			}},
+		},
+		{
+			name:    "ready none strategy makes v2 status unreported",
+			version: 2, capabilities: []protocol.PrefixCacheV2Capability{capability},
+			statuses: []protocol.PrefixCacheModelStatus{{
+				ModelID: capability.ModelID, Backend: "paged", ReplayStrategy: "none",
+				State: "ready", Reason: "ready",
+			}},
+		},
+		{
+			name:    "ready unknown strategy makes v2 status unreported",
+			version: 2, capabilities: []protocol.PrefixCacheV2Capability{capability},
+			statuses: []protocol.PrefixCacheModelStatus{{
+				ModelID: capability.ModelID, Backend: "paged", ReplayStrategy: "unknown",
+				State: "ready", Reason: "ready",
+			}},
+		},
+		{
+			name:    "v2 capability missing ready status becomes unreported",
+			version: 2, capabilities: []protocol.PrefixCacheV2Capability{capability},
+			statuses: []protocol.PrefixCacheModelStatus{{
+				ModelID: capability.ModelID, Backend: "paged", ReplayStrategy: "tail_replay",
+				State: "pending", Reason: "scan_pending",
+			}},
+		},
+		{
+			name:    "concrete matching ready status remains reported",
+			version: 2, capabilities: []protocol.PrefixCacheV2Capability{capability},
+			statuses: []protocol.PrefixCacheModelStatus{{
+				ModelID: capability.ModelID, Backend: "paged", ReplayStrategy: "tail_replay",
+				State: "ready", Reason: "ready",
+			}},
+			wantReported: true, wantCount: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			statuses := append([]protocol.PrefixCacheModelStatus(nil), test.statuses...)
+			msg := protocol.RegisterMessage{
+				Models:              []protocol.ModelInfo{model},
+				PrefixCacheProtocol: test.version,
+				PrefixCacheV2Models: test.capabilities,
+				PrefixCacheStatuses: &statuses,
+			}
+			if err := cacheEligibilityTestRegistry().
+				ValidatePrefixCacheRegistration(&msg); err != nil {
+				t.Fatal(err)
+			}
+			reported := msg.PrefixCacheStatuses != nil
+			if reported != test.wantReported {
+				t.Fatalf("reported=%v, want %v; statuses=%+v",
+					reported, test.wantReported, msg.PrefixCacheStatuses)
+			}
+			if reported && len(*msg.PrefixCacheStatuses) != test.wantCount {
+				t.Fatalf("status count=%d, want %d", len(*msg.PrefixCacheStatuses), test.wantCount)
+			}
+		})
+	}
+
+	// Off-catalog owner-local models remain valid when provider inventory,
+	// capability, and concrete ready status agree.
+	reg := cacheEligibilityTestRegistry()
+	reg.SetModelCatalog([]CatalogEntry{{ID: "public-model"}})
+	ownerCapability := capability
+	ownerCapability.ModelID = "owner-local"
+	ownerStatus := ready
+	ownerStatus.ModelID = ownerCapability.ModelID
+	ownerStatuses := []protocol.PrefixCacheModelStatus{ownerStatus}
+	owner := protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{
+			ID: ownerCapability.ModelID, WeightHash: ownerCapability.ModelAggregateHash,
+		}},
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{ownerCapability},
+		PrefixCacheStatuses: &ownerStatuses,
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&owner); err != nil {
+		t.Fatalf("matching owner-local ready status rejected: %v", err)
+	}
+	provider := reg.Register("owner", nil, &owner)
+	if provider == nil {
+		t.Fatal("owner-local provider did not register")
+	}
+	aggregate := reg.PrefixCacheProtocolStatus()
+	if aggregate.V2ReadyModels != 1 || aggregate.ByState["ready"] != 1 {
+		t.Fatalf("owner-local ready aggregate=%+v", aggregate)
+	}
+
+	// Old-provider omission never invalidates a strict valid capability.
+	omitted := protocol.RegisterMessage{
+		Models:              []protocol.ModelInfo{model},
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.PrefixCacheStatuses != nil {
+		t.Fatal("old-provider omission was converted to a status snapshot")
+	}
+}
+
+func TestPrefixCacheHeartbeatSnapshotReconcilesAtomically(t *testing.T) {
+	const epoch = "11111111-1111-1111-1111-111111111111"
+	capability := testV2Capability(epoch)
+	ready := protocol.PrefixCacheModelStatus{
+		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
+		State: "ready", Reason: "ready",
+	}
+	statuses := []protocol.PrefixCacheModelStatus{ready}
+	reg := cacheEligibilityTestRegistry()
+	provider := reg.Register("provider", nil, &protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{{
+			ID: capability.ModelID, WeightHash: capability.ModelAggregateHash,
+		}},
+		PrefixCacheProtocol: 2,
+		PrefixCacheV2Models: []protocol.PrefixCacheV2Capability{capability},
+		PrefixCacheStatuses: &statuses,
+	})
+
+	pending := []protocol.PrefixCacheModelStatus{{
+		ModelID: capability.ModelID, Backend: "contiguous", ReplayStrategy: "direct",
+		State: "pending", Reason: "scan_pending",
+	}}
+	if _, err := reg.UpdatePrefixCacheSnapshot(
+		provider.ID, false, 0, nil, &pending, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	if !provider.PrefixCacheV2Models[capability.ModelID].Ready ||
+		provider.PrefixCacheStatusReported ||
+		len(provider.PrefixCacheStatuses) != 0 {
+		t.Fatalf("capability/status contradiction leaked after replacement: %+v", provider)
+	}
+	provider.mu.Unlock()
+
+	restored := []protocol.PrefixCacheModelStatus{ready}
+	if _, err := reg.UpdatePrefixCacheSnapshot(
+		provider.ID, false, 0, nil, &restored, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	if !provider.PrefixCacheStatusReported ||
+		provider.PrefixCacheStatuses[capability.ModelID].State != "ready" {
+		t.Fatalf("matching status did not restore: %+v", provider.PrefixCacheStatuses)
+	}
+	provider.mu.Unlock()
+
+	readyOnV1 := []protocol.PrefixCacheModelStatus{ready}
+	if _, err := reg.UpdatePrefixCacheSnapshot(
+		provider.ID, true, 1, nil, &readyOnV1, nil); err != nil {
+		t.Fatal(err)
+	}
+	provider.mu.Lock()
+	if provider.PrefixCacheProtocol != 1 ||
+		len(provider.PrefixCacheV2Models) != 0 ||
+		!provider.PrefixCacheStatusReported ||
+		len(provider.PrefixCacheStatuses) != 0 {
+		t.Fatalf("protocol-v1 ready telemetry was not atomically dropped: %+v", provider)
+	}
+	provider.mu.Unlock()
+}
+
 func TestPrefixCacheStatusReplacementClearDisconnectAndMixedOmission(t *testing.T) {
 	reg := cacheEligibilityTestRegistry()
 	statuses := []protocol.PrefixCacheModelStatus{
@@ -235,12 +429,12 @@ func TestPrefixCacheStatusReplacementClearDisconnectAndMixedOmission(t *testing.
 	legacy.mu.Unlock()
 
 	got := reg.PrefixCacheProtocolStatus()
-	if got.LoadedModels != 4 || got.ReportedLoadedModels != 3 ||
-		got.UnreportedLoadedModels != 1 || got.ExcludedModels != 2 ||
-		got.ByState["ready"] != 1 ||
+	if got.LoadedModels != 4 || got.ReportedLoadedModels != 2 ||
+		got.UnreportedLoadedModels != 2 || got.ExcludedModels != 2 ||
+		got.ByState["ready"] != 0 ||
 		got.ByReason["scan_pending"] != 1 ||
 		got.ByReason["weight_hash_unavailable"] != 1 ||
-		got.ByBackend["contiguous"] != 2 ||
+		got.ByBackend["contiguous"] != 1 ||
 		got.ByReplayStrategy["frozen_full"] != 1 {
 		t.Fatalf("initial aggregate = %+v", got)
 	}
@@ -257,7 +451,7 @@ func TestPrefixCacheStatusReplacementClearDisconnectAndMixedOmission(t *testing.
 		t.Fatalf("authoritative clear/old omission aggregate = %+v", got)
 	}
 
-	replacement := []protocol.PrefixCacheModelStatus{statuses[0]}
+	replacement := []protocol.PrefixCacheModelStatus{statuses[1]}
 	if err := reg.UpdatePrefixCacheTelemetry("current", &replacement, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -284,11 +478,17 @@ func TestPrefixCacheDonationDeltasAndModelUpdateCleanup(t *testing.T) {
 		ModelID: "old", Backend: "contiguous", ReplayStrategy: "direct",
 		State: "ready", Reason: "ready",
 	}}
+	capability := testV2Capability("11111111-1111-1111-1111-111111111111")
+	capability.ModelID = "old"
 	baseline := []protocol.PrefixCacheDonationOutcomeCount{{
 		Outcome: "donated", Count: 2,
 	}}
 	provider := reg.Register("provider", nil, &protocol.RegisterMessage{
-		Models:                      []protocol.ModelInfo{{ID: "old"}},
+		Models: []protocol.ModelInfo{{
+			ID: "old", WeightHash: capability.ModelAggregateHash,
+		}},
+		PrefixCacheProtocol:         2,
+		PrefixCacheV2Models:         []protocol.PrefixCacheV2Capability{capability},
 		PrefixCacheStatuses:         &statuses,
 		PrefixCacheDonationOutcomes: &baseline,
 	})

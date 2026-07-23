@@ -71,6 +71,8 @@ struct PrefixCachePolicyTests {
             layerKinds: [full, full], backendSelection: .contiguous).strategy == .direct)
         #expect(PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [full, windowed], backendSelection: .paged).strategy == .tailReplay)
+        #expect(PrefixCacheReplayStrategy(PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [full, windowed], backendSelection: .paged)) == .tailReplay)
         #expect(PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, sharedFull],
             backendSelection: .contiguous).unsupportedReason == .invalidLayout)

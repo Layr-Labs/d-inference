@@ -145,6 +145,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_eligibility_backend{backend=contiguous}",
 		"exact_cache_eligibility_backend{backend=paged}",
 		"exact_cache_eligibility_strategy{strategy=frozen_full}",
+		"exact_cache_eligibility_strategy{strategy=tail_replay}",
 		"exact_cache_holders",
 		"exact_cache_attempts",
 		"exact_cache_ssd_lifecycle{event=lookup}",
@@ -161,7 +162,6 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 			t.Fatalf("missing exact-cache gauge %q", key)
 		}
 	}
-
 	collector := newUDPCollector(t)
 	defer collector.Close()
 	ddClient := newTestDD(t, collector)

@@ -18,7 +18,6 @@ var (
 	prefixCacheStatusReasons = []string{
 		"ready",
 		"config_disabled",
-		"no_loaded_slot",
 		"weight_hash_unavailable",
 		"runtime_identity_unavailable",
 		"unsupported_layout",
@@ -30,7 +29,9 @@ var (
 		"cache_init_failed",
 	}
 	prefixCacheStatusBackends   = []string{"contiguous", "paged", "unknown"}
-	prefixCacheReplayStrategies = []string{"direct", "frozen_full", "none", "unknown"}
+	prefixCacheReplayStrategies = []string{
+		"direct", "frozen_full", "tail_replay", "none", "unknown",
+	}
 	prefixCacheDonationOutcomes = []string{
 		"donated",
 		"below_effective_token_floor",
@@ -122,7 +123,7 @@ func validPrefixCacheStateReason(state, reason string) bool {
 		return reason == "scan_pending"
 	case "disabled":
 		switch reason {
-		case "config_disabled", "no_loaded_slot", "weight_hash_unavailable",
+		case "config_disabled", "weight_hash_unavailable",
 			"runtime_identity_unavailable", "unsupported_layout",
 			"unsupported_backend", "paged_hybrid_unsupported":
 			return true
@@ -134,6 +135,72 @@ func validPrefixCacheStateReason(state, reason string) bool {
 		}
 	}
 	return false
+}
+
+func concreteReadyPrefixCacheStatus(status protocol.PrefixCacheModelStatus) bool {
+	if status.State != "ready" || status.Reason != "ready" {
+		return false
+	}
+	if status.Backend != "contiguous" && status.Backend != "paged" {
+		return false
+	}
+	switch status.ReplayStrategy {
+	case "direct", "frozen_full", "tail_replay":
+		return true
+	default:
+		return false
+	}
+}
+
+// reconcilePrefixCacheStatuses cross-validates optional ready status against
+// the authoritative routing capability snapshot. Contradictory ready entries
+// are dropped. If an advertised v2 capability then lacks exactly one concrete
+// ready status, the entire optional snapshot becomes unreported rather than
+// weakening or deleting the strict routing capability.
+func reconcilePrefixCacheStatuses(
+	version int,
+	capabilities map[string]protocol.PrefixCacheV2Capability,
+	statuses map[string]protocol.PrefixCacheModelStatus,
+	reported bool,
+) (map[string]protocol.PrefixCacheModelStatus, bool) {
+	if !reported {
+		return nil, false
+	}
+	reconciled := make(map[string]protocol.PrefixCacheModelStatus, len(statuses))
+	for modelID, status := range statuses {
+		if status.State == "ready" {
+			if version < 2 || !concreteReadyPrefixCacheStatus(status) {
+				continue
+			}
+			if _, capable := capabilities[modelID]; !capable {
+				continue
+			}
+		}
+		reconciled[modelID] = status
+	}
+	for modelID := range capabilities {
+		status, ok := reconciled[modelID]
+		if !ok || !concreteReadyPrefixCacheStatus(status) {
+			return nil, false
+		}
+	}
+	return reconciled, true
+}
+
+func retainPrefixCacheStatuses(
+	statuses *[]protocol.PrefixCacheModelStatus,
+	reconciled map[string]protocol.PrefixCacheModelStatus,
+) {
+	if statuses == nil {
+		return
+	}
+	filtered := make([]protocol.PrefixCacheModelStatus, 0, len(reconciled))
+	for _, status := range *statuses {
+		if _, ok := reconciled[status.ModelID]; ok {
+			filtered = append(filtered, status)
+		}
+	}
+	*statuses = filtered
 }
 
 // sanitizePrefixCacheDonationOutcomes applies the same non-fatal policy to
@@ -189,14 +256,26 @@ func containsFixed(values []string, candidate string) bool {
 // Optional telemetry never closes registration and is scoped only to the
 // provider's advertised inventory; owner-local/off-catalog models are valid.
 func (r *Registry) ValidatePrefixCacheRegistration(msg *protocol.RegisterMessage) error {
-	if err := ValidatePrefixCacheRegistration(msg); err != nil {
-		return err
+	if msg == nil {
+		return fmt.Errorf("%w: missing registration", errInvalidPrefixCacheCapability)
 	}
 	models, err := uniqueProviderModels(msg.Models)
 	if err != nil {
 		return err
 	}
-	sanitizePrefixCacheStatuses(msg.PrefixCacheStatuses, models)
+	capabilities, err := validatePrefixCacheCapabilities(
+		msg.PrefixCacheProtocol, msg.PrefixCacheV2Models, models)
+	if err != nil {
+		return err
+	}
+	statuses, reported := sanitizePrefixCacheStatuses(msg.PrefixCacheStatuses, models)
+	statuses, reported = reconcilePrefixCacheStatuses(
+		msg.PrefixCacheProtocol, capabilities, statuses, reported)
+	if reported {
+		retainPrefixCacheStatuses(msg.PrefixCacheStatuses, statuses)
+	} else {
+		msg.PrefixCacheStatuses = nil
+	}
 	sanitizePrefixCacheDonationOutcomes(msg.PrefixCacheDonationOutcomes)
 	return nil
 }
@@ -213,63 +292,13 @@ func (r *Registry) UpdatePrefixCacheTelemetry(
 	if r == nil || (statuses == nil && outcomes == nil) {
 		return nil
 	}
-	r.mu.RLock()
-	provider := r.providers[providerID]
-	r.mu.RUnlock()
-	if provider == nil {
-		return fmt.Errorf("%w: provider is not registered", errInvalidPrefixCacheCapability)
-	}
-
-	provider.mu.Lock()
-	models, err := uniqueProviderModels(provider.Models)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
-	}
-	validatedStatuses, reported := sanitizePrefixCacheStatuses(statuses, models)
-	validatedOutcomes := sanitizePrefixCacheDonationOutcomes(outcomes)
-	if reported {
-		provider.PrefixCacheStatuses = validatedStatuses
-		provider.PrefixCacheStatusReported = true
-	}
-	deltas := make(map[string]uint64)
-	if outcomes != nil {
-		nextOutcomes := make(map[string]uint64, len(provider.PrefixCacheDonationOutcomes)+len(validatedOutcomes))
-		for outcome, previous := range provider.PrefixCacheDonationOutcomes {
-			nextOutcomes[outcome] = previous
-		}
-		for outcome, current := range validatedOutcomes {
-			previous := provider.PrefixCacheDonationOutcomes[outcome]
-			if current >= previous {
-				deltas[outcome] = current - previous
-				nextOutcomes[outcome] = current
-			}
-		}
-		provider.PrefixCacheDonationOutcomes = nextOutcomes
-	}
-	provider.mu.Unlock()
-
-	r.mu.RLock()
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if tracker != nil {
-		tracker.recordDonationOutcomes(deltas)
-	}
-	return nil
-}
-
-func (r *Registry) ClearPrefixCacheStatuses(providerID string) {
-	if r == nil {
-		return
-	}
-	r.mu.RLock()
-	provider := r.providers[providerID]
-	r.mu.RUnlock()
-	if provider == nil {
-		return
-	}
-	provider.mu.Lock()
-	provider.PrefixCacheStatuses = nil
-	provider.PrefixCacheStatusReported = true
-	provider.mu.Unlock()
+	_, err := r.UpdatePrefixCacheSnapshot(
+		providerID,
+		false,
+		0,
+		nil,
+		statuses,
+		outcomes,
+	)
+	return err
 }

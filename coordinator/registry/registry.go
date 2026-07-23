@@ -2253,6 +2253,13 @@ func (r *Registry) mergeProviderModels(
 		}
 		p.Models = kept
 	}
+	p.PrefixCacheStatuses, p.PrefixCacheStatusReported =
+		reconcilePrefixCacheStatuses(
+			p.PrefixCacheProtocol,
+			p.PrefixCacheV2Models,
+			p.PrefixCacheStatuses,
+			p.PrefixCacheStatusReported,
+		)
 	p.mu.Unlock()
 	if len(cacheStateInvalidated) > 0 {
 		r.mu.RLock()
@@ -2789,6 +2796,13 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		msg.PrefixCacheStatuses, modelInventory)
 	cacheDonationOutcomes := sanitizePrefixCacheDonationOutcomes(
 		msg.PrefixCacheDonationOutcomes)
+	cacheCapabilities := prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models)
+	cacheStatuses, cacheStatusReported = reconcilePrefixCacheStatuses(
+		msg.PrefixCacheProtocol,
+		cacheCapabilities,
+		cacheStatuses,
+		cacheStatusReported,
+	)
 
 	// Validate X25519 public key if provided.
 	// Reject invalid keys at registration rather than failing at encryption time.
@@ -2817,7 +2831,7 @@ func (r *Registry) Register(id string, conn *websocket.Conn, msg *protocol.Regis
 		PrefillTPS:                  msg.PrefillTPS,
 		DecodeTPS:                   msg.DecodeTPS,
 		PrefixCacheProtocol:         msg.PrefixCacheProtocol,
-		PrefixCacheV2Models:         prefixCacheV2CapabilityMap(msg.PrefixCacheV2Models),
+		PrefixCacheV2Models:         cacheCapabilities,
 		PrefixCacheStatuses:         cacheStatuses,
 		PrefixCacheStatusReported:   cacheStatusReported,
 		PrefixCacheDonationOutcomes: cacheDonationOutcomes,

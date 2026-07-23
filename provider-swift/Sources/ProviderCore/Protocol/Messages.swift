@@ -9,6 +9,7 @@ public enum PrefixCacheStatusBackend: String, Codable, Sendable, Equatable, Case
 public enum PrefixCacheReplayStrategy: String, Codable, Sendable, Equatable, CaseIterable {
     case direct
     case frozenFull = "frozen_full"
+    case tailReplay = "tail_replay"
     case none
     case unknown
 }
@@ -23,7 +24,6 @@ public enum PrefixCacheStatusState: String, Codable, Sendable, Equatable, CaseIt
 public enum PrefixCacheStatusReason: String, Codable, Sendable, Equatable, CaseIterable {
     case ready
     case configDisabled = "config_disabled"
-    case noLoadedSlot = "no_loaded_slot"
     case weightHashUnavailable = "weight_hash_unavailable"
     case runtimeIdentityUnavailable = "runtime_identity_unavailable"
     case unsupportedLayout = "unsupported_layout"

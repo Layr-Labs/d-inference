@@ -53,7 +53,10 @@ weight identity, layout/backend support, disk setup, and initialization failures
 use the fixed reason vocabulary documented in
 [`cache-aware-routing.md`](../architecture/cache-aware-routing.md). A provider
 advertises exact protocol v2 only when at least one slot is actually ready; the
-status snapshot still explains every loaded v1 slot.
+status snapshot still explains every loaded v1 slot. Ready status and v2
+capability are published from one reconciled snapshot: ready requires a
+concrete backend and replay strategy, and each capability requires one ready
+status when optional telemetry is present. Unloaded models emit no status.
 
 Every call into the SSD donation path settles exactly one process-local outcome:
 
@@ -61,6 +64,12 @@ Every call into the SSD donation path settles exactly one process-local outcome:
 `lossy_snapshot`, `incomplete_layer_state`, `stage_size_exceeded`,
 `write_rate_limited`, `write_queue_full`, `already_durable`, `already_queued`,
 `cache_closed`, `disk_unavailable`, or `write_failed`.
+
+If cache teardown races a write already executing, a successful durable write
+is classified `cache_closed` for both correlated and uncorrelated donations
+because ready-receipt delivery can no longer complete. A real write failure
+remains `write_failed`; ordinary successful completion remains `donated`. The
+per-opportunity settlement box still records exactly one outcome.
 
 These are cumulative counters, not per-request events. The provider sends only
 the fixed enum and count. No model/request/provider identifier, path, token,

@@ -170,6 +170,37 @@ struct SSDCacheEpochStoreTests {
         #expect(ready.statuses.first?.state == .ready)
         #expect(ready.statuses.first?.reason == .ready)
 
+        state.setPrefixCacheSnapshot(
+            sources: ["gpt-oss": cache],
+            statuses: [PrefixCacheModelStatus(
+                modelId: "gpt-oss",
+                backend: .unknown,
+                replayStrategy: .none,
+                state: .ready,
+                reason: .ready)],
+            runtimeIdentityAvailable: true)
+        let unknown = state.prefixCacheV2Advertisement()
+        #expect(unknown.protocolVersion == 1)
+        #expect(unknown.models.isEmpty)
+        #expect(unknown.statuses.isEmpty)
+
+        state.setPrefixCacheSnapshot(
+            sources: ["gpt-oss": cache],
+            statuses: [],
+            runtimeIdentityAvailable: true)
+        let missing = state.prefixCacheV2Advertisement()
+        #expect(missing.protocolVersion == 1)
+        #expect(missing.models.isEmpty)
+
+        state.setPrefixCacheSnapshot(
+            sources: ["gpt-oss": cache],
+            statuses: [PrefixCacheModelStatus(
+                modelId: "gpt-oss",
+                backend: .contiguous,
+                replayStrategy: .frozenFull,
+                state: .ready,
+                reason: .ready)],
+            runtimeIdentityAvailable: true)
         await cache.closeAndWait()
         #expect(state.prefixCacheV2Advertisement().protocolVersion == 1)
     }

@@ -142,13 +142,14 @@ concrete loaded model slot. The coordinator publishes only counts by
 loaded totals. This makes a v1 slot attributable without exposing the model:
 
 - state: `ready`, `pending`, `disabled`, or `error`;
-- reasons: `ready`, `config_disabled`, `no_loaded_slot`,
-  `weight_hash_unavailable`, `runtime_identity_unavailable`,
+- reasons: `ready`, `config_disabled`, `weight_hash_unavailable`,
+  `runtime_identity_unavailable`,
   `unsupported_layout`, `unsupported_backend`,
   `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`,
   `disk_unavailable`, or `cache_init_failed`;
 - backend: `contiguous`, `paged`, or `unknown`;
-- replay strategy: `direct`, `frozen_full`, `none`, or `unknown`.
+- replay strategy: `direct`, `frozen_full`, `tail_replay`, `none`, or
+  `unknown`.
 
 Old providers omit the field and contribute only to
 `unreported_loaded_models`; omission is never interpreted as a reason.
@@ -165,6 +166,16 @@ status; a dropped donation snapshot preserves the prior monotonic counter
 baseline. Field omission preserves the prior mixed-version behavior.
 Authoritative `prefix_cache_v2_models` validation remains strict and can still
 reject registration or quarantine malformed routing evidence.
+Because statuses describe loaded slots, there is no unloaded-slot reason. A
+`ready/ready` status is retained only when the same resulting snapshot has a
+v2 capability for that concrete model, a concrete backend
+(`contiguous|paged`), and a supported replay strategy
+(`direct|frozen_full|tail_replay`). Conversely, once a provider has supplied
+the optional status field, every v2 capability must have exactly one matching
+ready status. Registration, heartbeat capability/status replacement, and model
+updates reconcile these views under one provider lock. Contradictory optional
+status becomes unreported; routing capability is never weakened. Providers that
+omit the optional field retain backward-compatible v2 capability behavior.
 Provider SSD donation opportunities are cumulative fixed-enum counters, and
 holder additions/removals are counted by `ttl`, `disconnect`, `epoch_change`,
 `capability_change`, `miss_invalidation`, or `capacity_eviction`. The response

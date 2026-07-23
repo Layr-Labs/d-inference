@@ -168,45 +168,15 @@ func (r *Registry) UpdatePrefixCacheCapabilities(
 	version int,
 	capabilities []protocol.PrefixCacheV2Capability,
 ) error {
-	if r == nil {
-		return nil
-	}
-	r.mu.RLock()
-	provider := r.providers[providerID]
-	r.mu.RUnlock()
-	if provider == nil {
-		return fmt.Errorf("%w: provider is not registered", errInvalidPrefixCacheCapability)
-	}
-
-	provider.mu.Lock()
-	models, err := uniqueProviderModels(provider.Models)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
-	}
-	validated, err := validatePrefixCacheCapabilities(version, capabilities, models)
-	if err != nil {
-		provider.mu.Unlock()
-		return err
-	}
-	changed := provider.PrefixCacheProtocol != version ||
-		!equalPrefixCacheCapabilities(provider.PrefixCacheV2Models, validated)
-	removalReason := prefixCacheCapabilityRemovalReason(
-		provider.PrefixCacheV2Models, validated)
-	if changed {
-		provider.PrefixCacheProtocol = version
-		provider.PrefixCacheV2Models = validated
-		provider.prefixCacheRevision++
-	}
-	provider.mu.Unlock()
-
-	r.mu.RLock()
-	tracker := r.cacheRouting
-	r.mu.RUnlock()
-	if changed && tracker != nil {
-		tracker.disconnect(providerID, removalReason)
-	}
-	return nil
+	_, err := r.UpdatePrefixCacheSnapshot(
+		providerID,
+		true,
+		version,
+		capabilities,
+		nil,
+		nil,
+	)
+	return err
 }
 
 func prefixCacheCapabilityRemovalReason(

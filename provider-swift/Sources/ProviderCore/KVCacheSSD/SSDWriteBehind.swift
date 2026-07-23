@@ -269,7 +269,7 @@ final class SSDWriteBehind: @unchecked Sendable {
         // Empty jobs represent all-deduped, already-durable donations. For a
         // real job, at least one successful write allows settlement to reprobe
         // a shorter leading contiguous run after all attempts complete.
-        var maySettleDurable = job.blocks.isEmpty
+        var durableWriteSucceeded = job.blocks.isEmpty
         var rateLimited = false
         var diskUnavailable = false
         defer {
@@ -282,18 +282,23 @@ final class SSDWriteBehind: @unchecked Sendable {
             } else {
                 diskBudget.enforce(budgetBytes: config.diskBudgetBytes())
             }
-            let ready = maySettleDurable ? (job.onDurable?() ?? !job.blocks.isEmpty) : false
+            let readyReceiptSettled = durableWriteSucceeded ? job.onDurable?() : nil
+            let closedAtSettlement = queuedBytesLock.withLock { closed }
             let outcome: PrefixCacheDonationOutcome
             if job.blocks.isEmpty {
                 outcome = .alreadyDurable
-            } else if ready {
-                outcome = .donated
-            } else if rateLimited {
+            } else if !durableWriteSucceeded && rateLimited {
                 outcome = .writeRateLimited
-            } else if diskUnavailable {
+            } else if !durableWriteSucceeded && diskUnavailable {
                 outcome = .diskUnavailable
-            } else {
+            } else if !durableWriteSucceeded {
                 outcome = .writeFailed
+            } else if closedAtSettlement {
+                outcome = .cacheClosed
+            } else if job.onDurable != nil && readyReceiptSettled != true {
+                outcome = .writeFailed
+            } else {
+                outcome = .donated
             }
             job.onOutcome(outcome)
         }
@@ -332,7 +337,7 @@ final class SSDWriteBehind: @unchecked Sendable {
                     fileBytes = try writeBlock(block, url)
                     index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
                     stats.add(blocksWritten: 1, bytesWritten: fileBytes)
-                    maySettleDurable = true
+                    durableWriteSucceeded = true
                     continue
                 }
                 fileBytes = try SSDBlockStore.write(
@@ -355,7 +360,7 @@ final class SSDWriteBehind: @unchecked Sendable {
             // Index LAST, after the durable rename (spec §3.2 step 7).
             index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
             stats.add(blocksWritten: 1, bytesWritten: fileBytes)
-            maySettleDurable = true
+            durableWriteSucceeded = true
         }
     }
 

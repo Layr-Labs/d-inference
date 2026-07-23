@@ -198,7 +198,7 @@ public final class ProviderState: @unchecked Sendable {
         }
         let sources = snapshot.sources
         var models: [PrefixCacheV2Capability] = []
-        let statuses = snapshot.statuses.map { status in
+        var statuses = snapshot.statuses.map { status in
             let current: PrefixCacheModelStatus
             if let source = sources[status.modelId] {
                 let advertisement = source.prefixCacheAdvertisement(base: status)
@@ -212,6 +212,17 @@ public final class ProviderState: @unchecked Sendable {
             return snapshot.runtimeIdentityAvailable
                 ? current : current.withoutRuntimeIdentity()
         }.sorted { $0.modelId < $1.modelId }
+        if !snapshot.runtimeIdentityAvailable {
+            models.removeAll(keepingCapacity: true)
+        }
+        let capableModels = Set(models.map(\.modelId))
+        statuses = statuses.filter { status in
+            status.state != .ready ||
+                (status.isConcreteReady && capableModels.contains(status.modelId))
+        }
+        let readyModels = Set(
+            statuses.lazy.filter(\.isConcreteReady).map(\.modelId))
+        models.removeAll { !readyModels.contains($0.modelId) }
         models.sort { $0.modelId < $1.modelId }
         return (
             models.isEmpty || !snapshot.runtimeIdentityAvailable ? 1 : 2,

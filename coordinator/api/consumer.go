@@ -1817,7 +1817,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// Track providers that failed during retry so we don't dispatch to them again.
 		excludeProviders: make(map[string]struct{}),
 	}
+	d.actor = s.newRequestActor(
+		uuid.NewString(), consumerKey, model, publicModel,
+		chatActorEndpoint(isResponsesAPI), stream, 0)
 	d.run()
+}
+
+// chatActorEndpoint names the endpoint for the request actor's shadow journal.
+func chatActorEndpoint(isResponsesAPI bool) string {
+	if isResponsesAPI {
+		return "responses"
+	}
+	return "chat_completions"
 }
 
 // handleStreamingResponseWithFirstChunk streams SSE chunks to the consumer.
@@ -2069,6 +2080,14 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			return
 
 		case <-timer.C:
+			if !s.actorAcceptsClientTimeout(pr) {
+				// A provider terminal already won this attempt (its ChunkCh close /
+				// ErrorCh signal is imminent). Do not contradict billing by telling
+				// the client it timed out — re-arm and consume the real terminal
+				// (the fix for incident race #2).
+				timer.Reset(inferenceTimeout)
+				continue
+			}
 			markInferenceOutcome(r.Context(), pr.Model, requestClassTimeout)
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
@@ -2157,6 +2176,12 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			return
 
 		case <-timer.C:
+			if !s.actorAcceptsClientTimeout(pr) {
+				// Provider terminal already won — do not contradict billing with a
+				// timeout; consume the real terminal instead (race #2).
+				timer.Reset(inferenceTimeout)
+				continue
+			}
 			markInferenceOutcome(r.Context(), pr.Model, requestClassTimeout)
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
@@ -2170,6 +2195,18 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 		}
 	}
 }
+
+// providerTerminalGrace bounds how long a non-streaming client-deadline path
+// waits for an already-won provider terminal to actually deliver on the pending
+// request's channels. It is entered only when the request actor reports a
+// provider terminal already claimed this attempt (incident race #2): the client
+// deadline (ctx) is a one-shot that stays permanently fired, so the wait is on
+// the real terminal channel plus this bounded timer, never on ctx again. It
+// matches the 2s grace the streaming path uses to wait for CompleteCh after
+// ChunkCh closes; if it expires the request falls through to the existing refund
+// + timeout (bounded quiescence — never hang forever). A var (not a const) only
+// so tests can shrink it; production never mutates it.
+var providerTerminalGrace = 2 * time.Second
 
 // handleNonStreamingResponseWithFirstChunk collects all chunks from the
 // provider and assembles them into a single OpenAI-compatible JSON response.
@@ -2190,150 +2227,7 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			if !ok {
-				select {
-				case errMsg, ok := <-pr.ErrorCh:
-					if ok && errMsg.Error != "" {
-						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
-						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
-						s.writeGenericProviderError(w, errMsg)
-						return
-					}
-				default:
-				}
-				// The provider forwards the raw backend response as a single
-				// chunk. Detect complete responses (object=chat.completion
-				// or object=response) and pass through directly — this is
-				// format-agnostic and works for chat completions, Responses
-				// API, or any future endpoint without parsing.
-				if len(chunks) == 1 {
-					raw := strings.TrimPrefix(chunks[0], "data: ")
-					var obj map[string]any
-					if err := json.Unmarshal([]byte(raw), &obj); err == nil {
-						objType, _ := obj["object"].(string)
-						// Complete responses have object=chat.completion or
-						// object=response. Delta chunks have object=chat.completion.chunk.
-						if objType == "chat.completion" || objType == "response" {
-							var completeUsage protocol.UsageInfo
-							select {
-							case u, ok := <-pr.CompleteCh:
-								if !ok {
-									s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-									s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
-									writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
-									return
-								}
-								completeUsage = u
-							case <-ctx.Done():
-								if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-									s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-									s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
-									writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
-								} else {
-									s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
-									s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
-								}
-								return
-							}
-							if objType == "chat.completion" {
-								normalizeCompleteChatResponse(obj, consumerModel(pr))
-								// The provider engine reports "stop" even when generation
-								// hit the max-tokens bound — correct it from the
-								// authoritative token counts.
-								rewriteRawFinishReason(obj, completeUsage, pr.RequestedMaxTokens)
-								// Keep the passthrough path consistent with the
-								// SSE-reconstruction path: surface the provider's
-								// accurate reasoning-token count if its raw usage
-								// object didn't already carry one.
-								injectReasoningDetailIntoRawUsage(obj, completeUsage)
-								injectCacheDetailIntoRawUsage(obj, completeUsage)
-								if pr.ConsumerEndpoint == completionsEndpoint ||
-									pr.ConsumerEndpoint == messagesEndpoint {
-									encoded, err := json.Marshal(obj)
-									if err != nil {
-										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
-										return
-									}
-									msg := extractMessage([]string{"data: " + string(encoded)})
-									resp := buildGenericEndpointResponse(pr, msg, completeUsage)
-									s.noteInferenceSuccess(pr)
-									writeJSON(w, http.StatusOK, resp)
-									return
-								}
-								if pr.IsResponsesAPI {
-									var chatResp types.ChatCompletionResponse
-									b, err := json.Marshal(obj)
-									if err != nil {
-										log.Printf("WARN: failed to marshal chat response for Responses API conversion: %v", err)
-										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
-										return
-									}
-									if err := json.Unmarshal(b, &chatResp); err != nil {
-										log.Printf("WARN: failed to unmarshal chat response into typed struct: %v", err)
-										writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
-										return
-									}
-									respObj := chatCompletionToResponses(
-										chatResp, consumerModel(pr), pr.SESignature,
-										pr.ResponseHash, pr.Traits)
-									s.noteInferenceSuccess(pr)
-									writeJSON(w, http.StatusOK, respObj)
-									return
-								}
-							} else {
-								// Native passthrough (object=="response"): the provider
-								// echoed the concrete build id; rewrite it to the public
-								// alias so the consumer never sees the quant/build.
-								sanitizeCacheDetailIntoRawResponsesUsage(obj, completeUsage)
-								if pr.PublicModel != "" {
-									obj["model"] = consumerModel(pr)
-								}
-							}
-							if pr.SESignature != "" {
-								obj["se_signature"] = pr.SESignature
-								obj["response_hash"] = pr.ResponseHash
-							}
-							s.noteInferenceSuccess(pr)
-							writeJSON(w, http.StatusOK, obj)
-							return
-						}
-					}
-				}
-
-				// Fallback: SSE delta chunks — reconstruct into response.
-				msg := extractMessage(chunks)
-				select {
-				case usage, ok := <-pr.CompleteCh:
-					if !ok {
-						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
-						writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
-						return
-					}
-					var resp any
-					if pr.IsResponsesAPI {
-						resp = buildResponsesResponse(
-							pr.RequestID, consumerModel(pr), msg, usage,
-							pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash,
-							pr.Traits)
-					} else if pr.ConsumerEndpoint == completionsEndpoint ||
-						pr.ConsumerEndpoint == messagesEndpoint {
-						resp = buildGenericEndpointResponse(pr, msg, usage)
-					} else {
-						resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
-					}
-					s.noteInferenceSuccess(pr)
-					writeJSON(w, http.StatusOK, resp)
-				case <-ctx.Done():
-					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-						s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
-						writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
-					} else {
-						s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
-						s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
-					}
-				}
+				s.finalizeNonStreamingResponse(w, pr, ctx, chunks)
 				return
 			}
 			chunks = append(chunks, chunk)
@@ -2342,14 +2236,24 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			if !ok {
 				continue
 			}
-			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
-			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
-			s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
-			s.writeGenericProviderError(w, errMsg)
+			s.writeNonStreamingProviderError(w, pr, errMsg)
 			return
 
 		case <-ctx.Done():
 			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				if !s.actorAcceptsClientTimeout(pr) {
+					// A provider terminal already won this attempt (its billing
+					// is in progress); the client deadline must NOT contradict
+					// billing with a timeout (incident race #2). ctx is a one-shot
+					// deadline that stays permanently fired, so re-selecting on it
+					// would busy-loop — instead drain the real terminal channel
+					// under a bounded grace and finalize exactly like the normal
+					// outer loop. Only fall through to the timeout below if the
+					// grace expires with no terminal arriving.
+					if s.drainNonStreamingTerminal(w, pr, ctx, &chunks) {
+						return
+					}
+				}
 				s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 				s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "response_timeout_before_response"))
 				writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "request timed out"))
@@ -2360,6 +2264,242 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 			return
 		}
 	}
+}
+
+// completionOutcome classifies how the non-streaming handler's wait for the
+// provider's completion usage ended.
+type completionOutcome int
+
+const (
+	completionUsage      completionOutcome = iota // usage delivered; build the response
+	completionIncomplete                          // CompleteCh closed with no usage
+	completionTimeout                             // client deadline fired and no terminal arrived
+	completionClientGone                          // client disconnected before the response
+)
+
+// awaitCompletion waits for the provider's completion usage on pr.CompleteCh,
+// bounded by the client deadline ctx. On the normal path it behaves exactly as
+// the previous inline `select { <-CompleteCh; <-ctx.Done() }`.
+//
+// Race #2 fix: when the deadline fires but the request actor reports a provider
+// terminal already won the attempt (its billing is in progress), it does NOT
+// report a timeout immediately. Because ctx is a one-shot deadline that stays
+// permanently fired, re-selecting on it would busy-loop; instead it waits a
+// bounded providerTerminalGrace for the real completion on CompleteCh — never on
+// ctx again — and reports the real outcome. Only if that grace ALSO expires with
+// no terminal does it report a timeout. actorAcceptsClientTimeout is a no-op on
+// its reject path (it claims no terminal and moves no money), so this cannot
+// double-settle.
+func (s *Server) awaitCompletion(ctx context.Context, pr *registry.PendingRequest) (protocol.UsageInfo, completionOutcome) {
+	select {
+	case u, ok := <-pr.CompleteCh:
+		if !ok {
+			return protocol.UsageInfo{}, completionIncomplete
+		}
+		return u, completionUsage
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return protocol.UsageInfo{}, completionClientGone
+		}
+		if s.actorAcceptsClientTimeout(pr) {
+			return protocol.UsageInfo{}, completionTimeout
+		}
+		select {
+		case u, ok := <-pr.CompleteCh:
+			if !ok {
+				return protocol.UsageInfo{}, completionIncomplete
+			}
+			return u, completionUsage
+		case <-time.After(providerTerminalGrace):
+			return protocol.UsageInfo{}, completionTimeout
+		}
+	}
+}
+
+// writeNonStreamingCompletionFailure handles the non-success completion outcomes
+// shared by the passthrough and SSE-reconstruction paths: it refunds, records
+// the route outcome, and writes the client response. It returns true when it
+// handled a failure (the caller must return); it returns false only for
+// completionUsage, where the caller proceeds to build a success response.
+// refundReservedBalance finalizes the reservation through a CAS, so a refund
+// here is a no-op if a provider terminal already settled — this can never
+// double-refund.
+func (s *Server) writeNonStreamingCompletionFailure(w http.ResponseWriter, pr *registry.PendingRequest, outcome completionOutcome) bool {
+	switch outcome {
+	case completionIncomplete:
+		s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
+		s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
+		writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
+		return true
+	case completionTimeout:
+		s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
+		s.updateInferenceRouteOutcomeForPending(pr, preResponseTimeoutOutcome(pr, "usage_timeout_before_response"))
+		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "timed out waiting for usage info"))
+		return true
+	case completionClientGone:
+		s.refundReservedBalance(pr, "client_gone:"+pr.RequestID)
+		s.updateInferenceRouteOutcomeForPending(pr, clientGoneBeforeResponseOutcome(pr))
+		return true
+	default:
+		return false
+	}
+}
+
+// writeNonStreamingProviderError refunds, records provider health + route
+// outcome, and writes the provider error response. Shared by the outer-loop
+// ErrorCh case and finalizeNonStreamingResponse's buffered-error check so the
+// two stay identical.
+func (s *Server) writeNonStreamingProviderError(w http.ResponseWriter, pr *registry.PendingRequest, errMsg protocol.InferenceErrorMessage) {
+	s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
+	s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason)
+	s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderErrorOutcome(pr, errMsg))
+	s.writeGenericProviderError(w, errMsg)
+}
+
+// drainNonStreamingTerminal is the race #2 grace path for the outer-loop
+// deadline branch. The request actor has reported that a provider terminal
+// already won the attempt, so the client deadline must not report a timeout.
+// ctx is already permanently fired, so this drains the real terminal channel
+// (pr.ChunkCh) under a bounded grace instead of re-selecting on ctx, then
+// finalizes the response exactly like the normal outer loop. A provider error
+// terminal also closes pr.ChunkCh after buffering its error on pr.ErrorCh, so
+// finalizeNonStreamingResponse's own non-blocking ErrorCh check delivers it —
+// the drain only needs to observe the ChunkCh close. It returns true when it
+// produced a terminal response (the caller must return); false when the grace
+// expires with no terminal (the caller falls through to its timeout).
+func (s *Server) drainNonStreamingTerminal(w http.ResponseWriter, pr *registry.PendingRequest, ctx context.Context, chunks *[]string) bool {
+	grace := time.NewTimer(providerTerminalGrace)
+	defer grace.Stop()
+	for {
+		select {
+		case chunk, ok := <-pr.ChunkCh:
+			if !ok {
+				s.finalizeNonStreamingResponse(w, pr, ctx, *chunks)
+				return true
+			}
+			*chunks = append(*chunks, chunk)
+		case <-grace.C:
+			return false
+		}
+	}
+}
+
+// finalizeNonStreamingResponse assembles and writes the client response once
+// pr.ChunkCh has closed. It first surfaces any buffered provider error, then
+// either passes a single complete backend response through directly or
+// reconstructs the response from SSE delta chunks, waiting for the provider's
+// completion usage via awaitCompletion. Every path writes exactly one response
+// and returns.
+func (s *Server) finalizeNonStreamingResponse(w http.ResponseWriter, pr *registry.PendingRequest, ctx context.Context, chunks []string) {
+	select {
+	case errMsg, ok := <-pr.ErrorCh:
+		if ok && errMsg.Error != "" {
+			s.writeNonStreamingProviderError(w, pr, errMsg)
+			return
+		}
+	default:
+	}
+	// The provider forwards the raw backend response as a single chunk. Detect
+	// complete responses (object=chat.completion or object=response) and pass
+	// through directly — this is format-agnostic and works for chat completions,
+	// Responses API, or any future endpoint without parsing.
+	if len(chunks) == 1 {
+		raw := strings.TrimPrefix(chunks[0], "data: ")
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(raw), &obj); err == nil {
+			objType, _ := obj["object"].(string)
+			// Complete responses have object=chat.completion or object=response.
+			// Delta chunks have object=chat.completion.chunk.
+			if objType == "chat.completion" || objType == "response" {
+				completeUsage, outcome := s.awaitCompletion(ctx, pr)
+				if s.writeNonStreamingCompletionFailure(w, pr, outcome) {
+					return
+				}
+				if objType == "chat.completion" {
+					normalizeCompleteChatResponse(obj, consumerModel(pr))
+					// The provider engine reports "stop" even when generation
+					// hit the max-tokens bound — correct it from the
+					// authoritative token counts.
+					rewriteRawFinishReason(obj, completeUsage, pr.RequestedMaxTokens)
+					// Keep the passthrough path consistent with the
+					// SSE-reconstruction path: surface the provider's accurate
+					// reasoning-token count if its raw usage object didn't
+					// already carry one.
+					injectReasoningDetailIntoRawUsage(obj, completeUsage)
+					injectCacheDetailIntoRawUsage(obj, completeUsage)
+					if pr.ConsumerEndpoint == completionsEndpoint ||
+						pr.ConsumerEndpoint == messagesEndpoint {
+						encoded, err := json.Marshal(obj)
+						if err != nil {
+							writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
+							return
+						}
+						msg := extractMessage([]string{"data: " + string(encoded)})
+						resp := buildGenericEndpointResponse(pr, msg, completeUsage)
+						s.noteInferenceSuccess(pr)
+						writeJSON(w, http.StatusOK, resp)
+						return
+					}
+					if pr.IsResponsesAPI {
+						var chatResp types.ChatCompletionResponse
+						b, err := json.Marshal(obj)
+						if err != nil {
+							log.Printf("WARN: failed to marshal chat response for Responses API conversion: %v", err)
+							writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
+							return
+						}
+						if err := json.Unmarshal(b, &chatResp); err != nil {
+							log.Printf("WARN: failed to unmarshal chat response into typed struct: %v", err)
+							writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "invalid provider response"))
+							return
+						}
+						respObj := chatCompletionToResponses(
+							chatResp, consumerModel(pr), pr.SESignature,
+							pr.ResponseHash, pr.Traits)
+						s.noteInferenceSuccess(pr)
+						writeJSON(w, http.StatusOK, respObj)
+						return
+					}
+				} else {
+					// Native passthrough (object=="response"): the provider
+					// echoed the concrete build id; rewrite it to the public
+					// alias so the consumer never sees the quant/build.
+					sanitizeCacheDetailIntoRawResponsesUsage(obj, completeUsage)
+					if pr.PublicModel != "" {
+						obj["model"] = consumerModel(pr)
+					}
+				}
+				if pr.SESignature != "" {
+					obj["se_signature"] = pr.SESignature
+					obj["response_hash"] = pr.ResponseHash
+				}
+				s.noteInferenceSuccess(pr)
+				writeJSON(w, http.StatusOK, obj)
+				return
+			}
+		}
+	}
+
+	// Fallback: SSE delta chunks — reconstruct into response.
+	msg := extractMessage(chunks)
+	usage, outcome := s.awaitCompletion(ctx, pr)
+	if s.writeNonStreamingCompletionFailure(w, pr, outcome) {
+		return
+	}
+	var resp any
+	if pr.IsResponsesAPI {
+		resp = buildResponsesResponse(
+			pr.RequestID, consumerModel(pr), msg, usage,
+			pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash,
+			pr.Traits)
+	} else if pr.ConsumerEndpoint == completionsEndpoint ||
+		pr.ConsumerEndpoint == messagesEndpoint {
+		resp = buildGenericEndpointResponse(pr, msg, usage)
+	} else {
+		resp = buildNonStreamingResponse(pr.RequestID, consumerModel(pr), msg, usage, pr.RequestedMaxTokens, pr.SESignature, pr.ResponseHash)
+	}
+	s.noteInferenceSuccess(pr)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // rewriteRawFinishReason corrects a provider-reported "stop" finish_reason to
@@ -4415,6 +4555,17 @@ reserveProvider:
 		return
 	}
 	pendingCleanup = false
+
+	// Register this single generic (/v1/completions, /v1/messages) attempt with a
+	// request actor so its terminal is arbitrated synchronously on the provider
+	// read loop (race #1) and its client-facing stream timer defers to an accepted
+	// terminal (race #2), exactly like the chat/responses path. The generic path
+	// is single-attempt (one stable requestID across provider reselection), so no
+	// speculative winner selection is needed; the sole attempt wins by default.
+	genericActor := s.newRequestActor(
+		uuid.NewString(), consumerKey, model, publicModel, endpoint, stream, 0)
+	genericActor.registerAttempt(requestID, provider.ID, "primary", pr.Attempt)
+	defer genericActor.close()
 
 	s.logger.Info("inference request dispatched",
 		"request_id", requestID,

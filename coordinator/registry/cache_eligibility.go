@@ -35,6 +35,19 @@ var (
 	prefixCacheReplayStrategies = []string{
 		"direct", "frozen_full", "tail_replay", "none", "unknown",
 	}
+	// prefixCacheInitFailureDetails is the granular sub-cause vocabulary for
+	// reason == "cache_init_failed" (optional `init_failure` wire field,
+	// 0.7.14+ providers). Mirror of the Swift PrefixCacheInitFailureDetail.
+	prefixCacheInitFailureDetails = []string{
+		"key_unavailable",
+		"ephemeral_key_unavailable",
+		"block_contract_mismatch",
+		"epoch_unavailable",
+		"prompt_contract_unavailable",
+		"epoch_lost",
+		"cache_closed",
+		"unknown",
+	}
 	prefixCacheDonationOutcomes = []string{
 		"donated",
 		"below_effective_token_floor",
@@ -57,6 +70,9 @@ func PrefixCacheStatusReasons() []string  { return append([]string(nil), prefixC
 func PrefixCacheStatusBackends() []string { return append([]string(nil), prefixCacheStatusBackends...) }
 func PrefixCacheReplayStrategies() []string {
 	return append([]string(nil), prefixCacheReplayStrategies...)
+}
+func PrefixCacheInitFailureDetails() []string {
+	return append([]string(nil), prefixCacheInitFailureDetails...)
 }
 func PrefixCacheDonationOutcomes() []string {
 	return append([]string(nil), prefixCacheDonationOutcomes...)
@@ -111,11 +127,30 @@ func sanitizePrefixCacheStatuses(
 			!validPrefixCacheStateReason(status.State, status.Reason) {
 			continue
 		}
+		status.InitFailure = sanitizePrefixCacheInitFailure(
+			status.Reason, status.InitFailure)
 		result[status.ModelID] = status
 		sanitized = append(sanitized, status)
 	}
 	*statuses = sanitized
 	return result, true
+}
+
+// sanitizePrefixCacheInitFailure normalizes the OPTIONAL granular detail to
+// the fixed vocabulary. It only ever strips the detail to "" — an unexpected
+// or misplaced detail NEVER drops the entry or the snapshot, because the
+// detail is diagnostic garnish while the (state, reason) tuple is the signal:
+//   - detail outside reason == "cache_init_failed" is stripped (misplaced);
+//   - an unknown future detail is stripped (forward compatibility);
+//   - the empty detail from pre-0.7.14 providers passes through unchanged.
+func sanitizePrefixCacheInitFailure(reason, detail string) string {
+	if detail == "" || reason != "cache_init_failed" {
+		return ""
+	}
+	if !containsFixed(prefixCacheInitFailureDetails, detail) {
+		return ""
+	}
+	return detail
 }
 
 func validPrefixCacheStateReason(state, reason string) bool {

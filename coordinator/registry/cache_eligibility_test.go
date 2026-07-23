@@ -37,6 +37,11 @@ func TestPrefixCacheTelemetryEnumCasingIsPinned(t *testing.T) {
 			got:  PrefixCacheReplayStrategies(),
 			want: "direct,frozen_full,tail_replay,none,unknown",
 		},
+		"init failure details": {
+			got: PrefixCacheInitFailureDetails(),
+			want: "key_unavailable,ephemeral_key_unavailable,block_contract_mismatch," +
+				"epoch_unavailable,prompt_contract_unavailable,epoch_lost,cache_closed,unknown",
+		},
 		"donation outcomes": {
 			got: PrefixCacheDonationOutcomes(),
 			want: "donated,below_effective_token_floor,no_complete_block,lossy_snapshot," +
@@ -228,6 +233,129 @@ func TestPrefixCacheTelemetrySanitizesOptionalCompatibility(t *testing.T) {
 	if aggregate.ReportedLoadedModels != 1 ||
 		aggregate.ByReason["config_disabled"] != 1 {
 		t.Fatalf("known owner-local aggregate = %+v", aggregate)
+	}
+}
+
+func TestPrefixCacheInitFailureDetailSanitizationKeepsEntries(t *testing.T) {
+	// The granular detail is diagnostic-only: it is normalized (possibly to
+	// "") but NEVER costs the entry or the snapshot, in either direction of
+	// version skew.
+	for name, test := range map[string]struct {
+		status protocol.PrefixCacheModelStatus
+		want   string
+	}{
+		"valid detail preserved": {
+			status: protocol.PrefixCacheModelStatus{
+				ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
+				State: "error", Reason: "cache_init_failed",
+				InitFailure: "key_unavailable",
+			},
+			want: "key_unavailable",
+		},
+		"unknown future detail stripped entry kept": {
+			status: protocol.PrefixCacheModelStatus{
+				ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
+				State: "error", Reason: "cache_init_failed",
+				InitFailure: "future_detail",
+			},
+			want: "",
+		},
+		"detail under mismatched reason stripped entry kept": {
+			status: protocol.PrefixCacheModelStatus{
+				ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
+				State: "disabled", Reason: "config_disabled",
+				InitFailure: "key_unavailable",
+			},
+			want: "",
+		},
+		"old provider empty detail preserved": {
+			status: protocol.PrefixCacheModelStatus{
+				ModelID: "model", Backend: "contiguous", ReplayStrategy: "none",
+				State: "error", Reason: "cache_init_failed",
+			},
+			want: "",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			statuses := []protocol.PrefixCacheModelStatus{test.status}
+			msg := protocol.RegisterMessage{
+				Models:              []protocol.ModelInfo{{ID: "model"}},
+				PrefixCacheStatuses: &statuses,
+			}
+			reg := cacheEligibilityTestRegistry()
+			if err := reg.ValidatePrefixCacheRegistration(&msg); err != nil {
+				t.Fatalf("optional detail closed registration: %v", err)
+			}
+			if msg.PrefixCacheStatuses == nil || len(*msg.PrefixCacheStatuses) != 1 {
+				t.Fatalf("detail sanitization dropped the entry: %+v", msg.PrefixCacheStatuses)
+			}
+			got := (*msg.PrefixCacheStatuses)[0]
+			if got.InitFailure != test.want {
+				t.Fatalf("init failure=%q, want %q", got.InitFailure, test.want)
+			}
+			if got.State != test.status.State || got.Reason != test.status.Reason {
+				t.Fatalf("state/reason changed by detail sanitization: %+v", got)
+			}
+		})
+	}
+}
+
+func TestPrefixCacheInitFailureAggregationBreakdown(t *testing.T) {
+	reg := cacheEligibilityTestRegistry()
+	statuses := []protocol.PrefixCacheModelStatus{
+		{
+			ModelID: "key-lost", Backend: "contiguous", ReplayStrategy: "none",
+			State: "error", Reason: "cache_init_failed",
+			InitFailure: "key_unavailable",
+		},
+		{
+			ModelID: "epoch-lost", Backend: "paged", ReplayStrategy: "none",
+			State: "error", Reason: "cache_init_failed",
+			InitFailure: "epoch_lost",
+		},
+		{
+			ModelID: "old-provider", Backend: "contiguous", ReplayStrategy: "none",
+			State: "error", Reason: "cache_init_failed",
+		},
+		{
+			ModelID: "healthy", Backend: "contiguous", ReplayStrategy: "unknown",
+			State: "pending", Reason: "scan_pending",
+		},
+	}
+	msg := protocol.RegisterMessage{
+		Models: []protocol.ModelInfo{
+			{ID: "key-lost"}, {ID: "epoch-lost"}, {ID: "old-provider"}, {ID: "healthy"},
+		},
+		PrefixCacheStatuses: &statuses,
+	}
+	if err := reg.ValidatePrefixCacheRegistration(&msg); err != nil {
+		t.Fatal(err)
+	}
+	if reg.Register("provider", nil, &msg) == nil {
+		t.Fatal("provider did not register")
+	}
+
+	aggregate := reg.PrefixCacheProtocolStatus()
+	// The plain reason total keeps its meaning: detail-less entries from old
+	// providers still count, so the detail buckets sum to at most the total.
+	if aggregate.ByReason["cache_init_failed"] != 3 {
+		t.Fatalf("cache_init_failed total=%d, want 3", aggregate.ByReason["cache_init_failed"])
+	}
+	if aggregate.ByInitFailure["key_unavailable"] != 1 ||
+		aggregate.ByInitFailure["epoch_lost"] != 1 {
+		t.Fatalf("detail breakdown=%+v", aggregate.ByInitFailure)
+	}
+	detailTotal := 0
+	for _, count := range aggregate.ByInitFailure {
+		detailTotal += count
+	}
+	if detailTotal != 2 {
+		t.Fatalf("detail bucket sum=%d, want 2 (old provider has no detail)", detailTotal)
+	}
+	for _, detail := range PrefixCacheInitFailureDetails() {
+		if _, ok := aggregate.ByInitFailure[detail]; !ok {
+			t.Fatalf("missing zero bucket for %q: %+v", detail, aggregate.ByInitFailure)
+		}
 	}
 }
 

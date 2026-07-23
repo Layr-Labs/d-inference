@@ -113,7 +113,11 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		if model == "" {
 			model = info.requestedModel
 		}
-		s.recordRequestOutcome(model, orUptimeClassForRejection(info.httpStatus))
+		if info.r != nil {
+			s.recordRequestOutcomeForContext(info.r.Context(), model, orUptimeClassForRejection(info.httpStatus))
+		} else {
+			s.recordRequestOutcome(model, orUptimeClassForRejection(info.httpStatus))
+		}
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.

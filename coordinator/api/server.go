@@ -74,6 +74,7 @@ const (
 	ctxKeyConsumer contextKey = iota
 	ctxKeyRequestID
 	ctxKeyAPIKey
+	ctxKeyInferenceOutcome
 )
 
 // requestIDFromContext returns the per-request correlation ID set by
@@ -417,6 +418,10 @@ type Server struct {
 	// Server built directly (e.g. &Server{} in tests) leaves it nil, and
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
+
+	// openRouterCredentials identifies only the configured marketplace
+	// credentials. It never uses User-Agent or endpoint heuristics.
+	openRouterCredentials openRouterCredentialClassifier
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -703,6 +708,8 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		openRouterCredentials: newOpenRouterCredentialClassifier(
+			cfg.OpenRouterKeyIDs, cfg.OpenRouterCredentialSHA256, logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -1708,10 +1715,10 @@ func (s *Server) routes() {
 	// because it isn't counted in httpInflight, won't be seen by WaitForInflightZero
 	// — so a graceful shutdown could cut it off mid-flight. Add new dispatch routes
 	// here, gated, alongside the four below.
-	s.mux.HandleFunc("POST /v1/chat/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))
-	s.mux.HandleFunc("POST /v1/responses", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))) // Responses API — same handler, auto-detects input vs messages
-	s.mux.HandleFunc("POST /v1/completions", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions)))))
-	s.mux.HandleFunc("POST /v1/messages", s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages)))))
+	s.mux.HandleFunc("POST /v1/chat/completions", s.inferenceOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions))))))
+	s.mux.HandleFunc("POST /v1/responses", s.inferenceOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleChatCompletions)))))) // Responses API — same handler, auto-detects input vs messages
+	s.mux.HandleFunc("POST /v1/completions", s.inferenceOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleCompletions))))))
+	s.mux.HandleFunc("POST /v1/messages", s.inferenceOutcome(s.drainGate(s.requireAuth(s.rateLimitConsumer(s.sealedTransport(s.handleAnthropicMessages))))))
 	s.mux.HandleFunc("GET /v1/models", s.requireAuth(s.handleListModels))
 	// Dedicated OpenRouter provider feed — pure OpenRouter schema, no Darkbloom metadata.
 	s.mux.HandleFunc("GET /v1/models/openrouter", s.requireAuth(s.handleListModelsOpenRouter))
@@ -2284,6 +2291,7 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, errorResponse("authentication_error", "invalid API key"))
 			return
 		}
+		markInferenceOutcomeKeyID(r.Context(), keyRec.ID)
 
 		// Resolve key → account. If the key is linked to a Privy account, use
 		// that account ID and load the user. Unlinked legacy keys derive a
@@ -2602,6 +2610,13 @@ type statusWriter struct {
 	wroteHeader bool
 }
 
+func (sw *statusWriter) Write(p []byte) (int, error) {
+	if !sw.wroteHeader {
+		sw.WriteHeader(http.StatusOK)
+	}
+	return sw.ResponseWriter.Write(p)
+}
+
 func (sw *statusWriter) WriteHeader(code int) {
 	if !sw.wroteHeader {
 		sw.status = code
@@ -2611,6 +2626,9 @@ func (sw *statusWriter) WriteHeader(code int) {
 }
 
 func (sw *statusWriter) Flush() {
+	if !sw.wroteHeader {
+		sw.WriteHeader(http.StatusOK)
+	}
 	if f, ok := sw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}

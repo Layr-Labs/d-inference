@@ -99,6 +99,10 @@ enum TemplateExtraction {
             guard isLowerSHA256Hex(file.sha256) else {
                 throw Error.invalidManifestFileDigest(path: file.path)
             }
+            guard file.sizeBytes >= 0 else {
+                throw Error.inconsistentManifest(
+                    "negative size_bytes for \(file.path)")
+            }
         }
         guard manifest.fileCount == manifest.files.count else {
             throw Error.inconsistentManifest(

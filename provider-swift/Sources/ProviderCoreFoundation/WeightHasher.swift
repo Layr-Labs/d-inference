@@ -109,11 +109,13 @@ public struct WeightHasher: Sendable {
     /// Combine already-known per-file SHA-256 digests into the manifest
     /// aggregate hash WITHOUT reading any file bytes.
     ///
-    /// Byte-identical to `hashFilesWithRelativeKey` for the same
-    /// (path → digest) inputs, and to the Go coordinator's
-    /// `aggregateManifestFileHashes`: digests are decoded from hex, sorted by
-    /// path (lexicographic; ties broken on the digest hex, matching
-    /// `ManifestBuilder`), concatenated as raw 32-byte digests, and SHA-256'd.
+    /// Byte-identical to `hashFilesWithRelativeKey` for unique-path inputs
+    /// (duplicate paths tie-break differently — digest hex here vs input
+    /// order there — but valid manifests reject duplicates before either
+    /// runs), and to the Go coordinator's `aggregateManifestFileHashes`:
+    /// digests are decoded from hex, sorted by path (lexicographic; ties
+    /// broken on the digest hex, matching `ManifestBuilder`), concatenated
+    /// as raw 32-byte digests, and SHA-256'd.
     ///
     /// Used by the republish flow, where a new manifest is derived from an old
     /// manifest's per-file digests plus one new small file — the multi-GB

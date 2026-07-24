@@ -179,6 +179,13 @@ printf 'Skipping weight/large files entirely: %s (server-side copied later)\n' "
 
 DOWNLOADED=0
 while IFS=$'\t' read -r rel_path expected_sha; do
+  # Defense in depth: the Swift tool re-validates manifest paths, but this
+  # loop writes to disk first — never let a hostile manifest path escape the
+  # artifacts dir.
+  if [[ -z "$rel_path" || "$rel_path" == /* || "$rel_path" == *".."* || "$rel_path" == *"\\"* ]]; then
+    printf 'Refusing unsafe manifest path: %s\n' "$rel_path" >&2
+    exit 1
+  fi
   dest="$ARTIFACTS_DIR/$rel_path"
   mkdir -p "$(dirname "$dest")"
   printf 'Downloading %s\n' "$rel_path"

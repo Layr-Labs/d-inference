@@ -144,6 +144,19 @@ final class ExtractTemplateCommandTests: XCTestCase {
                        "extracted template must be byte-exact after UTF-8 encoding")
     }
 
+    func testExtractSurrogatePairsAndCombiningMarksExactBytes() throws {
+        // \ud83d\ude00 is the UTF-16 surrogate pair for U+1F600 (😀, UTF-8
+        // F0 9F 98 80); "e\u0301" is decomposed e + COMBINING ACUTE ACCENT and
+        // must survive WITHOUT NFC normalization (65 CC 81, not C3 A9).
+        let json = #"{"chat_template": "hi \ud83d\ude00 e\u0301"}"#
+        let template = try TemplateExtraction.extractTemplate(
+            fromTokenizerConfig: Data(json.utf8))
+        XCTAssertEqual(
+            [UInt8](Data(template.utf8)),
+            [0x68, 0x69, 0x20, 0xF0, 0x9F, 0x98, 0x80, 0x20, 0x65, 0xCC, 0x81],
+            "surrogate pairs must decode to exact UTF-8 and combining marks must not be normalized")
+    }
+
     func testExtractArrayFormTakesDefaultEntry() throws {
         // "default" is deliberately NOT the first entry.
         let json = """
@@ -280,6 +293,20 @@ final class ExtractTemplateCommandTests: XCTestCase {
         XCTAssertThrowsError(try TemplateExtraction.validateOldManifest(badTotal))
 
         XCTAssertNoThrow(try TemplateExtraction.validateOldManifest(good))
+    }
+
+    func testNegativeManifestFileSizeIsRejected() {
+        // Mirror of the coordinator's validateManifestFile size check: a
+        // negative size would otherwise flow into the new manifest's totals.
+        let old = makeOldManifest(extraFiles: [
+            ManifestFile(path: "vocab.json", sizeBytes: -1,
+                         sha256: String(repeating: "8c", count: 32), role: "tokenizer")
+        ])
+        XCTAssertThrowsError(try TemplateExtraction.validateOldManifest(old)) { error in
+            guard case .inconsistentManifest? = error as? TemplateExtraction.Error else {
+                return XCTFail("expected inconsistentManifest, got \(error)")
+            }
+        }
     }
 
     func testUppercaseManifestDigestIsRejected() {

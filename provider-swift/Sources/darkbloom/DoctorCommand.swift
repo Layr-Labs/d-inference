@@ -54,8 +54,6 @@ struct Doctor: AsyncParsableCommand {
             print("  \(check.status.marker) \(check.name): \(check.detail)")
         }
 
-        // Show ONE combined, deduped enable guide covering whichever
-        // boot-security protections didn't pass (single shared footer).
         if let guide = bootSecurityActionGuide(bootSecurity) {
             print("")
             print("BOOT SECURITY — ACTION REQUIRED")
@@ -101,7 +99,6 @@ enum CheckStatus: Equatable {
         switch verdict {
         case .pass: self = .pass
         case .warn: self = .warn
-        case .fail: self = .fail
         }
     }
 }
@@ -110,29 +107,11 @@ struct DoctorCheck {
     let name: String
     let status: CheckStatus
     let detail: String
-
-    init(name: String, status: CheckStatus, detail: String) {
-        self.name = name
-        self.status = status
-        self.detail = detail
-    }
 }
 
-/// The single combined, deduped boot-security remediation guide for `doctor`,
-/// or `nil` when all protections pass. Reuses
-/// `BootSecurityGuidance.guide(includeMacOS:includeSIP:includeSecureBoot:)` so
-/// there is exactly one guide with one shared verification footer — never
-/// multiple full guides with a doubled footer.
 func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
-    let macOSFailed = BootSecurityPolicy.macOSVerdict(bootSecurity.macOSMajorVersion) != .pass
-    let sipFailed = BootSecurityPolicy.sipVerdict(bootSecurity.sip) != .pass
-    let secureBootFailed = BootSecurityPolicy.secureBootVerdict(bootSecurity.secureBoot) != .pass
-    guard macOSFailed || sipFailed || secureBootFailed else { return nil }
-    return BootSecurityGuidance.guide(
-        includeMacOS: macOSFailed,
-        includeSIP: sipFailed,
-        includeSecureBoot: secureBootFailed
-    )
+    let fixes = bootSecurity.issues.map { "\($0.name): \($0.fix)" }
+    return fixes.isEmpty ? nil : fixes.joined(separator: "\n")
 }
 
 func buildDoctorChecks(
@@ -199,17 +178,15 @@ func buildDoctorChecks(
         detail: "\(snapshot.models.count) discovered"
     ))
 
-    let macOSVerdict = BootSecurityPolicy.macOSVerdict(bootSecurity.macOSMajorVersion)
     checks.append(.init(
         name: "macos",
-        status: CheckStatus(macOSVerdict),
-        detail: BootSecurityPolicy.macOSSummary(majorVersion: bootSecurity.macOSMajorVersion)
+        status: CheckStatus(bootSecurity.macOSVerdict),
+        detail: bootSecurity.macOSSummary
     ))
 
-    let sipVerdict = BootSecurityPolicy.sipVerdict(bootSecurity.sip)
     checks.append(.init(
         name: "sip",
-        status: CheckStatus(sipVerdict),
+        status: CheckStatus(bootSecurity.sipVerdict),
         detail: bootSecurity.sip.summary
     ))
 
@@ -218,13 +195,6 @@ func buildDoctorChecks(
         name: "rdma",
         status: rdmaDisabled ? .pass : .warn,
         detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes"
-    ))
-
-    let secureBootVerdict = BootSecurityPolicy.secureBootVerdict(bootSecurity.secureBoot)
-    checks.append(.init(
-        name: "secure boot",
-        status: CheckStatus(secureBootVerdict),
-        detail: bootSecurity.secureBoot.summary
     ))
 
     let authenticatedRoot = checkAuthenticatedRootEnabled()

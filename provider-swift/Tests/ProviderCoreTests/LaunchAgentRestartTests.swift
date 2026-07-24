@@ -81,12 +81,6 @@ struct LaunchAgentEnvironmentTests {
             from: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4", "PATH": "/usr/bin"])
         #expect(out == ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4"])
     }
-
-    @Test func forwardsInsecureBootOverrideToForegroundChild() {
-        let key = BootSecurityPolicy.overrideEnvVar
-        let out = LaunchAgent.passthroughEnvironment(from: [key: "1", "PATH": "/usr/bin"])
-        #expect(out == [key: "1"])
-    }
 }
 
 @Suite("LaunchAgent service plist")
@@ -96,20 +90,13 @@ struct LaunchAgentServicePlistTests {
             label: "io.darkbloom.provider",
             programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
             logPath: "/tmp/p.log",
-            environment: [
-                "DARKBLOOM_PREFIX_CACHE": "0",
-                BootSecurityPolicy.overrideEnvVar: "1",
-                "PATH": "/usr/bin",
-            ]
+            environment: ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin"]
         )
         // RunAtLoad=true so a rebooted / auto-login box restarts (and re-attests via
         // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["KeepAlive"] as? Bool == false)
-        #expect((plist["EnvironmentVariables"] as? [String: String]) == [
-            "DARKBLOOM_PREFIX_CACHE": "0",
-            BootSecurityPolicy.overrideEnvVar: "1",
-        ])
+        #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
     @Test func omitsEnvironmentWhenNoAllowlistedVarsSet() {

@@ -36,9 +36,7 @@ struct Status: AsyncParsableCommand {
             print("Hardware: unavailable (\(snapshot.hardwareError?.localizedDescription ?? "unknown error"))")
         }
 
-        for line in bootSecurityStatusLines(BootSecuritySnapshot.live()) {
-            print(line)
-        }
+        print(bootSecurityStatusLine(BootSecuritySnapshot.live()))
 
         if let scheduleConfig = config.schedule,
            let schedule = Schedule.from(config: scheduleConfig) {
@@ -73,20 +71,10 @@ struct Status: AsyncParsableCommand {
         return "on (watchdog not installed — run `darkbloom start` or `restart` to arm)"
     }
 
-    /// Compact boot-security posture for `darkbloom status`. Mirrors the same
-    /// policy as `doctor` and `start`, so an unproven serving posture is visible
-    /// without requiring users to run a second command.
-    func bootSecurityStatusLines(_ bootSecurity: BootSecuritySnapshot) -> [String] {
-        let macOSStatus = CheckStatus(BootSecurityPolicy.macOSVerdict(bootSecurity.macOSMajorVersion))
-        let sipStatus = CheckStatus(BootSecurityPolicy.sipVerdict(bootSecurity.sip))
-        let secureBootStatus = CheckStatus(BootSecurityPolicy.secureBootVerdict(bootSecurity.secureBoot))
-
-        return [
-            "Boot security:",
-            "  macOS: \(macOSStatus.marker) \(BootSecurityPolicy.macOSSummary(majorVersion: bootSecurity.macOSMajorVersion))",
-            "  SIP: \(sipStatus.marker) \(bootSecurity.sip.summary)",
-            "  Secure Boot: \(secureBootStatus.marker) \(bootSecurity.secureBoot.summary)",
-        ]
+    func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot) -> String {
+        let status = bootSecurity.issues.isEmpty ? CheckStatus.pass : .warn
+        return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
+            + "SIP \(bootSecurity.sip.summary); Secure Boot is checked separately by coordinator MDM"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last

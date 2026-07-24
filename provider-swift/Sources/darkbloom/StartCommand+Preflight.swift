@@ -12,7 +12,7 @@ extension Start {
     /// Runs critical doctor checks inline before the model picker so users
     /// don't discover problems *after* downloading GBs of weights.
     internal func runPreflightChecks(snapshot: RuntimeSnapshot) throws {
-        try enforceBootSecurity()
+        warnBootSecurity(coordinatorEnforced: true)
 
         let debuggerAttached = checkDebuggerAttached()
         if debuggerAttached {

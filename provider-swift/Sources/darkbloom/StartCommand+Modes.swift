@@ -16,7 +16,7 @@ extension Start {
         hardware: HardwareInfo,
         bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
-        try enforceBootSecurity(snapshot: bootSecuritySnapshot)
+        warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: false)
 
         let selected = advertisedModels(
             from: snapshot.models,
@@ -148,7 +148,7 @@ extension Start {
         coordinatorURL: String,
         bootSecuritySnapshot: BootSecuritySnapshot = .live()
     ) async throws {
-        try enforceBootSecurity(snapshot: bootSecuritySnapshot)
+        warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
         let selectedModels: [ModelInfo]
         if !model.isEmpty {
@@ -208,11 +208,10 @@ extension Start {
 
         var startupFields = bootSecurityTelemetryFields(bootSecuritySnapshot)
         startupFields["backend"] = .string("mlx-swift")
-        startupFields["models"] = .int(models.count)
 
         TelemetryClient.shared.emit(
             kind: .log,
-            severity: bootSecurityTelemetrySeverity(bootSecuritySnapshot),
+            severity: bootSecuritySnapshot.issues.isEmpty ? .info : .warn,
             message: "provider starting",
             fields: startupFields
         )

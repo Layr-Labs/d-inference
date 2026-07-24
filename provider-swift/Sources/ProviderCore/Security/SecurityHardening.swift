@@ -10,9 +10,7 @@
 ///   - Core dump disabling: RLIMIT_CORE set to 0
 ///   - Environment scrubbing: removes dangerous env vars (DYLD_*, etc.)
 ///   - Anti-debug detection: P_TRACED flag, sysctl kern.proc
-///   - Secure Boot check: `ibridge_secure_boot` via system_profiler
-///     SPiBridgeDataType (authoritative and sudo-free on macOS 26 / Tahoe, the
-///     provider's minimum OS, on both Apple Silicon and Intel T2)
+///   - Secure Boot self-report for coordinator MDM cross-check
 ///   - Hardened Runtime check: codesign entitlement verification
 ///   - Bundle signature verification: validates .app code signature
 ///   - MDM enrollment detection: MicroMDM profile checks
@@ -33,7 +31,6 @@ private let logger = Logger(subsystem: "dev.darkbloom.provider", category: "secu
 public enum SecurityError: Error, CustomStringConvertible, Sendable {
     case ptDenyAttachFailed(String)
     case coreDumpDisableFailed(String)
-    case sipDisabled
     case rdmaEnabled
     case debuggerDetected
     case bundleSignatureInvalid(String)
@@ -44,8 +41,6 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
             return "PT_DENY_ATTACH failed: \(reason)"
         case .coreDumpDisableFailed(let reason):
             return "Failed to disable core dumps: \(reason)"
-        case .sipDisabled:
-            return "System Integrity Protection is disabled"
         case .rdmaEnabled:
             return "RDMA policy rejected this runtime"
         case .debuggerDetected:
@@ -58,27 +53,9 @@ public enum SecurityError: Error, CustomStringConvertible, Sendable {
 
 // MARK: - SIP Check
 
-/// Check if System Integrity Protection (SIP) is enabled.
-///
-/// SIP is the foundation of the security model. With SIP enabled:
-///   - Hardened Runtime protections are enforced by the kernel
-///   - Unsigned kernel extensions cannot load
-///   - /dev/mem does not exist on Apple Silicon
-///   - Root cannot modify /System or attach to protected processes
-///
-/// SIP cannot be disabled at runtime -- it requires rebooting into
-/// Recovery Mode. So if this check passes, SIP will remain enabled
-/// for the lifetime of this process.
-///
-/// Returns true only when SIP is *fully* enabled. "enabled (Custom
-/// Configuration)" — where one or more protections are individually disabled —
-/// is treated as NOT enabled, since it is an unsupported, partially-protected
-/// state. Detection runs through `SIPStatusChecker`/`SIPStatusParser`, the
-/// single source of truth for parsing `csrutil status`.
-///
-/// This value feeds the SIGNED attestation (`sip_enabled`). The
-/// `SecurityCommandRunner` is injectable so the attestation-feeding path is
-/// unit-testable without depending on the host's SIP configuration.
+/// Signed SIP self-report. Preserve the existing wire meaning (enabled includes
+/// Custom Configuration) while local posture warns unless protection is full;
+/// coordinator MDM remains authoritative for trust.
 public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     let status = SIPStatusChecker(runner: runner).status()
     switch status {
@@ -93,7 +70,7 @@ public func checkSIPEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     case .unrecognized:
         logger.error("SIP check: could not interpret csrutil output")
     }
-    return status.isFullyEnabled
+    return status.reportsEnabled
 }
 
 // MARK: - RDMA Check
@@ -141,49 +118,19 @@ public func checkRDMADisabled() -> Bool {
 
 // MARK: - Secure Boot Check
 
-/// Check whether the Secure Boot posture is acceptable for serving inference.
-///
-/// Detection runs through `SecureBootStatusChecker` (the single source of truth):
-/// `ibridge_secure_boot` via `system_profiler SPiBridgeDataType`, authoritative
-/// and sudo-free on macOS 26 (Tahoe) — the provider's minimum OS — on both
-/// Apple Silicon and Intel T2.
-///
-/// Returns `SecureBootStatus.attestsSecureBoot`: true only for provable Full
-/// Security (`ibridge_secure_boot == "Full Security"`); false for any confident
-/// downgrade or an unreadable posture. The gate (`secureBootVerdict`) and this
-/// attestation boolean derive from the SAME `status()` result, so `doctor` /
-/// `start` and the attested `secure_boot_enabled` never disagree.
-///
-/// This value feeds the SIGNED attestation (`secure_boot_enabled`). The
-/// `SecurityCommandRunner` is injectable so the attestation-feeding path is
-/// unit-testable without depending on the host's boot policy.
+/// Provider Secure Boot self-report retained for wire compatibility. macOS has
+/// no stable unprivileged local API for this policy; the coordinator verifies
+/// Apple's typed MDM SecurityInfo before granting hardware trust.
 public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
-    let status = SecureBootStatusChecker(runner: runner).status()
-    if !status.attestsSecureBoot {
-        logger.warning("Secure Boot check: \(status.summary)")
-    }
-    return status.attestsSecureBoot
+    checkAuthenticatedRootEnabled(runner: runner)
 }
 
 // MARK: - Authenticated Root Volume
 
-/// Check if Authenticated Root Volume (ARV / SSV) is sealed.
-///
-/// ARV seals the system volume with a cryptographic hash. Any modification to
-/// system files breaks the seal and the volume won't mount. This is reported to
-/// the coordinator as the standalone signed-attestation field
-/// `authenticated_root_enabled`, independent of the Secure Boot check.
-///
-/// Detection is sudo-free: `csrutil authenticated-root status` is primary (it
-/// works without root and correctly reports "enabled" on macOS 26, where
-/// `diskutil` mislabels the seal "Sealed: Broken" due to changed APFS snapshot
-/// semantics); `diskutil info /` ("Sealed: Yes/No") is the fallback. Returns
-/// true only when the seal is positively confirmed enabled; an explicit
-/// disabled, an ambiguous "Broken", or an unreadable probe all return false.
-///
-/// This value feeds the SIGNED attestation (`authenticated_root_enabled`). The
-/// `SecurityCommandRunner` is injectable so the path is unit-testable without
-/// depending on the host's seal state.
+/// Signed Authenticated Root Volume self-report. `csrutil authenticated-root`
+/// is primary and `diskutil info /` is the fallback; only a positive enabled or
+/// sealed result returns true. "Broken" remains unconfirmed rather than being
+/// treated as healthy.
 public func checkAuthenticatedRootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     // csrutil primary: check "disabled" before "enabled" to prefer the explicit
     // downgrade reading and guard against any substring overlap.
@@ -349,26 +296,14 @@ public struct SecurityPosture: Sendable {
     public let bundleSignatureValid: Bool
     public let binaryHash: String?
 
-    /// Whether the minimum security requirements are met for serving inference.
-    ///
-    /// RDMA status is reported separately. RDMA-enabled providers are allowed
-    /// when the signed runtime owns the registered-buffer policy.
-    public var isSafeToServe: Bool {
-        sipEnabled
-    }
 }
 
-/// Verify all security prerequisites before accepting inference work.
-///
-/// This performs every check and returns a full posture report.
-/// Call at process startup and optionally before each inference request.
-///
-/// Throws `SecurityError.sipDisabled` if SIP is off. RDMA is no longer a
-/// startup-fatal condition; it is included in the signed posture report.
-public func verifySecurityPosture() throws -> SecurityPosture {
+/// Collect startup posture. Failures are reported to the coordinator, which
+/// owns the routing trust decision; local startup remains warning-only.
+public func collectSecurityPosture() -> SecurityPosture {
     let sipEnabled = checkSIPEnabled()
     if !sipEnabled {
-        throw SecurityError.sipDisabled
+        logger.warning("SIP is not fully enabled; coordinator trust verification will decide routing")
     }
 
     let rdmaDisabled = checkRDMADisabled()

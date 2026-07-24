@@ -198,7 +198,7 @@ func TestTelemetryIngest_UnknownEnumsCoerced(t *testing.T) {
 }
 
 func TestTelemetryFieldAllowlistHasKnownKeys(t *testing.T) {
-	for _, k := range []string{"component", "model", "exit_code", "reason", "duration_ms"} {
+	for _, k := range []string{"component", "model", "exit_code", "reason", "duration_ms", "boot_macos_major", "boot_sip_status"} {
 		if _, ok := telemetryFieldAllowlist[k]; !ok {
 			t.Errorf("allowlist missing expected key %q", k)
 		}

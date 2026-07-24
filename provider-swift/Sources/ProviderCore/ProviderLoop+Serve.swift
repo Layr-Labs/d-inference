@@ -376,14 +376,14 @@ extension ProviderLoop {
 
     private func applySecurityHardening() async throws {
         #if !DEBUG
-        let posture = try verifySecurityPosture()
+        let posture = collectSecurityPosture()
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {
             logger.error("Security hardening failed: provider binary hash unavailable")
             throw ProviderLoopError.binaryHashUnavailable
         }
         self.securityPosture = posture
         self.binaryHash = binaryHash
-        logger.info("Security posture verified: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
+        logger.info("Security posture collected: SIP=\(posture.sipEnabled), RDMA_disabled=\(posture.rdmaDisabled), SE=\(SecureEnclave.isAvailable)")
         #else
         logger.info("Security hardening skipped in DEBUG mode")
         self.binaryHash = selfBinaryHash()

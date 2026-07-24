@@ -87,6 +87,14 @@ if [[ -z "$MODEL_ID" ]]; then
   printf 'Model id is required.\n' >&2
   exit 1
 fi
+# Mirror ManifestBuilder.validateModelID: ASCII [A-Za-z0-9._/-] only, no
+# leading "/", no "..". Hostile ids otherwise die later at the catalog 404,
+# but validating here keeps every downstream URL/S3-key/printed-command use
+# trivially safe.
+if [[ ! "$MODEL_ID" =~ ^[A-Za-z0-9._/-]+$ || "$MODEL_ID" == /* || "$MODEL_ID" == *".."* ]]; then
+  printf 'Model id must use only [A-Za-z0-9._/-], not start with "/", and contain no "..": %s\n' "$MODEL_ID" >&2
+  exit 1
+fi
 # Mirror ManifestBuilder.validateVersion: non-empty, [A-Za-z0-9._-] only
 # (which excludes "/"), no "..".
 if [[ -z "$NEW_VERSION" || ! "$NEW_VERSION" =~ ^[A-Za-z0-9._-]+$ || "$NEW_VERSION" == *".."* ]]; then
@@ -117,7 +125,7 @@ fi
 # ---------------------------------------------------------------------------
 # 1) Catalog record -> current version + r2_prefix -> old manifest.
 # ---------------------------------------------------------------------------
-WORK_DIR="$(mktemp -d -t darkbloom-republish.XXXXXX)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-republish.XXXXXX")"
 ARTIFACTS_DIR="$WORK_DIR/artifacts"
 OLD_MANIFEST="$WORK_DIR/manifest.old.json"
 NEW_MANIFEST="$WORK_DIR/manifest.json"
@@ -174,8 +182,18 @@ while IFS=$'\t' read -r rel_path expected_sha; do
   dest="$ARTIFACTS_DIR/$rel_path"
   mkdir -p "$(dirname "$dest")"
   printf 'Downloading %s\n' "$rel_path"
-  curl -fsS "$MODEL_CDN_BASE_URL/$OLD_PREFIX/$rel_path" -o "$dest"
-  actual_sha="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$dest")"
+  # --max-filesize enforces the small-artifact cap on the wire (the manifest's
+  # claimed size_bytes is only a filter); the hash streams in 1 MiB chunks so
+  # an oversized body can never be slurped into memory first.
+  curl -fsS --max-filesize "$MAX_ARTIFACT_BYTES" \
+    "$MODEL_CDN_BASE_URL/$OLD_PREFIX/$rel_path" -o "$dest"
+  actual_sha="$(python3 -c '
+import hashlib, sys
+h = hashlib.sha256()
+with open(sys.argv[1], "rb") as f:
+    for chunk in iter(lambda: f.read(1 << 20), b""):
+        h.update(chunk)
+print(h.hexdigest())' "$dest")"
   if [[ "$actual_sha" != "$expected_sha" ]]; then
     printf 'SHA-256 mismatch for %s: manifest %s, downloaded %s\n' "$rel_path" "$expected_sha" "$actual_sha" >&2
     exit 1
@@ -281,29 +299,36 @@ METADATA="$(jq -c '.metadata // {}' "$CATALOG_JSON")"
 INPUT_PRICE="$(curl -fsS "$COORDINATOR_URL/v1/pricing" 2>/dev/null | jq -r --arg m "$MODEL_ID" '.prices[]? | select(.model == $m) | .input_price' || true)"
 OUTPUT_PRICE="$(curl -fsS "$COORDINATOR_URL/v1/pricing" 2>/dev/null | jq -r --arg m "$MODEL_ID" '.prices[]? | select(.model == $m) | .output_price' || true)"
 
+# The printed command is destined for copy-paste with prod-write credentials.
+# Catalog-sourced free text (display name, description, metadata JSON) is NOT
+# charset-validated at registration, so every interpolated value is rendered
+# shell-safe with %q — a catalog field containing `"; rm ...` or a stray quote
+# pastes as an inert literal instead of executing.
+q() { printf '%q' "$1"; }
+
 cat <<EOF
 
 Next (human step) — register the new version, verify a provider converges,
 then promote:
 
   gh workflow run register-model.yml \\
-    -f model_id="$MODEL_ID" \\
-    -f version="$NEW_VERSION" \\
-    -f display_name="$DISPLAY_NAME" \\
-    -f family="$FAMILY" \\
-    -f architecture="$ARCHITECTURE" \\
-    -f quantization="$QUANTIZATION" \\
-    -f capabilities_csv="$CAPABILITIES_CSV" \\
-    -f max_context_length="$MAX_CONTEXT" \\
-    -f max_output_length="$MAX_OUTPUT" \\
-    -f min_ram_gb="$MIN_RAM_GB" \\
-    -f description="$DESCRIPTION" \\
-    -f runtime_parameters_json='$RUNTIME_PARAMS' \\
-    -f metadata_json='$METADATA' \\
-    -f input_price="${INPUT_PRICE:-<input_price micro-USD per 1M tokens>}" \\
-    -f output_price="${OUTPUT_PRICE:-<output_price micro-USD per 1M tokens>}" \\
-    -f promote="false" \\
-    -f coordinator_url="$COORDINATOR_URL"
+    -f model_id=$(q "$MODEL_ID") \\
+    -f version=$(q "$NEW_VERSION") \\
+    -f display_name=$(q "$DISPLAY_NAME") \\
+    -f family=$(q "$FAMILY") \\
+    -f architecture=$(q "$ARCHITECTURE") \\
+    -f quantization=$(q "$QUANTIZATION") \\
+    -f capabilities_csv=$(q "$CAPABILITIES_CSV") \\
+    -f max_context_length=$(q "$MAX_CONTEXT") \\
+    -f max_output_length=$(q "$MAX_OUTPUT") \\
+    -f min_ram_gb=$(q "$MIN_RAM_GB") \\
+    -f description=$(q "$DESCRIPTION") \\
+    -f runtime_parameters_json=$(q "$RUNTIME_PARAMS") \\
+    -f metadata_json=$(q "$METADATA") \\
+    -f input_price=$(q "${INPUT_PRICE:-<input_price micro-USD per 1M tokens>}") \\
+    -f output_price=$(q "${OUTPUT_PRICE:-<output_price micro-USD per 1M tokens>}") \\
+    -f promote=false \\
+    -f coordinator_url=$(q "$COORDINATOR_URL")
 
 Promotion (after verifying the registered version):
   POST $COORDINATOR_URL/v1/admin/models/$MODEL_ID/promote {"version": "$NEW_VERSION"}

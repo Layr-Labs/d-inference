@@ -8,7 +8,7 @@ extension Start {
     ) {
         guard !snapshot.issues.isEmpty else { return }
         let enforcement = coordinatorEnforced
-            ? " The coordinator independently verifies hardware trust through MDM."
+            ? " Coordinator trust policy still controls public routing."
             : ""
         emit("WARNING: local boot security needs attention; continuing.\(enforcement)")
         for issue in snapshot.issues {

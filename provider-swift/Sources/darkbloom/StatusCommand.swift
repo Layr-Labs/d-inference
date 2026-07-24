@@ -74,7 +74,7 @@ struct Status: AsyncParsableCommand {
     func bootSecurityStatusLine(_ bootSecurity: BootSecuritySnapshot) -> String {
         let status = bootSecurity.issues.isEmpty ? CheckStatus.pass : .warn
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
-            + "SIP \(bootSecurity.sip.summary); Secure Boot is checked separately by coordinator MDM"
+            + "SIP \(bootSecurity.sip.summary); Secure Boot has no local public check"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last

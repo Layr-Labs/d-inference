@@ -26,7 +26,7 @@ struct BootSecurityWarningTests {
         #expect(network.contains("WARNING"))
         #expect(network.contains("Software Update"))
         #expect(network.contains("csrutil enable"))
-        #expect(network.contains("coordinator independently verifies"))
+        #expect(network.contains("Coordinator trust policy"))
 
         let local = try render(snapshot, coordinatorEnforced: false)
         #expect(!local.contains("coordinator"))

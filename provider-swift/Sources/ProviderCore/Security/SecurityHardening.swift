@@ -118,9 +118,8 @@ public func checkRDMADisabled() -> Bool {
 
 // MARK: - Secure Boot Check
 
-/// Provider Secure Boot self-report retained for wire compatibility. macOS has
-/// no stable unprivileged local API for this policy; the coordinator verifies
-/// Apple's typed MDM SecurityInfo before granting hardware trust.
+/// Historical Authenticated Root proxy retained for wire compatibility. It is
+/// not presented as a local Secure Boot verdict.
 public func checkSecureBootEnabled(runner: SecurityCommandRunner = .live) -> Bool {
     checkAuthenticatedRootEnabled(runner: runner)
 }

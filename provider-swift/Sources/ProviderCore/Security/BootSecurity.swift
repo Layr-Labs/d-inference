@@ -11,8 +11,8 @@ public struct BootSecurityIssue: Sendable, Equatable {
     public let fix: String
 }
 
-/// Local, warning-only posture. Secure Boot is intentionally absent: Apple's
-/// typed MDM SecurityInfo response is the coordinator's authoritative source.
+/// Local, warning-only posture. Secure Boot is intentionally absent because
+/// macOS exposes no stable unprivileged local check for it.
 public struct BootSecuritySnapshot: Sendable, Equatable {
     public static let recommendedMacOSMajorVersion = 26
 

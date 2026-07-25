@@ -108,12 +108,16 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	// exhausted rejection is skipped here because dispatch.go run()'s tail already
 	// counts that request exactly once; every other (pre-dispatch) stage has no
 	// route-outcome terminal, so it contributes its single outcome here.
+	//
+	// No KV backend: a pre-dispatch rejection never reached a slot, so there is
+	// nothing to attribute it to. "" normalizes to kv_backend:unknown — booking
+	// it to a real backend would invent a data point.
 	if info.stage != "dispatch" {
 		model := info.resolvedModel
 		if model == "" {
 			model = info.requestedModel
 		}
-		s.recordRequestOutcome(model, orUptimeClassForRejection(info.httpStatus))
+		s.recordRequestOutcome(model, "", orUptimeClassForRejection(info.httpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.

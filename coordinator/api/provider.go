@@ -2155,6 +2155,14 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 
+		// Per-backend request quality (v0.8.0 paged rollout, Gate G5). Same two
+		// numbers just written to the route-outcome row, emitted as live
+		// histograms segmented by the SLOT that served — (providerID, pr.Model),
+		// never the provider alone, because one box can hold several models on
+		// different backends during a staged rollout. See kv_backend_metrics.go.
+		s.emitRequestBackendLatency(pr.Model, s.kvBackendTag(providerID, pr.Model),
+			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
+
 		// Resolve provider identity for payout.
 		p := s.registry.GetProvider(providerID)
 		if p == nil {

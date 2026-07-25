@@ -27,6 +27,11 @@
 // `engine_health` telemetry (`operation=engine_v2_refusal`) + rethrow —
 // the load fails with a 503 and the coordinator reroutes. There is no
 // legacy engine to fall back to.
+//
+// An EXPLICITLY requested paged backend that cannot be built takes that
+// same route: `pagedUnavailable` rather than a quiet contiguous engine,
+// so a paged benchmark or e2e run can never report paged and measure
+// contiguous. `.auto` and the fleet kill switch still degrade.
 
 import Foundation
 import MLX
@@ -45,6 +50,15 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// admitted with a zero ceiling would reject every request, so the
     /// load is refused (503; the coordinator reroutes).
     case noKVHeadroom
+    /// An EXPLICIT paged request could not be served: `engine_v2_kv_backend
+    /// = "paged"`, a per-model override in `engine_v2_kv_backend_by_model`,
+    /// or the benchmark's `--kv-backend paged`. Those are claims someone
+    /// VERIFIES against — with no canary fleet, benchmarks and e2e are the
+    /// only safety net, so degrading a named paged run to contiguous would
+    /// report paged while measuring contiguous. `.auto` still degrades.
+    /// Carries the underlying reason (kernel preflight, physical-capacity
+    /// planning, or pool construction) verbatim.
+    case pagedUnavailable(String)
 
     var description: String {
         switch self {
@@ -52,6 +66,9 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
             return "engine_v2: model type \(type) has no CBv2 adapter"
         case .noKVHeadroom:
             return "engine_v2: no KV byte headroom under the unified-memory cap"
+        case .pagedUnavailable(let reason):
+            return "engine_v2: paged KV backend explicitly requested but "
+                + "unavailable — \(reason)"
         }
     }
 }
@@ -187,9 +204,11 @@ extension EngineV2Factory {
     public struct ProductionBuild {
         public let engine: any CBv2Engine
         public let kvBackendKind: EngineV2KVBackendKind
-        /// Non-nil when a paged selection fell back to contiguous (fleet
-        /// kill switch, kernel ineligibility, pool-construction capacity).
-        /// A fallback is a supported degradation — INFO, never a refusal.
+        /// Non-nil when a paged selection DEGRADED to contiguous: the fleet
+        /// kill switch always, and preflight/capacity/eligibility failures
+        /// under `.auto`. A degrade is supported — INFO, never a refusal.
+        /// An EXPLICIT `.paged` selection never degrades for a failure; it
+        /// throws `EngineV2ProductionError.pagedUnavailable`.
         public let kvBackendFallbackReason: String?
     }
 
@@ -199,6 +218,12 @@ extension EngineV2Factory {
         let layerKinds: [CBv2LayerKind]
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
+        /// The ONE scheduler config of this build. Constructed in
+        /// `prepareProductionBackend`, where it sizes the paged pool's
+        /// `maxPrefillChunk`, and carried here so `assembleProductionBuild`
+        /// hands the ENGINE that same instance instead of an unrelated
+        /// twin that happened to agree on the memberwise defaults.
+        let schedulerConfig: CBv2SchedulerConfig
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
@@ -213,7 +238,8 @@ extension EngineV2Factory {
             backend: CBv2KVBackend,
             caches: [any CBv2AttendingLayerCache],
             kind: EngineV2KVBackendKind,
-            fallbackReason: String?
+            fallbackReason: String?,
+            schedulerConfig: CBv2SchedulerConfig
         ) {
             self.modelIdentity = ObjectIdentifier(model)
             self.maxConcurrentRequests = max(1, maxConcurrentRequests)
@@ -222,6 +248,7 @@ extension EngineV2Factory {
             self.caches = caches
             self.kind = kind
             self.fallbackReason = fallbackReason
+            self.schedulerConfig = schedulerConfig
         }
 
         func consume(
@@ -253,13 +280,16 @@ extension EngineV2Factory {
     ///
     /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
     /// order): the caller passes the operator selection with slot vetoes
-    /// (VLM, kv-quant) already applied; `.auto` is always contiguous.
-    /// Paged remains an explicit experimental selection.
+    /// (VLM) already applied; `.auto` is always contiguous. Paged remains
+    /// an explicit experimental selection.
     /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
     /// THIS deepest layer so no call path (benchmarks included) bypasses
-    /// it. Paged construction throwing `CBv2KVError` (kernel ineligibility,
-    /// pool capacity) falls back to contiguous — a paged-ineligible model
-    /// must load and serve, never refuse.
+    /// it, and it DEGRADES rather than refuses — an operator override is
+    /// not a failure. Everything that IS a failure (kernel preflight,
+    /// physical-capacity planning, `PagedKVBackend` throwing `CBv2KVError`)
+    /// degrades to contiguous under `.auto` but THROWS
+    /// `EngineV2ProductionError.pagedUnavailable` under an explicit
+    /// `.paged`, so a paged run can never silently serve contiguous.
     public static func makeProductionBuild(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
@@ -346,6 +376,17 @@ extension EngineV2Factory {
         case .auto: resolvedKind = .contiguous
         }
         var fallbackReason: String?
+        // DEGRADE, not refuse — even on an explicit paged selection. This
+        // is the branch that must never be collapsed into the failure
+        // handling below: the kill switch says "DO NOT do what you asked",
+        // a preflight/capacity failure says "we CANNOT do what you asked".
+        // Only the second is a broken promise worth a 503. An operator who
+        // sets DARKBLOOM_CBV2_PAGED_KV=0 on a fleet configured
+        // `engine_v2_kv_backend = "paged"` is asking for contiguous
+        // SERVICE, not for every slot to start failing — a kill switch
+        // that refuses is not a kill switch. `killSwitchForcesContiguous`
+        // in `EngineV2KVBackendGateTests` is the only thing pinning this
+        // apart from the refusal cases; keep it a degrade assertion.
         if resolvedKind == .paged,
             EngineV2KVBackendPolicy.killSwitchDisabled(environment: environment)
         {
@@ -353,6 +394,34 @@ extension EngineV2Factory {
             fallbackReason = "kill_switch"
         }
 
+        // Paged FAILED: we CANNOT do what was asked (kernel preflight,
+        // physical-capacity planning, or pool construction) — the other
+        // half of the distinction drawn at the kill switch above. The
+        // degrade-or-refuse rule itself lives in
+        // `EngineV2KVBackendPolicy.degradesPagedFailure`, next to the
+        // other four selection layers and unit-testable without building
+        // an engine; note the degrade branch is currently reachable only
+        // once `.auto` starts resolving paged, since today it short-
+        // circuits to contiguous before any of this runs.
+        //
+        // The refusal is a catchable throw, never a trap: the slot factory
+        // maps it to ERROR `engine_v2_refusal` (reason
+        // `paged_backend_unavailable`) + 503 and the coordinator reroutes;
+        // the benchmark logs the cell as failed. Slot vetoes (VLM) resolve
+        // BEFORE this call, so a `.paged` arriving here is a request
+        // nothing has excused.
+        func degradeOrRefuse(_ reason: String) throws -> String {
+            guard EngineV2KVBackendPolicy.degradesPagedFailure(selection: kvBackend)
+            else {
+                throw EngineV2ProductionError.pagedUnavailable(reason)
+            }
+            return reason
+        }
+
+        // ONE scheduler config for the whole build: this instance sizes the
+        // paged pool's `maxPrefillChunk` below AND is the instance the
+        // engine runs on — `assembleProductionBuild` reads it back off the
+        // preparation and sets only `enablePrefixCache`.
         let schedulerConfig = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests))
 
@@ -369,7 +438,8 @@ extension EngineV2Factory {
                 backend: backend,
                 caches: caches,
                 kind: .contiguous,
-                fallbackReason: fallbackReason)
+                fallbackReason: fallbackReason,
+                schedulerConfig: schedulerConfig)
         }
 
         if resolvedKind == .paged {
@@ -381,7 +451,7 @@ extension EngineV2Factory {
                 }
             } catch {
                 resolvedKind = .contiguous
-                fallbackReason = "kernel_preflight: \(error)"
+                fallbackReason = try degradeOrRefuse("kernel_preflight: \(error)")
             }
         }
 
@@ -400,18 +470,23 @@ extension EngineV2Factory {
                     maxBufferLength: maxBufferLength))
             switch decision {
             case .contiguous(let reason):
-                fallbackReason = reason
+                fallbackReason = try degradeOrRefuse(reason)
             case .paged(let plan):
                 do {
                     let paged = try PagedKVBackend(
                         layerKinds: layerKinds,
                         config: PagedKVPoolConfig(
                             capacityBytes: plan.capacityBytes,
-                            // LOCKSTEP: a windowed-layer update larger than the
-                            // ring's provision traps the process
-                            // (PagedSequenceKV precondition) — size the pool to
-                            // the scheduler's REAL chunk, never a parallel
-                            // constant.
+                            // LOCKSTEP: a windowed-layer update larger than
+                            // the ring's provision traps the PROCESS
+                            // (`PagedSequenceKV` precondition), so the pool
+                            // must be sized from the chunk the engine
+                            // actually schedules. `schedulerConfig` IS that
+                            // instance: it is carried on the preparation and
+                            // `assembleProductionBuild` hands the very same
+                            // value to `EngineV2`, copying it only to set
+                            // `enablePrefixCache`. There is no second config
+                            // left to drift from.
                             maxPrefillChunk: schedulerConfig.prefillChunkSize,
                             nominalMaxSequenceLength: max(
                                 1, maxContextLength ?? 8192),
@@ -429,17 +504,21 @@ extension EngineV2Factory {
                         backend: paged,
                         caches: caches,
                         kind: .paged,
-                        fallbackReason: nil)
+                        fallbackReason: nil,
+                        schedulerConfig: schedulerConfig)
                 } catch let error as CBv2KVError {
-                    // Paged ineligibility/capacity is a supported degradation:
-                    // fall back to the contiguous backend (INFO telemetry at the
-                    // bridge — never the engine_v2_refusal path).
+                    // Paged ineligibility/capacity under `.auto` is a
+                    // supported degradation: fall back to the contiguous
+                    // backend (INFO telemetry at the bridge — never the
+                    // engine_v2_refusal path). Under an explicit `.paged`,
+                    // `degradeOrRefuse` rethrows it as `pagedUnavailable`.
                     switch error {
                     case .backendIneligible(let reason):
-                        fallbackReason = "ineligible: \(reason)"
+                        fallbackReason = try degradeOrRefuse("ineligible: \(reason)")
                     case .capacityExhausted(let needed, let available):
-                        fallbackReason =
-                            "pool_construction_capacity: needed \(needed), available \(available)"
+                        fallbackReason = try degradeOrRefuse(
+                            "pool_construction_capacity: needed \(needed), "
+                                + "available \(available)")
                     }
                 }
             }
@@ -469,7 +548,9 @@ extension EngineV2Factory {
     }
 
     /// Final engine assembly over an already resolved backend. This method has
-    /// no backend fallback path, so its cache capability cannot drift.
+    /// no backend fallback path, so its cache capability cannot drift, and it
+    /// builds no scheduler config of its own — it runs the engine on the very
+    /// instance `prepareProductionBackend` sized the paged pool against.
     static func assembleProductionBuild(
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
@@ -482,9 +563,16 @@ extension EngineV2Factory {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
             maxConcurrentRequests: maxConcurrentRequests)
-        let schedulerConfig = CBv2SchedulerConfig(
-            maxConcurrentRequests: max(1, maxConcurrentRequests),
-            enablePrefixCache: prefixCache != nil)
+        // The ONE config, read back off the preparation. `consume` has
+        // already refused a `maxConcurrentRequests` that differs from the
+        // prepared one, so the only field this phase may decide is
+        // `enablePrefixCache` — SSD cache construction deliberately runs
+        // AFTER backend preparation, because the cache's replay capability
+        // follows the backend that will actually serve. Everything else,
+        // `prefillChunkSize` above all, reaches the engine byte-identical
+        // to what the paged pool's `maxPrefillChunk` was sized from.
+        var schedulerConfig = preparedBackend.schedulerConfig
+        schedulerConfig.enablePrefixCache = prefixCache != nil
         return ProductionBuild(
             engine: makeEngineV2(
                 model: model,

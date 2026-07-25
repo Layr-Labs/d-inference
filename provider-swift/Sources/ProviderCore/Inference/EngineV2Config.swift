@@ -88,6 +88,16 @@ public enum EngineV2RefusalReason: String, Sendable {
     /// A load-time KV re-slice would push some co-resident slot below the
     /// minimum serviceable grant (`EngineV2KVSizing` floor).
     case resliceFloor = "reslice_floor"
+    /// An EXPLICITLY requested paged backend could not be served
+    /// (`EngineV2ProductionError.pagedUnavailable`): kernel preflight,
+    /// physical-capacity planning, or `PagedKVBackend` construction. Kept
+    /// SEPARATE from `engineInitFailed` on purpose — with no canary fleet
+    /// this is the aggregate signal that a paged rollout is regressing,
+    /// and folding it into the catch-all would make it indistinguishable
+    /// from an unrelated bad model load. An `.auto` selection never lands
+    /// here; it degrades to contiguous and reports INFO
+    /// `engine_v2_kv_backend` with a fallback reason instead.
+    case pagedBackendUnavailable = "paged_backend_unavailable"
     /// Any other engine-construction failure.
     case engineInitFailed = "engine_init_failed"
 
@@ -98,6 +108,8 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .noKVHeadroom
         case EngineV2ProductionError.unsupportedModel:
             return .unsupportedModel
+        case EngineV2ProductionError.pagedUnavailable:
+            return .pagedBackendUnavailable
         case is EngineV2VLMTextExtractionError:
             return .vlmExtractionFailed
         default:
@@ -243,34 +255,6 @@ public enum EngineV2Factory {
             "backend": .string("engine_v2"),
             "model": .string(modelId),
             "reason": .string(reason),
-        ])
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
-    }
-
-    /// WARN `engine_health` event when a model configured for `kv_quant` is
-    /// served through engine_v2, which does NOT support KV-quant and uses
-    /// unquantized native-float caches (`makeProductionEngine` builds
-    /// `CBv2LayerCache`, never a quantized cache). Surfacing this keeps the operator from assuming
-    /// the memory savings apply. Allowlisted fields only.
-    static func emitKVQuantUnsupportedTelemetry(
-        modelId: String,
-        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
-    ) {
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .warn,
-            kind: .engineHealth,
-            message: "engine_v2: kv_quant not supported — using unquantized native KV"
-        )
-        event.fields = TelemetryFieldFilter.filter([
-            "component": .string("engine"),
-            "operation": .string("engine_v2_kv_quant_unsupported"),
-            "backend": .string("engine_v2"),
-            "model": .string(modelId),
         ])
         if let emitTelemetry {
             emitTelemetry(event)

@@ -10,7 +10,8 @@ import Foundation
 public struct ThroughputSweepReport: Codable, Sendable {
 
     /// Bumped when the JSON shape changes so downstream parsers can gate.
-    public static let currentSchemaVersion = 1
+    /// 2 adds the optional `decodeConstructionFailure` block.
+    public static let currentSchemaVersion = 2
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -124,6 +125,28 @@ public struct ThroughputSweepReport: Codable, Sendable {
         }
     }
 
+    /// Present ONLY when engine construction failed for EVERY decode cell,
+    /// so the sweep measured nothing at all. The samples are still emitted
+    /// (all zero) and `notes` still records the selection, but a reader —
+    /// human or script — needs the CAUSE, not just an empty curve.
+    ///
+    /// The case this exists for: `--kv-backend paged` on a box where paged
+    /// cannot be served. Since OPEN-9 that is a hard refusal rather than a
+    /// silent degrade to contiguous, so the run legitimately produces no
+    /// numbers, and `darkbloom benchmark` exits non-zero off this field
+    /// rather than reporting success with an empty curve.
+    public struct DecodeConstructionFailure: Codable, Sendable {
+        /// The `--kv-backend` selection the run was launched with.
+        public let kvBackendSelection: String
+        /// The construction error, verbatim, from the last cell that failed.
+        public let reason: String
+
+        public init(kvBackendSelection: String, reason: String) {
+            self.kvBackendSelection = kvBackendSelection
+            self.reason = reason
+        }
+    }
+
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
@@ -132,6 +155,10 @@ public struct ThroughputSweepReport: Codable, Sendable {
     public let decode: [DecodeSample]
     public let derived: Derived
     public let notes: [String]
+    /// Non-nil only when no decode cell could be constructed. Omitted from
+    /// the JSON entirely on a healthy run, so successful reports keep their
+    /// existing shape.
+    public let decodeConstructionFailure: DecodeConstructionFailure?
 
     public init(
         schemaVersion: Int = ThroughputSweepReport.currentSchemaVersion,
@@ -141,7 +168,8 @@ public struct ThroughputSweepReport: Codable, Sendable {
         prefill: [PrefillSample],
         decode: [DecodeSample],
         derived: Derived,
-        notes: [String]
+        notes: [String],
+        decodeConstructionFailure: DecodeConstructionFailure? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.modelID = modelID
@@ -151,6 +179,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
         self.decode = decode
         self.derived = derived
         self.notes = notes
+        self.decodeConstructionFailure = decodeConstructionFailure
     }
 
     // MARK: - Derived assembly

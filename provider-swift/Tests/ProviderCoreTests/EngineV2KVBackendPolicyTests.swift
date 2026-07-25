@@ -3,7 +3,7 @@
 // Pure-logic tests for the paged-KV backend selection policy
 // (`EngineV2KVBackendPolicy`): operator-string parsing (per-model override
 // semantics, and the slot-veto layer (VLM forces contiguous; kv-quant is
-// no longer a veto — the feature is being removed from the product).
+// no longer a veto — the feature is gone from the product).
 // The family/eligibility layers live in `EngineV2KVBackendGateTests`
 // (real tiny models); the wire-through lives in the wiring tests.
 
@@ -109,7 +109,7 @@ struct EngineV2KVBackendPolicyTests {
 
         // Clean text slots pass through untouched — including the slots
         // that used to be vetoed for kv-quant intent, which is no longer
-        // a backend consideration.
+        // a backend consideration anywhere in the product.
         let paged = EngineV2KVBackendPolicy.applySlotVetoes(
             selection: .paged, isVLM: false)
         #expect(paged.selection == .paged)

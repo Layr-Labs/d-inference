@@ -161,14 +161,14 @@ jobs:
         run: swift test
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
-      - name: Build nested paged safety tests
+      - name: Build nested mlx-swift-lm tests
         working-directory: libs/mlx-swift-lm
         # Cold builds compile the full Cmlx C++/Metal tree (~20 min on the
         # 12-vcpu runner); warm runs restore libs/mlx-swift-lm/.build from
         # the SwiftPM cache and finish in ~1 min.
         timeout-minutes: 35
         run: swift build --build-tests
-      - name: Run nested paged and prompt-hash tests directly
+      - name: Run nested paged safety and prompt-hash tests directly
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 10
         run: |
@@ -182,6 +182,37 @@ jobs:
           done
           swift test --skip-build --filter CBv2PagedSafetyTests
           swift test --skip-build --filter CBv2PrefixCacheHasherTests
+      # The four suites below are already compiled by the `swift build
+      # --build-tests` step above but were never executed, so the paged-KV
+      # migration had no automated numerical gate. They add no compile time,
+      # only run time; one step each so a slow or failing suite is
+      # attributable straight from the job summary. They reuse the metallib
+      # placed by the step above.
+      - name: Run nested paged eligibility tests
+        working-directory: libs/mlx-swift-lm
+        # Pure Swift threadgroup-budget arithmetic; no GPU dispatch.
+        timeout-minutes: 5
+        run: swift test --skip-build --filter CBv2PagedEligibilityTests
+      - name: Run nested paged backend tests
+        working-directory: libs/mlx-swift-lm
+        # Pool bookkeeping, per-sequence page tables, windowed rings,
+        # reservation admission, backend lifecycle. Small MLX arrays only.
+        timeout-minutes: 10
+        run: swift test --skip-build --filter CBv2PagedBackendTests
+      - name: Run nested paged kernel parity tests
+        working-directory: libs/mlx-swift-lm
+        # Heaviest of the four: fp32 decode-kernel parity, bitwise
+        # batch-composition invariance, and a 200-step greedy token match.
+        # Dispatches the JIT-compiled Metal kernels, exactly as
+        # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
+        timeout-minutes: 20
+        run: swift test --skip-build --filter CBv2PagedKernelTests
+      - name: Run nested KV-sharing contiguous/paged parity tests
+        working-directory: libs/mlx-swift-lm
+        # Two-arm differential over TinyTestModel's KV-sharing variant; the
+        # paged arm self-skips (XCTSkip) if the backend is unavailable here.
+        timeout-minutes: 10
+        run: swift test --skip-build --filter CBv2KVSharingParityTests
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
@@ -212,7 +243,8 @@ jobs:
           swift build -c release --product darkbloom-fan-helper
       - name: Build nested mlx-swift-lm tests (warms nested cache)
         working-directory: libs/mlx-swift-lm
-        # The test-provider job runs CBv2PagedSafetyTests from this nested
+        # The test-provider job runs the CBv2 paged suites (safety, kernel
+        # parity, backend, eligibility, KV-sharing parity) from this nested
         # .build; saving it here keeps that lane warm across PRs.
         timeout-minutes: 35
         run: swift build --build-tests

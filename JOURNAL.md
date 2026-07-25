@@ -93,6 +93,17 @@ until each premise is individually checked against a live caller.
   unless it is copied to `<engine>/.build/debug/` AND each
   `.build/debug/*PackageTests.xctest/Contents/MacOS/`. Source:
   `/Users/gaj/Documents/Builds/d-inference-paged-kv/provider-swift/.build/arm64-apple-macosx/debug/mlx.metallib`.
+- **A verification track must NOT share a worktree with the code under test.**
+  Seven engine agents in one tree is fine for edits — ownership is exclusive and
+  nothing is clobbered — but any one agent's half-applied change makes the
+  library uncompilable, and Track T's entire job is running the suite. Edits
+  tolerate a shared tree; validation does not. **Wave 2: Track T gets its own
+  worktree.** Everyone else can stay shared.
+- **Expect a red tree mid-wave and do not treat it as a defect.** A shared
+  worktree with N concurrent agents is uncompilable most of the time. Agents
+  report written-and-unvalidated with a per-test prediction (pass, or
+  fail-pending-<track>); Main validates once at integration. A test that fails
+  for the predicted reason is stronger evidence than one that passes.
 - **`.build/debug` is a symlink** — binaries run through it silently disabled
   paged until commit `0408b73`. Gate runs should still prefer
   `.build/arm64-apple-macosx/<config>/`.

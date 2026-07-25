@@ -17,24 +17,42 @@ extension Benchmark {
             printError("--prefill-lengths must contain at least one positive integer")
             throw ExitCode.failure
         }
-        guard maxBatch >= 1 else {
-            printError("--max-batch must be >= 1")
-            throw ExitCode.failure
-        }
         guard decodeIterations >= 1 else {
             printError("--decode-iterations must be >= 1")
             throw ExitCode.failure
         }
-        let batchSizes = Array(1 ... maxBatch)
+        // An explicit list wins over the ladder: the release gates need the
+        // cells {1,2,4,8}, not every integer up to 8.
+        let batches: [Int]
+        if let raw = batchSizes {
+            batches = Self.parsePositiveInts(raw)
+            guard !batches.isEmpty else {
+                printError("--batch-sizes must contain at least one positive integer")
+                throw ExitCode.failure
+            }
+        } else {
+            guard maxBatch >= 1 else {
+                printError("--max-batch must be >= 1")
+                throw ExitCode.failure
+            }
+            batches = Array(1 ... maxBatch)
+        }
+        guard let backend = EngineV2KVBackendSelection(
+            rawValue: kvBackend.trimmingCharacters(in: .whitespaces).lowercased())
+        else {
+            printError("--kv-backend must be one of: auto, contiguous, paged")
+            throw ExitCode.failure
+        }
 
         let report = try await ThroughputSweep.run(
             modelID: modelID,
             modelDirectory: modelDirectory,
             promptLengths: lengths,
-            batchSizes: batchSizes,
+            batchSizes: batches,
             decodeTokens: decodeTokens,
             decodePromptTokens: decodePromptTokens,
             decodeIterations: decodeIterations,
+            kvBackend: backend,
             hardware: hardware
         )
 

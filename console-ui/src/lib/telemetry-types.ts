@@ -140,4 +140,21 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "prefix_construction_failure",
   "prefix_capacity_refusal",
   "prefix_cold_fallback",
+  // KV-backend discriminator (v0.8.0 paged rollout). `backend` stays the
+  // engine/runtime name; `kv_backend` is the KV storage kind, the same key
+  // and vocabulary as BackendSlotCapacity.kv_backend on the heartbeat wire.
+  // `prefix_reuse_backend` is the finer prefix-reuse row identity.
+  "kv_backend",
+  "prefix_reuse_backend",
+  // Paged KV pool metrics: aggregate pool counters only.
+  "pages_pinned",
+  "cow_events",
+  "pool_utilization",
+  // MTP (speculative decode) posture. MTP inflates observed_decode_tps with
+  // no discriminator, so a partially-MTP fleet biases routing on a metric the
+  // coordinator believes is homogeneous. Bounded enums and counters only.
+  "mtp_enabled",
+  "mtp_active",
+  "mtp_inactive_reason",
+  "mtp_acceptance_rate",
 ]);

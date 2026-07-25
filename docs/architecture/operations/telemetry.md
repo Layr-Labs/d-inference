@@ -26,9 +26,13 @@ The coordinator coerces unknown source/severity/kind values to safe defaults (`c
 
 All three field allowlists (Go server, Swift client, TypeScript client) must also stay in sync:
 
-* Go: `telemetryFieldAllowlist` (`telemetry_handlers.go:48-87`)
-* Swift: `TelemetryFieldFilter.allowed` (`TelemetryEvent.swift:229-236`)
-* TypeScript: `TELEMETRY_ALLOWED_FIELDS` (`telemetry-types.ts:54-85`)
+* Go: `telemetryFieldAllowlist` (`telemetry_handlers.go:48-171`)
+* Swift: `TelemetryFieldFilter.allowed` (`TelemetryEvent.swift:238-294`)
+* TypeScript: `TELEMETRY_ALLOWED_FIELDS` (`telemetry-types.ts:58-160`)
+
+This is enforced, not merely asked for: `coordinator/api/telemetry_allowlist_parity_test.go`
+scrapes both client mirrors at test time and diffs them against the Go map in both
+directions. Adding a field to one mirror alone fails `TestTelemetryAllowlistThreeWayParity`.
 
 ## Wire event shape
 
@@ -52,7 +56,7 @@ type TelemetryEvent struct {
 }
 ```
 
-The Swift struct uses identical snake_case `CodingKeys` and omits empty optionals (`TelemetryEvent.swift:69-77`). The TypeScript interface uses the same optional fields (`telemetry-types.ts:34-50`).
+The Swift struct uses identical snake_case `CodingKeys` and omits empty optionals (`TelemetryEvent.swift:78-86`). The TypeScript interface uses the same optional fields (`telemetry-types.ts:38-54`).
 
 ## Enums
 
@@ -125,7 +129,13 @@ Events are forwarded to Datadog Logs API asynchronously and are **not** persiste
 
 ## Field allowlist
 
-Only non-sensitive operational fields may be attached to events. The current allowlist (`telemetry_handlers.go:48-87`) includes generic metadata (`component`, `operation`, `duration_ms`), provider/backend context (`model`, `backend`, `hardware_chip`, `memory_gb`), coordinator context (`provider_id`, `trust_level`, `queue_depth`), connectivity (`reconnect_count`, `ws_state`), billing booleans (`billing_method`, `payment_failed`), and UI context (`url`, `route`).
+Only non-sensitive operational fields may be attached to events. The current allowlist (`telemetry_handlers.go:48-171`) includes generic metadata (`component`, `operation`, `duration_ms`), provider/backend context (`model`, `backend`, `hardware_chip`, `memory_gb`), coordinator context (`provider_id`, `trust_level`, `queue_depth`), connectivity (`reconnect_count`, `ws_state`), billing booleans (`billing_method`, `payment_failed`), UI context (`url`, `route`), and the OOM, engine-health, KV-budget-audit, media, and exact-prefix-replay diagnostic cohorts.
+
+v0.8.0 added three more cohorts, all bounded enums and counters:
+
+* **KV-backend discriminator** — `kv_backend` (`paged` | `contiguous`, the same key and vocabulary as `BackendSlotCapacity.kv_backend` on the heartbeat wire) and `prefix_reuse_backend`. These exist because `backend` was overloaded across three unrelated value vocabularies; see [the ruling in the schema reference](../../reference/telemetry-schema.md#backend-key-semantics), which also names the producer sites still to be corrected.
+* **Paged KV pool** — `pages_pinned`, `cow_events`, `pool_utilization`.
+* **MTP / speculative decode** — `mtp_enabled`, `mtp_active`, `mtp_inactive_reason`, `mtp_acceptance_rate`. MTP was previously invisible to the coordinator while silently inflating `observed_decode_tps`, so a partially-MTP fleet biased routing on a metric assumed homogeneous.
 
 **Prompt or response content must never appear in telemetry.** This is enforced by design (no such field exists) and by the allowlist.
 

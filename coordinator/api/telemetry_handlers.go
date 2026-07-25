@@ -153,6 +153,18 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"pages_pinned":     {},
 	"cow_events":       {},
 	"pool_utilization": {},
+	// Paged pool re-slice residue (v0.8.0 co-residency). RAW BYTES, and
+	// deliberately not a second ratio: pool_utilization above is OCCUPANCY,
+	// and a grant-vs-pool ratio under a near-identical name collides with it
+	// in every dashboard that groups by kv_backend. A clamped min(a,b)/b also
+	// discards the overflow magnitude — precisely the figure needed when a
+	// slot's fair share exceeds its committed pool and the box 503s on
+	// stranded slabs. pool_bytes is the denominator, emitted so share-of-pool
+	// stays derivable from the raw terms. See docs/reference/telemetry-schema.md
+	// "Adding a field: one key, one meaning".
+	"pool_bytes":                 {},
+	"pool_deferred_growth_bytes": {},
+	"pool_stranded_bytes":        {},
 	// Multi-token prediction (speculative decode) posture. MTP inflates
 	// observed_decode_tps with no discriminator, so a partially-MTP fleet
 	// biases coordinator routing on a metric it believes is homogeneous;

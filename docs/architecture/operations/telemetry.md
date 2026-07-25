@@ -133,9 +133,11 @@ Only non-sensitive operational fields may be attached to events. The current all
 
 v0.8.0 added three more cohorts, all bounded enums and counters:
 
-* **KV-backend discriminator** — `kv_backend` (`paged` | `contiguous`, the same key and vocabulary as `BackendSlotCapacity.kv_backend` on the heartbeat wire) and `prefix_reuse_backend`. These exist because `backend` was overloaded across three unrelated value vocabularies; see [the ruling in the schema reference](../../reference/telemetry-schema.md#backend-key-semantics), which also names the producer sites still to be corrected.
-* **Paged KV pool** — `pages_pinned`, `cow_events`, `pool_utilization`.
+* **KV-backend discriminator** — `kv_backend` (`paged` | `contiguous`, the same key and vocabulary as `BackendSlotCapacity.kv_backend` on the heartbeat wire) and `prefix_reuse_backend`. These exist because `backend` was overloaded across three unrelated value vocabularies; see [the ruling in the schema reference](../../reference/telemetry-schema.md#backend-key-semantics). All producer sites now emit the split keys.
+* **Paged KV pool** — `pages_pinned`, `cow_events`, `pool_utilization`. Only `pool_utilization` has a producer; the other two are blocked on engine mechanisms that do not exist yet (no pin concept, no copy-on-write page splitting) and are deliberately left unproduced rather than emitted as a hardcoded zero.
 * **MTP / speculative decode** — `mtp_enabled`, `mtp_active`, `mtp_inactive_reason`, `mtp_acceptance_rate`. MTP was previously invisible to the coordinator while silently inflating `observed_decode_tps`, so a partially-MTP fleet biased routing on a metric assumed homogeneous.
+
+The producer for the paged-pool and MTP cohorts is `engine_v2_slot_posture`, an INFO `engine_health` event sampled per slot every 60 s by `EngineV2Bridge+MTP.swift` — recurring and traffic-independent, because a rollout dashboard needs a fleet inventory rather than a once-per-load notification.
 
 **Prompt or response content must never appear in telemetry.** This is enforced by design (no such field exists) and by the allowlist.
 

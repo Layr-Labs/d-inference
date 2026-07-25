@@ -16,6 +16,29 @@
 //      serving path (MultiModelBatchSchedulerEngine → bridge);
 //   5. unload gemma → gpt-oss's grant grows back to the full budget.
 //
+// RUNS ON BOTH KV BACKENDS. The drill is the same; the ARITHMETIC is not,
+// and the difference is the whole of migration-plan §15:
+//
+//   * CONTIGUOUS — the admission ceiling IS the fleet grant. It shrinks
+//     when gemma arrives and grows back when gemma leaves. Steps 1/3/5
+//     assert exactly that.
+//   * PAGED — the ceiling is the physically materialized pool, sized ONCE
+//     at engine construction by `PagedKVPhysicalCapacityPolicy` (useful
+//     concurrent context ∧ machine size ∧ live headroom — never the grant).
+//     A co-resident load cannot shrink it (a ledger shrink frees no slabs)
+//     and a co-resident unload cannot grow it (a ledger grow mints no
+//     pages). So the paged arm asserts the ceiling is INVARIANT across the
+//     whole lifecycle, and that the fair share the slot cannot take is
+//     reported as `PagedPoolResizeShortfall.deferredGrowthBytes` instead of
+//     vanishing silently.
+//
+// The earlier revision of this file pinned `contiguous` and explained the
+// pin by claiming a lone paged slot would commit "~the full fleet budget"
+// as slabs and fail the later load closed. That was true when it was
+// written (#531) and stopped being true one PR later (#535), which bounded
+// physical capacity by demand. Neither the giant pool nor the failed load
+// happens; what happens is the frozen ceiling above.
+//
 // Gated like the other multi-GB suites: DARKBLOOM_LIVE_MLX_TESTS +
 // DARKBLOOM_LIVE_MLX_GEMMA, and each checkpoint skips cleanly when absent
 // from the local HF cache (LiveInferenceFixtures pattern).
@@ -44,7 +67,13 @@ struct EngineV2CoResidencyLiveTests {
     /// Real ProviderLoop over the two production checkpoints, with an
     /// isolated runtime. Estimated sizes mirror the on-disk footprints
     /// (gpt-oss ~12.1 GiB, gemma-qat ~14.9 GiB).
-    private func makeLiveLoop() throws -> (loop: ProviderLoop, runtime: EngineV2Runtime) {
+    ///
+    /// `kvBackend` is the EXPLICIT `[backend] engine_v2_kv_backend` setting,
+    /// never `auto`: an arm that silently degraded to the other backend
+    /// would report a pass for a drill it never ran.
+    private func makeLiveLoop(
+        kvBackend: String
+    ) throws -> (loop: ProviderLoop, runtime: EngineV2Runtime) {
         let config = ProviderLoopConfig(
             coordinatorURL: "ws://127.0.0.1:0/ignored",
             hardware: HardwareInfo(
@@ -64,19 +93,9 @@ struct EngineV2CoResidencyLiveTests {
             ],
             config: ProviderConfig(
                 provider: ProviderSettings(name: "coresidency-live", memoryReserveGB: Self.reserveGiB),
-                // PINNED contiguous: this drill asserts the LEDGER
-                // shrink/serve/regrow arithmetic, which is identical on the
-                // paged backend (paged re-slices are ledger-only). Under
-                // paged-by-default, gpt-oss's lone-slot grant would be
-                // physically committed as slabs (~the full fleet budget on
-                // this box) and the later gemma load correctly FAILS CLOSED
-                // at the post-load headroom guard — the designed v1 paged
-                // co-residency behavior, but not what this test measures.
-                // Meaningful paged co-residency at these scales needs the
-                // pool-resize follow-up.
                 backend: BackendSettings(
                     idleTimeoutMins: 0, maxModelSlots: 3,
-                    engineV2KVBackend: "contiguous"),
+                    engineV2KVBackend: kvBackend),
                 coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
             )
         )
@@ -104,8 +123,10 @@ struct EngineV2CoResidencyLiveTests {
         return (text, completion, error)
     }
 
-    @Test("load B while A streams: shrink, serve both, admission ceiling, regrow")
-    func coResidencyLifecycle() async throws {
+    @Test(
+        "load B while A streams: shrink, serve both, admission ceiling, regrow",
+        arguments: ["contiguous", "paged"])
+    func coResidencyLifecycle(kvBackend: String) async throws {
         guard LiveInferenceFixtures.liveTestsEnabled, LiveInferenceFixtures.gemmaTestsEnabled else {
             return  // env-gated (multi-GB weights)
         }
@@ -120,7 +141,8 @@ struct EngineV2CoResidencyLiveTests {
         }
         LiveInferenceFixtures.applyMemoryBudget(maxBytes: 64 * 1024 * 1024 * 1024)
 
-        let (loop, runtime) = try makeLiveLoop()
+        let paged = kvBackend == "paged"
+        let (loop, runtime) = try makeLiveLoop(kvBackend: kvBackend)
         await loop.setEngineV2RuntimeForTesting(runtime)
         // Structured teardown: unload whatever loaded, on every exit path.
         defer {
@@ -131,7 +153,7 @@ struct EngineV2CoResidencyLiveTests {
             }
         }
 
-        // ---- 1. Load A (gpt-oss): the lone slot holds the FULL budget. ----
+        // ---- 1. Load A (gpt-oss). ----
         try await loop.ensureModelLoaded(modelId: Self.gptossID)
         let bridgeA = try #require(await loop.slotBridgeForTesting(modelId: Self.gptossID))
         let sizingA = try #require(await loop.slotSizingForTesting(modelId: Self.gptossID))
@@ -140,16 +162,35 @@ struct EngineV2CoResidencyLiveTests {
         let budgetAlone = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes),
             configReserveBytes: reserveBytes)
-        #expect(grantA0 == Int(budgetAlone), "single model must hold the FULL fleet budget")
+        // The explicit backend selection must have been honoured — a
+        // degraded arm measures the wrong thing.
+        #expect(await bridgeA.kvBackendKind == (paged ? .paged : .contiguous))
+        let poolA = Int(await bridgeA.kvBackendPoolBytes())
+        if paged {
+            // The lone slot's ceiling is POOL truth, not the fleet budget:
+            // demand-bounded, and far below the budget on any real box.
+            #expect(grantA0 == poolA)
+            #expect(UInt64(grantA0) <= budgetAlone)
+            #expect(UInt64(grantA0) >= UnifiedMemoryCap.minimumLoadKVBytes)
+            // No re-slice has happened yet, so there is no residue.
+            #expect(await bridgeA.pagedPoolResizeShortfall() == nil)
+        } else {
+            #expect(grantA0 == Int(budgetAlone), "single model must hold the FULL fleet budget")
+        }
         // Engine-truth rate for the admission-probe arithmetic below.
         #expect(sizingA.fp16KVBytesPerToken == 24_576)
 
-        // ---- Admission-ceiling probe P: a worst-case request that FITS the
-        // full grant but NOT the post-shrink share, submitted DIRECTLY to
-        // the engine so the verdict is the admission ledger's canEverFit —
-        // pure grant arithmetic (drift-test-pinned against estimatedBytes),
-        // immune to free-RAM contention from concurrent suites. Sized 15%
-        // above the expected post-shrink share, well below the full grant.
+        // ---- Admission-ceiling probes, submitted DIRECTLY to the engine so
+        // the verdict is the admission ledger's canEverFit — pure grant
+        // arithmetic (drift-test-pinned against estimatedBytes), immune to
+        // free-RAM contention from concurrent suites.
+        //
+        // CONTIGUOUS: one probe, sized 15% above the expected post-shrink
+        // share and 15% below the current grant, so it flips from admitted
+        // to refused across the co-resident load.
+        // PAGED: two probes straddling the pool-bound ceiling. Both keep
+        // their verdict across the whole lifecycle — that invariance IS the
+        // finding.
         let gemmaSizingPreview = EngineV2KVSizing.ResliceSlot(
             modelId: Self.gemmaQatID, fp16KVBytesPerToken: 20_480, maxContextLength: 262_144)
         let previewBudget = UnifiedMemoryCap.kvBudgetBytes(
@@ -165,40 +206,63 @@ struct EngineV2CoResidencyLiveTests {
             newcomer: gemmaSizingPreview,
             fleetKVBudgetBytes: previewBudget)
         let expectedShrunkA = try #require(previewTargets[Self.gptossID])
-        let probeBytes = min(
-            UInt64(Double(expectedShrunkA) * 1.15),
-            UInt64(Double(grantA0) * 0.85))
-        let probeTokens = Int(probeBytes) / sizingA.fp16KVBytesPerToken
-        #expect(probeTokens * sizingA.fp16KVBytesPerToken > expectedShrunkA,
-                "probe must exceed the post-shrink ceiling to be meaningful")
-        print("[co-residency] probeTokens=\(probeTokens) (~\(probeBytes / Self.gib)GiB worst-case)")
         let probePrompt = try await tokenize("Write a very long story.", loop: loop)
         let engineA = await bridgeA.engine
-        /// Submit the probe straight to the engine ledger. Returns the
-        /// stream when admitted (caller cancels + drains), nil when the
-        /// ledger refused it (capacityExhausted).
-        @Sendable func submitLedgerProbe(_ id: UInt64) -> AsyncStream<CBv2Event>? {
+        func tokens(forBytes bytes: UInt64) -> Int {
+            Int(bytes) / sizingA.fp16KVBytesPerToken
+        }
+        /// Submit a worst-case probe straight to the engine ledger. Returns
+        /// the stream when admitted (drained here), nil when the ledger
+        /// refused it (capacityExhausted).
+        @Sendable func ledgerAdmits(_ id: UInt64, maxTokens: Int) async -> Bool {
+            let stream: AsyncStream<CBv2Event>?
             do {
-                return try engineA.submit(
+                stream = try engineA.submit(
                     CBv2Request(
                         id: CBv2RequestID(id),
                         promptTokens: probePrompt,
-                        maxTokens: probeTokens))
+                        maxTokens: maxTokens))
             } catch {
-                return nil
+                return false
             }
+            guard let stream else { return false }
+            // Submit-no-throw IS the verdict: cancel immediately and drain
+            // so the probe's reservations release.
+            engineA.cancel(CBv2RequestID(id))
+            for await _ in stream {}
+            return true
         }
-        do {
-            // Pre-shrink: the ledger ADMITS the worst case under the full
-            // grant. Cancel immediately (submit-no-throw IS the verdict) and
-            // drain so its reservations release.
-            let probeId: UInt64 = 0x7000_0001
-            let probe = submitLedgerProbe(probeId)
-            #expect(probe != nil, "the worst-case probe must fit the FULL grant pre-shrink")
-            if let probe {
-                engineA.cancel(CBv2RequestID(probeId))
-                for await _ in probe {}
-            }
+
+        // Sized against the CURRENT ceiling in both arms.
+        let underCeilingTokens = tokens(forBytes: UInt64(Double(grantA0) * 0.85))
+        let overCeilingTokens = tokens(forBytes: UInt64(Double(grantA0) * 1.15))
+        let shrinkProbeTokens = tokens(
+            forBytes: min(
+                UInt64(Double(expectedShrunkA) * 1.15),
+                UInt64(Double(grantA0) * 0.85)))
+        print(
+            "[co-residency/\(kvBackend)] grantA0=\(UInt64(grantA0) / Self.gib)GiB "
+                + "poolA=\(UInt64(poolA) / Self.gib)GiB "
+                + "expectedShrunkA=\(UInt64(expectedShrunkA) / Self.gib)GiB")
+
+        if paged {
+            // A pool-bound ceiling: below it admits, above it refuses.
+            #expect(await ledgerAdmits(0x7000_0001, maxTokens: underCeilingTokens))
+            #expect(!(await ledgerAdmits(0x7000_0002, maxTokens: overCeilingTokens)))
+            // The fair share gemma's arrival will award is LARGER than the
+            // pool — this box is in the deferred-growth regime, which is
+            // what makes the invariance below meaningful rather than
+            // coincidental.
+            #expect(
+                expectedShrunkA > grantA0,
+                "paged arm needs a fair share above the pool to be meaningful")
+        } else {
+            #expect(
+                shrinkProbeTokens * sizingA.fp16KVBytesPerToken > expectedShrunkA,
+                "probe must exceed the post-shrink ceiling to be meaningful")
+            #expect(
+                await ledgerAdmits(0x7000_0001, maxTokens: shrinkProbeTokens),
+                "the worst-case probe must fit the FULL grant pre-shrink")
         }
 
         // ---- 2. Stream on A while B loads. ----
@@ -218,14 +282,15 @@ struct EngineV2CoResidencyLiveTests {
         let bridgeB = try #require(await loop.slotBridgeForTesting(modelId: Self.gemmaQatID))
         let sizingB = try #require(await loop.slotSizingForTesting(modelId: Self.gemmaQatID))
         #expect(sizingB.fp16KVBytesPerToken == 20_480)
+        #expect(await bridgeB.kvBackendKind == (paged ? .paged : .contiguous))
 
-        // A's in-flight stream completes untouched across the shrink.
+        // A's in-flight stream completes untouched across the re-slice.
         let resultA = await collectorA.value
         #expect(resultA.error == nil, "A's stream must survive the shrink: \(resultA.error ?? "")")
         #expect(resultA.completion > 0)
         #expect(resultA.text.contains("10"), "greedy count should reach 10: \(resultA.text.prefix(200))")
 
-        // ---- 3. Both grants re-sliced; Σ ≤ fleet budget; ceilings live. ----
+        // ---- 3. Grants after the re-slice. ----
         let grantA1 = await bridgeA.engineKVBytesCapacity()
         let grantB = await bridgeB.engineKVBytesCapacity()
         let fleetBudget = UnifiedMemoryCap.kvBudgetBytes(
@@ -243,39 +308,81 @@ struct EngineV2CoResidencyLiveTests {
                 fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
                 maxContextLength: sizingB.maxContextLength),
             fleetKVBudgetBytes: fleetBudget)
-        #expect(grantA1 == expected[Self.gptossID])
-        #expect(grantB == expected[Self.gemmaQatID])
-        #expect(grantA1 < grantA0)
-        #expect(UInt64(grantA1) + UInt64(grantB) <= fleetBudget)
+        let targetA = try #require(expected[Self.gptossID])
         print(
-            "[co-residency] fleetBudget=\(fleetBudget / Self.gib)GiB "
+            "[co-residency/\(kvBackend)] fleetBudget=\(fleetBudget / Self.gib)GiB "
                 + "grantA0=\(UInt64(grantA0) / Self.gib)GiB "
                 + "grantA1=\(UInt64(grantA1) / Self.gib)GiB "
                 + "grantB=\(UInt64(grantB) / Self.gib)GiB")
 
-        // ---- 4. A's NEXT admission respects the SHRUNK ceiling: the same
-        // worst-case probe that was admitted pre-shrink is now REFUSED by
-        // the ledger (canEverFit against the re-sliced capacity). ----
-        let refusedProbe = submitLedgerProbe(0x7000_0002)
-        #expect(refusedProbe == nil, "post-shrink probe must be refused by the admission ledger")
-        if let refusedProbe {  // drain if the assertion failed, don't leak
-            engineA.cancel(CBv2RequestID(0x7000_0002))
-            for await _ in refusedProbe {}
+        if paged {
+            // A ledger grow mints no pages: A's ceiling did not move, and
+            // the fair share it cannot take is reported, not lost.
+            #expect(grantA1 == grantA0)
+            #expect(grantA1 == poolA)
+            #expect(await bridgeA.kvBackendPoolBytes() == UInt64(poolA))
+            let shortfall = try #require(await bridgeA.pagedPoolResizeShortfall())
+            #expect(shortfall.poolBytes == poolA)
+            #expect(shortfall.requestedBytes == targetA)
+            #expect(shortfall.deferredGrowthBytes == targetA - poolA)
+            #expect(shortfall.strandedBytes == 0)
+            // Σ(PHYSICAL pools) ≤ fleet budget still holds — the pools are
+            // demand-bounded, so co-residency does not over-commit KV. It
+            // under-commits it, badly: see the ratio printed below.
+            let poolB = await bridgeB.kvBackendPoolBytes()
+            #expect(UInt64(poolA) + poolB <= fleetBudget)
+            print(
+                "[co-residency/paged] Σpools=\((UInt64(poolA) + poolB) / Self.gib)GiB "
+                    + "of fleetBudget=\(fleetBudget / Self.gib)GiB "
+                    + "(deferred on A alone: \(UInt64(shortfall.deferredGrowthBytes) / Self.gib)GiB)")
+        } else {
+            #expect(grantA1 == targetA)
+            #expect(grantB == expected[Self.gemmaQatID])
+            #expect(grantA1 < grantA0)
+            #expect(UInt64(grantA1) + UInt64(grantB) <= fleetBudget)
+            #expect(await bridgeA.pagedPoolResizeShortfall() == nil)
+        }
+
+        // ---- 4. A's NEXT admission. Contiguous: the same worst-case probe
+        // that was admitted pre-shrink is now REFUSED by the ledger. Paged:
+        // both probes keep their pre-load verdict, because a co-resident
+        // load cannot move a pool-bound ceiling in either direction. ----
+        if paged {
+            #expect(await ledgerAdmits(0x7000_0003, maxTokens: underCeilingTokens))
+            #expect(!(await ledgerAdmits(0x7000_0004, maxTokens: overCeilingTokens)))
+        } else {
+            #expect(
+                !(await ledgerAdmits(0x7000_0003, maxTokens: shrinkProbeTokens)),
+                "post-shrink probe must be refused by the admission ledger")
         }
 
         // Both slots serve a REAL decode through the production path.
         _ = try await loop.runStartupSelfTestDecode(modelId: Self.gptossID)
         _ = try await loop.runStartupSelfTestDecode(modelId: Self.gemmaQatID)
 
-        // ---- 5. Unload B: A grows back to the FULL budget. ----
+        // ---- 5. Unload B. ----
         await loop.unloadModel(Self.gemmaQatID)
         let grantA2 = await bridgeA.engineKVBytesCapacity()
         let budgetAfterUnload = UnifiedMemoryCap.kvBudgetBytes(
             residentWeightBytes: UInt64(sizingA.weightsBytes),
             configReserveBytes: reserveBytes)
-        #expect(grantA2 == Int(budgetAfterUnload))
-        #expect(grantA2 > grantA1)
-        print("[co-residency] after unload grantA2=\(UInt64(grantA2) / Self.gib)GiB")
+        if paged {
+            // The regrow is deferred, not taken: the survivor is left
+            // holding a pool sized for a box that no longer exists.
+            #expect(grantA2 == poolA)
+            #expect(grantA2 == grantA1)
+            let shortfall = try #require(await bridgeA.pagedPoolResizeShortfall())
+            #expect(shortfall.requestedBytes == Int(budgetAfterUnload))
+            #expect(shortfall.deferredGrowthBytes == Int(budgetAfterUnload) - poolA)
+            print(
+                "[co-residency/paged] after unload grantA2=\(UInt64(grantA2) / Self.gib)GiB "
+                    + "deferred=\(UInt64(shortfall.deferredGrowthBytes) / Self.gib)GiB "
+                    + "of budget=\(budgetAfterUnload / Self.gib)GiB")
+        } else {
+            #expect(grantA2 == Int(budgetAfterUnload))
+            #expect(grantA2 > grantA1)
+            print("[co-residency/contiguous] after unload grantA2=\(UInt64(grantA2) / Self.gib)GiB")
+        }
 
         // A still serves after the round trip.
         _ = try await loop.runStartupSelfTestDecode(modelId: Self.gptossID)

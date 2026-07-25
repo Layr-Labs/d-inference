@@ -44,7 +44,7 @@ touches is mine — there is no second team; see DEC-4.
 
 | Stack | Repo | Owns | State |
 |---|---|---|---|
-| **E0** seam contract | engine | protocol decls only | not started |
+| **E0** seam contract | engine | protocol decls only | **written, awaiting compile** |
 | **T** oracle | engine | `Tests/CBv2Paged*`, `CBv2KVSharingParityTests` | not started |
 | **P** pool | engine | `PagedKVPool`, `PagedAttentionKernel` | not started |
 | **L** layer | engine | `PagedLayerCache`, `LayerCacheBankV2` | not started |
@@ -52,10 +52,10 @@ touches is mine — there is no second team; see DEC-4.
 | **M** MTP | engine | `MTP/EngineLoopV2+MTP*`, `EngineV2` mode select | not started |
 | **G** compiled | engine | `Compiled/*` + hooks | not started |
 | **X** factory | d-inference | `EngineV2Factory+Production`, `EngineV2SlotFactory`, `ProviderConfig` | not started |
-| **E** memory | d-inference | `AdmissionV2`, `UnifiedMemoryCap`, `registry/servability.go` | not started |
-| **F** wire | d-inference | telemetry mirrors, `BackendSlotCapacity` | not started |
+| **E** memory | d-inference | `AdmissionV2`, `UnifiedMemoryCap`, `registry/servability.go`, `registry/concurrency_cap.go` | **Wave 0 in flight** (E1) |
+| **F** wire | d-inference | telemetry mirrors, `BackendSlotCapacity` | **Wave 0 in flight** (F1) |
 | **D** SSD | d-inference | `KVCacheSSD/*`, `PrefixCachePolicy` | not started |
-| **C** CI/bench | d-inference | `ci.yml`, `e2e/testbed`, `BenchCBv2`, `gemma_contbatch` | not started |
+| **C** CI/bench | d-inference | `ci.yml`, `e2e/testbed`, `BenchCBv2`, `gemma_contbatch` | **Wave 0 in flight** (C1, C2, C3) |
 
 ## Decisions (2026-07-25, product owner)
 
@@ -70,12 +70,13 @@ touches is mine — there is no second team; see DEC-4.
 | DEC-7 | **No canary fleet.** Ship 0.8.0, observe, cancel the release if it misbehaves. | Gates G3/G4 (24h soaks) are deleted. Pre-release verification — Track T's oracle, e2e, and the benchmark matrix — becomes the *only* safety net, so its bar goes up, not down. |
 | DEC-8 | **MTP must work on paged.** | WS-3 in full, not just the 3.4 abort fix. |
 | DEC-9 | **Prefill must be fast enough.** | Item 0.2p is a release requirement with a parity bar, not an optimisation. |
+| DEC-10 | **MTP stays default-off in 0.8.0** (`[backend] mtp = false`). | Does NOT reduce the work — every WS-3 item is required for "working when enabled", because the current enabled-on-paged behaviour is silent inertness one flag-flip from a daemon abort. Keeps 0.8.0's blast radius to paged alone: MTP inflates `observed_decode_tps` with no wire discriminator, and there is no canary. |
 
 ## Open questions
 
 | # | Question | Needed from |
 |---|---|---|
-| OPEN-7 | Does MTP need to be ON by default in 0.8.0, or only working when `[backend] mtp` is enabled? | user |
+| ~~OPEN-7~~ | ~~MTP default-on?~~ **RESOLVED: default-off** — see DEC-10. | — |
 | OPEN-8 | Who repairs the red mixed-version gate (SIP disabled on the CI runner)? Defaulting to me as stack C4. | user (default: me) |
 
 ---
@@ -292,4 +293,50 @@ decided:  Implement paged rectangular (option b, ~3-5 days), NOT forced serial (
           perturbation. Default-off does NOT reduce the work — every item is required for
           "working when enabled".
 blocked:  OPEN-7 (MTP default-on or not) is the owner's call.
+```
+
+### 2026-07-25 — Main — E0 seam contract written, Wave 0 dispatched
+
+```
+JOURNAL
+stack:    E0
+pr:       none
+did:      Wrote the P/R/L seam contract and dispatched the five independent Wave 0 tasks.
+files:    libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedSeamContract.swift (new)
+evidence: Declarations only, zero behaviour change. Grounded on the real surfaces:
+          PagedSequenceKV members enumerated at :80-303, PagedKVPool at :82-463,
+          PagedLayerCache at :26-386, the existing shared protocol
+          CBv2AttendingLayerCache at CBv2Contracts.swift:488, and the MTP downcast site
+          at MTP/EngineLoopV2+MTPTargetVerification.swift:49-54. Compile pending — the
+          worktree currently has five agents mid-edit, so a build now would report their
+          in-progress state, not mine.
+decided:  E0 contains three things and deliberately nothing else.
+          (1) CBv2PagedSpeculation.maxSpeculativeSpan = 8. This is the highest-value item
+              in the file: track P consumes it in ringPageCount (WS-3.1) and track R
+              consumes it in supportsSpeculativeWrites (WS-3.3), in different files. If
+              they each invent one they collide, and the failure mode is a ring that
+              under-reserves — silent corruption, not a build error. Stated as a literal
+              with a static assertion against CBv2MTPConfig.testedMaxDraftTokens + 1
+              (= 8, MTPContractsV2.swift:175) so raising the MTP bound cannot silently
+              under-size a ring built before the raise.
+          (2) CBv2MTPRectangularSerializing, with CBv2LayerCache conformed by extension
+              (the stored flag already exists at LayerCacheV2.swift:49). This is the
+              foundation for item 3.0. It is genuinely needed rather than cosmetic:
+              CBv2LayerCache is `final` and PagedLayerCache is a sibling conformer of
+              CBv2AttendingLayerCache, so the `as? CBv2LayerCache` downcast at
+              MTP/EngineLoopV2+MTPTargetVerification.swift:50 can never succeed for a
+              paged bank, and its failure path is a preconditionFailure — a daemon abort
+              with no telemetry.
+          (3) CBv2PagedSpeculativeRow.speculativeHeadroom. begin/commitSpeculativeWrite
+              already exist as CBv2SequenceKV requirements with default no-ops
+              (CBv2Contracts.swift:297/304), so only the headroom query is new.
+          Everything else is a frozen-signature comment block rather than a stub, so E0
+          touches no file any track owns. Tracks implement against it; conformances are
+          added by their owners.
+          Worktree policy for Wave 0: agents share the integration worktree with strictly
+          exclusive file lists rather than one worktree each. Five submodule clones is
+          real cost for tracks whose files are disjoint. Agents do not run git; Main
+          commits per track, which keeps attribution clean and avoids index-lock
+          contention. Wave 1 revisits this — P/R/L genuinely need isolation.
+blocked:  nothing
 ```

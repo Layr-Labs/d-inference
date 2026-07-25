@@ -99,13 +99,22 @@ jobs:
         run: |
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
+          # Recorded, not enforced. The gate used to hard-require SIP and so
+          # went red (never ran) on a SIP-disabled runner. It is now pinned to
+          # the released binary's SHA-256 instead; the only SIP-dependent
+          # assertion adapts to whatever this prints. Reported here so a run
+          # that cannot cover the positive sip_enabled round-trip says so.
+          echo "Runner SIP state: $(/usr/bin/csrutil status 2>&1 || true)"
           RELEASED_PROVIDER=$(./scripts/fetch-v0712-provider.sh "$RUNNER_TEMP/released-providers")
           DARKBLOOM_MIXED_VERSION=1 \
           DARKBLOOM_PROVIDER_BINARY="$RELEASED_PROVIDER" \
             go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
               -run TestIntegrationMixedVersionReleasedV0712Provider
 
-      - name: Verify released coordinator with candidate v0.7.13 provider
+      # Reverse lane: the RELEASED v0.7.12 coordinator against the CANDIDATE
+      # provider. Named for v0.7.13 until v0.7.15; the pinned tag below has
+      # always been v0.7.12, which is what this actually checks out.
+      - name: Verify released v0.7.12 coordinator with candidate provider
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
@@ -120,7 +129,7 @@ jobs:
               TESTBED_PROVIDER_CONFIG=debug \
               DARKBLOOM_CBV2_MTP=0 \
               DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 \
-              DARKBLOOM_PREFIX_CACHE_TEST_ROOT="$RUNNER_TEMP/v0713-reverse-cache-$test_name" \
+              DARKBLOOM_PREFIX_CACHE_TEST_ROOT="$RUNNER_TEMP/v0712-reverse-cache-$test_name" \
                 go test ./e2e -count=1 -v -timeout 15m -p=1 \
                   -run "^TestIntegration_${test_name}$"
             done

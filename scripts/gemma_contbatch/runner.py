@@ -15,7 +15,9 @@ from .baseline import (
     resolve_model_snapshot,
     validate_baseline_pins,
 )
-from .config import PERFORMANCE_ENV_PREFIXES, parse_args
+from .checks import assert_finite
+from .config import parse_args
+from .environment import performance_environment
 from .process import (
     atomic_write,
     capture,
@@ -28,7 +30,7 @@ from .process import (
 from .report import markdown_report
 from .results import compare
 from .summary import summarize
-from .validation import assert_finite, validate_raw_outputs
+from .validation import validate_raw_outputs
 
 
 def safe_label(label: str) -> str:
@@ -132,11 +134,9 @@ def main() -> int:
     model_snapshot = resolve_model_snapshot(raw_outputs)
     hardware = sweep["hardware"]
 
-    environment = {
-        key: value
-        for key, value in sorted(os.environ.items())
-        if key.startswith(PERFORMANCE_ENV_PREFIXES)
-    }
+    # The same capture is recorded in the report and pinned against the
+    # baseline below, so the two can never describe different runs.
+    environment = performance_environment(os.environ)
     report = {
         # 2: the arrival summary carries the measured delivered-topology
         # evidence (offsets, arrival error, tolerance, discarded attempts).
@@ -181,10 +181,11 @@ def main() -> int:
         if not baseline_path.is_absolute():
             baseline_path = repo_root / baseline_path
         baseline = load_baseline(baseline_path)
-        # Pin weights, host, and workload before any delta is computed: an
-        # unpinned snapshot or a different Mac turns unrelated differences into
-        # what reads as an engine regression.
-        validate_baseline_pins(args, baseline, model_snapshot, hardware)
+        # Pin weights, host, workload, and engine/Metal overrides before any
+        # delta is computed: an unpinned snapshot, a different Mac, or a
+        # flipped kill switch turns unrelated differences into what reads as
+        # an engine regression.
+        validate_baseline_pins(args, baseline, model_snapshot, hardware, environment)
         report["comparison"] = compare(summary, baseline)
 
     assert_finite(report)

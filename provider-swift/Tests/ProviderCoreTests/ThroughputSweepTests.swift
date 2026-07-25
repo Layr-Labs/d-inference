@@ -208,3 +208,325 @@ struct SchedulerPrefillBenchmarkTests {
         #expect(SchedulerPrefillBenchmark.strategyLabel == "cbv2")
     }
 }
+
+// MARK: - --decode-iterations median reduction
+//
+// `--decode-iterations N` re-runs the whole decode batch curve N times and
+// emits every repetition as its own `DecodeSample`. `ThroughputSweep.run` then
+// reduces those raw samples with `medianDecodeByBatch` before handing them to
+// `ThroughputSweepReport.makeDerived`.
+//
+// The bug this replaced: a single sample was copied through and *labelled* a
+// median, so a wild first observation (cold cache, thermal spike, a stray
+// process) became the reported number. These tests pin the reduction so that
+// regression cannot come back silently — they are pure arithmetic (no MLX, no
+// model, no GPU).
+
+/// Deterministic PRNG so the "input order must not matter" shuffles are
+/// reproducible across runs (a flaky permutation would be useless evidence).
+private struct SplitMix64: RandomNumberGenerator {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
+}
+
+@Suite("throughput sweep: decode-iteration median reduction")
+struct ThroughputSweepMedianTests {
+
+    // MARK: Fixtures
+
+    /// One decode sample. `perSequence` defaults to the honest
+    /// `aggregate / batchSize` the sweep computes.
+    private func sample(
+        batch: Int,
+        aggregate: Double,
+        perSequence: Double? = nil,
+        elapsedMs: Double = 1000,
+        tokensPerSequence: Int = 64
+    ) -> ThroughputSweepReport.DecodeSample {
+        ThroughputSweepReport.DecodeSample(
+            batchSize: batch,
+            decodeTokensPerSequence: tokensPerSequence,
+            aggregateTokensPerSecond: aggregate,
+            perSequenceTokensPerSecond: perSequence ?? (aggregate / Double(batch)),
+            elapsedMs: elapsedMs
+        )
+    }
+
+    /// Emission order of the real sweep: repetition-outer, batch-inner.
+    /// `aggregatesByBatch[b]` lists that batch size's per-repetition readings.
+    private func curve(_ aggregatesByBatch: [(batch: Int, perRepetition: [Double])])
+        -> [ThroughputSweepReport.DecodeSample]
+    {
+        let reps = aggregatesByBatch.map(\.perRepetition.count).max() ?? 0
+        var out: [ThroughputSweepReport.DecodeSample] = []
+        for r in 0 ..< reps {
+            for entry in aggregatesByBatch where r < entry.perRepetition.count {
+                out.append(sample(batch: entry.batch, aggregate: entry.perRepetition[r]))
+            }
+        }
+        return out
+    }
+
+    private func aggregate(
+        _ samples: [ThroughputSweepReport.DecodeSample], batch: Int
+    ) -> Double? {
+        samples.first(where: { $0.batchSize == batch })?.aggregateTokensPerSecond
+    }
+
+    // MARK: 1. Odd-count median is the true middle, not the first sample
+
+    @Test("odd-count median picks the middle value and ignores a wild first sample")
+    func oddCountMedianIgnoresLeadingOutlier() {
+        // This is exactly the old bug: the FIRST reading is a wild outlier.
+        // A 3-repetition run must report 110, not the 900 it happened to see
+        // first.
+        #expect(ThroughputSweep.median([900, 100, 110]) == 110)
+        // ...and symmetrically for a wild *low* first reading.
+        #expect(ThroughputSweep.median([1, 100, 110]) == 100)
+        // Middle-of-five, unsorted input.
+        #expect(ThroughputSweep.median([4, 1, 3, 2, 5]) == 3)
+        // Single value is its own median; N=1 is the default path.
+        #expect(ThroughputSweep.median([42.5]) == 42.5)
+        // Degenerate input must not trap.
+        #expect(ThroughputSweep.median([]) == 0)
+
+        // Restated at the sample level: the reduction must not just take
+        // `group.first` (which it does use, but only for the non-numeric
+        // `decodeTokensPerSequence` field).
+        let reduced = ThroughputSweep.medianDecodeByBatch(
+            curve([(batch: 1, perRepetition: [900, 100, 110])]))
+        #expect(reduced.count == 1)
+        #expect(aggregate(reduced, batch: 1) == 110)
+        #expect(aggregate(reduced, batch: 1) != 900)
+    }
+
+    // MARK: 2. Even-count median matches Python's statistics.median
+
+    @Test("even-count median averages the two middle values (Python statistics.median)")
+    func evenCountMedianAveragesMiddlePair() {
+        // CONVENTION: for an even number of samples, `statistics.median` in
+        // Python returns the ARITHMETIC MEAN of the two middle values (it is
+        // NOT `median_low`/`median_high`). The Python side of this benchmark
+        // reduces the same decode samples with `statistics.median`, so the
+        // Swift helper must use the same convention or the two reports
+        // disagree on identical data.
+        //
+        // Expected values below were produced by CPython:
+        //   statistics.median([10, 20, 30, 40])        -> 25.0
+        //   statistics.median([1, 2])                  -> 1.5
+        //   statistics.median([1, 2, 3, 4, 5, 6])      -> 3.5
+        //   statistics.median([2.5, 7.5])              -> 5.0
+        #expect(ThroughputSweep.median([10, 20, 30, 40]) == 25.0)
+        #expect(ThroughputSweep.median([1, 2]) == 1.5)
+        #expect(ThroughputSweep.median([1, 2, 3, 4, 5, 6]) == 3.5)
+        #expect(ThroughputSweep.median([2.5, 7.5]) == 5.0)
+        // Unsorted input reduces identically (the helper sorts first).
+        #expect(ThroughputSweep.median([40, 10, 30, 20]) == 25.0)
+
+        // Explicitly NOT the low median (20) and NOT the high median (30).
+        let m = ThroughputSweep.median([10, 20, 30, 40])
+        #expect(m != 20)
+        #expect(m != 30)
+
+        // Even repetition counts flow through the sample reduction the same way.
+        let reduced = ThroughputSweep.medianDecodeByBatch(
+            curve([(batch: 2, perRepetition: [40, 10, 30, 20])]))
+        #expect(aggregate(reduced, batch: 2) == 25.0)
+    }
+
+    // MARK: 3. Grouping per batch size, independent of input order
+
+    @Test("samples are grouped per batch size and reduced independently")
+    func groupsByBatchSizeIndependently() {
+        let samples = curve([
+            (batch: 1, perRepetition: [900, 100, 110]),  // median 110
+            (batch: 2, perRepetition: [200, 220, 210]),  // median 210
+            (batch: 4, perRepetition: [400, 352, 300]),  // median 352
+        ])
+        #expect(samples.count == 9)
+
+        let reduced = ThroughputSweep.medianDecodeByBatch(samples)
+
+        // One row per DISTINCT batch size (not one per repetition), ascending.
+        #expect(reduced.count == 3)
+        #expect(reduced.map(\.batchSize) == [1, 2, 4])
+
+        // Each batch size is reduced from its OWN group only — no bleed.
+        #expect(aggregate(reduced, batch: 1) == 110)
+        #expect(aggregate(reduced, batch: 2) == 210)
+        #expect(aggregate(reduced, batch: 4) == 352)
+
+        // Non-aggregate numeric fields are reduced by median too.
+        #expect(reduced[0].perSequenceTokensPerSecond == 110)  // median of 900/1,100/1,110/1
+        #expect(reduced[1].perSequenceTokensPerSecond == 105)  // median of 100,110,105
+        #expect(reduced.allSatisfy { $0.decodeTokensPerSequence == 64 })
+        #expect(reduced.allSatisfy { $0.elapsedMs == 1000 })
+    }
+
+    @Test("input ordering does not change the reduction")
+    func reductionIsOrderIndependent() {
+        let samples = curve([
+            (batch: 1, perRepetition: [900, 100, 110]),
+            (batch: 2, perRepetition: [200, 220, 210]),
+            (batch: 4, perRepetition: [400, 352, 300]),
+        ])
+        let expected = ThroughputSweep.medianDecodeByBatch(samples)
+
+        func fingerprint(_ rows: [ThroughputSweepReport.DecodeSample])
+            -> [[Double]]
+        {
+            rows.map {
+                [Double($0.batchSize), Double($0.decodeTokensPerSequence),
+                 $0.aggregateTokensPerSecond, $0.perSequenceTokensPerSecond, $0.elapsedMs]
+            }
+        }
+
+        // Reversed emission order.
+        #expect(fingerprint(ThroughputSweep.medianDecodeByBatch(samples.reversed()))
+            == fingerprint(expected))
+
+        // Batch-outer / repetition-inner (the other plausible loop nesting).
+        let batchOuter = [1, 2, 4].flatMap { b in
+            samples.filter { $0.batchSize == b }
+        }
+        #expect(fingerprint(ThroughputSweep.medianDecodeByBatch(batchOuter))
+            == fingerprint(expected))
+
+        // Deterministic pseudo-random permutations.
+        var rng = SplitMix64(seed: 0xDA4B_1001)
+        for _ in 0 ..< 50 {
+            let shuffled = samples.shuffled(using: &rng)
+            #expect(fingerprint(ThroughputSweep.medianDecodeByBatch(shuffled))
+                == fingerprint(expected))
+        }
+    }
+
+    // MARK: 4. makeDerived consumes the medians, not the first sample
+
+    @Test("derived decode tok/s at B=1 is the median, not the first observation")
+    func derivedUsesMedianAtB1() {
+        // B=1 readings: 900 (outlier, emitted first), 100, 110 -> median 110.
+        let samples = curve([
+            (batch: 1, perRepetition: [900, 100, 110]),
+            (batch: 2, perRepetition: [220, 220, 220]),
+        ])
+
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: ThroughputSweep.medianDecodeByBatch(samples),
+            totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4,
+            bandwidthGBps: 400,
+            efficiency: 0.8
+        )
+        #expect(derived.decodeTokensPerSecondAtB1 == 110)
+        #expect(derived.decodeTokensPerSecondAtB1 != 900)
+
+        // The bandwidth inversion therefore hangs off the median as well:
+        // 400 * 0.8 / 110 GB/token.
+        #expect(abs(derived.impliedReadGBPerTokenAtB1 - (320.0 / 110.0)) < 1e-12)
+
+        // Feeding the RAW samples instead reproduces the old bug: `makeDerived`
+        // takes the first B=1 row it finds, i.e. the 900 outlier.
+        let rawDerived = ThroughputSweepReport.makeDerived(
+            decode: samples,
+            totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4,
+            bandwidthGBps: 400,
+            efficiency: 0.8
+        )
+        #expect(rawDerived.decodeTokensPerSecondAtB1 == 900)
+        #expect(rawDerived.decodeTokensPerSecondAtB1 != derived.decodeTokensPerSecondAtB1)
+    }
+
+    @Test("per-batch derived metrics are computed once, not once per repetition")
+    func derivedCountsEachBatchSizeOnce() {
+        // All B=1 readings identical (110) so the B=1 anchor is the same for
+        // both paths — this isolates the "counted N times" effect from the
+        // "outlier" effect of the previous test.
+        //
+        //   B=2 readings 220, 220, 100 -> median 220 -> ratio (220/110)/2 = 1.0
+        //   B=4 readings 352, 352, 352 -> median 352 -> ratio (352/110)/4 = 0.8
+        //   linearity = mean(1.0, 0.8) = 0.9   (two points, one per batch size)
+        let samples = curve([
+            (batch: 1, perRepetition: [110, 110, 110]),
+            (batch: 2, perRepetition: [220, 220, 100]),
+            (batch: 4, perRepetition: [352, 352, 352]),
+        ])
+
+        let reduced = ThroughputSweep.medianDecodeByBatch(samples)
+        // Two B>1 points reach the linearity average, not six.
+        #expect(reduced.count == 3)
+
+        func linearity(_ decode: [ThroughputSweepReport.DecodeSample]) -> Double? {
+            ThroughputSweepReport.makeDerived(
+                decode: decode,
+                totalParams: 26_000_000_000,
+                weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+                quantBits: 4, bandwidthGBps: 400, efficiency: 0.8
+            ).batchScalingLinearity
+        }
+
+        let medianLinearity = try? #require(linearity(reduced))
+        #expect(medianLinearity != nil)
+        #expect(abs((medianLinearity ?? 0) - 0.9) < 1e-12)
+
+        // Raw samples average SIX ratios (three per batch size), so the low
+        // B=2 repetition drags the answer down:
+        //   (1.0 + 1.0 + 0.4545… + 0.8 + 0.8 + 0.8) / 6 = 0.80909…
+        let rawLinearity = try? #require(linearity(samples))
+        #expect(rawLinearity != nil)
+        #expect(abs((rawLinearity ?? 0) - 0.8090909090909091) < 1e-12)
+        #expect(abs((rawLinearity ?? 0) - (medianLinearity ?? 0)) > 1e-3)
+    }
+
+    // MARK: 5. N = 1 (the default) is provably unchanged
+
+    @Test("single-iteration sweeps pass through untouched")
+    func singleIterationIsIdentity() throws {
+        #expect(ThroughputSweep.defaultDecodeIterations == 1)
+
+        // One sample per batch size — exactly what the default path produces.
+        let samples = [
+            sample(batch: 1, aggregate: 21, elapsedMs: 1234.5),
+            sample(batch: 2, aggregate: 37.8, elapsedMs: 999.25),
+            sample(batch: 6, aggregate: 101.4, elapsedMs: 1500),
+        ]
+        let reduced = ThroughputSweep.medianDecodeByBatch(samples)
+
+        #expect(reduced.count == samples.count)
+        for (original, row) in zip(samples, reduced) {
+            #expect(row.batchSize == original.batchSize)
+            #expect(row.decodeTokensPerSequence == original.decodeTokensPerSequence)
+            #expect(row.aggregateTokensPerSecond == original.aggregateTokensPerSecond)
+            #expect(row.perSequenceTokensPerSecond == original.perSequenceTokensPerSecond)
+            #expect(row.elapsedMs == original.elapsedMs)
+        }
+
+        // ...and the whole `derived` block is byte-identical to the pre-median
+        // behaviour, so N=1 reports cannot drift.
+        func derived(_ decode: [ThroughputSweepReport.DecodeSample]) throws -> Data {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            return try encoder.encode(ThroughputSweepReport.makeDerived(
+                decode: decode,
+                totalParams: 26_000_000_000,
+                weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+                quantBits: 4, bandwidthGBps: 400, efficiency: 0.8))
+        }
+        #expect(try derived(reduced) == (try derived(samples)))
+    }
+
+    @Test("empty decode input reduces to an empty curve")
+    func emptyInput() {
+        #expect(ThroughputSweep.medianDecodeByBatch([]).isEmpty)
+    }
+}

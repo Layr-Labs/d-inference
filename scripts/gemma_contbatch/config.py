@@ -10,12 +10,6 @@ DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 BASELINE_RELATIVE_PATH = Path(
     "docs/reports/2026-07-23-gemma-4-26b-qat4bit-continuous-batching-baseline.json"
 )
-PERFORMANCE_ENV_PREFIXES = (
-    "DARKBLOOM_CBV2_",
-    "DARKBLOOM_MEM_CAP_",
-    "DARKBLOOM_ACTIVATION_RESERVE_",
-    "MLX_METAL_",
-)
 EXPECTED_ARRIVAL_PATTERNS = {
     "burst": [0, 0, 0, 0],
     "stagger-25ms": [0, 25, 50, 75],

@@ -122,9 +122,18 @@ through every topology and reused for all measurements. Request IDs are unique,
 pattern order rotates across repetitions, and every row must finish with
 `.length` and exactly 64 tokens.
 
-Scheduled delays are relative to the scenario start. Actual submissions were
-within roughly 5-36 ms of those targets because Swift tasks can wake between
-GPU scheduling operations.
+PROVENANCE CAVEAT: this baseline was recorded with the ORIGINAL arrival
+benchmark, which slept each row's delay relative to its own task start rather
+than to the scenario start. Actual submissions therefore landed within roughly
+5-36 ms of their targets, so these arrival figures describe a topology that
+drifted from its name. The harness has since been corrected to sleep to an
+absolute deadline and to REJECT any sample whose arrival error exceeds 5 ms,
+which means a run of the current harness would refuse to reproduce the numbers
+in this section. Re-record this baseline against the unmodified engine before
+using its arrival rows for attribution.
+
+The decode rows carry the same warning: they are single measurements, because
+`--iterations` did not repeat the decode sweep when this baseline was taken.
 
 ### Per-Repetition Results
 

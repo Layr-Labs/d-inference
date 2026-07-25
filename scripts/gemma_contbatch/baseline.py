@@ -2,8 +2,9 @@
 
 A percentage delta against the committed baseline is only an *engine* delta if
 everything else is held constant. These checks refuse to compare when the model
-snapshot, the host hardware, or the workload shape differs, instead of silently
-attributing a weight/config/hardware difference to the code under test.
+snapshot, the host hardware, the workload shape, or the performance-relevant
+environment differs, instead of silently attributing a weight/config/hardware/
+kill-switch difference to the code under test.
 """
 
 from __future__ import annotations
@@ -11,6 +12,8 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+
+from .environment import baseline_environment
 
 
 NO_COMPARE_HINT = "pass --no-compare to run without a baseline comparison"
@@ -122,13 +125,74 @@ def validate_configuration_pin(args: argparse.Namespace, baseline: dict) -> None
         )
 
 
+def describe_env_value(value: str | None) -> str:
+    """`unset` is a bareword so it cannot be confused with the string 'unset'."""
+    return "unset" if value is None else repr(value)
+
+
+def validate_environment_pin(baseline: dict, environment: dict[str, str]) -> None:
+    """Refuse to compare when engine kill switches or MLX flags differ.
+
+    Values are compared verbatim. The harness does not normalise truthiness
+    ("0" vs "false" vs unset): each switch decides that for itself, and a
+    guess here would silently re-open the hole this pin closes.
+
+    The asymmetry that matters is a baseline with no recorded environment --
+    the committed baseline predates this pin. Such a baseline is read as an
+    implicit *empty* environment, i.e. "recorded with engine defaults":
+
+      * absent in baseline + empty run  -> match, the comparison proceeds.
+        Both sides are the default configuration, which is exactly what the
+        committed baseline was recorded under.
+      * absent in baseline + non-empty run -> REFUSE. This is the dangerous
+        case the pin exists for: a switch flipped on one side only, whose
+        effect would otherwise be reported as a code regression (or hide one).
+
+    That is deliberately not fail-open: the only permissive path requires the
+    run itself to carry no overrides. The residual risk is an old baseline
+    recorded *with* an override by a runner too old to write the block; the
+    committed baseline was not, and every baseline written from here on
+    records the block unconditionally (empty dict when nothing is set), so the
+    ambiguity is bounded to reports predating this pin.
+    """
+    try:
+        recorded = baseline_environment(baseline)
+    except RuntimeError as error:
+        raise RuntimeError(f"{error}; {NO_COMPARE_HINT}") from error
+    baseline_values = {} if recorded is None else recorded
+    # Union of keys, taking the baseline's record verbatim: the run side is
+    # already allowlist-filtered at capture, and filtering the baseline again
+    # here would let a hand-edited pin disappear instead of refusing.
+    mismatches = [
+        f"{name}={describe_env_value(environment.get(name))} "
+        f"(baseline {describe_env_value(baseline_values.get(name))})"
+        for name in sorted(set(environment) | set(baseline_values))
+        if environment.get(name) != baseline_values.get(name)
+    ]
+    if not mismatches:
+        return
+    subject = (
+        "the baseline, which records none (read as engine defaults)"
+        if recorded is None
+        else "the baseline environment"
+    )
+    raise RuntimeError(
+        f"performance environment does not match {subject}: "
+        + ", ".join(mismatches)
+        + "; "
+        + NO_COMPARE_HINT
+    )
+
+
 def validate_baseline_pins(
     args: argparse.Namespace,
     baseline: dict,
     model_snapshot: str,
     hardware: dict,
+    environment: dict[str, str],
 ) -> None:
     """Every pin that must hold before a delta can be read as an engine delta."""
     validate_model_pin(baseline, args.model, model_snapshot)
     validate_hardware_pin(baseline, hardware)
     validate_configuration_pin(args, baseline)
+    validate_environment_pin(baseline, environment)

@@ -49,3 +49,53 @@ climbing where contiguous flattens. The crossover is at B=5-6.
 
 Prefill is not a paged win and was never claimed to be — there is no paged
 prefill kernel. These are within run-to-run noise of each other.
+
+## G1 — Is paged sized correctly?
+
+Bar: per-sequence paged KV <= contiguous at ctx {1k, 10k, 100k}; pool
+footprint fits 36 GB boxes.
+
+### Per-sequence KV, gemma-4 (25 sliding w=1024 + 5 full, fp16)
+
+Derived from the LANDED ring geometry (`ringPageCount = 97 pages = 1,552
+tokens`), cross-checked against `PagedKVPool.pageDemand`.
+
+| ctx | contiguous | paged (ring 1,552) | ratio | paged + ring shrink | ratio |
+|--:|--:|--:|--:|--:|--:|
+| 1,024 | 0.273 GiB | 0.273 GiB | 1.00x | 0.273 GiB | 1.00x |
+| 10,240 | 0.977 GiB | 1.077 GiB | **1.10x** | 0.980 GiB | 1.00x |
+| 102,400 | 8.008 GiB | 8.109 GiB | 1.01x | 8.011 GiB | 1.00x |
+
+### Verdict: MARGINAL FAIL at 10k, and the ring shrink is what fixes it
+
+Paged overshoots contiguous by **10% at 10k context**. It is at parity at
+1k (both under the window) and at 100k (the 5 full-attention layers
+dominate and the sliding overshoot washes out). 10k is the worst case
+because it is where the sliding ring's extra `maxPrefillChunk` of width is
+largest relative to total KV.
+
+The overshoot is exactly `ring - window = 1,552 - 1,024 = 528` tokens per
+sliding layer. Shrinking the ring to `window + span` closes it to 1.00x at
+every context.
+
+**This promotes `gather(ring) ++ chunk` from an optimisation to a G1
+blocker.** It also needs BOTH halves: the layer half is landed, but
+row-level direct writers cannot re-gather post-write and need their own
+answer.
+
+### Measured, real weights, B=1
+
+| prefill | contiguous | paged |
+|--:|--:|--:|
+| 1,024 | 1291.2 tok/s | 1299.4 tok/s |
+| 8,192 | 861.1 tok/s | 910.1 tok/s |
+| 32,768 | 354.3 tok/s | 371.6 tok/s |
+
+Peak RSS at 32k: contiguous 14.914 GiB, paged 14.861 GiB.
+
+Note paged is slightly FASTER at long prefill (+5.7% at 8k, +4.9% at 32k).
+The migration plan predicted paged could not help prefill because there is
+no paged prefill kernel — that was right about the kernel and wrong about
+the outcome. The gain is query sub-blocking (WS-0.2p): paged previously
+built one full `[l, kL]` score tensor and now blocks at q=128, which cuts
+the score-tensor traffic contiguous had already avoided since #85.

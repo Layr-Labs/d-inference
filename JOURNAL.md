@@ -93,7 +93,14 @@ until each premise is individually checked against a live caller.
 4. **WS-2.2 (spans) must not sub-block without fixing `spanChunkMask`.**
    `AttentionV1.swift:559-577` anchors on `context.chunkEnd`; under sub-blocking
    `qAbs` slides to the wrong absolute window. Silent wrong vision output.
-5. **Do not delete the contiguous backend before 0.8.0 is stable.** It is the
+5. **The ~528-token alias margin is GONE as of this wave.** TrackP's ring
+   shrink landed after TrackM's WS-3.5, so the ordering rule held — but the
+   accidental slack that used to make the MTP lazy-gather hazard *latent* no
+   longer exists. `MTP/CBv2MTPCaptureFence.swift` is now load-bearing in
+   production, not insurance. **If anyone reverts, weakens or bypasses that
+   fence, paged MTP silently corrupts drafts** — no crash, no telemetry, and
+   greedy token-exactness breaks quietly. Treat it as a hard invariant.
+6. **Do not delete the contiguous backend before 0.8.0 is stable.** It is the
    `DARKBLOOM_CBV2_PAGED_KV=0` rollback path and there is no canary fleet.
 
 ## Process rules learned the hard way
@@ -122,6 +129,14 @@ until each premise is individually checked against a live caller.
   report written-and-unvalidated with a per-test prediction (pass, or
   fail-pending-<track>); Main validates once at integration. A test that fails
   for the predicted reason is stronger evidence than one that passes.
+- **The `edit` tool can serve a STALE SNAPSHOT on a heavily-shared file.**
+  W15 had an applied change silently vanish: a re-apply was rejected with
+  "hash #054F is not from this session; the current file hashes to #E470", and
+  the rejection preview contained a struct that was not on disk. So the tool's
+  snapshot disagreed with the filesystem, and that is what ate the edit — not a
+  sibling agent. **After any anchored edit to a file other agents are also in,
+  `grep` the symbol back before trusting it**, and prefer content-anchored
+  splices over line anchors. Reported via `report_issue`.
 - **`.build/debug` is a symlink** — binaries run through it silently disabled
   paged until commit `0408b73`. Gate runs should still prefer
   `.build/arm64-apple-macosx/<config>/`.
@@ -159,10 +174,10 @@ gitlink, open a PR per track, then run the full validation set.
 | F2 | heartbeat `kv_backend` discriminator (**Gate G5 CLEARED**) | **DONE** `548f0b63e` |
 | F3 | 9 telemetry fields + `backend` key ruling | **DONE** `28e4ef661` |
 | F4 | telemetry PRODUCERS (F3 added allowlist entries; nothing emits them) | running |
-| W15 | multi-model co-residency pool resize | running |
+| W15 | co-residency pool resize — `pagedPoolResizeShortfall` landed, provider target green | **DONE**, uncommitted |
 | D | SSD windowed sidecar (WS-4.2) | running |
 | E4 | relaxed the 5-sample solo floor (the real B=8 blocker) | **DONE** `1a1010d4c` |
-| A2 | sink-dtype coercion in `AttentionV1` — NEW latent daemon abort | running |
+| A2 | sink-dtype coercion — latent daemon abort in CONTIGUOUS | **DONE** `c89a24f` |
 
 ## What is left after Wave 1
 

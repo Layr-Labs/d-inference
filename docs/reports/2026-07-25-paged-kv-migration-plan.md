@@ -870,9 +870,49 @@ ring fails nothing. Track T must add an upper-bound assertion.
 | **Packed prefill** | `precondition(b == 1, ...)` at `PagedLayerCache.swift:142` (twin at `:175`) | Replace with the per-row loop `AttentionV1.updateAndAttend` already uses for `B>1, L>1` (`:127` → `updateAndAttendRow:235`). Nothing in it is storage-specific — `row.update(...)` then `attend(...)`, both `CBv2SequenceKV` protocol surface. | **3 d** |
 | **Vision / spans** | No `CBv2SpanMaskBinding` conformance | Compose the span overlay onto the mask `prefillAttend` already builds in absolute coordinates. Paged is *better* positioned than contiguous, which must abandon symbolic `.causal`. **Carries the `spanChunkMask` trap forward** — see below. | 1.5 wk |
 | **Capability protocol** | `supportsPackedPrefill = caches.allSatisfy { $0 is CBv2LayerCache }` (`LayerCacheBankV2.swift:121-123`) | A type check makes every future backend second-class by construction. Convert to an affirmative protocol. | 3 d |
-| Last-query prefill | No `CBv2LastQueryPrefillLayerCache` conformance | Days — and **dead on gemma-4-26B anyway**: `gemma4SupportsLastQueryPrefill` (`Gemma4Text.swift:80-84`) requires `!layerUsesSharedKV(numHiddenLayers-1)`, but `numKvSharedLayers` defaults to 20 (`:156`, `:252`) and `layerUsesSharedKV` (`:330`) always returns true for the last layer when it is > 0. `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0` is a no-op kill switch. | 2 d |
+| **Last-query prefill** | No `CBv2LastQueryPrefillLayerCache` conformance | **LIVE on the flagship model — Rev 2 was wrong to call this dead.** See the correction below; this is a real paged-vs-contiguous perf regression, not a no-op. | 2 d |
 | `uniformAttentionSoftcap` | Bank only inspects `CBv2LayerCache` (`:99`) → nil → fail-safe compiled veto (`EngineV2.swift:205-215`) | Report it for paged caches. **Not sufficient alone** — `EngineV2.swift:225` carries an independent `backendVeto = !producesCompiledDecodeEligibleRows` OR'd on the same line. Moot if §14 deletes compiled decode. | 2 d |
 | Slot vetoes | VLM and kv-quant forced to contiguous (`EngineV2SlotFactory.swift:182-185`) | Lift the VLM veto once spans land. **Note:** the vetoes are currently load-bearing for *test* correctness — `LiveInferenceFixtures` defaults `kvBackendConfig: "auto"`, so a default flip repoints ~10 live suites at paged and the VLM veto bounces them back. | 1 d |
+
+> ### Correction (Rev 2.1): last-query prefill is NOT dead
+>
+> Rev 2 claimed the feature was dead on gemma-4-26B because
+> `gemma4SupportsLastQueryPrefill` (`Gemma4Text.swift:80-84`) requires
+> `!layerUsesSharedKV(numHiddenLayers-1)` and `numKvSharedLayers` "defaults to
+> 20". **That default applies only when the JSON key is ABSENT.** Every
+> shipping checkpoint sets it explicitly. Verified on disk:
+>
+> | checkpoint | `num_kv_shared_layers` | `num_hidden_layers` | `layer_types[-1]` |
+> |---|---:|---:|---|
+> | `gemma-4-26B-A4B-it-qat-4bit` | **0** | 30 | `full_attention` |
+> | `gemma-4-26b-a4b-it-4bit` | **0** | 30 | `full_attention` |
+>
+> So `layerUsesSharedKV(29)` short-circuits false (`:330`), all three
+> conditions hold, and the feature is **live**: every prompt chunk ≥ 128
+> tokens selects it on the final layer via `Gemma4TextModel.cbv2Prefill` →
+> `SteppableAdapterV2.swift:78`, because `CBv2LayerCache` conforms to
+> `CBv2LastQueryPrefillLayerCache` (`LayerCacheV2.swift:186`).
+>
+> **Why the wrong conclusion looked tested.** The cited proof,
+> `CBv2LastQueryPrefillTests.swift:729-734`, uses
+> `TinyGemma.sharedFinalConfig()` — a synthetic fixture deliberately built
+> with `numKvSharedLayers = 2`. It pins the NEGATIVE case only and never
+> exercised the production shape. A production-shape test now exists
+> (`CBv2LastQueryPrefillProductionShapeTests`).
+>
+> **Consequence for the migration — this makes WS-2.4 more important, not
+> less.** Under paged, if `PagedLayerCache` does not conform to
+> `CBv2LastQueryPrefillLayerCache`, `hasCapableCache` goes false and the trunk
+> falls back to ordinary chunk attention. That is correct but slower, on the
+> flagship model, on the final layer of every chunk — a paged-vs-contiguous
+> regression that was not priced. It is a perf item, not a correctness one, so
+> it does not block the flip; it does belong in the release measurement.
+>
+> **Process lesson, recorded because it nearly cost a silent production
+> regression.** A Swift struct default is evidence about absent keys only,
+> never about a shipping checkpoint. The contradicting fact
+> (`num_kv_shared_layers: 0`, read from the real `config.json`) was already
+> present elsewhere in this document's own research and was not reconciled.
 
 **The `spanChunkMask` trap, relocated from Rev 1's §0.2.** `AttentionV1.swift:559-577`
 is the only absolute-coordinate mask site in the file:

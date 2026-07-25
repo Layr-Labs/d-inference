@@ -460,3 +460,91 @@ told to confirm with M over IRC before declaring done.
 
 Main is staying out of both worktrees while agents run — no git state mutation,
 per the Wave 0 incident.
+
+### 2026-07-25 — Main — stacked PRs open; last-query deletion RETRACTED
+
+**8 PRs open for parallel review.** Wave 0's commits were split into independent
+branches off each repo's base rather than a literal stack — they touch disjoint
+files, so a chain would have created false ordering and serialised review for no
+reason. Genuine stacks come when work is genuinely sequential (P1→P2→P3 within a
+track).
+
+`Layr-Labs/mlx-swift-lm`, base `main`:
+
+| PR | Branch |
+|---|---|
+| [#86](https://github.com/Layr-Labs/mlx-swift-lm/pull/86) seam contract | `paged-kv/seam-contract` |
+| [#87](https://github.com/Layr-Labs/mlx-swift-lm/pull/87) admission ring | `paged-kv/admission-ring` |
+| [#88](https://github.com/Layr-Labs/mlx-swift-lm/pull/88) bench prompt axis | `paged-kv/bench-prompt-axis` |
+| [#89](https://github.com/Layr-Labs/mlx-swift-lm/pull/89) resource symlink | `paged-kv/resource-symlink` |
+
+`Layr-Labs/d-inference`, base `master`:
+
+| PR | Branch |
+|---|---|
+| [#580](https://github.com/Layr-Labs/d-inference/pull/580) telemetry parity | `paged-kv/telemetry-parity` |
+| [#581](https://github.com/Layr-Labs/d-inference/pull/581) CI paged gate | `paged-kv/ci-paged-gate` |
+| [#582](https://github.com/Layr-Labs/d-inference/pull/582) e2e backend knob | `paged-kv/e2e-backend-knob` |
+| [#583](https://github.com/Layr-Labs/d-inference/pull/583) benchmark `--kv-backend` | `paged-kv/bench-kv-backend` |
+
+Every description carries the before/after Mermaid pair AGENTS.md requires.
+Branch prep was done in throwaway worktrees (`/tmp/engine-pr`, `/tmp/dinf-pr`)
+so the two live worktrees were never touched — the Wave 0 stash incident rule.
+
+---
+
+**RETRACTED: last-query prefill is not dead. `TrackDEL_DeadCode` stopped the
+deletion and was right.**
+
+```
+JOURNAL
+stack:    DEL
+pr:       none
+did:      Refuted the deletion premise before removing ~1,384 lines of live code.
+files:    verified against both shipping config.json files
+evidence: gemma-4-26B-A4B-it-qat-4bit and gemma-4-26b-a4b-it-4bit BOTH set
+          num_kv_shared_layers = 0 explicitly, num_hidden_layers = 30,
+          layer_types[29] = "full_attention". So layerUsesSharedKV(29)
+          short-circuits false at Gemma4Text.swift:330, all three conditions of
+          gemma4SupportsLastQueryPrefill hold, and the feature is LIVE: every
+          prompt chunk >= 128 tokens selects it on the final layer via
+          Gemma4TextModel.cbv2Prefill -> SteppableAdapterV2.swift:78, because
+          CBv2LayerCache conforms to CBv2LastQueryPrefillLayerCache
+          (LayerCacheV2.swift:186).
+decided:  Deletion abandoned. DEL's new CBv2LastQueryPrefillProductionShapeTests
+          is kept — it pins the production shape, which nothing did before.
+blocked:  nothing
+```
+
+**My error, not a scout's.** The Rev 2 claim rested on `numKvSharedLayers`
+"defaulting to 20". That default applies only when the JSON key is ABSENT.
+Worse: the model-facts block of the Wave 1 task brief states
+`num_kv_shared_layers: 0` — sourced from `PrefillParity`, which read the real
+`config.json` — while the deletion rationale two sections below asserted the
+struct default. **I had both halves in one document and did not reconcile
+them.** Had this shipped it would have been a silent perf regression on the
+flagship model.
+
+The wrong conclusion looked tested because the cited proof
+(`CBv2LastQueryPrefillTests.swift:729-734`) uses `TinyGemma.sharedFinalConfig()`,
+a fixture deliberately built with `numKvSharedLayers = 2` — it pins the NEGATIVE
+case only.
+
+Rule added to the plan: **a Swift struct default is evidence about absent keys
+only, never about a shipping checkpoint.**
+
+**This makes WS-2.4 more important, not less.** Under paged, if
+`PagedLayerCache` does not conform to `CBv2LastQueryPrefillLayerCache`,
+`hasCapableCache` goes false and the flagship model silently loses the
+optimisation on the final layer of every chunk — an unpriced paged-vs-contiguous
+regression. Perf, not correctness, so it does not block the flip, but it belongs
+in the release measurement and is now a scoped item for track L.
+
+### 2026-07-25 — Main — Wave 1 rulings
+
+| Track | Ruling |
+|---|---|
+| **G** | Granted the compiled-decode call sites outside its list (`SteppableAdapterV2`, `FrozenReplayFullSequenceKV`, `BenchCBv2RealModel`, 7 test files) — mechanical only. Carve-out: `CBv2MTPKVStagingTests.swift` stays TrackT's. Its dead-but-compiling list (`producesCompiledDecodeEligibleRows`, `externalReserveBytes`, `uniformAttentionSoftcap`) is deferred to one deliberate follow-up, not scattered. |
+| **X** | Granted both gate/policy test files and `EngineV2Config.swift`. Its call that the fleet kill switch keeps DEGRADING on explicit paged is **right** and must be commented in code: a kill switch that refuses would 503 every slot on a paged-configured fleet. Refusal set is exactly preflight / capacity / construction error. Also adding a dedicated refusal reason — `.engineInitFailed` is a catch-all that would make a paged regression indistinguishable from a bad model load. |
+| **R** | May append a suite at EOF of `CBv2PagedBackendTests.swift`; asked to also assert free-list and refcount restoration, since a row-only check passes even if a deferred free leaks. `PrefixReusePlan.swift` released back to unowned. |
+| **C4** | Complete. SIP was **incidental**, not intrinsic — coordinator trust is stamped (`suite.go:367-372` forces `ChallengeVerifiedSIP = true`) and the provider-side check is log-only. Replaced with a SHA-256 artifact pin plus an explicitly host-gated `security_posture` subtest that is falsifiable in both directions and never skips. |

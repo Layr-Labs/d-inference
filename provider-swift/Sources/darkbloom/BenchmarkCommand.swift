@@ -44,6 +44,12 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Sweep: decode prompt length in tokens per sequence (default 64).")
     var decodePromptTokens = ThroughputSweep.defaultDecodePromptTokens
 
+    @Option(name: .long, help: """
+        Sweep: measured repetitions of the whole decode batch curve (default 1). \
+        Each repetition emits its own decode sample so callers can take a median.
+        """)
+    var decodeIterations = ThroughputSweep.defaultDecodeIterations
+
     @Flag(name: .long, help: """
         Run the cold-prefill TTFT benchmark through the production \
         ContinuousBatchingV2 engine and print a JSON report (engine-internal \

@@ -28,6 +28,7 @@ public enum ThroughputSweep {
     public static let defaultBatchSizes = [1, 2, 3, 4, 5, 6]
     public static let defaultDecodeTokens = 64
     public static let defaultDecodePromptTokens = 64
+    public static let defaultDecodeIterations = 1
 
     /// Snapshot of model facts read once, off-actor, inside `perform`.
     private struct ModelFacts: Sendable {
@@ -38,6 +39,12 @@ public enum ThroughputSweep {
 
     /// Run the full sweep. `hardware` supplies the peak memory bandwidth used to
     /// invert decode tok/s into implied bytes/token.
+    ///
+    /// `decodeIterations` repeats the whole decode batch curve that many times
+    /// inside the one loaded process; every repetition is emitted as its own
+    /// `DecodeSample`, so callers can take a median instead of trusting a single
+    /// noisy GPU measurement. The `derived` block is always computed from the
+    /// per-batch medians.
     public static func run(
         modelID: String,
         modelDirectory: URL,
@@ -45,6 +52,7 @@ public enum ThroughputSweep {
         batchSizes: [Int] = defaultBatchSizes,
         decodeTokens: Int = defaultDecodeTokens,
         decodePromptTokens: Int = defaultDecodePromptTokens,
+        decodeIterations: Int = defaultDecodeIterations,
         hardware: HardwareInfo,
         efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency
     ) async throws -> ThroughputSweepReport {
@@ -89,13 +97,16 @@ public enum ThroughputSweep {
             batchSizes: batchSizes,
             decodeTokens: decodeTokens,
             decodePromptTokens: decodePromptTokens,
+            iterations: decodeIterations,
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
             modelDirectory: modelDirectory
         )
 
+        // One median sample per batch size: the B=1 implied read and the
+        // batch-scaling linearity must not hang off a single measurement.
         let derived = ThroughputSweepReport.makeDerived(
-            decode: decode,
+            decode: medianDecodeByBatch(decode),
             totalParams: facts.totalParams,
             weightBytes: facts.weightBytes,
             quantBits: quantBits,
@@ -179,6 +190,11 @@ public enum ThroughputSweep {
     /// per row), drop the first emitted token per row to exclude prefill, and
     /// report the aggregate + per-sequence steady-state decode tok/s.
     ///
+    /// The whole curve is repeated `iterations` times, batch-size-inner /
+    /// repetition-outer, so slow thermal drift is shared across batch sizes
+    /// instead of being charged entirely to the last one. Every repetition is
+    /// returned as its own sample; medians are the caller's job.
+    ///
     /// Engines run one batch size at a time: two engines on the same
     /// `ModelContainer` race shared MLX/Metal state and produce noise (matches
     /// `PerformanceLiveTests`).
@@ -189,6 +205,7 @@ public enum ThroughputSweep {
         batchSizes: [Int],
         decodeTokens: Int,
         decodePromptTokens: Int,
+        iterations: Int,
         weightBytes: Int,
         isVLM: Bool,
         modelDirectory: URL?
@@ -197,7 +214,8 @@ public enum ThroughputSweep {
         guard !sizes.isEmpty else { return [] }
         let promptLen = max(1, decodePromptTokens)
         let genTokens = max(1, decodeTokens)
-        log("decode sweep: batch sizes \(sizes), \(genTokens) tok/seq, prompt \(promptLen) tok/seq")
+        let repetitions = max(1, iterations)
+        log("decode sweep: batch sizes \(sizes), \(genTokens) tok/seq, prompt \(promptLen) tok/seq, \(repetitions) repetition(s)")
 
         // Warm-up at B=1 with a short generation to compile decode kernels
         // (CBv2 compiled decode pays its cold start here, not in a sample).
@@ -207,22 +225,24 @@ public enum ThroughputSweep {
             isVLM: isVLM, modelDirectory: modelDirectory)
 
         var samples: [ThroughputSweepReport.DecodeSample] = []
-        for batchSize in sizes {
-            let (totalTokens, maxElapsed) = await runDecodeBatch(
-                container: container, modelID: modelID, baseTokens: baseTokens,
-                batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
-                weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory)
-            let secs = seconds(maxElapsed)
-            let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
-            let perSeq = aggregate / Double(batchSize)
-            log("  B=\(batchSize): aggregate \(String(format: "%.1f", aggregate)) tok/s, per-seq \(String(format: "%.1f", perSeq)) tok/s")
-            samples.append(ThroughputSweepReport.DecodeSample(
-                batchSize: batchSize,
-                decodeTokensPerSequence: genTokens,
-                aggregateTokensPerSecond: aggregate,
-                perSequenceTokensPerSecond: perSeq,
-                elapsedMs: secs * 1000
-            ))
+        for iteration in 1 ... repetitions {
+            for batchSize in sizes {
+                let (totalTokens, maxElapsed) = await runDecodeBatch(
+                    container: container, modelID: modelID, baseTokens: baseTokens,
+                    batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
+                    weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory)
+                let secs = seconds(maxElapsed)
+                let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
+                let perSeq = aggregate / Double(batchSize)
+                log("  [\(iteration)/\(repetitions)] B=\(batchSize): aggregate \(String(format: "%.1f", aggregate)) tok/s, per-seq \(String(format: "%.1f", perSeq)) tok/s")
+                samples.append(ThroughputSweepReport.DecodeSample(
+                    batchSize: batchSize,
+                    decodeTokensPerSequence: genTokens,
+                    aggregateTokensPerSecond: aggregate,
+                    perSequenceTokensPerSecond: perSeq,
+                    elapsedMs: secs * 1000
+                ))
+            }
         }
         return samples
     }
@@ -361,6 +381,38 @@ public enum ThroughputSweep {
     static func seconds(_ duration: Duration) -> Double {
         Double(duration.components.seconds)
             + Double(duration.components.attoseconds) / 1e18
+    }
+
+    /// Collapse repeated decode measurements to one median sample per batch
+    /// size, ascending. Feeding this (not the raw repetition list) to
+    /// `makeDerived` keeps the B=1 implied read and the batch-scaling
+    /// linearity off a single noisy measurement, and stops a repeated batch
+    /// size from being counted N times in the linearity average.
+    static func medianDecodeByBatch(
+        _ samples: [ThroughputSweepReport.DecodeSample]
+    ) -> [ThroughputSweepReport.DecodeSample] {
+        var grouped: [Int: [ThroughputSweepReport.DecodeSample]] = [:]
+        for sample in samples { grouped[sample.batchSize, default: []].append(sample) }
+        return grouped.keys.sorted().compactMap { batchSize in
+            guard let group = grouped[batchSize], let first = group.first else { return nil }
+            return ThroughputSweepReport.DecodeSample(
+                batchSize: batchSize,
+                decodeTokensPerSequence: first.decodeTokensPerSequence,
+                aggregateTokensPerSecond: median(group.map(\.aggregateTokensPerSecond)),
+                perSequenceTokensPerSecond: median(group.map(\.perSequenceTokensPerSecond)),
+                elapsedMs: median(group.map(\.elapsedMs))
+            )
+        }
+    }
+
+    /// Low median for even counts is avoided: use the two-sided average so the
+    /// result matches Python's `statistics.median` (the runner recomputes it).
+    static func median(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        if sorted.count % 2 == 1 { return sorted[middle] }
+        return (sorted[middle - 1] + sorted[middle]) / 2
     }
 
     /// Whether the checkpoint's config.json declares a `vision_config`

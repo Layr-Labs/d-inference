@@ -10,6 +10,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .baseline import (
+    load_baseline,
+    resolve_model_snapshot,
+    validate_baseline_pins,
+)
 from .config import PERFORMANCE_ENV_PREFIXES, parse_args
 from .process import (
     atomic_write,
@@ -21,7 +26,8 @@ from .process import (
     source_fingerprint,
 )
 from .report import markdown_report
-from .results import compare, summarize, validate_comparison_shape
+from .results import compare
+from .summary import summarize
 from .validation import assert_finite, validate_raw_outputs
 
 
@@ -86,6 +92,8 @@ def main() -> int:
             str(args.decode_tokens),
             "--decode-prompt-tokens",
             str(args.decode_prompt_tokens),
+            "--decode-iterations",
+            str(args.iterations),
         ],
         provider_dir,
     )
@@ -114,8 +122,15 @@ def main() -> int:
         provider_dir,
     )
 
+    raw_outputs = {
+        "throughputSweep": sweep,
+        "schedulerPrefill": scheduler,
+        "arrivalInvariance": arrival,
+    }
     validate_raw_outputs(args, sweep, scheduler, arrival)
     summary = summarize(sweep, scheduler, arrival)
+    model_snapshot = resolve_model_snapshot(raw_outputs)
+    hardware = sweep["hardware"]
 
     environment = {
         key: value
@@ -123,16 +138,23 @@ def main() -> int:
         if key.startswith(PERFORMANCE_ENV_PREFIXES)
     }
     report = {
-        "schemaVersion": 1,
+        # 2: the arrival summary carries the measured delivered-topology
+        # evidence (offsets, arrival error, tolerance, discarded attempts).
+        "schemaVersion": 2,
         "generatedAt": generated_at,
         "label": args.label,
         "modelID": args.model,
+        "modelSnapshot": model_snapshot,
+        "hardware": hardware,
         "configuration": {
             "iterations": args.iterations,
             "prefillLengths": args.prefill_lengths,
             "decodePromptTokens": args.decode_prompt_tokens,
             "decodeTokens": args.decode_tokens,
             "maxBatch": args.max_batch,
+            # The decode curve is repeated once per iteration, so every batch
+            # size in the summary is a median over exactly this many samples.
+            "decodeIterations": args.iterations,
             "arrivalPromptTokens": args.arrival_prompt_tokens,
             "arrivalDecodeTokens": args.arrival_decode_tokens,
         },
@@ -149,11 +171,7 @@ def main() -> int:
             "thermalAfter": capture_optional(["pmset", "-g", "therm"], repo_root),
         },
         "summary": summary,
-        "raw": {
-            "throughputSweep": sweep,
-            "schedulerPrefill": scheduler,
-            "arrivalInvariance": arrival,
-        },
+        "raw": raw_outputs,
         "durationSeconds": time.monotonic() - started,
         "invocation": shlex.join([sys.executable, *sys.argv]),
     }
@@ -162,13 +180,11 @@ def main() -> int:
         baseline_path = Path(args.baseline)
         if not baseline_path.is_absolute():
             baseline_path = repo_root / baseline_path
-        with baseline_path.open(encoding="utf-8") as handle:
-            baseline = json.load(handle)
-        if baseline.get("modelID") != args.model:
-            raise RuntimeError(
-                f"baseline model {baseline.get('modelID')} does not match {args.model}"
-            )
-        validate_comparison_shape(args, baseline)
+        baseline = load_baseline(baseline_path)
+        # Pin weights, host, and workload before any delta is computed: an
+        # unpinned snapshot or a different Mac turns unrelated differences into
+        # what reads as an engine regression.
+        validate_baseline_pins(args, baseline, model_snapshot, hardware)
         report["comparison"] = compare(summary, baseline)
 
     assert_finite(report)

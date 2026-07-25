@@ -21,6 +21,10 @@ extension Benchmark {
             printError("--max-batch must be >= 1")
             throw ExitCode.failure
         }
+        guard decodeIterations >= 1 else {
+            printError("--decode-iterations must be >= 1")
+            throw ExitCode.failure
+        }
         let batchSizes = Array(1 ... maxBatch)
 
         let report = try await ThroughputSweep.run(
@@ -30,6 +34,7 @@ extension Benchmark {
             batchSizes: batchSizes,
             decodeTokens: decodeTokens,
             decodePromptTokens: decodePromptTokens,
+            decodeIterations: decodeIterations,
             hardware: hardware
         )
 

@@ -1,124 +1,8 @@
-"""Benchmark summaries, baseline comparisons, and comparison validation."""
+"""Baseline comparison of a summary against the committed baseline."""
 
 from __future__ import annotations
 
-import argparse
-from collections import defaultdict
-from statistics import median
-
-
-def summarize(sweep: dict, scheduler: dict, arrival: dict) -> dict:
-    prefill_groups: dict[int, list[dict]] = defaultdict(list)
-    for sample in sweep["prefill"]:
-        prefill_groups[int(sample["promptTokens"])].append(sample)
-    prefill = []
-    for prompt_tokens, samples in sorted(prefill_groups.items()):
-        prefill.append(
-            {
-                "promptTokens": prompt_tokens,
-                "medianElapsedMs": median(item["elapsedMs"] for item in samples),
-                "medianTokensPerSecond": median(
-                    item["prefillTokensPerSecond"] for item in samples
-                ),
-                "samples": [
-                    {
-                        "elapsedMs": item["elapsedMs"],
-                        "tokensPerSecond": item["prefillTokensPerSecond"],
-                    }
-                    for item in samples
-                ],
-            }
-        )
-
-    ttft_groups: dict[int, list[dict]] = defaultdict(list)
-    for sample in scheduler["samples"]:
-        ttft_groups[int(sample["promptTokens"])].append(sample)
-    scheduler_ttft = []
-    for prompt_tokens, samples in sorted(ttft_groups.items()):
-        scheduler_ttft.append(
-            {
-                "promptTokens": prompt_tokens,
-                "medianTTFTMs": median(item["ttftMs"] for item in samples),
-                "samples": [
-                    {
-                        "ttftMs": item["ttftMs"],
-                        "msPerPrefillToken": item["msPerPrefillToken"],
-                    }
-                    for item in samples
-                ],
-            }
-        )
-
-    decode = [
-        {
-            "batchSize": item["batchSize"],
-            "elapsedMs": item["elapsedMs"],
-            "perRequestTokensPerSecond": item["perSequenceTokensPerSecond"],
-            "aggregateTokensPerSecond": item["aggregateTokensPerSecond"],
-        }
-        for item in sweep["decode"]
-    ]
-
-    arrival_summary = []
-    for pattern in arrival["patterns"]:
-        all_rows = [row for sample in pattern["samples"] for row in sample["rows"]]
-        row_groups: dict[int, list[dict]] = defaultdict(list)
-        for sample in pattern["samples"]:
-            for row in sample["rows"]:
-                row_groups[int(row["row"])].append(row)
-        rows = [
-            {
-                "row": row,
-                "medianTTFTMs": median(item["ttftMs"] for item in samples),
-                "medianDecodeTokensPerSecond": median(
-                    item["decodeTokensPerSecond"] for item in samples
-                ),
-            }
-            for row, samples in sorted(row_groups.items())
-        ]
-        arrival_summary.append(
-            {
-                "name": pattern["name"],
-                "arrivalDelaysMs": pattern["arrivalDelaysMs"],
-                "medianTTFTMs": median(row["ttftMs"] for row in all_rows),
-                "medianPerRequestDecodeTokensPerSecond": median(
-                    row["decodeTokensPerSecond"] for row in all_rows
-                ),
-                "medianAggregateDecodeTokensPerSecond": median(
-                    item["aggregateDecodeTokensPerSecond"]
-                    for item in pattern["samples"]
-                ),
-                "medianEndToEndTokensPerSecond": median(
-                    item["endToEndTokensPerSecond"] for item in pattern["samples"]
-                ),
-                "medianMakespanMs": median(
-                    item["makespanMs"] for item in pattern["samples"]
-                ),
-                "outputsStableAcrossIterations": pattern[
-                    "outputsStableAcrossIterations"
-                ],
-                "outputsMatchBurst": pattern["outputsMatchBurst"],
-                "samples": [
-                    {
-                        "iteration": item["iteration"],
-                        "aggregateDecodeTokensPerSecond": item[
-                            "aggregateDecodeTokensPerSecond"
-                        ],
-                        "endToEndTokensPerSecond": item["endToEndTokensPerSecond"],
-                        "makespanMs": item["makespanMs"],
-                    }
-                    for item in pattern["samples"]
-                ],
-                "rows": rows,
-            }
-        )
-
-    return {
-        "prefill": prefill,
-        "schedulerTTFT": scheduler_ttft,
-        "decode": decode,
-        "arrival": arrival_summary,
-    }
+from .baseline import NO_COMPARE_HINT
 
 
 def index_by(items: list[dict], key: str) -> dict:
@@ -131,11 +15,51 @@ def percent_delta(current: float, baseline: float) -> float | None:
     return (current / baseline - 1.0) * 100.0
 
 
+def index_against_baseline(
+    section: str, current_items: list[dict], baseline_items: list[dict], key: str
+) -> dict:
+    """Index the baseline section, refusing any partial overlap.
+
+    A comparison that silently skips the rows the baseline happens to be missing
+    is worse than no comparison: the report still claims to be a baseline diff
+    while quietly hiding whichever measurements moved the most.
+    """
+    baseline_index = index_by(baseline_items, key)
+    current_keys = [item[key] for item in current_items]
+    duplicates = sorted(
+        {value for value in current_keys if current_keys.count(value) > 1}, key=repr
+    )
+    absent_from_baseline = sorted(
+        {value for value in current_keys if value not in baseline_index},
+        key=repr,
+    )
+    absent_from_run = sorted(set(baseline_index) - set(current_keys), key=repr)
+    problems = []
+    if len(baseline_index) != len(baseline_items):
+        problems.append(f"duplicate {key} in the baseline")
+    if duplicates:
+        problems.append(f"duplicate {key} in this run: {duplicates}")
+    if absent_from_baseline:
+        problems.append(f"{key} missing from the baseline: {absent_from_baseline}")
+    if absent_from_run:
+        problems.append(f"{key} missing from this run: {absent_from_run}")
+    if problems:
+        raise RuntimeError(
+            f"baseline {section} shape does not match this run ("
+            + "; ".join(problems)
+            + "); "
+            + NO_COMPARE_HINT
+        )
+    return baseline_index
+
+
 def compare(current: dict, baseline: dict) -> dict:
     baseline_summary = baseline["summary"]
     comparisons: dict[str, object] = {"baselineName": baseline.get("name", "baseline")}
 
-    base_prefill = index_by(baseline_summary["prefill"], "promptTokens")
+    base_prefill = index_against_baseline(
+        "prefill", current["prefill"], baseline_summary["prefill"], "promptTokens"
+    )
     comparisons["prefill"] = [
         {
             "promptTokens": item["promptTokens"],
@@ -149,10 +73,14 @@ def compare(current: dict, baseline: dict) -> dict:
             ),
         }
         for item in current["prefill"]
-        if item["promptTokens"] in base_prefill
     ]
 
-    base_ttft = index_by(baseline_summary["schedulerTTFT"], "promptTokens")
+    base_ttft = index_against_baseline(
+        "schedulerTTFT",
+        current["schedulerTTFT"],
+        baseline_summary["schedulerTTFT"],
+        "promptTokens",
+    )
     comparisons["schedulerTTFT"] = [
         {
             "promptTokens": item["promptTokens"],
@@ -162,10 +90,11 @@ def compare(current: dict, baseline: dict) -> dict:
             ),
         }
         for item in current["schedulerTTFT"]
-        if item["promptTokens"] in base_ttft
     ]
 
-    base_decode = index_by(baseline_summary["decode"], "batchSize")
+    base_decode = index_against_baseline(
+        "decode", current["decode"], baseline_summary["decode"], "batchSize"
+    )
     comparisons["decode"] = [
         {
             "batchSize": item["batchSize"],
@@ -179,10 +108,11 @@ def compare(current: dict, baseline: dict) -> dict:
             ),
         }
         for item in current["decode"]
-        if item["batchSize"] in base_decode
     ]
 
-    base_arrival = index_by(baseline_summary["arrival"], "name")
+    base_arrival = index_against_baseline(
+        "arrival", current["arrival"], baseline_summary["arrival"], "name"
+    )
     comparisons["arrival"] = [
         {
             "name": item["name"],
@@ -205,27 +135,5 @@ def compare(current: dict, baseline: dict) -> dict:
             ),
         }
         for item in current["arrival"]
-        if item["name"] in base_arrival
     ]
     return comparisons
-
-
-def validate_comparison_shape(args: argparse.Namespace, baseline: dict) -> None:
-    baseline_configuration = baseline.get("configuration", {})
-    expected = {
-        "decodePromptTokens": args.decode_prompt_tokens,
-        "decodeTokens": args.decode_tokens,
-        "arrivalPromptTokens": args.arrival_prompt_tokens,
-        "arrivalDecodeTokens": args.arrival_decode_tokens,
-    }
-    mismatches = [
-        f"{key}={value} (baseline {baseline_configuration.get(key)})"
-        for key, value in expected.items()
-        if baseline_configuration.get(key) != value
-    ]
-    if mismatches:
-        raise RuntimeError(
-            "benchmark shape is not comparable to the baseline: "
-            + ", ".join(mismatches)
-            + "; pass --no-compare for a different workload"
-        )

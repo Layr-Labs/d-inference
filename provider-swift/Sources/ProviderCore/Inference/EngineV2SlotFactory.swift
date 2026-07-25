@@ -163,9 +163,15 @@ enum EngineV2SlotFactory {
         // KV-backend gate, slot-veto layer (`EngineV2KVBackendPolicy`):
         // parse the operator selection (per-model override wins; typo →
         // WARN + auto), then force contiguous for slots the paged cache
-        // cannot serve — VLM alone now (span masks unsupported: media
-        // would 4xx at submit). A veto is policy, so it is silent even for
-        // an explicit paged request. kv_quant is gone from the product
+        // cannot serve. That is a VLM slot whose paged cache does not
+        // vouch for multimodal span masks — media would 4xx at submit.
+        // The claim comes from the cache itself
+        // (`PagedLayerCache.honorsSpanMaskContextsByConstruction`, the same
+        // constant the engine's own submit-time gate resolves to), never
+        // from a belief held here: the decision has to be made before any
+        // pool exists, so it cannot ask a live instance, but it must still
+        // ASK rather than assume. A veto is policy, so it is silent even
+        // for an explicit paged request. kv_quant is gone from the product
         // entirely — it is no longer a veto, no longer a parameter, and no
         // longer warned about. `auto` resolves contiguous; the fleet kill
         // switch, physical-capacity planning, and the degrade-or-REFUSE
@@ -180,7 +186,8 @@ enum EngineV2SlotFactory {
         }
         let vetoed = EngineV2KVBackendPolicy.applySlotVetoes(
             selection: parsedKVBackend.selection,
-            isVLM: isVLM)
+            isVLM: isVLM,
+            pagedHonorsSpanMasks: PagedLayerCache.honorsSpanMaskContextsByConstruction)
         let kvBackendSelection = vetoed.selection
         if let veto = vetoed.veto {
             logInfo(

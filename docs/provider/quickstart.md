@@ -85,13 +85,17 @@ darkbloom logs --last 1h
 ```
 
 `darkbloom doctor` runs local checks (hardware, Metal, SIP, Secure Boot,
-hardened runtime, binary hash, MDM enrollment) and fetches the coordinator's
-view of your provider from `/v1/providers/attestation`
+hardened runtime, binary hash, MDM enrollment), verifies that each loaded
+slot resolved to the KV backend the config asked for, and fetches the
+coordinator's view of your provider from `/v1/providers/attestation`
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`).
 
 `darkbloom status` prints config, hardware, schedule, and live daemon state
-including the coordinator's current trust verdict
-(`provider-swift/Sources/darkbloom/StatusCommand.swift`).
+including the coordinator's current trust verdict and, per loaded model,
+the resolved KV backend and MTP posture
+(`provider-swift/Sources/darkbloom/StatusCommand.swift`). Both read the
+daemon's state file rather than the live engine, so both report the
+snapshot's age — see `docs/provider/cli-reference.md`.
 
 ## Configuration
 

@@ -219,6 +219,116 @@ private func tmpStateURL() -> URL {
     #expect(daemonProcessAlive(pid: 999_999) == false) // almost certainly dead
 }
 
+// MARK: - DaemonSlotPostureBuilder (§16.5 per-slot KV/MTP inventory)
+
+@Test("slot posture survives the state file and stays absent for old daemons")
+func slotPostureRoundTripsAndIsOptional() {
+    let url = tmpStateURL()
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    // A daemon that does not report posture must decode, and must decode as
+    // NOT REPORTED — never as "this box has no slots".
+    DaemonStateFile.write(
+        DaemonState(pid: 1, version: "x", writtenAt: 1, startedAt: 1), to: url)
+    #expect(DaemonStateFile.read(from: url)?.slots == nil)
+
+    DaemonStateFile.write(
+        DaemonState(
+            pid: 1, version: "x", writtenAt: 1, startedAt: 1,
+            slots: [
+                .init(
+                    model: "gemma-4-26b", kvBackend: "paged", kvBackendRequested: "paged",
+                    mtpEnabled: true, mtpActive: false,
+                    mtpInactiveReason: MTPFallbackReason.inertKVUnsupported.rawValue)
+            ]),
+        to: url)
+    let slot = DaemonStateFile.read(from: url)?.slots?.first
+    #expect(slot?.kvBackend == "paged")
+    #expect(slot?.kvBackendRequested == "paged")
+    #expect(slot?.mtpEnabled == true)
+    #expect(slot?.mtpActive == false)
+    #expect(slot?.mtpInactiveReason == "inert_kv_unsupported")
+}
+
+@Test("posture builder pairs each live slot with the selection its config asked for")
+func slotPostureBuilderResolvesRequestedSelection() {
+    let built = DaemonSlotPostureBuilder.build(
+        live: [
+            .init(
+                model: "gpt-oss-20b", kvBackend: "contiguous", mtpEnabled: false,
+                mtpActive: false, mtpInactiveReason: nil),
+            .init(
+                model: "gemma-4-26b", kvBackend: "paged", mtpEnabled: true, mtpActive: true,
+                mtpInactiveReason: nil),
+        ],
+        requestedGlobal: "auto",
+        requestedByModel: ["gemma-4-26b": "paged"],
+        lastModelLoadError: nil)
+
+    #expect(built.map(\.model) == ["gemma-4-26b", "gpt-oss-20b"], "sorted for stable output")
+    #expect(built[0].kvBackend == "paged")
+    #expect(built[0].kvBackendRequested == "paged", "per-model override beats the global")
+    #expect(built[1].kvBackendRequested == "auto")
+    #expect(built.allSatisfy { $0.loadError == nil })
+}
+
+@Test("a refused load becomes a slot entry instead of a hole in the inventory")
+func slotPostureBuilderSynthesizesRefusedLoad() {
+    // An explicit paged request that cannot be served REFUSES, so no engine
+    // and no live slot exists. Absence alone cannot distinguish "paged was
+    // refused" from "nobody asked for that model", so the failure gets its
+    // own entry with a nil resolved backend.
+    let built = DaemonSlotPostureBuilder.build(
+        live: [],
+        requestedGlobal: "paged",
+        requestedByModel: [:],
+        lastModelLoadError: .init(
+            model: "gemma-4-26b",
+            message: "engine_v2: paged KV backend explicitly requested but unavailable — "
+                + "kernel preflight failed",
+            at: 10))
+
+    #expect(built.count == 1)
+    #expect(built[0].model == "gemma-4-26b")
+    #expect(built[0].kvBackend == nil, "no engine was built; a fabricated kind would be a lie")
+    #expect(built[0].kvBackendRequested == "paged")
+    #expect(built[0].loadError?.contains("explicitly requested but unavailable") == true)
+}
+
+@Test("a model that failed once and then loaded reports as serving, not failed")
+func slotPostureBuilderDropsSupersededLoadError() {
+    let built = DaemonSlotPostureBuilder.build(
+        live: [
+            .init(
+                model: "gemma-4-26b", kvBackend: "paged", mtpEnabled: true, mtpActive: true,
+                mtpInactiveReason: nil)
+        ],
+        requestedGlobal: "paged",
+        requestedByModel: [:],
+        lastModelLoadError: .init(model: "gemma-4-26b", message: "transient", at: 10))
+
+    #expect(built.count == 1)
+    #expect(built[0].kvBackend == "paged")
+    #expect(built[0].loadError == nil)
+}
+
+@Test("an unrecognized backend value is recorded as the auto it resolves to")
+func slotPostureBuilderNormalizesUnrecognizedSelection() {
+    // EngineV2KVBackendPolicy WARNs and falls back to auto. Recording the
+    // typo verbatim would make doctor diagnose a mismatch against a
+    // selection the engine never attempted.
+    let built = DaemonSlotPostureBuilder.build(
+        live: [
+            .init(
+                model: "m", kvBackend: "contiguous", mtpEnabled: false, mtpActive: false,
+                mtpInactiveReason: nil)
+        ],
+        requestedGlobal: "pagd",
+        requestedByModel: [:],
+        lastModelLoadError: nil)
+    #expect(built[0].kvBackendRequested == "auto")
+}
+
 // MARK: - WarmModelsFormat
 
 @Test func warmModelsLineListsEveryResidentModel() {

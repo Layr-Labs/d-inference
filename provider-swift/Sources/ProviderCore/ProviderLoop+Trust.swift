@@ -25,8 +25,15 @@ extension ProviderLoop {
     /// Best-effort and cheap; safe to call from the trust handler and the
     /// periodic capacity loop.
     internal func writeDaemonState() {
+        DaemonStateFile.write(currentDaemonState())
+    }
+
+    /// The snapshot `writeDaemonState` persists. Split out so a test can
+    /// assert its contents without a global `DARKBLOOM_STATE_FILE` override
+    /// racing every other suite.
+    internal func currentDaemonState() -> DaemonState {
         let cap = state.backendCapacity
-        let snapshot = DaemonState(
+        return DaemonState(
             pid: getpid(),
             processIdentity: ProcessIdentity.current(),
             version: ProviderCore.version,
@@ -47,9 +54,17 @@ extension ProviderLoop {
                     gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
                     gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
             },
-            lastModelLoadError: lastModelLoadError
+            lastModelLoadError: lastModelLoadError,
+            // Joined at WRITE time, not at sample time: a refused explicit
+            // paged request builds no engine, so its only trace is
+            // `lastModelLoadError` — and `recordModelLoadError` writes the
+            // state file immediately, before the next capacity refresh.
+            slots: DaemonSlotPostureBuilder.build(
+                live: lastLiveSlotPostures,
+                requestedGlobal: loopConfig.config.backend.engineV2KVBackend,
+                requestedByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                lastModelLoadError: lastModelLoadError)
         )
-        DaemonStateFile.write(snapshot)
     }
 
     /// Records a model-load failure for the diagnostics state file so the

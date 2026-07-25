@@ -37,6 +37,18 @@ public struct DaemonState: Codable, Sendable, Equatable {
     public var system: SystemInfo?
     public var capacity: Capacity?
     public var lastModelLoadError: ModelLoadError?
+    /// Per-slot KV-backend and MTP posture, one entry per model this daemon
+    /// has an engine for, plus one synthetic entry for a model whose load
+    /// FAILED (`kvBackend == nil`, `loadError != nil`) — a refused explicit
+    /// paged request builds no engine at all, so absence is the only other
+    /// evidence and inferring a fault from absence is guesswork.
+    ///
+    /// OPTIONAL, deliberately, and for the same reason as
+    /// `BackendSlotCapacity.kvBackend`: nil ⇒ NOT REPORTED (a state file
+    /// written by a pre-0.8.0 daemon), which a reader must render as
+    /// UNKNOWN and never as "no slots". An empty array means the daemon
+    /// reported and has nothing loaded.
+    public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
 
     public struct Trust: Codable, Sendable, Equatable {
@@ -101,6 +113,60 @@ public struct DaemonState: Codable, Sendable, Equatable {
         }
     }
 
+    /// One loaded (or refused) slot's serving posture, as the daemon
+    /// observed it at `writtenAt`. Everything here is a RESOLVED fact plus
+    /// the request it was resolved from, because during a staged paged
+    /// rollout "what did you ask for" and "what are you serving" are
+    /// different questions and only the pair answers "is this box on
+    /// paged?".
+    public struct SlotPosture: Codable, Sendable, Equatable {
+        public var model: String
+        /// The KV backend the engine was ACTUALLY built with
+        /// (`EngineV2Bridge.kvBackendKind.rawValue`: "paged" |
+        /// "contiguous"). nil ⇒ no engine exists — either the load failed
+        /// (see `loadError`) or the slot vanished between the capacity
+        /// refresh and this write.
+        public var kvBackend: String?
+        /// What the daemon's OWN config asked for, after per-model
+        /// override resolution: "auto" | "paged" | "contiguous"
+        /// (`EngineV2KVBackendPolicy.parseSelection`). Recorded here rather
+        /// than re-parsed by the CLI so a `provider.toml` edited after the
+        /// daemon started cannot manufacture a phantom mismatch.
+        public var kvBackendRequested: String
+        /// MTP was configured for this slot (a drafter was requested).
+        public var mtpEnabled: Bool
+        /// MTP is actually producing drafts. `mtpEnabled && !mtpActive`, or
+        /// `mtpActive` with a reason present, is the INERT state: the slot
+        /// looks healthy, charges full drafter residency and emits zero
+        /// drafts.
+        public var mtpActive: Bool
+        /// `MTPFallbackReason.rawValue` whenever MTP is not productively
+        /// running — including `inert_kv_unsupported`, which is the
+        /// enabled-but-inert case and is NOT a load failure.
+        public var mtpInactiveReason: String?
+        /// Verbatim `DaemonState.ModelLoadError.message` when this entry
+        /// exists BECAUSE a load failed. Non-nil ⇒ the slot is not serving.
+        public var loadError: String?
+
+        public init(
+            model: String,
+            kvBackend: String? = nil,
+            kvBackendRequested: String = "auto",
+            mtpEnabled: Bool = false,
+            mtpActive: Bool = false,
+            mtpInactiveReason: String? = nil,
+            loadError: String? = nil
+        ) {
+            self.model = model
+            self.kvBackend = kvBackend
+            self.kvBackendRequested = kvBackendRequested
+            self.mtpEnabled = mtpEnabled
+            self.mtpActive = mtpActive
+            self.mtpInactiveReason = mtpInactiveReason
+            self.loadError = loadError
+        }
+    }
+
     public struct Connectivity: Codable, Sendable, Equatable {
         public var reconnectCount: Int
         public var lastError: String?
@@ -125,6 +191,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         system: SystemInfo? = nil,
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
+        slots: [SlotPosture]? = nil,
         connectivity: Connectivity? = nil
     ) {
         self.schema = schema
@@ -141,6 +208,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.system = system
         self.capacity = capacity
         self.lastModelLoadError = lastModelLoadError
+        self.slots = slots
         self.connectivity = connectivity
     }
 
@@ -157,6 +225,81 @@ public struct DaemonState: Codable, Sendable, Equatable {
     }
 
     public func uptimeSeconds(now: Double) -> Double { max(0, now - startedAt) }
+}
+
+/// Joins the daemon's LIVE per-slot observations with its own KV-backend
+/// config and its last model-load failure into the `DaemonState.slots`
+/// inventory the `status`/`doctor` CLI renders.
+///
+/// The join exists because an explicitly requested paged backend that
+/// cannot be built now REFUSES (`EngineV2ProductionError.pagedUnavailable`)
+/// instead of degrading, so the failure builds no engine and leaves no live
+/// slot behind. Without the synthetic error entry the only remaining
+/// evidence would be the model's ABSENCE, and a diagnostic that infers a
+/// fault from absence cannot distinguish "paged was refused" from "nobody
+/// asked for that model".
+///
+/// Pure and static so the join rule is testable without a daemon.
+public enum DaemonSlotPostureBuilder {
+    /// One slot the daemon currently holds an engine for.
+    public struct LiveSlot: Sendable, Equatable {
+        public let model: String
+        /// `EngineV2Bridge.kvBackendKind.rawValue` — the RESOLVED kind.
+        public let kvBackend: String
+        public let mtpEnabled: Bool
+        public let mtpActive: Bool
+        public let mtpInactiveReason: String?
+
+        public init(
+            model: String,
+            kvBackend: String,
+            mtpEnabled: Bool,
+            mtpActive: Bool,
+            mtpInactiveReason: String?
+        ) {
+            self.model = model
+            self.kvBackend = kvBackend
+            self.mtpEnabled = mtpEnabled
+            self.mtpActive = mtpActive
+            self.mtpInactiveReason = mtpInactiveReason
+        }
+    }
+
+    /// `live` slots first (sorted by model id), then at most one synthetic
+    /// entry for `lastModelLoadError` — and only when that model has no live
+    /// slot, because a model that failed once and then loaded is serving.
+    public static func build(
+        live: [LiveSlot],
+        requestedGlobal: String,
+        requestedByModel: [String: String],
+        lastModelLoadError: DaemonState.ModelLoadError?
+    ) -> [DaemonState.SlotPosture] {
+        func requested(_ modelID: String) -> String {
+            EngineV2KVBackendPolicy.parseSelection(
+                global: requestedGlobal, byModel: requestedByModel, modelID: modelID
+            ).selection.rawValue
+        }
+        var out = live.sorted { $0.model < $1.model }.map {
+            DaemonState.SlotPosture(
+                model: $0.model,
+                kvBackend: $0.kvBackend,
+                kvBackendRequested: requested($0.model),
+                mtpEnabled: $0.mtpEnabled,
+                mtpActive: $0.mtpActive,
+                mtpInactiveReason: $0.mtpInactiveReason)
+        }
+        if let failure = lastModelLoadError,
+            !live.contains(where: { $0.model == failure.model })
+        {
+            out.append(
+                DaemonState.SlotPosture(
+                    model: failure.model,
+                    kvBackend: nil,
+                    kvBackendRequested: requested(failure.model),
+                    loadError: failure.message))
+        }
+        return out
+    }
 }
 
 /// Reports whether a process with the given PID is currently alive.

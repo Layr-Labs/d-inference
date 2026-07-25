@@ -57,7 +57,7 @@ struct PrefixCachePolicyTests {
         }
     }
 
-    @Test("typed capability enables frozen contiguous hybrids and rejects paged hybrids")
+    @Test("typed capability enables frozen hybrids on both backends, paged with a wider bound")
     func reusableLayoutSafety() {
         let full = CBv2LayerKind(
             attention: .full, headDim: 64, kvHeads: 4, queryHeads: 8)
@@ -85,17 +85,38 @@ struct PrefixCachePolicyTests {
         #expect(hybrid.plan(matchedBoundary: 512)?.replayStart == 384)
         #expect(hybrid.plan(matchedBoundary: 512)?.restoredFullTokens == 512)
 
+        // Paged hybrids WERE refused (`pagedHybridRequiresDualCursor`) until
+        // WS-4.1's dual cursor landed. They are now supported, and pay one
+        // extra `maxWindow` over contiguous: `PagedLayerCache.prefillKV`
+        // assembles `gather ++ chunk` and the chunk half is freshly projected,
+        // so a frozen paged row is exact only BEFORE the current chunk. The
+        // planner cannot see `maxPrefillChunk` (pool config, not model shape),
+        // so it buys `maxWindow` of slack and `PagedKVBackend
+        // .makeSequenceState(adopting:)` re-checks against the real chunk.
         let pagedHybrid = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, full],
             backendSelection: .paged)
-        #expect(!pagedHybrid.isSupported)
-        #expect(pagedHybrid.unsupportedReason == .pagedHybridRequiresDualCursor)
+        #expect(pagedHybrid.isSupported)
+        #expect(pagedHybrid.unsupportedReason == nil)
+        #expect(pagedHybrid.strategy == .frozenFullReplay)
+        let contiguousHybrid = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: [windowed, full],
+            backendSelection: .contiguous)
+        #expect(
+            pagedHybrid.conservativeReplayBoundTokens
+                == contiguousHybrid.conservativeReplayBoundTokens + 128,
+            "paged pays replayBound + one maxWindow")
 
+        // A KILLED paged slot has degraded to a contiguous row and is
+        // resolved as one, so it keeps the narrower contiguous bound.
         let killedPagedHybrid = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, full],
             backendSelection: .paged,
             pagedKilled: true)
         #expect(killedPagedHybrid.strategy == .frozenFullReplay)
+        #expect(
+            killedPagedHybrid.conservativeReplayBoundTokens
+                == contiguousHybrid.conservativeReplayBoundTokens)
     }
 
     @Test("adoptionBoundTokens: windowCount × maxWindow; 0 for pure full attention")
@@ -121,13 +142,12 @@ struct PrefixCachePolicyTests {
     @Test("adoptionBoundTokens resolves the backend instead of hardcoding contiguous")
     func boundFollowsBackendSelection() {
         let gemma = kinds(sliding: 25, window: 1024, full: 5)
-        // Same numeric bound on every selection today (it is windowCount ×
-        // maxWindow, which no backend changes) — but it is now derived from
-        // the SAME resolver as `prefixReuseCapability`, so the two can never
-        // describe different backends for one slot.
-        for selection in [
-            EngineV2KVBackendSelection.auto, .contiguous, .paged,
-        ] {
+        // Derived from the SAME resolver as `prefixReuseCapability`, so the
+        // two can never describe different backends for one slot — and since
+        // WS-4.1 that genuinely matters: a paged hybrid pays one extra
+        // `maxWindow` (1,024) for the freshly-projected chunk half of
+        // `gather ++ chunk`, so 26,624 against contiguous's 25,600.
+        for selection in [EngineV2KVBackendSelection.auto, .contiguous] {
             let capability = PrefixCachePolicy.prefixReuseCapability(
                 layerKinds: gemma, backendSelection: selection)
             #expect(
@@ -138,6 +158,19 @@ struct PrefixCachePolicyTests {
                     capability: capability, layerKinds: gemma,
                     windowResidency: .replayed) == 25_600)
         }
+        let paged = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: gemma, backendSelection: .paged)
+        #expect(
+            PrefixCachePolicy.adoptionBoundTokens(
+                layerKinds: gemma, backendSelection: .paged) == 26_624)
+        #expect(
+            PrefixCachePolicy.adoptionBoundTokens(
+                capability: paged, layerKinds: gemma,
+                windowResidency: .replayed) == 26_624)
+        // Still over the 25,600 long-hybrid threshold, so the 1,536 floor
+        // applies on paged too — the wider bound must not quietly relax it.
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: paged, adoptionBoundTokens: 26_624, environment: [:]) == 1_536)
         // A killed paged slot has degraded to a contiguous row.
         #expect(
             PrefixCachePolicy.adoptionBoundTokens(
@@ -243,7 +276,7 @@ struct PrefixCachePolicyTests {
         #expect(!PrefixCachePolicy.pagedWindowRestoreLanded)
     }
 
-    @Test("Gemma QAT and GPT-OSS contiguous layouts qualify for v2; paged stays cold")
+    @Test("Gemma QAT and GPT-OSS layouts qualify for v2 on both backends")
     func productionHybridCapabilities() {
         let sliding128 = CBv2LayerKind(
             attention: .slidingWindow(128),
@@ -278,11 +311,17 @@ struct PrefixCachePolicyTests {
             #expect(contiguous.isSupported)
             #expect(contiguous.strategy == .frozenFullReplay)
 
+            // Paged qualifies too since WS-4.1's dual cursor, at one extra
+            // `maxWindow` over contiguous for the freshly-projected chunk.
             let paged = PrefixCachePolicy.prefixReuseCapability(
                 layerKinds: kinds,
                 backendSelection: .paged)
-            #expect(!paged.isSupported)
-            #expect(paged.unsupportedReason == .pagedHybridRequiresDualCursor)
+            #expect(paged.isSupported)
+            #expect(paged.unsupportedReason == nil)
+            #expect(paged.strategy == .frozenFullReplay)
+            #expect(
+                paged.conservativeReplayBoundTokens
+                    > contiguous.conservativeReplayBoundTokens)
         }
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gpt) == 1_536)
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma) == 25_600)
@@ -322,9 +361,19 @@ struct PrefixCachePolicyTests {
             backendSelection: .paged)
         let box = PrefixCacheConstructionStatusBox()
 
+        // `.unsupportedPlan` on a paged hybrid used to report
+        // `.pagedHybridUnsupported`. It cannot any more: that branch in
+        // `PrefixCacheEligibilityStatus` keys off the capability carrying
+        // `paged_hybrid_requires_dual_cursor`, and since WS-4.1's dual cursor
+        // landed nothing produces that reason — `derive` never sets it and the
+        // capability's memberwise init is private, so it is unreachable from
+        // any input. A refused paged plan now lands on the generic layout
+        // reason. (The dead branch itself is in a file outside this track;
+        // flagged to the lead rather than deleted here.)
         box.record(failure: .unsupportedPlan, capability: pagedHybrid)
+        #expect(pagedHybrid.unsupportedReason == nil)
         #expect(box.snapshot?.state == .disabled)
-        #expect(box.snapshot?.reason == .pagedHybridUnsupported)
+        #expect(box.snapshot?.reason == .unsupportedLayout)
 
         box.record(failure: .missingWeightHash, capability: pagedHybrid)
         #expect(box.snapshot?.state == .disabled)

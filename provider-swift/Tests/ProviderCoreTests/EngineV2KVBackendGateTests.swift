@@ -616,4 +616,90 @@ struct EngineV2KVBackendGateTests {
         #expect(status.reason == .configDisabled)
         await bundle.bridge.shutdown()
     }
+
+    // MARK: VLM slot routing (WS-2.2)
+
+    /// THROUGH the slot factory, which is the point.
+    ///
+    /// Every other test of paged vision — the backend suites in
+    /// mlx-swift-lm, `BackendParityHarness` — constructs the engine
+    /// directly and therefore never runs `applySlotVetoes`. That is exactly
+    /// how the span-mask work could land, pass everywhere, and still be
+    /// unreachable in production: the veto forced every VLM slot to
+    /// contiguous and nothing that ran asked it. This test goes through
+    /// `makeProductionBundle` and asserts the backend the bridge ACTUALLY
+    /// resolved, so the next capability cannot land with the same invisible
+    /// gap.
+    ///
+    /// `preparedModel` is supplied so the VLM text extraction (which needs a
+    /// checkpoint directory) is skipped: the subject here is the ROUTING for
+    /// `isVLM: true`, not the extraction.
+    @Test("slot factory routes a VLM slot to paged now that the cache vouches")
+    func slotFactoryRoutesVLMToPagedWhenTheCacheVouches() async throws {
+        #expect(
+            PagedLayerCache.honorsSpanMaskContextsByConstruction,
+            "premise: the paged cache affirms span masks — if this ever goes false the expectation below must flip to .contiguous with a \"vlm\" veto")
+        let model = try tinyGemma4Text()
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: "tiny/gemma"),
+                model: model,
+                processor: GateProcessor(),
+                tokenizer: tokenizer))
+        let preparedModel = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: model, eosTokenIds: [1], extraEOSTokens: []),
+            servingModel: model,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+
+        let bundle = try await EngineV2SlotFactory.makeProductionBundle(
+            modelId: "tiny-gemma-vlm",
+            modelType: "gemma4",
+            isVLM: true,
+            modelDirectory: nil,
+            container: container,
+            tokenizer: TokenizerHandle(tokenizer),
+            sizing: SlotSizingSnapshot(
+                weightsBytes: 1,
+                fp16KVBytesPerToken: 1_024,
+                maxContextLength: 2_048,
+                defaultMaxTokens: 32),
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBudget: nil,
+            kvBackendConfig: "paged",
+            weightHash: String(repeating: "c", count: 64),
+            specDecPreparation: SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false)),
+            preparedModel: preparedModel,
+            environment: [PrefixCachePolicy.environmentFlag: "0"])
+        let backendKind = await bundle.bridge.kvBackendKind
+        #expect(
+            backendKind == .paged,
+            "an explicit paged VLM slot must now resolve PAGED — the veto is gated on the cache's span claim, and the paged cache affirms it")
+        await bundle.bridge.shutdown()
+    }
+
+    /// The other side of the same gate, and the reason it is a gate rather
+    /// than a deletion: a VLM slot whose cache does NOT vouch still goes
+    /// contiguous, silently, with the `"vlm"` tag for the slot log. Asserted
+    /// on the policy directly because no shipping cache answers false — the
+    /// veto has to keep working for the backend that has not implemented
+    /// spans YET, which is the whole point of gating on the claim.
+    @Test("a VLM slot whose cache does not vouch is still forced to contiguous")
+    func vlmSlotWithoutSpanClaimStaysContiguous() {
+        let refused = EngineV2KVBackendPolicy.applySlotVetoes(
+            selection: .paged, isVLM: true, pagedHonorsSpanMasks: false)
+        #expect(refused.selection == .contiguous)
+        #expect(refused.veto == "vlm")
+
+        let allowed = EngineV2KVBackendPolicy.applySlotVetoes(
+            selection: .paged, isVLM: true, pagedHonorsSpanMasks: true)
+        #expect(allowed.selection == .paged)
+        #expect(allowed.veto == nil, "an unvetoed slot has nothing to log")
+    }
 }

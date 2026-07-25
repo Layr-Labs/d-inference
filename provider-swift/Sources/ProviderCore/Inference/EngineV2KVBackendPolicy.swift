@@ -12,14 +12,16 @@
 //      overrides in `engine_v2_kv_backend_by_model`. Unrecognized values
 //      WARN and fall back to "auto" — safe by construction because every
 //      auto path still passes the vetoes below.
-//   2. Slot veto (`EngineV2SlotFactory`): VLM slots force contiguous —
-//      the paged cache cannot bind multimodal span masks, so vision
-//      requests would 4xx at submit with
-//      `CBv2MultimodalError.unsupportedBackend`. A veto is POLICY, not
-//      failure, so it stays silent even under an explicit "paged"
-//      selection; only layer 5 refuses. This layer is collapsing toward
-//      the identity function — the kv-quant veto went with the feature,
-//      and the VLM veto lifts when span masks land.
+//   2. Slot veto (`EngineV2SlotFactory`): a VLM slot may serve on paged
+//      only while the paged cache AFFIRMS that it applies multimodal span
+//      masks (`PagedLayerCache.honorsSpanMaskContextsByConstruction`).
+//      Without that affirmation vision requests would 4xx at submit with
+//      `CBv2MultimodalError.unsupportedBackend`, so the slot is forced to
+//      contiguous. A veto is POLICY, not failure, so it stays silent even
+//      under an explicit "paged" selection; only layer 5 refuses. This
+//      layer is collapsing toward the identity function — the kv-quant
+//      veto went with the feature, and the VLM veto now lifts ITSELF for
+//      any backend whose cache vouches.
 //   3. Fleet kill switch: `DARKBLOOM_CBV2_PAGED_KV=0` forces contiguous
 //      everywhere, enforced at engine construction (the deepest layer) so
 //      no call path can bypass it. Forwarded through the launchd plist
@@ -96,29 +98,57 @@ public enum EngineV2KVBackendPolicy {
     }
 
     /// Slot-veto layer: force contiguous for slots the paged cache cannot
-    /// serve. Today that is VLM alone — the paged cache cannot bind
-    /// multimodal span masks, so media requests would 4xx at submit on an
-    /// otherwise paged-ELIGIBLE model (gemma-4's shapes construct fine;
-    /// only vision traffic breaks, which is why layer 5 alone is not
-    /// enough).
+    /// serve.
+    ///
+    /// Today that is a VLM slot whose paged cache does NOT vouch for
+    /// multimodal span masks. `pagedHonorsSpanMasks` is the cache's own
+    /// affirmative claim, not this file's belief about it — callers pass
+    /// `PagedLayerCache.honorsSpanMaskContextsByConstruction`, the same
+    /// constant the engine's submit-time gate
+    /// (`CBv2LayerCacheBank.supportsMultimodalSpans`) resolves to. An
+    /// otherwise paged-ELIGIBLE model is not enough on its own: gemma-4's
+    /// shapes construct fine and only vision traffic breaks, which is why
+    /// layer 5 cannot cover this.
+    ///
+    /// Deliberately NOT `guard isVLM else { ... }` deleted outright. That
+    /// would make the lift unconditional in the other direction — every VLM
+    /// slot routed to paged whether or not the cache in front of it honours
+    /// spans — which is a capability ASSUMED rather than asked, and the
+    /// assumption would sit in a different repository from the mask code
+    /// and would not move when it does. Gated on the claim, the veto lifts
+    /// itself when the capability becomes real and re-arms if it regresses,
+    /// on this backend or any future one, with no second edit here.
+    ///
+    /// WHAT A VLM SLOT TRADES BY GOING PAGED, so it is written down rather
+    /// than discovered. Prefix reuse still works — `CBv2PrefixReuseCapability
+    /// .derive` returns `.frozenFullReplay` for `.pagedFP16` on gemma-4's
+    /// windowed-then-full shape — but paged pays ONE EXTRA WINDOW of replay
+    /// over contiguous: `conservativeReplayBoundTokens` is
+    /// `windowCount * maxWindow + maxWindow`, not `windowCount * maxWindow`.
+    /// The reason is a real difference between the two prefill paths, not a
+    /// safety margin. Contiguous's `CBv2FrozenReplayFullSequenceKV.update`
+    /// discards the replayed projections and returns CACHED keys for the
+    /// whole chunk, diagonal included, so it is exact from the first
+    /// position whose sliding cone fits. `PagedLayerCache.prefillKV`
+    /// assembles `gather([base, queryStart)) ++ chunk`, and the chunk half
+    /// is the freshly projected K/V the layer was just called with — so a
+    /// frozen paged row is exact BEFORE the current chunk and poisoned
+    /// inside it, pushing the first exact position back by at most one
+    /// `maxPrefillChunk`. A paged VLM slot is therefore slightly colder on
+    /// a prefix hit than a contiguous one; it is not reuse-free.
     ///
     /// A veto is POLICY ("we choose not to"), not failure ("we cannot"),
     /// so it is SILENT: it forces contiguous even for an explicit paged
     /// selection rather than throwing `pagedUnavailable`.
     ///
-    /// Collapsing toward the identity function. The kv-quant veto went
-    /// with the feature (quantized paged pages are separate later work).
-    /// The VLM veto lifts once span masks land — gemma-4 serves as a VLM
-    /// slot, so paged MUST eventually serve it. Deliberately left as ONE
-    /// condition so that lift, and the delete of this function with its
-    /// caller's log line, stays a one-line change.
     /// Returns the effective selection plus a veto tag for the slot log.
     public static func applySlotVetoes(
         selection: EngineV2KVBackendSelection,
-        isVLM: Bool
+        isVLM: Bool,
+        pagedHonorsSpanMasks: Bool
     ) -> (selection: EngineV2KVBackendSelection, veto: String?) {
         guard selection != .contiguous else { return (.contiguous, nil) }
-        guard isVLM else { return (selection, nil) }
+        guard isVLM, !pagedHonorsSpanMasks else { return (selection, nil) }
         return (.contiguous, selection == .paged ? "vlm" : nil)
     }
 

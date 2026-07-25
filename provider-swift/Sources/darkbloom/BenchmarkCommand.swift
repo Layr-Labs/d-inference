@@ -91,6 +91,34 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Arrival benchmark: measured iterations per arrival pattern.")
     var arrivalIterations = 3
 
+    // MARK: - Gate G2 parity mode (paged vs contiguous, PASS/FAIL per criterion)
+
+    @Flag(name: .long, help: """
+        Run the Gate G2 parity check: load the model on BOTH KV backends and \
+        report each G2 criterion (token exactness, MTP, packed prefill, vision \
+        spans, prefix reuse) as PASS/FAIL/UNAVAILABLE with its measured \
+        evidence. JSON to stdout, operator table to stderr. Exit 0 only when at \
+        least one criterion was evaluated and none failed; 1 on any failure; \
+        2 when nothing could be evaluated.
+        """)
+    var parity = false
+
+    @Option(name: .long, help: """
+        Parity: MTP assistant/drafter model id. Without it the MTP criterion \
+        reports UNAVAILABLE rather than passing by default.
+        """)
+    var assistantModel: String?
+
+    @Option(name: .long, help: "Parity: generated tokens per compared row (default 48).")
+    var parityMaxTokens = 48
+
+    @Option(name: .long, help: """
+        Parity: prompt tokens for the prefix-reuse probe (default 28672). Must \
+        exceed the backend's frozen-replay bound — 26624 on paged gemma-4 — or \
+        no prefill saving is reachable and the criterion reports UNAVAILABLE.
+        """)
+    var parityPrefixTokens = 28672
+
     mutating func run() async throws {
         do {
             _ = try GPUEnforcement.requireMetal()
@@ -119,6 +147,14 @@ struct Benchmark: AsyncParsableCommand {
         guard let modelPath = ModelScanner.resolveLocalPath(modelID: selectedModel.id) else {
             printError("could not resolve local path for model '\(selectedModel.id)'")
             throw ExitCode.failure
+        }
+
+        if parity {
+            try await runBackendParity(
+                modelID: selectedModel.id,
+                modelDirectory: modelPath
+            )
+            return
         }
 
         if sweep {

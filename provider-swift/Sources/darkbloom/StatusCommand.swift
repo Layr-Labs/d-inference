@@ -53,7 +53,7 @@ struct Status: AsyncParsableCommand {
 
         // Live daemon state (from the state file the running daemon writes).
         print("")
-        printDaemonStatus()
+        printDaemonStatus(config: config)
     }
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether
@@ -79,7 +79,7 @@ struct Status: AsyncParsableCommand {
 
     /// Prints the running daemon's live state, including the coordinator's last
     /// trust reason — the answer to "am I earning, and if not, why?".
-    private func printDaemonStatus() {
+    private func printDaemonStatus(config: ProviderConfig) {
         let now = Date().timeIntervalSince1970
         guard let state = DaemonStateFile.read() else {
             print("Daemon: not running (run `darkbloom start`)")
@@ -110,6 +110,18 @@ struct Status: AsyncParsableCommand {
         print("Requests served: \(state.stats.requestsServed)  |  tokens: \(state.stats.tokensGenerated)")
         if let err = state.lastModelLoadError {
             print("Last model-load error: \(err.model): \(err.message)")
+        }
+
+        // Which KV backend is this box actually serving on, and is MTP
+        // producing drafts or merely enabled? Both read the same state file
+        // as everything above, so the block carries its own age — see
+        // `KVBackendPosture` for why a bare value would be worse than none.
+        for line in KVBackendPosture.statusLines(
+            state: state,
+            now: now,
+            heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs)
+        {
+            print(line)
         }
     }
 

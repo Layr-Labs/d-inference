@@ -490,13 +490,21 @@ extension EngineV2Factory {
                             maxPrefillChunk: schedulerConfig.prefillChunkSize,
                             nominalMaxSequenceLength: max(
                                 1, maxContextLength ?? 8192),
-                            maxBufferLength: maxBufferLength))
+                            maxBufferLength: maxBufferLength),
+                        // D1: the slabs are NOT wired here. Under
+                        // `.atFirstAdmission` (the plan's production
+                        // posture) `PagedKVBackend` commits them at the
+                        // pool's first admission instead, so a slot that has
+                        // served nothing does not occupy unified memory that
+                        // the NEXT model's post-load headroom guard
+                        // measures. Everything the old eager commit
+                        // protected against still holds: resource and size
+                        // eligibility threw catchably in `PagedKVPool.init`
+                        // above, and the commitment happens before any row
+                        // exists, so no admitted page is ever unbacked.
+                        slabCommitment: plan.commitment)
                     let pagedCaches = paged.makeLayerCaches()
                     let caches = newCaches { index, _ in pagedCaches[index] }
-                    // Commit only the independently-capped PHYSICAL pool.
-                    // Resource and size eligibility has already thrown
-                    // catchably; first traffic cannot discover either.
-                    paged.pool.materializeSlabs()
                     return ProductionBackendPreparation(
                         model: model,
                         maxConcurrentRequests: maxConcurrentRequests,

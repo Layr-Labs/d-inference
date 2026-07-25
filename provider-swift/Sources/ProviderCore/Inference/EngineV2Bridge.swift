@@ -37,10 +37,13 @@ import os
 /// re-slicer moved its grant.
 ///
 /// A contiguous slot resizes its admission ledger and its physical capacity
-/// together, so every re-slice is exact. A paged slot's slabs are
-/// materialized once at engine construction (`PagedKVPool.materializeSlabs`)
-/// and `PagedKVPool` has no resize primitive, so a non-exact re-slice leaves
-/// one of two residues:
+/// together, so every re-slice is exact. A paged slot's pool is sized ONCE at
+/// engine construction and `PagedKVPool` has no resize primitive — `pageCount`
+/// is fixed at init and the slabs are immutable `let` arrays written in place.
+/// (Since D1 the slabs are WIRED lazily, at the pool's first admission rather
+/// than at construction; that moves when the bytes appear, not how many there
+/// are. The figure below is the construction-fixed budget either way.) So a
+/// non-exact re-slice leaves one of two residues:
 ///
 ///   * GROW past the pool ⇒ `deferredGrowthBytes` of awarded fair share the
 ///     slot cannot serve. The fleet re-slicer believes this slot holds them.
@@ -536,14 +539,28 @@ public actor EngineV2Bridge {
         // immediately without allocating any KV).
         var sharedKVReserved = false
         // PAGED slots skip the per-request shared-KV reserve: the pool is
-        // physically committed at construction (`materializeSlabs`) and
-        // already counted once — in MLX active memory (which the shared
-        // gate's headroom probe reads) and in the model-load gates. A
-        // per-request reservation on top would DOUBLE-count every paged
-        // request against headroom the pool has already claimed and
-        // collapse the gate to zero. Admission for paged requests is the
-        // engine's own ledger (`AdmissionV2`) + the pool's atomic
-        // worst-case page charge, with the capacity-requeue backstop.
+        // committed WHOLE at the slot's first admission (D1 —
+        // `PagedKVSlabCommitment.atFirstAdmission`, wired inside
+        // `PagedKVBackend.reserve`/`makeSequenceState`, which run downstream
+        // of this gate), so from the first paged request onward it is
+        // counted once — in MLX active memory (which the shared gate's
+        // headroom probe reads) and in the model-load gates. A per-request
+        // reservation on top would DOUBLE-count every paged request against
+        // headroom the pool has already claimed and collapse the gate to
+        // zero. Admission for paged requests is the engine's own ledger
+        // (`AdmissionV2`) + the pool's atomic worst-case page charge, with
+        // the capacity-requeue backstop.
+        //
+        // Residual window, deliberately accepted: between a paged slot's
+        // build and its first admission the pool is a logical grant with no
+        // residency, so a CONCURRENT contiguous request on a co-resident
+        // slot can see up to `capacityBytes` more live headroom than the box
+        // will have once this slot goes hot. That is exactly the posture a
+        // loaded-but-idle CONTIGUOUS slot has always had — its grant is
+        // equally invisible to this probe — and the gate re-probes live
+        // headroom on every reserve, so the window closes the moment the
+        // paged slot serves anything. Before D1 paged was stricter here and
+        // paid for it by making the second model unloadable.
         if kvBackendKind == .contiguous, let kvBudget, kvBytesPerToken > 0,
             cbv2Request.maxTokens > 0
         {

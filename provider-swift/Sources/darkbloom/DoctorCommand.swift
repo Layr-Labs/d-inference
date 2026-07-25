@@ -43,6 +43,16 @@ struct Doctor: AsyncParsableCommand {
         let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
 
+        // §16.5: did this box serve the KV backend it was configured for,
+        // and is the snapshot that answer comes from still being refreshed?
+        // Appended to the detailed checks so a refused explicit paged
+        // request exits non-zero like any other FAIL.
+        checks.append(contentsOf: KVPostureDiagnosis.checks(
+            state: daemonState,
+            daemonRunning: daemonRunning,
+            now: Date().timeIntervalSince1970,
+            heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs))
+
         // The high-signal diagnosis first (sectioned, with fixes).
         let rendered = DiagnosticReportRenderer.render(diagnosis)
         if !rendered.isEmpty { print(rendered) }

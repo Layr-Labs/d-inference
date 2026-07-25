@@ -214,7 +214,8 @@ private let wiringReserveBytes: UInt64 = 1 * wiringGiB
 
 private func makeWiringLoop(
     engineV2MaxConcurrent: UInt64 = 4,
-    engineV2MaxConcurrentByModel: [String: UInt64] = [:]
+    engineV2MaxConcurrentByModel: [String: UInt64] = [:],
+    kvBackend: String = "auto"
 ) throws -> ProviderLoop {
     let config = ProviderLoopConfig(
         coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -230,7 +231,8 @@ private func makeWiringLoop(
             backend: BackendSettings(
                 idleTimeoutMins: 0, maxModelSlots: 3,
                 engineV2MaxConcurrent: engineV2MaxConcurrent,
-                engineV2MaxConcurrentByModel: engineV2MaxConcurrentByModel),
+                engineV2MaxConcurrentByModel: engineV2MaxConcurrentByModel,
+                engineV2KVBackend: kvBackend),
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
@@ -240,14 +242,16 @@ private func makeWiringLoop(
 private func makeBridge(
     engine: WiringScriptedEngine,
     modelId: String = "gemma-4-26b-qat-4bit",
-    kvBytesPerToken: Int = 0
+    kvBytesPerToken: Int = 0,
+    kvBackendKind: EngineV2KVBackendKind = .contiguous
 ) -> EngineV2Bridge {
     EngineV2Bridge(
         engine: engine,
         modelId: modelId,
         tokenizer: TokenizerHandle(WiringStubTokenizer()),
         eosTokenIds: [2],
-        kvBytesPerToken: kvBytesPerToken
+        kvBytesPerToken: kvBytesPerToken,
+        kvBackendKind: kvBackendKind
     )
 }
 
@@ -1824,6 +1828,93 @@ struct EngineV2RuntimeGuardTests {
         // Exactly one heartbeat slot exists — the bridge's. No legacy fold
         // can double-report a model's capacity anymore.
         #expect(capacity?.slots.count == 1)
+    }
+
+    @Test("the daemon state file carries each slot's resolved KV backend and MTP posture")
+    func daemonStateCarriesSlotPosture() async throws {
+        // §16.5: `darkbloom status` / `doctor` read the state file, not the
+        // live engine. If the resolved backend never reaches that file the
+        // operator cannot answer "is this box on paged?" at all.
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+
+        let pagedBridge = makeBridge(
+            engine: WiringScriptedEngine(script: .manual),
+            modelId: "gemma-4-26b-qat-4bit",
+            kvBackendKind: .paged)
+        // `.zero` disables the posture sampler; this test is about the state
+        // file, not the telemetry producer.
+        await pagedBridge.configureMTPStatus(
+            MTPActivationStatus(
+                configured: true, active: true, reason: nil, source: nil, revision: nil,
+                artifactBytes: 0, assistantBytes: 0),
+            metricsInterval: .zero)
+        let contiguousBridge = makeBridge(
+            engine: WiringScriptedEngine(script: .manual),
+            modelId: "gpt-oss-20b",
+            kvBackendKind: .contiguous)
+
+        for (modelId, bridge) in [
+            ("gemma-4-26b-qat-4bit", pagedBridge), ("gpt-oss-20b", contiguousBridge),
+        ] {
+            await runtime.register(modelId: modelId, bridge: bridge)
+            await loop.installModelSlotForTesting(
+                modelId: modelId,
+                container: makeStubContainer(),
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                engineV2: bridge,
+                modelType: "gemma4")
+        }
+
+        await loop.updateAggregateCapacity()
+        let slots = try #require(await loop.currentDaemonState().slots)
+        #expect(slots.map(\.model) == ["gemma-4-26b-qat-4bit", "gpt-oss-20b"])
+        #expect(slots[0].kvBackend == "paged")
+        #expect(slots[1].kvBackend == "contiguous")
+        // A scripted engine is not a concrete EngineV2 and reports no MTP
+        // metrics, so a configured-and-activated slot resolves to
+        // enabled-but-not-producing. That is precisely the distinction the
+        // operator surface exists to make: enabled != producing drafts, and
+        // the reason must always be named.
+        #expect(slots[0].mtpEnabled == true)
+        #expect(slots[0].mtpActive == false)
+        #expect(slots[0].mtpInactiveReason == MTPFallbackReason.engineInactive.rawValue)
+        #expect(slots[1].mtpEnabled == false)
+        #expect(slots.allSatisfy { $0.loadError == nil })
+    }
+
+    @Test("a refused explicit paged load reaches the state file as a non-serving slot")
+    func daemonStateCarriesRefusedPagedLoad() async throws {
+        // An explicit paged request that cannot be built REFUSES, so no
+        // engine and no live slot survives. `recordModelLoadError` writes
+        // the state file immediately, and the join turns that record into a
+        // slot entry rather than leaving doctor to guess from absence.
+        // `recordModelLoadError` writes the REAL state file, so redirect it
+        // (this suite is `.serialized` and nothing else reads the default
+        // path) — then read the bytes back, which is the actual contract:
+        // the CLI decodes this file, it does not call into the daemon.
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dstate-refused-\(UUID().uuidString).json")
+        setenv("DARKBLOOM_STATE_FILE", stateURL.path, 1)
+        defer {
+            unsetenv("DARKBLOOM_STATE_FILE")
+            try? FileManager.default.removeItem(at: stateURL)
+        }
+
+        let loop = try makeWiringLoop(kvBackend: "paged")
+        await loop.recordModelLoadError(
+            model: "gemma-4-26b-qat-4bit",
+            message: "Model 'gemma-4-26b-qat-4bit' loaded but its v2 engine construction "
+                + "failed: engine_v2: paged KV backend explicitly requested but unavailable "
+                + "— kernel preflight failed — unloaded")
+
+        let slots = try #require(DaemonStateFile.read(from: stateURL)?.slots)
+        #expect(slots.count == 1)
+        #expect(slots[0].model == "gemma-4-26b-qat-4bit")
+        #expect(slots[0].kvBackend == nil, "no engine was built; naming a backend would be a lie")
+        #expect(slots[0].kvBackendRequested == "paged")
+        #expect(slots[0].loadError?.contains("explicitly requested but unavailable") == true)
     }
 
     @Test("model_load_time_ms rides the slot after recordModelLoadTime")

@@ -226,10 +226,33 @@ type soloModelTPS struct {
 //     a modelSoloTPSSeedEnv seed exists, it is an upper bound on that transfer:
 //     observations from faster classes cannot widen an unsampled slower class's
 //     cap above its configured cold-start estimate;
-//  3. the modelSoloTPSSeedEnv seed when there is no trusted cross-class rate
-//     (the TPS registry is in-memory and restart-wiped);
-//  4. the provider-level resolvedDecodeTPS(p) — exactly the pre-per-model
+//  3. the same-class solo median with FEWER than qualityCapSoloMinSamples
+//     samples (but at least one), then the same-chip-agnostic cross-class
+//     median under the same relaxation, seed-clamped as in (2). These are
+//     under-sampled but they are still MEASURED and still solo-gated, and the
+//     alternative below them is a model-AGNOSTIC hardware proxy: preferring
+//     sqrt(memory_bandwidth) over the provider's own measurement of this exact
+//     model is strictly worse information. See the note on convergence below;
+//  4. the modelSoloTPSSeedEnv seed when there is no measured rate at all
+//     (the TPS registry is in-memory and restart-wiped, and a provider that
+//     has completed no request reports no rate — see below);
+//  5. the provider-level resolvedDecodeTPS(p) — exactly the pre-per-model
 //     behavior, including its sqrt-bandwidth fallback semantics.
+//
+// What a provider reports BEFORE its first completion: nothing. The bridge's
+// EWMA (EngineV2Bridge.observedDecodeTpsEwma) is 0 until updateDecodeTpsEwma
+// runs on a terminal event, `observed_decode_tps` is `omitempty`, and the
+// heartbeat ingest only calls RecordSolo when the reported value is > 0
+// (registry.go). So a fresh provider contributes NO solo sample, reaches (4)
+// or (5), and is never capped at 1 by its own silence. Steps (3) can only
+// engage once a real decode has been measured.
+//
+// Under-sampled samples converge from BELOW, which is the safe direction. The
+// bridge EWMA (alpha = 0.3) blends prior batched decodes, so the first sample
+// taken as the box drops to a single running request UNDER-states the true
+// solo rate; it can never materially over-state it (solo is the fastest case,
+// and the ingest path already clamps to maxDecodeTPS). An under-stated rate
+// yields a TIGHTER cap, never a permissive one.
 //
 // The rate is deliberately STATIC (never an under-load EWMA): an observed rate
 // collapses under the very overload the cap exists to prevent, which would
@@ -241,15 +264,30 @@ type soloModelTPS struct {
 // r.mu and p.mu.
 func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloModelTPS {
 	if qualityCapPerModelTPS {
-		if tps, n := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware)); n >= qualityCapSoloMinSamples && tps > 0 {
-			return soloModelTPS{tps: tps, perModel: true}
+		classTPS, classN := r.tpsRegistry.SoloMedian(model, chipClassKey(p.Hardware))
+		if classN >= qualityCapSoloMinSamples && classTPS > 0 {
+			return soloModelTPS{tps: classTPS, perModel: true}
 		}
 		seed, hasSeed := modelSoloTPSSeed[strings.ToLower(model)]
-		if tps, n := r.tpsRegistry.SoloMedianAllChips(model); n >= qualityCapSoloMinSamples && tps > 0 {
-			if hasSeed && seed < tps {
-				tps = seed
-			}
-			return soloModelTPS{tps: tps, perModel: true}
+		// Seed-clamp the cross-class transfer: observations from faster classes
+		// cannot widen an unsampled slower class's cap above its configured
+		// cold-start estimate. Applies at both sample floors.
+		allTPS, allN := r.tpsRegistry.SoloMedianAllChips(model)
+		if allTPS > 0 && hasSeed && seed < allTPS {
+			allTPS = seed
+		}
+		if allN >= qualityCapSoloMinSamples && allTPS > 0 {
+			return soloModelTPS{tps: allTPS, perModel: true}
+		}
+		// Measured but under-sampled. Ranked below both trusted medians and
+		// above the seed: a real solo-gated measurement of THIS model beats a
+		// fleet-wide configured guess, and both beat the model-agnostic
+		// sqrt-bandwidth proxy that pins a fast model to cap 1-2.
+		if classN > 0 && classTPS > 0 {
+			return soloModelTPS{tps: classTPS, perModel: true}
+		}
+		if allN > 0 && allTPS > 0 {
+			return soloModelTPS{tps: allTPS, perModel: true}
 		}
 		if hasSeed {
 			return soloModelTPS{tps: seed, perModel: true}

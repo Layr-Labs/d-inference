@@ -59,6 +59,11 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// Carries the underlying reason (kernel preflight, physical-capacity
     /// planning, or pool construction) verbatim.
     case pagedUnavailable(String)
+    /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE` was set to something that is neither
+    /// `float16` nor `float32`. REFUSED rather than defaulted — see
+    /// `EngineV2Factory.pagedPoolDType(environment:)` for why this knob
+    /// alone among the paged knobs cannot fall back.
+    case invalidPagedPoolDType(String)
 
     var description: String {
         switch self {
@@ -69,6 +74,9 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
         case .pagedUnavailable(let reason):
             return "engine_v2: paged KV backend explicitly requested but "
                 + "unavailable — \(reason)"
+        case .invalidPagedPoolDType(let raw):
+            return "engine_v2: \(EngineV2Factory.pagedPoolDTypeEnvKey)=\"\(raw)\" is not a "
+                + "recognized paged page dtype (expected float16 or float32)"
         }
     }
 }
@@ -86,6 +94,84 @@ extension EngineV2Factory {
     ) -> Int {
         let physicalCap = Int(min(physicalBytes, UInt64(Int.max)))
         return min(max(0, kvBytesCapacity), physicalCap)
+    }
+
+    /// Element type of the PAGED pool's pages (`PagedKVPoolConfig.dtype`):
+    /// `float16` (default) or `float32`.
+    ///
+    /// Read ONLY when the resolved backend is paged — the contiguous
+    /// backend has no pages and ignores this entirely. `float32` is a
+    /// MEASUREMENT posture, not a serving one: it is the perturbation the
+    /// backend-parity harness needs for a same-backend control arm and for
+    /// its fp32 seam-accuracy reference, both of which are otherwise
+    /// unconstructible in-process.
+    static let pagedPoolDTypeEnvKey = "DARKBLOOM_CBV2_PAGED_KV_DTYPE"
+
+    /// Parse `DARKBLOOM_CBV2_PAGED_KV_DTYPE`. Unset or empty ⇒ `.float16`.
+    ///
+    /// An unrecognized value THROWS `invalidPagedPoolDType` instead of
+    /// reverting to the default. That is deliberately the OPPOSITE of
+    /// `DARKBLOOM_CBV2_PAGED_PTOK_TARGET`, which clamps over-range values
+    /// at parse and silently takes its default on a typo
+    /// (`PagedAttentionKernel.partitionTarget`), and the difference is not
+    /// an inconsistency. PTOK is a numeric TUNING target evaluated in a
+    /// `static let` initializer with no throw path, and every value it
+    /// accepts computes the SAME answers at a different speed — a typo
+    /// there costs microseconds. This knob selects the arithmetic the
+    /// answers are computed IN. An operator who writes `fp32` and silently
+    /// gets float16 has run a different experiment than they believe, and
+    /// a control arm that is secretly a second copy of the baseline looks
+    /// exactly like agreement.
+    ///
+    /// CAPACITY AT fp32 — the arithmetic, because it is a real wall:
+    /// a page costs `2 * kvHeads * pageSize * headDim * dtype.size` bytes
+    /// (`PagedKVGroup.pageBytes`), so fp32 pages cost exactly 2x, and
+    /// `PagedKVPool.init` sizes a group as `pageCount = groupBytes /
+    /// pageBytes`. The same byte grant therefore buys HALF the pages.
+    /// Page DEMAND does not move — `PagedKVPool.pageDemand` counts pages,
+    /// not bytes — so `CBv2PagedKVResidency` charges every admitted row
+    /// exactly what it charged at fp16, against a pool holding half as
+    /// many pages: concurrency-times-context halves. A grant that leaves a
+    /// group under two pages at fp32 (one poison, one tenant) throws
+    /// `CBv2KVError.capacityExhausted` from `PagedKVPool.init`. A config
+    /// that fit at fp16 and refuses at fp32 is CORRECT: it is refused
+    /// rather than quietly served at half the size.
+    ///
+    /// NOT keyed into the prefix cache. `PagedKVBackend.prefixReuseBackend`
+    /// is the constant `.pagedFP16` and `PrefixCacheV2` never considers
+    /// dtype, so a block donated under one dtype would be adopted under
+    /// another and silently converted by `PagedKVPool.writeTokens`'
+    /// `asType`. Unreachable today: a pool's dtype is fixed for its
+    /// lifetime and no paged cache entry outlives the pool that donated
+    /// it. Anyone making a paged prefix cache PERSISTENT across processes
+    /// — where this env var can differ between donor and adopter — must
+    /// fold the dtype into the cache key before doing so.
+    static func pagedPoolDType(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> DType {
+        guard let raw = environment[pagedPoolDTypeEnvKey] else { return .float16 }
+        // `.whitespacesAndNewlines`, not the `.whitespaces` its two
+        // neighbouring bool knobs use: those default on anything they do
+        // not recognize, so an `export VAR=$(cat file)` trailing newline
+        // costs them nothing, while here it would REFUSE a value whose
+        // intent is unambiguous. Normalize what cannot be misread; refuse
+        // everything that can.
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "", "float16": return .float16
+        case "float32": return .float32
+        default: throw EngineV2ProductionError.invalidPagedPoolDType(raw)
+        }
+    }
+
+    /// Operator-facing name of a resolved page dtype, in the SAME
+    /// vocabulary `pagedPoolDTypeEnvKey` accepts — what a run reports can
+    /// be pasted straight back in to reproduce it.
+    static func pagedPoolDTypeName(_ dtype: DType) -> String {
+        switch dtype {
+        case .float16: return "float16"
+        case .float32: return "float32"
+        default: return "\(dtype)"
+        }
     }
 
     /// Scheduler knobs for the production v2 engine. `maxConcurrentRequests`
@@ -210,6 +296,28 @@ extension EngineV2Factory {
         /// An EXPLICIT `.paged` selection never degrades for a failure; it
         /// throws `EngineV2ProductionError.pagedUnavailable`.
         public let kvBackendFallbackReason: String?
+        /// The dtype of the pages the PAGED pool was ACTUALLY built with
+        /// (`pagedPoolDTypeName` vocabulary), or nil when the resolved
+        /// backend is contiguous and there are no pages. Read off the
+        /// constructed pool, never off the requested config: a
+        /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` that lands on a
+        /// contiguous engine (kill switch, `.auto`) reports nil here, not
+        /// "float32", so a parity arm can tell "fp32 served" from "fp32
+        /// asked for and ignored" instead of reporting a control that
+        /// never ran.
+        public let pagedPoolDType: String?
+
+        public init(
+            engine: any CBv2Engine,
+            kvBackendKind: EngineV2KVBackendKind,
+            kvBackendFallbackReason: String?,
+            pagedPoolDType: String? = nil
+        ) {
+            self.engine = engine
+            self.kvBackendKind = kvBackendKind
+            self.kvBackendFallbackReason = kvBackendFallbackReason
+            self.pagedPoolDType = pagedPoolDType
+        }
     }
 
     /// Fully resolved backend resources, created before SSD cache construction
@@ -224,6 +332,10 @@ extension EngineV2Factory {
         /// hands the ENGINE that same instance instead of an unrelated
         /// twin that happened to agree on the memberwise defaults.
         let schedulerConfig: CBv2SchedulerConfig
+        /// Resolved page dtype of the constructed paged pool; nil on
+        /// contiguous. Carried so `assembleProductionBuild` can put it on
+        /// `ProductionBuild` without re-deriving it from the environment.
+        let pagedPoolDType: String?
 
         private let lock = NSLock()
         private let modelIdentity: ObjectIdentifier
@@ -239,7 +351,8 @@ extension EngineV2Factory {
             caches: [any CBv2AttendingLayerCache],
             kind: EngineV2KVBackendKind,
             fallbackReason: String?,
-            schedulerConfig: CBv2SchedulerConfig
+            schedulerConfig: CBv2SchedulerConfig,
+            pagedPoolDType: String?
         ) {
             self.modelIdentity = ObjectIdentifier(model)
             self.maxConcurrentRequests = max(1, maxConcurrentRequests)
@@ -249,6 +362,7 @@ extension EngineV2Factory {
             self.kind = kind
             self.fallbackReason = fallbackReason
             self.schedulerConfig = schedulerConfig
+            self.pagedPoolDType = pagedPoolDType
         }
 
         func consume(
@@ -394,6 +508,21 @@ extension EngineV2Factory {
             fallbackReason = "kill_switch"
         }
 
+        // Page dtype, read HERE: inside the paged branch, so a contiguous
+        // slot ignores a knob that means nothing to it and the kill switch
+        // (which has already forced contiguous above) leaves it inert; and
+        // BEFORE preflight, so a typo refuses even on a machine where
+        // paged would have failed for an unrelated reason and buried it.
+        // Deliberately NOT routed through `degradeOrRefuse`: that
+        // predicate splits "we CANNOT do what you asked" from "do NOT do
+        // what you asked", and a malformed value is neither — it is a
+        // request nobody can interpret, so it refuses for `.auto` too the
+        // day `.auto` starts resolving paged.
+        var pagedDType = DType.float16
+        if resolvedKind == .paged {
+            pagedDType = try Self.pagedPoolDType(environment: environment)
+        }
+
         // Paged FAILED: we CANNOT do what was asked (kernel preflight,
         // physical-capacity planning, or pool construction) — the other
         // half of the distinction drawn at the kill switch above. The
@@ -439,7 +568,11 @@ extension EngineV2Factory {
                 caches: caches,
                 kind: .contiguous,
                 fallbackReason: fallbackReason,
-                schedulerConfig: schedulerConfig)
+                schedulerConfig: schedulerConfig,
+                // Contiguous has no pages: report NO dtype rather than the
+                // requested one, so a parity arm cannot read a knob it set
+                // as evidence the fp32 pool exists.
+                pagedPoolDType: nil)
         }
 
         if resolvedKind == .paged {
@@ -477,6 +610,7 @@ extension EngineV2Factory {
                         layerKinds: layerKinds,
                         config: PagedKVPoolConfig(
                             capacityBytes: plan.capacityBytes,
+                            dtype: pagedDType,
                             // LOCKSTEP: a windowed-layer update larger than
                             // the ring's provision traps the PROCESS
                             // (`PagedSequenceKV` precondition), so the pool
@@ -513,7 +647,13 @@ extension EngineV2Factory {
                         caches: caches,
                         kind: .paged,
                         fallbackReason: nil,
-                        schedulerConfig: schedulerConfig)
+                        schedulerConfig: schedulerConfig,
+                        // From the CONSTRUCTED pool, not from `pagedDType`:
+                        // `PagedKVPool.init` is what validated the dtype and
+                        // stamped every group's slabs with it, so this is
+                        // the built artifact reporting itself.
+                        pagedPoolDType: Self.pagedPoolDTypeName(
+                            paged.pool.config.dtype))
                 } catch let error as CBv2KVError {
                     // Paged ineligibility/capacity under `.auto` is a
                     // supported degradation: fall back to the contiguous
@@ -599,7 +739,8 @@ extension EngineV2Factory {
                 mtpDrafter: mtpDrafter,
                 mtpConfig: mtpConfig),
             kvBackendKind: preparedBackend.kind,
-            kvBackendFallbackReason: preparedBackend.fallbackReason)
+            kvBackendFallbackReason: preparedBackend.fallbackReason,
+            pagedPoolDType: preparedBackend.pagedPoolDType)
     }
 
     /// Shared final assembly for both backends.

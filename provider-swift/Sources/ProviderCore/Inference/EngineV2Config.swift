@@ -98,6 +98,14 @@ public enum EngineV2RefusalReason: String, Sendable {
     /// here; it degrades to contiguous and reports INFO
     /// `engine_v2_kv_backend` with a fallback reason instead.
     case pagedBackendUnavailable = "paged_backend_unavailable"
+    /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE` carried a value that is neither
+    /// `float16` nor `float32`
+    /// (`EngineV2ProductionError.invalidPagedPoolDType`). Kept SEPARATE
+    /// from `pagedBackendUnavailable`, which is the paged-rollout
+    /// regression signal: this is an operator typo in a measurement knob,
+    /// and folding the two together would make a mistyped env var look
+    /// like paged infrastructure failing.
+    case pagedKVDTypeInvalid = "paged_kv_dtype_invalid"
     /// Any other engine-construction failure.
     case engineInitFailed = "engine_init_failed"
 
@@ -110,6 +118,8 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .unsupportedModel
         case EngineV2ProductionError.pagedUnavailable:
             return .pagedBackendUnavailable
+        case EngineV2ProductionError.invalidPagedPoolDType:
+            return .pagedKVDTypeInvalid
         case is EngineV2VLMTextExtractionError:
             return .vlmExtractionFailed
         default:

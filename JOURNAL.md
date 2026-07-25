@@ -64,8 +64,12 @@ until each premise is individually checked against a live caller.
 
 ## ⚠ Ordering constraints — violating these ships a daemon abort or silent corruption
 
-1. **The ring shrink (WS-1.2 / 3.1) must land AFTER WS-3.5.** It collapses the
-   ~528-token alias margin that keeps the MTP lazy-gather hazard latent.
+1. ~~**The ring shrink must land AFTER WS-3.5.**~~ **SATISFIED** — WS-3.5 landed
+   (`MTP/CBv2MTPCaptureFence.swift`, fence back-edge, gated on
+   `requiresMaterializedSnapshots`). The shrink is now IN FLIGHT with track P.
+   Target: `ceil(window/pageSize) + ceil(maxSpeculativeSpan/pageSize)` = 65 pages
+   for gemma-4, down from 97 (a 1.52x over-provision on 25 of 30 layers).
+   `ringIsNotOverProvisioned` already encodes it and is the only red in the tree.
 2. **WS-3.3 must never ship without WS-3.4 (and 3.0).** Flipping
    `supportsSpeculativeWrites` makes `MTP/EngineLoopV2+MTPTargetVerification.swift:50-52`
    reachable — a `preconditionFailure`, i.e. daemon death with no telemetry.
@@ -120,13 +124,13 @@ provider [#580](https://github.com/Layr-Labs/d-inference/pull/580) telemetry par
 [#582](https://github.com/Layr-Labs/d-inference/pull/582) e2e backend knob ·
 [#583](https://github.com/Layr-Labs/d-inference/pull/583) benchmark `--kv-backend`.
 
-**Wave 1 — IN FLIGHT, 13 agents.** On completion: commit per track, bump the
+**Wave 1 + 2/3 — IN FLIGHT, 14 agents.** On completion: commit per track, bump the
 gitlink, open a PR per track, then run the full validation set.
 
 | Track | Items | State |
 |---|---|---|
 | L | 0.2p paged sub-blocking, 0.5 pad site, 2.3 capability protocol, 3.4 rectangular | running |
-| P | 0.5 poison page, 0.6 guards, 1.3 lazy reservation, 6.4 PTOK | running (**NOT** the ring formula) |
+| P | 0.5 poison page, 0.6 guards, 1.3 lazy reservation, 6.4 PTOK, **+ ring shrink (UNBLOCKED — 3.5 landed)**, + kv-quant in `PagedKVPool` | running |
 | R | 3.2 spec transaction, 3.3 headroom | running |
 | M | 3.0 graceful degradation, 3.5 materialize captures | running |
 | G | remove compiled decode | running |
@@ -135,9 +139,16 @@ gitlink, open a PR per track, then run the full validation set.
 | X | OPEN-9 hard refusal, 0.4 merge scheduler configs, kv-quant veto | running |
 | E2 | parametric activation reserve + `servability.go` 9-site mirror | running |
 | E3 | `k` re-fit, quality cap reachable at 8 | running |
-| C4 | mixed-version gate | **DONE**, uncommitted |
+| C4 | mixed-version gate | **DONE** `d1c8abc5b` |
 | KVQuantEngine | `CBv2QuantizedSequenceKV`, `PrefixReusePlan` case, `snapshotIsLossless` | running |
-| KVQuantProvider | `kv_quant` → `RetiredCodingKeys`, orphaned scaffolding, docs | running |
+| KVQuantProvider | `kv_quant` → `RetiredCodingKeys`, orphaned scaffolding, docs | **DONE** `ee9b48bf0` |
+| F2 | heartbeat `kv_backend` discriminator (Gate G5) | running |
+| F3 | 9 telemetry fields + `backend` key ruling | **DONE** `28e4ef661` |
+| F4 | telemetry PRODUCERS (F3 added allowlist entries; nothing emits them) | running |
+| W15 | multi-model co-residency pool resize | running |
+| D | SSD windowed sidecar (WS-4.2) | running |
+| E4 | coordinator prefers measured decode rate over the bandwidth proxy | running |
+| A2 | sink-dtype coercion in `AttentionV1` — NEW latent daemon abort | running |
 
 ## What is left after Wave 1
 
@@ -699,3 +710,69 @@ in the release measurement and is now a scoped item for track L.
 | **X** | Granted both gate/policy test files and `EngineV2Config.swift`. Its call that the fleet kill switch keeps DEGRADING on explicit paged is **right** and must be commented in code: a kill switch that refuses would 503 every slot on a paged-configured fleet. Refusal set is exactly preflight / capacity / construction error. Also adding a dedicated refusal reason — `.engineInitFailed` is a catch-all that would make a paged regression indistinguishable from a bad model load. |
 | **R** | May append a suite at EOF of `CBv2PagedBackendTests.swift`; asked to also assert free-list and refcount restoration, since a row-only check passes even if a deferred free leaks. `PrefixReusePlan.swift` released back to unowned. |
 | **C4** | Complete. SIP was **incidental**, not intrinsic — coordinator trust is stamped (`suite.go:367-372` forces `ChallengeVerifiedSIP = true`) and the provider-side check is log-only. Replaced with a SHA-256 artifact pin plus an explicitly host-gated `security_posture` subtest that is falsifiable in both directions and never skips. |
+
+### 2026-07-25 — Main — Wave 2/3 dispatched early; new defect found by the oracle
+
+Five tracks were being serialised behind Wave 1 for no reason. Checked: every
+engine Wave 2 item (ring shrink, packed prefill, spans, WS-4.1, paged
+last-query) genuinely collides with P/L/R on the three hot files — that is the
+§6.1 contention, not caution. But F2, F3, W15, D and E4 have **zero** file
+overlap and are now running. F4 and A2 followed.
+
+**NEW DEFECT — latent daemon abort in the CONTIGUOUS path, found by TrackT's
+cross-backend differential on its first run.** This is the oracle paying for
+itself, and it found a bug in the backend we ship *today*, not the one we are
+migrating to.
+
+```
+JOURNAL
+stack:    T (finding) / A2 (fix)
+pr:       none
+did:      Found that the two backends disagree on accepted sink dtypes, and the
+          contiguous one aborts the process.
+files:    AttentionV1.swift:523,590 vs Paged/PagedLayerCache.swift:543,383
+evidence: PagedLayerCache coerces on BOTH paths — `sinks?.asType(queries.dtype)`
+          at :543 and `.asType(.float32)` at :383. CBv2AttentionV1 coerces on
+          NEITHER. fp16 queries + fp32 sinks through the contiguous path gives
+          `MLX/ErrorHandler.swift:345: Fatal error: [scaled_dot_product_attention]
+          Type of sinks must promote to output type float16` — a fatalError, so
+          a daemon abort taking every co-resident model's in-flight requests,
+          with no telemetry. Paged returns a correct answer on identical inputs.
+          PagedLayerCache:541-542 documents the trap, so the paged author knew
+          and defended; the contiguous one did not.
+decided:  Not firing today — gpt-oss-20b is the only sinks model and `sinks` is
+          a @ParameterInfo, so it loads in checkpoint dtype and matches the
+          activations. It goes live the moment anything upcasts that
+          one-element-per-head parameter (normal for a 1-D tensor, for numerical
+          stability) or a mixed-precision load path lands fp32 sinks against
+          fp16 activations. Fix mirrors paged. Assigned to A2.
+blocked:  nothing
+```
+
+TrackT handled it correctly: fed sinks in the query dtype, recorded the
+divergence in an 18-line comment, did NOT weaken the differential (sink-dtype
+coercion is not what that test is for; storage parity is), and did NOT assert
+the trap — an in-process `fatalError` would destroy every other agent's run in
+the shared worktree.
+
+**Ring shrink unblocked and in flight.** The full paged+MTP+admission suite is
+green except `ringIsNotOverProvisioned`, failing all 5 cases exactly as TrackT
+predicted — it encodes the post-shrink target and fails until P lands it. That
+is a test driving the next change, which is what the oracle is for.
+
+**`backend` telemetry key was worse than briefed.** I described two contradictory
+meanings; F3 found **three semantic axes over four value vocabularies**, and the
+fourth is a different enum from the third. Ruling: `backend` keeps engine
+identity, KV kind → `kv_backend` (already the cross-layer name, so telemetry and
+heartbeat capacity now group identically), row identity → `prefix_reuse_backend`.
+
+**F2 chose `*string` over `string`** for the heartbeat discriminator, unprompted:
+a plain string collapses absent and explicit-empty, so every pre-0.8.0 provider
+would book as a contiguous sample and the rollout dashboard would show a clean
+baseline that is really just old providers. That is the field making things
+worse instead of better, caught before it shipped.
+
+**E4's fix is coordinator-only.** `observed_decode_tps` is already populated at
+`EngineV2Bridge+Capacity.swift:146`, so no new wire field during a mixed-version
+rollout — the outcome the brief asked it to prefer, confirmed rather than
+assumed.

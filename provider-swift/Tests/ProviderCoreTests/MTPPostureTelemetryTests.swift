@@ -312,10 +312,20 @@ struct MTPPostureTelemetryTests {
             .disabled(.configDisabled, configured: false),
             metricsInterval: .milliseconds(20))
 
+        // Wait for the SECOND sample. The first is the opening snapshot emitted
+        // synchronously by configureMTPStatus, which would satisfy a
+        // first-event wait without the timer ever firing — this test is the one
+        // that has to prove the recurring loop still runs.
+        let postureCount = {
+            telemetry.events.filter {
+                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
+            }.count
+        }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while telemetry.posture == nil, ContinuousClock.now < deadline {
+        while postureCount() < 2, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
+        #expect(postureCount() >= 2, "the periodic sampler never produced a second posture event")
 
         let event = try #require(telemetry.posture, "periodic sampler produced no posture event")
         #expect(event.kind == .engineHealth)
@@ -331,6 +341,45 @@ struct MTPPostureTelemetryTests {
         await bridge.shutdown()
     }
 
+    @Test("a slot torn down inside its first interval still reports exactly once")
+    func slotShorterThanOneIntervalEmitsOnce() async throws {
+        // The rollout-visibility case: a slot that fails post-build, crashes,
+        // or is swapped out 40 s into a 60 s cadence. Sleeping first made
+        // exactly those slots invisible. The interval here is far longer than
+        // the test's lifetime, so the ONLY emission that can occur is the
+        // opening one — and there must be precisely one, not zero and not a
+        // duplicate from the loop's first iteration.
+        let telemetry = PostureTelemetrySink()
+        let bridge = makePostureBridge(
+            engine: PagedPoolStubEngine(kvBytesInUse: 2 << 30, poolBytes: 8 << 30),
+            kvBackendKind: .paged,
+            telemetry: telemetry)
+
+        await bridge.configureMTPStatus(
+            .disabled(.assistantLoadFailed, configured: true),
+            metricsInterval: .seconds(600))
+
+        // No polling: the opening sample is ordered before configureMTPStatus
+        // returns, so it is already on the sink.
+        let postures = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_slot_posture"
+        }
+        #expect(postures.count == 1)
+        let event = try #require(postures.first)
+        #expect(field(event, "kv_backend") == "paged")
+        #expect(field(event, "mtp_enabled") == "true")
+        #expect(field(event, "mtp_active") == "false")
+        #expect(field(event, "mtp_inactive_reason") == "assistant_load_failed")
+        #expect(field(event, "pool_utilization") == "0.25")
+
+        await bridge.shutdown()
+        try await Task.sleep(for: .milliseconds(120))
+        #expect(
+            telemetry.events.filter {
+                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
+            }.count == 1)
+    }
+
     @Test("shutdown stops the sampler")
     func shutdownStopsSampler() async throws {
         let telemetry = PostureTelemetrySink()
@@ -342,11 +391,19 @@ struct MTPPostureTelemetryTests {
             .disabled(.configDisabled, configured: false),
             metricsInterval: .milliseconds(20))
 
+        // Two samples, not one: the first is the opening snapshot, so waiting
+        // only for it would let this test pass against a sampler that never
+        // ticked — and then "shutdown stopped it" would prove nothing.
+        let postureCount = {
+            telemetry.events.filter {
+                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
+            }.count
+        }
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while telemetry.posture == nil, ContinuousClock.now < deadline {
+        while postureCount() < 2, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(20))
         }
-        _ = try #require(telemetry.posture)
+        #expect(postureCount() >= 2, "sampler never ticked, so shutdown has nothing to stop")
 
         await bridge.shutdown()
         let afterShutdown = telemetry.events.count

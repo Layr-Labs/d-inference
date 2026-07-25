@@ -2,6 +2,9 @@ package registry
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +25,7 @@ func enablePerModelQualityCap(t *testing.T, reg *Registry, seed, killSwitch, min
 		qualityCapPerModelTPS = true
 		qualityCapSoloMinSamples = defaultQualityCapSoloMinSamples
 		modelSoloTPSSeed = nil
+		modelSoloTPSSeedFleet = nil
 		qualityCapOvercommitByModel = nil
 	})
 	t.Setenv(modelSoloTPSSeedEnv, seed)
@@ -548,6 +552,231 @@ func TestSoloSeedColdStart(t *testing.T) {
 	wantGptoss := wantQualityCap(30, 15, 24, defaultQualityCapOvercommit)
 	if got := effCapResolved(reg, p, gptossBuild); got != wantGptoss {
 		t.Fatalf("cold-start gpt-oss cap = %d, want %d (seed 30 at k=%.2f × 1.2)", got, wantGptoss, effectiveTPSLoadFactor)
+	}
+}
+
+// prodSoloTPSSeed returns the EIGENINFERENCE_MODEL_SOLO_TPS_SEED value shipped
+// in deploy/environments/prod.env. Reading the real file rather than pinning a
+// copy is deliberate: the P1 this suite defends is a bad VALUE in that file,
+// so a test asserting against a hand-copied CSV would keep passing while prod
+// regressed. The repository root is located by walking up for the file itself
+// (the Go module root is coordinator/, one level below it).
+func prodSoloTPSSeed(t *testing.T) string {
+	t.Helper()
+	const rel = "deploy/environments/prod.env"
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	var path string
+	for {
+		candidate := filepath.Join(dir, rel)
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			path = candidate
+			break
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatalf("no ancestor of %q contains %s", dir, rel)
+		}
+		dir = parent
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	const key = modelSoloTPSSeedEnv + "="
+	for _, line := range strings.Split(string(raw), "\n") {
+		if after, ok := strings.CutPrefix(strings.TrimSpace(line), key); ok {
+			return after
+		}
+	}
+	t.Fatalf("%s carries no %s line", path, modelSoloTPSSeedEnv)
+	return ""
+}
+
+// classProvider is a single-model provider on a named chip class whose slot
+// reports the production MaxConcurrency of 8 — the `base` operand of the cap's
+// MIN, so the numbers here are the ones prod actually grants.
+func classProvider(t *testing.T, reg *Registry, id, model, family, tier string) *Provider {
+	t.Helper()
+	p := makeSchedulerProvider(t, reg, id, model, 0) // no registration benchmark
+	p.mu.Lock()
+	p.Hardware.ChipName = family + " " + tier
+	p.Hardware.ChipFamily = family
+	p.Hardware.ChipTier = tier
+	p.BackendCapacity.Slots[0].MaxConcurrency = 8
+	p.mu.Unlock()
+	return p
+}
+
+// TestSoloSeedIsChipClassScoped is the P1 guard: the 70 tok/s cold-start seed
+// was MEASURED on an M4 Max, and applying it fleet-wide hands an M1 Pro — which
+// decodes gemma at 10-18 tok/s — a cap of 8, projecting ~3.4 tok/s per request
+// at that batch against a 15 tok/s floor. The seed the coordinator resolves
+// must therefore depend on the provider's chip CLASS, and every class the
+// operator did not name must land on the conservative floor.
+//
+// It runs against the CSV actually shipped in prod.env, so re-broadening the
+// seed there fails here.
+func TestSoloSeedIsChipClassScoped(t *testing.T) {
+	seed := prodSoloTPSSeed(t)
+	reg := New(testLogger()) // fresh registry == post-restart, no solo samples
+	enablePerModelQualityCap(t, reg, seed, "", "")
+
+	cases := []struct {
+		name     string
+		family   string
+		tier     string
+		wantTPS  float64
+		wantCap  int
+		measured bool // the class the 70 tok/s number came from
+	}{
+		{name: "m4_max_measured_class", family: "M4", tier: "Max", wantTPS: 70, wantCap: 8, measured: true},
+		{name: "m1_pro_slower_class", family: "M1", tier: "Pro", wantTPS: 14, wantCap: 2},
+		{name: "m4_pro_same_family_slower_tier", family: "M4", tier: "Pro", wantTPS: 14, wantCap: 2},
+		{name: "unrecognized_chip", family: "Unknown", tier: "Unknown", wantTPS: 14, wantCap: 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := classProvider(t, reg, "box-"+tc.name, gemmaBuild, tc.family, tc.tier)
+			got := resolveSolo(reg, p, gemmaBuild)
+			if got.tps != tc.wantTPS || !got.perModel {
+				t.Fatalf("%s|%s resolved %+v, want tps %v perModel true",
+					tc.family, tc.tier, got, tc.wantTPS)
+			}
+			if cap := effCapResolved(reg, p, gemmaBuild); cap != tc.wantCap {
+				t.Fatalf("%s|%s cap = %d, want %d", tc.family, tc.tier, cap, tc.wantCap)
+			}
+			if !tc.measured && got.tps >= 70 {
+				t.Fatalf("%s|%s inherited the M4 Max seed (%v tok/s) — the exact over-admission this fix prevents",
+					tc.family, tc.tier, got.tps)
+			}
+		})
+	}
+}
+
+// TestSoloSeedNoMorePermissiveOnSlowerClasses is the other half of the P1: the
+// scoped seed must not merely differ from the fleet-wide one, it must be
+// TIGHTER everywhere except the class the fast rate was measured on.
+//
+// The same fleet is walked through three seed configurations — none at all
+// (the pre-seed provider-level chain), the fleet-wide 70 this PR originally
+// shipped, and the chip-class-scoped CSV now in prod.env — and every class
+// other than M4|Max must come out no more permissive than either baseline.
+// Note the pre-seed cap is the provider's REPORTED 8, not a proxy-derived
+// number: with no registration benchmark and a non-dedicated model,
+// effectiveMaxConcurrencyForModelRateLocked refuses to cap from the
+// model-agnostic sqrt-bandwidth rate at all and returns base.
+func TestSoloSeedNoMorePermissiveOnSlowerClasses(t *testing.T) {
+	classes := [][2]string{{"M4", "Max"}, {"M1", "Pro"}, {"M4", "Pro"}, {"M2", "Max"}, {"Unknown", "Unknown"}}
+	capsFor := func(seed string) map[string]int {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, seed, "", "")
+		out := make(map[string]int, len(classes))
+		for _, c := range classes {
+			key := c[0] + "|" + c[1]
+			p := classProvider(t, reg, "box-"+key+"-"+seed, gemmaBuild, c[0], c[1])
+			out[key] = effCapResolved(reg, p, gemmaBuild)
+		}
+		return out
+	}
+
+	noSeed := capsFor("")
+	fleetWide := capsFor(gemmaBuild + "=70") // what this PR shipped
+	scoped := capsFor(prodSoloTPSSeed(t))
+
+	for _, c := range classes {
+		key := c[0] + "|" + c[1]
+		if key == "M4|Max" {
+			// The measured class must KEEP its cap; scoping is not a
+			// fleet-wide retreat, it is a scope correction.
+			if scoped[key] != fleetWide[key] {
+				t.Fatalf("M4|Max cap %d != fleet-wide %d — the measured class lost its seed", scoped[key], fleetWide[key])
+			}
+			continue
+		}
+		if scoped[key] > fleetWide[key] || scoped[key] > noSeed[key] {
+			t.Fatalf("%s cap %d is more permissive than a baseline (fleet-wide-70 %d, no-seed %d)",
+				key, scoped[key], fleetWide[key], noSeed[key])
+		}
+		if scoped[key] >= fleetWide[key] {
+			t.Fatalf("%s cap %d did not TIGHTEN against the fleet-wide-70 baseline %d — the fix is inert on this class",
+				key, scoped[key], fleetWide[key])
+		}
+	}
+}
+
+// TestSoloSeedFleetFallbackClampedToSlowestNamedClass pins the structural half
+// of the fix. Scoping alone still lets an operator write a fast unqualified
+// value beside a slow class entry and re-create the bug; the unqualified entry
+// is therefore clamped to the slowest class named for that model, so an
+// unnamed class can never out-rank the slowest one that WAS named — the same
+// min-of-classes invariant SoloMedianAllChips enforces for measured medians.
+func TestSoloSeedFleetFallbackClampedToSlowestNamedClass(t *testing.T) {
+	reg := New(testLogger())
+	// Operator error: a 70 fleet-wide value alongside a 14 tok/s M1 Pro entry.
+	enablePerModelQualityCap(t, reg,
+		gemmaBuild+"=70,"+gemmaBuild+"@M1|Pro=14,"+gemmaBuild+"@M4|Max=70", "", "")
+
+	// The named slow class gets its own rate.
+	slow := classProvider(t, reg, "m1pro", gemmaBuild, "M1", "Pro")
+	if got := resolveSolo(reg, slow, gemmaBuild); got.tps != 14 {
+		t.Fatalf("M1|Pro resolved %v, want its own 14", got.tps)
+	}
+	// An UNNAMED class takes the fleet-wide entry clamped down to 14, not 70.
+	unnamed := classProvider(t, reg, "m2max", gemmaBuild, "M2", "Max")
+	if got := resolveSolo(reg, unnamed, gemmaBuild); got.tps != 14 {
+		t.Fatalf("unnamed M2|Max resolved %v, want the clamped 14 — an unnamed class must never out-rank the slowest named one", got.tps)
+	}
+	named := classProvider(t, reg, "m4max", gemmaBuild, "M4", "Max")
+	if got := resolveSolo(reg, named, gemmaBuild); got.tps != 70 {
+		t.Fatalf("M4|Max resolved %v, want its own 70 — the clamp must not touch a named class", got.tps)
+	}
+}
+
+// TestSoloSeedClassEntryYieldsToMeasuredSamples: a class-qualified seed is a
+// COLD-START estimate, not a pin. Once the provider's own class has enough
+// gated solo samples the median wins, exactly as an unqualified seed does.
+func TestSoloSeedClassEntryYieldsToMeasuredSamples(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, gemmaBuild+"=14,"+gemmaBuild+"@M4|Max=70", "", "5")
+	p := classProvider(t, reg, "m4max", gemmaBuild, "M4", "Max")
+	for _, v := range []float64{30, 32, 33, 34, 36} { // median 33
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", v)
+	}
+	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 33 {
+		t.Fatalf("resolved %v, want the measured 33 — the class seed must not outrank its own class's samples", got.tps)
+	}
+}
+
+// TestSoloSeedFleetFallbacksParsing covers the clamp table directly, including
+// the degenerate shapes parseModelFloatMap can hand it.
+func TestSoloSeedFleetFallbacksParsing(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+		want map[string]float64
+	}{
+		{name: "no_class_entries_passthrough", raw: "a=20,b=30", want: map[string]float64{"a": 20, "b": 30}},
+		{name: "clamped_to_slowest_class", raw: "a=70,a@m4|max=70,a@m1|pro=14", want: map[string]float64{"a": 14}},
+		{name: "fleet_already_below_classes", raw: "a=9,a@m4|max=70", want: map[string]float64{"a": 9}},
+		{name: "class_only_has_no_fleet_entry", raw: "a@m4|max=70", want: nil},
+		{name: "clamp_is_per_model", raw: "a=70,b=70,a@m1|pro=14", want: map[string]float64{"a": 14, "b": 70}},
+		{name: "empty", raw: "", want: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := soloSeedFleetFallbacks(parseModelFloatMap(tc.raw))
+			if len(got) != len(tc.want) {
+				t.Fatalf("soloSeedFleetFallbacks(%q) = %v, want %v", tc.raw, got, tc.want)
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Fatalf("soloSeedFleetFallbacks(%q)[%q] = %v, want %v", tc.raw, k, got[k], v)
+				}
+			}
+		})
 	}
 }
 

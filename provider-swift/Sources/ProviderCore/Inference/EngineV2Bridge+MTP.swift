@@ -10,14 +10,24 @@ extension EngineV2Bridge {
         subsystem: "com.darkbloom.provider", category: "engine_v2_mtp")
     #endif
 
-    /// Record MTP activation and (re)start the periodic per-slot posture
-    /// sampler.
+    /// Record MTP activation, emit the opening per-slot posture, and
+    /// (re)start the periodic sampler.
     ///
     /// The sampler is deliberately NOT gated on MTP being active. It also
     /// carries paged-pool occupancy, which a slot with no drafter must still
     /// report, and `mtp_enabled: false` is itself the observation that makes
     /// a partially-MTP fleet resolvable. `metricsInterval == .zero` still
-    /// disables it (tests).
+    /// disables the whole producer, opening sample included (tests).
+    ///
+    /// The opening sample is emitted BEFORE the first sleep. Waiting a full
+    /// interval means a slot that fails post-build, crashes, or is
+    /// swapped/unloaded inside its first minute is torn down having never
+    /// reported at all — and those short-lived slots (MTP fallback,
+    /// rollout failure) are exactly what this inventory exists to expose.
+    /// It runs inline rather than as the loop's first iteration so the
+    /// emission is ordered before this call returns: a caller that shuts the
+    /// bridge down immediately still gets exactly one posture event, with no
+    /// dependency on when the child task first gets scheduled.
     func configureMTPStatus(
         _ status: MTPActivationStatus,
         metricsInterval: Duration = .seconds(60)
@@ -26,6 +36,7 @@ extension EngineV2Bridge {
         slotPostureTask?.cancel()
         slotPostureTask = nil
         guard metricsInterval > .zero else { return }
+        sampleSlotPosture()
         let bridge = self
         slotPostureTask = Task { [weak bridge] in
             while !Task.isCancelled {

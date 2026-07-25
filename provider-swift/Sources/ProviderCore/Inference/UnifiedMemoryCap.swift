@@ -34,14 +34,23 @@ public enum UnifiedMemoryCap {
     /// OS (e.g. an 8 GiB box gets a 6 GiB cap, not 7.2 GiB).
     static let minimumReserveBytes: UInt64 = 2 * 1024 * 1024 * 1024  // 2 GiB
 
-    /// Default activation/working-memory reserve carved out INSIDE the cap.
+    /// Absolute FLOOR on the activation/working-memory reserve carved out
+    /// INSIDE the cap. ``activationReserveBytes(for:)`` raises it; nothing
+    /// lowers it except an explicit operator/programmatic override.
     ///
     /// Measured on M5 Max (Gemma-4-26B-qat-4bit + GPT-OSS-20B, both MoE): a
     /// 4-concurrent ~3000-token long-prefill burst moved RSS by only ~9 MB over
     /// the resident-weight baseline — MoE activates few experts, MLX fuses
     /// attention, and intermediates churn through the (count-bounded) buffer
-    /// cache rather than growing the live set. So activations are small in
-    /// practice; this is a conservative SAFETY FLOOR, not a per-batch estimate.
+    /// cache rather than growing the live set.
+    ///
+    /// That measurement is real but NARROW: short prompts, four concurrent
+    /// rows, and a burst whose attention MLX could fuse. It says nothing about
+    /// the one activation that is neither small nor fused — the composed-path
+    /// prefill SCORE tensor (see ``ActivationReserveShape``), which is already
+    /// ~6.6 GB at those same four concurrent rows once the context reaches
+    /// 100k. So this number is a floor for the non-attention working set, not
+    /// a per-batch estimate, and it must never be the whole answer on its own.
     static let defaultActivationReserveBytes: UInt64 = 3 * 1024 * 1024 * 1024  // 3 GiB
 
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
@@ -208,6 +217,172 @@ public enum UnifiedMemoryCap {
         return max(configReserveBytes, capImpliedReserve)
     }
 
+    // MARK: - Parametric activation reserve
+
+    /// The prefill-attention shape that decides how much working memory one
+    /// scheduler step can hold live, so the reserve scales with batch and
+    /// context instead of being a flat number justified by a single
+    /// 4-concurrent measurement.
+    ///
+    /// ## What is being sized
+    ///
+    /// MLX's fused SDPA kernel accepts head_dim ∈ {64, 80, 128}
+    /// (`sdpa_full_supported_head_dim`); anything else takes the COMPOSED
+    /// fallback, which MATERIALISES the score tensor
+    /// `[concurrentPrefills, heads, C, kL]` in fp32 before the softmax, plus a
+    /// `[C, kL]` bool mask. Gemma-4 (head_dim 256 sliding / 512 full) never
+    /// reaches the fused kernel; gpt-oss (head_dim 64) always does and costs
+    /// nothing here.
+    ///
+    /// ## Why `C` is not simply the chunk size
+    ///
+    /// Query sub-blocking (`CBv2AttentionV1.attendQueryBlocks`) pins a TEXT
+    /// chunk's live score tensor at `[1, heads, q, kL]`, O(1) in chunk length.
+    /// Span-bearing VISION chunks deliberately keep the single-call path
+    /// (`AttentionV1.swift:243-251`): a bidirectional overlay covers the whole
+    /// chunk, so a query block cannot be sliced to a causal-only visible span.
+    /// They are also the only prefill path whose `L` may exceed
+    /// ``prefillChunkSize`` (the scheduler's block snap-over), which makes them
+    /// simultaneously the largest-`L` and the only unblocked prefill. A slot
+    /// that serves vision is therefore costed at FULL `L`; a text-only slot at
+    /// the sub-block width.
+    ///
+    /// ## Filling it in
+    ///
+    /// Every field has exactly one upstream owner. READ them — restating any of
+    /// them here recreates the drifting parallel constant this type exists to
+    /// delete: `CBv2SchedulerConfig.maxBatchedTokensPerStep`/`.prefillChunkSize`,
+    /// `CBv2AttentionV1.queryBlockSize`, `CBv2LayerKind.queryHeads`/`.headDim`,
+    /// and the slot's own `maxContextLength`. That is why no field carries a
+    /// "sensible" default.
+    public struct ActivationReserveShape: Sendable, Equatable {
+        /// `CBv2SchedulerConfig.maxBatchedTokensPerStep`: the step's whole
+        /// token budget across decode and prefill. Divided by
+        /// ``prefillChunkSize`` it gives the concurrent prefill rows one step
+        /// can carry, and it independently caps the vision path (`MultimodalV2`
+        /// rejects a coalesced image block longer than this at submit).
+        public var maxBatchedTokensPerStep: Int
+
+        /// `CBv2SchedulerConfig.prefillChunkSize`: the per-row prompt chunk.
+        public var prefillChunkSize: Int
+
+        /// `CBv2AttentionV1.queryBlockSize` (env
+        /// `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK`). `0` = blocking disabled — the
+        /// kill switch — so a text chunk costs its full ``prefillChunkSize``.
+        public var querySubBlockSize: Int
+
+        /// Longest coalesced vision block this slot may schedule, in tokens;
+        /// `0` = text-only slot. Costed at full `L`, never at the sub-block
+        /// width, because span chunks skip query blocking.
+        public var spanChunkMaxL: Int
+
+        /// The model's context window — the longest key axis a prefill query
+        /// can attend. `0` = unknown, which disables the estimate.
+        public var maxContextLength: Int
+
+        /// QUERY heads on the widest attention layer
+        /// (`CBv2LayerKind.queryHeads`), NOT KV heads: the score tensor is
+        /// materialised after the GQA repeat, so a GQA model's KV-head count
+        /// under-counts it. `0` = unknown, which disables the estimate.
+        public var attentionHeads: Int
+
+        /// Whether attention takes MLX's composed fallback, i.e. whether a
+        /// score tensor is materialised at all. See
+        /// ``composedAttention(headDim:)``.
+        public var composedAttention: Bool
+
+        public init(
+            maxBatchedTokensPerStep: Int,
+            prefillChunkSize: Int,
+            querySubBlockSize: Int,
+            spanChunkMaxL: Int = 0,
+            maxContextLength: Int,
+            attentionHeads: Int,
+            composedAttention: Bool = true
+        ) {
+            self.maxBatchedTokensPerStep = maxBatchedTokensPerStep
+            self.prefillChunkSize = prefillChunkSize
+            self.querySubBlockSize = querySubBlockSize
+            self.spanChunkMaxL = spanChunkMaxL
+            self.maxContextLength = maxContextLength
+            self.attentionHeads = attentionHeads
+            self.composedAttention = composedAttention
+        }
+
+        /// The head_dims MLX's fused SDPA kernel accepts
+        /// (`sdpa_full_supported_head_dim`); every other head_dim composes and
+        /// pays for a materialised score tensor.
+        public static func composedAttention(headDim: Int) -> Bool {
+            headDim != 64 && headDim != 80 && headDim != 128
+        }
+    }
+
+    /// The composed path builds scores in fp32 regardless of the model's weight
+    /// dtype, and adds one `[C, kL]` bool mask (1 byte, shared across heads).
+    private static let scoreBytesPerElement: UInt64 = 4
+    private static let maskBytesPerElement: UInt64 = 1
+
+    /// Peak live prefill score + mask bytes for ONE scheduler step:
+    ///
+    ///     concurrentPrefills = maxBatchedTokensPerStep / prefillChunkSize
+    ///     C                  = max(querySubBlockSize, spanChunkMaxL)
+    ///     liveQueryRows      = min(maxBatchedTokensPerStep,
+    ///                              concurrentPrefills × C)
+    ///     bytes              = liveQueryRows × maxContextLength
+    ///                            × (attentionHeads × 4 + 1)
+    ///
+    /// Each concurrent prefill row holds ONE live score tensor behind the
+    /// `concatenated(axis: 0)` that joins the step's rows, so the rows add up.
+    /// `liveQueryRows` is then capped at the step budget: a row cannot hold more
+    /// query rows live than it was handed tokens to prefill. That cap is what
+    /// makes the vision term saturate at the whole step budget instead of
+    /// growing without bound as blocks snap over ``prefillChunkSize``.
+    ///
+    /// Reproduces the migration plan's §7.0.3 table (heads 8, chunk 512,
+    /// unblocked span path): B=4 → 2048 live query rows → 0.66 GB at 10k
+    /// context and 6.6 GB at 100k; B=8 → 4096 rows → 1.3 GB / 13.1 GB. The
+    /// same B=4 step on a TEXT-only slot sub-blocks to 512 rows and costs 1.7 GB
+    /// at 100k — that gap is exactly what #85 bought, and exactly what vision
+    /// does not get.
+    ///
+    /// Returns 0 when no score tensor exists (fused kernel) or the geometry is
+    /// unknown; the caller then keeps the measured floor.
+    public static func peakPrefillScoreBytes(for shape: ActivationReserveShape) -> UInt64 {
+        guard shape.composedAttention,
+            shape.attentionHeads > 0,
+            shape.maxContextLength > 0,
+            shape.maxBatchedTokensPerStep > 0
+        else { return 0 }
+        let stepBudget = shape.maxBatchedTokensPerStep
+        let chunk = max(1, min(shape.prefillChunkSize, stepBudget))
+        let concurrentPrefills = max(1, stepBudget / chunk)
+        // Text rows are pinned to the sub-block width (0 = kill switch → the
+        // whole chunk); span rows keep the single-call path at full L, capped
+        // by the step budget that also gates them at submit.
+        let textWidth =
+            shape.querySubBlockSize > 0
+            ? min(shape.querySubBlockSize, chunk)
+            : chunk
+        let spanWidth = min(max(0, shape.spanChunkMaxL), stepBudget)
+        let liveQueryRows = min(
+            UInt64(stepBudget),
+            saturatingMultiply(
+                UInt64(concurrentPrefills), UInt64(max(textWidth, spanWidth))))
+        let perKeyBytes = saturatingAdd(
+            saturatingMultiply(UInt64(shape.attentionHeads), scoreBytesPerElement),
+            maskBytesPerElement)
+        return saturatingMultiply(
+            liveQueryRows, UInt64(shape.maxContextLength), perKeyBytes)
+    }
+
+    /// The activation reserve for `shape`: the measured floor, RAISED to the
+    /// peak prefill score tensor whenever the configured batch and context need
+    /// more. Never returns less than ``defaultActivationReserveBytes`` — the
+    /// floor still covers the non-attention working set this estimate ignores.
+    public static func activationReserveBytes(for shape: ActivationReserveShape) -> UInt64 {
+        max(defaultActivationReserveBytes, peakPrefillScoreBytes(for: shape))
+    }
+
     // MARK: - Resolution (explicit → env → default)
 
     /// Cap fraction from explicit value, env `DARKBLOOM_MEM_CAP_FRACTION`
@@ -229,13 +404,21 @@ public enum UnifiedMemoryCap {
     }
 
     /// Activation reserve from explicit bytes, env
-    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or the default floor. A `<= 0` or
-    /// non-finite env value is treated as UNSET (→ the 3 GiB default floor): a
-    /// `0` reserve would remove the activation headroom the cap exists to
-    /// guarantee, so an operator can RAISE the reserve but not silently disable it
-    /// via env. An explicit programmatic value (tests) is honored as given.
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or — when the caller supplies the
+    /// slot's prefill `shape` — ``activationReserveBytes(for:)``, falling back
+    /// to the flat floor when it does not.
+    ///
+    /// A `<= 0` or non-finite env value is treated as UNSET (→ the parametric
+    /// value, else the floor): a `0` reserve would remove the activation
+    /// headroom the cap exists to guarantee, so an operator can RAISE the
+    /// reserve but not silently disable it via env. A env value that IS set
+    /// wins over the parametric estimate — the knob is the operator's explicit
+    /// override of provider policy, and it is how a bad estimate gets answered
+    /// in either direction. An explicit programmatic value (tests) is honored
+    /// as given.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
+        shape: ActivationReserveShape? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> UInt64 {
         if let explicit { return explicit }
@@ -244,7 +427,8 @@ public enum UnifiedMemoryCap {
             let scaled = gb * 1_073_741_824
             return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
         }
-        return defaultActivationReserveBytes
+        guard let shape else { return defaultActivationReserveBytes }
+        return activationReserveBytes(for: shape)
     }
 
     // MARK: - Helpers
@@ -272,6 +456,17 @@ public enum UnifiedMemoryCap {
         for v in values {
             let (sum, overflow) = total.addingReportingOverflow(v)
             total = overflow ? UInt64.max : sum
+        }
+        return total
+    }
+
+    private static func saturatingMultiply(_ values: UInt64...) -> UInt64 {
+        var total: UInt64 = 1
+        for v in values {
+            if v == 0 { return 0 }
+            let (product, overflow) = total.multipliedReportingOverflow(by: v)
+            if overflow { return UInt64.max }
+            total = product
         }
         return total
     }

@@ -44,10 +44,32 @@ const (
 	// servabilityCapFraction mirrors the provider's UnifiedMemoryCap default
 	// (90% of physical memory usable for MLX).
 	servabilityCapFraction = 0.90
-	// servabilityActivationReserveGB mirrors the provider's activation reserve
-	// kept aside on top of weights before KV cache (UnifiedMemoryCap activation
-	// reserve, ~3 GiB). Cold KV headroom ≈ cap*total - paddedWeights - reserve.
-	servabilityActivationReserveGB = 3.0
+	// servabilityActivationFloorGB mirrors the FLOOR half of the provider's
+	// activation reserve (UnifiedMemoryCap.defaultActivationReserveBytes,
+	// 3 GiB): the measured non-attention working set held back on top of
+	// weights before any KV cache. It does not scale with anything.
+	servabilityActivationFloorGB = 3.0
+	// servabilityActivationBytesPerToken mirrors the CONTEXT-SCALING half
+	// (UnifiedMemoryCap.peakPrefillScoreBytes), which the provider gained when
+	// the flat 3 GiB reserve stopped being true. A model whose head_dim misses
+	// MLX's fused-SDPA set {64, 80, 128} — gemma-4 is 256/512 — materialises a
+	// [rows, heads, C, kL] fp32 score tensor per prefill step, so its cost is
+	// LINEAR in kL and therefore a per-token surcharge on top of the KV bytes
+	// each token already costs:
+	//
+	//	attentionHeads(8) * 4 B (fp32) * liveQueryRows(2048) = 65536 B/token
+	//
+	// liveQueryRows is the provider's own step bound (maxBatchedTokensPerStep)
+	// for the UNBLOCKED prefill path — span-bearing vision chunks, the one path
+	// query sub-blocking (#85) does not cover and the only one whose L may
+	// exceed prefillChunkSize. gemma-4's 8 KV heads are the basis; a GQA model's
+	// query-head count is the true multiplier, so this sits at the OPTIMISTIC
+	// end on purpose, matching this predictor's fail-toward-serving contract.
+	//
+	// RETUNE TRIGGER: this tracks maxBatchedTokensPerStep, so §13.2's 6.2
+	// (2048 -> 4096) doubles it to 131072. Nothing detects that automatically —
+	// the coordinator never sees the provider's scheduler config.
+	servabilityActivationBytesPerToken = 65536
 )
 
 // ServabilityReason is the low-cardinality reason a request was judged
@@ -78,11 +100,18 @@ type ServabilityVerdict struct {
 }
 
 // coldTokenBudgetEstimate approximates the token budget a cold (on-disk, not yet
-// loaded) provider would have AFTER loading the model, mirroring the provider's
-// own live-KV-headroom math:
+// loaded) provider would have AFTER loading the model. The provider holds back
 //
-//	kvHeadroomGB ≈ cap*totalMemoryGB - paddedWeightsGB - activationReserveGB
-//	tokens       ≈ kvHeadroomGB * bytesPerGB / kvBytesPerToken
+//	reserve(t) = max(activationFloor, activationBytesPerToken * t)
+//
+// on top of the padded weights, so the budget is the largest t satisfying
+//
+//	t*kvBytesPerToken + reserve(t) <= cap*totalMemoryGB - paddedWeightsGB
+//
+// which is piecewise-linear with a single crossover at
+// activationFloor/activationBytesPerToken (49152 tokens at today's constants):
+// below it the flat floor binds and a token pays only KV; above it the score
+// tensor scales with context and the two per-token costs simply add.
 //
 // paddedWeightsGB uses the same catalog→padded-GiB conversion the cold-load gate
 // uses (coldLoadCatalogGBToMemGiB). kvBytesPerToken prefers the provider-reported
@@ -90,32 +119,58 @@ type ServabilityVerdict struct {
 // is deliberately OPTIMISTIC (uses only the activation reserve, not the extra
 // min-KV load floor) so the predictor errs toward serving. Returns 0 when the
 // inputs are unusable or no headroom remains.
+//
+// # Deliberate divergence from the provider's own formula
+//
+// The provider evaluates its reserve at a CEILING it can see — its configured
+// maxContextLength, its scheduler's step/chunk sizes, and the slot's real
+// per-layer head counts — and holds that many bytes back unconditionally. The
+// coordinator sees none of those: a cold slot has no heartbeat at all, and even
+// a warm one reports neither maxBatchedTokensPerStep nor head counts. Rather
+// than guess the provider's ceiling (a duplicated constant that drifts the
+// moment either side is retuned — the exact failure this replaces), the
+// coordinator solves the SELF-CONSISTENT point: it charges the score tensor at
+// exactly the context it is predicting the provider can hold. The two agree
+// when the predicted budget equals the provider's maxContextLength and the
+// coordinator is optimistic below it — the safe direction for a gate whose
+// false-NO is a 429. Only servabilityActivationBytesPerToken is shared, and it
+// is a shape constant (heads x fp32 x step rows), not a memory figure.
 func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64) int64 {
 	if totalMemoryGB <= 0 || modelSizeGB <= 0 {
 		return 0
 	}
 	paddedWeightsGB := modelSizeGB * coldLoadCatalogGBToMemGiB
-	kvHeadroomGB := servabilityCapFraction*totalMemoryGB - paddedWeightsGB - servabilityActivationReserveGB
-	if kvHeadroomGB <= 0 {
+	postLoadGB := servabilityCapFraction*totalMemoryGB - paddedWeightsGB
+	if postLoadGB <= 0 {
 		return 0
 	}
 	kvpt := kvBytesPerToken
 	if kvpt <= 0 {
 		kvpt = kvCacheBytesPerToken
 	}
-	tokens := int64(kvHeadroomGB * float64(bytesPerGB) / float64(kvpt))
-	if tokens < 0 {
+	postLoadBytes := postLoadGB * float64(bytesPerGB)
+	floorBytes := servabilityActivationFloorGB * float64(bytesPerGB)
+	// Below the crossover the flat floor is the whole reserve.
+	tokens := (postLoadBytes - floorBytes) / float64(kvpt)
+	if tokens > floorBytes/servabilityActivationBytesPerToken {
+		// Above it the score tensor dominates and scales with the context, so
+		// every token carries both costs.
+		tokens = postLoadBytes / float64(kvpt+servabilityActivationBytesPerToken)
+	}
+	if tokens <= 0 {
 		return 0
 	}
-	return tokens
+	return int64(tokens)
 }
 
 // snapshotStructuralBudget returns this provider's structural token-budget
 // contribution for the model, and whether it is known. A resident slot uses the
-// provider-reported active_token_budget_max; a cold-but-fitting provider uses the
-// optimistic cold estimate. "known=false" means we cannot tell (legacy resident
-// slot with no budget, or missing memory data) — the caller treats unknown as
-// fail-open and skips the budget tier entirely.
+// provider-reported active_token_budget_max — which already nets out whatever
+// activation reserve that provider actually chose. A cold-but-fitting provider
+// has no such report, so it uses the optimistic post-load estimate, reserve
+// included (see coldTokenBudgetEstimate). "known=false" means we cannot tell
+// (legacy resident slot with no budget, or missing memory data) — the caller
+// treats unknown as fail-open and skips the budget tier entirely.
 func snapshotStructuralBudget(snap routingSnapshot) (budget int64, known bool) {
 	if snap.activeTokenBudgetMax > 0 {
 		return snap.activeTokenBudgetMax, true

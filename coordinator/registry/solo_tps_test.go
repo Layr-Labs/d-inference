@@ -444,16 +444,39 @@ func TestSoloClassKeyingEndToEndNoCrossTierOverCap(t *testing.T) {
 	}
 }
 
+// TestResolvedSoloModelTPSMinSampleFloor pins what the min-sample floor now
+// selects BETWEEN, and that the terminal provider-level fallback is still
+// wired.
+//
+// The floor used to be the boundary between a per-model rate and the
+// provider-level one. It no longer is: below the floor the resolver prefers
+// the under-sampled — but still solo-gated and still per-model — measured
+// median over resolvedDecodeTPS's model-AGNOSTIC sqrt-bandwidth proxy (see
+// resolvedSoloModelTPSLocked). Here that difference is the whole postmortem
+// layer-6 failure in one line: 14 tok/s is gemma's own measured rate, 93 is
+// the mixed box's registration benchmark taken on gpt-oss. Five gemma samples
+// are better evidence about gemma than a fast benchmark of a different model.
+//
+// What the floor still decides is the TRUST TIER — authoritative, or a
+// fallback ranked below the configured seed — and the provider-level rate is
+// now reached only when the model has NO measurement at all.
 func TestResolvedSoloModelTPSMinSampleFloor(t *testing.T) {
 	reg := New(testLogger())
-	// Floor raised to 6: five per-chip samples are NOT yet trusted.
+	// Floor raised to 6: five samples are NOT yet the trusted tier.
 	enablePerModelQualityCap(t, reg, "", "", "6")
 	p := mixedBoxProvider(t, reg, "mixed", 93)
-	for i := 0; i < 5; i++ {
+
+	// No measurement at all — the terminal provider-level fallback. This is
+	// the only remaining route to resolvedDecodeTPS(p), so it is pinned here.
+	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 93 || got.perModel {
+		t.Fatalf("no samples = %+v, want the provider-level fallback (93, perModel false)", got)
+	}
+
+	for range 5 {
 		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
 	}
-	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 93 || got.perModel {
-		t.Fatalf("below min samples = %+v, want provider-level (93, perModel false)", got)
+	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
+		t.Fatalf("below min samples = %+v, want the under-sampled measured rate (14, perModel true), not the provider-level 93", got)
 	}
 	reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
 	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
@@ -511,18 +534,20 @@ func TestParseModelFloatMapSeedEntries(t *testing.T) {
 
 // TestSoloSeedColdStart is the restart scenario: the TPS registry is in-memory
 // and wiped by a coordinator restart, so on a fresh registry the seed env must
-// carry the per-model cap alone (gemma-qat solo ≈ 14 from prod data → cap 2)
-// until gated solo samples re-accumulate.
+// carry the per-model cap alone until gated solo samples re-accumulate. The
+// gemma seed (14, at or under the 15 floor) pins to 2 at any measured k; the
+// gpt-oss cap is k-derived (see the helpers in concurrency_cap_test.go).
 func TestSoloSeedColdStart(t *testing.T) {
 	reg := New(testLogger()) // fresh registry == post-restart state
 	enablePerModelQualityCap(t, reg, "gemma-4-26b-qat-4bit=14,gpt-oss-20b=30", "", "")
 	p := mixedBoxProvider(t, reg, "mixed", 93)
 
 	if got := effCapResolved(reg, p, gemmaBuild); got != 2 {
-		t.Fatalf("cold-start gemma cap = %d, want 2 (seed 14 ≤ floor 15 → qc 1 × 1.2)", got)
+		t.Fatalf("cold-start gemma cap = %d, want 2 (seed 14 ≤ floor 15 → quality batch 1 × 1.2)", got)
 	}
-	if got := effCapResolved(reg, p, gptossBuild); got != 4 {
-		t.Fatalf("cold-start gpt-oss cap = %d, want 4 (seed 30 → qc 3 → ceil(3.6))", got)
+	wantGptoss := wantQualityCap(30, 15, 24, defaultQualityCapOvercommit)
+	if got := effCapResolved(reg, p, gptossBuild); got != wantGptoss {
+		t.Fatalf("cold-start gpt-oss cap = %d, want %d (seed 30 at k=%.2f × 1.2)", got, wantGptoss, effectiveTPSLoadFactor)
 	}
 }
 

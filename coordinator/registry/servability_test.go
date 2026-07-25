@@ -3,19 +3,33 @@ package registry
 import "testing"
 
 // TestColdTokenBudgetEstimate pins the pure cold post-load KV-budget estimator.
-// The formula is:
+// The provider's activation reserve is max(flat floor, per-token score tensor),
+// so the budget is piecewise-linear around the crossover
+// servabilityActivationFloorGB*bytesPerGB / servabilityActivationBytesPerToken
+// = 3*2^30/65536 = 49152 tokens:
 //
-//	kvHeadroomGB = servabilityCapFraction*total - size*coldLoadCatalogGBToMemGiB - servabilityActivationReserveGB
-//	tokens       = int64(kvHeadroomGB * bytesPerGB / kvBytesPerToken)   // kvBytesPerToken<=0 → 400000
+//	postLoadGB = servabilityCapFraction*total - size*coldLoadCatalogGBToMemGiB
+//	postLoadB  = postLoadGB * bytesPerGB
+//	floorB     = servabilityActivationFloorGB * bytesPerGB   // 3*2^30
+//	tokens     = (postLoadB - floorB) / kvBytesPerToken      // floor binds
+//	if tokens > 49152:
+//	    tokens = postLoadB / (kvBytesPerToken + 65536)       // score binds
 //
-// with servabilityCapFraction=0.90, servabilityActivationReserveGB=3.0,
-// coldLoadCatalogGBToMemGiB≈1.1175870895385742, bytesPerGB=1<<30.
+// with servabilityCapFraction=0.90, servabilityActivationFloorGB=3.0,
+// servabilityActivationBytesPerToken=65536,
+// coldLoadCatalogGBToMemGiB≈1.1175870895385742, bytesPerGB=1<<30, and
+// kvBytesPerToken<=0 → 400000.
 func TestColdTokenBudgetEstimate(t *testing.T) {
-	// (a) Roomy node: total=64, size=12, kvpt=400000.
-	//   padded   = 12 * 1.1175870895385742           = 13.41104507446289
-	//   headroom = 0.90*64 - 13.41104507446289 - 3.0 = 41.18895492553711 GB
-	//   tokens   = int64(41.18895492553711 * 2^30 / 400000) = 110565
-	const wantRoomy = int64(110565)
+	// (a) Roomy node: total=64, size=12, kvpt=400000. Long-context regime —
+	// the score tensor, not the 3 GiB floor, is what the provider holds back.
+	//   padded    = 12 * 1.1175870895385742           = 13.41104507446289
+	//   postLoadGB= 0.90*64 - 13.41104507446289       = 44.18895492553711 GB
+	//   postLoadB = 44.18895492553711 * 2^30          = 47447529062.4 B
+	//   floor-bound tokens = (47447529062.4 - 3221225472) / 400000 = 110565.75
+	//   110565.75 > 49152, so the score tensor binds instead:
+	//   tokens    = int64(47447529062.4 / 465536)     = 101920
+	// (Flat-3-GiB predecessor: 110565 — 8% optimistic at this context.)
+	const wantRoomy = int64(101920)
 	if got := coldTokenBudgetEstimate(64, 12, 400000); got != wantRoomy {
 		t.Fatalf("roomy estimate = %d, want %d", got, wantRoomy)
 	}
@@ -23,10 +37,42 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 		t.Fatalf("roomy estimate = %d, want > 0", got)
 	}
 
-	// (b) Tiny node: weights (padded) + activation reserve exceed 90% of the
-	// 8 GB cap, so there is no KV headroom at all → 0 (never negative).
+	// (b) Tiny node: weights (padded) alone exceed 90% of the 8 GB cap, so
+	// there is no post-load memory at all, let alone room for the activation
+	// reserve → 0 (never negative).
 	if got := coldTokenBudgetEstimate(8, 12, 400000); got != 0 {
-		t.Fatalf("tiny-node estimate = %d, want 0 (weights+reserve exceed cap)", got)
+		t.Fatalf("tiny-node estimate = %d, want 0 (weights exceed cap)", got)
+	}
+
+	// (b2) Floor regime: a 48 GB node loading 28 GB of gemma-4 weights lands
+	// BELOW the crossover, so the flat floor is still the whole reserve and the
+	// estimate is unchanged from the pre-parametric formula.
+	//   padded    = 28 * 1.1175870895385742     = 31.292438507080078
+	//   postLoadGB= 0.90*48 - 31.292438507080078 = 11.907561492919925 GB
+	//   tokens    = (11.907561492919925*2^30 - 3221225472) / 400000 = 23911.05
+	//   23911 <= 49152 → floor branch wins.
+	if got := coldTokenBudgetEstimate(48, 28, 400000); got != int64(23911) {
+		t.Fatalf("floor-regime estimate = %d, want 23911", got)
+	}
+
+	// (b3) The two regimes must JOIN, not jump. Sweeping node size across the
+	// crossover has to stay monotone and continuous; a branch inversion, or a
+	// floor charged ON TOP OF the per-token cost rather than instead of it,
+	// shows up here as a step backwards or a cliff. Each 0.05 GB step adds
+	// 0.045*2^30 bytes = at most ~121 tokens in either regime.
+	prev := int64(0)
+	for total := 20.0; total <= 30.0; total += 0.05 {
+		got := coldTokenBudgetEstimate(total, 1, 400000)
+		if got < prev {
+			t.Fatalf("budget went backwards at total=%.2f: %d after %d", total, got, prev)
+		}
+		if prev > 0 && got-prev > 200 {
+			t.Fatalf("regime discontinuity at total=%.2f: %d jumped from %d", total, got, prev)
+		}
+		prev = got
+	}
+	if prev <= 49152 {
+		t.Fatalf("sweep ended at %d tokens, never crossed the 49152 regime boundary", prev)
 	}
 
 	// (c) kvBytesPerToken <= 0 falls back to the kvCacheBytesPerToken default

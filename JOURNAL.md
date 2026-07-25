@@ -44,7 +44,7 @@ touches is mine — there is no second team; see DEC-4.
 
 | Stack | Repo | Owns | State |
 |---|---|---|---|
-| **E0** seam contract | engine | protocol decls only | **written, awaiting compile** |
+| **E0** seam contract | engine | protocol decls only | **DONE** — `a6af510` |
 | **T** oracle | engine | `Tests/CBv2Paged*`, `CBv2KVSharingParityTests` | not started |
 | **P** pool | engine | `PagedKVPool`, `PagedAttentionKernel` | not started |
 | **L** layer | engine | `PagedLayerCache`, `LayerCacheBankV2` | not started |
@@ -52,10 +52,10 @@ touches is mine — there is no second team; see DEC-4.
 | **M** MTP | engine | `MTP/EngineLoopV2+MTP*`, `EngineV2` mode select | not started |
 | **G** compiled | engine | `Compiled/*` + hooks | not started |
 | **X** factory | d-inference | `EngineV2Factory+Production`, `EngineV2SlotFactory`, `ProviderConfig` | not started |
-| **E** memory | d-inference | `AdmissionV2`, `UnifiedMemoryCap`, `registry/servability.go`, `registry/concurrency_cap.go` | **Wave 0 in flight** (E1) |
-| **F** wire | d-inference | telemetry mirrors, `BackendSlotCapacity` | **Wave 0 in flight** (F1) |
+| **E** memory | d-inference | `AdmissionV2`, `UnifiedMemoryCap`, `registry/servability.go`, `registry/concurrency_cap.go` | E1 **DONE**; 0.0/0.0b/0.3 pending |
+| **F** wire | d-inference | telemetry mirrors, `BackendSlotCapacity` | F1 **DONE**; discriminator + fields pending |
 | **D** SSD | d-inference | `KVCacheSSD/*`, `PrefixCachePolicy` | not started |
-| **C** CI/bench | d-inference | `ci.yml`, `e2e/testbed`, `BenchCBv2`, `gemma_contbatch` | **Wave 0 in flight** (C1, C2, C3) |
+| **C** CI/bench | d-inference | `ci.yml`, `e2e/testbed`, `BenchCBv2`, `gemma_contbatch` | C1/C2/C3 **DONE**; C4 (mixed-version gate) pending |
 
 ## Decisions (2026-07-25, product owner)
 
@@ -340,3 +340,76 @@ decided:  E0 contains three things and deliberately nothing else.
           contention. Wave 1 revisits this — P/R/L genuinely need isolation.
 blocked:  nothing
 ```
+
+### 2026-07-25 — Main — Wave 0 complete, integrated and validated
+
+Seven commits. Superproject `paged-kv/integration`, engine `paged-kv/wave0`,
+gitlink bumped at `164614eb3`.
+
+| Commit | Repo | What |
+|---|---|---|
+| `a6af510` | engine | E0 seam contract |
+| `1c85ced` | engine | E1 Bug A — ring charged at admission |
+| `10a5016` | engine | C3 BenchCBv2 prompt-length axis + provenance |
+| `0408b73` | engine | paged resource lookup through symlinked roots |
+| `238712300` | super | F1 telemetry 3-way allowlist parity guard |
+| `e54aa59c6` | super | C1 CI paged correctness gate |
+| `0ee27c8d2` | super | C2 e2e KV-backend + concurrency knob |
+| `56f0ca323` | super | C3 `darkbloom benchmark --kv-backend` |
+
+```
+JOURNAL
+stack:    integration
+pr:       paged-kv/integration, paged-kv/wave0
+did:      Integrated all five Wave 0 tasks plus one defect found in flight, bumped the
+          gitlink, and validated the combined tree.
+files:    see the table above
+evidence: coordinator `go build ./... && go test ./...` clean; `cd e2e && go build ./...`
+          clean; engine `swift test --filter
+          'CBv2SchedulerAdmissionTests|CBv2FrozenReplayPlanTests|CBv2PagedSafetyTests|CBv2PagedEligibilityTests'`
+          -> 25 XCTest + 18 swift-testing, 0 failures. provider `swift build` clean.
+decided:  Content-dedupe, not path-dedupe, for the paged resource locator. C1 correctly
+          warned that resolving roots alone converts an unreachable `.ambiguous` into a
+          reachable one; the repro turned out to be even more direct than predicted — with
+          both build trees populated, two byte-identical copies of pagedattention.metal are
+          reachable (provider-swift's own bundle, and libs/mlx-swift-lm's, which the
+          source-ancestor walk finds). `.ambiguous` exists to stop the process loading an
+          unknown VARIANT of the kernel, so the right key is bytes. A divergent resource
+          still throws.
+blocked:  nothing
+```
+
+**Defect found and fixed in flight (not in the plan).** `PagedAttentionResources.locate`
+enumerated roots with `contentsOfDirectory(at:)`; `.build/debug` is a symlink to
+`.build/<triple>/debug`, the URL enumerator does not follow it, so the kernel source was
+never found and `EngineV2Factory` degraded paged → contiguous **at INFO level**. Any
+benchmark or e2e run through the conventional path silently measured contiguous while
+reporting that paged was requested. `swift test` was unaffected. Fixed; both invocation
+paths now print `paged-kernel-runtime-smoke: ok`.
+
+**Open item raised by C1, not yet actioned.** The INFO-level degrade is arguably worse
+than the symlink was. When paged is *explicitly* requested — `--kv-backend paged`, or
+`engine_v2_kv_backend = "paged"` — a kernel-preflight failure should be a hard refusal,
+not a fallback. `.auto` should keep falling back. Tracked as **OPEN-9**; belongs to
+track X with `EngineV2Factory+Production.swift`.
+
+**Process incident, mine.** I ran `git stash` in the shared worktree while C3 was still
+editing, which swept its in-progress `BenchCBv2RealModel.swift` into a stash. Recovered
+with no loss — E1 cherry-picked back, C3's 104 insertions restored, all three verified
+byte-identical afterwards. Root cause: I mutated git state in a worktree with live
+agents. **Rule for Wave 1: no git state mutation while any agent is running in that
+worktree.** This is also an argument for the per-track worktrees Wave 1 was going to use
+for P/R/L anyway.
+
+**Second process note.** Three of five agents had relative `edit` paths resolve against
+the master checkout instead of the worktree. All three detected it themselves and
+reverted; master is clean (verified: only the 9 files of the owner's own parallel work).
+Wave 1 task briefs must state the absolute worktree path for every edit.
+
+### 2026-07-25 — Main — open questions after Wave 0
+
+| # | Question | Owner |
+|---|---|---|
+| OPEN-8 | Mixed-version gate is red (SIP disabled on the CI runner). Defaulting to me as C4. | me |
+| OPEN-9 | Should an explicit paged request hard-refuse on kernel-preflight failure instead of degrading at INFO? Recommend yes. | me, track X |
+| OPEN-10 | `CBv2PagedKernelTests`/`CBv2PagedBackendTests` dispatch JIT Metal with no skip guard. Assessed low risk — `CBv2PagedSafetyTests` already runs `runtimeSmoke()` green in the same CI job — but the first CI run must be watched. | me |

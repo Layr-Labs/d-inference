@@ -3011,3 +3011,515 @@ struct SSDPrefixCacheDonationOutcomeTests {
         #expect(total == 2)
     }
 }
+
+// MARK: - WS-4.2 windowed sidecar
+
+/// Layout with a window that TILES: blockSize 8, window 16 ⇒ two sidecars per
+/// window. Layer 0 is the full-attention (block-cached) layer, layers 1 and 2
+/// are storage-owning sliding layers, layer 3 borrows layer 1's KV and must
+/// therefore never be persisted.
+private let sidecarBlockSize = 8
+private let sidecarWindow = 16
+private let sidecarLayerKinds: [CBv2LayerKind] = [
+    CBv2LayerKind(attention: .full, headDim: fixtureHeadDim, kvHeads: fixtureKVHeads, queryHeads: 4),
+    CBv2LayerKind(
+        attention: .slidingWindow(sidecarWindow), headDim: fixtureHeadDim,
+        kvHeads: fixtureKVHeads, queryHeads: 4),
+    CBv2LayerKind(
+        attention: .slidingWindow(sidecarWindow), headDim: fixtureHeadDim,
+        kvHeads: fixtureKVHeads, queryHeads: 4),
+    CBv2LayerKind(
+        attention: .slidingWindow(sidecarWindow), sharesKVWithLayer: 1,
+        headDim: fixtureHeadDim, kvHeads: fixtureKVHeads, queryHeads: 4),
+]
+
+private func sidecarGeometry() -> SSDWindowSidecarGeometry {
+    SSDWindowSidecarGeometry.derive(
+        layerKinds: sidecarLayerKinds, blockSize: sidecarBlockSize)!
+}
+
+private func makeSidecarCache(
+    dir: URL,
+    kek: SymmetricKey,
+    clock: ClockBox,
+    geometry: SSDWindowSidecarGeometry? = sidecarGeometry(),
+    adoptionBound: Int = 0,
+    maxStageBytes: Int = 1 << 30
+) -> SSDPrefixCache {
+    let config = SSDPrefixCache.Config(
+        modelId: "sidecar-model",
+        promptContractID: "sidecar-prompt-contract",
+        weightHash: "sidecar-weight-hash",
+        blockSize: sidecarBlockSize,
+        adoptionBoundTokens: adoptionBound,
+        layoutEpoch: SSDBlockStore.layoutEpoch(
+            blockSize: sidecarBlockSize, layerKinds: sidecarLayerKinds),
+        root: dir,
+        ttlSeconds: 900,
+        minEffectiveTokens: sidecarBlockSize,
+        maxStageBytes: maxStageBytes,
+        maxStageMillis: 1_000_000,
+        windowSidecar: geometry,
+        nowSeconds: { clock.now })
+    return SSDPrefixCache(
+        config: config, kekKey: kek, kvBudget: nil, diskBudget: SSDDiskBudget(),
+        maxWriteBytesPerDay: 0, strictFsync: false,
+        diskBudgetBytes: { 1 << 40 })
+}
+
+/// Full-layer snapshots (layer 0 only) covering `tokenCount` tokens.
+private func sidecarSnapshots(tokenCount: Int)
+    -> [(keys: MLXArray, values: MLXArray, offset: Int)?]
+{
+    _ = LiveInferenceFixtures.ensureMetallibColocated()
+    let shape = [1, fixtureKVHeads, tokenCount, fixtureHeadDim]
+    let count = shape.reduce(1, *)
+    let base = MLXArray(0 ..< count).reshaped(shape).asType(.float16)
+    eval(base)
+    return [(keys: base, values: (base + 0.5).asType(.float16), offset: tokenCount), nil, nil, nil]
+}
+
+/// Sliding-window payloads anchored at `base`, distinct per layer so a
+/// layer-order bug cannot pass by accident.
+private func sidecarWindows(base: Int, tokens: Int = sidecarWindow)
+    -> [SSDWindowSidecar.Window?]
+{
+    _ = LiveInferenceFixtures.ensureMetallibColocated()
+    let shape = [1, fixtureKVHeads, tokens, fixtureHeadDim]
+    let count = shape.reduce(1, *)
+    func payload(_ seed: Float) -> SSDWindowSidecar.Window {
+        let ramp = MLXArray(0 ..< count).reshaped(shape).asType(.float16)
+        let keys = (ramp + seed).asType(.float16)
+        let values = (ramp - seed).asType(.float16)
+        eval(keys, values)
+        return (keys: keys, values: values, base: base)
+    }
+    return [nil, payload(1), payload(2), nil]
+}
+
+private func maxAbs(_ a: MLXArray, _ b: MLXArray) -> Float {
+    abs(a.asType(.float32) - b.asType(.float32)).max().item(Float.self)
+}
+
+@Suite("SSD prefix cache: windowed sidecar (WS-4.2)")
+struct SSDWindowSidecarTests {
+
+    private let tokenCount = 64  // 8 whole blocks at blockSize 8
+
+    // MARK: Geometry
+
+    @Test("geometry derives only for layouts whose window tiles into whole blocks")
+    func geometryDerivation() {
+        let geometry = try! #require(
+            SSDWindowSidecarGeometry.derive(
+                layerKinds: sidecarLayerKinds, blockSize: sidecarBlockSize))
+        #expect(geometry.windowTokens == 16)
+        #expect(geometry.blocksPerWindow == 2)
+        #expect(geometry.layerCount == 4)
+        // The KV-SHARED sliding layer borrows storage and must not be
+        // persisted; only the two owning sliding layers are.
+        #expect(geometry.layers.map(\.index) == [1, 2])
+
+        func kinds(sliding: Int, window: Int, full: Int) -> [CBv2LayerKind] {
+            (0 ..< sliding).map { _ in
+                CBv2LayerKind(
+                    attention: .slidingWindow(window), headDim: 256, kvHeads: 8, queryHeads: 16)
+            } + (0 ..< full).map { _ in
+                CBv2LayerKind(attention: .full, headDim: 512, kvHeads: 2, queryHeads: 16)
+            }
+        }
+        // gemma-4-26B: 25 sliding × 1024 + 5 full, at the production block size.
+        #expect(
+            SSDWindowSidecarGeometry.derive(
+                layerKinds: kinds(sliding: 25, window: 1024, full: 5),
+                blockSize: 256)?.blocksPerWindow == 4)
+        // gpt-oss-20b's 128-token window is SHORTER than one block, so it can
+        // never be tiled — it keeps its 1,536-token replay bound.
+        #expect(
+            SSDWindowSidecarGeometry.derive(
+                layerKinds: kinds(sliding: 12, window: 128, full: 12), blockSize: 256) == nil)
+        // A window that is not a whole number of blocks fails closed.
+        #expect(
+            SSDWindowSidecarGeometry.derive(
+                layerKinds: kinds(sliding: 4, window: 300, full: 1), blockSize: 256) == nil)
+        // Pure full attention has no window to persist.
+        #expect(
+            SSDWindowSidecarGeometry.derive(
+                layerKinds: kinds(sliding: 0, window: 0, full: 24), blockSize: 256) == nil)
+        // Mixed window sizes: one payload cannot serve two windows.
+        var mixed = kinds(sliding: 2, window: 1024, full: 1)
+        mixed[0].attention = .slidingWindow(512)
+        #expect(SSDWindowSidecarGeometry.derive(layerKinds: mixed, blockSize: 256) == nil)
+    }
+
+    @Test("coveredBlocks: a mid-block donor covers W/blockSize − 1 blocks, and donors tile")
+    func coverageArithmetic() {
+        let geometry = sidecarGeometry()  // window 16 = 2 blocks of 8
+        // Block-aligned donor at offset 64 retains [48, 64) ⇒ blocks 6 and 7.
+        #expect(geometry.coveredBlocks(base: 48, tokens: 16, blockCount: 8) == 6 ..< 8)
+        // The general case: a donor that stopped mid-block at offset 61 retains
+        // [45, 61) and covers only block 6. This is the physics that makes the
+        // sidecar PER-BLOCK rather than per-window.
+        #expect(geometry.coveredBlocks(base: 45, tokens: 16, blockCount: 8) == 6 ..< 7)
+        // Two donors straddling a boundary tile it: 61 gives block 6, 68 gives
+        // block 7, and together they complete the window ending at 64.
+        #expect(geometry.coveredBlocks(base: 52, tokens: 16, blockCount: 8) == 7 ..< 8)
+        // Never more blocks than a window spans, even from a longer payload.
+        #expect(geometry.coveredBlocks(base: 0, tokens: 64, blockCount: 8) == 6 ..< 8)
+        // Degenerate inputs produce no coverage rather than a bad slice.
+        #expect(geometry.coveredBlocks(base: 0, tokens: 0, blockCount: 8).isEmpty)
+        #expect(geometry.coveredBlocks(base: 3, tokens: 4, blockCount: 8).isEmpty)
+        #expect(geometry.coveredBlocks(base: 48, tokens: 16, blockCount: 0).isEmpty)
+    }
+
+    @Test("sidecar tags come from a separate HMAC domain and never collide with block tags")
+    func tagDomainSeparation() {
+        let keys = SSDLookupKeys(kek: SymmetricKey(size: .bits256))
+        let hash = Data(SHA256.hash(data: Data("prefix".utf8)))
+        let block = keys.tag(chainHash: hash, cacheSalt: "")
+        let window = keys.windowTag(chainHash: hash, cacheSalt: "")
+        #expect(block != window)
+        #expect(window.count == 32)
+        #expect(keys.windowTag16(chainHash: hash, cacheSalt: "").count == 16)
+        #expect(keys.windowTag16(chainHash: hash, cacheSalt: "") == window.prefix(16))
+        // Scope isolation holds in the sidecar domain too.
+        #expect(keys.windowTag(chainHash: hash, cacheSalt: "a") != window)
+    }
+
+    @Test("an ordinary block's canonical metadata JSON is unchanged by the new fields")
+    func metadataBackwardCompatibility() throws {
+        // The AAD is the canonical JSON, so a nil window field that serialized
+        // would break every pre-existing file's auth tag on read.
+        let metadata = SSDBlockMetadata(
+            lookupTag: String(repeating: "ab", count: 32),
+            weightHash: "w", layoutEpoch: "e", blockSize: 8, layerCount: 2,
+            chunks: [], chunkPlaintextSizes: [], createdAt: 1000)
+        let json = try #require(String(
+            data: try SSDBlockStore.canonicalEncode(metadata), encoding: .utf8))
+        #expect(!json.contains("windowKind"))
+        #expect(!json.contains("windowBase"))
+        #expect(!json.contains("windowTokens"))
+        // …and a sidecar's does carry them, authenticated.
+        let sidecar = SSDBlockMetadata(
+            lookupTag: String(repeating: "ab", count: 32),
+            weightHash: "w", layoutEpoch: "e", blockSize: 8, layerCount: 2,
+            chunks: [], chunkPlaintextSizes: [], createdAt: 1000,
+            windowKind: SSDWindowSidecar.kind, windowBase: 48, windowTokens: 8)
+        let sidecarJSON = try #require(String(
+            data: try SSDBlockStore.canonicalEncode(sidecar), encoding: .utf8))
+        #expect(sidecarJSON.contains("\"windowBase\":48"))
+        #expect(sidecarJSON.contains("\"windowKind\":\"sliding-window-v1\""))
+    }
+
+    // MARK: Lifecycle
+
+    @Test("stage → restart → rehydrate: a windowed sidecar survives and restores byte-exactly")
+    func sidecarRestartRoundTrip() async throws {
+        let dir = tempDir("sidecar-warmth")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let tokens = Array(0 ..< tokenCount)
+        let windowBase = tokenCount - sidecarWindow  // 48
+        let windows = sidecarWindows(base: windowBase)
+
+        let writer = makeSidecarCache(dir: dir, kek: kek, clock: clock)
+        writer.donate(
+            requestID: nil,
+            tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            windowSnapshots: windows,
+            layerKinds: sidecarLayerKinds,
+            cacheSalt: nil)
+        // 8 blocks + 2 sidecars tiling [48, 64).
+        #expect(await waitForIndexCount(writer, atLeast: 10))
+        await writer.waitForWritesForTesting()
+        #expect(writer.stats().windowSidecarsWritten == 2)
+        #expect(dbk3Files(under: dir).count == 10)
+        writer.close()
+
+        // "Restart": a fresh instance over the same dir and install key. The
+        // directory scan is the whole recovery protocol — sidecars are indexed
+        // by the same pass that indexes blocks.
+        let reader = makeSidecarCache(dir: dir, kek: kek, clock: clock)
+        defer { reader.close() }
+        reader.scanOnDisk()
+        #expect(reader.index.count == 10)
+
+        let prompt = tokens + [9_001]
+        let staged = await reader.stage(
+            requestID: "req-window", promptTokens: prompt, cacheScope: "")
+        #expect(staged.staged)
+        #expect(staged.stagedTokens == tokenCount)
+        #expect(reader.stats().windowsRestored == 1)
+
+        let restored = try #require(reader.stagedWindow(requestID: "req-window"))
+        #expect(restored.count == 4)
+        #expect(restored[0] == nil)  // full-attention layer: blocks, not sidecar
+        #expect(restored[3] == nil)  // KV-shared sliding layer: borrows layer 1
+        for layer in [1, 2] {
+            let entry = try #require(restored[layer])
+            #expect(entry.base == windowBase, "restored window must anchor at M − W")
+            #expect(entry.keys.shape == [1, fixtureKVHeads, sidecarWindow, fixtureHeadDim])
+            let donor = try #require(windows[layer])
+            #expect(maxAbs(entry.keys, donor.keys) == 0)
+            #expect(maxAbs(entry.values, donor.values) == 0)
+        }
+
+        // The block adoption is unaffected and still byte-exact.
+        let (matched, prefix) = try #require(
+            reader.lookup(tokens: prompt, layerKinds: sidecarLayerKinds, cacheSalt: nil))
+        #expect(matched == tokenCount)
+        let adopted = try #require(prefix[0])
+        let donorFull = try #require(sidecarSnapshots(tokenCount: tokenCount)[0])
+        #expect(maxAbs(adopted.keys, donorFull.keys) == 0)
+
+        reader.endAdoption(tokens: prompt, matched: matched, cacheSalt: nil)
+        #expect(reader.bytesInUse == 0)
+        #expect(reader.stagedWindow(requestID: "req-window") == nil)
+    }
+
+    @Test("an incomplete tiling replays instead of restoring a PARTIAL window")
+    func partialTilingIsRefused() async throws {
+        let dir = tempDir("sidecar-partial")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let tokens = Array(0 ..< tokenCount)
+
+        let cache = makeSidecarCache(dir: dir, kek: kek, clock: clock)
+        defer { cache.close() }
+        // A donor that stopped mid-block: window [45, 61) covers block 6 only,
+        // so the window ending at 64 can never be assembled from it alone.
+        cache.donate(
+            requestID: nil,
+            tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            windowSnapshots: sidecarWindows(base: 45),
+            layerKinds: sidecarLayerKinds,
+            cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 9))
+        await cache.waitForWritesForTesting()
+        #expect(cache.stats().windowSidecarsWritten == 1)
+
+        let staged = await cache.stage(
+            requestID: "req-partial", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged, "the block run still adopts")
+        #expect(cache.stagedWindow(requestID: "req-partial") == nil)
+        #expect(cache.stats().windowsRestored == 0)
+    }
+
+    @Test("two donors straddling a boundary tile its window; the second completes it")
+    func donorsTileTheWindow() async throws {
+        let dir = tempDir("sidecar-tile")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let tokens = Array(0 ..< tokenCount)
+        let snapshots = sidecarSnapshots(tokenCount: tokenCount)
+
+        let cache = makeSidecarCache(dir: dir, kek: kek, clock: clock)
+        defer { cache.close() }
+        // Donor A stopped at 61: covers block 6 ([48, 56)).
+        cache.donate(
+            requestID: nil, tokens: tokens, snapshots: snapshots,
+            windowSnapshots: sidecarWindows(base: 45),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 9))
+        await cache.waitForWritesForTesting()
+        #expect(cache.stagedWindow(requestID: "none") == nil)
+
+        // Donor B stopped at 68: covers block 7 ([56, 64)). Same prefix, so its
+        // eight blocks dedupe — only the missing sidecar is written.
+        cache.donate(
+            requestID: nil, tokens: tokens, snapshots: snapshots,
+            windowSnapshots: sidecarWindows(base: 52),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 10))
+        await cache.waitForWritesForTesting()
+        #expect(cache.stats().windowSidecarsWritten == 2)
+
+        let staged = await cache.stage(
+            requestID: "req-tiled", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged)
+        let restored = try #require(cache.stagedWindow(requestID: "req-tiled"))
+        // Block 6 came from donor A (base 45 ⇒ offset 3 into its payload),
+        // block 7 from donor B (base 52 ⇒ offset 4).
+        let a = try #require(sidecarWindows(base: 45)[1])
+        let b = try #require(sidecarWindows(base: 52)[1])
+        let entry = try #require(restored[1])
+        #expect(entry.base == 48)
+        #expect(maxAbs(
+            entry.keys[.ellipsis, 0 ..< 8, 0...],
+            a.keys[.ellipsis, 3 ..< 11, 0...]) == 0)
+        #expect(maxAbs(
+            entry.keys[.ellipsis, 8 ..< 16, 0...],
+            b.keys[.ellipsis, 4 ..< 12, 0...]) == 0)
+    }
+
+    @Test("a corrupted sidecar drops the window only; the block adoption stands")
+    func corruptSidecarDegradesToReplay() async throws {
+        let dir = tempDir("sidecar-corrupt")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let tokens = Array(0 ..< tokenCount)
+
+        let writer = makeSidecarCache(dir: dir, kek: kek, clock: clock)
+        writer.donate(
+            requestID: nil, tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            windowSnapshots: sidecarWindows(base: 48),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(writer, atLeast: 10))
+        await writer.waitForWritesForTesting()
+        writer.close()
+
+        // Flip one byte of the LAST sidecar's ciphertext body.
+        let keys = SSDLookupKeys(kek: kek)
+        let hasher = CBv2BlockHasher(
+            blockSize: sidecarBlockSize,
+            promptContractID: "sidecar-prompt-contract",
+            scopeID: "")
+        let hashes = hasher.chainHashes(tokens: tokens)
+        let victim = SSDBlockStore.fileURL(
+            root: dir,
+            tag16Hex: SSDLookupKeys.hex(
+                keys.windowTag16(chainHash: hashes[7], cacheSalt: "")))
+        var bytes = try Data(contentsOf: victim)
+        bytes[bytes.count - 1] ^= 0xFF
+        try bytes.write(to: victim)
+
+        let reader = makeSidecarCache(dir: dir, kek: kek, clock: clock)
+        defer { reader.close() }
+        reader.scanOnDisk()
+        let staged = await reader.stage(
+            requestID: "req-corrupt", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged, "corruption in an accelerator must not cost the block run")
+        #expect(staged.stagedTokens == tokenCount)
+        #expect(reader.stagedWindow(requestID: "req-corrupt") == nil)
+        #expect(reader.stats().corruptDropped == 1)
+        // Fail-closed: the unreadable sidecar is unlinked and de-indexed.
+        #expect(!FileManager.default.fileExists(atPath: victim.path))
+    }
+
+    @Test("the feature is OFF by default: no geometry ⇒ no sidecars, no window")
+    func disabledByDefault() async throws {
+        #expect(!SSDPrefixCachePolicy.windowSidecarEnabled(environment: [:]))
+        let dir = tempDir("sidecar-off")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeSidecarCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
+            geometry: nil)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        cache.donate(
+            requestID: nil, tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            windowSnapshots: sidecarWindows(base: 48),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+        #expect(cache.index.count == 8, "only the full-attention blocks")
+        #expect(cache.stats().windowSidecarsWritten == 0)
+        let staged = await cache.stage(
+            requestID: "req-off", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged)
+        #expect(cache.stagedWindow(requestID: "req-off") == nil)
+    }
+
+    @Test("the contiguous windowed ring conforms to the donor seam WS-4.1 freezes")
+    func contiguousDonorSeam() {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let row = CBv2WindowedSequenceKV(
+            window: sidecarWindow, kvHeads: fixtureKVHeads, headDim: fixtureHeadDim)
+        #expect((row as any SSDWindowSnapshotting).windowSnapshot() == nil, "empty row")
+        let shape = [1, fixtureKVHeads, 24, fixtureHeadDim]
+        let chunk = MLXArray(0 ..< shape.reduce(1, *)).reshaped(shape).asType(.float16)
+        eval(chunk)
+        _ = row.update(keys: chunk, values: chunk)
+        let snapshot = try! #require((row as any SSDWindowSnapshotting).windowSnapshot())
+        // 24 tokens written into a 16-slot ring ⇒ the window is [8, 24).
+        #expect(snapshot.keys.dim(2) == sidecarWindow)
+        #expect(snapshot.base == 24 - sidecarWindow)
+        #expect(maxAbs(snapshot.keys, chunk[.ellipsis, 8 ..< 24, 0...]) == 0)
+    }
+
+    // MARK: Economics
+
+    @Test("gemma-4 sidecar economics: 10:1 sliding:full, 200 MiB read, 140 ms planned")
+    func gemmaEconomics() throws {
+        let sliding = CBv2LayerKind(
+            attention: .slidingWindow(1024), headDim: 256, kvHeads: 8, queryHeads: 16)
+        let full = CBv2LayerKind(attention: .full, headDim: 512, kvHeads: 2, queryHeads: 16)
+        let gemma = (0 ..< 5).flatMap { _ in Array(repeating: sliding, count: 5) + [full] }
+        let geometry = try #require(
+            SSDWindowSidecarGeometry.derive(layerKinds: gemma, blockSize: 256))
+        #expect(geometry.layers.count == 25)
+        #expect(geometry.blocksPerWindow == 4)
+
+        // One sidecar = 50 MiB; the full-attention block it rides beside is
+        // 5 MiB. That 10:1 is the real economics of WS-4.2 and it is a
+        // property of gemma-4's geometry (25 × 8 × 256 sliding against
+        // 5 × 2 × 512 full), not of this format.
+        let sidecarBytes = geometry.bytesPerBlock(elementSize: 2)
+        #expect(sidecarBytes == 52_428_800)
+        var fullBlockBytes = 0
+        for kind in gemma where kind.attention == .full {
+            fullBlockBytes += 2 * kind.kvHeads * 256 * kind.headDim * 2
+        }
+        #expect(fullBlockBytes == 5_242_880)
+        #expect(sidecarBytes / fullBlockBytes == 10)
+
+        // "read-terminal-four": one adoption reads four sidecars = 200 MiB,
+        // which the conservative 1.5 GB/s planner costs at 140 ms against the
+        // 1,000 ms stage budget, and which fits the 1 GiB per-adoption cap
+        // with room for 164 blocks (41,984 tokens) of prefix.
+        #expect(geometry.windowReadBytes(elementSize: 2) == 209_715_200)
+        #expect(
+            SSDPrefixCachePolicy.estimatedStageMillis(
+                bytes: geometry.windowReadBytes(elementSize: 2)) == 140)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillis(
+            bytes: geometry.windowReadBytes(elementSize: 2))
+            < SSDPrefixCachePolicy.defaultMaxStageMillis)
+        let blocksLeft =
+            (SSDPrefixCachePolicy.defaultMaxStageBytes
+                - geometry.windowReadBytes(elementSize: 2)) / fullBlockBytes
+        #expect(blocksLeft == 164)
+    }
+
+    @Test("staging a window costs the sidecar read and nothing structural")
+    func stageDelta() async throws {
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let tokens = Array(0 ..< tokenCount)
+
+        func stageMs(withSidecar: Bool) async throws -> Double {
+            let dir = tempDir("sidecar-delta-\(withSidecar)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let geometry = withSidecar ? sidecarGeometry() : nil
+            let cache = makeSidecarCache(
+                dir: dir, kek: kek, clock: clock, geometry: geometry)
+            defer { cache.close() }
+            cache.donate(
+                requestID: nil, tokens: tokens,
+                snapshots: sidecarSnapshots(tokenCount: tokenCount),
+                windowSnapshots: sidecarWindows(base: 48),
+                layerKinds: sidecarLayerKinds, cacheSalt: nil)
+            #expect(await waitForIndexCount(cache, atLeast: withSidecar ? 10 : 8))
+            await cache.waitForWritesForTesting()
+            let staged = await cache.stage(
+                requestID: "req-delta", promptTokens: tokens + [7], cacheScope: "")
+            #expect(staged.staged)
+            #expect((cache.stagedWindow(requestID: "req-delta") != nil) == withSidecar)
+            return staged.stageMs
+        }
+
+        let cold = try await stageMs(withSidecar: false)
+        let warm = try await stageMs(withSidecar: true)
+        // The sidecar read is bounded work on the same pipeline, not a new
+        // phase: it must stay well inside the stage deadline.
+        #expect(warm < Double(SSDPrefixCachePolicy.defaultMaxStageMillis))
+        #expect(cold < Double(SSDPrefixCachePolicy.defaultMaxStageMillis))
+    }
+}

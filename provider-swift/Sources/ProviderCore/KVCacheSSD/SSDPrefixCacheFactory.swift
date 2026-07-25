@@ -248,12 +248,27 @@ enum SSDPrefixCacheFactory {
             #endif
             return nil
         }
+        // WS-4.2: sidecar geometry is nil unless the operator knob is on AND
+        // the layout tiles into whole-block sidecars. When it is non-nil the
+        // residency is `.restoredFromSidecar`, which collapses the replay
+        // bound — and, through it, the long-hybrid benefit floor.
+        let windowResidency = PrefixCachePolicy.windowResidency(
+            layerKinds: layerKinds,
+            backendSelection: prefixReuseCapability.backend == .pagedFP16 ? .paged : .contiguous,
+            environment: environment)
+        let windowSidecar = windowResidency == .restoredFromSidecar
+            ? SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize)
+            : nil
+        let adoptionBoundTokens = PrefixCachePolicy.adoptionBoundTokens(
+            capability: prefixReuseCapability,
+            layerKinds: layerKinds,
+            windowResidency: windowResidency)
         let config = SSDPrefixCache.Config(
             modelId: modelId,
             promptContractID: promptContractID,
             weightHash: weightHash,
             blockSize: blockSize,
-            adoptionBoundTokens: prefixReuseCapability.conservativeReplayBoundTokens,
+            adoptionBoundTokens: adoptionBoundTokens,
             nominalFullKVBytesPerToken: prefixReuseCapability.fullKVBytesPerToken,
             layoutEpoch: layoutEpoch,
             epochStore: epochStore,
@@ -262,9 +277,11 @@ enum SSDPrefixCacheFactory {
             ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: environment),
             minEffectiveTokens: PrefixCachePolicy.minEffectiveTokens(
                 capability: prefixReuseCapability,
+                adoptionBoundTokens: adoptionBoundTokens,
                 environment: environment),
             maxStageBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
+            windowSidecar: windowSidecar,
             nowSeconds: { Int64(Date().timeIntervalSince1970) })
         let cache = SSDPrefixCache(
             config: config,

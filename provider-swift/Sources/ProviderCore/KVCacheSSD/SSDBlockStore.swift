@@ -32,6 +32,13 @@
 // block shape descriptors (architecture — public), and createdAt. NO raw
 // chain hashes, NO token ids/counts, NO scope/salt values, NO request ids.
 //
+// The WS-4.2 windowed sidecar (`SSDWindowSidecar`) is the same file format
+// with the same crypto: only its filename tag domain and three optional
+// metadata fields (`windowKind` / `windowBase` / `windowTokens`) differ, and
+// its chunks carry sliding rather than full layers. Those fields add one
+// architectural fact — the sliding window size, already public — and one
+// position, both of which the block shape descriptors already imply.
+//
 // v1 `.darkbloom-kv` files are never read by this tier (different
 // subtree + suffix; they die with the legacy engine's deletion pass).
 
@@ -99,11 +106,23 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
     let chunks: [SSDBlockChunkDescriptor]
     let chunkPlaintextSizes: [Int]
     let createdAt: Int64
+    /// WS-4.2 windowed sidecar discriminator (`SSDWindowSidecar.kind`), nil
+    /// on an ordinary full-attention block. Optional so a v0.7.5 block file
+    /// still decodes AND still re-encodes byte-identically: the synthesized
+    /// encoder omits nil, so the canonical-JSON AAD of every pre-existing
+    /// file is unchanged and no layout epoch bump is owed.
+    let windowKind: String?
+    /// Absolute position of this sidecar's first token. Authenticated (it is
+    /// in the GCM AAD), so a file cannot be replayed at another boundary.
+    let windowBase: Int?
+    /// Token count this sidecar carries (== `blockSize`).
+    let windowTokens: Int?
 
     init(
         lookupTag: String, weightHash: String, layoutEpoch: String, blockSize: Int,
         layerCount: Int, chunks: [SSDBlockChunkDescriptor], chunkPlaintextSizes: [Int],
-        createdAt: Int64 = Int64(Date().timeIntervalSince1970)
+        createdAt: Int64 = Int64(Date().timeIntervalSince1970),
+        windowKind: String? = nil, windowBase: Int? = nil, windowTokens: Int? = nil
     ) {
         self.schema = "darkbloom.kv.v3"
         self.lookupTag = lookupTag
@@ -114,6 +133,9 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         self.chunks = chunks
         self.chunkPlaintextSizes = chunkPlaintextSizes
         self.createdAt = createdAt
+        self.windowKind = windowKind
+        self.windowBase = windowBase
+        self.windowTokens = windowTokens
     }
 }
 

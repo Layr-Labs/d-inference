@@ -116,6 +116,97 @@ struct PrefixCachePolicyTests {
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: []) == 0)
     }
 
+    // MARK: - Residency- and backend-aware bound (WS-4.2)
+
+    @Test("adoptionBoundTokens resolves the backend instead of hardcoding contiguous")
+    func boundFollowsBackendSelection() {
+        let gemma = kinds(sliding: 25, window: 1024, full: 5)
+        // Same numeric bound on every selection today (it is windowCount ×
+        // maxWindow, which no backend changes) — but it is now derived from
+        // the SAME resolver as `prefixReuseCapability`, so the two can never
+        // describe different backends for one slot.
+        for selection in [
+            EngineV2KVBackendSelection.auto, .contiguous, .paged,
+        ] {
+            let capability = PrefixCachePolicy.prefixReuseCapability(
+                layerKinds: gemma, backendSelection: selection)
+            #expect(
+                PrefixCachePolicy.adoptionBoundTokens(
+                    layerKinds: gemma, backendSelection: selection) == 25_600)
+            #expect(
+                PrefixCachePolicy.adoptionBoundTokens(
+                    capability: capability, layerKinds: gemma,
+                    windowResidency: .replayed) == 25_600)
+        }
+        // A killed paged slot has degraded to a contiguous row.
+        #expect(
+            PrefixCachePolicy.adoptionBoundTokens(
+                layerKinds: gemma, backendSelection: .paged, pagedKilled: true) == 25_600)
+        // The shipped default is unchanged: no argument ⇒ replayed contiguous.
+        #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma) == 25_600)
+    }
+
+    @Test("a restored window collapses the bound and, with it, the long-hybrid floor")
+    func restoredWindowCollapsesTheFloor() {
+        let gemma = kinds(sliding: 25, window: 1024, full: 5)
+        let gpt = kinds(sliding: 12, window: 128, full: 12)
+        let gemmaCapability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: gemma, backendSelection: .contiguous)
+
+        let replayed = PrefixCachePolicy.adoptionBoundTokens(
+            capability: gemmaCapability, layerKinds: gemma, windowResidency: .replayed)
+        let restored = PrefixCachePolicy.adoptionBoundTokens(
+            capability: gemmaCapability, layerKinds: gemma,
+            windowResidency: .restoredFromSidecar)
+        #expect(replayed == 25_600)
+        #expect(restored == 0)
+
+        // The 1,536 long-hybrid floor exists because saving 1,024 tokens was
+        // inside the noise of a 25,600-token replay. With no replay it does
+        // not apply, so the generic 1,024 governs. Donation floor:
+        // 25,600 + 1,536 = 27,136 ⇒ 0 + 1,024 = 1,024.
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: gemmaCapability, adoptionBoundTokens: replayed,
+            environment: [:]) == 1_536)
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: gemmaCapability, adoptionBoundTokens: restored,
+            environment: [:]) == 1_024)
+        // The environment can still only RAISE it.
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: gemmaCapability, adoptionBoundTokens: restored,
+            environment: [SSDPrefixCachePolicy.minEffectiveTokensFlag: "2048"]) == 2_048)
+
+        // gpt-oss-20b's 128-token window does not tile into 256-token blocks,
+        // so asserting residency for it must still fail closed to replay.
+        let gptCapability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: gpt, backendSelection: .contiguous)
+        #expect(PrefixCachePolicy.adoptionBoundTokens(
+            capability: gptCapability, layerKinds: gpt,
+            windowResidency: .restoredFromSidecar) == 1_536)
+    }
+
+    @Test("windowResidency is off unless the operator knob is set AND the layout tiles")
+    func residencyGate() {
+        let gemma = kinds(sliding: 25, window: 1024, full: 5)
+        let gpt = kinds(sliding: 12, window: 128, full: 12)
+        let on = [SSDPrefixCachePolicy.windowSidecarFlag: "1"]
+        for selection in [EngineV2KVBackendSelection.auto, .contiguous, .paged] {
+            #expect(
+                PrefixCachePolicy.windowResidency(
+                    layerKinds: gemma, backendSelection: selection,
+                    environment: [:]) == .replayed,
+                "default must not change the shipped floor")
+            #expect(
+                PrefixCachePolicy.windowResidency(
+                    layerKinds: gemma, backendSelection: selection,
+                    environment: on) == .restoredFromSidecar)
+            #expect(
+                PrefixCachePolicy.windowResidency(
+                    layerKinds: gpt, backendSelection: selection,
+                    environment: on) == .replayed)
+        }
+    }
+
     @Test("Gemma QAT and GPT-OSS contiguous layouts qualify for v2; paged stays cold")
     func productionHybridCapabilities() {
         let sliding128 = CBv2LayerKind(

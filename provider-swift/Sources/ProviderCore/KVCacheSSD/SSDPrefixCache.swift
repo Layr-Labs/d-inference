@@ -61,6 +61,12 @@ public struct SSDPrefixCacheStats: Sendable, Equatable {
     public var corruptDropped = 0
     public var evictions = 0
     public var ttlExpired = 0
+    /// WS-4.2. `windowSidecarsWritten` is a SUBSET of `blocksWritten` (they
+    /// share the write-behind consumer); `windowsRestored` counts adoptions
+    /// whose sliding window came off disk instead of being replayed. With no
+    /// canary fleet these two are how the sidecar is observed in the field.
+    public var windowSidecarsWritten = 0
+    public var windowsRestored = 0
     /// Index size (filled at snapshot time).
     public var entries = 0
     public var bytesOnDisk = 0
@@ -74,7 +80,8 @@ final class SSDPrefixCacheStatsBox: @unchecked Sendable {
         hits: Int = 0, misses: Int = 0, tokensSaved: Int = 0, stages: Int = 0,
         stagedBytesDelta: Int = 0, blocksWritten: Int = 0, bytesWritten: Int = 0,
         donationsDropped: Int = 0, writeRateLimited: Int = 0, corruptDropped: Int = 0,
-        evictions: Int = 0, ttlExpired: Int = 0
+        evictions: Int = 0, ttlExpired: Int = 0,
+        windowSidecarsWritten: Int = 0, windowsRestored: Int = 0
     ) {
         lock.withLock {
             stats.hits += hits
@@ -89,6 +96,8 @@ final class SSDPrefixCacheStatsBox: @unchecked Sendable {
             stats.corruptDropped += corruptDropped
             stats.evictions += evictions
             stats.ttlExpired += ttlExpired
+            stats.windowSidecarsWritten += windowSidecarsWritten
+            stats.windowsRestored += windowsRestored
         }
     }
 
@@ -129,6 +138,12 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         let minEffectiveTokens: Int
         let maxStageBytes: Int
         let maxStageMillis: Int
+        /// WS-4.2 sliding-window sidecar geometry, or nil when the feature is
+        /// off (`SSDPrefixCachePolicy.windowSidecarFlag`, default) or the
+        /// model's window does not tile into whole blocks. One field rather
+        /// than a flag plus a derivation, so the write and read paths cannot
+        /// disagree about whether this cache has sidecars.
+        let windowSidecar: SSDWindowSidecarGeometry?
         let nowSeconds: @Sendable () -> Int64
 
         init(
@@ -146,6 +161,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             minEffectiveTokens: Int,
             maxStageBytes: Int,
             maxStageMillis: Int,
+            windowSidecar: SSDWindowSidecarGeometry? = nil,
             nowSeconds: @escaping @Sendable () -> Int64
         ) {
             self.modelId = modelId
@@ -162,6 +178,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             self.minEffectiveTokens = minEffectiveTokens
             self.maxStageBytes = maxStageBytes
             self.maxStageMillis = maxStageMillis
+            self.windowSidecar = windowSidecar
             self.nowSeconds = nowSeconds
         }
     }
@@ -184,6 +201,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     private final class StagedEntry {
         let matched: Int
         let prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?]
+        /// WS-4.2: the donor's sliding window at `matched`, restored from
+        /// windowed sidecars, or nil when the adopter must replay. Indexed by
+        /// model layer, nil at every non-sliding slot — the shape WS-4.1's
+        /// `restoreWindow(keys:values:base:)` consumes.
+        let window: [SSDWindowSidecar.Window?]?
         let deviceBytes: Int
         let cacheEpoch: String?
         /// Requests attached to this entry that have not yet been balanced.
@@ -206,10 +228,12 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
         init(
             matched: Int, prefix: [(keys: MLXArray, values: MLXArray, offset: Int)?],
+            window: [SSDWindowSidecar.Window?]?,
             deviceBytes: Int, cacheEpoch: String?, firstTicket: String, reservationKey: String
         ) {
             self.matched = matched
             self.prefix = prefix
+            self.window = window
             self.deviceBytes = deviceBytes
             self.cacheEpoch = cacheEpoch
             self.openTickets = [firstTicket]
@@ -677,8 +701,15 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             return
         }
         var snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?] = []
+        var windows: [SSDWindowSidecar.Window?] = []
         snapshots.reserveCapacity(layerKinds.count)
+        windows.reserveCapacity(layerKinds.count)
         for (i, kind) in layerKinds.enumerated() {
+            // WS-4.2: sliding rows are NOT cacheable as blocks, but their ring
+            // is exactly what a windowed sidecar persists. Probed through the
+            // donor seam so contiguous and (once WS-4.1 lands) paged rows both
+            // participate without this path knowing which backend it holds.
+            windows.append((state[i] as? SSDWindowSnapshotting)?.windowSnapshot())
             guard Self.isCacheable(kind), let seq = state[i] else {
                 snapshots.append(nil)
                 continue
@@ -688,6 +719,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         donate(
             tokens: tokens,
             snapshots: snapshots,
+            windowSnapshots: windows,
             layerKinds: layerKinds,
             cacheSalt: cacheSalt,
             receiptRequestID: nil,
@@ -739,9 +771,34 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             settlement: settlement)
     }
 
+    /// Donation with an explicit sliding-window payload — the WS-4.2 entry
+    /// point for a caller that already holds the donor's per-layer window
+    /// (`PagedSequenceKV.windowSnapshot()` shape). `nil` window entries are
+    /// ignored; a sidecar is written only when EVERY storage-owning sliding
+    /// layer is present and they agree on one absolute span.
+    func donate(
+        requestID: CBv2RequestID?,
+        tokens: [Int],
+        snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?],
+        windowSnapshots: [SSDWindowSidecar.Window?],
+        layerKinds: [CBv2LayerKind],
+        cacheSalt: String?
+    ) {
+        let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
+        donate(
+            tokens: tokens,
+            snapshots: snapshots,
+            windowSnapshots: windowSnapshots,
+            layerKinds: layerKinds,
+            cacheSalt: cacheSalt,
+            receiptRequestID: requestID,
+            settlement: settlement)
+    }
+
     private func donate(
         tokens: [Int],
         snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?],
+        windowSnapshots: [SSDWindowSidecar.Window?]? = nil,
         layerKinds: [CBv2LayerKind],
         cacheSalt: String?,
         receiptRequestID: CBv2RequestID?,
@@ -891,14 +948,34 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             SSDBlockStore.setAttributesIfSafe(
                 [.modificationDate: touchDate], at: url, under: config.root)
         }
+        // WS-4.2 sidecars are claimed here, BEFORE the all-deduped early
+        // return: a repeat donation of an already-durable prefix still ends at
+        // a different absolute offset, so it covers block boundaries no
+        // earlier donation could. Skipping it would leave permanent holes in
+        // the window tiling.
+        var blocks: [SSDBlockWrite] = []
+        var totalBytes = 0
+        appendWindowSidecars(
+            into: &blocks, totalBytes: &totalBytes,
+            windowSnapshots: windowSnapshots, layerKinds: layerKinds,
+            chainHashes: hashes, cacheSalt: salt,
+            blockCount: min(blockCount, maxPersistBlocks), now: now)
+
         guard !newBlockIndices.isEmpty else {
             settlement.settle(skippedInFlight ? .alreadyQueued : .alreadyDurable)
             // Every block is already durable or owned by an earlier queued
             // write. Still pass correlated donations through the serial queue
             // so prior writes and maintenance settle before a ready receipt.
-            if onDurable != nil {
-                _ = writeBehind.submit(SSDDonationJob(
-                    blocks: [], totalBytes: 0, onDurable: onDurable))
+            // Already settled above, so the job's outcome is a no-op.
+            if onDurable != nil || !blocks.isEmpty {
+                let result = writeBehind.submitWithResult(SSDDonationJob(
+                    blocks: blocks, totalBytes: totalBytes, onDurable: onDurable))
+                if result != .accepted, !blocks.isEmpty {
+                    lock.withLock {
+                        for block in blocks { inFlightWrites.remove(block.tag16) }
+                    }
+                    statsBox.add(donationsDropped: blocks.count)
+                }
             }
             return
         }
@@ -915,14 +992,17 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         guard writeBehind.mightAcceptWrite(bytes: perBlockBytes) else {
             lock.withLock {
                 for i in newBlockIndices { inFlightWrites.remove(tags16[i]) }
+                // Sidecars claimed above go back too — the bucket is drained
+                // for everything, and a stranded tag can never be rewritten.
+                for block in blocks { inFlightWrites.remove(block.tag16) }
             }
             // Attribute to the write cap (same accounting as the consumer's
             // per-block tryConsume drop) so `rateLimited` stats stay
             // truthful now that this pre-check intercepts most
             // cap-exhausted donations.
             statsBox.add(
-                donationsDropped: newBlockIndices.count,
-                writeRateLimited: newBlockIndices.count)
+                donationsDropped: newBlockIndices.count + blocks.count,
+                writeRateLimited: newBlockIndices.count + blocks.count)
             settlement.settle(.writeRateLimited)
             return
         }
@@ -930,8 +1010,6 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // Per-block extraction: device slice → eval → compact host Data in
         // engine-native [B, kvHeads, block, headDim] layout. Device arrays
         // are dropped as soon as the bytes are copied out.
-        var blocks: [SSDBlockWrite] = []
-        var totalBytes = 0
         for b in newBlockIndices {
             let t0 = b * config.blockSize
             let t1 = t0 + config.blockSize
@@ -989,6 +1067,86 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             statsBox.add(donationsDropped: blocks.count)
             settlement.settle(submitResult == .closed ? .cacheClosed : .writeQueueFull)
             return
+        }
+    }
+
+    /// WS-4.2: claim and extract the windowed sidecars this donation covers,
+    /// appending them to the same write-behind job as the blocks.
+    ///
+    /// Coverage is bounded by physics, not policy: a donating row's ring holds
+    /// exactly the last `W` positions ending at its own absolute offset, which
+    /// is a mid-block position for all but 1 in `blockSize` requests. So one
+    /// donation covers `W/blockSize − 1` whole blocks in the general case and
+    /// `W/blockSize` when it happens to stop on a boundary. Successive
+    /// donations end at different offsets and their covered ranges TILE, which
+    /// is what eventually completes a boundary's window. A boundary whose
+    /// tiling is incomplete is simply not restorable, and the adopter replays.
+    private func appendWindowSidecars(
+        into blocks: inout [SSDBlockWrite],
+        totalBytes: inout Int,
+        windowSnapshots: [SSDWindowSidecar.Window?]?,
+        layerKinds: [CBv2LayerKind],
+        chainHashes: [Data],
+        cacheSalt: String,
+        blockCount: Int,
+        now: Int64
+    ) {
+        guard let geometry = config.windowSidecar,
+            let windows = windowSnapshots,
+            let span = SSDWindowSidecar.span(windows: windows, geometry: geometry)
+        else { return }
+        let covered = geometry.coveredBlocks(
+            base: span.base, tokens: span.tokens,
+            blockCount: min(blockCount, chainHashes.count))
+        guard !covered.isEmpty else { return }
+
+        var claimed: [(block: Int, tag16: Data, fullTag: Data)] = []
+        lock.withLock {
+            guard !closed else { return }
+            for b in covered {
+                let full = lookupKeys.windowTag(chainHash: chainHashes[b], cacheSalt: cacheSalt)
+                let tag16 = full.prefix(SSDLookupKeys.truncatedTagLength)
+                if index.contains(tag16: tag16) || inFlightWrites.contains(tag16) { continue }
+                inFlightWrites.insert(tag16)
+                claimed.append((b, tag16, full))
+            }
+        }
+        guard !claimed.isEmpty else { return }
+
+        var written: Set<Data> = []
+        for entry in claimed {
+            guard let payload = SSDWindowSidecar.extract(
+                blockIndex: entry.block, windows: windows,
+                geometry: geometry, base: span.base)
+            else { continue }
+            let bytes = payload.sizes.reduce(0, +)
+            guard bytes > 0 else { continue }
+            let metadata = SSDBlockMetadata(
+                lookupTag: SSDLookupKeys.hex(entry.fullTag),
+                weightHash: config.weightHash,
+                layoutEpoch: config.layoutEpoch,
+                blockSize: config.blockSize,
+                layerCount: layerKinds.count,
+                chunks: payload.descriptors,
+                chunkPlaintextSizes: payload.sizes,
+                createdAt: now,
+                windowKind: SSDWindowSidecar.kind,
+                windowBase: entry.block * config.blockSize,
+                windowTokens: config.blockSize)
+            blocks.append(
+                SSDBlockWrite(
+                    tag16: entry.tag16, tag16Hex: SSDLookupKeys.hex(entry.tag16),
+                    metadata: metadata, chunks: payload.chunks, plaintextBytes: bytes))
+            totalBytes += bytes
+            written.insert(entry.tag16)
+        }
+        guard written.count != claimed.count else { return }
+        // An extraction that failed must give its tag back, or the block can
+        // never be rewritten for the life of the process.
+        lock.withLock {
+            for entry in claimed where !written.contains(entry.tag16) {
+                inFlightWrites.remove(entry.tag16)
+            }
         }
     }
 
@@ -1069,6 +1227,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             fullTags.append(full)
             tags16.append(full.prefix(SSDLookupKeys.truncatedTagLength))
         }
+        // WS-4.2: the terminal-four sidecars that would restore the donor's
+        // window at each candidate boundary. Probed inside the trim loop so
+        // their bytes are inside the stage byte/time caps rather than added
+        // on top of a run those caps already saturated.
+        let windowGeometry = config.windowSidecar
 
         // Longest contiguous run, trimmed to the stage caps (bytes/time)
         // while it still clears the benefit floor.
@@ -1076,6 +1239,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         guard k > 0 else { return finish(.missAbsent) }
         var runBytes = 0
         var runSizes: [Int] = []
+        var windowTags: [Data] = []
         while k > 0 {
             let matched = k * config.blockSize
             let effective = matched - min(config.adoptionBoundTokens, matched)
@@ -1091,6 +1255,20 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
                 guard !overflow else { return finish(.skippedCapacity) }
                 runBytes = sum
+            }
+            windowTags = windowSidecarTags(
+                geometry: windowGeometry, chainHashes: hashes, cacheSalt: salt, blocks: k)
+            if let windowSizes = index.fileBytes(tags16: windowTags[...]), !windowTags.isEmpty {
+                for size in windowSizes {
+                    let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
+                    guard !overflow else { return finish(.skippedCapacity) }
+                    runBytes = sum
+                }
+            } else {
+                // Incomplete tiling (or a raced eviction): a PARTIAL window is
+                // not exact, so the whole window is dropped and the adopter
+                // replays. Never shortens the block run.
+                windowTags = []
             }
             if runBytes <= config.maxStageBytes,
                 SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
@@ -1239,8 +1417,30 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             await releaseReservation(reservationKey)
             return finish(.skippedPolicy)
         }
+        // WS-4.2: restore the donor's sliding window from the terminal-four
+        // sidecars whose bytes the trim loop already budgeted. Attempted only
+        // on an unshortened run — a corruption-shortened boundary has a
+        // different tiling than the one accounted for, and a PARTIAL window is
+        // not exact. Any failure drops the window ALONE: the block adoption
+        // stands and the adopter replays, exactly as it does today.
+        var restoredWindow: [SSDWindowSidecar.Window?]?
+        if let geometry = windowGeometry, usableBlocks == k, !windowTags.isEmpty {
+            restoredWindow = readWindowSidecars(
+                geometry: geometry, chainHashes: hashes, cacheSalt: salt, blocks: usableBlocks)
+        }
         var exactDeviceBytes = 0
         for entry in prefix {
+            guard let entry else { continue }
+            let (entryBytes, entryOverflow) = entry.keys.nbytes.addingReportingOverflow(
+                entry.values.nbytes)
+            let (total, totalOverflow) = exactDeviceBytes.addingReportingOverflow(entryBytes)
+            guard !entryOverflow, !totalOverflow else {
+                await releaseReservation(reservationKey)
+                return finish(.skippedCapacity)
+            }
+            exactDeviceBytes = total
+        }
+        for entry in restoredWindow ?? [] {
             guard let entry else { continue }
             let (entryBytes, entryOverflow) = entry.keys.nbytes.addingReportingOverflow(
                 entry.values.nbytes)
@@ -1313,10 +1513,13 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 return .attached(deviceBytes: existing.deviceBytes)
             }
             stagedEntries[usedTag] = StagedEntry(
-                matched: matched, prefix: prefix, deviceBytes: exactDeviceBytes,
+                matched: matched, prefix: prefix, window: restoredWindow,
+                deviceBytes: exactDeviceBytes,
                 cacheEpoch: stageEpoch, firstTicket: requestID, reservationKey: reservationKey)
             tickets[requestID] = usedTag
-            statsBox.add(stages: 1, stagedBytesDelta: exactDeviceBytes)
+            statsBox.add(
+                stages: 1, stagedBytesDelta: exactDeviceBytes,
+                windowsRestored: restoredWindow == nil ? 0 : 1)
             return .created
         }
         switch resolution {
@@ -1335,13 +1538,17 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             break  // reservation is now owned by the staged entry
         }
         // Sliding TTL: bump index recency AND file mtimes so warmth
-        // survives a restart (the scan seeds lastAccess from mtime).
+        // survives a restart (the scan seeds lastAccess from mtime). The
+        // window sidecars ride the same bump — letting them expire under a
+        // still-warm block run would silently re-arm the 25,600-token replay
+        // and pay their write wear again on the next donation.
         let now = config.nowSeconds()
         index.touch(tags16: tags16.prefix(usableBlocks), now: now)
+        index.touch(tags16: windowTags, now: now)
         let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
-        for i in 0 ..< usableBlocks {
+        for tag16 in tags16.prefix(usableBlocks) + windowTags {
             let url = SSDBlockStore.fileURL(
-                root: config.root, tag16Hex: SSDLookupKeys.hex(tags16[i]))
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
             SSDBlockStore.setAttributesIfSafe(
                 [.modificationDate: touchDate], at: url, under: config.root)
         }
@@ -1359,6 +1566,92 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             requestID: ticketKey(requestID),
             promptTokens: promptTokens,
             cacheScope: cacheScope)
+    }
+
+    /// Truncated sidecar tags tiling the window that ends at block boundary
+    /// `blocks`, oldest first. Empty when the boundary is shorter than one
+    /// window — there is nothing to restore below `W` tokens, because the row
+    /// legitimately has no older entries and cold prefill is already exact.
+    private func windowSidecarTags(
+        geometry: SSDWindowSidecarGeometry?,
+        chainHashes: [Data],
+        cacheSalt: String,
+        blocks: Int
+    ) -> [Data] {
+        guard let geometry, blocks >= geometry.blocksPerWindow, blocks <= chainHashes.count
+        else { return [] }
+        return (blocks - geometry.blocksPerWindow ..< blocks).map {
+            lookupKeys.windowTag16(chainHash: chainHashes[$0], cacheSalt: cacheSalt)
+        }
+    }
+
+    /// Read, authenticate and reassemble the sliding window that ends at
+    /// block boundary `blocks`. nil ⇒ the adopter replays.
+    ///
+    /// An unreadable sidecar is deleted and de-indexed exactly like an
+    /// unreadable block, but it never shortens the block run: the sidecar is
+    /// an accelerator, and losing it costs replay, not correctness.
+    private func readWindowSidecars(
+        geometry: SSDWindowSidecarGeometry,
+        chainHashes: [Data],
+        cacheSalt: String,
+        blocks: Int
+    ) -> [SSDWindowSidecar.Window?]? {
+        let first = blocks - geometry.blocksPerWindow
+        guard first >= 0, blocks <= chainHashes.count else { return nil }
+        var payloads: [(metadata: SSDBlockMetadata, chunks: [Data])] = []
+        payloads.reserveCapacity(geometry.blocksPerWindow)
+        for b in first ..< blocks {
+            let fullTag = lookupKeys.windowTag(chainHash: chainHashes[b], cacheSalt: cacheSalt)
+            let tag16 = fullTag.prefix(SSDLookupKeys.truncatedTagLength)
+            let url = SSDBlockStore.fileURL(
+                root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+            do {
+                let (metadata, chunks) = try SSDBlockStore.read(from: url, kekKey: kekKey)
+                guard metadata.weightHash == config.weightHash,
+                    metadata.layoutEpoch == config.layoutEpoch,
+                    metadata.lookupTag == SSDLookupKeys.hex(fullTag),
+                    SSDWindowSidecar.isBound(
+                        metadata,
+                        expectedBase: b * config.blockSize,
+                        geometry: geometry)
+                else {
+                    throw SSDBlockStoreError.bindingMismatch(
+                        "window sidecar weightHash/layoutEpoch/tag/base binding")
+                }
+                payloads.append((metadata, chunks))
+            } catch {
+                statsBox.add(corruptDropped: 1)
+                _ = performDestructiveChange {
+                    _ = SSDBlockStore.removeItemIfSafe(at: url, under: config.root)
+                    index.remove(tag16: tag16)
+                }
+                #if canImport(os)
+                Self.logger.warning(
+                    "ssd prefix cache (\(self.config.modelId, privacy: .public)): dropped unreadable window sidecar (\(String(describing: error), privacy: .public)) — replay fallback")
+                #endif
+                return nil
+            }
+        }
+        return SSDWindowSidecar.rebuildWindow(
+            blocks: payloads,
+            geometry: geometry,
+            base: blocks * config.blockSize - geometry.windowTokens,
+            dtypeByName: Self.dtypeByName)
+    }
+
+    /// WS-4.2 adoption seam: the donor's sliding window staged for
+    /// `requestID`, indexed by model layer. nil ⇒ nothing was restored and the
+    /// adopter must replay. Consumed by `restoreWindow(keys:values:base:)`.
+    func stagedWindow(requestID: String) -> [SSDWindowSidecar.Window?]? {
+        lock.withLock {
+            guard let tag = tickets[requestID], let staged = stagedEntries[tag] else { return nil }
+            return staged.window
+        }
+    }
+
+    func stagedWindow(requestID: CBv2RequestID) -> [SSDWindowSidecar.Window?]? {
+        stagedWindow(requestID: ticketKey(requestID))
     }
 
     /// Bridge backstop: release a request's staging ticket on every

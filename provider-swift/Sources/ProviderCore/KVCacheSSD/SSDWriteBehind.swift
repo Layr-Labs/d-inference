@@ -332,11 +332,14 @@ final class SSDWriteBehind: @unchecked Sendable {
                 continue
             }
             let fileBytes: Int
+            let sidecar = block.metadata.windowKind == nil ? 0 : 1
             do {
                 if let writeBlock = config.writeBlock {
                     fileBytes = try writeBlock(block, url)
                     index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
-                    stats.add(blocksWritten: 1, bytesWritten: fileBytes)
+                    stats.add(
+                        blocksWritten: 1, bytesWritten: fileBytes,
+                        windowSidecarsWritten: sidecar)
                     durableWriteSucceeded = true
                     continue
                 }
@@ -359,7 +362,8 @@ final class SSDWriteBehind: @unchecked Sendable {
             }
             // Index LAST, after the durable rename (spec §3.2 step 7).
             index.insert(tag16: block.tag16, fileBytes: fileBytes, lastAccess: now)
-            stats.add(blocksWritten: 1, bytesWritten: fileBytes)
+            stats.add(
+                blocksWritten: 1, bytesWritten: fileBytes, windowSidecarsWritten: sidecar)
             durableWriteSucceeded = true
         }
     }

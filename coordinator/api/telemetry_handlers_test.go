@@ -197,6 +197,10 @@ func TestTelemetryIngest_UnknownEnumsCoerced(t *testing.T) {
 	}
 }
 
+// TestTelemetryFieldAllowlistHasKnownKeys is a Go-side existence spot-check only.
+// Cross-language agreement between the Go, Swift, and TypeScript allowlists is
+// enforced by TestTelemetryAllowlistThreeWayParity in
+// telemetry_allowlist_parity_test.go.
 func TestTelemetryFieldAllowlistHasKnownKeys(t *testing.T) {
 	for _, k := range []string{"component", "model", "exit_code", "reason", "duration_ms", "boot_macos_major", "boot_sip_status"} {
 		if _, ok := telemetryFieldAllowlist[k]; !ok {

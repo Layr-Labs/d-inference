@@ -38,6 +38,13 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Sweep: maximum decode batch size; measures B=1...N (default 6).")
     var maxBatch = 6
 
+    @Option(name: .long, help: """
+        Sweep: explicit comma-separated decode batch sizes (e.g. 1,2,4,8). \
+        When present this replaces the B=1...--max-batch ladder, so a release \
+        gate measures only the cells it needs instead of the whole ramp.
+        """)
+    var batchSizes: String?
+
     @Option(name: .long, help: "Sweep: decode tokens generated per sequence (default 64).")
     var decodeTokens = ThroughputSweep.defaultDecodeTokens
 
@@ -49,6 +56,14 @@ struct Benchmark: AsyncParsableCommand {
         Each repetition emits its own decode sample so callers can take a median.
         """)
     var decodeIterations = ThroughputSweep.defaultDecodeIterations
+
+    @Option(name: .long, help: """
+        Sweep: KV backend the decode engine is built with — auto|contiguous|paged \
+        (default auto, which resolves to contiguous today). A paged selection can \
+        still fall back to contiguous (fleet kill switch, kernel preflight, pool \
+        capacity); the backend that actually served is recorded in the report notes.
+        """)
+    var kvBackend = "auto"
 
     @Flag(name: .long, help: """
         Run the cold-prefill TTFT benchmark through the production \

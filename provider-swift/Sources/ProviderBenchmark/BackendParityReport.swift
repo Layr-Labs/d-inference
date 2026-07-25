@@ -556,6 +556,24 @@ public enum BackendParityCriteria {
             candidate.label: mtpSummary(cand),
         ]
 
+        // The engine refused to build an MTP driver on BOTH arms for the SAME
+        // reason. That is a property of the model/drafter pair or the process
+        // config, identical on either backend, so it tells us nothing about
+        // paged-vs-contiguous parity and must not be booked as a paged
+        // regression. One arm refusing while the other builds IS a backend
+        // finding and falls through to the FAIL below.
+        if !base.driverConstructed, !cand.driverConstructed,
+            base.inactiveReason == cand.inactiveReason
+        {
+            return .init(
+                id: id, title: title, verdict: .unavailable,
+                detail: "no MTP driver was constructed on either backend"
+                    + (base.inactiveReason.map { " (\($0))" } ?? "")
+                    + " — the drafter never engaged on either side, so there is no "
+                    + "cross-backend MTP behaviour to compare",
+                measurements: measurements)
+        }
+
         // Drafts-produced comes FIRST. A no-op drafter emits the target's own
         // tokens, so the token comparison below would pass on nothing.
         var inert: [String] = []
@@ -581,9 +599,22 @@ public enum BackendParityCriteria {
         if let mismatch = rowMismatch(baseline: base.rows, candidate: cand.rows) {
             var failed = measurements
             failed["divergence"] = mismatch
+            // Attribution matters. MTP verification emits the TARGET's own
+            // argmaxes, so if plain greedy decode already differs between
+            // these backends the MTP rows inherit that difference and MTP is
+            // not the defect. Still a FAIL — the bar is token equality — but
+            // reported against the right subsystem.
+            var detail = "MTP output diverged: \(mismatch)"
+            if let inherited = rowMismatch(
+                baseline: baseline.rows, candidate: candidate.rows)
+            {
+                failed["inheritedFromBaseDecode"] = inherited
+                detail += " — NOTE: plain greedy decode already diverges between these "
+                    + "backends, so this is inherited from the base decode path rather "
+                    + "than introduced by MTP; fix token_exactness first"
+            }
             return .init(
-                id: id, title: title, verdict: .fail,
-                detail: "MTP output diverged: \(mismatch)",
+                id: id, title: title, verdict: .fail, detail: detail,
                 measurements: failed)
         }
 
@@ -768,8 +799,12 @@ public enum BackendParityCriteria {
 
     // MARK: - Comparators
 
-    /// First per-row divergence between two token-id streams, or nil when
+    /// Every per-row divergence between two token-id streams, or nil when
     /// every row matches exactly (ids AND finish reason).
+    ///
+    /// All rows, not just the first: "1 of 3 rows drifted at token 1" and
+    /// "3 of 3 rows drifted at token 0" are very different bugs, and a
+    /// first-match-wins message cannot tell them apart.
     static func rowMismatch(
         baseline: [BackendParityObservation.Row],
         candidate: [BackendParityObservation.Row]
@@ -777,6 +812,7 @@ public enum BackendParityCriteria {
         guard baseline.count == candidate.count else {
             return "row count differs: \(baseline.count) vs \(candidate.count)"
         }
+        var diverged: [String] = []
         for (base, cand) in zip(baseline, candidate) {
             guard base.prompt == cand.prompt else {
                 return "prompt order differs: '\(base.prompt)' vs '\(cand.prompt)'"
@@ -784,15 +820,18 @@ public enum BackendParityCriteria {
             if let index = firstDivergence(base.tokens, cand.tokens) {
                 let lhs = base.tokens.count > index ? "\(base.tokens[index])" : "<end>"
                 let rhs = cand.tokens.count > index ? "\(cand.tokens[index])" : "<end>"
-                return "prompt '\(base.prompt)' token \(index): \(lhs) vs \(rhs) "
-                    + "(lengths \(base.tokens.count) vs \(cand.tokens.count))"
-            }
-            if base.finishReason != cand.finishReason {
-                return "prompt '\(base.prompt)' finish reason: "
-                    + "\(base.finishReason) vs \(cand.finishReason)"
+                diverged.append(
+                    "prompt '\(base.prompt)' token \(index): \(lhs) vs \(rhs) "
+                        + "(lengths \(base.tokens.count) vs \(cand.tokens.count))")
+            } else if base.finishReason != cand.finishReason {
+                diverged.append(
+                    "prompt '\(base.prompt)' finish reason: "
+                        + "\(base.finishReason) vs \(cand.finishReason)")
             }
         }
-        return nil
+        guard !diverged.isEmpty else { return nil }
+        return "\(diverged.count) of \(baseline.count) rows diverged — "
+            + diverged.joined(separator: "; ")
     }
 
     /// Index of the first differing element, or of the end of the shorter

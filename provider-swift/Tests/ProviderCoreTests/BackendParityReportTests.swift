@@ -322,6 +322,43 @@ struct BackendParityReportTests {
         #expect(!roundsOnly.producedDrafts)
     }
 
+    @Test("a driver refused on BOTH backends for the same reason is UNAVAILABLE")
+    func pairLevelMTPRefusalIsUnavailable() {
+        // `CBv2MTPRoundDriver.build` returning nil identically on both arms is
+        // a model/drafter-pair or process-config fact, not a paged regression.
+        // Booking it as FAIL would blame the backend for the pairing.
+        let reason = "model/drafter pair cannot prove matching MTP target identity"
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [row("a", [1, 2, 3])],
+                mtp: BackendParityObservation.MTP(
+                    rows: [row("a", [1, 2, 3])],
+                    driverConstructed: false,
+                    inactiveReason: reason))
+        }
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("no MTP driver was constructed on either backend"))
+        #expect(result.detail.contains(reason))
+    }
+
+    @Test("a driver refused on ONE backend only is a FAIL — that IS a parity gap")
+    func oneSidedMTPRefusalFails() {
+        let refusedOnPaged = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: baseline.mtp?.rows ?? [],
+                driverConstructed: false,
+                inactiveReason: "paged backend rejected the drafter"))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: refusedOnPaged)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("produced no drafts on paged"))
+    }
+
     @Test("a missing assistant is UNAVAILABLE, not a failure")
     func missingDrafterIsUnavailable() {
         let noAssistant = BackendParityObservation(
@@ -343,6 +380,42 @@ struct BackendParityReportTests {
             baseline: baseline, candidate: none)
         #expect(result.verdict == .unavailable)
         #expect(result.detail.contains("no drafter supplied"))
+    }
+
+    @Test("an MTP divergence that the base decode already has is attributed to the base")
+    func mtpDivergenceInheritedFromBaseDecodeIsLabelled() {
+        // MTP verification emits the target's own argmaxes, so when plain
+        // greedy decode already differs the MTP rows inherit it. Still a FAIL,
+        // but blaming MTP would send someone to the wrong subsystem.
+        let driftedRows = [row("a", [1, 2, 9]), row("b", [4, 5])]
+        let drifted = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: driftedRows,
+            mtp: BackendParityObservation.MTP(
+                rows: driftedRows,
+                driverConstructed: true, rounds: 5, draftedTokens: 5, acceptedTokens: 3))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: drifted)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("inherited from the base decode path"))
+        #expect(result.detail.contains("fix token_exactness first"))
+        #expect(result.measurements["inheritedFromBaseDecode"] != nil)
+    }
+
+    @Test("an MTP-only divergence is NOT labelled as inherited")
+    func mtpOnlyDivergenceIsNotLabelledInherited() {
+        // Base decode agrees; only the MTP rows differ. That IS an MTP defect.
+        let mtpOnly = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: baseline.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: [row("a", [1, 2, 9]), row("b", [4, 5])],
+                driverConstructed: true, rounds: 5, draftedTokens: 5, acceptedTokens: 3))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: mtpOnly)
+        #expect(result.verdict == .fail)
+        #expect(!result.detail.contains("inherited"))
+        #expect(result.measurements["inheritedFromBaseDecode"] == nil)
     }
 
     @Test("MTP passes only when both arms drafted AND their token ids match")

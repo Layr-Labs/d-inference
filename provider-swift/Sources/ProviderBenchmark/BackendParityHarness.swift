@@ -106,26 +106,73 @@ public enum BackendParityHarness {
                 from: modelDirectory, using: LocalTokenizerLoader())
         }
 
+        // The SERVING model is resolved EXACTLY ONCE and reused by every
+        // engine build and by the drafter.
+        //
+        // This is not an optimization. For a VLM checkpoint
+        // `benchmarkServingModel` runs `EngineV2VLMTextExtraction`, which
+        // returns a NEW model object on each call. Calling it per engine bound
+        // the drafter to one instance and every engine to another, and
+        // `CBv2MTPRoundDriver.build` could then not prove target identity — it
+        // returned nil and the run reported MTP inert on BOTH backends for a
+        // reason that was entirely the harness's. Resolving once also keeps
+        // the two arms on literally the same weights, so a token difference
+        // can only be the backend.
         struct Facts: @unchecked Sendable {
             let weightBytes: Int
             let eosTokenIds: Set<Int>
             let prompts: [(name: String, tokens: [Int])]
             let seedTokens: [Int]
+            let serving: ServingModel
         }
-        let facts = await container.perform { ctx -> Facts in
+        let facts = try await container.perform { ctx -> Facts in
             let weightBytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
             let prompts = parityPrompts.map { text in
                 (name: shortName(text), tokens: ctx.tokenizer.encode(text: text))
             }
             let seed = ctx.tokenizer.encode(
                 text: ThroughputSweep.seedText, addSpecialTokens: false)
+            let servingModel = try EngineV2Factory.benchmarkServingModel(
+                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+
+            // Both halves of the packed-prefill gate are consulted by the
+            // engine loop; only the model half is publicly readable, so read
+            // it off the real serving model rather than assuming it.
+            let packedClaim =
+                (servingModel as? CBv2LanguageModelPrefillForwardable)?
+                .cbv2SupportsPackedPrefill ?? false
+            let embeddable = servingModel as? CBv2EmbeddingForwardable
+            let visionClaim = embeddable?.supportsVisionSpanPrefill ?? false
+
+            // Build the span embedding through the model itself so it carries
+            // the model's own hidden size and dtype. A hand-rolled zeros array
+            // would probe the shape checker, not the span path.
+            var spanEmbedding: MLXArray?
+            if visionClaim, let embeddable, configuration.visionSpanTokens > 0 {
+                let ids = MLXArray(
+                    Array(repeating: Int32(0), count: configuration.visionSpanTokens)
+                ).reshaped([1, configuration.visionSpanTokens])
+                let embedded = embeddable.scaledInputEmbeddings(ids)
+                eval(embedded)
+                spanEmbedding = embedded
+            }
             return Facts(
                 weightBytes: weightBytes,
                 eosTokenIds: ctx.configuration.eosTokenIds,
                 prompts: prompts,
-                seedTokens: seed.isEmpty ? [0] : seed)
+                seedTokens: seed.isEmpty ? [0] : seed,
+                serving: ServingModel(
+                    model: servingModel,
+                    tokenizer: ctx.tokenizer,
+                    claimsPackedPrefill: packedClaim,
+                    claimsVisionSpans: visionClaim,
+                    typeName: "\(type(of: servingModel))",
+                    spanEmbedding: spanEmbedding))
         }
         log("  weights: \(String(format: "%.2f", Double(facts.weightBytes) / 1e9)) GB")
+        log("  serving model: \(facts.serving.typeName) "
+            + "(packedPrefill=\(facts.serving.claimsPackedPrefill), "
+            + "visionSpans=\(facts.serving.claimsVisionSpans))")
 
         let kvCapacity = configuration.kvBytesCapacity ?? Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
@@ -141,8 +188,7 @@ public enum BackendParityHarness {
         if let assistantDirectory {
             do {
                 drafter = try await loadDrafter(
-                    container: container, isVLM: isVLM,
-                    modelDirectory: modelDirectory, assistantDirectory: assistantDirectory)
+                    serving: facts.serving, assistantDirectory: assistantDirectory)
                 log("  drafter loaded: \(assistantModelID ?? assistantDirectory.lastPathComponent)")
             } catch {
                 drafterFailure = "\(error)"
@@ -156,8 +202,7 @@ public enum BackendParityHarness {
         for selection in [EngineV2KVBackendSelection.contiguous, .paged] {
             let observation = await measureArm(
                 container: container,
-                isVLM: isVLM,
-                modelDirectory: modelDirectory,
+                serving: facts.serving,
                 selection: selection,
                 kvCapacity: kvCapacity,
                 facts: (
@@ -183,19 +228,28 @@ public enum BackendParityHarness {
 
     // MARK: - One backend
 
+    /// The one serving model every engine and the drafter share, plus the
+    /// model-level capability claims read off it. `@unchecked Sendable` by the
+    /// same ownership-transfer argument as `MTPProductionModelBundle`: it is
+    /// built once inside `container.perform` and only ever used from the
+    /// serialized engine construction that follows.
+    private struct ServingModel: @unchecked Sendable {
+        let model: any LanguageModel
+        let tokenizer: any MLXLMCommon.Tokenizer
+        /// `CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill`.
+        let claimsPackedPrefill: Bool
+        /// `CBv2EmbeddingForwardable.supportsVisionSpanPrefill`.
+        let claimsVisionSpans: Bool
+        let typeName: String
+        /// Pre-built `[1, L, hidden]` span embedding for the vision probe, or
+        /// nil when the model cannot produce one.
+        let spanEmbedding: MLXArray?
+    }
+
     private struct EngineBox: @unchecked Sendable {
         let engine: any CBv2Engine
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
-        /// Public model-level packed-prefill claim, read off the SERVING model
-        /// the engine was actually built with.
-        let modelClaimsPackedPrefill: Bool
-        /// Public model-level vision-span claim, same source.
-        let modelClaimsVisionSpans: Bool
-        let modelTypeName: String
-        /// Pre-built `[1, L, hidden]` span embedding for the vision probe, or
-        /// nil when the model cannot produce one.
-        let spanEmbedding: MLXArray?
     }
 
     /// `CBv2MTPDrafter` is `AnyObject` and deliberately NOT `Sendable` — it
@@ -210,8 +264,7 @@ public enum BackendParityHarness {
 
     private static func measureArm(
         container: ModelContainer,
-        isVLM: Bool,
-        modelDirectory: URL,
+        serving: ServingModel,
         selection: EngineV2KVBackendSelection,
         kvCapacity: Int,
         facts: (eos: Set<Int>, prompts: [(name: String, tokens: [Int])], seed: [Int]),
@@ -224,11 +277,10 @@ public enum BackendParityHarness {
         let box: EngineBox
         do {
             box = try await buildEngine(
-                container: container, isVLM: isVLM, modelDirectory: modelDirectory,
+                container: container, serving: serving,
                 selection: selection, kvCapacity: kvCapacity,
                 maxConcurrentRequests: max(configuration.packedProbeRows, 2),
-                prefixCache: nil, drafter: nil, mtpConfig: CBv2MTPConfig(),
-                visionSpanTokens: configuration.visionSpanTokens)
+                prefixCache: nil, drafter: nil, mtpConfig: CBv2MTPConfig())
         } catch {
             // Since OPEN-9 an explicit `.paged` REFUSES rather than degrading,
             // so this is the normal shape of "paged cannot serve this model".
@@ -253,9 +305,11 @@ public enum BackendParityHarness {
 
         // 2. Packed prefill and 3. vision spans, on the same engine.
         let packed = await probePackedPrefill(
-            box: box, seed: facts.seed, eos: facts.eos, configuration: configuration)
+            box: box, serving: serving, seed: facts.seed, eos: facts.eos,
+            configuration: configuration)
         let vision = await probeVisionSpans(
-            box: box, seed: facts.seed, eos: facts.eos, configuration: configuration)
+            box: box, serving: serving, seed: facts.seed, eos: facts.eos,
+            configuration: configuration)
 
         await box.engine.shutdown()
         Memory.clearCache()
@@ -263,14 +317,14 @@ public enum BackendParityHarness {
         // 4. Prefix reuse needs its own engine: the factory only enables the
         //    scheduler's prefix cache when one is passed in.
         let prefixReuse = await probePrefixReuse(
-            container: container, isVLM: isVLM, modelDirectory: modelDirectory,
+            container: container, serving: serving,
             selection: selection, kvCapacity: kvCapacity, seed: facts.seed,
             eos: facts.eos, configuration: configuration)
         Memory.clearCache()
 
         // 5. MTP needs a third: a drafter cannot be attached after construction.
         let mtp = await probeMTP(
-            container: container, isVLM: isVLM, modelDirectory: modelDirectory,
+            container: container, serving: serving,
             selection: selection, kvCapacity: kvCapacity, prompts: facts.prompts,
             eos: facts.eos, drafter: drafter, drafterFailure: drafterFailure,
             configuration: configuration)
@@ -291,80 +345,50 @@ public enum BackendParityHarness {
 
     private static func buildEngine(
         container: ModelContainer,
-        isVLM: Bool,
-        modelDirectory: URL,
+        serving: ServingModel,
         selection: EngineV2KVBackendSelection,
         kvCapacity: Int,
         maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)?,
         drafter: DrafterBox?,
-        mtpConfig: CBv2MTPConfig,
-        visionSpanTokens: Int
+        mtpConfig: CBv2MTPConfig
     ) async throws -> EngineBox {
-        try await container.perform { ctx -> EngineBox in
-            let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+        // Inside `perform` for the same reason ThroughputSweep is: pool
+        // allocation and the paged kernel preflight want serialized GPU
+        // access. The serving model itself is NOT re-resolved here — see the
+        // comment in `run`.
+        try await container.perform { _ -> EngineBox in
             let build = try EngineV2Factory.makeProductionBuild(
-                model: servingModel,
-                tokenizer: ctx.tokenizer,
+                model: serving.model,
+                tokenizer: serving.tokenizer,
                 kvBytesCapacity: kvCapacity,
                 prefixCache: prefixCache,
                 maxConcurrentRequests: maxConcurrentRequests,
                 mtpDrafter: drafter?.drafter,
                 mtpConfig: mtpConfig,
                 kvBackend: selection)
-
-            // Both halves of the packed-prefill gate are consulted by the
-            // engine loop; only this one is publicly readable, so read it
-            // rather than assuming it from the model name.
-            let packedClaim =
-                (servingModel as? CBv2LanguageModelPrefillForwardable)?
-                .cbv2SupportsPackedPrefill ?? false
-            let embeddable = servingModel as? CBv2EmbeddingForwardable
-            let visionClaim = embeddable?.supportsVisionSpanPrefill ?? false
-
-            // Build the span embedding through the model itself so it carries
-            // the model's own hidden size and dtype. A hand-rolled zeros array
-            // would probe the shape checker, not the span path.
-            var spanEmbedding: MLXArray?
-            if visionClaim, let embeddable, visionSpanTokens > 0 {
-                let ids = MLXArray(Array(repeating: Int32(0), count: visionSpanTokens))
-                    .reshaped([1, visionSpanTokens])
-                let embedded = embeddable.scaledInputEmbeddings(ids)
-                eval(embedded)
-                spanEmbedding = embedded
-            }
-
             return EngineBox(
                 engine: build.engine,
                 kind: build.kvBackendKind,
-                fallbackReason: build.kvBackendFallbackReason,
-                modelClaimsPackedPrefill: packedClaim,
-                modelClaimsVisionSpans: visionClaim,
-                modelTypeName: "\(type(of: servingModel))",
-                spanEmbedding: spanEmbedding)
+                fallbackReason: build.kvBackendFallbackReason)
         }
     }
 
+    /// Bind the drafter to the SAME serving-model instance every engine will
+    /// be built with. `CBv2MTPRoundDriver.build` proves target identity by
+    /// object, so a second `benchmarkServingModel` call here would silently
+    /// disable MTP on both backends.
     private static func loadDrafter(
-        container: ModelContainer,
-        isVLM: Bool,
-        modelDirectory: URL,
+        serving: ServingModel,
         assistantDirectory: URL
     ) async throws -> DrafterBox {
-        struct TargetBox: @unchecked Sendable { let target: any Gemma4MTPTarget }
-        let boxed = try await container.perform { ctx -> TargetBox in
-            let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
-            guard let target = servingModel as? any Gemma4MTPTarget else {
-                throw MTPBenchmarkError.mtpRequestedButInactive(
-                    "target model \(type(of: servingModel)) is not Gemma4MTPTarget")
-            }
-            return TargetBox(target: target)
+        guard let target = serving.model as? any Gemma4MTPTarget else {
+            throw MTPBenchmarkError.mtpRequestedButInactive(
+                "target model \(serving.typeName) is not Gemma4MTPTarget")
         }
         let assistant = try await Gemma4AssistantDraftModel.load(from: assistantDirectory)
         return DrafterBox(
-            drafter: try Gemma4CBv2MTPDrafter(drafter: assistant, target: boxed.target))
+            drafter: try Gemma4CBv2MTPDrafter(drafter: assistant, target: target))
     }
 
     // MARK: - Generation
@@ -464,6 +488,7 @@ public enum BackendParityHarness {
     /// it, rather than banking a pass it did not earn.
     private static func probePackedPrefill(
         box: EngineBox,
+        serving: ServingModel,
         seed: [Int],
         eos: Set<Int>,
         configuration: Configuration
@@ -471,9 +496,9 @@ public enum BackendParityHarness {
         let rowCount = max(2, configuration.packedProbeRows)
         let length = max(8, configuration.packedProbePromptTokens)
 
-        guard box.modelClaimsPackedPrefill else {
+        guard serving.claimsPackedPrefill else {
             return .undetermined(
-                "model \(box.modelTypeName) does not claim "
+                "model \(serving.typeName) does not claim "
                     + "CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill, so the "
                     + "packed path is never taken for this model on EITHER backend — the "
                     + "backend's own claim cannot be reached through it")
@@ -536,18 +561,19 @@ public enum BackendParityHarness {
     /// backend-side one and must not be reported as a backend regression.
     private static func probeVisionSpans(
         box: EngineBox,
+        serving: ServingModel,
         seed: [Int],
         eos: Set<Int>,
         configuration: Configuration
     ) async -> BackendParityObservation.Capability {
         let spanLength = max(1, configuration.visionSpanTokens)
-        guard box.modelClaimsVisionSpans else {
+        guard serving.claimsVisionSpans else {
             return .undetermined(
-                "model \(box.modelTypeName) reports supportsVisionSpanPrefill=false, so "
+                "model \(serving.typeName) reports supportsVisionSpanPrefill=false, so "
                     + "CBv2Multimodal.validate refuses at the MODEL gate before the backend's "
                     + "span capability is consulted — this says nothing about the backend")
         }
-        guard let embedding = box.spanEmbedding else {
+        guard let embedding = serving.spanEmbedding else {
             return .undetermined(
                 "model claims vision-span prefill but no span embedding could be built from "
                     + "scaledInputEmbeddings")
@@ -593,8 +619,7 @@ public enum BackendParityHarness {
 
     private static func probePrefixReuse(
         container: ModelContainer,
-        isVLM: Bool,
-        modelDirectory: URL,
+        serving: ServingModel,
         selection: EngineV2KVBackendSelection,
         kvCapacity: Int,
         seed: [Int],
@@ -606,10 +631,9 @@ public enum BackendParityHarness {
         let box: EngineBox
         do {
             box = try await buildEngine(
-                container: container, isVLM: isVLM, modelDirectory: modelDirectory,
+                container: container, serving: serving,
                 selection: selection, kvCapacity: kvCapacity, maxConcurrentRequests: 2,
-                prefixCache: cache, drafter: nil, mtpConfig: CBv2MTPConfig(),
-                visionSpanTokens: 0)
+                prefixCache: cache, drafter: nil, mtpConfig: CBv2MTPConfig())
         } catch {
             return BackendParityObservation.PrefixReuse(
                 unavailableReason: "prefix-cache engine construction failed: \(error)")
@@ -709,8 +733,7 @@ public enum BackendParityHarness {
 
     private static func probeMTP(
         container: ModelContainer,
-        isVLM: Bool,
-        modelDirectory: URL,
+        serving: ServingModel,
         selection: EngineV2KVBackendSelection,
         kvCapacity: Int,
         prompts: [(name: String, tokens: [Int])],
@@ -736,10 +759,9 @@ public enum BackendParityHarness {
         let box: EngineBox
         do {
             box = try await buildEngine(
-                container: container, isVLM: isVLM, modelDirectory: modelDirectory,
+                container: container, serving: serving,
                 selection: selection, kvCapacity: kvCapacity, maxConcurrentRequests: 2,
-                prefixCache: nil, drafter: drafter, mtpConfig: mtpConfig,
-                visionSpanTokens: 0)
+                prefixCache: nil, drafter: drafter, mtpConfig: mtpConfig)
         } catch {
             return BackendParityObservation.MTP(
                 unavailableReason: "MTP engine construction failed: \(error)")

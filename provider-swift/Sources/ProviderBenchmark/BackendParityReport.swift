@@ -46,6 +46,16 @@ public struct BackendParityReport: Codable, Sendable {
         /// long-window one, so the absolute token count hides the thing that
         /// actually varies.
         ///
+        /// The allowance is one `maxWindow`, NOT one `maxPrefillChunk`. The
+        /// two coincide on neither model measured so far (gemma-4: window
+        /// 1024 vs chunk 512; gpt-oss: window 128 vs chunk 512), so writing
+        /// it as "one chunk" would mispredict both. The cause is structural,
+        /// not tuning: a contiguous frozen row hands attention the cached
+        /// keys for the whole chunk, while `PagedLayerCache.prefillKV` hands
+        /// it `gather ++ freshly-projected chunk`, so a frozen paged row
+        /// emits poisoned keys inside the current chunk and its replay has
+        /// to start one cone earlier.
+        ///
         /// Does NOT make the process exit non-zero on its own, but it is
         /// named in the summary line so a reader who only sees the tail of a
         /// CI log cannot miss it.
@@ -852,7 +862,9 @@ public enum BackendParityCriteria {
                     + "maxWindow (\(structuralAllowance) tokens) of extra frozen replay by "
                     + "construction, so this is NOT a regression — and it is NOT parity "
                     + "either. The cost scales as maxWindow/matched, so it is negligible on "
-                    + "short-window models and severe on long-window ones"
+                    + "short-window models and severe on long-window ones. Note the "
+                    + "allowance is one maxWindow, NOT one prefill chunk — they differ on "
+                    + "every model measured so far"
                 return .init(
                     id: id, title: title, verdict: .expectedShortfall, detail: detail,
                     measurements: measurements)

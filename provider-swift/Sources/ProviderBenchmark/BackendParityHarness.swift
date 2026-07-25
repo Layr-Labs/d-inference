@@ -473,19 +473,29 @@ public enum BackendParityHarness {
 
     // MARK: - Probe: packed prefill
 
-    /// Packed prefill has NO counter and NO engine-level accessor: the loop's
-    /// decision (`EngineLoopV2`, `packedIDs`) is a step-local set that is
-    /// discarded, and the bank that vouches for it is held behind `EngineV2`'s
-    /// private loop. So this probe cannot report ACTIVE.
+    /// Packed prefill, measured rather than assumed.
     ///
-    /// What it CAN do is falsify. It submits `packedProbeRows` rows of EQUAL
-    /// prompt length concurrently — precisely the shape the loop packs — and
-    /// compares each row against the same prompt run solo. If packing ran and
-    /// is wrong, the rows diverge and that is a definitive INACTIVE/FAIL. If
-    /// they match, packing was either off (vacuous) or on and bit-identical
-    /// (its contract), and the two are indistinguishable from out here — so
-    /// the probe stays UNDETERMINED and names the accessor that would settle
-    /// it, rather than banking a pass it did not earn.
+    /// `CBv2Engine.packedPrefillActivity()` separates the two questions that
+    /// matter: `isSupported` is CONFIGURATION (both capability gates agree,
+    /// so the engine MAY pack) and `groupsExecuted` is EVIDENCE (a rectangular
+    /// `[B > 1, chunk]` forward actually happened). A claimed-but-never-packed
+    /// backend reports supported with zero counters — the exact analogue of
+    /// the MTP silent no-op — so this probe gates on the counters, never on
+    /// the flag, as the accessor's own contract requires.
+    ///
+    /// The counters are cumulative and monotonic per engine instance, so the
+    /// probe DIFFERENCES them across the concurrent batch. An absolute read
+    /// would prove the engine packed at some point in its life, not that it
+    /// packed for the rows just submitted — and the solo baseline runs first,
+    /// which would poison exactly that reading.
+    ///
+    /// Three ways this could read zero for reasons that are not a backend
+    /// fault, all avoided by construction: MTP rounds never pack (this engine
+    /// is built with no drafter), an adopted prefix leaves nothing to chunk
+    /// (built with no prefix cache, and the requests set
+    /// `prefixCacheEnabled: false`), and a token budget below
+    /// `rows * chunk` splits the last row into its own group (so the verdict
+    /// keys on `groupsExecuted > 0`, never on `rowsExecuted == rowCount`).
     private static func probePackedPrefill(
         box: EngineBox,
         serving: ServingModel,
@@ -500,8 +510,8 @@ public enum BackendParityHarness {
             return .undetermined(
                 "model \(serving.typeName) does not claim "
                     + "CBv2LanguageModelPrefillForwardable.cbv2SupportsPackedPrefill, so the "
-                    + "packed path is never taken for this model on EITHER backend — the "
-                    + "backend's own claim cannot be reached through it")
+                    + "packed path is never taken for this model on EITHER backend — that "
+                    + "is a MODEL fact and says nothing about the backend")
         }
 
         // Distinct rotations, identical length: distinct so a cross-row leak
@@ -519,6 +529,7 @@ public enum BackendParityHarness {
 
         let engine = box.engine
         let maxTokens = configuration.maxTokens
+        let before = engine.packedPrefillActivity()
         var concurrent = [BackendParityObservation.Row?](repeating: nil, count: rowCount)
         await withTaskGroup(of: (Int, BackendParityObservation.Row).self) { group in
             for (index, tokens) in prompts.enumerated() {
@@ -530,8 +541,13 @@ public enum BackendParityHarness {
             }
             for await (index, row) in group { concurrent[index] = row }
         }
+        let after = engine.packedPrefillActivity()
+        let groups = after.groupsExecuted - before.groupsExecuted
+        let rows = after.rowsExecuted - before.rowsExecuted
         let batched = concurrent.compactMap { $0 }
 
+        // Bit-identity outranks everything: if the rows diverge, packing ran
+        // and is WRONG, which is a harder failure than not packing at all.
         if let mismatch = BackendParityCriteria.rowMismatch(
             baseline: solo, candidate: batched)
         {
@@ -539,16 +555,31 @@ public enum BackendParityHarness {
                 active: false,
                 detail: "\(rowCount) equal-length rows decoded concurrently diverged from the "
                     + "same rows run solo — the packed/batched prefill path is NOT "
-                    + "bit-identical: \(mismatch)")
+                    + "bit-identical (\(groups) packed group(s) over \(rows) row(s) ran "
+                    + "during the batch): \(mismatch)")
         }
 
-        return .undetermined(
-            "model claims packed prefill and \(rowCount) equal-length concurrent rows were "
-                + "bit-identical to solo (necessary, not sufficient), but no public accessor "
-                + "reports whether the packed path was TAKEN: "
-                + "CBv2LayerCacheProvider.supportsPackedPrefill and EngineLoopV2's packedIDs "
-                + "are both behind EngineV2's private loop. Needs an engine-side accessor or "
-                + "packed-row counter on CBv2Engine to become PASS/FAIL")
+        guard after.isSupported else {
+            return BackendParityObservation.Capability(
+                active: false,
+                detail: "the model claims packed prefill but the engine reports "
+                    + "isSupported=false, so the CACHE half refused — a layer cache in this "
+                    + "backend's bank does not vouch for keepsRowsIndependentWhenPacked")
+        }
+
+        guard groups > 0 else {
+            return BackendParityObservation.Capability(
+                active: false,
+                detail: "packed prefill is supported but NEVER EXECUTED: \(rowCount) "
+                    + "equal-length rows submitted concurrently produced 0 rectangular "
+                    + "forwards. Claimed-but-never-packed, the same shape as a silent no-op")
+        }
+
+        return BackendParityObservation.Capability(
+            active: true,
+            detail: "\(groups) rectangular packed forward(s) carrying \(rows) prompt row(s) "
+                + "executed for \(rowCount) equal-length concurrent rows, and every row was "
+                + "bit-identical to the same prompt run solo")
     }
 
     // MARK: - Probe: vision spans

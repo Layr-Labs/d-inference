@@ -919,3 +919,35 @@ Engine commits this pass, on `paged-kv/wave1`:
 | `bc69878` | G — compiled decode | −2,607 |
 | `57c3131` | DEL — counter-evidence, zero deletions | +156 |
 | `f0e7fbf` | M — WS-3.0 + WS-3.5 fence back-edge | — |
+
+### 2026-07-25 — Wave 1 closing; the ring-shrink item has TWO halves, not one
+
+`gather(ring) ++ chunk` is scheduled as the item that actually buys the
+memory. Anyone picking it up expecting TrackL's landed layer change to be
+the whole job will ship a daemon abort.
+
+**Landed (TrackL):** `PagedLayerCache.updateAndAttend` assembles
+`gather(pre-write window history) ++ chunk` BEFORE `row.write`, so the
+cache only ever asks the ring for `window-1` tokens.
+
+**Still missing (TrackT's finding, via TrackP):** row-level DIRECT writers
+call `PagedSequenceKV.write` then `attendableViews` and cannot use the
+cache's gather trick — the data is already overwritten. Their chunk bound
+is `ringTokens - window + 1`, NOT `maxPrefillChunk`. Two live callers: the
+kernel differential harness, and the prefix-adoption replay in
+`PagedKVBackend.makeSequenceState(adopting:)`.
+
+The cache-level and row-level bounds are genuinely different quantities and
+`checkedRingPageCount` only enforces the cache-level one. So the item is:
+layer half (done) + a row-level answer + a guard that covers both bounds.
+
+Related, already handled: `CBv2KVSourceChunkRetaining` (TrackL) lets a
+KV-borrowing source retain its assembled view, since it cannot re-gather
+post-write either. Default ON so a bank-less cache is correct; gemma-4
+(`num_kv_shared_layers: 0`) and gpt-oss pay zero bytes. Dormant under
+today's ring sizing.
+
+**Also this pass:** `pages_pinned` / `cow_events` removed from all three
+telemetry mirrors — allowlisted with no producer and no possible producer
+(no pin concept, COW unimplemented). A producerless key reads as a
+legitimate zero. Add each key in the same change as its mechanism.

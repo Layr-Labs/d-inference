@@ -511,18 +511,20 @@ func TestParseModelFloatMapSeedEntries(t *testing.T) {
 
 // TestSoloSeedColdStart is the restart scenario: the TPS registry is in-memory
 // and wiped by a coordinator restart, so on a fresh registry the seed env must
-// carry the per-model cap alone (gemma-qat solo ≈ 14 from prod data → cap 2)
-// until gated solo samples re-accumulate.
+// carry the per-model cap alone until gated solo samples re-accumulate. The
+// gemma seed (14, at or under the 15 floor) pins to 2 at any measured k; the
+// gpt-oss cap is k-derived (see the helpers in concurrency_cap_test.go).
 func TestSoloSeedColdStart(t *testing.T) {
 	reg := New(testLogger()) // fresh registry == post-restart state
 	enablePerModelQualityCap(t, reg, "gemma-4-26b-qat-4bit=14,gpt-oss-20b=30", "", "")
 	p := mixedBoxProvider(t, reg, "mixed", 93)
 
 	if got := effCapResolved(reg, p, gemmaBuild); got != 2 {
-		t.Fatalf("cold-start gemma cap = %d, want 2 (seed 14 ≤ floor 15 → qc 1 × 1.2)", got)
+		t.Fatalf("cold-start gemma cap = %d, want 2 (seed 14 ≤ floor 15 → quality batch 1 × 1.2)", got)
 	}
-	if got := effCapResolved(reg, p, gptossBuild); got != 4 {
-		t.Fatalf("cold-start gpt-oss cap = %d, want 4 (seed 30 → qc 3 → ceil(3.6))", got)
+	wantGptoss := wantQualityCap(30, 15, 24, defaultQualityCapOvercommit)
+	if got := effCapResolved(reg, p, gptossBuild); got != wantGptoss {
+		t.Fatalf("cold-start gpt-oss cap = %d, want %d (seed 30 at k=%.2f × 1.2)", got, wantGptoss, effectiveTPSLoadFactor)
 	}
 }
 

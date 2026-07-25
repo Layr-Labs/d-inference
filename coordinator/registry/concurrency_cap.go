@@ -28,6 +28,24 @@ import (
 // single-stream decode rate (resolvedDecodeTPS), NEVER the observed-under-load
 // EWMA: the observed rate collapses under the very overload this cap exists to
 // prevent, which would force the cap to 1 — a feedback loop.
+//
+// Raising a backend's own concurrency ceiling therefore buys NOTHING on its
+// own. The provider-reported number is only the `base` operand of the MIN
+// below; the resolved per-model SOLO RATE decides. Inverting the cap math, a
+// provider is granted its full reported N only above
+//
+//	q    = floor((N-1)/overcommit) + 1     # smallest quality batch whose
+//	                                       # ceil(q·overcommit) still reaches N
+//	solo >= floor · (1 + k·q)              # N=8, floor 15, overcommit 1.2:
+//	                                       #   39.3 tok/s at k=0.27
+//	                                       #   50.1 tok/s at k=0.39
+//
+// and a model whose resolved rate sits under that gets the quality batch, not
+// the bump. The rate is what needs fixing when a bump does not land — usually
+// by seeding it (modelSoloTPSSeedEnv), because solo sampling is gated on a
+// fully uncontended box (soloSampleEligible) and a model that is BUSY at the
+// new concurrency never produces another sample. See
+// TestQualityCapReachesProviderReportedConcurrency for the pinned relationship.
 
 // defaultQualityCapOvercommit is the effective overcommit when the operator has
 // not set EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT. The legacy 2.0 diluted

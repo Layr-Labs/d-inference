@@ -29,11 +29,27 @@ import Foundation
 public struct BackendParityReport: Codable, Sendable {
 
     /// Bumped when the JSON shape changes so downstream parsers can gate.
-    public static let currentSchemaVersion = 1
+    /// 2 adds the `EXPECTED_SHORTFALL` verdict.
+    public static let currentSchemaVersion = 2
 
     public enum Verdict: String, Codable, Sendable, CaseIterable {
         case pass = "PASS"
         case fail = "FAIL"
+        /// Measured, understood, and NOT parity. Paged pays one `maxWindow`
+        /// of extra frozen replay over contiguous by construction, so a
+        /// hybrid model can never reach `paged >= contiguous` on prefix
+        /// reuse. Reporting that as FAIL forever trains readers to skip the
+        /// criterion; reporting it as PASS lets someone conclude the two
+        /// backends match, which they do not. It gets its own verdict, and
+        /// it carries the magnitude as a PERCENTAGE of the baseline's saving
+        /// — the shortfall is 0.5% on a short-window model and 36% on a
+        /// long-window one, so the absolute token count hides the thing that
+        /// actually varies.
+        ///
+        /// Does NOT make the process exit non-zero on its own, but it is
+        /// named in the summary line so a reader who only sees the tail of a
+        /// CI log cannot miss it.
+        case expectedShortfall = "EXPECTED_SHORTFALL"
         case unavailable = "UNAVAILABLE"
     }
 
@@ -165,34 +181,47 @@ public struct BackendParityReport: Codable, Sendable {
 /// other two is the failure mode this type exists to prevent: a harness that
 /// skipped every criterion has produced no evidence, and evidence-free is not
 /// the same as green.
+///
+/// `EXPECTED_SHORTFALL` is deliberately NOT a fourth state. It is a measured,
+/// documented cost rather than a failure, so it does not move the exit status
+/// on its own — but it rides along in `passed`/`failed` and is named in the
+/// summary line, because a reader who sees only the tail of a CI log must not
+/// come away believing the backends matched.
 public enum BackendParityOutcome: Equatable, Sendable {
     /// At least one criterion was evaluated and none failed. `skipped` may be
     /// non-zero — the gate passed on what it could measure, and says how much
-    /// it could not.
-    case passed(evaluated: Int, skipped: Int)
+    /// it could not. `shortfalls` names criteria that came in at exactly the
+    /// documented structural cost.
+    case passed(evaluated: Int, skipped: Int, shortfalls: [String])
     /// At least one evaluated criterion FAILED. Carries the failing ids.
-    case failed(criteria: [String])
+    case failed(criteria: [String], shortfalls: [String])
     /// Every criterion reported UNAVAILABLE (or there were none at all).
     /// Nothing was measured, so nothing can be concluded.
     case nothingEvaluated(skipped: Int)
 
     public init(criteria: [BackendParityReport.Criterion]) {
         let failed = criteria.filter { $0.verdict == .fail }.map(\.id)
+        let shortfalls = criteria.filter { $0.verdict == .expectedShortfall }.map(\.id)
         let passed = criteria.filter { $0.verdict == .pass }.count
         let skipped = criteria.filter { $0.verdict == .unavailable }.count
         if !failed.isEmpty {
-            self = .failed(criteria: failed)
-        } else if passed == 0 {
+            self = .failed(criteria: failed, shortfalls: shortfalls)
+        } else if passed == 0 && shortfalls.isEmpty {
+            // A shortfall IS a measurement, so a run consisting only of
+            // shortfalls is not "nothing evaluated".
             self = .nothingEvaluated(skipped: skipped)
         } else {
-            self = .passed(evaluated: passed, skipped: skipped)
+            self = .passed(
+                evaluated: passed + shortfalls.count, skipped: skipped,
+                shortfalls: shortfalls)
         }
     }
 
-    /// 0 = every evaluated criterion passed. 1 = something failed.
-    /// 2 = nothing was evaluated. A gate that exits 0 on total failure — or on
-    /// total absence — is not a gate; the sweep benchmark shipped exactly that
-    /// bug this wave and it is not repeated here.
+    /// 0 = every evaluated criterion passed or came in at the documented
+    /// structural cost. 1 = something failed. 2 = nothing was evaluated.
+    /// A gate that exits 0 on total failure — or on total absence — is not a
+    /// gate; the sweep benchmark shipped exactly that bug this wave and it is
+    /// not repeated here.
     public var exitStatus: Int32 {
         switch self {
         case .passed: return 0
@@ -203,13 +232,23 @@ public enum BackendParityOutcome: Equatable, Sendable {
 
     public var summary: String {
         switch self {
-        case .passed(let evaluated, 0):
-            return "G2 PASS: \(evaluated) criteria evaluated, all passed."
-        case .passed(let evaluated, let skipped):
-            return "G2 PASS (partial): \(evaluated) criteria passed, "
-                + "\(skipped) UNAVAILABLE — the gate is only as strong as what it measured."
-        case .failed(let ids):
-            return "G2 FAIL: \(ids.joined(separator: ", "))."
+        case .passed(let evaluated, let skipped, let shortfalls):
+            var line = shortfalls.isEmpty
+                ? "G2 PASS: \(evaluated) criteria evaluated, all passed."
+                : "G2 PASS with EXPECTED SHORTFALL: \(evaluated) criteria evaluated, "
+                    + "\(shortfalls.joined(separator: ", ")) at the documented "
+                    + "structural cost (NOT parity)."
+            if skipped > 0 {
+                line += " \(skipped) UNAVAILABLE — the gate is only as strong as what "
+                    + "it measured."
+            }
+            return line
+        case .failed(let ids, let shortfalls):
+            var line = "G2 FAIL: \(ids.joined(separator: ", "))."
+            if !shortfalls.isEmpty {
+                line += " EXPECTED SHORTFALL: \(shortfalls.joined(separator: ", "))."
+            }
+            return line
         case .nothingEvaluated(let skipped):
             return "G2 INCONCLUSIVE: nothing was evaluated (\(skipped) UNAVAILABLE). "
                 + "This is not a pass."
@@ -779,11 +818,51 @@ public enum BackendParityCriteria {
                 measurements: measurements)
         }
 
-        if cand.secondPrefillTokensSaved < base.secondPrefillTokensSaved {
+        // The structural allowance, derived from the two measured
+        // capabilities rather than hardcoded: paged's frozen-replay bound is
+        // contiguous's plus exactly one `maxWindow`
+        // (`CBv2PrefixReuseCapability.derive`, WS-4.1), so the difference of
+        // the arms' bounds IS that maxWindow. Zero or negative means the
+        // candidate claims no extra bound and owes no shortfall.
+        let structuralAllowance = max(0, cand.replayBoundTokens - base.replayBoundTokens)
+        let shortfall = base.secondPrefillTokensSaved - cand.secondPrefillTokensSaved
+
+        if shortfall > 0 {
+            // Percentage, not just tokens: the same one-window cost is 0.5%
+            // of contiguous's saving on a 128-token-window model and 36% on a
+            // 1024-token-window one. The absolute count hides exactly the
+            // thing a release decision needs to weigh.
+            let percent = base.secondPrefillTokensSaved > 0
+                ? Double(shortfall) / Double(base.secondPrefillTokensSaved) * 100
+                : 0
+            let magnitude = String(format: "%.1f", percent)
             var detail = "\(candidate.label) saved \(cand.secondPrefillTokensSaved) prefill "
-                + "tokens against \(base.secondPrefillTokensSaved) on \(baseline.label)"
+                + "tokens against \(base.secondPrefillTokensSaved) on \(baseline.label) — "
+                + "short by \(shortfall) (\(magnitude)% of the baseline's saving)"
+
+            // The allowance is the price of DOING frozen replay on paged. A
+            // backend whose capability derived UNSUPPORTED is not paying that
+            // price, it is not reusing at all — that is a defect, and letting
+            // it hide behind the structural band would be the exact laundering
+            // this verdict exists to prevent.
+            if shortfall <= structuralAllowance, structuralAllowance > 0,
+                cand.capabilitySupported
+            {
+                detail += ". That is within the documented structural cost: paged pays one "
+                    + "maxWindow (\(structuralAllowance) tokens) of extra frozen replay by "
+                    + "construction, so this is NOT a regression — and it is NOT parity "
+                    + "either. The cost scales as maxWindow/matched, so it is negligible on "
+                    + "short-window models and severe on long-window ones"
+                return .init(
+                    id: id, title: title, verdict: .expectedShortfall, detail: detail,
+                    measurements: measurements)
+            }
+
             if !cand.capabilitySupported, let reason = cand.capabilityUnsupportedReason {
                 detail += " — the backend's prefix-reuse capability is unsupported: \(reason)"
+            } else if structuralAllowance > 0 {
+                detail += ", which EXCEEDS the \(structuralAllowance)-token structural "
+                    + "allowance (one maxWindow) — the excess is a real regression"
             }
             return .init(
                 id: id, title: title, verdict: .fail, detail: detail,
@@ -793,7 +872,11 @@ public enum BackendParityCriteria {
         return .init(
             id: id, title: title, verdict: .pass,
             detail: "\(candidate.label) saved \(cand.secondPrefillTokensSaved) prefill tokens, "
-                + ">= \(base.secondPrefillTokensSaved) on \(baseline.label)",
+                + ">= \(base.secondPrefillTokensSaved) on \(baseline.label)"
+                + (structuralAllowance > 0
+                    ? " — and it beat the \(structuralAllowance)-token structural allowance, "
+                        + "which is surprising and worth checking"
+                    : ""),
             measurements: measurements)
     }
 

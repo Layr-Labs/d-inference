@@ -108,7 +108,8 @@ struct BackendParityReportTests {
             criterion(.mtpTokenExactness, .fail),
             criterion(.prefixReuse, .fail),
         ])
-        #expect(outcome == .failed(criteria: ["mtp_token_exactness", "prefix_reuse"]))
+        #expect(outcome == .failed(
+            criteria: ["mtp_token_exactness", "prefix_reuse"], shortfalls: []))
         #expect(outcome.exitStatus == 1)
         #expect(outcome.summary.contains("mtp_token_exactness"))
         #expect(outcome.summary.contains("prefix_reuse"))
@@ -130,9 +131,9 @@ struct BackendParityReportTests {
             criterion(.tokenExactness, .pass),
             criterion(.prefixReuse, .pass),
         ])
-        #expect(outcome == .passed(evaluated: 2, skipped: 0))
+        #expect(outcome == .passed(evaluated: 2, skipped: 0, shortfalls: []))
         #expect(outcome.exitStatus == 0)
-        #expect(!outcome.summary.contains("partial"))
+        #expect(!outcome.summary.contains("UNAVAILABLE"))
     }
 
     @Test("a partial pass exits 0 but says how much it could not measure")
@@ -142,20 +143,69 @@ struct BackendParityReportTests {
             criterion(.packedPrefill, .unavailable),
             criterion(.visionSpans, .unavailable),
         ])
-        #expect(outcome == .passed(evaluated: 1, skipped: 2))
+        #expect(outcome == .passed(evaluated: 1, skipped: 2, shortfalls: []))
         #expect(outcome.exitStatus == 0)
-        #expect(outcome.summary.contains("partial"))
         #expect(outcome.summary.contains("2 UNAVAILABLE"))
     }
 
     @Test("the three outcomes have three distinct exit statuses")
     func statusesAreDistinguishable() {
         let statuses = Set([
-            BackendParityOutcome.passed(evaluated: 1, skipped: 0).exitStatus,
-            BackendParityOutcome.failed(criteria: ["x"]).exitStatus,
+            BackendParityOutcome.passed(evaluated: 1, skipped: 0, shortfalls: []).exitStatus,
+            BackendParityOutcome.failed(criteria: ["x"], shortfalls: []).exitStatus,
             BackendParityOutcome.nothingEvaluated(skipped: 3).exitStatus,
         ])
         #expect(statuses.count == 3)
+    }
+
+    @Test("an EXPECTED_SHORTFALL does not fail the run on its own")
+    func expectedShortfallDoesNotExitNonZero() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.prefixReuse, .expectedShortfall),
+        ])
+        #expect(outcome == .passed(
+            evaluated: 2, skipped: 0, shortfalls: ["prefix_reuse"]))
+        #expect(outcome.exitStatus == 0)
+    }
+
+    @Test("an EXPECTED_SHORTFALL is named in the SUMMARY, not buried in a detail")
+    func expectedShortfallRidesTheSummaryLine() {
+        // A reader who only sees the tail of a CI log must not come away
+        // believing the backends matched.
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.prefixReuse, .expectedShortfall),
+        ])
+        #expect(outcome.summary.contains("EXPECTED SHORTFALL"))
+        #expect(outcome.summary.contains("prefix_reuse"))
+        #expect(outcome.summary.contains("NOT parity"))
+    }
+
+    @Test("a shortfall still rides the summary when something else failed")
+    func shortfallSurvivesAFailure() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .fail),
+            criterion(.prefixReuse, .expectedShortfall),
+        ])
+        #expect(outcome == .failed(
+            criteria: ["token_exactness"], shortfalls: ["prefix_reuse"]))
+        #expect(outcome.exitStatus == 1)
+        #expect(outcome.summary.contains("G2 FAIL: token_exactness"))
+        #expect(outcome.summary.contains("EXPECTED SHORTFALL: prefix_reuse"))
+    }
+
+    @Test("a run of only shortfalls is evaluated, not inconclusive")
+    func shortfallCountsAsEvaluated() {
+        // A shortfall IS a measurement. Collapsing it into "nothing ran"
+        // would throw away the one number that was actually taken.
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.prefixReuse, .expectedShortfall),
+            criterion(.packedPrefill, .unavailable),
+        ])
+        #expect(outcome == .passed(
+            evaluated: 1, skipped: 1, shortfalls: ["prefix_reuse"]))
+        #expect(outcome.exitStatus == 0)
     }
 
     // MARK: - Comparison preconditions
@@ -509,24 +559,101 @@ struct BackendParityReportTests {
         #expect(result.detail.contains("vacuous"))
     }
 
-    @Test("paged reusing less than contiguous fails and names the capability gap")
-    func prefixReuseShortfallFails() {
-        let base = healthyArm(
-            selection: "contiguous", resolved: "contiguous", prefillTokensSaved: 768)
-        let short = BackendParityObservation(
-            selection: "paged", resolvedBackend: "paged",
-            prefixReuse: BackendParityObservation.PrefixReuse(
-                capabilitySupported: false,
-                capabilityUnsupportedReason: "paged_hybrid_requires_dual_cursor",
-                replayBoundTokens: 26624,
-                promptTokens: 28672,
-                donatedEntries: 4,
-                firstOutcome: "disabled",
-                secondOutcome: "disabled"))
-        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: short)
+    /// Two arms whose ONLY difference is the saving, with a 1024-token
+    /// structural allowance (paged bound 26624 vs contiguous 25600) — the
+    /// real gemma-4 shape.
+    private func reuseArms(
+        baselineSaved: Int,
+        candidateSaved: Int,
+        candidateSupported: Bool = true
+    ) -> (BackendParityObservation, BackendParityObservation) {
+        func arm(
+            _ selection: String, _ bound: Int, _ saved: Int, _ supported: Bool
+        ) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                prefixReuse: BackendParityObservation.PrefixReuse(
+                    capabilitySupported: supported,
+                    capabilityStrategy: supported ? "frozen_full_replay" : nil,
+                    capabilityUnsupportedReason: supported
+                        ? nil : "paged_hybrid_requires_dual_cursor",
+                    replayBoundTokens: bound,
+                    promptTokens: 28672,
+                    donatedEntries: 1,
+                    firstOutcome: "miss",
+                    secondOutcome: saved > 0 ? "hit" : "adoption_failed",
+                    secondMatchedTokens: 28416,
+                    secondPrefillTokensSaved: saved))
+        }
+        return (
+            arm("contiguous", 25600, baselineSaved, true),
+            arm("paged", 26624, candidateSaved, candidateSupported)
+        )
+    }
+
+    @Test("a shortfall of exactly one maxWindow is EXPECTED_SHORTFALL, not FAIL")
+    func oneWindowShortfallIsExpected() {
+        // The measured gemma-4 case: 2816 contiguous, 1792 paged, delta 1024,
+        // which is exactly the maxWindow paged pays by construction.
+        let (base, cand) = reuseArms(baselineSaved: 2816, candidateSaved: 1792)
+        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: cand)
+        #expect(result.verdict == .expectedShortfall)
+        #expect(result.verdict != .pass)
+        #expect(result.detail.contains("short by 1024"))
+        // Percentage, because the same one-window cost is 36% here and 0.5%
+        // on a short-window model.
+        #expect(result.detail.contains("36.4%"))
+        #expect(result.detail.contains("NOT a regression"))
+        #expect(result.detail.contains("NOT parity"))
+        #expect(result.detail.contains("maxWindow/matched"))
+    }
+
+    @Test("a shortfall beyond one maxWindow is a real FAIL and says by how much")
+    func shortfallBeyondAllowanceFails() {
+        let (base, cand) = reuseArms(baselineSaved: 2816, candidateSaved: 1791)
+        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: cand)
         #expect(result.verdict == .fail)
-        #expect(result.detail.contains("saved 0 prefill tokens against 768"))
+        #expect(result.detail.contains("EXCEEDS the 1024-token structural allowance"))
+    }
+
+    @Test("an unsupported capability never hides inside the structural band")
+    func unsupportedCapabilityCannotClaimTheAllowance() {
+        // The allowance is the price of DOING frozen replay. A backend that
+        // derived unsupported is not paying it, it is not reusing at all.
+        let (base, cand) = reuseArms(
+            baselineSaved: 1000, candidateSaved: 0, candidateSupported: false)
+        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: cand)
+        #expect(result.verdict == .fail)
         #expect(result.detail.contains("paged_hybrid_requires_dual_cursor"))
+    }
+
+    @Test("the shortfall percentage, not just the token count, reaches the reader")
+    func shortfallMagnitudeIsAPercentage() {
+        // The measured gpt-oss shape after F1's adoption fix: a 128-token
+        // window against a 26880-token baseline saving — same structural cost
+        // as gemma-4, two orders of magnitude less important.
+        func arm(_ selection: String, _ bound: Int, _ saved: Int)
+            -> BackendParityObservation
+        {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                prefixReuse: BackendParityObservation.PrefixReuse(
+                    capabilitySupported: true,
+                    capabilityStrategy: "frozen_full_replay",
+                    replayBoundTokens: bound,
+                    promptTokens: 28672,
+                    donatedEntries: 1,
+                    firstOutcome: "miss",
+                    secondOutcome: "hit",
+                    secondMatchedTokens: 28416,
+                    secondPrefillTokensSaved: saved))
+        }
+        let result = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", 1536, 26880),
+            candidate: arm("paged", 1664, 26752))
+        #expect(result.verdict == .expectedShortfall)
+        #expect(result.detail.contains("short by 128"))
+        #expect(result.detail.contains("0.5%"))
     }
 
     @Test("a prefix that never got donated is UNAVAILABLE, not a missed reuse")

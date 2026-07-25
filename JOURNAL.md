@@ -41,12 +41,26 @@ they are dead. They are not.
 | Do NOT delete | Why it looked dead | Why it is not |
 |---|---|---|
 | **Last-query prefill** (~1,384 lines: `Gemma4Text.swift` policy trio, `LastQueryPrefillV2.swift`, `AttentionV1.updateAndAttendLastQuery`, `CBv2LastQueryPrefillTests.swift`) | `numKvSharedLayers` "defaults to 20", so the last layer looked KV-shared | **The default applies only when the JSON key is ABSENT.** Both shipping checkpoints set `num_kv_shared_layers: 0` explicitly (verified on disk), `layer_types[29] = full_attention`, so `gemma4SupportsLastQueryPrefill` is TRUE and the feature is LIVE on the flagship. The "proof" test used `TinyGemma.sharedFinalConfig()`, a fixture built with `numKvSharedLayers = 2` — it pinned the negative case only. |
+| **`CBv2PrefixCacheStats`** | A repo-wide grep for the TYPE NAME returned zero hits | The tests obtain it by **type inference** from `cache.stats()`, so no use site ever names it — and `stats()` is not a `CBv2PrefixCache` protocol requirement, so a protocol-surface grep misses it too. Six files read all five fields. Deleting the struct deletes `stats()` and breaks all six. |
 | **`PrefixCacheV2`** (~1,293 lines) + its 8 dependent test files | Never constructed in production; `EngineV2SlotFactory.swift:379` installs `SSDPrefixCache` | It is the **only in-engine exercise of the `CBv2PrefixCache` contract**, and `SSDPrefixCache` is unreachable from `MLXLMTests`. `CBv2EndToEndTests:526-572` is the only test of the `requiresMaterializedSnapshots` guard — the exact bit WS-3.5 builds on. Keep as a test fixture; only `CBv2PrefixCacheStats` (zero references) is deleted. |
 
 **Root cause, stated so it is not repeated: "not reachable from production" is
-NOT "safe to delete".** The inventory measured the first and claimed the second.
-A Swift struct default is evidence about absent keys only, never about a
-shipping checkpoint.
+NOT "safe to delete".** The inventory measured the first and claimed the second,
+and it was wrong three different ways:
+
+1. A **Swift struct default** is evidence about absent keys only, never about a
+   shipping checkpoint.
+2. A type can be **dead in production and load-bearing as a test fixture**. Ask
+   what covers the contract if it goes.
+3. **Grep the accessor, not the type.** A type obtained by inference
+   (`let s = cache.stats()`) has no use-site mention anywhere, and if the
+   accessor is not a protocol requirement, a protocol grep misses it too — two
+   independent searches both return clean on live code.
+
+Track DEL netted **zero** source deletions after three refutations. That is the
+correct outcome; the defect was in the inventory, not the execution. Deletion
+totals quoted anywhere in the plan of record should be treated as unverified
+until each premise is individually checked against a live caller.
 
 ## ⚠ Ordering constraints — violating these ships a daemon abort or silent corruption
 
@@ -105,7 +119,7 @@ gitlink, open a PR per track, then run the full validation set.
 | R | 3.2 spec transaction, 3.3 headroom | running |
 | M | 3.0 graceful degradation, 3.5 materialize captures | running |
 | G | remove compiled decode | running |
-| DEL | `CBv2PrefixCacheStats` only — both big deletions retracted | winding down |
+| DEL | **zero deletions** — all three premises refuted. Ships a header comment + an inference-consumer marker | yielding |
 | T | differential oracle, slab canary, ring upper bound, invert the defect pin | running |
 | X | OPEN-9 hard refusal, 0.4 merge scheduler configs, kv-quant veto | running |
 | E2 | parametric activation reserve + `servability.go` 9-site mirror | running |

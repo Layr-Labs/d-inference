@@ -85,6 +85,16 @@ type Provider struct {
 	cmd    *os.Process
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// generatedConfig holds the provider TOML this instance wrote into
+	// StateDir. Empty when no KV-backend / concurrency knob was set, which is
+	// the default and launches with no --config at all.
+	generatedConfig string
+	// canonicalConfigExisted records whether ~/.config/darkbloom/provider.toml
+	// was present at launch. The provider copies a --config file there when it
+	// is missing; Stop undoes that copy so a testbed TOML never becomes the
+	// machine's default config.
+	canonicalConfigExisted bool
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {
@@ -290,6 +300,8 @@ func (s *Suite) startProviders() error {
 				TrustLevel:                 TrustNone,
 				AuthTokenPath:              authTokenPath,
 				EnableEphemeralPrefixCache: s.Config.EnableEphemeralPrefixCache,
+				KVBackend:                  s.Config.KVBackend,
+				MaxConcurrent:              s.Config.MaxConcurrent,
 			}); err != nil {
 				_ = os.RemoveAll(authDir)
 				return fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err)
@@ -468,6 +480,31 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		p.StateDir = stateDir
 	}
 
+	// The KV backend and the per-slot concurrency cap have no env-var or CLI
+	// equivalent (DARKBLOOM_CBV2_PAGED_KV can only force paged OFF), so
+	// selecting them means handing the provider a TOML. Unset knobs render no
+	// file and add no argument: the default launch stays byte-identical.
+	generated, err := BuildProviderTOML(cfg, p.ProviderIndex)
+	if err != nil {
+		return fmt.Errorf("provider %d config: %w", p.ProviderIndex, err)
+	}
+	if generated != "" {
+		configPath := filepath.Join(p.StateDir, "provider.toml")
+		if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
+			return fmt.Errorf("write provider config: %w", err)
+		}
+		args = append(args, "--config", configPath)
+		p.generatedConfig = generated
+		if canonical := canonicalProviderConfigPath(); canonical != "" {
+			_, statErr := os.Stat(canonical)
+			p.canonicalConfigExisted = statErr == nil
+		}
+		p.Logger.Info("provider config written",
+			"path", configPath,
+			"kv_backend", ResolveKVBackend(cfg.KVBackend),
+			"max_concurrent", ResolveMaxConcurrent(cfg.MaxConcurrent))
+	}
+
 	cmd := execCommandContext(ctx, p.BinaryPath, args...)
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
@@ -536,5 +573,6 @@ func (p *Provider) Stop() {
 	if p.StateDir != "" {
 		_ = os.RemoveAll(p.StateDir)
 	}
+	removeMigratedTestbedConfig(p.generatedConfig, p.canonicalConfigExisted)
 	p.Logger.Info("provider stopped")
 }

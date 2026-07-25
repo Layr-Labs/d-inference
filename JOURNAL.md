@@ -141,6 +141,20 @@ until each premise is individually checked against a live caller.
   report written-and-unvalidated with a per-test prediction (pass, or
   fail-pending-<track>); Main validates once at integration. A test that fails
   for the predicted reason is stronger evidence than one that passes.
+- **"The build is green" does NOT prove your edit landed.** Green can simply
+  mean the PRE-EDIT file compiled fine. W15 lost applies on two files; the
+  second went unnoticed until a filtered run executed a test under its OLD
+  display name instead of failing. Verification protocol for anything
+  load-bearing on a shared worktree:
+  1. content-anchored splice (not line anchors), written with `write`;
+  2. read the bytes back and compare;
+  3. run the test and check the **display name in the output** is the one you
+     wrote.
+- **Bash `grep` is ERE — do not verify a CALL EXPRESSION with it.**
+  `grep "asType(queries.dtype)"` matches nothing even when the line is on disk,
+  because the parens parse as a capture group. Escape them, or use the `grep`
+  tool. A bare-symbol grep is unaffected, which is why `pagedPoolResizeShortfall`
+  verified correctly.
 - **The `edit` tool can serve a STALE SNAPSHOT on a heavily-shared file.**
   W15 had an applied change silently vanish: a re-apply was rejected with
   "hash #054F is not from this session; the current file hashes to #E470", and

@@ -951,3 +951,21 @@ today's ring sizing.
 telemetry mirrors — allowlisted with no producer and no possible producer
 (no pin concept, COW unimplemented). A producerless key reads as a
 legitimate zero. Add each key in the same change as its mechanism.
+
+### 2026-07-25 — Wave 1 shipped as 14 PRs
+
+Engine `Layr-Labs/mlx-swift-lm`: #86 #87 #88 #89 (Wave 0) · #90 sink-dtype
+(independent) · #91 → #92 → #93 → #94 (linear stack on #86).
+
+Provider `Layr-Labs/d-inference`: #580–#583 (Wave 0) · #584 memory/routing ·
+#585 → #586 → #587 (stack) · #588 SSD sidecar · #589 mixed-version gate.
+
+**The PR split had to be derived, not designed.** My first grouping into five
+independent engine PRs cherry-picked cleanly and then FAILED TO COMPILE on four
+of five — clean apply is not independence. Building each branch surfaced the
+real graph: three types come from Wave 0's seam contract (#86), `partitionTokenLadder`
+from the ring commit, and two Wave 0 branches share files with Wave 1 work.
+The honest shape is a linear stack, not a fan.
+
+Rule: **build every PR branch before opening it.** A cherry-pick that applies is
+not a PR that compiles.

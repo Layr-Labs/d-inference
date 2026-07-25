@@ -57,6 +57,20 @@ and it was wrong three different ways:
    accessor is not a protocol requirement, a protocol grep misses it too — two
    independent searches both return clean on live code.
 
+**THE CHEAP GATE (adopt this before any future deletion).** Every premise that
+failed was argued from the PRODUCTION side only — "no caller constructs this",
+"the downcast never matches", "the guard is vacuous". The one that held named
+the surviving covers **by symbol and line** before deleting. So:
+
+> **Grep `Tests/` separately from `Libraries/`, and require the premise to
+> survive BOTH.** A production-only reader audit is structurally blind to
+> exactly the case that has bitten us four times.
+
+Corollary, from the fifth premise: a symbol can be dead as a PRODUCER and live
+as a wire CONTRACT. `.lossySnapshot` has no remaining producer but is still
+decoded by the coordinator, and v0.8.0 ships to a fleet running older providers
+for days. Deleting it would be a compatibility break, not a cleanup.
+
 Track DEL netted **zero** source deletions after three refutations. That is the
 correct outcome; the defect was in the inventory, not the execution. Deletion
 totals quoted anywhere in the plan of record should be treated as unverified
@@ -132,22 +146,22 @@ gitlink, open a PR per track, then run the full validation set.
 | L | 0.2p paged sub-blocking, 0.5 pad site, 2.3 capability protocol, 3.4 rectangular | running |
 | P | 0.5 poison page, 0.6 guards, 1.3 lazy reservation, 6.4 PTOK, **+ ring shrink (UNBLOCKED — 3.5 landed)**, + kv-quant in `PagedKVPool` | running |
 | R | 3.2 spec transaction, 3.3 headroom | running |
-| M | 3.0 graceful degradation, 3.5 materialize captures | running |
-| G | remove compiled decode | running |
-| DEL | **zero deletions** — all three premises refuted. Ships a header comment + an inference-consumer marker | yielding |
+| M | 3.0 graceful degradation, 3.5 fence back-edge | **DONE** `f0e7fbf` |
+| G | remove compiled decode | **DONE** `bc69878` (−2,607) |
+| DEL | **zero deletions**, all three premises refuted; ships counter-evidence | **DONE** `57c3131` |
 | T | differential oracle, slab canary, ring upper bound, invert the defect pin | running |
 | X | OPEN-9 hard refusal, 0.4 merge scheduler configs, kv-quant veto | running |
 | E2 | parametric activation reserve + `servability.go` 9-site mirror | running |
 | E3 | `k` re-fit, quality cap reachable at 8 | running |
 | C4 | mixed-version gate | **DONE** `d1c8abc5b` |
-| KVQuantEngine | `CBv2QuantizedSequenceKV`, `PrefixReusePlan` case, `snapshotIsLossless` | running |
+| KVQuantEngine | engine kv-quant removal (−621) | **DONE** `f5d0616` |
 | KVQuantProvider | `kv_quant` → `RetiredCodingKeys`, orphaned scaffolding, docs | **DONE** `ee9b48bf0` |
-| F2 | heartbeat `kv_backend` discriminator (Gate G5) | running |
+| F2 | heartbeat `kv_backend` discriminator (**Gate G5 CLEARED**) | **DONE** `548f0b63e` |
 | F3 | 9 telemetry fields + `backend` key ruling | **DONE** `28e4ef661` |
 | F4 | telemetry PRODUCERS (F3 added allowlist entries; nothing emits them) | running |
 | W15 | multi-model co-residency pool resize | running |
 | D | SSD windowed sidecar (WS-4.2) | running |
-| E4 | coordinator prefers measured decode rate over the bandwidth proxy | running |
+| E4 | relaxed the 5-sample solo floor (the real B=8 blocker) | **DONE** `1a1010d4c` |
 | A2 | sink-dtype coercion in `AttentionV1` — NEW latent daemon abort | running |
 
 ## What is left after Wave 1
@@ -776,3 +790,48 @@ worse instead of better, caught before it shipped.
 `EngineV2Bridge+Capacity.swift:146`, so no new wire field during a mixed-version
 rollout — the outcome the brief asked it to prefer, confirmed rather than
 assumed.
+
+### 2026-07-25 — Main — ring shrink defect; five engine tracks committed
+
+**WS-1.2 as specified in the plan is WRONG and would have shipped a daemon
+abort.** TrackR caught it after TrackP landed the shrink.
+
+`retainedCount` is `min(written, window - 1 + lastUpdateTokens)`, not
+`min(written, window)` — a chunk's EARLIEST query must still see its full
+window, so the attendable range after a 512-token chunk is 1,535 tokens. The
+plan's formula `ceil(window/ps) + ceil(span/ps)` gives 1,040. Every windowed
+prefill chunk trips `gather of evicted window range`
+(`PagedSequenceKV.swift:346`). No speculation involved — this is ordinary
+prefill.
+
+Corrected formula: `ceil((window - 1 + maxPrefillChunk)/ps) + ceil(span/ps)`.
+
+**And that is 97 pages for gemma-4 at chunk 512 — exactly the old value.** The
+shrink saves nothing by resizing alone, so the plan's headline "1.52x
+over-provision on 25 of 30 layers" is NOT removable the way §9 claims.
+
+The missing half is the clause I under-weighted when briefing: *"attend
+`gather(ring) ++ chunk` as contiguous does"*. The ring only needs to hold
+`window` if the current chunk is supplied SEPARATELY at attend time, which is
+what `WindowedSequenceKV.update` does with `concatenated(kParts, axis: 2)`.
+**Both halves are item 1.2; one half alone is a trap.**
+
+Ruling: land the corrected formula now (safe, honest, saves little); schedule
+`gather(ring) ++ chunk` as its own item spanning P and L, because that is what
+actually unlocks the memory win. TrackT to pin the inequality rather than the
+literal 65, so the real shrink still has a test waiting.
+
+This is the hazard the sequencing predicted arriving through a different door —
+not the MTP lazy gather, the plain prefill gather.
+
+**§9 of the plan of record is now wrong** and must be corrected before anyone
+prices the migration off it.
+
+Engine commits this pass, on `paged-kv/wave1`:
+
+| Commit | Track | Net |
+|---|---|---|
+| `f5d0616` | KVQuantEngine — engine kv-quant | −621 |
+| `bc69878` | G — compiled decode | −2,607 |
+| `57c3131` | DEL — counter-evidence, zero deletions | +156 |
+| `f0e7fbf` | M — WS-3.0 + WS-3.5 fence back-edge | — |

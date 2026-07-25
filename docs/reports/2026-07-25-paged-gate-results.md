@@ -99,3 +99,35 @@ no paged prefill kernel — that was right about the kernel and wrong about
 the outcome. The gain is query sub-blocking (WS-0.2p): paged previously
 built one full `[l, kL]` score tensor and now blocks at q=128, which cuts
 the score-tensor traffic contiguous had already avoided since #85.
+
+## G0a — Does the coordinator actually dispatch 8?
+
+Bar: `effectiveMaxConcurrencyForModelRateLocked` returns 8 for gemma-4.
+
+Pinned by `coordinator/registry/gate_g0a_test.go` against the MEASURED solo
+rates above, not modelled ones.
+
+| input rate | source | quality cap |
+|---|---|--:|
+| 98.8 tok/s | measured, paged B=1 | **8** |
+| 107.2 tok/s | measured, contiguous B=1 | **8** |
+| 23.4 tok/s | `sqrt(memory_bandwidth)` fallback | **1** |
+
+### Verdict: PASS, and the reason is load-bearing
+
+`b = floor((tps/floor - 1)/k)` with `floor = 15` (`EIGENINFERENCE_MIN_DECODE_TPS`)
+and the re-fitted `k = 0.39` requires **61.8 tok/s** to earn a cap of 8. Both
+backends measure well past it, so there is ~1.6x headroom.
+
+The third row is the important one. Rev 1 of the plan claimed "no code change
+is required to test the batching hypothesis." That was wrong, and this is why:
+with no real per-model measurement the coordinator falls back to a
+model-agnostic `sqrt(memory_bandwidth)` proxy that reads gemma-4 as ~23.4 tok/s
+and pins the cap at **1**. B=8 would never have been dispatched and G0b would
+have measured nothing.
+
+So the gate passes *because* a real measurement now reaches the coordinator —
+which is the relaxed solo-rate tier added this wave (trust a real solo sample
+below the 5-sample floor). A second test pins that dependency explicitly, so
+if anyone removes the relaxed tier the failure names the cause instead of
+silently reverting the fleet to B=1.

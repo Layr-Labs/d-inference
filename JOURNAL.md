@@ -200,10 +200,53 @@ gitlink, open a PR per track, then run the full validation set.
 | F2 | heartbeat `kv_backend` discriminator (**Gate G5 CLEARED**) | **DONE** `548f0b63e` |
 | F3 | 9 telemetry fields + `backend` key ruling | **DONE** `28e4ef661` |
 | F4 | telemetry PRODUCERS (F3 added allowlist entries; nothing emits them) | running |
-| W15 | co-residency pool resize — `pagedPoolResizeShortfall` landed, provider target green | **DONE**, uncommitted |
+| W15 | co-residency — §15 premise REFUTED; found D1, a 2-model 36 GiB regression | **DONE**, uncommitted |
 | D | SSD windowed sidecar (WS-4.2) | running |
 | E4 | relaxed the 5-sample solo floor (the real B=8 blocker) | **DONE** `1a1010d4c` |
 | A2 | sink-dtype coercion — latent daemon abort in CONTIGUOUS | **DONE** `c89a24f` |
+
+## ⚠ D1 — OPEN RELEASE DECISION: paged breaks 2-model 36 GiB boxes
+
+Found by W15 while refuting §15. **This is the true paged-only co-residency
+regression, and it is a TWO-model failure, not a three-model one.**
+
+Eager slab commitment steals the headroom that the NEXT load's post-build guard
+measures. On a 36 GiB box loading gpt-oss then gemma-4: paged commits 2.25 GiB
+of slabs for slot 1, so gemma's post-build live headroom reads 0.15 GiB against
+a 1 GiB `minimumLoadKVBytes` — gemma is unloaded and 503s. **All-contiguous on
+the same box measures 2.40 GiB and serves.**
+
+Three-model capability, measured by reproducing `PagedKVPhysicalCapacityPolicy
+.decide` + `UnifiedMemoryCap` + `EngineV2KVSizing.resliceGrants`:
+
+| box | verdict |
+|---|---|
+| 128 GiB @ B=8 | pools 6/5/6 GiB — all three slots serve |
+| 64 GiB @ B=4 | pools 3.00/2.50/2.50 GiB — all three serve |
+| 48 GiB | third slot refused at the serviceability floor — **identical under contiguous**, not a paged regression |
+| 36 GiB | **second** load fails closed where contiguous succeeds ← D1 |
+
+**Options, needs an owner decision:**
+1. Scope the v0.8.0 rollout to exclude ≤40 GiB boxes (config: per-model backend
+   override, or a memory floor on the flip).
+2. Make slab commitment lazy / late so it does not pre-empt the next load's
+   headroom measurement.
+3. Lower `minimumLoadKVBytes` for the second slot — **not recommended**, it is
+   the guard that stops an unserveable model loading.
+
+**§15 of the plan is STALE and must be corrected.** Its premise — "gpt-oss's
+lone-slot grant would be physically committed as slabs (~the full fleet budget
+on this box)" — was authored in `0868bf112` (#531), one PR BEFORE
+`PagedKVPhysicalCapacityPolicy` landed in `311ff10b2` (#535). Since #535 the
+pool is capped five ways, so a lone gpt-oss slot on a 128 GiB box commits ~3 GiB
+at B=4, not ~85 GiB. The paged arm of `postBuildServeable` also cannot fail for
+a slot that got a pool, because `decide()` already enforces the same 1 GiB floor.
+
+**W15's change is DIAGNOSTIC-ONLY** and says so: it fixes one fail-closed-to-death
+clamp bug and makes the shortfall measurable. It does not move a byte of KV.
+A real resize is blocked engine-side: `PagedKVGroup.kSlab/vSlab` are `let`
+MLXArrays written in place and never replaced by design, and `pageCount` is
+fixed at init. Nothing provider-side can shrink or grow that.
 
 ## What is left after Wave 1
 

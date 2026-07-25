@@ -28,12 +28,39 @@ public struct ProviderMTPStatusSnapshot: Sendable, Equatable {
 
     init(status: MTPActivationStatus, metrics: CBv2MTPMetrics?) {
         let engineActive = metrics?.active == true
+        // "Enabled but inert": drafter resident, engine reporting itself
+        // active, zero rounds executed, and every planned row skipped as
+        // kv_unsupported. `rounds` counts only rounds that DRAFTED and
+        // VERIFIED, and the skip is recorded per scheduled row, so this can
+        // only become true after real traffic has been planned and refused —
+        // never on a freshly built engine. That matters: the post-build MTP
+        // teardown gate (ProviderLoop+ModelLoading, +EngineV2Liveness,
+        // StandaloneServer) reads `active` on a zero-traffic engine, where
+        // rounds == 0 and the skip count is 0, so it cannot mis-fire there.
+        let inertKVUnsupported =
+            status.active && engineActive
+            && (metrics?.rounds ?? 0) == 0
+            && (metrics?.skippedRows["kv_unsupported"] ?? 0) > 0
         self.configured = status.configured
-        self.active = status.active && engineActive
+        // A slot executing zero rounds is NOT active. Reporting it active is
+        // exactly what hid this state: it also made `mtp_active` lie to the
+        // routing correction it exists for — an inert slot does not inflate
+        // observed_decode_tps, so discounting its throughput is wrong in the
+        // opposite direction.
+        self.active = status.active && engineActive && !inertKVUnsupported
         self.verificationMode = metrics?.verificationMode.rawValue
         self.rectangularVerificationRounds = metrics?.rectangularVerificationRounds ?? 0
         self.serialVerificationRounds = metrics?.serialVerificationRounds ?? 0
-        self.fallbackReason = status.active && !engineActive ? .engineInactive : status.reason
+        // Precedence: engine-says-off outranks engine-says-on-but-idle; the
+        // two are mutually exclusive by construction. A load-time reason
+        // (`status.reason`) still wins when the assistant never activated.
+        if status.active && !engineActive {
+            self.fallbackReason = .engineInactive
+        } else if inertKVUnsupported {
+            self.fallbackReason = .inertKVUnsupported
+        } else {
+            self.fallbackReason = status.reason
+        }
         self.assistantSource = status.source
         self.assistantRevision = status.revision
         self.assistantArtifactBytes = status.artifactBytes

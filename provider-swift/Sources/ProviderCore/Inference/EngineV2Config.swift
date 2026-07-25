@@ -230,10 +230,13 @@ public enum EngineV2Factory {
     }
 
     /// INFO `engine_health` event reporting which KV backend a slot was
-    /// built with (`operation=engine_v2_kv_backend`, `reason=paged |
-    /// contiguous | fallback:<why>`). Emitted once per engine construction
-    /// so the fleet dashboard can attribute serving backends and spot
-    /// unexpected fallbacks. Allowlisted fields only — no wire changes.
+    /// built with (`operation=engine_v2_kv_backend`, `kv_backend=paged |
+    /// contiguous`, `reason=paged | contiguous | fallback:<why>`). Emitted
+    /// once per engine construction, so it is a NOTIFICATION of a load, not
+    /// a fleet inventory — the sink drops on full behind a rate limit. The
+    /// recurring per-slot inventory is `engine_v2_slot_posture`
+    /// (`EngineV2Bridge+MTP`) plus `BackendSlotCapacity.kv_backend` on every
+    /// heartbeat. Allowlisted fields only — no wire changes.
     static func emitKVBackendTelemetry(
         modelId: String,
         kind: EngineV2KVBackendKind,
@@ -252,7 +255,13 @@ public enum EngineV2Factory {
         event.fields = TelemetryFieldFilter.filter([
             "component": .string("engine"),
             "operation": .string("engine_v2_kv_backend"),
+            // `backend` is the engine; `kv_backend` is the KV storage kind.
+            // The kind was already here, but only inside the free-form
+            // `reason` string, where "fallback:kill_switch" hides it from
+            // any `group by`. It gets its own key so this event joins the
+            // heartbeat and the posture sample on the same value.
             "backend": .string("engine_v2"),
+            "kv_backend": .string(kind.rawValue),
             "model": .string(modelId),
             "reason": .string(reason),
         ])

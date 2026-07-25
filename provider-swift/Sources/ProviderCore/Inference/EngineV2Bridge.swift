@@ -33,6 +33,45 @@ import ProviderCoreFoundation
 import os
 #endif
 
+/// What a paged slot's construction-fixed pool could NOT do when the fleet
+/// re-slicer moved its grant.
+///
+/// A contiguous slot resizes its admission ledger and its physical capacity
+/// together, so every re-slice is exact. A paged slot's slabs are
+/// materialized once at engine construction (`PagedKVPool.materializeSlabs`)
+/// and `PagedKVPool` has no resize primitive, so a non-exact re-slice leaves
+/// one of two residues:
+///
+///   * GROW past the pool ⇒ `deferredGrowthBytes` of awarded fair share the
+///     slot cannot serve. The fleet re-slicer believes this slot holds them.
+///   * SHRINK below the pool ⇒ `strandedBytes` of physical KV the slot still
+///     owns after its fair share was cut. Nobody can use them: the re-slicer
+///     has already promised those bytes to a co-resident slot's logical
+///     grant while Metal still holds them here, so `Σ(logical grants) ≤
+///     fleet budget` stops implying `Σ(physical KV) ≤ fleet budget`.
+///
+/// Both are ZERO on a contiguous slot and on an exact paged re-slice. They
+/// are precisely the two inputs a real pool resize consumes — and, with no
+/// canary fleet, the only signal that a box's paged slots are partitioned by
+/// model ARRIVAL ORDER rather than by fair share.
+public struct PagedPoolResizeShortfall: Sendable, Equatable {
+    /// Committed physical pool bytes (`CBv2CapacitySnapshot
+    /// .kvBytesBackendCapacity`); always > 0 — an UNKNOWN pool yields no
+    /// shortfall at all rather than a fabricated one.
+    public let poolBytes: Int
+    /// The logical fair share the re-slicer last asked this slot to hold,
+    /// recorded BEFORE the physical clamp.
+    public let requestedBytes: Int
+
+    /// Awarded grant the construction-fixed pool cannot serve.
+    public var deferredGrowthBytes: Int { max(0, requestedBytes - poolBytes) }
+    /// Physical KV held past the current fair share; unreclaimable without
+    /// an unload/rebuild of the slot's engine.
+    public var strandedBytes: Int { max(0, poolBytes - requestedBytes) }
+    /// The pool and the fair share agree — nothing to resize.
+    public var isExact: Bool { poolBytes == requestedBytes }
+}
+
 /// Bridges one `CBv2Engine` (one loaded model) to the provider's
 /// `GenerationEvent` streaming surface.
 ///
@@ -126,8 +165,11 @@ public actor EngineV2Bridge {
     /// checkpoint-tier logger). Started by the slot factory when an active
     /// cache exists; cancelled in `shutdown()`.
     var prefixCacheStatsTask: Task<Void, Never>?
-    /// Periodic content-free MTP metrics logger, cancelled by `shutdown()`.
-    var mtpMetricsTask: Task<Void, Never>?
+    /// Periodic content-free per-slot POSTURE sampler: the MTP metrics log
+    /// plus the `engine_v2_slot_posture` telemetry event that produces the
+    /// v0.8.0 MTP and paged-pool fields. Runs for every slot, MTP or not —
+    /// see `configureMTPStatus`. Cancelled by `shutdown()`.
+    var slotPostureTask: Task<Void, Never>?
     var mtpActivationStatus = MTPActivationStatus.disabled(
         .configDisabled, configured: false)
     /// Injectable telemetry sink (tests); nil ⇒ `TelemetryClient.shared`.
@@ -224,6 +266,16 @@ public actor EngineV2Bridge {
     /// Set on the OLD bridge being drained; the recovered slot's fresh
     /// bridge starts clean.
     var recoveryReloading = false
+    /// The logical fair share the fleet re-slicer last asked this slot to
+    /// hold, recorded BEFORE the paged physical clamp so the part a
+    /// construction-fixed pool cannot honour stays measurable
+    /// (`pagedPoolResizeShortfall()`). nil until the first re-slice: a
+    /// freshly-built slot's admission ceiling IS its pool, by construction.
+    var lastRequestedKVBytesCapacity: Int?
+    /// Last shortfall shape published to telemetry, so the clamp signal is
+    /// emitted on CHANGE only — the re-slicer fires on every load and unload
+    /// of every co-resident model, and an unchanged residue is not news.
+    var lastPagedShortfallEmitted: PagedPoolResizeShortfall?
 
     public init(
         engine: any CBv2Engine,
@@ -705,15 +757,36 @@ public actor EngineV2Bridge {
     /// does NOT reclaim physical memory; callers must never count it as
     /// freed. A later GROW can restore admission only up to the same pool.
     /// Reclaiming or adding physical bytes requires an unload/rebuild.
+    ///
+    /// Neither residue is silent any more: the pre-clamp target is recorded
+    /// and the difference is published as a `PagedPoolResizeShortfall`
+    /// (accessor + `paged_pool_resize_clamped` telemetry). Multi-model boxes
+    /// need it — a paged slot sized against the box as it looked at ITS load
+    /// instant is otherwise indistinguishable from one holding its fair
+    /// share.
     public func updateKVBytesCapacity(_ bytes: Int) {
         let requested = max(0, bytes)
         guard let engine = ownedEngine else { return }
-        if kvBackendKind == .paged {
-            let physical = max(0, engine.capacity().kvBytesBackendCapacity)
-            engine.updateKVBytesCapacity(min(requested, physical))
-        } else {
+        guard kvBackendKind == .paged else {
             engine.updateKVBytesCapacity(requested)
+            return
         }
+        lastRequestedKVBytesCapacity = requested
+        // `kvBytesBackendCapacity == 0` means UNKNOWN, never "no pool" — the
+        // `CBv2CapacitySnapshot` contract says so in as many words. Clamping
+        // to it would pin this slot's admission ledger at ZERO for the rest
+        // of its life: the loaded-but-unserveable black hole the post-load
+        // guard exists to prevent, reached through a legal contract state.
+        // An unknown pool therefore does not bind, exactly as
+        // `backendSlotCapacity` already refuses to bind the heartbeat.
+        let physical = engine.capacity().kvBytesBackendCapacity
+        guard physical > 0 else {
+            engine.updateKVBytesCapacity(requested)
+            return
+        }
+        engine.updateKVBytesCapacity(min(requested, physical))
+        publishPagedPoolResizeShortfall(
+            PagedPoolResizeShortfall(poolBytes: physical, requestedBytes: requested))
     }
 
     /// Record the slot's cold-start load time for heartbeat reporting
@@ -728,6 +801,93 @@ public actor EngineV2Bridge {
     /// serveable-KV guard (`KVHeadroomProbe.postBuildServeable`).
     public func kvBackendPoolBytes() -> UInt64 {
         UInt64(max(0, capacitySnapshot().kvBytesBackendCapacity))
+    }
+
+    /// What this slot's construction-fixed paged pool could not do for the
+    /// re-slicer's most recent grant. nil on a contiguous slot, on a paged
+    /// slot whose pool capacity is UNKNOWN, and before the first re-slice
+    /// (a freshly-built slot's ceiling IS its pool).
+    public func pagedPoolResizeShortfall() -> PagedPoolResizeShortfall? {
+        guard kvBackendKind == .paged, let requested = lastRequestedKVBytesCapacity else {
+            return nil
+        }
+        let pool = capacitySnapshot().kvBytesBackendCapacity
+        guard pool > 0 else { return nil }
+        return PagedPoolResizeShortfall(poolBytes: pool, requestedBytes: requested)
+    }
+
+    /// Publish a change in the paged resize residue as `engine_health` /
+    /// `operation=paged_pool_resize_clamped`. WARN while a residue exists,
+    /// INFO on the edge back to exact. Off the inference hot path (the
+    /// re-slicer runs at model load/unload only) and carries aggregate pool
+    /// arithmetic exclusively — every key is already in the coordinator's
+    /// allowlist, and the filter is applied so a future key cannot leak.
+    ///
+    /// DELIBERATELY NOT `pool_utilization`. That key is defined fleet-wide as
+    /// OCCUPANCY (`bytesInUse / bytesCapacity`, produced by
+    /// `engine_v2_slot_posture` in `EngineV2Bridge+MTP.swift`), and this
+    /// event's grant-vs-pool ratio is a different quantity on the same
+    /// population — both are paged slots tagged `kv_backend=paged`, so
+    /// `avg(pool_utilization) by kv_backend` would blend them into noise.
+    /// That is the `backend`-overloading defect recurring, so the ratio is
+    /// not emitted here at all.
+    ///
+    /// RULED (Main, wave 2): this event carries RAW BYTES, never a second
+    /// ratio. A second `*_utilization` key was rejected — `min(a, b) / b`
+    /// clamps to 1.0 exactly when the fair share exceeds the pool, which is
+    /// the case co-residency exists to diagnose, so the magnitude vanishes
+    /// at the only moment it matters. Bytes compose: a consumer can sum,
+    /// diff, threshold, and derive the ratio from them; nothing recovers
+    /// bytes from a clamped ratio. The binding condition is that the ratio
+    /// stay DERIVABLE, so the denominator ships with the delta:
+    /// `pool_bytes` + `pool_deferred_growth_bytes` + `pool_stranded_bytes`.
+    ///
+    /// All three keys are mirrored (Go `telemetry_handlers.go`, Swift
+    /// `TelemetryEvent.swift`, TS `telemetry-types.ts`) and are emitted
+    /// TOGETHER. `pool_bytes` is the denominator and must never ship without
+    /// the deltas, nor they without it: `TelemetryFieldFilter` drops
+    /// unmirrored keys SILENTLY, so a partial set would look healthy at the
+    /// producer and arrive uninterpretable.
+    ///
+    /// `pool_stranded_bytes` is the fleet-visible diagnostic for the
+    /// co-residency admission defect — paged commits slabs per slot at
+    /// construction, so on a memory-tight box a later slot measures too
+    /// little headroom against the load minimum and 503s where an
+    /// all-contiguous box would have served. Without this number that
+    /// reaches the fleet as a mystery 503.
+    private func publishPagedPoolResizeShortfall(_ shortfall: PagedPoolResizeShortfall) {
+        guard shortfall != lastPagedShortfallEmitted else { return }
+        // Nothing to report when a slot has been exact all along.
+        if shortfall.isExact, lastPagedShortfallEmitted == nil { return }
+        lastPagedShortfallEmitted = shortfall
+        let reason: String
+        if shortfall.deferredGrowthBytes > 0 {
+            reason = "deferred_grow"
+        } else if shortfall.strandedBytes > 0 {
+            reason = "unreclaimed_shrink"
+        } else {
+            reason = "exact"
+        }
+        var event = TelemetryEvent(
+            source: .provider,
+            severity: shortfall.isExact ? .info : .warn,
+            kind: .engineHealth,
+            message: shortfall.isExact
+                ? "engine_v2: paged pool matches the re-sliced grant"
+                : "engine_v2: paged pool cannot follow the re-sliced grant "
+                    + "(pool \(shortfall.poolBytes) B vs grant \(shortfall.requestedBytes) B)")
+        event.fields = TelemetryFieldFilter.filter([
+            "component": .string("engine"),
+            "operation": .string("paged_pool_resize_clamped"),
+            "backend": .string("engine_v2"),
+            "kv_backend": .string("paged"),
+            "model": .string(modelId),
+            "reason": .string(reason),
+            "pool_bytes": .int(shortfall.poolBytes),
+            "pool_deferred_growth_bytes": .int(shortfall.deferredGrowthBytes),
+            "pool_stranded_bytes": .int(shortfall.strandedBytes),
+        ])
+        emit(event)
     }
 
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
@@ -752,8 +912,8 @@ public actor EngineV2Bridge {
         let statsTask = prefixCacheStatsTask
         prefixCacheStatsTask = nil
         statsTask?.cancel()
-        mtpMetricsTask?.cancel()
-        mtpMetricsTask = nil
+        slotPostureTask?.cancel()
+        slotPostureTask = nil
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }

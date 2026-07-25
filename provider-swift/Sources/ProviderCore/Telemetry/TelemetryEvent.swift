@@ -283,6 +283,14 @@ public enum TelemetryFieldFilter {
         // Paged KV pool metrics. Aggregate pool counters only — never page
         // contents or block hashes. Mirror in Go + TS allowlists.
         "pages_pinned", "cow_events", "pool_utilization",
+        // Paged pool re-slice residue. RAW BYTES, not a second ratio:
+        // pool_utilization above is OCCUPANCY, and a grant-vs-pool ratio under
+        // a near-identical name collides with it wherever a dashboard groups
+        // by kv_backend. A clamped ratio also discards the overflow magnitude
+        // at exactly the point co-residency diagnosis needs it. pool_bytes is
+        // the denominator, shipped alongside the deltas so share-of-pool stays
+        // derivable from raw terms. Mirror in Go + TS allowlists.
+        "pool_bytes", "pool_deferred_growth_bytes", "pool_stranded_bytes",
         // MTP (speculative decode) posture. MTP inflates observed_decode_tps
         // with no discriminator, so a partially-MTP fleet biases coordinator
         // routing on a metric it believes is homogeneous. mtp_inactive_reason

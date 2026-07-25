@@ -150,6 +150,14 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "pages_pinned",
   "cow_events",
   "pool_utilization",
+  // Paged pool re-slice residue: raw bytes, not a second ratio. Above,
+  // `pool_utilization` is OCCUPANCY; a grant-vs-pool ratio under a
+  // near-identical name collides with it in any `group by kv_backend`, and a
+  // clamped ratio drops the overflow magnitude. `pool_bytes` is the
+  // denominator, so share-of-pool stays derivable.
+  "pool_bytes",
+  "pool_deferred_growth_bytes",
+  "pool_stranded_bytes",
   // MTP (speculative decode) posture. MTP inflates observed_decode_tps with
   // no discriminator, so a partially-MTP fleet biases routing on a metric the
   // coordinator believes is homogeneous. Bounded enums and counters only.

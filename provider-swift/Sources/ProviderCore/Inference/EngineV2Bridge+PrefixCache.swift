@@ -194,7 +194,14 @@ extension EngineV2Bridge {
         event.fields = TelemetryFieldFilter.filter([
             "component": .string("engine"),
             "operation": .string("prefix_cache_replay"),
-            "backend": .string(kvBackendKind.rawValue),
+            // `backend` names the ENGINE executing inference, matching
+            // RegisterMessage.backend on the wire. The KV STORAGE KIND is a
+            // separate axis and rides `kv_backend` — deliberately the same
+            // key and vocabulary as BackendSlotCapacity.KVBackend on the
+            // heartbeat wire, so telemetry and per-slot capacity group
+            // identically. Never fold one into the other.
+            "backend": .string("engine_v2"),
+            "kv_backend": .string(kvBackendKind.rawValue),
             "model": .string(modelId),
             "reason": .string(reason),
             "prefix_reuse_strategy": .string("none"),
@@ -249,7 +256,9 @@ extension EngineV2Bridge {
         event.fields = TelemetryFieldFilter.filter([
             "component": .string("engine"),
             "operation": .string("prefix_cache_replay"),
-            "backend": .string(kvBackendKind.rawValue),
+            // Same two axes as the cold-fallback event above.
+            "backend": .string("engine_v2"),
+            "kv_backend": .string(kvBackendKind.rawValue),
             "model": .string(modelId),
             "reason": .string(outcome),
             "prefix_reuse_strategy": .string(

@@ -44,6 +44,19 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 		t.Fatalf("tiny-node estimate = %d, want 0 (weights exceed cap)", got)
 	}
 
+	// (b1) The OTHER zero, and the one that only exists because the reserve is
+	// subtracted separately from the weights: a 20 GB node loading 14 GB of
+	// weights clears the cap with 0.90*20 - 14*1.1175870895385742 = 2.3538 GB
+	// to spare, so it survives the postLoadGB<=0 early return — but 2.35 GB
+	// cannot cover the 3 GiB activation floor, so the floor branch computes
+	// (2.3538*2^30 - 3221225472)/400000 = -1734.68 and the tokens<=0 guard
+	// clamps it. Drop that guard and this returns a NEGATIVE budget, which
+	// PredictServable would publish as FleetMaxBudget. Distinct from (b): there
+	// the weights alone bust the cap and the reserve never enters it.
+	if got := coldTokenBudgetEstimate(20, 14, 400000); got != 0 {
+		t.Fatalf("reserve-bound estimate = %d, want 0 (weights fit, activation floor does not)", got)
+	}
+
 	// (b2) Floor regime: a 48 GB node loading 28 GB of gemma-4 weights lands
 	// BELOW the crossover, so the flat floor is still the whole reserve and the
 	// estimate is unchanged from the pre-parametric formula.

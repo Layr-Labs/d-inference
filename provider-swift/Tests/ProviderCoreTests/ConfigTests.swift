@@ -39,42 +39,33 @@ import Testing
     #expect(decoded.backend.maxModelSlots == 5)
 }
 
-@Test func configParsingDefaultsKVQuantToFalse() throws {
+// v0.8.0 removed KV quantization from the product. Effectively every
+// provider.toml in the field carries `kv_quant` because the serializer used
+// to round-trip it, so an UPGRADING provider must load such a config without
+// error, keep every other setting, and surface `kv_quant` for the
+// retired-key WARN — the same treatment the v0.7.5 one-engine knobs get.
+@Test func configParsingRetiresKVQuantWithoutLosingNeighbours() throws {
     let config = ConfigManager.parse("""
     [provider]
     name = "test-provider"
 
     [backend]
     port = 8100
-    """)
-
-    #expect(config.backend.kvQuant == false)
-}
-
-@Test func configParsingHonoursKVQuantTrue() throws {
-    let config = ConfigManager.parse("""
-    [provider]
-    name = "test-provider"
-
-    [backend]
     kv_quant = true
+    max_model_slots = 7
+    idle_timeout_mins = 30
+    engine_v2_kv_backend = "paged"
+    mtp = true
     """)
 
-    #expect(config.backend.kvQuant == true)
-}
-
-@Test func configSerializationRoundTripsKVQuant() throws {
-    let original = ProviderConfig(
-        provider: ProviderSettings(name: "test-provider"),
-        backend: BackendSettings(kvQuant: true),
-        coordinator: CoordinatorSettings()
-    )
-
-    let toml = ConfigManager.serialize(original)
-    let decoded = ConfigManager.parse(toml)
-
-    #expect(toml.contains("kv_quant"))
-    #expect(decoded.backend.kvQuant == true)
+    #expect(config.backend.retiredKeysPresent == ["kv_quant"])
+    // Every neighbouring setting survives the retired key.
+    #expect(config.provider.name == "test-provider")
+    #expect(config.backend.port == 8100)
+    #expect(config.backend.maxModelSlots == 7)
+    #expect(config.backend.idleTimeoutMins == 30)
+    #expect(config.backend.engineV2KVBackend == "paged")
+    #expect(config.backend.mtp == true)
 }
 
 @Test func configParsingSurfacesNoRetiredKeysByDefault() throws {
@@ -89,10 +80,10 @@ import Testing
     #expect(config.backend.retiredKeysPresent.isEmpty)
 }
 
-// v0.7.5 one-engine: the legacy engine's [backend] keys are RETIRED. An
-// old provider.toml must keep parsing cleanly — a stale config can never
-// brick a provider — and the retired keys must be SURFACED (startup WARNs
-// off this list) rather than silently swallowed. Their values are ignored.
+// v0.7.5 one-engine (plus `kv_quant`, retired in v0.8.0): these [backend]
+// keys are RETIRED. An old provider.toml must keep parsing cleanly — a stale
+// config can never brick a provider — and the retired keys must be SURFACED
+// (startup WARNs off this list) rather than silently swallowed. Values ignored.
 @Test func configParsingSurfacesRetiredKeysWithoutFailing() throws {
     let config = ConfigManager.parse("""
     [provider]
@@ -103,13 +94,14 @@ import Testing
     continuous_batching = false
     adaptive_prefill = true
     legacy_compiled_decode = true
+    kv_quant = true
     idle_timeout_mins = 30
     """)
 
     #expect(
         Set(config.backend.retiredKeysPresent) == [
             "engine_v2", "continuous_batching", "adaptive_prefill",
-            "legacy_compiled_decode",
+            "legacy_compiled_decode", "kv_quant",
         ])
     // Live neighbors still decode.
     #expect(config.backend.idleTimeoutMins == 30)
@@ -130,6 +122,7 @@ import Testing
     #expect(!toml.contains("engine_v2 ="))
     #expect(!toml.contains("continuous_batching"))
     #expect(!toml.contains("legacy_compiled_decode"))
+    #expect(!toml.contains("kv_quant"))
     #expect(decoded.backend.retiredKeysPresent.isEmpty)
 }
 

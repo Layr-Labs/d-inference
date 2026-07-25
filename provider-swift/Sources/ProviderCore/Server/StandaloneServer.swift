@@ -63,10 +63,6 @@ public struct StandaloneServerConfig: Sendable {
     /// Bearer token required on every inference route (direct/local mode).
     /// nil = no auth (library default / explicit `--no-auth`).
     public let authToken: String?
-    /// Operator `kv_quant` intent. The v2 engine is fp16-only, so this now
-    /// only drives the one-per-load WARN telemetry (config key retires in
-    /// the v0.7.5 env/config cleanup).
-    public let kvQuant: Bool
     /// Detected local hardware. Was the adaptive-prefill ladder seed;
     /// retained for CLI compatibility, currently unused on the v2 path.
     public let hardware: HardwareInfo?
@@ -90,7 +86,6 @@ public struct StandaloneServerConfig: Sendable {
         host: String = "127.0.0.1",
         maxCachedModels: Int = 3,
         authToken: String? = nil,
-        kvQuant: Bool = false,
         hardware: HardwareInfo? = nil,
         engineV2MaxConcurrent: UInt64 = 4,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
@@ -103,7 +98,6 @@ public struct StandaloneServerConfig: Sendable {
         self.host = host
         self.maxCachedModels = max(1, maxCachedModels)
         self.authToken = authToken
-        self.kvQuant = kvQuant
         self.hardware = hardware
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
@@ -820,7 +814,6 @@ public actor StandaloneServer {
                 kvBytesCapacity: targets[modelId] ?? 0,
                 maxConcurrentRequests: engineV2MaxConcurrent(forModel: modelId),
                 kvBudget: kvBudget,
-                kvQuantConfigured: config.kvQuant,
                 kvBackendConfig: config.engineV2KVBackend,
                 kvBackendConfigByModel: config.engineV2KVBackendByModel,
                 weightHash: cacheEligibleWeightHash,

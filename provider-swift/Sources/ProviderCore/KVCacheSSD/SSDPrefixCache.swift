@@ -683,10 +683,6 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 snapshots.append(nil)
                 continue
             }
-            guard seq.snapshotIsLossless else {
-                settlement.settle(.lossySnapshot)
-                return
-            }
             snapshots.append(seq.snapshot())
         }
         donate(

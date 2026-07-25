@@ -30,15 +30,8 @@ extension ProviderLoop {
         }
         for retired in loopConfig.config.backend.retiredKeysPresent {
             logger.warning(
-                "provider.toml sets [backend] \(retired), which is retired and IGNORED as "
-                    + "of v0.7.5 (one engine) — remove the key")
-        }
-        if loopConfig.config.backend.kvQuant {
-            logger.warning(
-                "provider.toml sets kv_quant = true, which is REJECTED as of v0.7.5 — the "
-                    + "v2 engine serves fp16-only KV caches (the legacy KV-quant schemes "
-                    + "died with the legacy engine; a CBv2-native KV-quant fast-follow is "
-                    + "planned). The value is NOT silently honored.")
+                "provider.toml sets [backend] \(retired), which is a RETIRED knob and is "
+                    + "IGNORED — remove the key")
         }
 
         logger.info("darkbloom \(ProviderCore.version) starting")

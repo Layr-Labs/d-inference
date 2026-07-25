@@ -1585,22 +1585,6 @@ private enum TestBudgets {
 @Suite("EngineV2 shared-budget KV accounting")
 struct EngineV2SharedBudgetTests {
 
-    @Test("kv_quant → fp16 sizing decision (EngineV2KVSizing)")
-    func fp16SizingDecision() {
-        // kv_quant OFF (rates equal): use the rate, no WARN.
-        let off = EngineV2KVSizing.resolve(quantizedRate: 400_000, fp16Rate: 400_000)
-        #expect(off.rate == 400_000)
-        #expect(!off.warnKVQuantUnsupported)
-        // kv_quant ON (quantized below fp16): pick fp16, WARN.
-        let on = EngineV2KVSizing.resolve(quantizedRate: 100_000, fp16Rate: 400_000)
-        #expect(on.rate == 400_000)
-        #expect(on.warnKVQuantUnsupported)
-        // fp16 unknown: fall back to the quantized rate, never WARN.
-        let unknown = EngineV2KVSizing.resolve(quantizedRate: 100_000, fp16Rate: 0)
-        #expect(unknown.rate == 100_000)
-        #expect(!unknown.warnKVQuantUnsupported)
-    }
-
     @Test("an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish")
     func recordsAndReleasesReservation() async {
         // Manual script so the request stays in-flight until we drive the terminal.

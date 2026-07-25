@@ -221,13 +221,13 @@ darkbloom beta disable <feature>    # turn off
 
 | Feature | Effect |
 |---------|--------|
-| `kv-quant` | Forward-compatibility toggle; v0.7.5 warns and continues with fp16 KV |
 | `mtp` | Default-off Gemma 4 MTP code path; requires a separately published and verified `spec_dec` artifact, which production does not currently have |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
 beta list` also accepts `--json`. Installing a provider release does not enable
 MTP, and local parity results are not a blanket M1–M3/unknown-chip certification.
+`kv-quant` was removed in v0.8.0 and is no longer a valid feature id.
 
 ## `darkbloom fan` (experimental)
 

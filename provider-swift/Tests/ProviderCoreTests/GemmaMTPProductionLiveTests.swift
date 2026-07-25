@@ -124,7 +124,6 @@ struct GemmaMTPProductionLiveTests {
             kvBytesCapacity: grant,
             maxConcurrentRequests: 1,
             kvBudget: nil,
-            kvQuantConfigured: false,
             specDecPreparation: preparation,
             preparedModel: prepared,
             environment: ["DARKBLOOM_PREFIX_CACHE": "0"])

@@ -2953,24 +2953,6 @@ struct SSDPrefixCacheDonationOutcomeTests {
             layerKinds: fixtureLayerKinds,
             cacheSalt: nil)
 
-        let lossy = makeCache(
-            dir: root.appendingPathComponent("lossy"),
-            kek: SymmetricKey(size: .bits256),
-            clock: ClockBox(10_000),
-            donationRecorder: recorder)
-        let quantized = CBv2QuantizedSequenceKV(
-            promptLength: 16,
-            maxLength: 32,
-            kvHeads: fixtureKVHeads,
-            headDim: 64,
-            groupSize: 64,
-            bits: 4)
-        lossy.donate(
-            tokens: Array(0 ..< 16),
-            state: [quantized, nil],
-            layerKinds: fixtureLayerKinds,
-            cacheSalt: nil)
-
         let closed = makeCache(
             dir: root.appendingPathComponent("closed"),
             kek: SymmetricKey(size: .bits256),
@@ -2988,10 +2970,9 @@ struct SSDPrefixCacheDonationOutcomeTests {
         #expect(recorder.count(.incompleteLayerState) == 1)
         #expect(recorder.count(.stageSizeExceeded) == 1)
         #expect(recorder.count(.writeRateLimited) == 1)
-        #expect(recorder.count(.lossySnapshot) == 1)
         #expect(recorder.count(.cacheClosed) == 1)
 
-        for cache in [noBlock, belowFloor, incomplete, stageCapped, rateLimited, lossy] {
+        for cache in [noBlock, belowFloor, incomplete, stageCapped, rateLimited] {
             cache.close()
         }
     }

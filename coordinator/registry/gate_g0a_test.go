@@ -55,9 +55,20 @@ func TestGateG0AQualityCapReachesEightOnMeasuredRates(t *testing.T) {
 // The cap is only reachable because a REAL per-model measurement reaches the
 // coordinator. This pins the reason: on the bandwidth fallback the same
 // provider is capped to 1, so B=8 would never be dispatched and Gate G0b would
-// have measured nothing. If someone removes the relaxed solo-rate tier, this
-// test is what says why B=8 stopped happening.
-func TestGateG0ABandwidthFallbackWouldPinTheCap(t *testing.T) {
+// have measured nothing.
+//
+// SCOPE, and it is narrower than it first looks. effectiveMaxConcurrencyForModelRateLocked
+// short-circuits to `base` when a provider reports no decode_tps AND the rate is
+// not per-model AND the model is NOT dedicated -- deliberately, because the
+// bandwidth proxy under-reads fast models and hard-capping them from it would
+// shed healthy traffic. So this pinning applies to DEDICATED models, and
+// gemma-4 is dedicated in production (EIGENINFERENCE_DEDICATED_MODELS=gemma-4,
+// deploy/environments/prod.env:26). That is precisely the model this migration
+// targets, so the guard does not spare it.
+//
+// If someone removes the relaxed solo-rate tier, this test is what says why
+// B=8 stopped happening on gemma-4.
+func TestGateG0ABandwidthFallbackWouldPinTheCapForDedicatedModels(t *testing.T) {
 	got := qualityConcurrency(bandwidthProxyTPS, prodFloorTPS, effectiveTPSLoadFactor, engineCeiling, engineCeiling)
 	if got >= engineCeiling {
 		t.Fatalf("bandwidth-proxy cap = %d, want well below %d: if the coarse "+

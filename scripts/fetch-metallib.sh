@@ -45,10 +45,35 @@ test -f "$MLX_SRC/mlx/version.h" || {
 
 MLX_SHA="$(git -C "$MLX_SRC" rev-parse HEAD 2>/dev/null || echo nogit)"
 
-# Cache the built metallib by mlx commit + deployment target so repeat runs are
-# instant (the build is ~1 min). Override with METALLIB_CACHE_DIR.
+# The commit alone is NOT a sufficient cache key: kernel work happens in the
+# WORKING TREE long before it is committed, and serving a metallib built from
+# different sources than the host code that dispatches into it is not a stale
+# cache — it is a hang. (Observed: patching `qmm_t_impl`'s M parameter while
+# reusing the pre-patch metallib wedges the GPU at 0% CPU.) So fold any
+# uncommitted change — tracked diffs AND untracked files — into the key.
+MLX_TREE_HASH="$({
+    git -C "$MLX_SRC" diff HEAD -- 2>/dev/null || true
+    git -C "$MLX_SRC" ls-files --others --exclude-standard 2>/dev/null \
+        | while IFS= read -r f; do
+            printf '%s\n' "$f"
+            cat "$MLX_SRC/$f" 2>/dev/null || true
+        done
+} | shasum -a 256 | cut -d' ' -f1)"
+# Hash of empty input == a clean tree; keep those cache entries keyed exactly
+# as before so existing caches stay valid.
+MLX_CLEAN_HASH="$(printf '' | shasum -a 256 | cut -d' ' -f1)"
+if [ "$MLX_TREE_HASH" = "$MLX_CLEAN_HASH" ]; then
+    MLX_TREE_SUFFIX=""
+else
+    MLX_TREE_SUFFIX="-w${MLX_TREE_HASH:0:12}"
+    echo "→ mlx working tree is dirty; keying metallib on its contents (${MLX_TREE_HASH:0:12})"
+fi
+
+# Cache the built metallib by mlx commit + working-tree contents + deployment
+# target so repeat runs are instant (the build is ~1 min). Override with
+# METALLIB_CACHE_DIR.
 CACHE_DIR="${METALLIB_CACHE_DIR:-/tmp/mlx-metallib-cache}"
-CACHED="$CACHE_DIR/mlx-${MLX_SHA}-dt${DEPLOYMENT_TARGET}.metallib"
+CACHED="$CACHE_DIR/mlx-${MLX_SHA}${MLX_TREE_SUFFIX}-dt${DEPLOYMENT_TARGET}.metallib"
 
 if [ ! -s "$CACHED" ]; then
     echo "→ Building mlx.metallib from $MLX_SRC @ ${MLX_SHA:0:12} (deployment target $DEPLOYMENT_TARGET)"

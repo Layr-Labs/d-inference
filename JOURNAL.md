@@ -197,7 +197,7 @@ gitlink, open a PR per track, then run the full validation set.
 | C4 | mixed-version gate | **DONE** `d1c8abc5b` |
 | KVQuantEngine | engine kv-quant removal (−621) | **DONE** `f5d0616` |
 | KVQuantProvider | `kv_quant` → `RetiredCodingKeys`, orphaned scaffolding, docs | **DONE** `ee9b48bf0` |
-| F2 | heartbeat `kv_backend` discriminator (**Gate G5 CLEARED**) | **DONE** `548f0b63e` |
+| F2 | heartbeat `kv_backend` discriminator — wire field only | **DONE** `548f0b63e` |
 | F3 | 9 telemetry fields + `backend` key ruling | **DONE** `28e4ef661` |
 | F4 | telemetry PRODUCERS (F3 added allowlist entries; nothing emits them) | running |
 | W15 | co-residency — §15 premise REFUTED; found D1, a 2-model 36 GiB regression | **DONE**, uncommitted |
@@ -969,3 +969,58 @@ The honest shape is a linear stack, not a fan.
 
 Rule: **build every PR branch before opening it.** A cherry-pick that applies is
 not a PR that compiles.
+
+---
+
+## 2026-07-25 — v0.8.0 completion pass: review, features, gates
+
+### Two claims I wrote that were FALSE, caught by agents
+
+1. **"Gate G5 CLEARED" against `548f0b63e`** (journal line 200, now corrected).
+   That commit added the `kv_backend` WIRE FIELD only. Nothing read it, so
+   nothing could be segmented by it — the gate could not have been cleared by
+   a field with no reader. G5 is actually closed by `4f1b38e3c`. Caught by
+   `G5_BackendSegmentation`, which also corrected two claims in the brief I
+   gave it: the registry *was* already storing `KVBackend` (wholesale
+   `BackendCapacity` assignment), and the per-request TTFT / decode-TPS
+   metrics I told it to "tag" did not exist — measured values lived only in
+   Postgres columns and the `X-Timing` header, neither groupable live.
+
+2. **"97 pages is the landed formula and 65 caused a daemon abort."**
+   True when written, stale within hours. 65 is now landed and correct — but
+   only because three preconditions hold that did not before: the pre-write
+   gather is on BOTH the layer and row paths, `retainedCount` is clamped to
+   `maxWindowExposure`, and `PagedKVPool.gather` publishes a fence back-edge.
+   That last was a latent bug the shrink uncovered: `gather` and `writeTokens`
+   were graph SIBLINGS, benign at 1,552 tokens because history and chunk never
+   shared a ring slot, silently CORRUPTING at 1,040 because they do.
+
+### The structural hazard that cost the most time
+
+There are TWO checkouts of the `mlx-swift-lm` submodule on the same branch —
+one under `d-inference-paged-engine` (write side) and one under
+`d-inference-paged-kv/libs` (read side, which `provider-swift` compiles).
+I created that situation and did not name it as a hazard until `R6` did.
+
+It broke the build three times, and each time the proximate cause was MINE:
+- `git add -A <dir>` swept a sibling's mid-edit file into a commit.
+- An explicit staging list that was two files short, because the file I staged
+  carried another agent's hunks whose dependencies I did not check.
+
+Rule now in force: **the read side is output.** Engine work happens in the
+write side, I commit, I fast-forward. Never a hand-mirror, never the reverse.
+
+### Verification lessons banked, all earned by agents rather than asserted
+
+- A green build does not prove your edit landed. (W15)
+- A clean `git status` does not prove the tree matches HEAD — a stale index
+  hid a divergent working file. `git update-index --really-refresh` exposes it.
+- A set of greps across turns does not prove they saw the same tree. Cite HEAD
+  alongside line numbers, or a multi-turn read can straddle a fast-forward and
+  describe a state that never existed. (`D1AdmissionMap`, on itself)
+- Absence of a symbol is not absence of a file. (`D1EngineSlabMap`, on itself)
+- `swift test --filter` matches the SYMBOL, not the `@Suite` display name; the
+  display-name form silently matches zero tests and reports a passing run. (R5)
+- A `@testable import` of the provider does NOT transitively bring in the
+  engine module's public types. That failure reads identically to a missing
+  commit, and was misattributed as one by three agents.

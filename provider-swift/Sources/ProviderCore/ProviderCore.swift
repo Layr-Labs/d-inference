@@ -129,8 +129,7 @@ public enum ProviderCore {
     //     DARKBLOOM_COMPILED_DECODE, B=1 fast-path + KV-quant + adaptive-
     //     prefill envs; [backend] engine_v2 /
     //     continuous_batching / adaptive_prefill / legacy_compiled_decode
-    //     parse-and-WARN as retired; kv_quant is REJECTED-with-WARN (a
-    //     CBv2-native KV-quant fast-follow is planned).
+    //     parse-and-WARN as retired.
     // Rollback is release-level (re-point latest to 0.7.4) — there is no
     // in-binary legacy engine to fall back to. No protocol changes: same
     // WebSocket message types, same BackendSlotCapacity wire shape;
@@ -140,7 +139,7 @@ public enum ProviderCore {
     // "auto" contiguous and leaves paged explicit/experimental. Explicit pools
     // eagerly commit only an independently capped physical plan, report pool
     // truth through existing heartbeat fields, and map terminal exhaustion to
-    // retryable capacity. VLM and kv-quant slots stay contiguous.
+    // retryable capacity. VLM slots stay contiguous.
     // 0.7.12 restores exact hybrid-attention SSD prefix reuse through
     // frozen-full tail replay and enforces Gemma tool choices during decoding.
     // Constrained requests advertise an explicit per-model protocol capability

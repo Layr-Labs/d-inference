@@ -69,6 +69,11 @@ public enum PrefixCacheDonationOutcome: String, Codable, Sendable, Equatable, Ca
     case donated
     case belowEffectiveTokenFloor = "below_effective_token_floor"
     case noCompleteBlock = "no_complete_block"
+    /// Retained for wire compatibility with pre-0.8.0 providers; the
+    /// producing guard was removed in the kv-quant removal (no cache
+    /// backend reports a lossy snapshot any more). The coordinator's
+    /// `registry/cache_eligibility.go` still lists `lossy_snapshot`, so
+    /// this case must not be dropped during the v0.8.0 rollout window.
     case lossySnapshot = "lossy_snapshot"
     case incompleteLayerState = "incomplete_layer_state"
     case stageSizeExceeded = "stage_size_exceeded"

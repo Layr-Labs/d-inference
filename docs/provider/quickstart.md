@@ -113,11 +113,9 @@ auto_restart = true
 
 [backend]
 model = ""
-continuous_batching = true
 enabled_models = []
 idle_timeout_mins = 60
 max_model_slots = 3
-kv_quant = false
 
 [coordinator]
 url = "wss://api.darkbloom.dev/ws/provider"
@@ -134,13 +132,10 @@ end = "08:00"
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).
 - `backend.max_model_slots` — maximum resident models at once (default 3).
-- `backend.kv_quant` — retained for forward compatibility, but v0.7.5 serves
-  fp16-only KV. Setting it logs a warning and does not enable quantization. See
-  [Beta Features](beta-features.md).
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` (default — contiguous for every model), experimental `"paged"`,
-  or `"contiguous"`. Vision models and `kv_quant`
-  configurations always serve contiguous; models the paged kernel cannot
+  or `"contiguous"`. Vision models always serve contiguous; models the
+  paged kernel cannot
   serve fall back to contiguous automatically. Per-model overrides:
   `engine_v2_kv_backend_by_model` (TOML table of model id → value). Fleet
   kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0` (survives restarts —

@@ -19,7 +19,7 @@ struct Beta: AsyncParsableCommand {
           status [feature]     Show details for all features, or one.
 
         Most changes require a restart to take effect:
-          darkbloom beta enable kv-quant
+          darkbloom beta enable mtp
           darkbloom restart
         """,
         subcommands: [List.self, Enable.self, Disable.self, Status.self],

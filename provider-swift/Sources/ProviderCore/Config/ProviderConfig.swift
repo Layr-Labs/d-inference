@@ -80,13 +80,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// coordinator-driven preloads so advertised model count cannot become a
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
-    /// KV-cache quantization request. v0.7.5 serves fp16-only KV (the
-    /// KV-quant schemes died with the legacy engine); a `kv_quant = true`
-    /// is REJECTED-with-WARN at startup and per model load — never
-    /// silently ignored — because a CBv2-native KV-quant fast-follow is
-    /// planned and operators who set this should learn it does not apply
-    /// yet, not wonder why memory numbers moved.
-    public var kvQuant: Bool
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default 4 — the
     /// CBv2 product target. Clamped to [1, 8] at use: the engine's KV
@@ -102,10 +95,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
     /// `[backend]`): "auto" (default — contiguous for every current and
-    /// future model), experimental "paged", or "contiguous". VLM slots and
-    /// `kv_quant = true` always force contiguous; kernel-ineligible models
-    /// fall back to contiguous with an INFO telemetry event. Fleet kill
-    /// switch: `DARKBLOOM_CBV2_PAGED_KV=0`. See `EngineV2KVBackendPolicy`.
+    /// future model), experimental "paged", or "contiguous". VLM slots
+    /// always force contiguous. Under "auto" a model that cannot serve
+    /// paged falls back to contiguous with an INFO event; under an
+    /// explicit "paged" it REFUSES the load instead, so a paged fleet
+    /// can never silently serve contiguous. Fleet kill switch
+    /// `DARKBLOOM_CBV2_PAGED_KV=0` always degrades, never refuses.
+    /// See `EngineV2KVBackendPolicy`.
     public var engineV2KVBackend: String
     /// Optional per-model override map (`engine_v2_kv_backend_by_model`
     /// under `[backend]`, TOML table of model id → "auto" | "paged" |
@@ -156,10 +152,10 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var mtpDrafterPath: String?
     /// RETIRED `[backend]` keys found in the decoded provider.toml
     /// (`engine_v2`, `continuous_batching`, `adaptive_prefill`,
-    /// `legacy_compiled_decode`). The keys parse cleanly — an old config
-    /// must never brick a provider — but their values are IGNORED;
-    /// startup emits one WARN per entry so operators notice the knob no
-    /// longer exists. Not encoded back out.
+    /// `legacy_compiled_decode`, `kv_quant`). The keys parse cleanly — an
+    /// old config must never brick a provider — but their values are
+    /// IGNORED; startup emits one WARN per entry so operators notice the
+    /// knob no longer exists. Not encoded back out.
     public internal(set) var retiredKeysPresent: [String] = []
 
     public init(
@@ -168,7 +164,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
-        kvQuant: Bool = false,
         engineV2MaxConcurrent: UInt64 = 4,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
@@ -186,7 +181,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = enabledModels
         self.idleTimeoutMins = idleTimeoutMins
         self.maxModelSlots = maxModelSlots
-        self.kvQuant = kvQuant
         self.engineV2MaxConcurrent = engineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel = engineV2MaxConcurrentByModel
         self.engineV2KVBackend = engineV2KVBackend
@@ -206,7 +200,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case enabledModels = "enabled_models"
         case idleTimeoutMins = "idle_timeout_mins"
         case maxModelSlots = "max_model_slots"
-        case kvQuant = "kv_quant"
         case engineV2MaxConcurrent = "engine_v2_max_concurrent"
         case engineV2MaxConcurrentByModel = "engine_v2_max_concurrent_by_model"
         case engineV2KVBackend = "engine_v2_kv_backend"
@@ -220,13 +213,16 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         case mtpDrafterPath = "mtp_drafter_path"
     }
 
-    /// RETIRED `[backend]` keys (v0.7.5 one-engine): parsed for presence
-    /// only, values ignored. See `retiredKeysPresent`.
+    /// RETIRED `[backend]` keys: parsed for presence only, values ignored.
+    /// See `retiredKeysPresent`. v0.7.5 (one engine) retired the four
+    /// selection knobs; v0.8.0 retired `kv_quant` along with the KV
+    /// quantization feature itself.
     private enum RetiredCodingKeys: String, CodingKey, CaseIterable {
         case continuousBatching = "continuous_batching"
         case adaptivePrefill = "adaptive_prefill"
         case engineV2 = "engine_v2"
         case legacyCompiledDecode = "legacy_compiled_decode"
+        case kvQuant = "kv_quant"
     }
 
     public init(from decoder: Decoder) throws {
@@ -236,7 +232,6 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.enabledModels = try container.decodeIfPresent([String].self, forKey: .enabledModels) ?? []
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
-        self.kvQuant = try container.decodeIfPresent(Bool.self, forKey: .kvQuant) ?? false
         self.engineV2MaxConcurrent =
             try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent) ?? 4
         self.engineV2MaxConcurrentByModel =

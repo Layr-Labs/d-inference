@@ -76,6 +76,30 @@ enum SSDPrefixCachePolicy {
         return n
     }
 
+    // MARK: - Windowed sidecar (WS-4.2)
+
+    /// Persist and restore the sliding window alongside the full-attention
+    /// blocks. **Default OFF.** WS-4.2 lands the format, the write/read paths
+    /// and the residency plumbing; turning it on moves gemma-4's donation
+    /// floor from 27,137 tokens to `blockSize + minEffectiveTokens`, which is
+    /// a separate, deliberate step that also needs WS-4.1's
+    /// `restoreWindow(keys:values:base:)` on the paged row.
+    ///
+    /// Costs it turns on, measured against gemma-4's real geometry (25
+    /// sliding layers × 8 KV heads × 256 head dim vs 5 full layers × 2 × 512,
+    /// i.e. 204,800 vs 20,480 fp16 bytes per token — a 10:1 ratio):
+    /// +52.4 MB of disk per newly covered 256-token block and +209.7 MB on
+    /// the terminal-four stage read.
+    static let windowSidecarFlag = "DARKBLOOM_PREFIX_CACHE_SSD_WINDOW_SIDECAR"
+
+    static func windowSidecarEnabled(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        let raw = environment[windowSidecarFlag]?
+            .trimmingCharacters(in: .whitespaces).lowercased()
+        return raw == "1" || raw == "true" || raw == "yes" || raw == "on"
+    }
+
     /// Per-adoption staged-bytes cap (bounds the transient staging RAM and
     /// the pre-submit read).
     static let maxStageMBFlag = "DARKBLOOM_PREFIX_CACHE_SSD_MAX_STAGE_MB"

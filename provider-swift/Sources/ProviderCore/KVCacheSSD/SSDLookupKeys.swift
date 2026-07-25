@@ -8,6 +8,9 @@
 //     tag_i    = HMAC-SHA256(K_lookup,
 //                    "dbkv3-name-v1" ‖ u64le(len(saltUTF8)) ‖ saltUTF8
 //                                    ‖ chainHash_i)
+//     win_i    = HMAC-SHA256(K_lookup,
+//                    "dbkv3-window-v1" ‖ u64le(len(saltUTF8)) ‖ saltUTF8
+//                                      ‖ chainHash_i)
 //
 // * K_lookup is derived from the existing Secure-Enclave-rooted KEK
 //   (RFC 5869 Expand-only — the KEK is already a uniform 256-bit key, so
@@ -35,6 +38,12 @@ struct SSDLookupKeys: Sendable {
 
     static let hkdfInfo = Data("dbkv3-lookup-v1".utf8)
     static let nameDomainTag = Data("dbkv3-name-v1".utf8)
+    /// Domain tag for WS-4.2 windowed sidecars. A DIFFERENT domain, not a
+    /// different key: the sidecar of a block must land on its own filename
+    /// (both live in the same fan-out tree under the same grammar), and a
+    /// disk observer must not be able to pair a block with its sidecar —
+    /// which a shared domain plus a suffix would hand them for free.
+    static let windowNameDomainTag = Data("dbkv3-window-v1".utf8)
     /// Truncated-tag length used for filenames and the RAM index (128-bit;
     /// the full 256-bit tag rides inside the authenticated file metadata).
     static let truncatedTagLength = 16
@@ -51,8 +60,12 @@ struct SSDLookupKeys: Sendable {
     /// ("" ⇒ unscoped — length-prefixed, so it can never collide with a
     /// non-empty salt whose bytes happen to align).
     func tag(chainHash: Data, cacheSalt: String) -> Data {
+        tag(chainHash: chainHash, cacheSalt: cacheSalt, domain: Self.nameDomainTag)
+    }
+
+    private func tag(chainHash: Data, cacheSalt: String, domain: Data) -> Data {
         var message = Data()
-        message.append(Self.nameDomainTag)
+        message.append(domain)
         let saltBytes = Data(cacheSalt.utf8)
         var len = UInt64(saltBytes.count).littleEndian
         withUnsafeBytes(of: &len) { message.append(contentsOf: $0) }
@@ -64,6 +77,17 @@ struct SSDLookupKeys: Sendable {
     /// Truncated 16-byte tag (the RAM-index key and filename identity).
     func tag16(chainHash: Data, cacheSalt: String) -> Data {
         tag(chainHash: chainHash, cacheSalt: cacheSalt).prefix(Self.truncatedTagLength)
+    }
+
+    /// Full 32-byte lookup tag for the WINDOWED SIDECAR of one chain hash.
+    func windowTag(chainHash: Data, cacheSalt: String) -> Data {
+        tag(chainHash: chainHash, cacheSalt: cacheSalt, domain: Self.windowNameDomainTag)
+    }
+
+    /// Truncated 16-byte sidecar tag (RAM-index key and filename identity).
+    func windowTag16(chainHash: Data, cacheSalt: String) -> Data {
+        windowTag(chainHash: chainHash, cacheSalt: cacheSalt)
+            .prefix(Self.truncatedTagLength)
     }
 
     static func hex(_ data: Data) -> String {

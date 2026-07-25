@@ -129,29 +129,90 @@ enum PrefixCachePolicy {
             backend: backend)
     }
 
-    /// Conservative finite-window replay length. Kept as a policy convenience
-    /// for SSD donation/stage benefit gates; the engine plan remains
-    /// authoritative per matched boundary.
-    static func adoptionBoundTokens(layerKinds: [CBv2LayerKind]) -> Int {
-        CBv2PrefixReuseCapability.derive(
+    // MARK: - Window residency (WS-4.2)
+
+    /// Whether an adopter's sliding rows are RESTORED from windowed sidecars
+    /// or replayed. Default `.replayed` everywhere: WS-4.2 lands the format
+    /// and this plumbing, and the residency flip is a later, separate step.
+    ///
+    /// `.restoredFromSidecar` requires all three of:
+    ///   * the operator knob (`SSDPrefixCachePolicy.windowSidecarEnabled`);
+    ///   * a layout that tiles into whole-block sidecars
+    ///     (`SSDWindowSidecarGeometry.derive` — gpt-oss-20b's 128-token
+    ///     window does not, and correctly keeps its 1,536-token bound);
+    ///   * a row that can accept a restored window. Paged gets that from
+    ///     WS-4.1's `restoreWindow(keys:values:base:)`; a KILLED paged slot
+    ///     has degraded to a contiguous row, so it is resolved as contiguous.
+    static func windowResidency(
+        layerKinds: [CBv2LayerKind],
+        backendSelection: EngineV2KVBackendSelection,
+        pagedKilled: Bool = false,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> SSDWindowResidency {
+        guard SSDPrefixCachePolicy.windowSidecarEnabled(environment: environment),
+            SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize) != nil
+        else { return .replayed }
+        return .restoredFromSidecar
+    }
+
+    /// Conservative finite-window replay length for the SSD donation/stage
+    /// benefit gates; the engine plan remains authoritative per matched
+    /// boundary.
+    ///
+    /// Resolves the backend through `prefixReuseCapability` rather than
+    /// hardcoding `.contiguousUnquantized`, so this and its sibling can no
+    /// longer describe two different backends for the same slot.
+    static func adoptionBoundTokens(
+        layerKinds: [CBv2LayerKind],
+        backendSelection: EngineV2KVBackendSelection = .auto,
+        pagedKilled: Bool = false,
+        windowResidency: SSDWindowResidency = .replayed
+    ) -> Int {
+        adoptionBoundTokens(
+            capability: prefixReuseCapability(
+                layerKinds: layerKinds,
+                backendSelection: backendSelection,
+                pagedKilled: pagedKilled),
             layerKinds: layerKinds,
-            backend: .contiguousUnquantized
-        ).conservativeReplayBoundTokens
+            windowResidency: windowResidency)
+    }
+
+    /// Residency-resolved bound for an already-derived capability.
+    ///
+    /// A restored window means the sliding rows are exact AT the boundary, so
+    /// there is nothing to replay and the bound collapses to zero — the whole
+    /// point of WS-4.2. It is gated on the geometry existing so that a
+    /// residency asserted for a layout that cannot produce whole-block
+    /// sidecars still fails closed to replay.
+    static func adoptionBoundTokens(
+        capability: CBv2PrefixReuseCapability,
+        layerKinds: [CBv2LayerKind],
+        windowResidency: SSDWindowResidency
+    ) -> Int {
+        guard windowResidency == .restoredFromSidecar,
+            SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize) != nil
+        else { return capability.conservativeReplayBoundTokens }
+        return 0
     }
 
     /// Real Gemma QAT evidence is noisy/negative at only 1,024 saved tokens
     /// and positive from 1,536 onward; GPT's shorter 1,536-token replay span
     /// remains beneficial at the generic 1,024 floor. The environment may
     /// raise either floor but cannot lower the proved long-hybrid minimum.
+    ///
+    /// The override keys off the RESOLVED bound, not the capability's raw
+    /// one. That evidence was measured against a 25,600-token replay, where
+    /// saving 1,024 tokens was within the noise; with the window restored
+    /// there is no replay to be noisy about, so the generic floor applies.
     static func minEffectiveTokens(
         capability: CBv2PrefixReuseCapability,
+        adoptionBoundTokens: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int {
         let configured = SSDPrefixCachePolicy.minEffectiveTokens(environment: environment)
+        let bound = adoptionBoundTokens ?? capability.conservativeReplayBoundTokens
         let longHybridFloor =
-            capability.strategy == .frozenFullReplay
-                && capability.conservativeReplayBoundTokens >= 25_600
-            ? 1_536 : 0
+            capability.strategy == .frozenFullReplay && bound >= 25_600 ? 1_536 : 0
         return max(configured, longHybridFloor)
     }
 

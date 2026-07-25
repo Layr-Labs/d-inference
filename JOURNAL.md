@@ -413,3 +413,50 @@ Wave 1 task briefs must state the absolute worktree path for every edit.
 | OPEN-8 | Mixed-version gate is red (SIP disabled on the CI runner). Defaulting to me as C4. | me |
 | OPEN-9 | Should an explicit paged request hard-refuse on kernel-preflight failure instead of degrading at INFO? Recommend yes. | me, track X |
 | OPEN-10 | `CBv2PagedKernelTests`/`CBv2PagedBackendTests` dispatch JIT Metal with no skip guard. Assessed low risk — `CBv2PagedSafetyTests` already runs `runtimeSmoke()` green in the same CI job — but the first CI run must be watched. | me |
+
+### 2026-07-25 — Main — Wave 1 dispatched, 11 tracks in parallel
+
+Correction to how Wave 0 was run: too much implementation stayed with Main. The
+paged resource-locator fix is the clearest case — C1 and C3 had already produced
+a complete brief (repro, cause, and the specific trap in the naive fix) and Main
+still implemented it across six serial build/test cycles. That was a textbook
+delegation. From Wave 1 on, Main scopes, contracts, reviews and integrates;
+agents implement.
+
+| Track | Worktree | Owns | Items |
+|---|---|---|---|
+| **L** | engine | `PagedLayerCache`, `LayerCacheBankV2` | 0.2p, 0.5 (pad site), 2.3, 3.4 |
+| **P** | engine | `PagedKVPool`, `PagedAttentionKernel` | 0.5 (poison page), 0.6, 1.3, 6.4 |
+| **R** | engine | `PagedSequenceKV`, `PrefixReusePlan` | 3.2, 3.3 |
+| **M** | engine | `MTP/*` | 3.0, 3.5 |
+| **G** | engine | `Compiled/*`, `EngineLoopV2`, `EngineV2`, `SequenceKV/*` | remove compiled decode |
+| **DEL** | engine | `Gemma4Text`, `LastQueryPrefillV2`, `AttentionV1`, `PrefixCacheV2` | ~1,900 lines of dead code |
+| **T** | engine | paged + MTP test suites | differential oracle, canary, ring bound |
+| **X** | provider | `EngineV2Factory+Production`, `EngineV2KVBackendPolicy`, `EngineV2SlotFactory` | OPEN-9, 0.4, kv-quant veto |
+| **E2** | provider | `UnifiedMemoryCap`, `registry/servability.go` | parametric activation reserve |
+| **E3** | provider | `registry/concurrency_cap.go`, `warm_pool_target.go` | `k` re-fit, cap reachable at 8 |
+| **C4** | provider | `e2e/mixed_version_test.go`, `integration.yml` | repair the red gate |
+
+Two worktrees, not eleven: `d-inference-paged-engine` (74M — git worktrees share
+the submodule object store) and `d-inference-paged-kv`. File ownership is
+exclusive within each; SwiftPM serialises builds on a lock, which blocks rather
+than corrupts. Eleven worktrees would have cost tens of GB of `.build` for no
+isolation the ownership map does not already provide.
+
+Held out of this wave deliberately:
+
+- **The ring shrink (WS-1.2/3.1).** It collapses the ~528-token alias margin
+  that keeps M's lazy-gather hazard latent. M's 3.5 lands first.
+- **Lifting `b == 1` (packed prefill).** Needs L's 0.2p proven first, or B
+  gathers and B score tensors go live simultaneously — over 3 GiB on one layer
+  at B=8.
+- **kv-quant removal and the SSD windowed sidecar.** Both are cross-cutting
+  across files P, R and X own this wave. Wave 2.
+
+Ordering constraint carried in the batch context, because it is a daemon-abort
+risk: **R's 3.3 must not be considered safe until M's 3.0 lands.** Flipping
+`supportsSpeculativeWrites` makes the MTP `preconditionFailure` reachable. R was
+told to confirm with M over IRC before declaring done.
+
+Main is staying out of both worktrees while agents run — no git state mutation,
+per the Wave 0 incident.

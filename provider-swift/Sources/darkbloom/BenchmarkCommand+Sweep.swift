@@ -60,6 +60,33 @@ extension Benchmark {
         print(try report.jsonString())
     }
 
+    func runArrivalInvarianceBenchmark(
+        modelID: String,
+        modelDirectory: URL
+    ) async throws {
+        guard arrivalPromptTokens >= 2 else {
+            printError("--arrival-prompt-tokens must be >= 2")
+            throw ExitCode.failure
+        }
+        guard arrivalDecodeTokens >= 2 else {
+            printError("--arrival-decode-tokens must be >= 2")
+            throw ExitCode.failure
+        }
+        guard arrivalIterations >= 1 else {
+            printError("--arrival-iterations must be >= 1")
+            throw ExitCode.failure
+        }
+
+        let report = try await ArrivalInvarianceBenchmark.run(
+            modelID: modelID,
+            modelDirectory: modelDirectory,
+            promptTokens: arrivalPromptTokens,
+            decodeTokens: arrivalDecodeTokens,
+            iterations: arrivalIterations
+        )
+        print(try report.jsonString())
+    }
+
     /// Parse a comma-separated list of positive integers, ignoring blanks and
     /// non-numeric tokens.
     static func parsePositiveInts(_ raw: String) -> [Int] {

@@ -2,7 +2,7 @@
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
-        provider-build provider-test provider \
+        provider-build provider-test provider benchmark-gemma-contbatch \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         test build all clean
@@ -51,6 +51,9 @@ provider-test: ## swift test for the Swift provider CLI
 	cd provider-swift && swift test
 
 provider: provider-build provider-test ## Build + test provider
+
+benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
+	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
 # ---- Console UI (Next.js 16) ----------------------------------------------
 

@@ -54,6 +54,18 @@ struct Benchmark: AsyncParsableCommand {
     @Option(name: .long, help: "Scheduler prefill: measured iterations per length.")
     var prefillIterations = 2
 
+    @Flag(name: .long, help: "Measure production CBv2 burst-versus-staggered request arrivals and output invariance.")
+    var arrivalInvariance = false
+
+    @Option(name: .long, help: "Arrival benchmark: prompt tokens per request.")
+    var arrivalPromptTokens = 512
+
+    @Option(name: .long, help: "Arrival benchmark: generated tokens per request.")
+    var arrivalDecodeTokens = 64
+
+    @Option(name: .long, help: "Arrival benchmark: measured iterations per arrival pattern.")
+    var arrivalIterations = 3
+
     mutating func run() async throws {
         do {
             _ = try GPUEnforcement.requireMetal()
@@ -95,6 +107,14 @@ struct Benchmark: AsyncParsableCommand {
 
         if schedulerPrefill {
             try await runSchedulerPrefillBenchmark(
+                modelID: selectedModel.id,
+                modelDirectory: modelPath
+            )
+            return
+        }
+
+        if arrivalInvariance {
+            try await runArrivalInvarianceBenchmark(
                 modelID: selectedModel.id,
                 modelDirectory: modelPath
             )

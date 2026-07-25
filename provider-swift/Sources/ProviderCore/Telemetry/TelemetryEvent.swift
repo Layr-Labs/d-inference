@@ -273,6 +273,24 @@ public enum TelemetryFieldFilter {
         "prefix_saved_tokens", "prefix_boundary_splits",
         "prefix_construction_failure", "prefix_capacity_refusal",
         "prefix_cold_fallback",
+        // KV-backend discriminator (v0.8.0 paged rollout). `backend` stays the
+        // ENGINE/runtime name ("engine_v2", "mlx-swift"); `kv_backend` is the
+        // KV storage kind ("paged" | "contiguous"), the same key and vocabulary
+        // as BackendSlotCapacity.kv_backend on the heartbeat wire.
+        // `prefix_reuse_backend` carries the finer CBv2PrefixReuseBackend row
+        // identity that "contiguous" alone cannot express.
+        "kv_backend", "prefix_reuse_backend",
+        // Paged KV pool metrics. Aggregate pool counters only — never page
+        // contents or block hashes. Mirror in Go + TS allowlists.
+        "pages_pinned", "cow_events", "pool_utilization",
+        // MTP (speculative decode) posture. MTP inflates observed_decode_tps
+        // with no discriminator, so a partially-MTP fleet biases coordinator
+        // routing on a metric it believes is homogeneous. mtp_inactive_reason
+        // carries MTPFallbackReason.rawValue plus "inert_kv_unsupported" —
+        // enabled, drafter resident, zero rounds, rows skipped kv_unsupported.
+        // Bounded enums and counters only; never draft tokens or prompt text.
+        "mtp_enabled", "mtp_active", "mtp_inactive_reason",
+        "mtp_acceptance_rate",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

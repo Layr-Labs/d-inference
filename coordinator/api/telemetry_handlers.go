@@ -139,6 +139,31 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"prefix_construction_failure": {},
 	"prefix_capacity_refusal":     {},
 	"prefix_cold_fallback":        {},
+	// KV-backend discriminator (v0.8.0 paged rollout). `backend` names the
+	// ENGINE or runtime ("engine_v2", "mlx-swift"); `kv_backend` names the KV
+	// storage kind ("paged" | "contiguous") and is deliberately the same key
+	// as BackendSlotCapacity.KVBackend on the heartbeat wire, so telemetry and
+	// per-slot capacity group identically. `prefix_reuse_backend` is the finer
+	// prefix-reuse row identity (contiguous_unquantized | contiguous_quantized
+	// | paged_fp16 | unknown) that "contiguous" alone cannot express.
+	"kv_backend":           {},
+	"prefix_reuse_backend": {},
+	// Paged KV pool metrics (v0.8.0). Aggregate pool counters only — never
+	// page contents or block hashes. Mirror of the Swift + TS allowlists.
+	"pages_pinned":     {},
+	"cow_events":       {},
+	"pool_utilization": {},
+	// Multi-token prediction (speculative decode) posture. MTP inflates
+	// observed_decode_tps with no discriminator, so a partially-MTP fleet
+	// biases coordinator routing on a metric it believes is homogeneous;
+	// these four make the split visible. mtp_inactive_reason carries
+	// MTPFallbackReason values plus "inert_kv_unsupported" — enabled, drafter
+	// resident, zero rounds executed, every row skipped as kv_unsupported.
+	// Bounded enums and counters only; never draft tokens or prompt content.
+	"mtp_enabled":         {},
+	"mtp_active":          {},
+	"mtp_inactive_reason": {},
+	"mtp_acceptance_rate": {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

@@ -5,7 +5,133 @@ v0.8.0**. Plan of record: `docs/reports/2026-07-25-paged-kv-migration-plan.md`
 (Rev 2).
 
 Integration branch: `paged-kv/integration`.
-Worktree: `.claude/worktrees/paged-kv`.
+
+---
+
+# ⇱ RESUME HERE — live state, rewritten every wave
+
+*Everything below this banner up to `## Journal contract` is a MUTABLE snapshot.
+The dated entries at the bottom are append-only history. If you are resuming
+with no memory of this work, read this section and nothing else first.*
+
+## Prime directive
+
+**Do not stop until v0.8.0 ships PagedAttention everywhere** — every model,
+every slot type, `.auto → .paged`. This is a multi-wave migration, not a task.
+Finishing a wave is not finishing the job. Waves remaining are listed under
+"What is left" below.
+
+## Where everything is
+
+| | Path / ref |
+|---|---|
+| Integration worktree (provider, coordinator, e2e, docs) | `/Users/gaj/Documents/Builds/d-inference-paged-kv` on `paged-kv/integration` |
+| Engine worktree (submodule work) | `/Users/gaj/Documents/Builds/d-inference-paged-engine` on `paged-kv/engine`, submodule on `paged-kv/wave1` |
+| Master checkout — **DO NOT WORK HERE** | `/Users/gaj/Documents/Builds/d-inference` (carries the owner's own parallel work) |
+| Plan of record | `docs/reports/2026-07-25-paged-kv-migration-plan.md` (Rev 2, plus the Rev 2.1 correction in §10) |
+| Engine repo | `Layr-Labs/mlx-swift-lm`, base `main`, pinned `abd1985` + Wave 0 |
+| Provider repo | `Layr-Labs/d-inference`, base `master` |
+
+## ⚠ RETRACTED DELETIONS — do not re-attempt
+
+Two deletions were scheduled, started, and **stopped on evidence**. A compacted
+context WILL want to redo them, because the original inventory still reads as if
+they are dead. They are not.
+
+| Do NOT delete | Why it looked dead | Why it is not |
+|---|---|---|
+| **Last-query prefill** (~1,384 lines: `Gemma4Text.swift` policy trio, `LastQueryPrefillV2.swift`, `AttentionV1.updateAndAttendLastQuery`, `CBv2LastQueryPrefillTests.swift`) | `numKvSharedLayers` "defaults to 20", so the last layer looked KV-shared | **The default applies only when the JSON key is ABSENT.** Both shipping checkpoints set `num_kv_shared_layers: 0` explicitly (verified on disk), `layer_types[29] = full_attention`, so `gemma4SupportsLastQueryPrefill` is TRUE and the feature is LIVE on the flagship. The "proof" test used `TinyGemma.sharedFinalConfig()`, a fixture built with `numKvSharedLayers = 2` — it pinned the negative case only. |
+| **`PrefixCacheV2`** (~1,293 lines) + its 8 dependent test files | Never constructed in production; `EngineV2SlotFactory.swift:379` installs `SSDPrefixCache` | It is the **only in-engine exercise of the `CBv2PrefixCache` contract**, and `SSDPrefixCache` is unreachable from `MLXLMTests`. `CBv2EndToEndTests:526-572` is the only test of the `requiresMaterializedSnapshots` guard — the exact bit WS-3.5 builds on. Keep as a test fixture; only `CBv2PrefixCacheStats` (zero references) is deleted. |
+
+**Root cause, stated so it is not repeated: "not reachable from production" is
+NOT "safe to delete".** The inventory measured the first and claimed the second.
+A Swift struct default is evidence about absent keys only, never about a
+shipping checkpoint.
+
+## ⚠ Ordering constraints — violating these ships a daemon abort or silent corruption
+
+1. **The ring shrink (WS-1.2 / 3.1) must land AFTER WS-3.5.** It collapses the
+   ~528-token alias margin that keeps the MTP lazy-gather hazard latent.
+2. **WS-3.3 must never ship without WS-3.4 (and 3.0).** Flipping
+   `supportsSpeculativeWrites` makes `MTP/EngineLoopV2+MTPTargetVerification.swift:50-52`
+   reachable — a `preconditionFailure`, i.e. daemon death with no telemetry.
+3. **WS-0.2p must land before the `b == 1` precondition is lifted.** Unblocked
+   packed prefill puts B gathers + B score tensors live behind
+   `concatenated(axis: 0)` — over 3 GiB on one layer at B=8.
+4. **WS-2.2 (spans) must not sub-block without fixing `spanChunkMask`.**
+   `AttentionV1.swift:559-577` anchors on `context.chunkEnd`; under sub-blocking
+   `qAbs` slides to the wrong absolute window. Silent wrong vision output.
+5. **Do not delete the contiguous backend before 0.8.0 is stable.** It is the
+   `DARKBLOOM_CBV2_PAGED_KV=0` rollback path and there is no canary fleet.
+
+## Process rules learned the hard way
+
+- **Absolute paths in every agent brief.** Relative paths resolve against the
+  master checkout; this bit three agents in Wave 0.
+- **No git state mutation in a worktree with live agents.** Main ran `git stash`
+  during Wave 0 and swept an agent's in-progress work (recovered, no loss).
+  Branch prep goes in throwaway worktrees (`/tmp/engine-pr`, `/tmp/dinf-pr`).
+- **Agents never run git.** They leave changes in the tree; Main commits per
+  track, which keeps attribution clean and avoids index-lock contention.
+- **PRs are independent branches off base, not a literal chain**, unless the work
+  is genuinely sequential. Every PR needs the before/after Mermaid pair.
+- **Metallib:** engine tests abort with "Failed to load the default metallib"
+  unless it is copied to `<engine>/.build/debug/` AND each
+  `.build/debug/*PackageTests.xctest/Contents/MacOS/`. Source:
+  `/Users/gaj/Documents/Builds/d-inference-paged-kv/provider-swift/.build/arm64-apple-macosx/debug/mlx.metallib`.
+- **`.build/debug` is a symlink** — binaries run through it silently disabled
+  paged until commit `0408b73`. Gate runs should still prefer
+  `.build/arm64-apple-macosx/<config>/`.
+
+## Wave status
+
+**Wave 0 — DONE.** 8 commits, integrated, validated, all 8 PRs open:
+engine [#86](https://github.com/Layr-Labs/mlx-swift-lm/pull/86) seam contract ·
+[#87](https://github.com/Layr-Labs/mlx-swift-lm/pull/87) admission ring ·
+[#88](https://github.com/Layr-Labs/mlx-swift-lm/pull/88) bench prompt axis ·
+[#89](https://github.com/Layr-Labs/mlx-swift-lm/pull/89) resource symlink;
+provider [#580](https://github.com/Layr-Labs/d-inference/pull/580) telemetry parity ·
+[#581](https://github.com/Layr-Labs/d-inference/pull/581) CI paged gate ·
+[#582](https://github.com/Layr-Labs/d-inference/pull/582) e2e backend knob ·
+[#583](https://github.com/Layr-Labs/d-inference/pull/583) benchmark `--kv-backend`.
+
+**Wave 1 — IN FLIGHT, 13 agents.** On completion: commit per track, bump the
+gitlink, open a PR per track, then run the full validation set.
+
+| Track | Items | State |
+|---|---|---|
+| L | 0.2p paged sub-blocking, 0.5 pad site, 2.3 capability protocol, 3.4 rectangular | running |
+| P | 0.5 poison page, 0.6 guards, 1.3 lazy reservation, 6.4 PTOK | running (**NOT** the ring formula) |
+| R | 3.2 spec transaction, 3.3 headroom | running |
+| M | 3.0 graceful degradation, 3.5 materialize captures | running |
+| G | remove compiled decode | running |
+| DEL | `CBv2PrefixCacheStats` only — both big deletions retracted | winding down |
+| T | differential oracle, slab canary, ring upper bound, invert the defect pin | running |
+| X | OPEN-9 hard refusal, 0.4 merge scheduler configs, kv-quant veto | running |
+| E2 | parametric activation reserve + `servability.go` 9-site mirror | running |
+| E3 | `k` re-fit, quality cap reachable at 8 | running |
+| C4 | mixed-version gate | **DONE**, uncommitted |
+| KVQuantEngine | `CBv2QuantizedSequenceKV`, `PrefixReusePlan` case, `snapshotIsLossless` | running |
+| KVQuantProvider | `kv_quant` → `RetiredCodingKeys`, orphaned scaffolding, docs | running |
+
+## What is left after Wave 1
+
+| Wave | Content |
+|---|---|
+| **2** | Ring shrink (1.2/3.1, gated on 3.5) · packed prefill / lift `b == 1` (gated on 0.2p) · WS-2.2 vision spans + lift the VLM veto · WS-4.1 `installShared`/`restoreWindow`/`windowSnapshot` + the three `.contiguousUnquantized` hardcodes · **WS-2.4 paged `CBv2LastQueryPrefillLayerCache` conformance** (upgraded, not deleted) · G's dead-but-compiling follow-up |
+| **3** | WS-4.2 SSD windowed sidecar (2.5 wk) · §15 multi-model co-residency pool resize — **unscheduled and mandatory**, 94 mixed boxes · WS-7 heartbeat KV-backend discriminator (Gate G5) + MTP/paged telemetry fields |
+| **4** | Benchmark matrix on the M4 Max (serialized, single machine) · Gates G0a/G0b/G1/G2/G5 |
+| **5** | **The flip**: `EngineV2Factory+Production.swift:346` `.auto → .paged`, plus its 4 test updates · version bump `0.7.15 → 0.8.0` in BOTH `coordinator/api/server.go:148` and `provider-swift/Sources/ProviderCore/ProviderCore.swift:172` (AGENTS.md requires they stay in sync) · release |
+
+## Open questions
+
+| # | Question | Owner |
+|---|---|---|
+| OPEN-9 | Explicit paged request hard-refuses on preflight failure. **Decided yes**; TrackX implementing. Kill switch keeps degrading — it is an operator override, not a failure. | in flight |
+| OPEN-10 | First CI run must be watched: the new paged kernel suites dispatch JIT Metal with no skip guard. | Main |
+| OPEN-11 | `hypervisor_active` (~190 Go), `EngineV2Config` retired-env enum (39), BenchCBv2 legacy doc (4) — out of paged scope. Fold in only if the owner asks. | owner |
+
+---
 
 ## Journal contract
 

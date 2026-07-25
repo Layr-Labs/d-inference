@@ -7,9 +7,6 @@ from pathlib import Path
 
 
 DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-BASELINE_RELATIVE_PATH = Path(
-    "docs/reports/2026-07-23-gemma-4-26b-qat4bit-continuous-batching-baseline.json"
-)
 EXPECTED_ARRIVAL_PATTERNS = {
     "burst": [0, 0, 0, 0],
     "stagger-25ms": [0, 25, 50, 75],
@@ -47,8 +44,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arrival-decode-tokens", type=int, default=64)
     parser.add_argument("--label", default="")
     parser.add_argument("--output-dir", default="tmp/benchmarks")
-    parser.add_argument("--baseline", default=str(BASELINE_RELATIVE_PATH))
-    parser.add_argument("--no-compare", action="store_true")
+    # Comparison is OPT-IN against an explicit report. There is deliberately
+    # no committed baseline: one would be valid only on the exact machine,
+    # model snapshot and engine configuration that recorded it, and a
+    # reference that has silently drifted still yields confident-looking
+    # percentages. Point this at a report you just produced — e.g. the OFF
+    # half of a same-binary feature bracket — so both sides share a binary,
+    # a host and a thermal state.
+    parser.add_argument(
+        "--baseline",
+        default=None,
+        help="path to a previous report JSON to diff against (default: no comparison)",
+    )
     parser.add_argument("--skip-build", action="store_true")
     parser.add_argument("--skip-metallib", action="store_true")
     args = parser.parse_args()

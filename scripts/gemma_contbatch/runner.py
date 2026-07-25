@@ -176,7 +176,7 @@ def main() -> int:
         "invocation": shlex.join([sys.executable, *sys.argv]),
     }
 
-    if not args.no_compare:
+    if args.baseline:
         baseline_path = Path(args.baseline)
         if not baseline_path.is_absolute():
             baseline_path = repo_root / baseline_path

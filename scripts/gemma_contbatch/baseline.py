@@ -1,6 +1,6 @@
 """Baseline loading and the fail-closed pins that gate a comparison.
 
-A percentage delta against the committed baseline is only an *engine* delta if
+A percentage delta against a reference report is only an *engine* delta if
 everything else is held constant. These checks refuse to compare when the model
 snapshot, the host hardware, the workload shape, or the performance-relevant
 environment differs, instead of silently attributing a weight/config/hardware/
@@ -16,7 +16,7 @@ from pathlib import Path
 from .environment import baseline_environment
 
 
-NO_COMPARE_HINT = "pass --no-compare to run without a baseline comparison"
+NO_COMPARE_HINT = "omit --baseline to run without a comparison"
 
 HARDWARE_FIELDS = ("chipName", "gpuCores", "memoryGb", "memoryBandwidthGbs")
 
@@ -121,7 +121,7 @@ def validate_configuration_pin(args: argparse.Namespace, baseline: dict) -> None
         raise RuntimeError(
             "benchmark shape is not comparable to the baseline: "
             + ", ".join(mismatches)
-            + "; pass --no-compare for a different workload"
+            + "; " + NO_COMPARE_HINT
         )
 
 
@@ -138,12 +138,12 @@ def validate_environment_pin(baseline: dict, environment: dict[str, str]) -> Non
     guess here would silently re-open the hole this pin closes.
 
     The asymmetry that matters is a baseline with no recorded environment --
-    the committed baseline predates this pin. Such a baseline is read as an
+    an older report predates this pin. Such a baseline is read as an
     implicit *empty* environment, i.e. "recorded with engine defaults":
 
       * absent in baseline + empty run  -> match, the comparison proceeds.
         Both sides are the default configuration, which is exactly what the
-        committed baseline was recorded under.
+        reference report was recorded under.
       * absent in baseline + non-empty run -> REFUSE. This is the dangerous
         case the pin exists for: a switch flipped on one side only, whose
         effect would otherwise be reported as a code regression (or hide one).
@@ -151,7 +151,7 @@ def validate_environment_pin(baseline: dict, environment: dict[str, str]) -> Non
     That is deliberately not fail-open: the only permissive path requires the
     run itself to carry no overrides. The residual risk is an old baseline
     recorded *with* an override by a runner too old to write the block; the
-    committed baseline was not, and every baseline written from here on
+    older smoke reports were not, and every report written from here on
     records the block unconditionally (empty dict when nothing is set), so the
     ambiguity is bounded to reports predating this pin.
     """

@@ -179,6 +179,9 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
 /// 2. **Coordinator URL**: if the TOML text contains a known stale
 ///    coordinator URL (localhost, dev), rewrite it to production in-place.
 func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderConfig {
+    // Dev-insecure: never rewrite a ws:// dev coordinator URL to production.
+    if DevInsecure.isEnabled { return config }
+
     let fm = FileManager.default
     guard fm.fileExists(atPath: configPath.path) else { return config }
 

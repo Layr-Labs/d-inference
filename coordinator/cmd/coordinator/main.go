@@ -82,6 +82,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// EIGENINFERENCE_DEV_INSECURE — dev-only "all security disabled" mode for a
+	// throwaway dev coordinator. It fail-opens the attestation/hardening routing
+	// gates (E2E prompt encryption is KEPT) so an un-hardened, un-attested dev
+	// provider can connect, register, and serve inference. resolveDevInsecure
+	// applies defense-in-depth prod guards (see its doc): the flag NEVER silently
+	// weakens a production deployment — a stray env var fails CLOSED (refuses to
+	// start), never open.
+	if cfg.RegistryCfg.DevInsecure {
+		resolvedTrust, err := resolveDevInsecure(
+			cfg.StoreConfig.DatabaseURL,
+			cfg.RegistryCfg.MinTrustLevel,
+			cfg.StoreConfig.AllowMemoryStore,
+		)
+		if err != nil {
+			logger.Error("refusing to start in dev-insecure mode", "error", err)
+			os.Exit(1)
+		}
+		cfg.RegistryCfg.MinTrustLevel = resolvedTrust
+		logger.Warn("⚠️  EIGENINFERENCE_DEV_INSECURE ENABLED — attestation, MDM, code-identity, SIP, and hardening routing gates are DISABLED (E2E prompt encryption is kept). NEVER run this in production.")
+	}
+
 	adminKey := cfg.AdminKey
 	if adminKey == "" {
 		logger.Warn("EIGENINFERENCE_ADMIN_KEY is not set — no pre-seeded API key available")
@@ -134,6 +155,21 @@ func main() {
 		})
 	}
 
+	// Dev-insecure: seed the admin account with a large balance so inference is
+	// effectively free on the throwaway dev coordinator (the admin key resolves
+	// to the "admin" ledger account). This keeps the real billing path intact
+	// (reserve/settle/refund arithmetic all run normally against the balance)
+	// rather than special-casing the settlement math. Guarded by DevInsecure, so
+	// it never runs in prod; the in-memory store means it re-seeds each start.
+	if cfg.RegistryCfg.DevInsecure {
+		const devInsecureSeedMicroUSD int64 = 1_000_000_000_000_000 // ~$1B
+		if err := st.Credit("admin", devInsecureSeedMicroUSD, store.LedgerAdminCredit, "dev-insecure-seed"); err != nil {
+			logger.Warn("dev-insecure: failed to seed admin balance", "error", err)
+		} else {
+			logger.Warn("dev-insecure: seeded admin account with a large balance for free inference")
+		}
+	}
+
 	// Reconcile provider sessions left open by a previous coordinator process
 	// (durable uptime history). Best-effort + time-bounded — neither an error nor
 	// a slow/unresponsive DB must block startup. Only sessions whose last
@@ -155,6 +191,7 @@ func main() {
 	}()
 
 	reg := registry.New(logger)
+	reg.DevInsecure = cfg.RegistryCfg.DevInsecure
 
 	// Set minimum trust level for routing.
 	if cfg.RegistryCfg.MinTrustLevel != "" {
@@ -930,6 +967,41 @@ func main() {
 	}
 
 	logger.Info("coordinator stopped")
+}
+
+// parseAPNsEnforceAfter reads APNS_ENFORCE_AFTER (RFC3339) — the instant at which
+// resolveDevInsecure validates the dev-insecure ("all security disabled") config
+// and returns the effective MinTrustLevel, or an error the caller MUST turn into a
+// refuse-to-start. Pure (no env/IO) so the prod guards are unit-tested.
+//
+// Defense-in-depth: the guard must not rest on a single environmental invariant
+// while also dismantling the adjacent fail-safes. So dev-insecure:
+//   - refuses if a durable database is configured (prod always sets
+//     EIGENINFERENCE_DATABASE_URL) — dev-insecure is ephemeral-only;
+//   - refuses if EIGENINFERENCE_MIN_TRUST is explicitly "hardware" (a direct
+//     contradiction — fail loudly instead of silently overriding it);
+//   - requires the operator's EXPLICIT in-memory-store opt-in
+//     (EIGENINFERENCE_ALLOW_MEMORY_STORE=true) rather than force-enabling it, so
+//     the normal "no DB → refuse to start" backstop stays intact. A stray
+//     DEV_INSECURE=true in a prod-like deploy whose DB secret failed to inject
+//     then still fails CLOSED (won't boot) instead of booting open on an
+//     ephemeral store.
+//
+// Only after all three pass does it default an empty MIN_TRUST to none.
+func resolveDevInsecure(databaseURL, minTrust string, allowMemoryStore bool) (string, error) {
+	if databaseURL != "" {
+		return "", errors.New("EIGENINFERENCE_DEV_INSECURE must not be combined with EIGENINFERENCE_DATABASE_URL — dev-insecure mode is ephemeral-only and must never run against a durable/production database")
+	}
+	if minTrust == string(registry.TrustHardware) {
+		return "", fmt.Errorf("EIGENINFERENCE_DEV_INSECURE is contradictory with EIGENINFERENCE_MIN_TRUST=%s — refusing to start", registry.TrustHardware)
+	}
+	if !allowMemoryStore {
+		return "", errors.New("EIGENINFERENCE_DEV_INSECURE requires EIGENINFERENCE_ALLOW_MEMORY_STORE=true (dev-insecure is ephemeral-only) — refusing to start")
+	}
+	if minTrust == "" {
+		return string(registry.TrustNone), nil
+	}
+	return minTrust, nil
 }
 
 // parseAPNsEnforceAfter reads APNS_ENFORCE_AFTER (RFC3339) — the instant at which

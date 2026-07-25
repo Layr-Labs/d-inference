@@ -1120,6 +1120,21 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 		"status_fields_trusted", statusFieldsTrusted,
 	)
 
+	// Dev-insecure: skip all attestation status-field enforcement below (SIP,
+	// Secure Boot, RDMA, binary/model-weight hashes). On an un-attested dev box
+	// those checks would MarkUntrusted → deroute it — contradicting the relaxed
+	// routing gates and the provider's tolerant preflight (e.g. a SIP-disabled
+	// dev Mac). The challenge signature above still verified, and E2E is
+	// unaffected. Record a passing challenge so the provider stays live.
+	if s.registry.DevInsecure {
+		provider.Mu().Lock()
+		provider.ChallengeVerifiedSIP = resp.SIPEnabled != nil && *resp.SIPEnabled
+		provider.Mu().Unlock()
+		s.registry.RecordChallengeSuccess(providerID)
+		s.ddIncr("attestation.challenges", []string{"outcome:dev_insecure_skip"})
+		return
+	}
+
 	// Verify fresh SIP status. This signal is mandatory for private text:
 	// an omitted value is not evidence of safety, so fail closed.
 	if resp.SIPEnabled == nil {

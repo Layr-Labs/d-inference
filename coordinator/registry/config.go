@@ -17,6 +17,17 @@ type Config struct {
 	WarmPool      WarmPoolConfig
 	CacheRouting  CacheRoutingConfig
 	QualityCap    QualityCapConfig
+
+	// DevInsecure enables dev-only "all security disabled" routing
+	// (EIGENINFERENCE_DEV_INSECURE). When set, the coordinator fail-opens every
+	// attestation/hardening routing gate (runtime manifest, coordinator-verified
+	// SIP, code-identity, privacy-capabilities, runtime-verified, and
+	// challenge-freshness) while KEEPING the end-to-end crypto requirements
+	// (per-provider X25519 public key, mlx-swift backend, encrypted response
+	// chunks) — prompts stay encrypted on the wire. main.go additionally forces
+	// MIN_TRUST=none, requires the in-memory store, and REFUSES to start against a
+	// durable database, so this can never silently weaken a production deployment.
+	DevInsecure bool
 }
 
 type CacheRoutingConfig struct {
@@ -117,6 +128,7 @@ func (c WarmPoolConfig) perTickCeiling() int {
 func ReadConfig() Config {
 	return Config{
 		MinTrustLevel: os.Getenv(env.EnvPrefix + "_MIN_TRUST"),
+		DevInsecure:   env.EnvBool(env.EnvPrefix+"_DEV_INSECURE", false),
 		WarmPool: WarmPoolConfig{
 			Enabled:                   env.EnvBool(env.EnvPrefix+"_WARM_POOL_ENABLED", true),
 			ObserveOnly:               env.EnvBool(env.EnvPrefix+"_WARM_POOL_OBSERVE_ONLY", false),

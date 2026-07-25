@@ -76,8 +76,6 @@ enum EngineV2SlotFactory {
     ///   - kvBudget: process-wide shared KV reservation ledger (nil ⇒ no
     ///     shared gating — unit tests only; both production callers pass
     ///     their ledger).
-    ///   - kvQuantConfigured: operator set `kv_quant` — v2 uses unquantized
-    ///     native-float KV, so a WARN telemetry event fires once per load.
     ///   - weightHash: the slot's verified weight hash binding for SSD
     ///     artifacts. Nil or blank disables reusable SSD caching.
     ///   - environment: prefix-cache policy environment
@@ -101,7 +99,6 @@ enum EngineV2SlotFactory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
-        kvQuantConfigured: Bool,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         weightHash: String? = nil,
@@ -122,7 +119,6 @@ enum EngineV2SlotFactory {
             kvBytesCapacity: kvBytesCapacity,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBudget: kvBudget,
-            kvQuantConfigured: kvQuantConfigured,
             kvBackendConfig: kvBackendConfig,
             kvBackendConfigByModel: kvBackendConfigByModel,
             weightHash: weightHash,
@@ -151,7 +147,6 @@ enum EngineV2SlotFactory {
         kvBytesCapacity: Int,
         maxConcurrentRequests: Int,
         kvBudget: GlobalKVCacheBudget?,
-        kvQuantConfigured: Bool,
         kvBackendConfig: String = "auto",
         kvBackendConfigByModel: [String: String] = [:],
         weightHash: String? = nil,
@@ -168,10 +163,13 @@ enum EngineV2SlotFactory {
         // KV-backend gate, slot-veto layer (`EngineV2KVBackendPolicy`):
         // parse the operator selection (per-model override wins; typo →
         // WARN + auto), then force contiguous for slots the paged cache
-        // cannot serve — VLM (span masks unsupported: media would 4xx at
-        // submit) and kv_quant intent (fp16 pages only). `auto` resolves
-        // contiguous; the fleet kill switch, physical-capacity planning,
-        // and eligibility fallback live in `makeProductionBuild`.
+        // cannot serve — VLM alone now (span masks unsupported: media
+        // would 4xx at submit). A veto is policy, so it is silent even for
+        // an explicit paged request; kv_quant is no longer a veto because
+        // the feature is being removed, and it survives here only as the
+        // WARN below. `auto` resolves contiguous; the fleet kill switch,
+        // physical-capacity planning, and the degrade-or-REFUSE decision
+        // for an explicit paged request live in `makeProductionBuild`.
         let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
             global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
         if let unrecognized = parsedKVBackend.unrecognized {
@@ -181,8 +179,7 @@ enum EngineV2SlotFactory {
         }
         let vetoed = EngineV2KVBackendPolicy.applySlotVetoes(
             selection: parsedKVBackend.selection,
-            isVLM: isVLM,
-            kvQuantConfigured: kvQuantConfigured)
+            isVLM: isVLM)
         let kvBackendSelection = vetoed.selection
         if let veto = vetoed.veto {
             logInfo(
@@ -448,12 +445,6 @@ enum EngineV2SlotFactory {
                 + prefixCacheStateDescription(
                     ssdCache: ssdPrefixCache))
 
-        // WARN once (per load) that kv_quant is ignored on the v2 path
-        // (unquantized native-float caches are what the engine builds).
-        if kvQuantConfigured {
-            EngineV2Factory.emitKVQuantUnsupportedTelemetry(
-                modelId: modelId, emitTelemetry: emitTelemetry)
-        }
         let reason = mtpStatus.reason?.rawValue ?? "none"
         let revision = mtpStatus.revision ?? "none"
         logInfo(

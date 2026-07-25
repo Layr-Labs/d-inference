@@ -3,9 +3,11 @@
 // KV-backend GATE tests over the REAL `EngineV2Factory.makeProductionBuild`
 // with tiny real-family models (JSON-decoded configs, random-init weights,
 // no downloads): production-safe `auto` (always contiguous), the fleet
-// kill switch at the deepest layer, explicit
-// selections, and the eligibility fallback (ineligible head dim → paged
-// selection degrades to contiguous, never a refusal).
+// kill switch at the deepest layer, explicit selections, and the
+// degrade-or-REFUSE split — an explicit paged request that cannot be
+// served throws `EngineV2ProductionError.pagedUnavailable` with the reason
+// attached, while the kill switch still degrades because an operator
+// override is not a failure.
 //
 // These tests CONSTRUCT engines (paged construction materializes its slab
 // pool — a small Metal eval), but never run a forward pass.
@@ -93,6 +95,13 @@ private final class GateCacheCapture: @unchecked Sendable {
     var capability: CBv2PrefixReuseCapability? { lock.withLock { _capability } }
 }
 
+private final class GateTelemetrySink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _events: [TelemetryEvent] = []
+    var events: [TelemetryEvent] { lock.withLock { _events } }
+    func record(_ event: TelemetryEvent) { lock.withLock { _events.append(event) } }
+}
+
 private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
 
 private func makeBuild(
@@ -112,6 +121,34 @@ private func makeBuild(
         maxContextLength: 2048,
         environment: environment,
         pagedPreflightOverride: pagedPreflightOverride)
+}
+
+/// Run `body` and require it REFUSED an explicit paged request, returning
+/// the reason the refusal carries. `body` COMPLETING is itself the
+/// failure: it means the policy silently degraded to contiguous, which is
+/// the exact defect OPEN-9 closes — a run that reports paged and measures
+/// contiguous. Also pins the telemetry classification, because
+/// `engine_init_failed` would bury a paged regression among unrelated bad
+/// model loads.
+private func pagedRefusalReason(
+    _ body: () async throws -> Void
+) async -> String? {
+    do {
+        try await body()
+        Issue.record("explicit paged must refuse, not degrade to contiguous")
+        return nil
+    } catch let error as EngineV2ProductionError {
+        guard case .pagedUnavailable(let reason) = error else {
+            Issue.record("expected .pagedUnavailable, got \(error)")
+            return nil
+        }
+        #expect(EngineV2RefusalReason.classify(error) == .pagedBackendUnavailable)
+        #expect("\(error)".contains("explicitly requested but unavailable"))
+        return reason
+    } catch {
+        Issue.record("expected EngineV2ProductionError, got \(error)")
+        return nil
+    }
 }
 
 // MARK: - Tests
@@ -169,6 +206,13 @@ struct EngineV2KVBackendGateTests {
         await build.engine.shutdown()
     }
 
+    // DEGRADE, deliberately — the one paged-to-contiguous case that
+    // survives OPEN-9, and the only test pinning the distinction. The kill
+    // switch is an operator override ("do NOT do what you asked"), not a
+    // failure ("we CANNOT do what you asked"); refusing here would 503
+    // every slot on a fleet configured `engine_v2_kv_backend = "paged"`
+    // the moment an operator pulled it. The three refusal tests below are
+    // the other half of that split.
     @Test("fleet kill switch forces explicit paged to contiguous at the deepest layer")
     func killSwitchForcesContiguous() async throws {
         let build = try makeBuild(
@@ -180,62 +224,89 @@ struct EngineV2KVBackendGateTests {
         await build.engine.shutdown()
     }
 
-    @Test("kernel-ineligible shape falls back to contiguous, never refuses")
-    func ineligibleFallsBack() async throws {
+    @Test("kernel-ineligible shape REFUSES an explicit paged request")
+    func ineligibleShapeRefusesExplicitPaged() async throws {
         // headDim 80 is outside the paged kernel's {64,128,256,512}.
-        let build = try makeBuild(model: try tinyGPTOSS(headDim: 80), kvBackend: .paged)
-        #expect(build.kvBackendKind == .contiguous)
-        #expect(build.kvBackendFallbackReason?.hasPrefix("kernel_preflight:") == true)
-        await build.engine.shutdown()
+        let reason = await pagedRefusalReason {
+            let build = try makeBuild(
+                model: try tinyGPTOSS(headDim: 80), kvBackend: .paged)
+            // Reached only on a policy regression; still tear the engine
+            // down so the failure is one clean assertion, not a leak too.
+            await build.engine.shutdown()
+        }
+        #expect(reason?.hasPrefix("kernel_preflight:") == true)
     }
 
-    @Test("failed kernel preflight falls back to contiguous before slab construction")
-    func failedPreflightFallsBack() async throws {
+    @Test("failed kernel preflight REFUSES before slab construction")
+    func failedPreflightRefuses() async throws {
         struct PreflightFailure: Error {}
-        let build = try makeBuild(
-            model: try tinyGPTOSS(),
-            kvBackend: .paged,
-            pagedPreflightOverride: { _ in throw PreflightFailure() })
-        #expect(build.kvBackendKind == .contiguous)
-        #expect(build.kvBackendFallbackReason?.hasPrefix("kernel_preflight:") == true)
-        await build.engine.shutdown()
+        let reason = await pagedRefusalReason {
+            let build = try makeBuild(
+                model: try tinyGPTOSS(),
+                kvBackend: .paged,
+                pagedPreflightOverride: { _ in throw PreflightFailure() })
+            await build.engine.shutdown()
+        }
+        #expect(reason?.hasPrefix("kernel_preflight:") == true)
+        // The underlying cause survives into the refusal, so an operator
+        // reading the 503 sees WHY paged could not be served.
+        #expect(reason?.contains("PreflightFailure") == true)
     }
 
-    @Test("explicit paged fallback constructs frozen-full cache for resolved contiguous backend")
+    @Test("physical-capacity shortfall REFUSES an explicit paged request")
+    func capacityShortfallRefusesExplicitPaged() async throws {
+        let reason = await pagedRefusalReason {
+            _ = try EngineV2Factory.prepareProductionBackend(
+                model: try tinyGemma4Text(),
+                kvBytesCapacity: 1_024,
+                maxConcurrentRequests: 2,
+                kvBackend: .paged,
+                maxContextLength: 2048,
+                environment: [:],
+                pagedPreflightOverride: { _ in })
+        }
+        #expect(reason?.hasPrefix("physical_capacity:") == true)
+    }
+
+    @Test("`.auto` still degrades when paged cannot be served")
+    func autoDegradesOnPagedFailure() async throws {
+        // Layer 5's degrade half. `.auto` short-circuits to contiguous
+        // before any paged attempt today, so the real construction path
+        // cannot reach the branch; the policy predicate is the seam that
+        // decides it, and it must keep answering "degrade" for every
+        // non-explicit selection or an auto fleet starts 503-ing the day
+        // auto begins resolving paged.
+        #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: .auto))
+        #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: .contiguous))
+        #expect(!EngineV2KVBackendPolicy.degradesPagedFailure(selection: .paged))
+    }
+
+    @Test("kill-switch degrade constructs frozen-full cache for resolved contiguous backend")
     func pagedFallbackConstructsFrozenCache() async throws {
-        struct PreflightFailure: Error {}
         let model = try tinyGemma4Text()
+        // The kill switch is now the only route to a DEGRADED preparation
+        // from an explicit paged selection — preflight and capacity
+        // failures refuse instead (see the three refusal tests above). The
+        // property under test is unchanged: whatever produces a resolved
+        // contiguous backend must also produce a frozen-full SSD cache
+        // capability, so the cache can never be built for a backend that
+        // is not the one serving.
         let prepared = try EngineV2Factory.prepareProductionBackend(
             model: model,
             kvBytesCapacity: gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBackend: .paged,
             maxContextLength: 2048,
-            environment: [:],
-            pagedPreflightOverride: { _ in throw PreflightFailure() })
+            environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"],
+            pagedPreflightOverride: { _ in })
         #expect(prepared.kind == .contiguous)
-        #expect(prepared.fallbackReason?.hasPrefix("kernel_preflight:") == true)
+        #expect(prepared.fallbackReason == "kill_switch")
 
         let capability = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: prepared.layerKinds,
             backendSelection: .contiguous)
         #expect(capability.strategy == .frozenFullReplay)
         #expect(capability.isSupported)
-
-        let capacityFallback = try EngineV2Factory.prepareProductionBackend(
-            model: model,
-            kvBytesCapacity: 1_024,
-            maxConcurrentRequests: 2,
-            kvBackend: .paged,
-            maxContextLength: 2048,
-            environment: [:],
-            pagedPreflightOverride: { _ in })
-        #expect(capacityFallback.kind == .contiguous)
-        #expect(capacityFallback.fallbackReason?.hasPrefix("physical_capacity:") == true)
-        #expect(PrefixCachePolicy.prefixReuseCapability(
-            layerKinds: capacityFallback.layerKinds,
-            backendSelection: .contiguous
-        ).strategy == .frozenFullReplay)
 
         let root = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
             .appendingPathComponent("paged-fallback-cache-\(UUID().uuidString)", isDirectory: true)
@@ -290,9 +361,38 @@ struct EngineV2KVBackendGateTests {
         await build.engine.shutdown()
     }
 
-    @Test("slot factory resolves paged fallback before constructing frozen cache")
+    @Test("paged pool is sized from the ONE scheduler config the engine runs on")
+    func pagedPoolLocksStepWithSchedulerConfig() async throws {
+        let model = try tinyGemma4Text()
+        let prepared = try EngineV2Factory.prepareProductionBackend(
+            model: model,
+            kvBytesCapacity: gateTestCapacity,
+            maxConcurrentRequests: 2,
+            kvBackend: .paged,
+            maxContextLength: 2048,
+            environment: [:])
+        #expect(prepared.kind == .paged)
+        let (backend, _) = try prepared.consume(model: model, maxConcurrentRequests: 2)
+        let paged = try #require(backend as? PagedKVBackend)
+        // LOCKSTEP. `PagedSequenceKV` PRECONDITIONS that a windowed update
+        // never exceeds the pool's `maxPrefillChunk` — a process kill, not
+        // a throw — so the pool must be sized from the chunk the ENGINE
+        // actually schedules. There is now one `CBv2SchedulerConfig` per
+        // build, carried on the preparation and reused verbatim by
+        // `assembleProductionBuild`; this pins the pool against it so a
+        // re-introduced parallel constant fails here instead of aborting
+        // the daemon under a long windowed prefill.
+        #expect(
+            paged.pool.config.maxPrefillChunk
+                == prepared.schedulerConfig.prefillChunkSize)
+        #expect(prepared.schedulerConfig.maxConcurrentRequests == 2)
+        // Prefix caching is the ONLY field assembly may still decide, and
+        // it is off until a cache instance is supplied.
+        #expect(!prepared.schedulerConfig.enablePrefixCache)
+    }
+
+    @Test("slot factory resolves the degraded backend before constructing frozen cache")
     func slotFactoryOrdersResolvedBackendBeforeCache() async throws {
-        struct PreflightFailure: Error {}
         let model = try tinyGemma4Text()
         let tokenizer = StubBridgeTokenizer()
         let container = ModelContainer(
@@ -331,7 +431,6 @@ struct EngineV2KVBackendGateTests {
             kvBytesCapacity: gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBudget: nil,
-            kvQuantConfigured: false,
             kvBackendConfig: "paged",
             weightHash: String(repeating: "a", count: 64),
             specDecPreparation: SpecDecPreparation(
@@ -340,7 +439,10 @@ struct EngineV2KVBackendGateTests {
             preparedModel: preparedModel,
             assemblyOverrides: .init(
                 promptContractID: "tiny-gemma-contract",
-                pagedPreflight: { _ in throw PreflightFailure() },
+                // Kill-switch degrade, not a preflight failure: an
+                // explicit `paged` config whose preflight fails now
+                // refuses out of this same call (see
+                // `slotFactoryRefusesExplicitPagedRequest`).
                 makePrefixCache: { layerKinds, capability in
                     let cache = SSDPrefixCache(
                         config: .init(
@@ -368,7 +470,7 @@ struct EngineV2KVBackendGateTests {
                     capture.set(cache: cache, capability: capability)
                     return cache
                 }),
-            environment: [:])
+            environment: [EngineV2KVBackendPolicy.killSwitchEnvKey: "0"])
         let cache = try #require(capture.cache)
         let backendKind = await bundle.bridge.kvBackendKind
         #expect(backendKind == .contiguous)
@@ -381,6 +483,77 @@ struct EngineV2KVBackendGateTests {
         #expect(status.state == .pending)
         #expect(status.reason == .scanPending)
         await bundle.bridge.shutdown()
+    }
+
+    @Test("slot factory REFUSES an explicit paged request it cannot serve")
+    func slotFactoryRefusesExplicitPagedRequest() async throws {
+        struct PreflightFailure: Error {}
+        let model = try tinyGemma4Text()
+        let tokenizer = StubBridgeTokenizer()
+        let container = ModelContainer(
+            context: ModelContext(
+                configuration: ModelConfiguration(id: "tiny/gemma"),
+                model: model,
+                processor: GateProcessor(),
+                tokenizer: tokenizer))
+        let preparedModel = EngineV2PreparedModel(
+            snapshot: EngineV2ModelSnapshot(
+                model: model,
+                eosTokenIds: [1],
+                extraEOSTokens: []),
+            servingModel: model,
+            assistant: nil,
+            mtpStatus: .disabled(.configDisabled, configured: false),
+            mtpArtifact: nil)
+        let telemetry = GateTelemetrySink()
+
+        // The production 503 path end to end: operator config says paged,
+        // the kernel cannot be preflighted, so the LOAD fails instead of
+        // quietly serving a contiguous slot under a paged label.
+        let reason = await pagedRefusalReason {
+            _ = try await EngineV2SlotFactory.makeProductionBundle(
+                modelId: "tiny-gemma",
+                modelType: "gemma4_text",
+                isVLM: false,
+                modelDirectory: nil,
+                container: container,
+                tokenizer: TokenizerHandle(tokenizer),
+                sizing: SlotSizingSnapshot(
+                    weightsBytes: 1,
+                    fp16KVBytesPerToken: 1_024,
+                    maxContextLength: 2_048,
+                    defaultMaxTokens: 32),
+                kvBytesCapacity: gateTestCapacity,
+                maxConcurrentRequests: 2,
+                kvBudget: nil,
+                kvBackendConfig: "paged",
+                weightHash: String(repeating: "a", count: 64),
+                specDecPreparation: SpecDecPreparation(
+                    artifact: nil,
+                    status: .disabled(.configDisabled, configured: false)),
+                preparedModel: preparedModel,
+                assemblyOverrides: .init(
+                    promptContractID: "tiny-gemma-contract",
+                    pagedPreflight: { _ in throw PreflightFailure() }),
+                environment: [:],
+                emitTelemetry: { telemetry.record($0) })
+        }
+        #expect(reason?.hasPrefix("kernel_preflight:") == true)
+
+        // ERROR `engine_v2_refusal`, classified so a paged-rollout
+        // regression stays separable from every other bad load in
+        // aggregate — `engine_init_failed` would bury it.
+        let refusals = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "engine_v2_refusal"
+        }
+        #expect(refusals.count == 1)
+        #expect(refusals.first?.severity == .error)
+        #expect(
+            refusals.first?.fields?["reason"]?.description
+                == "paged_backend_unavailable")
+        #expect(
+            refusals.first?.fields?["error"]?.description
+                .contains("kernel_preflight:") == true)
     }
 
     @Test("slot factory publishes GPT-OSS native contiguous rate without SSD staging")
@@ -425,7 +598,6 @@ struct EngineV2KVBackendGateTests {
             kvBytesCapacity: gateTestCapacity,
             maxConcurrentRequests: 2,
             kvBudget: nil,
-            kvQuantConfigured: false,
             kvBackendConfig: "contiguous",
             weightHash: String(repeating: "b", count: 64),
             specDecPreparation: SpecDecPreparation(

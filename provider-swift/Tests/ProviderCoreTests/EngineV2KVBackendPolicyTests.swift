@@ -2,8 +2,8 @@
 //
 // Pure-logic tests for the paged-KV backend selection policy
 // (`EngineV2KVBackendPolicy`): operator-string parsing (per-model override
-// precedence, typo fail-safe), the fleet kill switch's negative-only
-// semantics, and the slot-veto layer (VLM / kv-quant force contiguous).
+// semantics, and the slot-veto layer (VLM forces contiguous; kv-quant is
+// no longer a veto — the feature is being removed from the product).
 // The family/eligibility layers live in `EngineV2KVBackendGateTests`
 // (real tiny models); the wire-through lives in the wiring tests.
 
@@ -89,42 +89,39 @@ struct EngineV2KVBackendPolicyTests {
 
     // MARK: slot vetoes
 
-    @Test("VLM and kv-quant force contiguous; clean slots pass through")
+    @Test("VLM forces contiguous; clean slots pass through")
     func slotVetoes() {
         // Explicit paged on a VLM slot: vetoed, tagged for the slot log.
+        // A veto is POLICY, not failure — it must stay a silent force to
+        // contiguous, NOT the `pagedUnavailable` refusal an explicit paged
+        // request gets when the backend genuinely cannot be built.
         let pagedVLM = EngineV2KVBackendPolicy.applySlotVetoes(
-            selection: .paged, isVLM: true, kvQuantConfigured: false)
+            selection: .paged, isVLM: true)
         #expect(pagedVLM.selection == .contiguous)
         #expect(pagedVLM.veto == "vlm")
 
         // Auto on a VLM slot resolves contiguous silently (the default
         // doing its job is not an override worth logging).
         let autoVLM = EngineV2KVBackendPolicy.applySlotVetoes(
-            selection: .auto, isVLM: true, kvQuantConfigured: false)
+            selection: .auto, isVLM: true)
         #expect(autoVLM.selection == .contiguous)
         #expect(autoVLM.veto == nil)
 
-        // kv-quant intent vetoes both paged and auto (fp16 pages only).
-        for selection in [EngineV2KVBackendSelection.paged, .auto] {
-            let vetoed = EngineV2KVBackendPolicy.applySlotVetoes(
-                selection: selection, isVLM: false, kvQuantConfigured: true)
-            #expect(vetoed.selection == .contiguous)
-            #expect(vetoed.veto == "kv_quant")
-        }
-
-        // Clean text slots pass through untouched.
+        // Clean text slots pass through untouched — including the slots
+        // that used to be vetoed for kv-quant intent, which is no longer
+        // a backend consideration.
         let paged = EngineV2KVBackendPolicy.applySlotVetoes(
-            selection: .paged, isVLM: false, kvQuantConfigured: false)
+            selection: .paged, isVLM: false)
         #expect(paged.selection == .paged)
         #expect(paged.veto == nil)
         let auto = EngineV2KVBackendPolicy.applySlotVetoes(
-            selection: .auto, isVLM: false, kvQuantConfigured: false)
+            selection: .auto, isVLM: false)
         #expect(auto.selection == .auto)
         #expect(auto.veto == nil)
 
         // Contiguous is never vetoed (nothing to force).
         let contiguous = EngineV2KVBackendPolicy.applySlotVetoes(
-            selection: .contiguous, isVLM: true, kvQuantConfigured: true)
+            selection: .contiguous, isVLM: true)
         #expect(contiguous.selection == .contiguous)
         #expect(contiguous.veto == nil)
     }

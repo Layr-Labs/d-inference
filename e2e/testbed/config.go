@@ -2,6 +2,7 @@ package testbed
 
 import (
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -67,6 +68,41 @@ const (
 	TrustHardware   TrustLevel = "hardware"
 )
 
+// KVBackendAuto / KVBackendPaged / KVBackendContiguous are the values the
+// provider accepts for `engine_v2_kv_backend` under `[backend]`.
+const (
+	KVBackendAuto       = "auto"
+	KVBackendPaged      = "paged"
+	KVBackendContiguous = "contiguous"
+)
+
+// ResolveKVBackend returns the KV backend the testbed should ask the provider
+// for: the explicit value when set, else DARKBLOOM_TESTBED_KV_BACKEND, else ""
+// (leave the provider at its own default). The env fallback lets CI re-run the
+// existing suites against a different backend without editing a single test.
+func ResolveKVBackend(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return os.Getenv("DARKBLOOM_TESTBED_KV_BACKEND")
+}
+
+// ResolveMaxConcurrent returns the per-slot concurrency cap: the explicit
+// value when non-zero, else DARKBLOOM_TESTBED_MAX_CONCURRENT, else 0 (leave
+// the provider at its own default of 4). A non-numeric env value is ignored
+// rather than failing the suite over a typo in an optional knob.
+func ResolveMaxConcurrent(explicit int) int {
+	if explicit != 0 {
+		return explicit
+	}
+	if raw := os.Getenv("DARKBLOOM_TESTBED_MAX_CONCURRENT"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
 type ProviderConfig struct {
 	TrustLevel                 TrustLevel
 	ModelID                    string
@@ -74,6 +110,23 @@ type ProviderConfig struct {
 	AttestationInterval        time.Duration
 	AuthTokenPath              string
 	EnableEphemeralPrefixCache bool
+	// KVBackend selects the CBv2 KV-cache backend for every engine slot the
+	// provider builds: "" (leave the provider at its own default), "auto",
+	// "paged", or "contiguous". Non-empty makes the testbed write a provider
+	// TOML into StateDir and launch with `--config`; empty changes nothing
+	// about the launch.
+	//
+	// GOTCHA — do NOT reach for DARKBLOOM_CBV2_PAGED_KV to turn paged on.
+	// That env var is negative-polarity ONLY: it is the fleet kill switch and
+	// can force paged OFF, never ON. `engine_v2_kv_backend` under `[backend]`
+	// is the only way to select paged, which is the entire reason the testbed
+	// writes a config file at all.
+	KVBackend string
+	// MaxConcurrent is the box-wide concurrent-request cap per engine slot
+	// (`engine_v2_max_concurrent` under `[backend]`). 0 leaves the provider at
+	// its own default (4); the provider clamps the value to [1, 8]. Travels
+	// through the same generated TOML as KVBackend.
+	MaxConcurrent int
 }
 
 func DefaultProviderConfig() ProviderConfig {
@@ -146,6 +199,11 @@ type SuiteConfig struct {
 	SeedBalance                int64
 	UseMemoryStore             bool
 	EnableEphemeralPrefixCache bool
+	// KVBackend / MaxConcurrent are forwarded verbatim to every provider this
+	// suite launches. See ProviderConfig for the zero-value semantics and the
+	// DARKBLOOM_CBV2_PAGED_KV gotcha.
+	KVBackend     string
+	MaxConcurrent int
 }
 
 func DefaultSuiteConfig() SuiteConfig {

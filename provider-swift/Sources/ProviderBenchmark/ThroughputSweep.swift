@@ -12,9 +12,10 @@ import MLXVLM
 /// same `LLMModelFactory` + `LocalTokenizerLoader` the serve path uses, runs
 /// prefill through `model.callAsFunction(_:cache:)`, and runs decode through
 /// the PRODUCTION ContinuousBatchingV2 engine, constructed via
-/// `EngineV2Factory.makeProductionEngine` — the exact one-engine entry point
-/// every serving slot uses as of v0.7.5. It does **not** reimplement any
-/// inference numerics; it only drives the engine and times it.
+/// `EngineV2Factory.makeProductionBuild` — the one-engine entry point every
+/// serving slot uses (`makeProductionEngine` is its thin wrapper, which
+/// discards the resolved-backend metadata this report needs). It does **not**
+/// reimplement any inference numerics; it only drives the engine and times it.
 ///
 /// The decode-vs-batch curve is the point: a memory-bandwidth-bound dense model
 /// amortizes one weight read across the batch and scales ~linearly, while a
@@ -45,6 +46,12 @@ public enum ThroughputSweep {
     /// `DecodeSample`, so callers can take a median instead of trusting a single
     /// noisy GPU measurement. The `derived` block is always computed from the
     /// per-batch medians.
+    ///
+    /// `kvBackend` is the operator-facing selection handed to the production
+    /// factory. `.auto` resolves to contiguous today, so it is the default here
+    /// too — a run with no new flags measures exactly what it measured before.
+    /// A `.paged` selection can still degrade to contiguous, so the report
+    /// notes carry the backend the engine ACTUALLY built with.
     public static func run(
         modelID: String,
         modelDirectory: URL,
@@ -53,6 +60,7 @@ public enum ThroughputSweep {
         decodeTokens: Int = defaultDecodeTokens,
         decodePromptTokens: Int = defaultDecodePromptTokens,
         decodeIterations: Int = defaultDecodeIterations,
+        kvBackend: EngineV2KVBackendSelection = .auto,
         hardware: HardwareInfo,
         efficiency: Double = DecodeBandwidthModel.defaultBandwidthEfficiency
     ) async throws -> ThroughputSweepReport {
@@ -90,7 +98,7 @@ public enum ThroughputSweep {
 
         let prefill = await measurePrefill(
             container: container, baseTokens: baseTokens, lengths: promptLengths)
-        let decode = await measureDecode(
+        let decodeOutcome = await measureDecode(
             container: container,
             modelID: modelID,
             baseTokens: baseTokens,
@@ -100,8 +108,10 @@ public enum ThroughputSweep {
             iterations: decodeIterations,
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
-            modelDirectory: modelDirectory
+            modelDirectory: modelDirectory,
+            kvBackend: kvBackend
         )
+        let decode = decodeOutcome.samples
 
         // One median sample per batch size: the B=1 implied read and the
         // batch-scaling linearity must not hang off a single measurement.
@@ -114,7 +124,9 @@ public enum ThroughputSweep {
             efficiency: efficiency
         )
 
-        let notes = makeNotes(hardware: hardware, efficiency: efficiency, derived: derived)
+        let notes = makeNotes(
+            hardware: hardware, efficiency: efficiency, derived: derived,
+            kvBackend: kvBackend, resolvedBackends: decodeOutcome.resolvedBackends)
 
         return ThroughputSweepReport(
             modelID: modelID,
@@ -185,6 +197,25 @@ public enum ThroughputSweep {
         let elapsed: Duration
     }
 
+    /// Decode samples plus the KV backend the engine ACTUALLY built for those
+    /// cells. `.auto`/`.paged` are selections, not outcomes — paged degrades to
+    /// contiguous on kill switch, kernel preflight, or pool capacity, and a
+    /// release gate that cannot see the degradation silently measures the wrong
+    /// backend.
+    private struct DecodeOutcome {
+        var samples: [ThroughputSweepReport.DecodeSample] = []
+        /// Distinct resolved-backend descriptors, in first-seen order.
+        var resolvedBackends: [String] = []
+
+        /// Returns true when `descriptor` had not been seen before.
+        @discardableResult
+        mutating func record(_ descriptor: String?) -> Bool {
+            guard let descriptor, !resolvedBackends.contains(descriptor) else { return false }
+            resolvedBackends.append(descriptor)
+            return true
+        }
+    }
+
     /// For each batch size B, build a fresh `BatchedEngine`, submit B greedy
     /// requests (each with a distinct rotated prompt so MoE routing differs
     /// per row), drop the first emitted token per row to exclude prefill, and
@@ -208,34 +239,40 @@ public enum ThroughputSweep {
         iterations: Int,
         weightBytes: Int,
         isVLM: Bool,
-        modelDirectory: URL?
-    ) async -> [ThroughputSweepReport.DecodeSample] {
+        modelDirectory: URL?,
+        kvBackend: EngineV2KVBackendSelection
+    ) async -> DecodeOutcome {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
-        guard !sizes.isEmpty else { return [] }
+        guard !sizes.isEmpty else { return DecodeOutcome() }
         let promptLen = max(1, decodePromptTokens)
         let genTokens = max(1, decodeTokens)
         let repetitions = max(1, iterations)
-        log("decode sweep: batch sizes \(sizes), \(genTokens) tok/seq, prompt \(promptLen) tok/seq, \(repetitions) repetition(s)")
+        log("decode sweep: batch sizes \(sizes), \(genTokens) tok/seq, prompt \(promptLen) tok/seq, \(repetitions) repetition(s), kv backend selection \(kvBackend.rawValue)")
+
+        var outcome = DecodeOutcome()
 
         // Warm-up at B=1 with a short generation to compile decode kernels
         // (CBv2 compiled decode pays its cold start here, not in a sample).
         await runDecodeBatch(
             container: container, modelID: modelID, baseTokens: baseTokens,
             batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes,
-            isVLM: isVLM, modelDirectory: modelDirectory)
+            isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
 
-        var samples: [ThroughputSweepReport.DecodeSample] = []
         for iteration in 1 ... repetitions {
             for batchSize in sizes {
-                let (totalTokens, maxElapsed) = await runDecodeBatch(
+                let (totalTokens, maxElapsed, resolved) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
-                    weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory)
+                    weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory,
+                    kvBackend: kvBackend)
+                if outcome.record(resolved), let resolved {
+                    log("  engine resolved kv backend: \(resolved)")
+                }
                 let secs = seconds(maxElapsed)
                 let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
                 let perSeq = aggregate / Double(batchSize)
                 log("  [\(iteration)/\(repetitions)] B=\(batchSize): aggregate \(String(format: "%.1f", aggregate)) tok/s, per-seq \(String(format: "%.1f", perSeq)) tok/s")
-                samples.append(ThroughputSweepReport.DecodeSample(
+                outcome.samples.append(ThroughputSweepReport.DecodeSample(
                     batchSize: batchSize,
                     decodeTokensPerSequence: genTokens,
                     aggregateTokensPerSecond: aggregate,
@@ -244,14 +281,16 @@ public enum ThroughputSweep {
                 ))
             }
         }
-        return samples
+        return outcome
     }
 
-    /// Build the production CBv2 engine (`EngineV2Factory.makeProductionEngine`
+    /// Build the production CBv2 engine (`EngineV2Factory.makeProductionBuild`
     /// — the same construction every serving slot uses), run `batchSize`
     /// greedy rows to completion, shut the engine down, and return
-    /// `(totalDecodedTokens, maxRowElapsed)` where the clock starts after each
-    /// row's first token (prefill excluded).
+    /// `(totalDecodedTokens, maxRowElapsed, resolvedBackend)` where the clock
+    /// starts after each row's first token (prefill excluded) and
+    /// `resolvedBackend` names the KV backend the factory actually chose
+    /// (nil when construction failed).
     @discardableResult
     private static func runDecodeBatch(
         container: ModelContainer,
@@ -262,8 +301,9 @@ public enum ThroughputSweep {
         promptLen: Int,
         weightBytes: Int,
         isVLM: Bool,
-        modelDirectory: URL?
-    ) async -> (totalTokens: Int, maxElapsed: Duration) {
+        modelDirectory: URL?,
+        kvBackend: EngineV2KVBackendSelection
+    ) async -> (totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
         // short rows need — admission never binds in the sweep.
@@ -276,6 +316,8 @@ public enum ThroughputSweep {
         struct EngineParts: @unchecked Sendable {
             let engine: any CBv2Engine
             let eosTokenIds: Set<Int>
+            /// The backend the factory resolved to, with any fallback reason.
+            let resolvedBackend: String
         }
         let parts: EngineParts
         do {
@@ -284,17 +326,26 @@ public enum ThroughputSweep {
                 // weight-sharing text extraction, exactly like a slot build.
                 let servingModel = try EngineV2Factory.benchmarkServingModel(
                     model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                // `makeProductionBuild` is the construction
+                // `makeProductionEngine` wraps, and additionally hands back the
+                // backend kind the engine actually resolved to — the fact a
+                // paged gate run has to record.
+                let build = try EngineV2Factory.makeProductionBuild(
+                    model: servingModel,
+                    tokenizer: ctx.tokenizer,
+                    kvBytesCapacity: kvCapacity,
+                    maxConcurrentRequests: max(batchSize, 1),
+                    kvBackend: kvBackend)
                 return EngineParts(
-                    engine: try EngineV2Factory.makeProductionEngine(
-                        model: servingModel,
-                        tokenizer: ctx.tokenizer,
-                        kvBytesCapacity: kvCapacity,
-                        maxConcurrentRequests: max(batchSize, 1)),
-                    eosTokenIds: ctx.configuration.eosTokenIds)
+                    engine: build.engine,
+                    eosTokenIds: ctx.configuration.eosTokenIds,
+                    resolvedBackend: build.kvBackendFallbackReason.map {
+                        "\(build.kvBackendKind.rawValue) (fallback: \($0))"
+                    } ?? build.kvBackendKind.rawValue)
             }
         } catch {
             log("  engine construction failed: \(error)")
-            return (0, .zero)
+            return (0, .zero, nil)
         }
         let engine = parts.engine
         let eosTokenIds = parts.eosTokenIds
@@ -348,7 +399,9 @@ public enum ThroughputSweep {
         }
 
         await engine.shutdown()
-        return result
+        return (
+            totalTokens: result.0, maxElapsed: result.1,
+            resolvedBackend: parts.resolvedBackend)
     }
 
     // MARK: - Helpers
@@ -443,9 +496,17 @@ public enum ThroughputSweep {
     private static func makeNotes(
         hardware: HardwareInfo,
         efficiency: Double,
-        derived: ThroughputSweepReport.Derived
+        derived: ThroughputSweepReport.Derived,
+        kvBackend: EngineV2KVBackendSelection,
+        resolvedBackends: [String]
     ) -> [String] {
         var notes: [String] = []
+        notes.append(
+            "kv backend: selection=\(kvBackend.rawValue), resolved="
+                + (resolvedBackends.isEmpty
+                    ? "n/a (no decode cells ran)"
+                    : resolvedBackends.joined(separator: " + "))
+                + " — decode numbers describe the RESOLVED backend, not the selection.")
         notes.append(
             "implied per-token read assumes \(Int(efficiency * 100))% of \(hardware.memoryBandwidthGbs) GB/s peak bandwidth.")
         notes.append(

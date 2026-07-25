@@ -282,7 +282,9 @@ public enum TelemetryFieldFilter {
         "kv_backend", "prefix_reuse_backend",
         // Paged KV pool metrics. Aggregate pool counters only — never page
         // contents or block hashes. Mirror in Go + TS allowlists.
-        "pages_pinned", "cow_events", "pool_utilization",
+        // pages_pinned / cow_events deliberately absent: no mechanism exists,
+        // and a producerless key reads as a legitimate zero. See the Go mirror.
+        "pool_utilization",
         // Paged pool re-slice residue. RAW BYTES, not a second ratio:
         // pool_utilization above is OCCUPANCY, and a grant-vs-pool ratio under
         // a near-identical name collides with it wherever a dashboard groups

@@ -150,6 +150,11 @@ extension EngineV2Bridge {
         // — "today every page has refcount 0 or 1" (PagedKVPool.swift header).
         // Emitting a hardcoded 0 would be indistinguishable from a measured
         // zero and would make the dashboard assert a fact nothing observed.
+        //
+        // For the same reason the two keys are no longer ALLOWLISTED either:
+        // a key that survives the filter but is never written reads as a
+        // legitimate zero to anyone building a panel on it. Add each key in
+        // the same change as its mechanism, across all three mirrors.
         var event = TelemetryEvent(
             source: .provider,
             severity: .info,

@@ -78,6 +78,12 @@ type warmTargetInputs struct {
 // concurrency cap (falling back to fallbackConc). When the floor is disabled
 // (<= 0), the solo rate is unknown, or load scaling is off, the constraint does
 // not bind and the cap is returned.
+//
+// k is MEASURED per engine generation, not chosen, and this function is the
+// most load-bearing consumer of getting it wrong in the safe-looking
+// direction: too SMALL a k over-states the quality batch, which divides
+// Little's Law demand by too much and under-warms the pool — a shortfall that
+// reads as demand undershoot rather than as a stale coefficient.
 func qualityConcurrency(soloDecodeTPS, floor, k float64, maxProviderConc, fallbackConc int) int {
 	limit := maxProviderConc
 	if limit <= 0 {

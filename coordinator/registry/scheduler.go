@@ -55,14 +55,46 @@ const (
 	// effective TPS used in cost is `decodeTPS / (1 + k * batchSize)`
 	// where batchSize is the backend's currently-running request count.
 	//
-	// Measured on M4 Max (Qwen2.5-7B-4bit) at N=1/2/4/8 concurrent
-	// decodes: per-request TPS = 92.8 / 69.5 / 35.9 / 29.6. Median
-	// implied k = 0.27 (see scripts/calibrate-routing.sh load-factor).
-	// Prior default 0.4 was ~48% too aggressive — it under-predicted
-	// per-request TPS at small batch sizes, pushing traffic off the
-	// big machines sooner than warranted.
+	// Measured on M4 Max against the CBv2 engine and a model this
+	// coordinator actually serves — gemma-4-26b-qat-4bit, per-request
+	// decode at B = 1/2/4/8 = 101.8 / 59.6 / 38.0 / 24.7 (v2 rows of
+	// libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-qat4bit-paged-gate-2026-07-09.md).
+	// Method: median of the implied k over B = 2/4/8, solo pinned to the
+	// B=1 measurement — 0.354 / 0.420 / 0.390 -> 0.39. A least-squares fit
+	// of 1/rate against B agrees (0.3895). The SAME method reproduces the
+	// previous 0.27 exactly from the legacy rows (Qwen2.5-7B-4bit on the
+	// legacy engine: 92.8 / 69.5 / 35.9 / 29.6 -> 0.2669), so this is a
+	// change of engine and model, not of method. Cross-checks: gemma
+	// v2-paged 0.388, v2-compiled 0.419; gpt-oss-20b v2-eager 0.432,
+	// v2-paged 0.325.
+	//
+	// 0.27 errs in the LENIENT direction against CBv2 — it UNDER-predicts
+	// degradation, i.e. over-predicts the surviving rate, and the error
+	// grows with batch:
+	//
+	//	B    measured    k=0.27 pred       k=0.39 pred
+	//	2    59.6        66.1   (+10.9%)   57.2   (-4.1%)
+	//	4    38.0        48.9   (+28.8%)   39.8   (+4.6%)
+	//	8    24.7        32.2   (+30.4%)   24.7   (-0.0%)
+	//	                 MAPE 23.4%        MAPE 2.9%
+	//
+	// B=1 is the model's INPUT (solo), not a prediction, so it is not
+	// scored. Mind the SIGN: 0.27 is too SMALL, not too large. A reading
+	// that it was wildly "too aggressive" comes from comparing a
+	// prediction made with the coordinator's sqrt(memory_bandwidth) proxy
+	// solo (16-28 tok/s) against a rate measured at the engine's real solo
+	// (101.8) — that gap is a bad SOLO rate, not a bad k, and it has its
+	// own lever (modelSoloTPSSeedEnv in concurrency_cap.go). Raising k
+	// makes every derived cap TIGHTER, never looser.
+	//
+	// Four systems consume this and a too-small k over-states the quality
+	// batch in all of them at once: the admission cap (concurrency_cap.go),
+	// effectiveDecodeTPS and projectedPerRequestDecodeTPSAtBatch below, and
+	// the warm-pool target (warm_pool_controller.go) — which then
+	// under-warms the pool while admission packs batches that miss the
+	// decode floor.
 	// Set to 0 to disable load scaling.
-	effectiveTPSLoadFactor = 0.27
+	effectiveTPSLoadFactor = 0.39
 )
 
 type routingSnapshot struct {

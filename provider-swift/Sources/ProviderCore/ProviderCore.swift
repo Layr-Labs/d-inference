@@ -154,5 +154,20 @@ public enum ProviderCore {
     // carry a typed terminal_cause and reconciled attempt_usage on the wire
     // (optional fields; old coordinators ignore them). Kill-switch:
     // DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT=1 restores the legacy wall.
-    public static let version = "0.7.14"
+    // 0.7.15 cuts CBv2 prompt work that was computed and discarded. Prompt
+    // chunks no longer build full [B, L, vocab] logits for positions the
+    // engine never reads; the final decoder layer keeps full attention and
+    // every K/V write but evaluates only the frontier row; and equal-length
+    // text chunks execute as ONE rectangular [B, L] forward instead of B
+    // separate ones, which is what fixes concurrent-burst TTFT. Decode is
+    // untouched: the compiled [B, 1] path and MTP verification never enter
+    // the prompt seam, and packing disengages for any model or cache
+    // provider that does not vouch for per-row independence. Measured on
+    // Gemma 4 26B-A4B QAT 4-bit (M4 Max): TTFT -15%/-20%/-19% at
+    // 128/512/2048 tokens and -25% for a 4x512 burst, decode within noise,
+    // exact output invariance held. Kill switches:
+    // DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS=0 and
+    // DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0; the opt-in mixed-step prefill
+    // quota is DARKBLOOM_CBV2_MIXED_PREFILL_CAP.
+    public static let version = "0.7.15"
 }

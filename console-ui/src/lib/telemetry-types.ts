@@ -147,8 +147,8 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "kv_backend",
   "prefix_reuse_backend",
   // Paged KV pool metrics: aggregate pool counters only.
-  "pages_pinned",
-  "cow_events",
+  // `pages_pinned` / `cow_events` deliberately absent: no mechanism exists,
+  // and a producerless key reads as a legitimate zero. See the Go mirror.
   "pool_utilization",
   // Paged pool re-slice residue: raw bytes, not a second ratio. Above,
   // `pool_utilization` is OCCUPANCY; a grant-vs-pool ratio under a

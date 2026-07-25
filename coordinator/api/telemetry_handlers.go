@@ -150,8 +150,13 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"prefix_reuse_backend": {},
 	// Paged KV pool metrics (v0.8.0). Aggregate pool counters only — never
 	// page contents or block hashes. Mirror of the Swift + TS allowlists.
-	"pages_pinned":     {},
-	"cow_events":       {},
+	// pages_pinned and cow_events are deliberately NOT allowlisted. Neither
+	// mechanism exists: PagedKVPool has no pin concept (only reserve/in-use)
+	// and copy-on-write page splitting is unimplemented — every page is
+	// refcount 0 or 1. An allowlisted key with no producer is worse than an
+	// absent one, because it reads as a legitimate zero: a panel built on
+	// cow_events would report "no COW events" for a feature that does not
+	// exist. Add the key WITH its mechanism, in all three mirrors at once.
 	"pool_utilization": {},
 	// Paged pool re-slice residue (v0.8.0 co-residency). RAW BYTES, and
 	// deliberately not a second ratio: pool_utilization above is OCCUPANCY,

@@ -281,6 +281,27 @@ type BackendSlotCapacity struct {
 	KVBytesPerToken       int64   `json:"kv_bytes_per_token,omitempty"`       // per-token KV cache memory cost in bytes (provider-side only)
 	ModelLoadTimeMS       int64   `json:"model_load_time_ms,omitempty"`       // measured cold-start load time (ms) for the model in this slot; omitted when unmeasured
 
+	// KVBackend names the KV-cache backend this slot's engine was actually
+	// built with — the provider's `EngineV2Bridge.kvBackendKind`, i.e. the
+	// RESOLVED kind after every veto and fallback, not the operator's
+	// requested `engine_v2_kv_backend`. Values: "paged" | "contiguous".
+	// This is the fleet's only per-slot, every-heartbeat record of the
+	// v0.8.0 paged rollout; without it a mixed fleet cannot be A/B'd on
+	// TTFT, decode TPS or error rate by backend, and a fleet-wide
+	// regression cannot be attributed to the rollout at all.
+	//
+	// POINTER, deliberately. Pre-0.8.0 providers omit the key entirely and
+	// nil MUST read as "unknown", never as "contiguous" — otherwise the
+	// rollout dashboard books every legacy provider as a contiguous sample
+	// and the comparison lies. A non-nil pointer to "" still marshals as
+	// `"kv_backend":""` (omitempty tests the pointer, not the pointee), so
+	// an authoritative "slot present, backend unnameable" stays distinct
+	// from omission. Same idiom as FreeForLoadGB / PrefixCacheStatuses.
+	//
+	// MEASUREMENT ONLY — decoded for observability; routing is NOT gated on
+	// it. Acting on the backend kind is a separate change.
+	KVBackend *string `json:"kv_backend,omitempty"`
+
 	// Engine-health (first-token wedge) signals — low-cardinality, NON-PRIVATE
 	// diagnostics that let the coordinator SEE a wedged MLX/Metal first-token
 	// path (provider emits the preamble, then the first blocking eval never

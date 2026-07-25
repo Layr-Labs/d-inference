@@ -422,3 +422,143 @@ func TestBackendSlotCapacityWedgeFields(t *testing.T) {
 		t.Fatalf("legacy slot should default wedge fields to zero/false, got %+v", legacy)
 	}
 }
+
+// The v0.8.0 paged-KV rollout discriminator. `KVBackend` is a *string, not a
+// string, for exactly one reason: a pre-0.8.0 provider omits `kv_backend`
+// entirely and nil must read as UNKNOWN. A plain string would decode omission
+// to "", making "old provider" indistinguishable from any value a provider
+// actually sent — and a rollout dashboard that folds unknown into contiguous
+// reports an A/B comparison that is simply false. The three tests below pin
+// present, omitted and explicit-empty as three DIFFERENT decoded states.
+
+func TestBackendSlotCapacityKVBackendRoundTrip(t *testing.T) {
+	paged := "paged"
+	msg := HeartbeatMessage{
+		Type:   TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &BackendCapacity{
+			Slots: []BackendSlotCapacity{{
+				Model:     "gemma-4-26b-qat-4bit",
+				State:     "running",
+				KVBackend: &paged,
+			}},
+		},
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"kv_backend":"paged"`)) {
+		t.Fatalf("kv_backend missing from wire: %s", data)
+	}
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	got := decoded.BackendCapacity.Slots[0].KVBackend
+	if got == nil {
+		t.Fatal("KVBackend decoded nil, want \"paged\"")
+	}
+	if *got != "paged" {
+		t.Fatalf("KVBackend=%q, want \"paged\"", *got)
+	}
+
+	// The other shipped kind, so the field is not accidentally paged-only and a
+	// contiguous slot is a POSITIVE observation rather than an absence.
+	contiguous := "contiguous"
+	slotData, err := json.Marshal(BackendSlotCapacity{
+		Model: "gpt-oss-20b", State: "running", KVBackend: &contiguous,
+	})
+	if err != nil {
+		t.Fatalf("marshal contiguous: %v", err)
+	}
+	var contiguousSlot BackendSlotCapacity
+	if err := json.Unmarshal(slotData, &contiguousSlot); err != nil {
+		t.Fatalf("unmarshal contiguous: %v", err)
+	}
+	if contiguousSlot.KVBackend == nil || *contiguousSlot.KVBackend != "contiguous" {
+		t.Fatalf("contiguous round-trip = %v", contiguousSlot.KVBackend)
+	}
+}
+
+func TestBackendSlotCapacityKVBackendOmittedCompatibility(t *testing.T) {
+	// Exactly the pre-0.8.0 heartbeat shape.
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running"}]}
+	}`)
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	// nil, i.e. UNKNOWN — not "", not "contiguous". A legacy provider is not a
+	// contiguous data point.
+	if got := decoded.BackendCapacity.Slots[0].KVBackend; got != nil {
+		t.Fatalf("omitted kv_backend decoded to %q, want nil (unknown)", *got)
+	}
+
+	// Reverse direction: a slot that never sets it keeps the prior wire shape,
+	// so a 0.8.0 coordinator stays byte-compatible with pre-0.8.0 consumers.
+	legacyShape, err := json.Marshal(BackendSlotCapacity{Model: "qwen", State: "running"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(legacyShape, []byte("kv_backend")) {
+		t.Fatalf("nil KVBackend should be omitted, got %s", legacyShape)
+	}
+}
+
+func TestBackendSlotCapacityKVBackendExplicitEmptyCompatibility(t *testing.T) {
+	data := []byte(`{
+		"type":"heartbeat",
+		"status":"serving",
+		"active_model":null,
+		"stats":{},
+		"system_metrics":{},
+		"backend_capacity":{"slots":[{"model":"qwen","state":"running","kv_backend":""}]}
+	}`)
+
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	got := decoded.BackendCapacity.Slots[0].KVBackend
+	if got == nil {
+		t.Fatal("explicit empty kv_backend decoded to nil: omission and an explicit empty value must stay distinguishable")
+	}
+	if *got != "" {
+		t.Fatalf("explicit empty kv_backend = %q, want \"\"", *got)
+	}
+
+	// `omitempty` on a POINTER tests the pointer, not the pointee, so an
+	// explicit "" survives a re-marshal instead of collapsing into omission.
+	// This is the mechanism the whole present/omitted/empty distinction rests
+	// on: a plain `string` field would drop the key here and silently downgrade
+	// an authoritative empty value to "unknown".
+	empty := ""
+	reencoded, err := json.Marshal(BackendSlotCapacity{
+		Model: "qwen", State: "running", KVBackend: &empty,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(reencoded, []byte(`"kv_backend":""`)) {
+		t.Fatalf("explicit empty kv_backend should survive marshal, got %s", reencoded)
+	}
+}

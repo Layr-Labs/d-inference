@@ -450,6 +450,20 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var maxConcurrency: UInt32
     public var modelLoadTimeMs: Int64
 
+    /// The KV-cache backend this slot's engine was actually built with:
+    /// `EngineV2Bridge.kvBackendKind.rawValue` — "paged" | "contiguous",
+    /// the RESOLVED kind after every veto and fallback, not the operator's
+    /// requested `engine_v2_kv_backend`. The coordinator's only per-slot,
+    /// every-heartbeat record of the v0.8.0 paged rollout.
+    ///
+    /// OPTIONAL, deliberately: nil ⇒ not reported, which the coordinator
+    /// reads as UNKNOWN and never as contiguous (mirrors the Go
+    /// `KVBackend *string`). Encoded with `encodeIfPresent`, NOT the
+    /// non-zero/false omission the counters below use, so an explicit ""
+    /// still goes on the wire — Go's pointer `omitempty` tests the pointer,
+    /// not the pointee, and the two sides must agree on that.
+    public var kvBackend: String?
+
     // MARK: - Engine-health (first-token wedge) signals
     //
     // Low-cardinality, NON-PRIVATE diagnostic counters that let the coordinator
@@ -501,6 +515,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case kvBytesPerToken = "kv_bytes_per_token"
         case maxConcurrency = "max_concurrency"
         case modelLoadTimeMs = "model_load_time_ms"
+        case kvBackend = "kv_backend"
         case stepsExecuted = "steps_executed"
         case admits
         case firstTokensEmitted = "first_tokens_emitted"
@@ -526,6 +541,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget: Int64 = 0,
         kvBytesPerToken: Int64 = 0,
         modelLoadTimeMs: Int64 = 0,
+        kvBackend: String? = nil,
         stepsExecuted: Int64 = 0,
         admits: Int64 = 0,
         firstTokensEmitted: Int64 = 0,
@@ -549,6 +565,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
         self.modelLoadTimeMs = modelLoadTimeMs
+        self.kvBackend = kvBackend
         self.stepsExecuted = stepsExecuted
         self.admits = admits
         self.firstTokensEmitted = firstTokensEmitted
@@ -575,6 +592,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
+        // No `?? ""` fallback: absent must stay absent, or the coordinator
+        // cannot tell a pre-0.8.0 provider from one reporting an empty kind.
+        kvBackend = try container.decodeIfPresent(String.self, forKey: .kvBackend)
         stepsExecuted = try container.decodeIfPresent(Int64.self, forKey: .stepsExecuted) ?? 0
         admits = try container.decodeIfPresent(Int64.self, forKey: .admits) ?? 0
         firstTokensEmitted = try container.decodeIfPresent(Int64.self, forKey: .firstTokensEmitted) ?? 0
@@ -601,6 +621,7 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try encodeIfNonZero(queuedTokenBudget, forKey: .queuedTokenBudget, into: &container)
         try encodeIfNonZero(kvBytesPerToken, forKey: .kvBytesPerToken, into: &container)
         try encodeIfNonZero(modelLoadTimeMs, forKey: .modelLoadTimeMs, into: &container)
+        try container.encodeIfPresent(kvBackend, forKey: .kvBackend)
         try encodeIfNonZero(stepsExecuted, forKey: .stepsExecuted, into: &container)
         try encodeIfNonZero(admits, forKey: .admits, into: &container)
         try encodeIfNonZero(firstTokensEmitted, forKey: .firstTokensEmitted, into: &container)

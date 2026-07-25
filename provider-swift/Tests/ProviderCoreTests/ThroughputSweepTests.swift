@@ -171,6 +171,9 @@ struct ThroughputSweepReportTests {
         let json = try report.jsonString()
         #expect(json.contains("impliedReadFractionOfWeights"))
         #expect(json.contains("\"regime\""))
+        // A healthy run keeps its old shape: the OPEN-9 failure block is
+        // omitted from the JSON entirely, not emitted as null.
+        #expect(!json.contains("decodeConstructionFailure"))
 
         let decoded = try JSONDecoder().decode(
             ThroughputSweepReport.self, from: Data(json.utf8))
@@ -178,6 +181,42 @@ struct ThroughputSweepReportTests {
         #expect(decoded.decode.count == 2)
         #expect(decoded.derived.regime == .dense)
         #expect(decoded.schemaVersion == ThroughputSweepReport.currentSchemaVersion)
+    }
+
+    @Test("a refused sweep carries the reason, not just an empty curve")
+    func constructionFailureRoundTrip() throws {
+        // The OPEN-9 case: `--kv-backend paged` on a box that cannot serve
+        // paged now refuses per cell, so the sweep measures nothing. The
+        // report still ships (an operator needs the artifact) and must say
+        // WHY it is empty — `darkbloom benchmark` exits non-zero off this
+        // field and quotes the reason.
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: [], totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4, bandwidthGBps: 400)
+        let reason =
+            "engine_v2: paged KV backend explicitly requested but unavailable "
+            + "— kernel_preflight: PagedKernelPreflightError.ineligible"
+        let report = ThroughputSweepReport(
+            modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+            modelPath: "/models/gemma",
+            hardware: .init(
+                chipName: "Apple M4 Max", memoryGb: 128, gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            prefill: [],
+            decode: [],
+            derived: derived,
+            notes: ["kv backend: selection=paged, resolved=n/a (no decode cells ran)"],
+            decodeConstructionFailure: .init(
+                kvBackendSelection: "paged", reason: reason)
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ThroughputSweepReport.self, from: Data(try report.jsonString().utf8))
+        let failure = try #require(decoded.decodeConstructionFailure)
+        #expect(failure.kvBackendSelection == "paged")
+        #expect(failure.reason == reason)
+        #expect(decoded.decode.isEmpty)
     }
 }
 

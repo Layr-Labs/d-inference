@@ -56,7 +56,43 @@ extension Benchmark {
             hardware: hardware
         )
 
+        // The artifact ALWAYS ships, including on a refused run: the operator
+        // needs the notes line and the failure reason more than the status,
+        // and swallowing the report to signal an error would trade a good
+        // diagnostic for a bad one.
         print(try report.jsonString())
+
+        if let message = Self.sweepFailureMessage(
+            backend: backend, failure: report.decodeConstructionFailure)
+        {
+            printError(message)
+            throw ExitCode.failure
+        }
+    }
+
+    /// Exit-status decision for a completed sweep: the message to print
+    /// before failing, or nil when the run may report success.
+    ///
+    /// A sweep that constructed no engine measured NOTHING. Exiting 0 there
+    /// is indistinguishable from success to `set -e`, to CI, and to any
+    /// wrapper that checks status before parsing the report — and with no
+    /// canary fleet this benchmark IS the safety net for the paged rollout,
+    /// so it must not report success on total failure.
+    ///
+    /// Only for an EXPLICIT `--kv-backend`. `auto` keeps its old behaviour
+    /// exactly: it promised nothing about the backend, so a run that could
+    /// not build one is an ordinary bad run rather than a broken guarantee,
+    /// and scripts pinned to today's exit status must not start failing.
+    ///
+    /// The message names the REASON, not just the count: "no decode cells"
+    /// alone sends the reader back to the stderr log to find out why.
+    static func sweepFailureMessage(
+        backend: EngineV2KVBackendSelection,
+        failure: ThroughputSweepReport.DecodeConstructionFailure?
+    ) -> String? {
+        guard backend != .auto, let failure else { return nil }
+        return "--kv-backend \(backend.rawValue) produced no decode cells: "
+            + failure.reason
     }
 
     func runSchedulerPrefillBenchmark(

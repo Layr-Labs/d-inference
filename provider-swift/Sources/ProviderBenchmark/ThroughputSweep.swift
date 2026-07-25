@@ -128,6 +128,16 @@ public enum ThroughputSweep {
             hardware: hardware, efficiency: efficiency, derived: derived,
             kvBackend: kvBackend, resolvedBackends: decodeOutcome.resolvedBackends)
 
+        // Only when NOTHING ran. A failure alongside cells that did resolve is
+        // a partial result, not the story of the run, and must not be
+        // presented as one.
+        let constructionFailure = decodeOutcome.resolvedBackends.isEmpty
+            ? decodeOutcome.constructionFailure.map {
+                ThroughputSweepReport.DecodeConstructionFailure(
+                    kvBackendSelection: kvBackend.rawValue, reason: $0)
+            }
+            : nil
+
         return ThroughputSweepReport(
             modelID: modelID,
             modelPath: modelDirectory.path,
@@ -140,7 +150,8 @@ public enum ThroughputSweep {
             prefill: prefill,
             decode: decode,
             derived: derived,
-            notes: notes
+            notes: notes,
+            decodeConstructionFailure: constructionFailure
         )
     }
 
@@ -198,14 +209,21 @@ public enum ThroughputSweep {
     }
 
     /// Decode samples plus the KV backend the engine ACTUALLY built for those
-    /// cells. `.auto`/`.paged` are selections, not outcomes — paged degrades to
+    /// cells. `.auto` is a selection, not an outcome — it degrades to
     /// contiguous on kill switch, kernel preflight, or pool capacity, and a
-    /// release gate that cannot see the degradation silently measures the wrong
-    /// backend.
+    /// release gate that cannot see the degradation silently measures the
+    /// wrong backend. Since OPEN-9 an EXPLICIT `.paged` no longer degrades at
+    /// all: it refuses, every cell fails to construct, and `constructionFailure`
+    /// is the only record of why the curve is empty.
     private struct DecodeOutcome {
         var samples: [ThroughputSweepReport.DecodeSample] = []
-        /// Distinct resolved-backend descriptors, in first-seen order.
+        /// Distinct resolved-backend descriptors, in first-seen order. EMPTY
+        /// means no cell ever built an engine.
         var resolvedBackends: [String] = []
+        /// Last construction error seen, verbatim. Meaningful only when
+        /// `resolvedBackends` is empty — otherwise some cells did run and a
+        /// single failure is a partial result, not the story of the run.
+        var constructionFailure: String?
 
         /// Returns true when `descriptor` had not been seen before.
         @discardableResult
@@ -253,14 +271,19 @@ public enum ThroughputSweep {
 
         // Warm-up at B=1 with a short generation to compile decode kernels
         // (CBv2 compiled decode pays its cold start here, not in a sample).
-        await runDecodeBatch(
+        let warmUp = await runDecodeBatch(
             container: container, modelID: modelID, baseTokens: baseTokens,
             batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes,
             isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
+        // The warm-up is the FIRST cell to hit a refused paged selection, so
+        // it carries the reason even when the sized cells below fail
+        // identically. Keep it: an operator should not have to infer the
+        // cause from a curve of zeros.
+        outcome.constructionFailure = warmUp.constructionFailure
 
         for iteration in 1 ... repetitions {
             for batchSize in sizes {
-                let (totalTokens, maxElapsed, resolved) = await runDecodeBatch(
+                let (totalTokens, maxElapsed, resolved, failure) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                     weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory,
@@ -268,6 +291,7 @@ public enum ThroughputSweep {
                 if outcome.record(resolved), let resolved {
                     log("  engine resolved kv backend: \(resolved)")
                 }
+                if let failure { outcome.constructionFailure = failure }
                 let secs = seconds(maxElapsed)
                 let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
                 let perSeq = aggregate / Double(batchSize)
@@ -303,7 +327,10 @@ public enum ThroughputSweep {
         isVLM: Bool,
         modelDirectory: URL?,
         kvBackend: EngineV2KVBackendSelection
-    ) async -> (totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?) {
+    ) async -> (
+        totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
+        constructionFailure: String?
+    ) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
         // short rows need — admission never binds in the sweep.
@@ -344,8 +371,12 @@ public enum ThroughputSweep {
                     } ?? build.kvBackendKind.rawValue)
             }
         } catch {
+            // Since OPEN-9 this is the path an explicit `--kv-backend paged`
+            // takes when paged cannot be served: a refusal, not a degrade.
+            // Return the reason so the report and the process exit status can
+            // both name it instead of showing a bare curve of zeros.
             log("  engine construction failed: \(error)")
-            return (0, .zero, nil)
+            return (0, .zero, nil, "\(error)")
         }
         let engine = parts.engine
         let eosTokenIds = parts.eosTokenIds
@@ -401,7 +432,7 @@ public enum ThroughputSweep {
         await engine.shutdown()
         return (
             totalTokens: result.0, maxElapsed: result.1,
-            resolvedBackend: parts.resolvedBackend)
+            resolvedBackend: parts.resolvedBackend, constructionFailure: nil)
     }
 
     // MARK: - Helpers

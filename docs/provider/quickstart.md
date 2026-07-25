@@ -134,12 +134,16 @@ end = "08:00"
 - `backend.max_model_slots` — maximum resident models at once (default 3).
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` (default — contiguous for every model), experimental `"paged"`,
-  or `"contiguous"`. Vision models always serve contiguous; models the
-  paged kernel cannot
-  serve fall back to contiguous automatically. Per-model overrides:
-  `engine_v2_kv_backend_by_model` (TOML table of model id → value). Fleet
-  kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0` (survives restarts —
-  it is forwarded into the launchd service environment). An explicit paged
+  or `"contiguous"`. Vision models always serve contiguous. Under `"auto"`, a
+  model the paged kernel cannot serve falls back to contiguous automatically;
+  under an explicit `"paged"` the model FAILS to load instead (503, and the
+  coordinator reroutes), so a paged fleet can never silently serve contiguous.
+  Per-model overrides: `engine_v2_kv_backend_by_model` (TOML table of model
+  id → value). Fleet kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0`
+  (survives restarts — it is forwarded into the launchd service
+  environment); the kill switch always falls back and never fails, so
+  pulling it on a paged fleet gives you contiguous service, not 503s. An
+  explicit paged
   model eagerly commits a separately capped physical pool derived from useful
   concurrent context demand, live memory, machine size, and Metal buffer
   limits; it never preallocates the full logical admission grant.

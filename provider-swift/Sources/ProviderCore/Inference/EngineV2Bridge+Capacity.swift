@@ -155,6 +155,13 @@ extension EngineV2Bridge {
             // Slot-level bookkeeping (recorded by ensureModelLoaded on
             // load completion) — previously the legacy scheduler's field.
             modelLoadTimeMs: modelLoadTimeMs,
+            // Per-slot KV-backend discriminator. This is the RESOLVED kind
+            // the engine was built with (post-veto, post-fallback), not the
+            // operator's request, and it is reported on EVERY heartbeat —
+            // unlike the once-per-construction `engine_v2_kv_backend`
+            // telemetry event, which rides a droppable best-effort sink and
+            // is therefore not a fleet inventory.
+            kvBackend: kvBackendKind.rawValue,
             stepsExecuted: Int64(wedgeMonitor.lastStepsSample),
             admits: Int64(wedgeMonitor.admits),
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),

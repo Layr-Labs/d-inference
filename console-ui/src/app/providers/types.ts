@@ -40,6 +40,12 @@ export interface MyBackendSlot {
   // they are optional here.
   observed_prefill_tps?: number; // EWMA of measured prefill TPS (admission→first token)
   model_load_time_ms?: number; // measured cold-start load time (ms) for this slot's model
+  // Per-slot KV-cache backend the provider's engine was actually built with,
+  // mirrored from Go BackendSlotCapacity.KVBackend (`*string`, omitempty).
+  // A pre-0.8.0 provider omits the key, so `undefined` means UNKNOWN — never
+  // read it as "contiguous", or the paged-rollout comparison silently counts
+  // every legacy provider as a contiguous sample.
+  kv_backend?: "paged" | "contiguous" | string;
 }
 
 export interface MyBackendCapacity {

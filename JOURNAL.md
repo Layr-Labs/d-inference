@@ -93,13 +93,25 @@ until each premise is individually checked against a live caller.
 4. **WS-2.2 (spans) must not sub-block without fixing `spanChunkMask`.**
    `AttentionV1.swift:559-577` anchors on `context.chunkEnd`; under sub-blocking
    `qAbs` slides to the wrong absolute window. Silent wrong vision output.
-5. **The ~528-token alias margin is GONE as of this wave.** TrackP's ring
-   shrink landed after TrackM's WS-3.5, so the ordering rule held — but the
-   accidental slack that used to make the MTP lazy-gather hazard *latent* no
-   longer exists. `MTP/CBv2MTPCaptureFence.swift` is now load-bearing in
-   production, not insurance. **If anyone reverts, weakens or bypasses that
-   fence, paged MTP silently corrupts drafts** — no crash, no telemetry, and
-   greedy token-exactness breaks quietly. Treat it as a hard invariant.
+5. **The ~528-token alias margin is INTACT — corrected 2026-07-25.** An earlier
+   entry here said it was gone; that was wrong and is retracted. TrackP's first
+   shrink (`ceil(window/ps) + ceil(span/ps)`) DID land for ~20 minutes and was
+   reverted after TrackR reproduced a daemon abort in ordinary windowed prefill.
+   The landed formula is `ceil((window - 1 + maxPrefillChunk)/ps) +
+   ceil(maxSpeculativeSpan/ps)` = 97 pages = 1,552 tokens for gemma-4, the
+   pre-wave value. Margins, recomputed:
+
+   | context | attendable | margin vs 1,552 |
+   |---|---:|---:|
+   | MTP round (`lastUpdateTokens` = 1) | 1,024 | **528** |
+   | prefill chunk (`lastUpdateTokens` = 512) | 1,535 | **17** |
+
+   So `MTP/CBv2MTPCaptureFence.swift` is **defence-in-depth**, not the last
+   line — the weaker and correct claim. It still must not be removed: the 528
+   tokens are a by-product of chunk sizing that **nothing asserts**, and the
+   real shrink (`gather(ring) ++ chunk`) is still scheduled, at which point the
+   fence becomes load-bearing for real. Note the prefill margin is only 17
+   tokens even today.
 6. **Do not delete the contiguous backend before 0.8.0 is stable.** It is the
    `DARKBLOOM_CBV2_PAGED_KV=0` rollback path and there is no canary fleet.
 

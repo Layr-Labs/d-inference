@@ -36,9 +36,9 @@ blocked:  <what is needed, or "nothing">
 **In scope (mine):** everything required to make `.auto` resolve `.paged` for
 **every** model and slot type, safely, with observability and CI coverage.
 
-**Out of scope (owned elsewhere):** the dedicated-models fleet partition,
-hardware-aware routing, and the coordinator quality-cap / load-factor work
-except where paged sizing depends on it (see OPEN-1).
+**Out of scope (owned elsewhere):** the dedicated-models fleet partition and
+hardware-aware routing. Everything else in the coordinator that paged or B=8
+touches is mine — there is no second team; see DEC-4.
 
 ## Stack status
 
@@ -57,16 +57,26 @@ except where paged sizing depends on it (see OPEN-1).
 | **D** SSD | d-inference | `KVCacheSSD/*`, `PrefixCachePolicy` | not started |
 | **C** CI/bench | d-inference | `ci.yml`, `e2e/testbed`, `BenchCBv2`, `gemma_contbatch` | not started |
 
-## Open questions blocking work
+## Decisions (2026-07-25, product owner)
+
+| # | Decision | Effect on the work |
+|---|---|---|
+| DEC-1 | **Remove kv-quant now.** Do not port it to paged. Quantized paged pages are separate follow-up work after the migration, and are considered worth doing. | New deletion stack. Simplifies `applySlotVetoes` and possibly the `PrefixReusePlan` backend enum. |
+| DEC-2 | **VLM is mandatory.** gemma-4 — one of only two supported models — serves as VLM slots, so span masks must work and the VLM veto must be lifted. | WS-2.2 spans is a release blocker. Vision becomes the only unblocked prefill path, so WS-0.3's reserve must cost the span path at full `L`. |
+| DEC-3 | **Remove compiled decode.** | WS-5 becomes a deletion stack. Collapses WS-2.5 (`uniformAttentionSoftcap` for paged) — it existed only to un-veto compiled. |
+| DEC-4 | **We own the whole coordinator.** The quality cap and the load-factor re-fit are mine. | Track E absorbs `concurrency_cap.go` + the `k` re-fit. Not a handoff. |
+| DEC-5 | **PR rights on every repo are available.** | No blocker on stacked branches in `Layr-Labs/mlx-swift-lm`. |
+| DEC-6 | **Exclusive M4 Max, this machine only.** No second arm. | All benchmarks strictly serialize. Makes C3 (the benchmark context axis) critical-path, not reporting. |
+| DEC-7 | **No canary fleet.** Ship 0.8.0, observe, cancel the release if it misbehaves. | Gates G3/G4 (24h soaks) are deleted. Pre-release verification — Track T's oracle, e2e, and the benchmark matrix — becomes the *only* safety net, so its bar goes up, not down. |
+| DEC-8 | **MTP must work on paged.** | WS-3 in full, not just the 3.4 abort fix. |
+| DEC-9 | **Prefill must be fast enough.** | Item 0.2p is a release requirement with a parity bar, not an optimisation. |
+
+## Open questions
 
 | # | Question | Needed from |
 |---|---|---|
-| OPEN-1 | Who owns the coordinator quality cap (`concurrency_cap.go`) and the `k` re-fit? Paged pool sizing is `f(B)`, so I need B=8 reachable to validate at target. | user |
-| OPEN-2 | Is lifting the VLM veto in scope for 0.8.0? "Everywhere" implies yes; it is WS-2's 1.5 wk spans work. | user |
-| OPEN-3 | Retire compiled decode in 0.8.0, or leave it vetoed-but-present? | user |
-| OPEN-4 | Exclusive M4 Max (and M5 Max) hours for the benchmark matrix. | user |
-| OPEN-5 | PR rights on `Layr-Labs/mlx-swift-lm` for stacked branches. | user |
-| OPEN-6 | Who repairs the red mixed-version gate (SIP disabled on the CI runner)? It guards the exact wire surface this migration changes. | user |
+| OPEN-7 | Does MTP need to be ON by default in 0.8.0, or only working when `[backend] mtp` is enabled? | user |
+| OPEN-8 | Who repairs the red mixed-version gate (SIP disabled on the CI runner)? Defaulting to me as stack C4. | user (default: me) |
 
 ---
 
@@ -121,4 +131,165 @@ decided:  26 corrections logged in plan section 22. Four reshaped the work:
           (4) CI runs no paged correctness test; the three silent-corruption
               classes have zero fireable assertions. New sections 19 and 20.
 blocked:  nothing
+```
+
+### 2026-07-25 — RemovalSurface (scout) — deletion inventory
+
+```
+JOURNAL
+stack:    scout
+pr:       none
+did:      Inventoried everything that dies under paged-everywhere + no-compiled + no-kv-quant.
+files:    Gemma4Text.swift, GPTOSS.swift, CBv2LastQueryPrefillTests.swift, Compiled/*,
+          EngineLoopV2.swift, PrefixCacheV2.swift, EngineV2Config.swift, EngineV2SlotFactory.swift
+evidence: Last-query prefill is DEAD ON BOTH MODELS. It is gemma-4-only by type
+          (gemma4UseLastQueryPrefill takes Gemma4TextConfiguration; grep across all 59
+          files in Libraries/MLXLLM/Models matches Gemma4Text.swift ONLY), and on
+          gemma-4-26B numKvSharedLayers=20 gates it off — pinned by the repo's own test,
+          CBv2LastQueryPrefillTests.swift:730-733 asserts
+          gemma4SupportsLastQueryPrefill(sharedFinalConfig) == false.
+          Deletable now ~5,400 lines: compiled ~2,470, last-query ~1,384 (1,176 of it test),
+          PrefixCacheV2 ~1,293 (zero production construction sites; EngineV2SlotFactory.swift:379
+          installs ssdPrefixCache instead), hypervisor_active ~190 Go, EngineV2Config enum 39,
+          bench legacy doc 4. Plus ~2,270 lines of contiguous backend held as the 0.8.0
+          rollback path and deleted in phase 2.
+decided:  Strike WS-2.4 (paged last-query conformance) from the plan — the work item does
+          not exist. Delete the feature instead.
+blocked:  nothing
+```
+
+Three corrections to the plan of record from this scout:
+
+1. `EngineV2Config.swift` is **not** a retired-env warner. Only the enum is (39 of 281
+   lines); the rest is the live bridge factory, including a live
+   `maxConcurrentRequests: Int = 4` default at `:133`.
+2. **`eagerCompositionStale` must survive.** MTP owns an independent writer at
+   `MTP/EngineLoopV2+MTPFinalize.swift:195-197`. Only `eagerBindingsReleased` is
+   purely-compiled and dies with it.
+3. **Compiled decode is live in production today at B≤4** (`compiledSteps=130,
+   fallbacks=[:]`). Deleting it is not a free win — it costs ~2–3% decode TPS at low B.
+   It is still correct to delete (incompatible with paged, and no B=8 rung), but the
+   honest framing is "a wash at B≤4, unavailable at B=8", not "strictly worse".
+
+### 2026-07-25 — KvQuantRemoval (scout) — kv-quant deletion map
+
+```
+JOURNAL
+stack:    scout
+pr:       none
+did:      Mapped the full kv-quant surface for DEC-1.
+files:    43 files across three repos; 6 whole-file deletes + 1 whole-directory delete
+evidence: ~1,700-1,900 deletable lines. applySlotVetoes COLLAPSES TO THE IDENTITY
+          FUNCTION once kv-quant goes and the VLM veto lifts (DEC-2) — delete it and its
+          test outright. `.contiguousQuantized` is already UNREACHABLE in production
+          (EngineV2Factory+Production.swift:361 is the only construction site and never
+          passes `quantization:`), so CBv2QuantizedSequenceKV (246 lines) is dead code kept
+          alive solely by tests. PrefixReusePlan's backend enum goes 4 cases -> 3;
+          `.contiguousUnquantized` should be renamed `.contiguous`.
+          CBv2PrefixResidencyClass DOES NOT EXIST — it is a WS-4.1 planned symbol, so
+          kv-quant removal cannot simplify it. provider-swift/Benchmarks/KVQuant/ and
+          scripts/kvquant/ (~556 lines) are orphaned: the kv-quant-gate executable they
+          document has NO TARGET in Package.swift. Removing CBv2QuantizedSequenceKV leaves
+          snapshotIsLossless with zero false-returning implementors, making 3 guards and
+          the .lossySnapshot wire enum vacuous.
+decided:  USER-FACING BREAK: `darkbloom beta enable kv-quant` stops working and effectively
+          every provider.toml in the field carries `kv_quant` because the serializer
+          round-trips it. Config LOADING does not break (decodeIfPresent ignores unknown
+          keys) but `kv_quant` MUST be added to the existing RetiredCodingKeys mechanism
+          plus a release note.
+blocked:  nothing
+```
+
+### 2026-07-25 — PrefillParity (scout) — 0.2p scoped and quantified
+
+```
+JOURNAL
+stack:    scout
+pr:       none
+did:      Quantified paged-vs-contiguous prefill at abd1985 and scoped item 0.2p.
+files:    Paged/PagedLayerCache.swift:309-344, AttentionV1.swift:460-495,
+          Paged/PagedKVPool.swift:527-553, Paged/pagedattention.metal,
+          Sources/BenchCBv2/BenchCBv2RealModel.swift, gemma-4-26B config.json
+evidence: Verified from the real config: 25 sliding (w1024, d256, 8kv) + 5 full (d512, 2kv),
+          num_kv_shared_layers = 0 -> 30 independent gathers per chunk.
+          Score tensor 16*L*kL*2B: paged 2.044 GB vs contiguous-blocked 0.511 GB at 124k.
+          Sliding FLOPs 785,920 vs 589,312 (+33%).
+          Gather Sigma-retained: p50 336 MB, p90 8.12 GB, max 389.8 GB. The FULL-layer share
+          (30.5 MB / 2.20 GB / 313.4 GB) is pure delta, because FullSequenceKV.update
+          returns zero-copy strided views and copies nothing.
+          Peak on ONE full layer at max ctx: ~3.06 GB vs contiguous 0.51 GB — over the flat
+          3 GiB activation reserve.
+          Measured TTFT (07-09, pre-#85, both arms unblocked): gemma +4.0..+14.4%,
+          gpt-oss +2.0..+16.6% — a ~60-90 ms CONSTANT offset, not a slope.
+          pagedattention.metal has exactly 3 kernels, all q=[B,KVH*GQA,D] with no query
+          axis; the virtual-row trick needs an 8.19 GB f32 split-K partials buffer. No
+          paged prefill kernel exists and none is reachable.
+          NO PAGED PREFILL MEASUREMENT EXISTS ANYWHERE: PagedBackendBenchmark steps L=1 only
+          and its "prefill" calls row.write directly, bypassing prefillAttend.
+decided:  0.2p = ~40 lines inside prefillAttend, 2-3 days, one file. Three traps that a
+          naive port hits: (1) do NOT reuse attendQueryBlocks — it is private AND its
+          maskMode returns symbolic .causal, which violates the pinned-path contract at
+          PagedLayerCache.swift:13-15; (2) do NOT move the gather inside the block loop —
+          per-block spans overlap by window-1, a 3x pessimisation on sliding and 4x on full;
+          (3) build qpos/kpos ONCE per chunk and slice — rebuilding per block regresses host
+          arange work 4x on full layers. Free adjacent win: set the pool dtype to the model
+          activation dtype (fp16 and bf16 are both 2B, capacity math unchanged) to delete
+          the asType copy at :316-317.
+          0.2p STRICTLY PRECEDES lifting the b==1 precondition: unblocked packed prefill
+          puts B gathers + B score tensors live behind concatenated(axis:0), >3 GiB on one
+          layer at B=8.
+          Residual gather delta (+2.20 GB p90, +313 GB max) is structural and needs a new
+          flash-attention kernel — OUT OF SCOPE for 0.8.0.
+blocked:  Runtime activation dtype unconfirmed (config declares bfloat16, pool defaults
+          float16) — one print settles it.
+```
+
+### 2026-07-25 — MTPPagedScope (scout) — MTP on paged, full breakdown
+
+```
+JOURNAL
+stack:    scout
+pr:       none
+did:      Scoped MTP-on-paged end to end; derived that serial verification cannot beat
+          plain decode, and recommended implementing paged rectangular instead.
+files:    MTP/*.swift (9 files, 2,144 lines), Paged/*, LayerCacheV2.swift, CBv2Contracts.swift,
+          MTPAutomaticVerificationPolicy.swift, EngineV2SlotFactory.swift, Tests/CBv2MTP*
+evidence: MTP on gemma-4 paged today is a SILENT TOTAL NO-OP, not a crash.
+          mtpStorageEligible uses allSatisfy over all 30 layers
+          (EngineLoopV2+MTPPlanning.swift:28-30) and PagedSequenceKV.swift:115 returns false
+          for the 25 windowed layers, so every request skips with recordSkip("kv_unsupported")
+          and the depth controller returns 0. The provider still reports mtp_active = true
+          (ProviderEngineBundle.swift:32 derives it from assistant-load success) and still
+          charges 236 MB of assistant residency.
+          The preconditionFailure at EngineLoopV2+MTPTargetVerification.swift:50-52 is
+          unreachable ONLY because that gate fires first.
+          Rectangular is ALWAYS selected in production: CBv2MTPRoundDriver.swift:253-259
+          pre-clamps depth so (1+k)*B <= cap always holds, so the .automatic arm can never
+          pick serial. Corroborated by MTPBenchmarkRunner.swift:419-427 asserting
+          serialVerificationRounds == 0. Serial has never executed in the shipping provider.
+          SERIAL IS STRICTLY WORSE THAN MTP-OFF, derivable without measurement: 1+k target
+          forwards emit at most 1+k tokens, vs plain decode's exactly 1 per forward, plus k
+          drafter forwards on top. So 100% of the 1.24-1.79x is rectangular's.
+          Rectangular is CHEAP to port: it does NOT use batched multi-query attention.
+          LayerCacheV2.swift:124 sets serializeQueries -> attendQueryBlocks(blockSize: 1),
+          one query at a time. Rectangular batches only the weight-bound model body across
+          1+k columns, which is backend-independent. Paged rectangular is a column loop over
+          the EXISTING decode kernel. Zero Metal.
+decided:  Implement paged rectangular (option b, ~3-5 days), NOT forced serial (option a).
+          NEW item 3.0, ship unconditionally: replace the as? CBv2LayerCache downcast +
+          preconditionFailure with a protocol conformance check that degrades to serial. A
+          fatalError on an unrecognised cache class is a daemon abort with no telemetry.
+          HARD ORDERING: 3.3 must never ship without 3.4 — flipping supportsSpeculativeWrites
+          converts the silent no-op into a process abort.
+          HARD ORDERING: 3.1 and 3.5 must land BEFORE item 1.2. The ring shrink collapses the
+          ~528-token alias margin that currently makes the item-3.5 lazy-gather hazard latent.
+          NEW item 3.6: paged arms for the MTP suites (CBv2MTPEngineMixedTests:216 already
+          takes a backend parameter — a call-site addition). INVERT
+          CBv2MTPKVStagingPagedFlagTests:434, which currently pins the defect.
+          NEW item 3.7: fix the silent-inertness reporting in ProviderEngineBundle.swift:32.
+          RECOMMEND MTP stays default-off in 0.8.0: it inflates observed_decode_tps with no
+          wire discriminator, so default-on plus no canary is an uncontrolled routing
+          perturbation. Default-off does NOT reduce the work — every item is required for
+          "working when enabled".
+blocked:  OPEN-7 (MTP default-on or not) is the owner's call.
 ```

@@ -131,25 +131,72 @@ enum PrefixCachePolicy {
 
     // MARK: - Window residency (WS-4.2)
 
+    /// Whether a row of this shape can INSTALL a restored sliding window.
+    ///
+    /// **Every answer is `false` today, and that is the point of this
+    /// function.** WS-4.2 lands the sidecar format, the write path, the read
+    /// path and the residency plumbing; it does not land a consumer:
+    ///
+    ///   * paged would need WS-4.1's `PagedSequenceKV.restoreWindow(_:at:)`,
+    ///     which does not exist in this repo — only comments reference it;
+    ///   * contiguous would need `CBv2WindowedSequenceKV` adoption of a
+    ///     restored ring, which does not exist either;
+    ///   * and nothing calls `SSDPrefixCache.stagedWindow(requestID:)`, so
+    ///     even a staged window is never handed to the engine.
+    ///
+    /// Reporting a residency no row can honour is not a cosmetic error: it
+    /// collapses the replay bound to zero, so the cache advertises a matched
+    /// prefix as free while the engine still performs its full
+    /// `windowCount × maxWindow` replay. The bound must therefore stay
+    /// conservative until the consumer is real — one edit here, plus its
+    /// test, is the flip.
+
+    /// Flips to `true` when `CBv2WindowedSequenceKV` can adopt a restored
+    /// ring AND the bridge installs `SSDPrefixCache.stagedWindow(requestID:)`.
+    static let contiguousWindowRestoreLanded = false
+    /// Flips to `true` when WS-4.1's `PagedSequenceKV.restoreWindow(_:at:)`
+    /// (taking a `CBv2PagedWindowSnapshot`) exists AND the bridge installs the
+    /// staged window.
+    static let pagedWindowRestoreLanded = false
+
+    static func windowRestoreSupported(
+        backendSelection: EngineV2KVBackendSelection,
+        pagedKilled: Bool = false
+    ) -> Bool {
+        switch backendSelection {
+        case .auto, .contiguous:
+            return contiguousWindowRestoreLanded
+        case .paged:
+            // A KILLED paged slot has degraded to a contiguous row, so it is
+            // answered as contiguous.
+            return pagedKilled ? contiguousWindowRestoreLanded : pagedWindowRestoreLanded
+        }
+    }
+
     /// Whether an adopter's sliding rows are RESTORED from windowed sidecars
-    /// or replayed. Default `.replayed` everywhere: WS-4.2 lands the format
-    /// and this plumbing, and the residency flip is a later, separate step.
+    /// or replayed.
     ///
     /// `.restoredFromSidecar` requires all three of:
+    ///   * a row that can actually accept a restored window
+    ///     (`windowRestoreSupported`) — the fail-closed gate;
     ///   * the operator knob (`SSDPrefixCachePolicy.windowSidecarEnabled`);
     ///   * a layout that tiles into whole-block sidecars
     ///     (`SSDWindowSidecarGeometry.derive` — gpt-oss-20b's 128-token
-    ///     window does not, and correctly keeps its 1,536-token bound);
-    ///   * a row that can accept a restored window. Paged gets that from
-    ///     WS-4.1's `restoreWindow(keys:values:base:)`; a KILLED paged slot
-    ///     has degraded to a contiguous row, so it is resolved as contiguous.
+    ///     window does not, and correctly keeps its 1,536-token bound).
+    ///
+    /// Note what this does NOT gate: whether sidecars are WRITTEN and READ.
+    /// That is the operator knob alone (`SSDPrefixCacheFactory.make`), so the
+    /// format, the corpus and both paths stay exercised while the accounting
+    /// stays honest.
     static func windowResidency(
         layerKinds: [CBv2LayerKind],
         backendSelection: EngineV2KVBackendSelection,
         pagedKilled: Bool = false,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> SSDWindowResidency {
-        guard SSDPrefixCachePolicy.windowSidecarEnabled(environment: environment),
+        guard windowRestoreSupported(
+            backendSelection: backendSelection, pagedKilled: pagedKilled),
+            SSDPrefixCachePolicy.windowSidecarEnabled(environment: environment),
             SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize) != nil
         else { return .replayed }
         return .restoredFromSidecar

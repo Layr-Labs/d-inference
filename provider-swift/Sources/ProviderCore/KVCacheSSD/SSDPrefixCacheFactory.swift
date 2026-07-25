@@ -248,18 +248,36 @@ enum SSDPrefixCacheFactory {
             #endif
             return nil
         }
-        // WS-4.2: sidecar geometry is nil unless the operator knob is on AND
-        // the layout tiles into whole-block sidecars. When it is non-nil the
-        // residency is `.restoredFromSidecar`, which collapses the replay
-        // bound — and, through it, the long-hybrid benefit floor.
-        let windowResidency = PrefixCachePolicy.windowResidency(
-            layerKinds: layerKinds,
-            backendSelection: prefixReuseCapability.backend == .pagedFP16 ? .paged : .contiguous,
-            environment: environment)
-        let windowSidecar = windowResidency == .restoredFromSidecar
+        // WS-4.2. Two INDEPENDENT decisions, deliberately:
+        //
+        //  * whether this cache has sidecars at all — the operator knob plus a
+        //    layout that tiles into whole blocks. This drives the write and
+        //    read paths, so the format and the corpus stay exercised;
+        //  * whether an adopter's sliding rows are RESTORED — which
+        //    additionally requires a row that can install one. Nothing can
+        //    today, so this resolves `.replayed` and the replay bound stays
+        //    conservative. Tying the geometry to the residency instead would
+        //    make the knob a no-op; tying the bound to the geometry (the
+        //    original shape) advertised a zero replay that the engine still
+        //    performed.
+        let backendSelection: EngineV2KVBackendSelection =
+            prefixReuseCapability.backend == .pagedFP16 ? .paged : .contiguous
+        let windowSidecar =
+            SSDPrefixCachePolicy.windowSidecarEnabled(environment: environment)
             ? SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize)
             : nil
+        let windowResidency = PrefixCachePolicy.windowResidency(
+            layerKinds: layerKinds,
+            backendSelection: backendSelection,
+            environment: environment)
+        // The conservative bound is what this cache charges by default; the
+        // restored bound applies per boundary, only where a complete
+        // authenticated window is actually present.
         let adoptionBoundTokens = PrefixCachePolicy.adoptionBoundTokens(
+            capability: prefixReuseCapability,
+            layerKinds: layerKinds,
+            windowResidency: .replayed)
+        let windowRestoredBoundTokens = PrefixCachePolicy.adoptionBoundTokens(
             capability: prefixReuseCapability,
             layerKinds: layerKinds,
             windowResidency: windowResidency)
@@ -282,6 +300,7 @@ enum SSDPrefixCacheFactory {
             maxStageBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
             windowSidecar: windowSidecar,
+            windowRestoredBoundTokens: windowRestoredBoundTokens,
             nowSeconds: { Int64(Date().timeIntervalSince1970) })
         let cache = SSDPrefixCache(
             config: config,

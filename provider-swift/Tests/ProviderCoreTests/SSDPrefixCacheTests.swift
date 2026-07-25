@@ -3044,7 +3044,9 @@ private func makeSidecarCache(
     clock: ClockBox,
     geometry: SSDWindowSidecarGeometry? = sidecarGeometry(),
     adoptionBound: Int = 0,
-    maxStageBytes: Int = 1 << 30
+    windowRestoredBound: Int? = nil,
+    maxStageBytes: Int = 1 << 30,
+    maxWriteBytesPerDay: Int = 0
 ) -> SSDPrefixCache {
     let config = SSDPrefixCache.Config(
         modelId: "sidecar-model",
@@ -3060,10 +3062,11 @@ private func makeSidecarCache(
         maxStageBytes: maxStageBytes,
         maxStageMillis: 1_000_000,
         windowSidecar: geometry,
+        windowRestoredBoundTokens: windowRestoredBound,
         nowSeconds: { clock.now })
     return SSDPrefixCache(
         config: config, kekKey: kek, kvBudget: nil, diskBudget: SSDDiskBudget(),
-        maxWriteBytesPerDay: 0, strictFsync: false,
+        maxWriteBytesPerDay: maxWriteBytesPerDay, strictFsync: false,
         diskBudgetBytes: { 1 << 40 })
 }
 
@@ -3095,6 +3098,39 @@ private func sidecarWindows(base: Int, tokens: Int = sidecarWindow)
         return (keys: keys, values: values, base: base)
     }
     return [nil, payload(1), payload(2), nil]
+}
+
+/// The SAME payloads in the shape `EngineLoopV2.enqueueDonation` hands to
+/// `CBv2SlidingWindowDonating`: `CBv2SequenceKV.snapshot()` triples, whose
+/// `offset` is the position of the NEXT token, untruncated, and nil at every
+/// layer the engine does not donate (full-attention and KV-shared sliding).
+private func engineSlidingSnapshots(base: Int, tokens: Int = sidecarWindow)
+    -> [(keys: MLXArray, values: MLXArray, offset: Int)?]
+{
+    sidecarWindows(base: base, tokens: tokens).map { window in
+        window.map { (keys: $0.keys, values: $0.values, offset: $0.base + $0.keys.dim(2)) }
+    }
+}
+
+/// The PLAINTEXT metadata JSON of a DBK3 file, sliced straight out of the
+/// bytes on disk — the region `assembleHeader` writes unencrypted so startup
+/// can index without the KEK. Layout: magic(4) ‖ version(2) ‖ flags(2) ‖
+/// fileIV(12) ‖ u32le wrappedDEKLen ‖ wrappedDEK ‖ u32le metadataLen ‖ metadata.
+private func dbk3PlaintextMetadataJSON(_ bytes: Data) -> Data? {
+    func uint32LE(at offset: Int) -> Int? {
+        guard offset >= 0, bytes.count >= offset + 4 else { return nil }
+        var value = 0
+        for i in (0 ..< 4).reversed() { value = value << 8 | Int(bytes[bytes.startIndex + offset + i]) }
+        return value
+    }
+    guard bytes.count > 24, Array(bytes.prefix(4)) == SSDBlockStore.magic,
+        let dekLength = uint32LE(at: 20)
+    else { return nil }
+    let metadataLengthOffset = 24 + dekLength
+    guard let metadataLength = uint32LE(at: metadataLengthOffset) else { return nil }
+    let start = metadataLengthOffset + 4
+    guard metadataLength > 0, bytes.count >= start + metadataLength else { return nil }
+    return bytes.subdata(in: (bytes.startIndex + start) ..< (bytes.startIndex + start + metadataLength))
 }
 
 private func maxAbs(_ a: MLXArray, _ b: MLXArray) -> Float {
@@ -3199,16 +3235,36 @@ struct SSDWindowSidecarTests {
         #expect(!json.contains("windowKind"))
         #expect(!json.contains("windowBase"))
         #expect(!json.contains("windowTokens"))
-        // …and a sidecar's does carry them, authenticated.
+        // …and a sidecar's carries the discriminator and a keyed COMMITMENT
+        // to its position — never the position itself.
+        let keys = SSDLookupKeys(kek: SymmetricKey(size: .bits256))
+        let windowTag = keys.windowTag(
+            chainHash: Data(SHA256.hash(data: Data("prefix".utf8))), cacheSalt: "")
         let sidecar = SSDBlockMetadata(
             lookupTag: String(repeating: "ab", count: 32),
             weightHash: "w", layoutEpoch: "e", blockSize: 8, layerCount: 2,
             chunks: [], chunkPlaintextSizes: [], createdAt: 1000,
-            windowKind: SSDWindowSidecar.kind, windowBase: 48, windowTokens: 8)
+            windowKind: SSDWindowSidecar.kind,
+            windowBaseTag: keys.windowBaseCommitmentHex(windowTag: windowTag, base: 48),
+            windowTokens: 8)
         let sidecarJSON = try #require(String(
             data: try SSDBlockStore.canonicalEncode(sidecar), encoding: .utf8))
-        #expect(sidecarJSON.contains("\"windowBase\":48"))
         #expect(sidecarJSON.contains("\"windowKind\":\"sliding-window-v1\""))
+        #expect(
+            !sidecarJSON.contains("\"windowBase\":"),
+            "the raw absolute-position key must not exist in the AAD JSON")
+        #expect(
+            sidecarJSON.contains(
+                "\"windowBaseTag\":\"\(keys.windowBaseCommitmentHex(windowTag: windowTag, base: 48))\""))
+        // The commitment is position-binding: a different base, same file.
+        #expect(
+            keys.windowBaseCommitmentHex(windowTag: windowTag, base: 48)
+                != keys.windowBaseCommitmentHex(windowTag: windowTag, base: 56))
+        // …and install-binding: another box's K_lookup commits differently.
+        let otherKeys = SSDLookupKeys(kek: SymmetricKey(size: .bits256))
+        #expect(
+            otherKeys.windowBaseCommitmentHex(windowTag: windowTag, base: 48)
+                != keys.windowBaseCommitmentHex(windowTag: windowTag, base: 48))
     }
 
     // MARK: Lifecycle
@@ -3426,6 +3482,290 @@ struct SSDWindowSidecarTests {
             requestID: "req-off", promptTokens: tokens + [7], cacheScope: "")
         #expect(staged.staged)
         #expect(cache.stagedWindow(requestID: "req-off") == nil)
+    }
+
+    // MARK: The production donation path
+
+    @Test("the request-aware production donation captures windows (the feature is not inert)")
+    func requestAwareDonationCapturesWindows() async throws {
+        let dir = tempDir("sidecar-request-aware")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeSidecarCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+
+        // The engine reads this BEFORE it snapshots anything, so a false here
+        // means production never even builds the (200 MiB on gemma-4) window.
+        #expect(cache.wantsSlidingWindowDonation)
+        // Reached through the EXISTENTIAL the engine actually casts to
+        // (`EngineLoopV2.enqueueDonation`): losing the conformance, or losing
+        // the dispatch, makes production silently stop writing sidecars.
+        let donor: any CBv2SlidingWindowDonating = cache
+        donor.donate(
+            requestID: CBv2RequestID(41),
+            tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            slidingSnapshots: engineSlidingSnapshots(base: 48),
+            layerKinds: sidecarLayerKinds,
+            cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 10))
+        await cache.waitForWritesForTesting()
+        #expect(
+            cache.stats().windowSidecarsWritten == 2,
+            "the production donation overload must persist the terminal tiling")
+
+        // …and the window it wrote is the donor's, byte-exactly.
+        let staged = await cache.stage(
+            requestID: "req-production", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged)
+        let restored = try #require(cache.stagedWindow(requestID: "req-production"))
+        let donated = try #require(sidecarWindows(base: 48)[1])
+        let entry = try #require(restored[1])
+        #expect(entry.base == 48)
+        #expect(maxAbs(entry.keys, donated.keys) == 0)
+    }
+
+    @Test("the frozen request-aware overload carries no windows — the defect this replaced")
+    func frozenRequestAwareOverloadIsWindowless() async throws {
+        let dir = tempDir("sidecar-frozen-overload")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeSidecarCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        // `CBv2PrefixCache`'s snapshots array is nil at every windowed layer by
+        // contract, so this overload can only ever write blocks. It is pinned
+        // here so nobody "fixes" the inertness by smuggling sliding rows into
+        // a contract that four other conformers read as full-attention only.
+        cache.donate(
+            requestID: CBv2RequestID(42),
+            tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            layerKinds: sidecarLayerKinds,
+            cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+        #expect(cache.index.count == 8)
+        #expect(cache.stats().windowSidecarsWritten == 0)
+    }
+
+    @Test("a cache without sidecars tells the engine not to snapshot sliding rows")
+    func donorSeamIsSilentWhenDisabled() {
+        let dir = tempDir("sidecar-no-donor")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let cache = makeSidecarCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
+            geometry: nil)
+        defer { cache.close() }
+        #expect(
+            !cache.wantsSlidingWindowDonation,
+            "the default build must not pay for a window nobody persists")
+    }
+
+    // MARK: Replay bound
+
+    @Test("an incomplete tiling is judged against the FULL replay bound")
+    func incompleteTilingKeepsTheReplayBound() async throws {
+        let kek = SymmetricKey(size: .bits256)
+        let clock = ClockBox(10_000)
+        let tokens = Array(0 ..< tokenCount)
+
+        /// `donorBase` 48 tiles the terminal window ([48,64) ⇒ blocks 6+7);
+        /// 45 covers block 6 only, so boundary 64 can never be restored.
+        func savedTokens(donorBase: Int) async throws -> Int {
+            let dir = tempDir("sidecar-bound-\(donorBase)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            // Conservative replay bound 24, restored bound 0 — the shape the
+            // factory produces once a restore consumer lands.
+            let cache = makeSidecarCache(
+                dir: dir, kek: kek, clock: clock,
+                adoptionBound: 24, windowRestoredBound: 0)
+            defer { cache.close() }
+            cache.donate(
+                requestID: nil, tokens: tokens,
+                snapshots: sidecarSnapshots(tokenCount: tokenCount),
+                windowSnapshots: sidecarWindows(base: donorBase),
+                layerKinds: sidecarLayerKinds, cacheSalt: nil)
+            #expect(await waitForIndexCount(cache, atLeast: donorBase == 48 ? 10 : 9))
+            await cache.waitForWritesForTesting()
+            let staged = await cache.stage(
+                requestID: "req-bound-\(donorBase)", promptTokens: tokens + [7], cacheScope: "")
+            guard case .staged(let matched, let saved, _) = staged.disposition else {
+                Issue.record("expected a staged run, got \(staged.disposition)")
+                return -1
+            }
+            #expect(matched == tokenCount, "the block run adopts either way")
+            #expect((cache.stagedWindow(requestID: "req-bound-\(donorBase)") != nil)
+                == (donorBase == 48))
+            return saved
+        }
+
+        // Complete tiling: nothing left to replay, so every matched token is
+        // saved.
+        #expect(try await savedTokens(donorBase: 48) == tokenCount)
+        // Incomplete: the adopter performs the ORIGINAL replay, so the benefit
+        // must be charged the conservative bound — 64 − 24 — not the cache-wide
+        // restored zero. Reporting 64 here is the defect.
+        #expect(try await savedTokens(donorBase: 45) == tokenCount - 24)
+    }
+
+    // MARK: Endurance
+
+    @Test("a nearly-drained write bucket funds the required blocks, never the sidecars")
+    func sidecarsNeverStarveTheBlocks() async throws {
+        let dir = tempDir("sidecar-endurance")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let tokens = Array(0 ..< tokenCount)
+        // Fixture bytes: a full-attention block is 512 B (one layer × K/V ×
+        // 256 B); a sidecar is 1024 B (two sliding layers). The whole job
+        // wants 8 × 512 + 2 × 1024 = 6,144 B. Allow 4,608 — every block plus
+        // one block's slack, and less than one sidecar beyond them.
+        let cache = makeSidecarCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
+            maxWriteBytesPerDay: 8 * 512 + 512)
+        defer { cache.close() }
+        cache.donate(
+            requestID: nil, tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            windowSnapshots: sidecarWindows(base: 48),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 8))
+        await cache.waitForWritesForTesting()
+
+        // `SSDWriteBehind.consume` charges the bucket per entry IN ARRAY
+        // ORDER, so whoever is queued first spends the allowance. The prefix
+        // blocks are the thing the sidecars can only accelerate, so they win:
+        // all 8 land. Queued the other way round, two sidecars would have
+        // taken 2,048 B and starved three of them.
+        #expect(cache.stats().blocksWritten == 8, "every required block is funded")
+        #expect(
+            cache.stats().windowSidecarsWritten == 0,
+            "the optional accelerator yields to the blocks it depends on")
+        // …and the refused sidecars were never EXTRACTED: the pre-check runs
+        // before the device slice / eval / host copy, so nothing was
+        // materialized only to be dropped, and no tag is stranded in flight.
+        #expect(cache.stats().donationsDropped == 0)
+        #expect(dbk3Files(under: dir).count == 8)
+
+        // The block run still adopts; only the window is missing.
+        let staged = await cache.stage(
+            requestID: "req-endurance", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged)
+        #expect(cache.stagedWindow(requestID: "req-endurance") == nil)
+    }
+
+    @Test("re-donating a covered boundary refreshes its sidecars, not just its blocks")
+    func donationRefreshesReusedSidecars() async throws {
+        let dir = tempDir("sidecar-refresh")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clock = ClockBox(10_000)
+        let cache = makeSidecarCache(
+            dir: dir, kek: SymmetricKey(size: .bits256), clock: clock)
+        defer { cache.close() }
+        let tokens = Array(0 ..< tokenCount)
+        let snapshots = sidecarSnapshots(tokenCount: tokenCount)
+
+        cache.donate(
+            requestID: nil, tokens: tokens, snapshots: snapshots,
+            windowSnapshots: sidecarWindows(base: 48),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 10))
+        await cache.waitForWritesForTesting()
+
+        // 800 s later the same conversation donates the same prefix again.
+        // Every block AND every sidecar is already durable, so nothing is
+        // written — but the donation is proof of activity and must slide the
+        // TTL of both. The blocks were always refreshed here; the sidecars
+        // were not, so they aged out from under a still-warm run.
+        clock.advance(800)
+        cache.donate(
+            requestID: nil, tokens: tokens, snapshots: snapshots,
+            windowSnapshots: sidecarWindows(base: 48),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        await cache.waitForWritesForTesting()
+        #expect(cache.stats().windowSidecarsWritten == 2, "nothing re-written")
+
+        // 200 s more: 1,000 s since the first donation (past the 900 s TTL),
+        // 200 s since the refresh. Everything must survive.
+        clock.advance(200)
+        cache.sweepExpiredEntries()
+        #expect(
+            cache.index.count == 10,
+            "an unrefreshed sidecar expires under a warm block run and re-arms the replay")
+        let staged = await cache.stage(
+            requestID: "req-refresh", promptTokens: tokens + [7], cacheScope: "")
+        #expect(staged.staged)
+        #expect(cache.stagedWindow(requestID: "req-refresh") != nil)
+    }
+
+    // MARK: On-disk privacy (TB-003)
+
+    @Test("a written sidecar's plaintext header carries no absolute token position")
+    func sidecarHeaderHidesPosition() async throws {
+        let dir = tempDir("sidecar-privacy")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let kek = SymmetricKey(size: .bits256)
+        let tokens = Array(0 ..< tokenCount)
+        let cache = makeSidecarCache(dir: dir, kek: kek, clock: ClockBox(10_000))
+        cache.donate(
+            requestID: nil, tokens: tokens,
+            snapshots: sidecarSnapshots(tokenCount: tokenCount),
+            windowSnapshots: sidecarWindows(base: 48),
+            layerKinds: sidecarLayerKinds, cacheSalt: nil)
+        #expect(await waitForIndexCount(cache, atLeast: 10))
+        await cache.waitForWritesForTesting()
+        cache.close()
+
+        // The two sidecars written cover blocks 6 and 7 — absolute bases 48
+        // and 56. Read the REAL BYTES back and prove neither appears.
+        let keys = SSDLookupKeys(kek: kek)
+        let hasher = CBv2BlockHasher(
+            blockSize: sidecarBlockSize, promptContractID: "sidecar-prompt-contract", scopeID: "")
+        let hashes = hasher.chainHashes(tokens: tokens)
+        var checked = 0
+        for (block, base) in [(6, 48), (7, 56)] {
+            let fullTag = keys.windowTag(chainHash: hashes[block], cacheSalt: "")
+            let url = SSDBlockStore.fileURL(
+                root: dir,
+                tag16Hex: SSDLookupKeys.hex(fullTag.prefix(SSDLookupKeys.truncatedTagLength)))
+            let bytes = try Data(contentsOf: url)
+            let metadataBytes = try #require(dbk3PlaintextMetadataJSON(bytes))
+            let json = try #require(String(data: metadataBytes, encoding: .utf8))
+
+            // 1. No raw position key, and no decimal position anywhere in the
+            //    plaintext header once the opaque commitment is removed.
+            #expect(!json.contains("\"windowBase\":"))
+            let commitment = keys.windowBaseCommitmentHex(windowTag: fullTag, base: base)
+            // Opaque by construction: a full-width SHA-256 MAC in lowercase
+            // hex, so the field itself cannot BE the position in disguise.
+            #expect(SSDBlockStore.isLowerHex(commitment, count: 64))
+            #expect(json.contains(commitment), "the commitment is what binds the position")
+            let withoutCommitment = json.replacingOccurrences(of: commitment, with: "")
+            for position in [48, 56, tokenCount] {
+                #expect(
+                    !withoutCommitment.contains(":\(position)")
+                        && !withoutCommitment.contains(",\(position)"),
+                    "absolute position \(position) leaked into the plaintext header")
+            }
+            // 2. The accepted plaintext discriminator, kept deliberately: it
+            //    says only "sliding-window sidecar", which the chunk
+            //    descriptors (sliding layer indices + shapes, already public
+            //    architecture) reveal regardless.
+            #expect(json.contains("\"windowKind\":\"sliding-window-v1\""))
+            // 3. The commitment still BINDS: the same file cannot pass the
+            //    anti-splice check at the neighbouring boundary.
+            let metadata = try SSDBlockStore.readMetadataOnly(from: url)
+            #expect(SSDWindowSidecar.isBound(
+                metadata, expectedBaseTag: commitment, geometry: sidecarGeometry()))
+            #expect(!SSDWindowSidecar.isBound(
+                metadata,
+                expectedBaseTag: keys.windowBaseCommitmentHex(
+                    windowTag: fullTag, base: base + sidecarBlockSize),
+                geometry: sidecarGeometry()))
+            checked += 1
+        }
+        #expect(checked == 2)
     }
 
     @Test("the contiguous windowed ring conforms to the donor seam WS-4.1 freezes")

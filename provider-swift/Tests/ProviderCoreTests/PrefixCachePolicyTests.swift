@@ -185,26 +185,62 @@ struct PrefixCachePolicyTests {
             windowResidency: .restoredFromSidecar) == 1_536)
     }
 
-    @Test("windowResidency is off unless the operator knob is set AND the layout tiles")
-    func residencyGate() {
+    @Test("residency stays REPLAYED while no row can install a restored window")
+    func residencyFailsClosedWithoutAConsumer() {
         let gemma = kinds(sliding: 25, window: 1024, full: 5)
         let gpt = kinds(sliding: 12, window: 128, full: 12)
         let on = [SSDPrefixCachePolicy.windowSidecarFlag: "1"]
+
+        // Nothing in this repo consumes a staged window: there is no
+        // `restoreWindow(_:at:)` on any row, and nothing calls
+        // `SSDPrefixCache.stagedWindow(requestID:)`. Every backend must
+        // therefore answer `false`, killed or not.
         for selection in [EngineV2KVBackendSelection.auto, .contiguous, .paged] {
-            #expect(
-                PrefixCachePolicy.windowResidency(
-                    layerKinds: gemma, backendSelection: selection,
-                    environment: [:]) == .replayed,
-                "default must not change the shipped floor")
-            #expect(
-                PrefixCachePolicy.windowResidency(
-                    layerKinds: gemma, backendSelection: selection,
-                    environment: on) == .restoredFromSidecar)
-            #expect(
-                PrefixCachePolicy.windowResidency(
-                    layerKinds: gpt, backendSelection: selection,
-                    environment: on) == .replayed)
+            for killed in [false, true] {
+                #expect(
+                    !PrefixCachePolicy.windowRestoreSupported(
+                        backendSelection: selection, pagedKilled: killed),
+                    "\(selection)/killed=\(killed) must not claim a restore consumer")
+                // …so the residency is `.replayed` with the knob ON, for a
+                // layout that tiles perfectly, on every backend.
+                #expect(
+                    PrefixCachePolicy.windowResidency(
+                        layerKinds: gemma, backendSelection: selection,
+                        pagedKilled: killed, environment: on) == .replayed)
+                #expect(
+                    PrefixCachePolicy.windowResidency(
+                        layerKinds: gemma, backendSelection: selection,
+                        pagedKilled: killed, environment: [:]) == .replayed,
+                    "default must not change the shipped floor")
+                #expect(
+                    PrefixCachePolicy.windowResidency(
+                        layerKinds: gpt, backendSelection: selection,
+                        pagedKilled: killed, environment: on) == .replayed)
+            }
         }
+
+        // The consequence that matters: the knob cannot collapse gemma-4's
+        // replay bound, so the cache can never advertise a matched prefix as
+        // free while the engine still replays 25,600 tokens. This is the exact
+        // composition `SSDPrefixCacheFactory.make` performs.
+        let capability = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: gemma, backendSelection: .contiguous)
+        #expect(PrefixCachePolicy.adoptionBoundTokens(
+            capability: capability,
+            layerKinds: gemma,
+            windowResidency: PrefixCachePolicy.windowResidency(
+                layerKinds: gemma, backendSelection: .contiguous, environment: on)) == 25_600)
+
+        // …while the knob still switches the sidecar format on, so the write
+        // and read paths stay exercised rather than becoming dead code.
+        #expect(SSDPrefixCachePolicy.windowSidecarEnabled(environment: on))
+        #expect(
+            SSDWindowSidecarGeometry.derive(
+                layerKinds: gemma, blockSize: PrefixCachePolicy.blockSize) != nil)
+
+        // The flip is these two constants plus a consumer.
+        #expect(!PrefixCachePolicy.contiguousWindowRestoreLanded)
+        #expect(!PrefixCachePolicy.pagedWindowRestoreLanded)
     }
 
     @Test("Gemma QAT and GPT-OSS contiguous layouts qualify for v2; paged stays cold")

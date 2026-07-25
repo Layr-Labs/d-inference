@@ -34,10 +34,23 @@
 //
 // The WS-4.2 windowed sidecar (`SSDWindowSidecar`) is the same file format
 // with the same crypto: only its filename tag domain and three optional
-// metadata fields (`windowKind` / `windowBase` / `windowTokens`) differ, and
-// its chunks carry sliding rather than full layers. Those fields add one
-// architectural fact — the sliding window size, already public — and one
-// position, both of which the block shape descriptors already imply.
+// metadata fields (`windowKind` / `windowBaseTag` / `windowTokens`) differ,
+// and its chunks carry sliding rather than full layers. NONE of the three
+// adds a position or a count:
+//
+//   * `windowKind` marks the file a sidecar. It is redundant with what the
+//     chunk descriptors already publish — a sidecar's `chunks` name the
+//     SLIDING layer indices and their shapes, which a reader of this header
+//     can already tell apart from a full-attention block's — so it reveals
+//     only the architectural fact that this model has sliding layers, which
+//     the layout epoch and the block shapes carry regardless.
+//   * `windowBaseTag` is HMAC(K_lookup, …‖base‖windowTag): the position is
+//     BOUND (tampering breaks every auth tag, and a file cannot be replayed
+//     at another boundary) without the absolute index appearing anywhere. A
+//     raw `windowBase` integer here would have told a local disk observer
+//     each donated sequence's length to block granularity, breaking this
+//     format's `NO token ids/counts` invariant (TB-003).
+//   * `windowTokens` equals `blockSize`, which is already in this header.
 //
 // v1 `.darkbloom-kv` files are never read by this tier (different
 // subtree + suffix; they die with the legacy engine's deletion pass).
@@ -112,9 +125,11 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
     /// encoder omits nil, so the canonical-JSON AAD of every pre-existing
     /// file is unchanged and no layout epoch bump is owed.
     let windowKind: String?
-    /// Absolute position of this sidecar's first token. Authenticated (it is
-    /// in the GCM AAD), so a file cannot be replayed at another boundary.
-    let windowBase: Int?
+    /// Keyed commitment to this sidecar's absolute first-token position
+    /// (`SSDLookupKeys.windowBaseCommitmentHex`). Authenticated — it is in
+    /// the GCM AAD — so a file cannot be replayed at another boundary, and
+    /// opaque, so the header never publishes the position itself.
+    let windowBaseTag: String?
     /// Token count this sidecar carries (== `blockSize`).
     let windowTokens: Int?
 
@@ -122,7 +137,7 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         lookupTag: String, weightHash: String, layoutEpoch: String, blockSize: Int,
         layerCount: Int, chunks: [SSDBlockChunkDescriptor], chunkPlaintextSizes: [Int],
         createdAt: Int64 = Int64(Date().timeIntervalSince1970),
-        windowKind: String? = nil, windowBase: Int? = nil, windowTokens: Int? = nil
+        windowKind: String? = nil, windowBaseTag: String? = nil, windowTokens: Int? = nil
     ) {
         self.schema = "darkbloom.kv.v3"
         self.lookupTag = lookupTag
@@ -134,7 +149,7 @@ struct SSDBlockMetadata: Codable, Equatable, Sendable {
         self.chunkPlaintextSizes = chunkPlaintextSizes
         self.createdAt = createdAt
         self.windowKind = windowKind
-        self.windowBase = windowBase
+        self.windowBaseTag = windowBaseTag
         self.windowTokens = windowTokens
     }
 }

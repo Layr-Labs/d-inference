@@ -80,8 +80,10 @@ enum SSDWindowResidency: String, Sendable, Equatable, CaseIterable {
     /// engine must replay `windowCount × maxWindow` tokens.
     case replayed
     /// Sliding rows are restored from windowed sidecars, so there is nothing
-    /// to replay. Requires `PagedSequenceKV.restoreWindow(keys:values:base:)`
-    /// (WS-4.1) on paged, or `CBv2WindowedSequenceKV` adoption on contiguous.
+    /// to replay. Requires `PagedSequenceKV.restoreWindow(_:at:)` (WS-4.1) on
+    /// paged, or `CBv2WindowedSequenceKV` adoption on contiguous — neither of
+    /// which exists yet, so `PrefixCachePolicy.windowResidency` never returns
+    /// this case today.
     case restoredFromSidecar = "restored_from_sidecar"
 }
 
@@ -204,6 +206,35 @@ enum SSDWindowSidecar {
     /// `PagedSequenceKV.windowSnapshot() -> (keys:values:base:)?`.
     typealias Window = (keys: MLXArray, values: MLXArray, base: Int)
 
+    /// The `(keys, values, base)` window that a `CBv2SequenceKV.snapshot()`
+    /// triple describes. `snapshot()` reports the position of the NEXT token
+    /// in temporal order, so the first retained entry sits at
+    /// `offset − retained`.
+    ///
+    /// This is the ONE place that arithmetic lives: both donor paths — the
+    /// state-based overload's `windowSnapshot()` and the engine's
+    /// `CBv2SlidingWindowDonating` hand-off, which arrives already
+    /// snapshotted on the engine thread — resolve through it, so they can
+    /// never disagree about where a donated ring is anchored.
+    static func window(
+        fromSnapshot snapshot: (keys: MLXArray, values: MLXArray, offset: Int)?
+    ) -> Window? {
+        guard let snapshot, snapshot.keys.ndim == 4 else { return nil }
+        let retained = snapshot.keys.dim(2)
+        guard retained > 0, snapshot.offset >= retained else { return nil }
+        return (keys: snapshot.keys, values: snapshot.values, base: snapshot.offset - retained)
+    }
+
+    /// Per-layer windows for a full-width engine sliding-snapshot array.
+    /// Entries the engine left nil (full-attention and KV-shared layers)
+    /// stay nil; `span` then rejects the set unless every storage-owning
+    /// sliding layer produced one.
+    static func windows(
+        fromSnapshots snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?]
+    ) -> [Window?] {
+        snapshots.map { window(fromSnapshot: $0) }
+    }
+
     /// Validate a per-layer window set against the geometry and collapse it to
     /// the single `(base, tokens)` span every layer must agree on.
     ///
@@ -285,17 +316,20 @@ enum SSDWindowSidecar {
 
     /// Authenticated-metadata binding check for ONE sidecar of a window run.
     ///
-    /// `windowBase` is in the GCM AAD, so this rejects a file that
-    /// authenticates correctly but describes a different absolute position —
-    /// the anti-splice guard that keeps a truncated-tag collision from
-    /// silently restoring the wrong 256 tokens.
+    /// `windowBaseTag` is the keyed commitment to the sidecar's absolute base
+    /// (`SSDLookupKeys.windowBaseCommitment`) and it is in the GCM AAD, so
+    /// this rejects a file that authenticates correctly but describes a
+    /// different absolute position — the anti-splice guard that keeps a
+    /// truncated-tag collision from silently restoring the wrong 256 tokens.
+    /// The caller supplies the commitment it recomputed for the base it
+    /// EXPECTS, so the position never has to appear in the header.
     static func isBound(
         _ metadata: SSDBlockMetadata,
-        expectedBase: Int,
+        expectedBaseTag: String,
         geometry: SSDWindowSidecarGeometry
     ) -> Bool {
         metadata.windowKind == kind
-            && metadata.windowBase == expectedBase
+            && metadata.windowBaseTag == expectedBaseTag
             && metadata.windowTokens == geometry.blockSize
             && metadata.blockSize == geometry.blockSize
             && metadata.layerCount == geometry.layerCount
@@ -383,25 +417,26 @@ enum SSDWindowSidecar {
 ///
 ///  * `CBv2WindowedSequenceKV` — below, today. Its `snapshot()` already
 ///    returns the ring in temporal order plus the row's absolute offset, so
-///    contiguous gemma-4 can produce sidecars with no engine change. This
-///    settles the plan's open question at §12: the windowed sidecar is NOT
-///    paged-dependent.
+///    contiguous gemma-4 can produce sidecars from the state-based donation
+///    overload. This settles the plan's open question at §12: the windowed
+///    sidecar is NOT paged-dependent.
 ///  * `PagedSequenceKV` — a one-line retroactive conformance once WS-4.1 adds
 ///    the method. It is deliberately NOT written here: the method does not
-///    exist yet and `libs/` is out of scope for this track.
+///    exist yet.
+///
+/// The PRODUCTION donation path does not use this protocol at all: the
+/// engine already holds the rows and snapshots them on its own thread, so it
+/// hands the triples over through `CBv2SlidingWindowDonating` and the cache
+/// resolves them with `SSDWindowSidecar.windows(fromSnapshots:)`. Both routes
+/// share `SSDWindowSidecar.window(fromSnapshot:)`.
 protocol SSDWindowSnapshotting: AnyObject {
     func windowSnapshot() -> (keys: MLXArray, values: MLXArray, base: Int)?
 }
 
 extension CBv2WindowedSequenceKV: SSDWindowSnapshotting {
-    /// The contiguous ring's window in the paged seam's shape. `snapshot()`
-    /// returns `(keys, values, offset)` in temporal order with `offset` the
-    /// position of the NEXT token, so the first retained token sits at
-    /// `offset − retained`.
+    /// The contiguous ring's window in the paged seam's shape, resolved
+    /// through the shared `snapshot()` → `(base)` arithmetic.
     func windowSnapshot() -> (keys: MLXArray, values: MLXArray, base: Int)? {
-        let snap = snapshot()
-        let retained = snap.keys.dim(2)
-        guard retained > 0, snap.offset >= retained else { return nil }
-        return (keys: snap.keys, values: snap.values, base: snap.offset - retained)
+        SSDWindowSidecar.window(fromSnapshot: snapshot())
     }
 }

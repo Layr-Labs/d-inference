@@ -83,7 +83,9 @@ enum SSDPrefixCachePolicy {
     /// and the residency plumbing; turning it on moves gemma-4's donation
     /// floor from 27,137 tokens to `blockSize + minEffectiveTokens`, which is
     /// a separate, deliberate step that also needs WS-4.1's
-    /// `restoreWindow(keys:values:base:)` on the paged row.
+    /// `restoreWindow(_:at:)` on the paged row. Until that consumer exists
+    /// `PrefixCachePolicy.windowResidency` stays `.replayed`, so this knob
+    /// switches the sidecar FORMAT on without collapsing any replay bound.
     ///
     /// Costs it turns on, measured against gemma-4's real geometry (25
     /// sliding layers × 8 KV heads × 256 head dim vs 5 full layers × 2 × 512,

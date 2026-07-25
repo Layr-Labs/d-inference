@@ -108,7 +108,9 @@ final class SSDPrefixCacheStatsBox: @unchecked Sendable {
 
 // MARK: - SSDPrefixCache
 
-public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecked Sendable {
+public final class SSDPrefixCache:
+    CBv2PrefixCache, CBv2SlidingWindowDonating, SSDEvictableStore, @unchecked Sendable
+{
 
     struct Config: Sendable {
         let modelId: String
@@ -117,9 +119,22 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         /// construction refuses to create this reusable tier without it.
         let weightHash: String
         let blockSize: Int
-        /// `windowCount × maxWindow` — the engine's recompute bound; the
-        /// staging benefit gate subtracts it from `matched`.
+        /// `windowCount × maxWindow` — the engine's recompute bound when the
+        /// adopter's sliding rows are REPLAYED, which is the conservative and
+        /// always-safe answer. The staging benefit gate subtracts it from
+        /// `matched`.
         let adoptionBoundTokens: Int
+        /// The bound that applies only at a boundary whose ENTIRE window is
+        /// tiled by present, authenticated sidecars: zero, because there is
+        /// nothing left to replay.
+        ///
+        /// Two fields rather than one because sidecar availability is a
+        /// per-boundary fact, not a cache-wide one. Collapsing the cache-wide
+        /// bound instead makes every candidate — including the ones whose
+        /// tiling is incomplete and which therefore replay in full — advertise
+        /// savings it will not deliver. Defaults to `adoptionBoundTokens`,
+        /// so a cache with no restore consumer can only ever be conservative.
+        let windowRestoredBoundTokens: Int
         /// Nominal fp16 full-row bytes per token used by SSD replay planning.
         /// The slot factory independently gives every contiguous request a
         /// resolved native-width process reservation before staging.
@@ -162,6 +177,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             maxStageBytes: Int,
             maxStageMillis: Int,
             windowSidecar: SSDWindowSidecarGeometry? = nil,
+            windowRestoredBoundTokens: Int? = nil,
             nowSeconds: @escaping @Sendable () -> Int64
         ) {
             self.modelId = modelId
@@ -169,6 +185,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             self.weightHash = weightHash
             self.blockSize = blockSize
             self.adoptionBoundTokens = adoptionBoundTokens
+            self.windowRestoredBoundTokens = windowRestoredBoundTokens ?? adoptionBoundTokens
             self.nominalFullKVBytesPerToken = max(0, nominalFullKVBytesPerToken)
             self.layoutEpoch = layoutEpoch
             self.epochStore = epochStore
@@ -204,7 +221,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         /// WS-4.2: the donor's sliding window at `matched`, restored from
         /// windowed sidecars, or nil when the adopter must replay. Indexed by
         /// model layer, nil at every non-sliding slot — the shape WS-4.1's
-        /// `restoreWindow(keys:values:base:)` consumes.
+        /// `restoreWindow(_:at:)` consumes (bridged through
+        /// `CBv2PagedWindowSnapshot`).
         let window: [SSDWindowSidecar.Window?]?
         let deviceBytes: Int
         let cacheEpoch: String?
@@ -771,11 +789,16 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             settlement: settlement)
     }
 
-    /// Donation with an explicit sliding-window payload — the WS-4.2 entry
-    /// point for a caller that already holds the donor's per-layer window
-    /// (`PagedSequenceKV.windowSnapshot()` shape). `nil` window entries are
-    /// ignored; a sidecar is written only when EVERY storage-owning sliding
-    /// layer is present and they agree on one absolute span.
+    /// Donation with an explicit sliding-window payload, already in
+    /// `(keys, values, base)` form — the direct-injection seam for a caller
+    /// that resolved the anchor itself. `nil` window entries are ignored; a
+    /// sidecar is written only when EVERY storage-owning sliding layer is
+    /// present and they agree on one absolute span.
+    ///
+    /// PRODUCTION does not come through here: the engine hands over
+    /// `snapshot()` triples via `CBv2SlidingWindowDonating` (below), which
+    /// resolves the anchor with `SSDWindowSidecar.windows(fromSnapshots:)`
+    /// and then joins this same private path.
     func donate(
         requestID: CBv2RequestID?,
         tokens: [Int],
@@ -789,6 +812,44 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             tokens: tokens,
             snapshots: snapshots,
             windowSnapshots: windowSnapshots,
+            layerKinds: layerKinds,
+            cacheSalt: cacheSalt,
+            receiptRequestID: requestID,
+            settlement: settlement)
+    }
+
+    // MARK: CBv2SlidingWindowDonating — the PRODUCTION donation path
+
+    /// Whether this cache persists sliding rows at all. The engine reads it
+    /// once per donation BEFORE snapshotting anything, so a build with the
+    /// sidecar knob off never pays for the (200 MiB on gemma-4) window graph.
+    /// Resolved at construction from the operator knob and the layout, so
+    /// this is a plain field read on the engine thread.
+    public var wantsSlidingWindowDonation: Bool { config.windowSidecar != nil }
+
+    /// The donation the engine ACTUALLY makes for a request that carries a
+    /// `prefixCacheReceiptID` — i.e. every production request once the SSD
+    /// cache is constructed (`EngineV2Bridge` mints one for each of them).
+    ///
+    /// This overload exists because the frozen
+    /// `donate(requestID:tokens:snapshots:layerKinds:cacheSalt:)` carries no
+    /// sliding rows — its `snapshots` array is nil at every windowed layer by
+    /// contract — so routing production through it left the sidecar feature
+    /// inert no matter what the operator knob said. The engine now hands the
+    /// sliding triples over here, already snapshotted on its own thread.
+    public func donate(
+        requestID: CBv2RequestID,
+        tokens: [Int],
+        snapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?],
+        slidingSnapshots: [(keys: MLXArray, values: MLXArray, offset: Int)?],
+        layerKinds: [CBv2LayerKind],
+        cacheSalt: String?
+    ) {
+        let settlement = PrefixCacheDonationSettlement(recorder: donationRecorder)
+        donate(
+            tokens: tokens,
+            snapshots: snapshots,
+            windowSnapshots: SSDWindowSidecar.windows(fromSnapshots: slidingSnapshots),
             layerKinds: layerKinds,
             cacheSalt: cacheSalt,
             receiptRequestID: requestID,
@@ -905,7 +966,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     requestID: receiptRequestID,
                     tags16: durableTags,
                     fullTags: durableFullTags,
-                    chainHashes: durableChainHashes) ?? false
+                    chainHashes: durableChainHashes,
+                    cacheSalt: salt) ?? false
             }
         } else {
             onDurable = nil
@@ -948,13 +1010,93 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             SSDBlockStore.setAttributesIfSafe(
                 [.modificationDate: touchDate], at: url, under: config.root)
         }
-        // WS-4.2 sidecars are claimed here, BEFORE the all-deduped early
-        // return: a repeat donation of an already-durable prefix still ends at
-        // a different absolute offset, so it covers block boundaries no
-        // earlier donation could. Skipping it would leave permanent holes in
-        // the window tiling.
         var blocks: [SSDBlockWrite] = []
         var totalBytes = 0
+
+        if !newBlockIndices.isEmpty {
+            // Endurance pre-check BEFORE any extraction: when the daily write
+            // budget can't even cover ONE block, the consumer would drop every
+            // one of these blocks at `tryConsume` — after the loop below had
+            // already paid the device-slice/eval/host-copy for each. Skip the
+            // whole donation up front instead. Gated on a single block (not
+            // the full donation) so a nearly-drained bucket still persists the
+            // leading prefix-contiguous blocks it can afford — the consumer's
+            // per-block `tryConsume` stays the authority. Settle the in-flight
+            // tags so a later donation can retry these blocks once the bucket
+            // refills.
+            guard writeBehind.mightAcceptWrite(bytes: perBlockBytes) else {
+                lock.withLock {
+                    for i in newBlockIndices { inFlightWrites.remove(tags16[i]) }
+                }
+                // Attribute to the write cap (same accounting as the consumer's
+                // per-block tryConsume drop) so `rateLimited` stats stay
+                // truthful now that this pre-check intercepts most
+                // cap-exhausted donations.
+                statsBox.add(
+                    donationsDropped: newBlockIndices.count,
+                    writeRateLimited: newBlockIndices.count)
+                settlement.settle(.writeRateLimited)
+                return
+            }
+
+            // Per-block extraction: device slice → eval → compact host Data in
+            // engine-native [B, kvHeads, block, headDim] layout. Device arrays
+            // are dropped as soon as the bytes are copied out.
+            for b in newBlockIndices {
+                let t0 = b * config.blockSize
+                let t1 = t0 + config.blockSize
+                var slices: [MLXArray] = []
+                slices.reserveCapacity(cacheable.count * 2)
+                for layer in cacheable {
+                    slices.append(layer.keys[.ellipsis, t0 ..< t1, 0...])
+                    slices.append(layer.values[.ellipsis, t0 ..< t1, 0...])
+                }
+                eval(slices)
+                var chunks: [Data] = []
+                var descriptors: [SSDBlockChunkDescriptor] = []
+                var sizes: [Int] = []
+                for (j, layer) in cacheable.enumerated() {
+                    for tensor in 0 ..< 2 {
+                        let arr = slices[j * 2 + tensor]
+                        let data = arr.asData(access: .copy)
+                        chunks.append(data.data)
+                        sizes.append(data.data.count)
+                        descriptors.append(
+                            SSDBlockChunkDescriptor(
+                                layerIndex: layer.layerIndex, tensor: tensor,
+                                shape: data.shape, dtype: String(describing: data.dType)))
+                    }
+                }
+                let tag16Hex = SSDLookupKeys.hex(tags16[b])
+                let metadata = SSDBlockMetadata(
+                    lookupTag: SSDLookupKeys.hex(fullTags[b]),
+                    weightHash: config.weightHash,
+                    layoutEpoch: config.layoutEpoch,
+                    blockSize: config.blockSize,
+                    layerCount: layerKinds.count,
+                    chunks: descriptors,
+                    chunkPlaintextSizes: sizes,
+                    createdAt: now)
+                let blockBytes = sizes.reduce(0, +)
+                totalBytes += blockBytes
+                blocks.append(
+                    SSDBlockWrite(
+                        tag16: tags16[b], tag16Hex: tag16Hex, metadata: metadata,
+                        chunks: chunks, plaintextBytes: blockBytes))
+            }
+        }
+
+        // WS-4.2 sidecars are appended AFTER the blocks — and claimed even
+        // when every block deduped, because a repeat donation of an already-
+        // durable prefix still ends at a different absolute offset and so
+        // covers boundaries no earlier donation could; skipping it would leave
+        // permanent holes in the window tiling.
+        //
+        // Order is load-bearing: `SSDWriteBehind.consume` charges the daily
+        // endurance bucket per entry IN ARRAY ORDER, and one sidecar is an
+        // order of magnitude larger than a block (52 MB vs 5 MB on gemma-4).
+        // Queued first, a sidecar could spend the last of the allowance and
+        // starve the very prefix blocks it can only accelerate.
         appendWindowSidecars(
             into: &blocks, totalBytes: &totalBytes,
             windowSnapshots: windowSnapshots, layerKinds: layerKinds,
@@ -978,79 +1120,6 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 }
             }
             return
-        }
-
-        // Endurance pre-check BEFORE any extraction: when the daily write
-        // budget can't even cover ONE block, the consumer would drop every
-        // one of these blocks at `tryConsume` — after this loop has already
-        // paid the device-slice/eval/host-copy for each. Skip the whole
-        // donation up front instead. Gated on a single block (not the full
-        // donation) so a nearly-drained bucket still persists the leading
-        // prefix-contiguous blocks it can afford — the consumer's per-block
-        // `tryConsume` stays the authority. Settle the in-flight tags so a
-        // later donation can retry these blocks once the bucket refills.
-        guard writeBehind.mightAcceptWrite(bytes: perBlockBytes) else {
-            lock.withLock {
-                for i in newBlockIndices { inFlightWrites.remove(tags16[i]) }
-                // Sidecars claimed above go back too — the bucket is drained
-                // for everything, and a stranded tag can never be rewritten.
-                for block in blocks { inFlightWrites.remove(block.tag16) }
-            }
-            // Attribute to the write cap (same accounting as the consumer's
-            // per-block tryConsume drop) so `rateLimited` stats stay
-            // truthful now that this pre-check intercepts most
-            // cap-exhausted donations.
-            statsBox.add(
-                donationsDropped: newBlockIndices.count + blocks.count,
-                writeRateLimited: newBlockIndices.count + blocks.count)
-            settlement.settle(.writeRateLimited)
-            return
-        }
-
-        // Per-block extraction: device slice → eval → compact host Data in
-        // engine-native [B, kvHeads, block, headDim] layout. Device arrays
-        // are dropped as soon as the bytes are copied out.
-        for b in newBlockIndices {
-            let t0 = b * config.blockSize
-            let t1 = t0 + config.blockSize
-            var slices: [MLXArray] = []
-            slices.reserveCapacity(cacheable.count * 2)
-            for layer in cacheable {
-                slices.append(layer.keys[.ellipsis, t0 ..< t1, 0...])
-                slices.append(layer.values[.ellipsis, t0 ..< t1, 0...])
-            }
-            eval(slices)
-            var chunks: [Data] = []
-            var descriptors: [SSDBlockChunkDescriptor] = []
-            var sizes: [Int] = []
-            for (j, layer) in cacheable.enumerated() {
-                for tensor in 0 ..< 2 {
-                    let arr = slices[j * 2 + tensor]
-                    let data = arr.asData(access: .copy)
-                    chunks.append(data.data)
-                    sizes.append(data.data.count)
-                    descriptors.append(
-                        SSDBlockChunkDescriptor(
-                            layerIndex: layer.layerIndex, tensor: tensor,
-                            shape: data.shape, dtype: String(describing: data.dType)))
-                }
-            }
-            let tag16Hex = SSDLookupKeys.hex(tags16[b])
-            let metadata = SSDBlockMetadata(
-                lookupTag: SSDLookupKeys.hex(fullTags[b]),
-                weightHash: config.weightHash,
-                layoutEpoch: config.layoutEpoch,
-                blockSize: config.blockSize,
-                layerCount: layerKinds.count,
-                chunks: descriptors,
-                chunkPlaintextSizes: sizes,
-                createdAt: now)
-            let blockBytes = sizes.reduce(0, +)
-            totalBytes += blockBytes
-            blocks.append(
-                SSDBlockWrite(
-                    tag16: tags16[b], tag16Hex: tag16Hex, metadata: metadata,
-                    chunks: chunks, plaintextBytes: blockBytes))
         }
 
         let submitResult = writeBehind.submitWithResult(SSDDonationJob(
@@ -1099,16 +1168,49 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             base: span.base, tokens: span.tokens,
             blockCount: min(blockCount, chainHashes.count))
         guard !covered.isEmpty else { return }
+        // Endurance pre-check BEFORE extraction, charged on top of the blocks
+        // already queued. One sidecar is an order of magnitude larger than the
+        // block it accelerates (52 MB vs 5 MB on gemma-4), so extracting one
+        // the consumer will refuse costs ~150–200 MiB of device slices, evals
+        // and host copies on the engine's donation queue for nothing. Advisory
+        // exactly like the block pre-check: the consumer's per-entry
+        // `tryConsume` remains the authority for races.
+        let elementSize = geometry.layers
+            .compactMap { windows[$0.index]?.keys.dtype.size }.first ?? 0
+        let sidecarBytes = geometry.bytesPerBlock(elementSize: elementSize)
+        guard sidecarBytes > 0,
+            writeBehind.mightAcceptWrite(bytes: totalBytes + sidecarBytes)
+        else { return }
 
         var claimed: [(block: Int, tag16: Data, fullTag: Data)] = []
+        var reused: [Data] = []
         lock.withLock {
             guard !closed else { return }
             for b in covered {
                 let full = lookupKeys.windowTag(chainHash: chainHashes[b], cacheSalt: cacheSalt)
                 let tag16 = full.prefix(SSDLookupKeys.truncatedTagLength)
-                if index.contains(tag16: tag16) || inFlightWrites.contains(tag16) { continue }
+                if index.contains(tag16: tag16) {
+                    reused.append(tag16)
+                    continue
+                }
+                if inFlightWrites.contains(tag16) { continue }
                 inFlightWrites.insert(tag16)
                 claimed.append((b, tag16, full))
+            }
+        }
+        // Sliding-TTL bump for the sidecars this donation re-covered, exactly
+        // as the block path bumps its reused tags. Without it a conversation
+        // can keep its block run warm forever while the sidecars underneath it
+        // expire at 15 minutes — silently re-arming the full replay and paying
+        // their (much larger) write wear again on the next donation.
+        if !reused.isEmpty {
+            index.touch(tags16: reused, now: now)
+            let touchDate = Date(timeIntervalSince1970: TimeInterval(now))
+            for tag16 in reused {
+                let url = SSDBlockStore.fileURL(
+                    root: config.root, tag16Hex: SSDLookupKeys.hex(tag16))
+                SSDBlockStore.setAttributesIfSafe(
+                    [.modificationDate: touchDate], at: url, under: config.root)
             }
         }
         guard !claimed.isEmpty else { return }
@@ -1131,7 +1233,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 chunkPlaintextSizes: payload.sizes,
                 createdAt: now,
                 windowKind: SSDWindowSidecar.kind,
-                windowBase: entry.block * config.blockSize,
+                windowBaseTag: lookupKeys.windowBaseCommitmentHex(
+                    windowTag: entry.fullTag, base: entry.block * config.blockSize),
                 windowTokens: config.blockSize)
             blocks.append(
                 SSDBlockWrite(
@@ -1242,8 +1345,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         var windowTags: [Data] = []
         while k > 0 {
             let matched = k * config.blockSize
-            let effective = matched - min(config.adoptionBoundTokens, matched)
-            guard effective >= config.minEffectiveTokens else { return finish(.skippedCost) }
+            // Monotone impossibility test. `windowRestoredBoundTokens` is the
+            // SMALLEST bound this cache can ever apply, and shorter runs match
+            // strictly less, so failing here means no candidate can pass.
+            // (The per-candidate gate below is NOT monotone: a shorter
+            // boundary can have a complete tiling where a longer one does not.)
+            guard matched - min(config.windowRestoredBoundTokens, matched)
+                >= config.minEffectiveTokens
+            else { return finish(.skippedCost) }
             guard let sizes = index.fileBytes(tags16: tags16[0 ..< k]) else {
                 // Raced an eviction — re-probe.
                 k = min(k - 1, index.longestRun(tags16: tags16))
@@ -1270,7 +1379,14 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 // replays. Never shortens the block run.
                 windowTags = []
             }
-            if runBytes <= config.maxStageBytes,
+            // The bound must describe the window this boundary will ACTUALLY
+            // get. Charging the cache-wide restored bound to a candidate whose
+            // tiling is incomplete advertises savings the adopter cannot
+            // deliver — it still performs the full replay.
+            let bound = windowTags.isEmpty
+                ? config.adoptionBoundTokens : config.windowRestoredBoundTokens
+            if matched - min(bound, matched) >= config.minEffectiveTokens,
+                runBytes <= config.maxStageBytes,
                 SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
             {
                 break
@@ -1285,7 +1401,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // false cold fallbacks under a full but correctly-accounted budget.
         let terminalTag = tags16[k - 1]
         let reservationKey = reservationKey(forRequestID: requestID)
-        let attachedBytes = lock.withLock { () -> Int? in
+        let attached = lock.withLock { () -> (deviceBytes: Int, hasWindow: Bool)? in
             guard !closed,
                 !destructiveChangeInProgress,
                 cacheEpochMatches(stageEpoch)
@@ -1296,15 +1412,20 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             else { return nil }
             existing.openTickets.insert(requestID)
             tickets[requestID] = terminalTag
-            return existing.deviceBytes
+            return (existing.deviceBytes, existing.window != nil)
         }
-        if let attachedBytes {
+        if let attached {
+            // The saving belongs to the entry we joined, not to our probe: an
+            // entry staged without a window still costs its adopter the full
+            // replay, whatever this request's own index probe just saw.
+            let matched = k * config.blockSize
+            let bound = attached.hasWindow
+                ? config.windowRestoredBoundTokens : config.adoptionBoundTokens
             return finish(.staged(
-                matchedTokens: k * config.blockSize,
-                expectedPrefillTokensSaved: max(
-                    0, k * config.blockSize - min(config.adoptionBoundTokens, k * config.blockSize)),
+                matchedTokens: matched,
+                expectedPrefillTokensSaved: max(0, matched - min(bound, matched)),
                 shortenedByCorruption: false),
-                deviceBytes: attachedBytes)
+                deviceBytes: attached.deviceBytes)
         }
         // Multi-block conversion temporarily holds three full representations:
         // decrypted host Data, per-block MLX inputs, and concatenated outputs.
@@ -1356,10 +1477,16 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                 break
             }
         }
-        // Re-apply the benefit gate to the (possibly shortened) run.
+        // Re-apply the benefit gate to the (possibly shortened) run. A
+        // corruption-shortened run ends at a DIFFERENT boundary than the one
+        // the trim loop tiled, and never restores a window (below), so it can
+        // only be judged against the conservative replay bound.
         let matched = usableBlocks * config.blockSize
-        let effective = matched - min(config.adoptionBoundTokens, matched)
-        guard usableBlocks > 0, effective >= config.minEffectiveTokens else {
+        var settledBound = usableBlocks == k && !windowTags.isEmpty
+            ? config.windowRestoredBoundTokens
+            : config.adoptionBoundTokens
+        guard usableBlocks > 0, matched - min(settledBound, matched) >= config.minEffectiveTokens
+        else {
             await releaseReservation(reservationKey)
             return finish(shortenedByCorruption ? .missCorrupt : .skippedCost)
         }
@@ -1428,6 +1555,19 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             restoredWindow = readWindowSidecars(
                 geometry: geometry, chainHashes: hashes, cacheSalt: salt, blocks: usableBlocks)
         }
+        // A sidecar that was indexed but unreadable leaves this boundary on
+        // the replay path after all, so the benefit has to be re-settled
+        // against the conservative bound — and re-gated, since a run that only
+        // cleared the floor on the strength of a restored window is not worth
+        // staging without one.
+        if restoredWindow == nil, settledBound != config.adoptionBoundTokens {
+            settledBound = config.adoptionBoundTokens
+            guard matched - min(settledBound, matched) >= config.minEffectiveTokens else {
+                await releaseReservation(reservationKey)
+                return finish(.skippedCost)
+            }
+        }
+        let effective = matched - min(settledBound, matched)
         var exactDeviceBytes = 0
         for entry in prefix {
             guard let entry else { continue }
@@ -1489,7 +1629,11 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         // which case we ATTACH (and release our now-redundant provisional
         // reservation); otherwise we CREATE and our reservation becomes the
         // entry's per-entry reservation.
-        enum StageResolution { case created, attached(deviceBytes: Int), failed }
+        enum StageResolution {
+            case created
+            case attached(deviceBytes: Int, hasWindow: Bool)
+            case failed
+        }
         let resolution: StageResolution = lock.withLock {
             guard !closed,
                 !destructiveChangeInProgress,
@@ -1501,7 +1645,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = terminalTag
-                return .attached(deviceBytes: existing.deviceBytes)
+                return .attached(deviceBytes: existing.deviceBytes, hasWindow: existing.window != nil)
             }
             let usedTag = tags16[usableBlocks - 1]
             if let existing = stagedEntries[usedTag],
@@ -1510,7 +1654,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = usedTag
-                return .attached(deviceBytes: existing.deviceBytes)
+                return .attached(deviceBytes: existing.deviceBytes, hasWindow: existing.window != nil)
             }
             stagedEntries[usedTag] = StagedEntry(
                 matched: matched, prefix: prefix, window: restoredWindow,
@@ -1526,12 +1670,16 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         case .failed:
             await releaseReservation(reservationKey)
             return finish(.skippedPolicy)
-        case .attached(let attachedDeviceBytes):
-            // Redundant with the winner's per-entry reservation.
+        case .attached(let attachedDeviceBytes, let attachedHasWindow):
+            // Redundant with the winner's per-entry reservation. The saving is
+            // the WINNER's: our own window read does not apply to an entry we
+            // did not create.
             await releaseReservation(reservationKey)
+            let attachedBound = attachedHasWindow
+                ? config.windowRestoredBoundTokens : config.adoptionBoundTokens
             return finish(.staged(
                 matchedTokens: matched,
-                expectedPrefillTokensSaved: effective,
+                expectedPrefillTokensSaved: max(0, matched - min(attachedBound, matched)),
                 shortenedByCorruption: shortenedByCorruption),
                 deviceBytes: attachedDeviceBytes)
         case .created:
@@ -1585,6 +1733,20 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         }
     }
 
+    /// Whether EVERY sidecar tiling the window that ends at block boundary
+    /// `blocks` is currently indexed — the same predicate the staging trim
+    /// loop applies, in the RAM index only (no I/O), so a donation-settlement
+    /// receipt can describe the replay an adopter would really face.
+    private func windowTilingComplete(
+        chainHashes: [Data], cacheSalt: String, blocks: Int
+    ) -> Bool {
+        let tags = windowSidecarTags(
+            geometry: config.windowSidecar, chainHashes: chainHashes,
+            cacheSalt: cacheSalt, blocks: blocks)
+        guard !tags.isEmpty else { return false }
+        return index.fileBytes(tags16: tags[...]) != nil
+    }
+
     /// Read, authenticate and reassemble the sliding window that ends at
     /// block boundary `blocks`. nil ⇒ the adopter replays.
     ///
@@ -1613,7 +1775,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
                     metadata.lookupTag == SSDLookupKeys.hex(fullTag),
                     SSDWindowSidecar.isBound(
                         metadata,
-                        expectedBase: b * config.blockSize,
+                        expectedBaseTag: lookupKeys.windowBaseCommitmentHex(
+                            windowTag: fullTag, base: b * config.blockSize),
                         geometry: geometry)
                 else {
                     throw SSDBlockStoreError.bindingMismatch(
@@ -1642,7 +1805,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
 
     /// WS-4.2 adoption seam: the donor's sliding window staged for
     /// `requestID`, indexed by model layer. nil ⇒ nothing was restored and the
-    /// adopter must replay. Consumed by `restoreWindow(keys:values:base:)`.
+    /// adopter must replay. Consumed by WS-4.1's `restoreWindow(_:at:)`, via
+    /// `CBv2PagedWindowSnapshot(keys:values:base:)`.
     func stagedWindow(requestID: String) -> [SSDWindowSidecar.Window?]? {
         lock.withLock {
             guard let tag = tickets[requestID], let staged = stagedEntries[tag] else { return nil }
@@ -1997,7 +2161,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
         requestID: CBv2RequestID,
         tags16: [Data],
         fullTags: [Data],
-        chainHashes: [Data]
+        chainHashes: [Data],
+        cacheSalt: String
     ) -> Bool {
         guard tags16.count == fullTags.count,
             tags16.count == chainHashes.count,
@@ -2025,7 +2190,17 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             }
         }
         let readyTokens = readableBlocks * config.blockSize
-        let recompute = min(config.adoptionBoundTokens, readyTokens)
+        // The receipt has to describe the replay the ADOPTER will face. That
+        // is the restored bound only when this boundary's window is fully
+        // tiled by present sidecars; otherwise the adopter replays in full and
+        // a zero-recompute receipt would send the coordinator a prefix that
+        // does not exist.
+        let recompute = min(
+            windowTilingComplete(
+                chainHashes: chainHashes, cacheSalt: cacheSalt, blocks: readableBlocks)
+                ? config.windowRestoredBoundTokens
+                : config.adoptionBoundTokens,
+            readyTokens)
         let expectedSaved = max(0, readyTokens - recompute)
         guard expectedSaved >= config.minEffectiveTokens else { return false }
         guard let durableSizes = index.fileBytes(tags16: tags16.prefix(readableBlocks))

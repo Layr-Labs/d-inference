@@ -1143,3 +1143,41 @@ to prevent.
 This does not change the ranking. It changes what "done" means for the
 producer item, and it is the single place where a plausible-looking
 implementation of these findings would ship a data-corruption bug.
+
+---
+
+## Both models, measured
+
+| | gemma-4-26B-A4B | gpt-oss-20b |
+|---|---|---|
+| layout | 25 sliding (w=1024) + 5 full | 12 sliding (w=128) + 12 full |
+| bytes/token/layer | 8192 sliding vs 4096 full — **asymmetric** | 2048 vs 2048 — **symmetric** |
+| block scaling | full scales to 32 | none needed |
+| kv_cache_groups | **6** (5 sliding + 1 full) | **2** (1 sliding + 1 full) |
+| **min prefix reuse** | **32 tokens** | **16 tokens** |
+| vs our 25,600 | **800x** | **1600x** |
+| p50 979 tok | 960 reusable (98.1%) | 976 reusable (99.7%) |
+
+**gpt-oss is the easier case on every axis and has the larger ratio.**
+Symmetric head geometry means no block-size scaling, so the floor is a
+flat 16; the 128-token window makes the contiguous-run requirement 8
+blocks rather than 64; and group formation collapses it to 2 groups
+against gemma-4's 6. **If we want a first target for capture-as-they-fill,
+gpt-oss has the smallest surface and the largest payoff.**
+
+Note the group count is not "one table per attention type" — it is set by
+the REPEATING PATTERN. gemma-4's 25:5 gives `group_size` 5 and therefore
+six tables; gpt-oss's 1:1 alternating gives twelve and therefore two. Same
+code path, and it is what keeps per-block residency at 1x rather than
+N-layers x in both cases.
+
+Both models' contiguous-run requirement (1024 and 128 tokens) binds ONLY
+above the window — which our p50 of 979 is not, for either model. **At
+typical traffic neither model ever meets the window as a floor.**
+
+One tension worth naming: gpt-oss is the best target for the prefix-reuse
+work AND the worst for the capture hazard, since its ring is chunk-bound
+at every setting with zero slack. The two facts point at the same
+implementation — handle captured inline, materialisation off-thread with
+an explicit deadline — which is required there and merely correct on
+gemma-4.

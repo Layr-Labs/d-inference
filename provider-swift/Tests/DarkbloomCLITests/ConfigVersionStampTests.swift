@@ -98,6 +98,86 @@ struct ConfigVersionStampTests {
         }
     }
 
+    /// "Already dated" is an ASSIGNMENT of `config_version`, not the three
+    /// words appearing anywhere in the file. A pre-v0.8.0 config that merely
+    /// MENTIONS the key — a comment about it, a commented-out stamp, or the
+    /// name inside another key's value — is undated, and mistaking it for
+    /// dated skips BOTH halves of the migration: the durable `4 -> 8`
+    /// rewrite and the stamp. `ProviderConfig.init(from:)` still raises the
+    /// value in memory, so the provider then runs at 8 while its file says
+    /// 4, forever, and no later pass corrects it.
+    @Test("a file that only mentions config_version in prose is not treated as dated")
+    func mentionWithoutAssignmentIsNotAStamp() throws {
+        let mentions = [
+            // A comment about the key, which is exactly what an operator
+            // reading the upgrade notes would paste above their config.
+            """
+            # config_version is written by the upgrade, do not hand-edit
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            engine_v2_max_concurrent = 4
+            """,
+            // A commented-OUT stamp is not a stamp.
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            # config_version = 1
+            engine_v2_max_concurrent = 4
+            """,
+            // The key named inside another key's value.
+            """
+            [provider]
+            name = "config_version"
+
+            [backend]
+            engine_v2_max_concurrent = 4
+            """,
+        ]
+
+        for contents in mentions {
+            try withTempConfig(contents) { path in
+                #expect(stampConfigVersion(in: path) == true)
+
+                let text = try read(path)
+                #expect(text.hasPrefix("config_version = 1\n"))
+                #expect(text.contains("engine_v2_max_concurrent = 8"))
+                #expect(!text.contains("engine_v2_max_concurrent = 4"))
+
+                let config = try ConfigManager.load(from: path)
+                #expect(config.backend.engineV2MaxConcurrent == 8)
+                #expect(config.appliedMigrations.isEmpty)
+            }
+        }
+    }
+
+    /// The other direction: a real assignment is a stamp however it is
+    /// spaced, so the detector must not be so narrow that an indented or
+    /// loosely-spaced stamp gets a second one prepended.
+    @Test("an indented or loosely-spaced assignment counts as dated")
+    func spacingVariantsCountAsDated() throws {
+        for stamp in ["  config_version = 1", "config_version=1", "config_version\t=\t1"] {
+            try withTempConfig(
+                """
+                \(stamp)
+                [provider]
+                name = "test-provider"
+
+                [backend]
+                engine_v2_max_concurrent = 4
+                """
+            ) { path in
+                #expect(stampConfigVersion(in: path) == false)
+                let text = try read(path)
+                #expect(text.contains("engine_v2_max_concurrent = 4"))
+                #expect(!text.hasPrefix("config_version = 1\n\(stamp)"))
+            }
+        }
+    }
+
     /// Why this is text surgery and not a `ConfigManager.save` round-trip:
     /// the encoder would drop both of these, and startup still needs the
     /// retired key present in order to warn about it.

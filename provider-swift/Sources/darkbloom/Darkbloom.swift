@@ -175,6 +175,16 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
 /// what dates a file to before v0.8.0 — see `ProviderConfig.configVersion`.
 private let configVersionKey = "config_version"
 
+/// Matches an ASSIGNMENT of that key: line-anchored, so a `#` comment about
+/// `config_version`, a commented-OUT stamp, or the name inside another key's
+/// value is not mistaken for one. Substring-matching the key instead read
+/// such a file as already dated and skipped both halves of the migration —
+/// the durable `4 -> 8` rewrite and the stamp — while
+/// `ProviderConfig.init(from:)` kept raising the value in memory on every
+/// decode. The provider then ran at 8 with a file that said 4, and no later
+/// pass ever corrected it.
+private let configVersionAssignment = #"(?m)^[ \t]*config_version[ \t]*="#
+
 /// Matches ONLY a whole `engine_v2_max_concurrent = 4` assignment line — the
 /// exact value pre-v0.8.0 releases generated. Anchored to the full line so it
 /// cannot touch `[backend.engine_v2_max_concurrent_by_model]` or a `4` in it.
@@ -307,7 +317,7 @@ private func rewriteStaleURLs(in path: URL) -> String? {
 /// without its legacy-path branch writing into the real `~/.config`.
 func stampConfigVersion(in path: URL) -> Bool {
     guard var content = try? String(contentsOf: path, encoding: .utf8),
-        !content.contains(configVersionKey)
+        content.range(of: configVersionAssignment, options: .regularExpression) == nil
     else { return false }
 
     let legacy = content.range(of: legacyMaxConcurrentAssignment, options: .regularExpression)

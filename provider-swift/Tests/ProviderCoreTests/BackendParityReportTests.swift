@@ -215,7 +215,11 @@ struct BackendParityReportTests {
                     probeResolvedBackend: selection))
         }
 
-        // The real gemma-4 shape: 2,816 of 28,672 skipped = 9.8%.
+        // The gemma-4-26B-A4B shape specifically: bound 25,600, so 2,816 of
+        // 28,672 skipped = 9.8%. Named to the checkpoint on purpose — the
+        // bound is windowCount * maxWindow and differs per checkpoint, and an
+        // unqualified "gemma-4" here is how 26B's 25,600 got quoted against
+        // e2b-it-4bit (28 sliding x 512 = 14,336) three separate times today.
         let thin = BackendParityCriteria.prefixReuse(
             baseline: arm("contiguous", saved: 2816, bound: 25600, exact: true),
             candidate: arm("paged", saved: 2816, bound: 25600, exact: true))

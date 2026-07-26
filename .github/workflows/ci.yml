@@ -204,35 +204,22 @@ jobs:
       # only run time; one step each so a slow or failing suite is
       # attributable straight from the job summary. They reuse the metallib
       # placed by the step above.
+      #
+      # The bodies are ONE script (scripts/run-nested-suite.sh), which is what
+      # carries the executed-count tripwire. Four inline copies of a check
+      # whose failure mode is silence is four chances to edit one and miss
+      # three.
       - name: Run nested paged eligibility tests
         working-directory: libs/mlx-swift-lm
         # Pure Swift threadgroup-budget arithmetic; no GPU dispatch.
         timeout-minutes: 5
-        run: |
-          # swift test exits 0 even when the swift-testing pass executes
-          # NOTHING (see the note above), so a bare invocation is not a gate.
-          # Require a non-zero executed count.
-          set -o pipefail
-          swift test --skip-build --filter CBv2PagedEligibilityTests 2>&1 | tee /tmp/CBv2PagedEligibilityTests.log
-          if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' /tmp/CBv2PagedEligibilityTests.log; then
-            echo "::error::CBv2PagedEligibilityTests executed ZERO tests — the gate did not run"
-            exit 1
-          fi
+        run: ../../scripts/run-nested-suite.sh CBv2PagedEligibilityTests
       - name: Run nested paged backend tests
         working-directory: libs/mlx-swift-lm
         # Pool bookkeeping, per-sequence page tables, windowed rings,
         # reservation admission, backend lifecycle. Small MLX arrays only.
         timeout-minutes: 10
-        run: |
-          # swift test exits 0 even when the swift-testing pass executes
-          # NOTHING (see the note above), so a bare invocation is not a gate.
-          # Require a non-zero executed count.
-          set -o pipefail
-          swift test --skip-build --filter CBv2PagedBackendTests 2>&1 | tee /tmp/CBv2PagedBackendTests.log
-          if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' /tmp/CBv2PagedBackendTests.log; then
-            echo "::error::CBv2PagedBackendTests executed ZERO tests — the gate did not run"
-            exit 1
-          fi
+        run: ../../scripts/run-nested-suite.sh CBv2PagedBackendTests
       - name: Run nested paged kernel parity tests
         working-directory: libs/mlx-swift-lm
         # Heaviest of the four: fp32 decode-kernel parity, bitwise
@@ -240,31 +227,13 @@ jobs:
         # Dispatches the JIT-compiled Metal kernels, exactly as
         # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
         timeout-minutes: 20
-        run: |
-          # swift test exits 0 even when the swift-testing pass executes
-          # NOTHING (see the note above), so a bare invocation is not a gate.
-          # Require a non-zero executed count.
-          set -o pipefail
-          swift test --skip-build --filter CBv2PagedKernelTests 2>&1 | tee /tmp/CBv2PagedKernelTests.log
-          if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' /tmp/CBv2PagedKernelTests.log; then
-            echo "::error::CBv2PagedKernelTests executed ZERO tests — the gate did not run"
-            exit 1
-          fi
+        run: ../../scripts/run-nested-suite.sh CBv2PagedKernelTests
       - name: Run nested KV-sharing contiguous/paged parity tests
         working-directory: libs/mlx-swift-lm
         # Two-arm differential over TinyTestModel's KV-sharing variant; the
         # paged arm self-skips (XCTSkip) if the backend is unavailable here.
         timeout-minutes: 10
-        run: |
-          # swift test exits 0 even when the swift-testing pass executes
-          # NOTHING (see the note above), so a bare invocation is not a gate.
-          # Require a non-zero executed count.
-          set -o pipefail
-          swift test --skip-build --filter CBv2KVSharingParityTests 2>&1 | tee /tmp/CBv2KVSharingParityTests.log
-          if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' /tmp/CBv2KVSharingParityTests.log; then
-            echo "::error::CBv2KVSharingParityTests executed ZERO tests — the gate did not run"
-            exit 1
-          fi
+        run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

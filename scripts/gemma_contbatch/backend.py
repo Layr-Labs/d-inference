@@ -28,8 +28,6 @@ disables paged on a box that is perfectly capable of running it.
 
 from __future__ import annotations
 
-import argparse
-
 from .baseline import NO_COMPARE_HINT
 
 
@@ -133,9 +131,15 @@ def phase_descriptors(label: str, payload: dict) -> list[str]:
 
 
 def resolve_kv_backend(
-    args: argparse.Namespace, sweep: dict, scheduler: dict, arrival: dict
+    requested: str, sweep: dict, scheduler: dict, arrival: dict
 ) -> dict:
     """Selection versus resolved backend, per decode cell AND per phase.
+
+    `requested` is the `--kv-backend` value the wrapper launched with. Passed
+    as the string rather than the whole `argparse.Namespace` it came from:
+    this function reads exactly one field, and taking the namespace forced
+    every test to fabricate one to exercise backend logic that has nothing to
+    do with argument parsing.
 
     Raises when a payload predates the structured blocks, when a requested
     decode cell went unmeasured, when a cell reports no backend at all, or
@@ -156,9 +160,9 @@ def resolve_kv_backend(
     process off the list.
     """
     validate_decode_coverage(sweep)
-    selection = phase_selection("throughput sweep", sweep, args.kv_backend)
-    phase_selection("scheduler prefill", scheduler, args.kv_backend)
-    phase_selection("arrival invariance", arrival, args.kv_backend)
+    selection = phase_selection("throughput sweep", sweep, requested)
+    phase_selection("scheduler prefill", scheduler, requested)
+    phase_selection("arrival invariance", arrival, requested)
 
     descriptors: list[str] = []
     degrades: list[str] = []

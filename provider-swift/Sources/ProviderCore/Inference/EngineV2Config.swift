@@ -218,30 +218,23 @@ public enum EngineV2Factory {
         error: Error?,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) {
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .error,
-            kind: .engineHealth,
-            message: "engine_v2: refused to serve — \(reason.rawValue)"
-        )
-        var fields: [String: AnyCodableValue] = [
-            "component": .string("engine"),
-            "operation": .string("engine_v2_refusal"),
-            "backend": .string("engine_v2"),
-            "model": .string(modelId),
-            "reason": .string(reason.rawValue),
-        ]
+        var extra: [String: AnyCodableValue] = ["reason": .string(reason.rawValue)]
         if let error {
-            fields["error_class"] = .string(String(reflecting: type(of: error)))
+            extra["error_class"] = .string(String(reflecting: type(of: error)))
             // Human-readable detail ("error" is allowlisted on both sides).
-            fields["error"] = .string(String(describing: error))
+            extra["error"] = .string(String(describing: error))
         }
-        event.fields = TelemetryFieldFilter.filter(fields)
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        // No `kv_backend`: a refusal can happen before the backend is
+        // resolved, and this path has no way to know which.
+        emitEngineHealth(
+            EngineHealthEvent.make(
+                severity: .error,
+                message: "engine_v2: refused to serve — \(reason.rawValue)",
+                operation: "engine_v2_refusal",
+                model: modelId,
+                kvBackend: nil,
+                extra: extra),
+            sink: emitTelemetry)
     }
 
     /// INFO `engine_health` event reporting which KV backend a slot was
@@ -260,30 +253,19 @@ public enum EngineV2Factory {
     ) {
         let reason =
             fallbackReason.map { "fallback:\($0)" } ?? kind.rawValue
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .info,
-            kind: .engineHealth,
-            message: "engine_v2: serving with \(kind.rawValue) KV backend"
-                + (fallbackReason.map { " (fallback: \($0))" } ?? "")
-        )
-        event.fields = TelemetryFieldFilter.filter([
-            "component": .string("engine"),
-            "operation": .string("engine_v2_kv_backend"),
-            // `backend` is the engine; `kv_backend` is the KV storage kind.
-            // The kind was already here, but only inside the free-form
-            // `reason` string, where "fallback:kill_switch" hides it from
-            // any `group by`. It gets its own key so this event joins the
-            // heartbeat and the posture sample on the same value.
-            "backend": .string("engine_v2"),
-            "kv_backend": .string(kind.rawValue),
-            "model": .string(modelId),
-            "reason": .string(reason),
-        ])
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        // The kind used to live only inside the free-form `reason` string,
+        // where "fallback:kill_switch" hid it from any `group by`. It has its
+        // own `kv_backend` key so this event joins the heartbeat and the
+        // posture sample on the same value.
+        emitEngineHealth(
+            EngineHealthEvent.make(
+                severity: .info,
+                message: "engine_v2: serving with \(kind.rawValue) KV backend"
+                    + (fallbackReason.map { " (fallback: \($0))" } ?? ""),
+                operation: "engine_v2_kv_backend",
+                model: modelId,
+                kvBackend: kind.rawValue,
+                extra: ["reason": .string(reason)]),
+            sink: emitTelemetry)
     }
 }

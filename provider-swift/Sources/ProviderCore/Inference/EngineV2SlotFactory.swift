@@ -485,46 +485,33 @@ enum EngineV2SlotFactory {
         failure: SSDPrefixCacheConstructionFailure,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) {
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .warn,
-            kind: .engineHealth,
-            message: "engine_v2: SSD prefix cache construction failed"
-        )
-        var fields: [String: AnyCodableValue] = [
-            "component": .string("engine"),
-            "operation": .string("prefix_cache_construction"),
-            // Three axes, three keys. `backend` is the ENGINE executing
-            // inference (matches RegisterMessage.backend on the wire);
-            // `kv_backend` is the KV storage kind (same key and vocabulary as
-            // BackendSlotCapacity.KVBackend on the heartbeat wire);
-            // `prefix_reuse_backend` is the finer prefix-reuse ROW identity,
-            // which keeps its own key because contiguous_quantized vs
-            // contiguous_unquantized is a distinction "contiguous" cannot
-            // express. Folding any of these together silently mis-buckets
-            // every `group by backend` dashboard.
-            "backend": .string("engine_v2"),
-            "model": .string(modelId),
-            "prefix_reuse_backend": .string(capability.backend.rawValue),
-            "prefix_reuse_strategy": .string(
-                capability.strategy?.rawValue ?? "none"),
-            "prefix_construction_failure": .string(failure.rawValue),
-            "prefix_cold_fallback": .bool(true),
-        ]
-        // ABSENT ⇒ UNKNOWN. Same contract as BackendSlotCapacity.KVBackend
-        // (`*string` + omitempty) on the heartbeat wire: a slot whose backend
-        // was never resolved omits the key. Do NOT substitute a third
-        // vocabulary value such as "unknown" — omission must stay
-        // distinguishable from an observation, and any value here would be
-        // read as one.
-        if let kvBackendKind {
-            fields["kv_backend"] = .string(kvBackendKind.rawValue)
-        }
-        event.fields = TelemetryFieldFilter.filter(fields)
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        // `prefix_reuse_backend` keeps its own key alongside the shared
+        // `backend` / `kv_backend` pair: it is the finer prefix-reuse ROW
+        // identity, and contiguous_quantized vs contiguous_unquantized is a
+        // distinction "contiguous" cannot express. Folding any of the three
+        // together silently mis-buckets every `group by backend` dashboard.
+        //
+        // `kv_backend` is nil-ABLE here and that is the whole reason
+        // EngineHealthEvent.make takes an optional. ABSENT ⇒ UNKNOWN, the same
+        // contract as BackendSlotCapacity.KVBackend (`*string` + omitempty) on
+        // the heartbeat wire: a slot whose backend was never resolved omits
+        // the key. Do NOT substitute a third vocabulary value such as
+        // "unknown" — omission must stay distinguishable from an observation,
+        // and any value here would be read as one.
+        emitEngineHealth(
+            EngineHealthEvent.make(
+                severity: .warn,
+                message: "engine_v2: SSD prefix cache construction failed",
+                operation: "prefix_cache_construction",
+                model: modelId,
+                kvBackend: kvBackendKind?.rawValue,
+                extra: [
+                    "prefix_reuse_backend": .string(capability.backend.rawValue),
+                    "prefix_reuse_strategy": .string(
+                        capability.strategy?.rawValue ?? "none"),
+                    "prefix_construction_failure": .string(failure.rawValue),
+                    "prefix_cold_fallback": .bool(true),
+                ]),
+            sink: emitTelemetry)
     }
 }

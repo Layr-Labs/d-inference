@@ -81,7 +81,7 @@ def make_arrival(**overrides) -> dict:
 
 
 def resolve(
-    args: argparse.Namespace | None = None,
+    requested: str = "paged",
     sweep: dict | None = None,
     scheduler: dict | None = None,
     arrival: dict | None = None,
@@ -92,15 +92,18 @@ def resolve(
     with the sweep's first decode cell: the wrapper now forwards one
     selection to all three commands, so agreement is the ordinary case and a
     test that wants a mixed-arm run says so explicitly.
+
+    Takes the `--kv-backend` string directly. `resolve_kv_backend` used to
+    take the whole `argparse.Namespace` to read that one field, which meant
+    every backend test had to build a namespace it otherwise had no use for.
     """
-    args = make_args() if args is None else args
     sweep = make_sweep() if sweep is None else sweep
     # `.get` chains: tests that strip the sweep's block to prove it is
     # required must still reach `resolve_kv_backend` to be refused there.
     selection = sweep.get("kvBackend", {}).get("selection", "paged")
     resolved = sweep["decode"][0].get("resolvedKVBackend") or "paged"
     return resolve_kv_backend(
-        args,
+        requested,
         sweep,
         make_scheduler(selection=selection, resolved=resolved)
         if scheduler is None
@@ -252,7 +255,7 @@ class ResolveKVBackendTests(unittest.TestCase):
                 8: "contiguous (fallback: pool capacity)",
             },
         )
-        block = resolve(make_args(kv_backend="auto"), sweep)
+        block = resolve("auto", sweep)
         self.assertEqual(block["resolved"], ["contiguous", "paged"])
         self.assertEqual(block["byBatchSize"]["8"], "contiguous")
         decode_violation = next(
@@ -344,7 +347,7 @@ class ResolveKVBackendTests(unittest.TestCase):
 
     def test_selection_drift_between_wrapper_and_binary_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "but this wrapper requested"):
-            resolve(make_args(kv_backend="contiguous"))
+            resolve("contiguous")
 
     def test_unknown_kind_is_refused_rather_than_compared(self):
         sweep = make_sweep(resolved_by_batch={1: "quantized-pages"})
@@ -452,7 +455,7 @@ class BackendPinTests(unittest.TestCase):
         # Both runs saw {paged, contiguous}, but on different batch sizes, so
         # every per-batch delta in the report is cross-population.
         mixed = resolve(
-            make_args(kv_backend="auto"),
+            "auto",
             make_sweep(selection="auto", resolved_by_batch={8: "contiguous"}),
         )
         baseline = {

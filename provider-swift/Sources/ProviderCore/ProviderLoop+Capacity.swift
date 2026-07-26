@@ -161,18 +161,15 @@ extension ProviderLoop {
         // EVERY slot, not just `loadedSlots`: a model that is loaded but not
         // advertised is still occupying memory on the backend an operator is
         // asking about.
+        // Assembled by the BRIDGE (`slotPosture`), not here, so this and the
+        // `engine_v2_slot_posture` telemetry event cannot describe the same
+        // slot differently — that shared accessor is what makes the sentence
+        // above true rather than merely intended.
         var postures: [DaemonSlotPostureBuilder.LiveSlot] = []
         postures.reserveCapacity(modelSlots.count)
-        for (modelId, slot) in modelSlots {
+        for (_, slot) in modelSlots {
             let bridge = slot.engineV2
-            let mtp = await bridge.mtpStatusSnapshot()
-            postures.append(
-                DaemonSlotPostureBuilder.LiveSlot(
-                    model: modelId,
-                    kvBackend: bridge.kvBackendKind.rawValue,
-                    mtpEnabled: mtp.configured,
-                    mtpActive: mtp.active,
-                    mtpInactiveReason: mtp.fallbackReason?.rawValue))
+            postures.append(bridge.slotPosture(await bridge.mtpStatusSnapshot()))
         }
         lastLiveSlotPostures = postures
     }

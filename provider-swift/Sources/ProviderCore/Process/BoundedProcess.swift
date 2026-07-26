@@ -149,10 +149,17 @@ private final class StderrTailBox: @unchecked Sendable {
         guard !buffer.isEmpty,
             let text = String(data: buffer, encoding: .utf8)
         else { return nil }
-        let collapsed = text.split(whereSeparator: \.isNewline)
+        var collapsed = text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
             .joined(separator: " | ")
+        // The BYTE buffer is bounded, but collapsing each newline into " | "
+        // is a 1 -> 3 expansion, so the rendered string can exceed the limit
+        // the caller asked for. Bound what actually reaches them: this rides
+        // an error description that may land in a heartbeat field.
+        if collapsed.count > limit {
+            collapsed = String(collapsed.suffix(limit))
+        }
         return collapsed.isEmpty ? nil : collapsed
     }
 }

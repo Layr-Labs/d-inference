@@ -75,8 +75,19 @@ struct PagedKernelPreflightTests {
                 executableURL: child.executable,
                 childTimeout: 5)
             Issue.record("noisy failing child unexpectedly passed")
-        } catch PagedKernelPreflightError.childFailed(let status, _) {
+        } catch PagedKernelPreflightError.childFailed(let status, let tail) {
             #expect(status == 9)
+            // The child's own message IS the diagnosis. Discarding it cost an
+            // hour: a binary copied without its SwiftPM resource bundle made
+            // `runtime-smoke` exit 1 saying exactly that, the message was
+            // dropped, `.auto` degraded silently, and three runs that looked
+            // like clean paged arms were contiguous. Assert the tail SURVIVES
+            // and that it is the END of the stream -- this child emits 20,000
+            // lines, so a tail that kept the head would carry no diagnosis at
+            // all on a real compiler failure.
+            let tail = try #require(tail, "the child's stderr must reach the caller")
+            #expect(tail.contains("paged-kernel-compiler-diagnostic"))
+            #expect(tail.count <= 2048, "tail must stay bounded on a chatty child")
         } catch {
             Issue.record("unexpected preflight error: \(error)")
         }

@@ -106,7 +106,20 @@ jobs:
       # `engine_v2_max_concurrent` as 4. Paged at B=4 measures 0.98x of
       # contiguous against 1.17x at B=8, so setting the backend alone would
       # have bought the B=1 regression and none of the throughput.
-      - name: Run integration + profile tests (paged @ 8 — migration gate)
+      # NON-BLOCKING as of the .auto reversal. `.auto` resolves CONTIGUOUS
+      # again because paged ADOPTION is not exact against paged COLD -- on
+      # gemma-4 at 28,672 tokens a paged slot answers differently depending
+      # on whether a prefix-cache hit occurred, which is state the caller
+      # cannot see. Paged is therefore opt-in, and a gate's blocking-ness
+      # should match the feature's default-ness.
+      #
+      # This lane is EXPECTED RED until the engine-side frozen-bound fix
+      # lands. It is kept, pinned, and visible rather than removed: the red
+      # IS the finding, and unpinning it would recreate the "gate that
+      # cannot fail" pattern this release fixed four separate times.
+      # Promote back to blocking in the same change that re-flips `.auto`.
+      - name: Run integration + profile tests (paged @ 8 — informational)
+        continue-on-error: true
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
           DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
@@ -148,7 +161,7 @@ jobs:
       # below, which the repo already budgets 15m for the same two tests.
       # Step budget for the job goes 25+15+15=55m to 25+10+15+15=65m against
       # a 90m job timeout.
-      - name: Run default-posture smoke (.auto, no --config)
+      - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"

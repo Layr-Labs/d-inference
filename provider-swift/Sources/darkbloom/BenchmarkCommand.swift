@@ -59,13 +59,15 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: """
         Sweep: KV backend the decode engine is built with — auto|contiguous|paged \
-        (default auto, which resolves to contiguous today). An explicit paged \
-        selection FAILS the run rather than degrading: if kernel preflight or \
-        pool capacity cannot serve paged, engine construction throws, the cell \
-        records no samples, and the command exits non-zero naming the reason — \
-        so a paged benchmark can never measure contiguous. Only \
-        DARKBLOOM_CBV2_PAGED_KV=0 still degrades. The backend that actually \
-        served is recorded in the report notes.
+        (default auto, which resolves to PAGED since v0.8.0 but still degrades \
+        to contiguous on kill switch, kernel preflight, or pool capacity). An \
+        explicit paged selection FAILS the run rather than degrading: if paged \
+        cannot be served, engine construction throws, the cell records no \
+        samples, and the command exits non-zero naming the reason — so a paged \
+        benchmark can never measure contiguous. Only DARKBLOOM_CBV2_PAGED_KV=0 \
+        still degrades an explicit selection. The backend that actually served \
+        is recorded per cell in decode[].resolvedKVBackend and de-duplicated in \
+        the report's kvBackend block.
         """)
     var kvBackend = "auto"
 

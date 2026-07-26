@@ -218,6 +218,52 @@ struct ThroughputSweepReportTests {
         #expect(failure.reason == reason)
         #expect(decoded.decode.isEmpty)
     }
+
+    @Test("selection and resolved backend are recorded separately, per cell")
+    func kvBackendResolutionRoundTrip() throws {
+        // The whole point of the block: "I asked for auto" and "I got
+        // contiguous at B=8" are different facts. A report that carried only
+        // the selection would let a degraded cell be read as a paged
+        // measurement, which is what `scripts/gemma_contbatch` gates on.
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: [], totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4, bandwidthGBps: 400)
+        let mixed = [
+            ThroughputSweepReport.DecodeSample(
+                batchSize: 1, decodeTokensPerSequence: 64,
+                aggregateTokensPerSecond: 21, perSequenceTokensPerSecond: 21,
+                elapsedMs: 1000, resolvedKVBackend: "paged"),
+            ThroughputSweepReport.DecodeSample(
+                batchSize: 8, decodeTokensPerSequence: 64,
+                aggregateTokensPerSecond: 96, perSequenceTokensPerSecond: 12,
+                elapsedMs: 1000,
+                resolvedKVBackend: "contiguous (fallback: pool capacity)"),
+        ]
+        let report = ThroughputSweepReport(
+            modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+            modelPath: "/models/gemma",
+            hardware: .init(
+                chipName: "Apple M4 Max", memoryGb: 128, gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            prefill: [],
+            decode: mixed,
+            derived: derived,
+            notes: [],
+            kvBackend: .init(
+                selection: "auto",
+                resolved: ["paged", "contiguous (fallback: pool capacity)"])
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ThroughputSweepReport.self, from: Data(try report.jsonString().utf8))
+        #expect(decoded.kvBackend.selection == "auto")
+        // Two entries, not one: a mixed-population curve must be visibly
+        // mixed rather than collapsed to whichever cell ran first.
+        #expect(decoded.kvBackend.resolved.count == 2)
+        #expect(decoded.decode.first?.resolvedKVBackend == "paged")
+        #expect(decoded.decode.last?.resolvedKVBackend?.hasPrefix("contiguous") == true)
+    }
 }
 
 @Suite("throughput sweep: token tiling helper")

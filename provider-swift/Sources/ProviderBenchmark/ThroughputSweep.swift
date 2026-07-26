@@ -48,10 +48,12 @@ public enum ThroughputSweep {
     /// per-batch medians.
     ///
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory. `.auto` resolves to contiguous today, so it is the default here
-    /// too — a run with no new flags measures exactly what it measured before.
-    /// A `.paged` selection can still degrade to contiguous, so the report
-    /// notes carry the backend the engine ACTUALLY built with.
+    /// factory. Since v0.8.0 `.auto` resolves PAGED and still DEGRADES to
+    /// contiguous on kill switch, preflight, or capacity; an explicit
+    /// `.paged` refuses instead. Either way the selection is not the
+    /// outcome, so the report carries the backend each cell ACTUALLY built
+    /// with — per cell in `decode[].resolvedKVBackend`, and de-duplicated in
+    /// the `kvBackend` block.
     public static func run(
         modelID: String,
         modelDirectory: URL,
@@ -151,6 +153,9 @@ public enum ThroughputSweep {
             decode: decode,
             derived: derived,
             notes: notes,
+            kvBackend: ThroughputSweepReport.KVBackend(
+                selection: kvBackend.rawValue,
+                resolved: decodeOutcome.resolvedBackends),
             decodeConstructionFailure: constructionFailure
         )
     }
@@ -301,7 +306,8 @@ public enum ThroughputSweep {
                     decodeTokensPerSequence: genTokens,
                     aggregateTokensPerSecond: aggregate,
                     perSequenceTokensPerSecond: perSeq,
-                    elapsedMs: secs * 1000
+                    elapsedMs: secs * 1000,
+                    resolvedKVBackend: resolved
                 ))
             }
         }

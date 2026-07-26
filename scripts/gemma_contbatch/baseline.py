@@ -109,7 +109,7 @@ def validate_configuration_pin(args: argparse.Namespace, baseline: dict) -> None
         "decodeTokens": args.decode_tokens,
         "arrivalPromptTokens": args.arrival_prompt_tokens,
         "arrivalDecodeTokens": args.arrival_decode_tokens,
-        "maxBatch": args.max_batch,
+        "batchSizes": list(args.batch_sizes),
         "prefillLengths": list(args.prefill_lengths),
     }
     mismatches = [

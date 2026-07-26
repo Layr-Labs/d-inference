@@ -11,7 +11,9 @@ public struct ThroughputSweepReport: Codable, Sendable {
 
     /// Bumped when the JSON shape changes so downstream parsers can gate.
     /// 2 adds the optional `decodeConstructionFailure` block.
-    public static let currentSchemaVersion = 2
+    /// 3 adds the required `kvBackend` block and the per-cell
+    /// `decode[].resolvedKVBackend`.
+    public static let currentSchemaVersion = 3
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -51,19 +53,27 @@ public struct ThroughputSweepReport: Codable, Sendable {
         public let aggregateTokensPerSecond: Double
         public let perSequenceTokensPerSecond: Double
         public let elapsedMs: Double
+        /// The KV backend the engine for THIS cell actually built with, or
+        /// nil when construction failed and the cell measured nothing. Each
+        /// batch size builds its own engine, so `.auto` can resolve paged at
+        /// B=1 and degrade at B=8 — a single run-wide scalar would hide
+        /// exactly that.
+        public let resolvedKVBackend: String?
 
         public init(
             batchSize: Int,
             decodeTokensPerSequence: Int,
             aggregateTokensPerSecond: Double,
             perSequenceTokensPerSecond: Double,
-            elapsedMs: Double
+            elapsedMs: Double,
+            resolvedKVBackend: String? = nil
         ) {
             self.batchSize = batchSize
             self.decodeTokensPerSequence = decodeTokensPerSequence
             self.aggregateTokensPerSecond = aggregateTokensPerSecond
             self.perSequenceTokensPerSecond = perSequenceTokensPerSecond
             self.elapsedMs = elapsedMs
+            self.resolvedKVBackend = resolvedKVBackend
         }
     }
 
@@ -147,6 +157,31 @@ public struct ThroughputSweepReport: Codable, Sendable {
         }
     }
 
+    /// What was ASKED FOR versus what was BUILT. Two different facts: the
+    /// gap between them is the whole signal a paged rollout is measured on,
+    /// and collapsing them into one string makes an honest paged run
+    /// indistinguishable from an `.auto` run that degraded to contiguous.
+    ///
+    /// This exists as structured JSON rather than only as a `notes` line
+    /// because the release gates parse it: `scripts/gemma_contbatch` refuses
+    /// to diff two reports whose resolved backends differ, and a prose
+    /// sentence is not a contract a gate can hold.
+    public struct KVBackend: Codable, Sendable {
+        /// The `--kv-backend` selection the run was launched with:
+        /// "auto" | "contiguous" | "paged".
+        public let selection: String
+        /// Distinct resolved-backend descriptors across every decode cell,
+        /// in first-seen order. EMPTY means no cell ever built an engine.
+        /// More than one entry means the run measured a MIXED population and
+        /// its curve cannot be read as one backend's.
+        public let resolved: [String]
+
+        public init(selection: String, resolved: [String]) {
+            self.selection = selection
+            self.resolved = resolved
+        }
+    }
+
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
@@ -155,6 +190,9 @@ public struct ThroughputSweepReport: Codable, Sendable {
     public let decode: [DecodeSample]
     public let derived: Derived
     public let notes: [String]
+    /// Selection versus resolved backend. Always present since schema 3: a
+    /// decode curve whose backend is unknown is not comparable to anything.
+    public let kvBackend: KVBackend
     /// Non-nil only when no decode cell could be constructed. Omitted from
     /// the JSON entirely on a healthy run, so successful reports keep their
     /// existing shape.
@@ -169,6 +207,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
         decode: [DecodeSample],
         derived: Derived,
         notes: [String],
+        kvBackend: KVBackend = KVBackend(selection: "auto", resolved: []),
         decodeConstructionFailure: DecodeConstructionFailure? = nil
     ) {
         self.schemaVersion = schemaVersion
@@ -179,6 +218,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
         self.decode = decode
         self.derived = derived
         self.notes = notes
+        self.kvBackend = kvBackend
         self.decodeConstructionFailure = decodeConstructionFailure
     }
 

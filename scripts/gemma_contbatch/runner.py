@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import shlex
@@ -10,6 +11,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .backend import resolve_kv_backend, validate_kv_backend_pin
 from .baseline import (
     load_baseline,
     resolve_model_snapshot,
@@ -36,6 +38,38 @@ from .validation import validate_raw_outputs
 def safe_label(label: str) -> str:
     normalized = "".join(character if character.isalnum() else "-" for character in label)
     return "-".join(part for part in normalized.split("-") if part).lower()
+
+
+def sweep_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
+    """The full `darkbloom benchmark --sweep` argv this wrapper runs.
+
+    Pure, so the two controls that make a run attributable can be asserted
+    without a GPU: before #583 was wired through here, the wrapper measured
+    whatever `--kv-backend auto` happened to resolve, on a `B=1..--max-batch`
+    ladder that stopped below the paged/contiguous crossover at ~B=5. A green
+    run could therefore neither name its backend nor reach the batch sizes
+    the release is claimed on.
+    """
+    repeated_lengths = ",".join(
+        str(length)
+        for length in args.prefill_lengths
+        for _ in range(args.iterations)
+    )
+    return benchmark + [
+        "--sweep",
+        "--prefill-lengths",
+        repeated_lengths,
+        "--kv-backend",
+        args.kv_backend,
+        "--batch-sizes",
+        ",".join(map(str, args.batch_sizes)),
+        "--decode-tokens",
+        str(args.decode_tokens),
+        "--decode-prompt-tokens",
+        str(args.decode_prompt_tokens),
+        "--decode-iterations",
+        str(args.iterations),
+    ]
 
 
 def main() -> int:
@@ -77,28 +111,7 @@ def main() -> int:
         raise RuntimeError("release binary or mlx.metallib is missing")
 
     benchmark = [str(binary), "benchmark", "--model", args.model]
-    repeated_lengths = ",".join(
-        str(length)
-        for length in args.prefill_lengths
-        for _ in range(args.iterations)
-    )
-    sweep = run_json(
-        benchmark
-        + [
-            "--sweep",
-            "--prefill-lengths",
-            repeated_lengths,
-            "--max-batch",
-            str(args.max_batch),
-            "--decode-tokens",
-            str(args.decode_tokens),
-            "--decode-prompt-tokens",
-            str(args.decode_prompt_tokens),
-            "--decode-iterations",
-            str(args.iterations),
-        ],
-        provider_dir,
-    )
+    sweep = run_json(sweep_argv(benchmark, args), provider_dir)
     scheduler = run_json(
         benchmark
         + [
@@ -130,6 +143,10 @@ def main() -> int:
         "arrivalInvariance": arrival,
     }
     validate_raw_outputs(args, sweep, scheduler, arrival)
+    # The backend the decode cells were actually built with. Extracted before
+    # the summary so a curve that cannot name its backend never reaches a
+    # report, let alone a comparison.
+    kv_backend = resolve_kv_backend(args, sweep)
     summary = summarize(sweep, scheduler, arrival)
     model_snapshot = resolve_model_snapshot(raw_outputs)
     hardware = sweep["hardware"]
@@ -146,12 +163,16 @@ def main() -> int:
         "modelID": args.model,
         "modelSnapshot": model_snapshot,
         "hardware": hardware,
+        # Selection and resolved backend, kept apart: "paged was requested"
+        # and "paged was built" are different facts, and the gap between them
+        # is the only evidence that `.auto` did not quietly degrade.
+        "kvBackend": kv_backend,
         "configuration": {
             "iterations": args.iterations,
             "prefillLengths": args.prefill_lengths,
             "decodePromptTokens": args.decode_prompt_tokens,
             "decodeTokens": args.decode_tokens,
-            "maxBatch": args.max_batch,
+            "batchSizes": args.batch_sizes,
             # The decode curve is repeated once per iteration, so every batch
             # size in the summary is a median over exactly this many samples.
             "decodeIterations": args.iterations,
@@ -186,6 +207,10 @@ def main() -> int:
         # flipped kill switch turns unrelated differences into what reads as
         # an engine regression.
         validate_baseline_pins(args, baseline, model_snapshot, hardware, environment)
+        # The pin this release turns on. A paged-versus-contiguous difference
+        # would otherwise show up as a double-digit aggregate delta with no
+        # trace of its cause anywhere in the report.
+        validate_kv_backend_pin(baseline, kv_backend)
         report["comparison"] = compare(summary, baseline)
 
     assert_finite(report)
@@ -211,4 +236,12 @@ def main() -> int:
     print("Reports:")
     print(f"  {output_dir / f'{stem}.md'}")
     print(f"  {output_dir / f'{stem}.json'}")
+    # Fail the process, but only after the artifact is on disk: a run that
+    # measured the wrong backend is exactly the run whose report an operator
+    # needs to read.
+    violations = kv_backend["postureViolations"]
+    if violations:
+        for violation in violations:
+            print(f"KV backend posture FAILED: {violation}", file=sys.stderr)
+        return 1
     return 0

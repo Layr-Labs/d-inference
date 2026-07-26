@@ -838,3 +838,27 @@ artifact of end-of-life snapshotting rather than of the capability.
   not a benchmark. Treat as a hypothesis to test after the kernel exists,
   never as a projected speedup.
 - **The 5 global layers** — nothing. `BLOCK_Q` is pinned at 1 outright.
+
+The scheduler-side mechanism, which makes "as they fill" literal rather
+than a figure of speech: capture is driven from the step loop on EVERY
+step, not at request end. `AsyncScheduler._update_request_with_output`
+calls `kv_cache_manager.cache_blocks(request, num_computed_tokens -
+num_output_placeholders)` (`async_scheduler.py:70-72`), gated on the
+request having been RUNNING, so each step's newly-filled blocks are hashed
+and published as that step completes.
+
+Dense is confirmed as the default and sparsity as opt-in: the retention
+interval is sourced from `VLLM_PREFIX_CACHE_RETENTION_INTERVAL`
+(`kv_cache_coordinator.py:124-125`, unset -> None -> dense) and **only SWA
+and Mamba act on it** (`single_type_kv_cache_manager.py:416-419`).
+
+So the contrast is exact:
+
+| | when blocks are published |
+|---|---|
+| vLLM | incrementally, from the step loop, as they fill |
+| us | once, at retire, from the donation queue (`EngineLoopV2.swift:2109`) |
+
+That is upstream of the 200 MiB / 20 GiB sidecar caveat rather than beside
+it, and it is why vLLM's sliding-window coverage does not depend on
+donors' final offsets tiling.

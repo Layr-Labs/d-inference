@@ -223,9 +223,10 @@ presented as if commensurable. Prefix saving is fully determined:
 and `replayBound = windowCount * maxWindow`. At `--parity-prefix-tokens
 28672` with gpt-oss's 12x128 bound that is `28,416 - 1,536 = 26,880`;
 **2,304 is only reachable at a prompt of 3,841-4,096**, i.e. a ~4k probe.
-Confirmed three ways: the arithmetic, a live re-run whose paged arm
-measured `saved=26,880, matched=28,416` at prompt 28,672, and
-`v0.8.0-notes.md` (grep `26,880`), which independently records 26,880 for
+Confirmed three ways: the arithmetic; a clean re-run at
+`--parity-max-tokens 48 --parity-prefix-tokens 28672` in which BOTH arms
+independently measured `matched=28,416, saved=26,880` (PASS, 26,880 >=
+26,880); and `v0.8.0-notes.md` (grep `26,880`), which records 26,880 for
 gpt-oss from this same harness. The gemma-4 row above (2,816 = 28,416 -
 25,600) IS at 28,672 and is unchanged.
 

@@ -969,3 +969,57 @@ which a written-but-uncaptured block can be lost.**
 Adopting that ordering — capture in the same call that writes, never on a
 later boundary — removes the chunk-size coupling as a CORRECTNESS concern
 and leaves it as a residency-tuning one. That is the shape to build.
+
+**But the unit captured synchronously must be the HANDLE, not the bytes.**
+Our donation path is deliberately split across two threads, for a
+paged-specific reason: `retire`/`enqueueDonation` build snapshot handles
+on the ENGINE thread — graph-only, so views over the shared slabs stay
+consistent with in-flight writes — then hand hashing, indexing and
+materialisation to a serial `donationQueue`
+(`EngineLoopV2.swift:467-468`, build at `:2061-2106`, hand-off at
+`:2109-2124`). Materialisation is not optional:
+`PagedKVBackend.requiresMaterializedSnapshots` is `true` (`:508`) because
+donated views reference live slab pages that are recycled the moment the
+donor's state is released.
+
+So "capture the block when you write it" read literally would drag a
+device `eval` onto the step thread, once per block per layer during
+prefill — precisely what today's design routes around.
+
+The resolution is that our existing split is already the right one:
+**build the graph slice inline on the engine thread (cheap, no eval) and
+hand materialisation off.** Applied per-block-as-filled instead of once at
+retire, that satisfies the ordering property — the handle is captured in
+the same call that wrote it, before anything can lap it — without moving
+device work onto the step. The lazy handle pins nothing; only the later
+eval does.
+
+### A sixth delta: our prefill chunk is not vLLM's `max_num_batched_tokens`
+
+`pageDemand` routes sliding layers straight through `ringPageCount`, and
+`pageDemand` is both the admission charge and the row's hard cap. Wiring
+confirmed: `maxPrefillChunk: schedulerConfig.prefillChunkSize`
+(`EngineV2Factory+Production.swift:667`). So the chain is:
+
+> scheduler's prefill chunk -> ring page count -> per-row page demand ->
+> KV admission capacity
+
+vLLM's `max_num_batched_tokens` is a PURE scheduling knob — it does not
+size the KV pool at all, block count comes from available memory, and
+their tuning doc actively recommends raising it above 8192 for throughput.
+
+Ours is not free in the same way. Below the `maxWindowExposure +
+maxSpeculativeSpan` term (~1032) the window dominates and the chunk is
+genuinely free — which is where production sits at 512. **Above it, every
+further token of chunk inflates the ring on all 25 sliding layers, per
+row, charged at admission.** The knob starts buying step-level throughput
+with admitted concurrency.
+
+So vLLM's published tuning advice does not port unchanged: for us the
+ITL/TTFT trade becomes a concurrency trade past that threshold. Anyone
+tuning our chunk for tail latency needs it as a third axis.
+
+Both this and the capture hazard share one root, and it is the honest
+architectural difference underneath them: **on our side the prefill chunk
+size is a LOCKSTEP parameter coupling the scheduler to KV geometry. vLLM
+has no such coupling anywhere.**

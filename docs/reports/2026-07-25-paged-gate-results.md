@@ -1305,3 +1305,33 @@ because it is natural to cite a function's body while quoting its
 docstring header. That is invisible on re-reading, since the surrounding
 code looks right either way. Bare basenames compound it — `scheduler.py`
 is not a citation in a tree with five of them.
+
+### Two working rules, learned expensively
+
+Every agent on this investigation independently audited its own citations
+at the end. Combined: **~190 citations checked, 19 range slips, 1 wrong
+path, 0 fabrications.** Every quoted string was real; only ranges drifted,
+and always in the same direction. Two rules fall out.
+
+**1. Anchor line numbers to `grep`, never to a position counted inside a
+rendered `read`.** Those outputs elide regions with `…`, and hand-counting
+silently absorbs the elision. Every one of the 19 slips was hand-counted;
+every grep-derived citation passed. Drift ran 1-22 lines, always with the
+cited start landing *before* the quoted anchor — which is invisible on
+re-reading, because the surrounding code looks right either way. The
+natural error is citing a function's body while quoting its docstring
+header.
+
+**2. Escape regex metacharacters when searching for literal code.**
+Unescaped `( ) [ ] . * + ? |` silently change the query: searching
+`range(max_num_blocks - 1, -1, -1)` parses the parens as a capture group
+and matches text that does not exist, returning a confident false
+negative. Use fixed-string mode, or escape. This produced a false "grep is
+unreliable" conclusion that was itself retracted — and had it stood, it
+would have caused a *true* negative to be discarded.
+
+Corollary worth keeping: **a negative needs a control.** "Symbol absent
+from file A" is only evidence once the same single-branch pattern is shown
+to match in sibling file B. Two load-bearing negatives here
+(`retainPage` has no callers; FlashAttention never sets
+`reorder_batch_threshold`) were re-established that way after the scare.

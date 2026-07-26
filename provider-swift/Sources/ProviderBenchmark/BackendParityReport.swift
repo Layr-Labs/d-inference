@@ -668,9 +668,28 @@ public enum BackendParityCriteria {
     ///  1. The incumbent fails it too. P1_DivergenceRootCause showed
     ///     contiguous-against-CONTIGUOUS diverging on 2 of these same 3
     ///     gemma-4 prompts with no backend involved, purely by moving
-    ///     `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK` 128 -> 8, a shipped operator
+    ///     `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK` 128 -> 8, an operator-REACHABLE
     ///     knob (investigation committed at 977a5893e). A bar the incumbent
-    ///     fails under a supported configuration cannot judge a challenger.
+    ///     fails under a REACHABLE configuration cannot judge a challenger.
+    ///
+    ///     Reachable, deliberately — not "sanctioned". v0.8.0 declines to
+    ///     bless a non-default value, but nothing refuses one: `AttentionV1`
+    ///     reads the variable at runtime and accepts any `value >= 0` with no
+    ///     version gate (`AttentionV1.swift:35-41`), and blocking simply
+    ///     turns on at `> 0` (`:48`). This argument needs only the code
+    ///     fact. An operator CAN stand the incumbent in a configuration
+    ///     where it fails this bar, so the bar cannot convict a challenger —
+    ///     whether or not the release blesses that configuration. Do NOT
+    ///     "reconcile" this with release policy by weakening it: policy does
+    ///     not close the path, and the earlier wording ("a supported
+    ///     configuration") invited exactly that misreading.
+    ///
+    ///     Nor would retiring the knob restore this criterion as a FAIL
+    ///     gate. The knob is the cheapest DEMONSTRATION of the sensitivity,
+    ///     not its cause — the amplification described below is a property
+    ///     of gemma-4's attention scale and MoE routing density, and
+    ///     paged-vs-contiguous storage-order drift perturbs the same
+    ///     decisions. Reason 2 below involves no knob at all.
     ///
     ///     The mechanism is storage-order drift, amplified roughly 1,300x
     ///     relative to gpt-oss by gemma-4's attention scale of 1.0 at head
@@ -727,8 +746,9 @@ public enum BackendParityCriteria {
             detail += "\(candidate.label) diverged from \(baseline.label) at the first "
                 + "flip: \(mismatch). NOT scored as a regression: free-running greedy "
                 + "decode is a PASS-ONLY signal here, because the incumbent fails it too "
-                + "(contiguous-vs-contiguous diverges on this model under the shipped "
-                + "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK knob, 977a5893e), and because past the "
+                + "(contiguous-vs-contiguous diverges on this model under the "
+                + "operator-reachable DARKBLOOM_CBV2_ATTN_QUERY_BLOCK knob, 977a5893e), "
+                + "and because past the "
                 + "first flip the two arms decode different contexts so later positions "
                 + "compare unrelated conversations"
             if let first = firstDivergingRow(

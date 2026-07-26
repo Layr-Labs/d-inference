@@ -361,8 +361,11 @@ struct BackendParityReportTests {
     @Test("token exactness NEVER fails: a divergence is UNAVAILABLE with the first flip")
     func tokenExactnessIsPassOnly() {
         // The incumbent fails free-running token exactness too — contiguous
-        // against contiguous diverges on gemma-4 under the shipped
-        // DARKBLOOM_CBV2_ATTN_QUERY_BLOCK knob (977a5893e). A bar the
+        // against contiguous diverges on gemma-4 under the operator-REACHABLE
+        // DARKBLOOM_CBV2_ATTN_QUERY_BLOCK knob (977a5893e). Reachable is the
+        // load-bearing word, not "supported": AttentionV1 accepts any value
+        // >= 0 at runtime with no version gate, so release policy declining
+        // to bless a non-default value does not close the path. A bar the
         // incumbent cannot clear must not be used to accuse the challenger.
         let healthy = candidate
         let drifted = BackendParityObservation(

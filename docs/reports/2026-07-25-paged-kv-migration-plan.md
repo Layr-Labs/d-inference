@@ -66,7 +66,7 @@ path only; `PagedLayerCache.prefillAttend` still materialises the full
 | gemma-4 donatable traffic | 2.3% | **~37%** | donation settle counters |
 | Per-slot KV-backend on the wire | **absent** | **present** | `BackendSlotCapacity` |
 | Paged correctness on CI | **none** | **gated** | CI job |
-| MTP | token-exact | **token-exact** (non-negotiable) | parity suite |
+| MTP | cross-arm diff only (unreachable on gemma-4) | **lossless vs each backend's OWN greedy decode** (non-negotiable) | `mtp_token_exactness` in the G2 parity report |
 | Vision, packed prefill | working | **working** | e2e |
 
 **Non-goals:** beating contiguous at B=1; preserving compiled decode (§14);
@@ -283,12 +283,12 @@ Six stop-or-continue decisions (G0 split; G5 added).
 | **G0a** | Does the coordinator actually dispatch 8? | `effectiveMaxConcurrencyForModelRateLocked` returns 8 for gemma-4 on a canary; `slot.NumRunning` observed at 8 |
 | **G0b** | Does batching pay end to end? | agg throughput ≥ 1.07x of B=4 at matched prompt mix; per-request decode ≥ 22 tok/s |
 | **G1** | Is paged sized correctly? | **per-sequence** paged KV ≤ contiguous at ctx {1k, 10k, 100k}; pool footprint fits 36 GB boxes |
-| **G2** | Is parity green? | MTP token-exact, vision serving, packed prefill active, prefix reuse ≥ contiguous |
+| **G2** | Is parity green? | MTP lossless against each backend's own greedy decode, vision serving, packed prefill active, prefix reuse ≥ contiguous |
 | **G3** | Does gpt-oss canary hold? | 24h at parity or better on TTFT p50/p90, decode TPS, 503 rate |
 | **G4** | Does gemma-4 hold? | same, plus donation rate materially above 2.3% |
 | **G5** | Is the canary observable? | coordinator can segment TTFT/TPS/error-rate by KV backend (§18) |
 
-Three changes from Rev 1, all forced by measurement:
+Four changes from Rev 1, all forced by measurement:
 
 - **G0 is split.** G0a is the coordinator co-change; without it G0b is
   unmeasurable. Rev 1 collapsed them and would have reported "no gain."
@@ -299,6 +299,22 @@ Three changes from Rev 1, all forced by measurement:
   (30.5–32.5 GiB) is dominated by the `--kv-gb 16` pool reservation, not by
   KV/seq, and `gpuActive` is inert (13.48 GiB on every row — weights only).
   As emitted, those columns do not answer G1.
+- **G2's MTP bar is per-arm losslessness, not a cross-arm diff.** Rev 1 scored
+  MTP by diffing the two arms' token streams against each other. That form
+  cannot fail wherever plain greedy decode already diverges — and it does
+  diverge on 2 of 3 gemma-4 parity prompts with no backend involved, purely
+  under the shipped `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK` knob (977a5893e). So on
+  gemma-4 every MTP divergence classified as "inherited from the base decode"
+  and the criterion was structurally unable to reach a FAIL: a gate in name
+  only, on the one model this migration is named for. It now compares each
+  arm's MTP output against **its own** plain greedy output. Verified greedy
+  speculation is lossless by construction, and both sides of that comparison
+  share a backend, its kernels and its storage order, so base-decode drift
+  cancels instead of propagating. The criterion can accuse again, and it
+  attributes to the right backend. Corollary: once both arms are self-
+  lossless, a cross-backend MTP difference *is* exactly the base-decode
+  difference `token_exactness` reports — the old attribution guess becomes a
+  proof.
 
 Gates map to **waves**, not to elapsed weeks — see §6.
 

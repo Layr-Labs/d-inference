@@ -759,11 +759,53 @@ public enum BackendParityCriteria {
 
     // MARK: MTP
 
+    /// MTP parity, scored as PER-ARM losslessness rather than a cross-arm
+    /// token diff.
+    ///
+    /// The cross-arm form cannot carry this criterion, and the reason is
+    /// structural rather than incidental. MTP verification emits the TARGET's
+    /// own argmaxes, so comparing the two arms' MTP streams to each other
+    /// re-measures whatever free-running drift the base decode already has.
+    /// That drift is unscoreable — the incumbent reproduces it with no backend
+    /// involved (see `tokenExactness`) — and on gemma-4 it is present on 2 of
+    /// the 3 parity prompts. A criterion that declines to score inherited
+    /// divergence therefore could NEVER reach a FAIL on the one model this
+    /// migration is about, which is a gate in name only.
+    ///
+    /// So each arm is compared against ITSELF: its MTP rows against its own
+    /// plain greedy rows. Two properties make that the right bar:
+    ///
+    ///  1. It is a definitional guarantee, not a tuning target. Greedy
+    ///     verified speculation accepts a draft token only where it equals
+    ///     the target's own argmax, so a correct MTP implementation
+    ///     reproduces plain greedy decode of the same target exactly.
+    ///     Deviation is a defect, never taste.
+    ///  2. Both sides of the comparison share one backend, its kernels and
+    ///     its storage order, so it inherits NOTHING from the cross-backend
+    ///     question. Base-decode drift cancels instead of propagating.
+    ///
+    /// The verdict then keys on whether the reference arm establishes the bar
+    /// is reachable at all, which is the same rule `tokenExactness` applies:
+    /// baseline lossy -> UNAVAILABLE (a bar the incumbent fails cannot judge
+    /// the challenger); baseline lossless and candidate lossy -> FAIL, and it
+    /// is attributable; both lossless -> PASS.
+    ///
+    /// Corollary worth stating, because it replaces a guess with a proof:
+    /// once MTP == plain on both arms, a cross-backend MTP difference is
+    /// EXACTLY the base-decode difference `token_exactness` reports. The old
+    /// code inferred that attribution from "the base also diverges"; here it
+    /// follows by construction.
+    ///
+    /// Row alignment is sound because `BackendParityHarness` generates the
+    /// plain and MTP row sets from the same `parityPrompts`, in the same
+    /// order, with the same `maxTokens` and EOS set; `rowMismatch` joins on
+    /// the prompt name and refuses a count or order mismatch outright.
     static func mtpTokenExactness(
         baseline: BackendParityObservation,
         candidate: BackendParityObservation
     ) -> BackendParityReport.Criterion {
-        let title = "MTP: drafts PRODUCED on both backends and token ids identical"
+        let title = "MTP: drafts PRODUCED on both backends and token-exact against "
+            + "each backend's OWN plain decode"
         let id = BackendParityReport.CriterionID.mtpTokenExactness
 
         if let blocker = comparisonBlocker(baseline: baseline, candidate: candidate) {
@@ -835,45 +877,78 @@ public enum BackendParityCriteria {
                 measurements: measurements)
         }
 
-        if let mismatch = rowMismatch(baseline: base.rows, candidate: cand.rows) {
-            var evidence = measurements
-            evidence["divergence"] = mismatch
-            // Attribution decides the VERDICT here, not just the wording.
-            // MTP verification emits the TARGET's own argmaxes, so when plain
-            // greedy decode already diverges the MTP rows inherit it — and
-            // that base divergence is itself unscoreable (the incumbent fails
-            // it too, see `tokenExactness`). Booking this as an MTP FAIL would
-            // charge MTP for free-running drift the backends did not cause.
-            if let inherited = rowMismatch(
-                baseline: baseline.rows, candidate: candidate.rows)
-            {
-                evidence["inheritedFromBaseDecode"] = inherited
-                return .init(
-                    id: id, title: title, verdict: .unavailable,
-                    detail: "MTP output diverged, but plain greedy decode already diverges "
-                        + "between these backends, so this is INHERITED from the base "
-                        + "decode path and not introduced by MTP. Base decode divergence "
-                        + "is itself a PASS-only signal (the incumbent fails it under a "
-                        + "shipped knob), so MTP token equality cannot be scored on this "
-                        + "model. Drafts WERE produced on both arms, which is the part "
-                        + "this criterion can still confirm: \(mismatch)",
-                    measurements: evidence)
-            }
-            // Base decode agrees and only the MTP rows differ. That IS an MTP
-            // defect and the one case this criterion can indict.
+        // The own-target comparison needs a target. Without plain rows there
+        // is nothing to measure losslessness against, and silently comparing
+        // the arms to each other instead is the failure mode this criterion
+        // was rewritten to remove.
+        if baseline.rows.isEmpty || candidate.rows.isEmpty {
             return .init(
-                id: id, title: title, verdict: .fail,
-                detail: "MTP output diverged while plain greedy decode agrees, so the "
-                    + "difference is introduced by MTP itself: \(mismatch)",
+                id: id, title: title, verdict: .unavailable,
+                detail: "MTP rows were captured but the plain greedy rows they must be "
+                    + "compared against are missing (\(baseline.label): "
+                    + "\(baseline.rows.count), \(candidate.label): \(candidate.rows.count))"
+                    + " — with no own-target decode there is nothing to measure MTP "
+                    + "losslessness against",
+                measurements: measurements)
+        }
+
+        let baseSelf = rowMismatch(baseline: baseline.rows, candidate: base.rows)
+        let candSelf = rowMismatch(baseline: candidate.rows, candidate: cand.rows)
+
+        var evidence = measurements
+        evidence["\(baseline.label) MTP vs own decode"] = baseSelf ?? "token-exact"
+        evidence["\(candidate.label) MTP vs own decode"] = candSelf ?? "token-exact"
+        let crossBackend = rowMismatch(baseline: base.rows, candidate: cand.rows)
+        if let crossBackend { evidence["crossBackendMTP"] = crossBackend }
+
+        // The incumbent fails the bar, so the bar cannot judge the challenger.
+        // Reported with the candidate's own result, because "we could not
+        // score this" must not hide the fact that the candidate may have
+        // cleared it outright.
+        if let baseSelf {
+            return .init(
+                id: id, title: title, verdict: .unavailable,
+                detail: "the INCUMBENT failed this bar, so it cannot judge the "
+                    + "challenger. MTP is NOT token-exact against its own plain greedy "
+                    + "decode on the reference arm \(baseline.label): \(baseSelf). MTP "
+                    + "losslessness is therefore not scoreable on this model/drafter "
+                    + "pair. This is NOT a statement that \(candidate.label) is "
+                    + "untestable or unproven — measured on its own, \(candidate.label) "
+                    + "was "
+                    + (candSelf.map { "not token-exact either: \($0)" }
+                        ?? "token-exact against its own plain decode"),
                 measurements: evidence)
         }
 
+        // The reference arm PROVED the bar is reachable on this model and this
+        // drafter, and the candidate missed it. This comparison crosses no
+        // backend boundary, so it cannot be explained away as inherited
+        // base-decode drift — it is MTP on the candidate backend.
+        if let candSelf {
+            return .init(
+                id: id, title: title, verdict: .fail,
+                detail: "MTP output diverged from \(candidate.label)'s OWN plain greedy "
+                    + "decode, while MTP on \(baseline.label) reproduces its own decode "
+                    + "exactly. Verified greedy speculation is lossless by construction, "
+                    + "so this is introduced by MTP on \(candidate.label): it crosses no "
+                    + "backend boundary and inherits no base-decode drift: \(candSelf)",
+                measurements: evidence)
+        }
+
+        var detail = "both backends drafted (\(base.draftedTokens) and "
+            + "\(cand.draftedTokens) draft tokens over \(base.rounds) and \(cand.rounds) "
+            + "rounds) and MTP reproduced each backend's OWN plain greedy decode token "
+            + "for token across \(base.rows.count) prompts, so MTP introduces no "
+            + "divergence on either backend"
+        if let crossBackend {
+            detail += ". The two backends' MTP streams DO differ from each other, but "
+                + "with MTP token-exact against its own target on both arms that "
+                + "difference is EXACTLY the base-decode divergence token_exactness "
+                + "reports — inherited, not introduced by MTP: \(crossBackend)"
+        }
         return .init(
-            id: id, title: title, verdict: .pass,
-            detail: "both backends drafted (\(base.draftedTokens) and \(cand.draftedTokens) "
-                + "draft tokens over \(base.rounds) and \(cand.rounds) rounds) and produced "
-                + "identical token ids across \(base.rows.count) prompts",
-            measurements: measurements)
+            id: id, title: title, verdict: .pass, detail: detail,
+            measurements: evidence)
     }
 
     // MARK: capabilities

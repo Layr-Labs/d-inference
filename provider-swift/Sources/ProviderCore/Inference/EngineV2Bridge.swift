@@ -128,6 +128,19 @@ public actor EngineV2Bridge {
     /// rebuild instead of resizing; `updateBytesCapacity` is a no-op on
     /// a physically preallocated pool).
     public let kvBackendKind: EngineV2KVBackendKind
+    /// Why the engine ended up on `kvBackendKind` instead of the backend
+    /// it was asked for — `ProductionBuild.kvBackendFallbackReason`, nil
+    /// when nothing degraded. Held for the whole life of the slot (the
+    /// decision is made once, at construction) because the heartbeat
+    /// reports it on EVERY tick alongside the kind: a degrade that is only
+    /// announced in the once-per-load `engine_v2_kv_backend` event rides a
+    /// droppable best-effort sink, so a fleet that missed the event books
+    /// a degraded slot as a deliberately-contiguous one forever.
+    ///
+    /// Read ONLY for reporting. Nothing in the bridge's accounting,
+    /// clamping or re-slice policy may branch on it — those key off
+    /// `kvBackendKind`, which is the backend that actually exists.
+    public let kvBackendFallbackReason: String?
     let tokenizer: TokenizerHandle
     /// Resolved stop-token set (model EOS ∪ tokenizer EOS ∪ extra EOS
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
@@ -293,12 +306,14 @@ public actor EngineV2Bridge {
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
         kvBackendKind: EngineV2KVBackendKind = .contiguous,
+        kvBackendFallbackReason: String? = nil,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) {
         self.ownedEngine = engine
         self.modelId = modelId
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
+        self.kvBackendFallbackReason = kvBackendFallbackReason
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
             eosTokenIds: eosTokenIds,
             tokenizerEOSTokenId: tokenizer.inner.eosTokenId,

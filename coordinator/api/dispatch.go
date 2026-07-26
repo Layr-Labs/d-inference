@@ -183,13 +183,14 @@ type dispatchState struct {
 	// error-body message (the jinja_* stop surfaces the curated
 	// model_capability text, not the provider's raw template backtrace).
 	terminalClientErrorMessage string
-	// servedKVBackend latches the KV-cache backend of the SLOT the most recent
-	// attempt was dispatched to (v0.8.0 paged rollout, Gate G5). It is NOT
+	// servedKVBackend latches the KV-cache backend attribution of the SLOT the
+	// most recent attempt was dispatched to (v0.8.0 paged rollout, Gate G5) —
+	// the resolved kind AND whether that kind was a silent degrade. It is NOT
 	// per-attempt scratch: the failure tails run after a retry has cleared
 	// d.provider/d.pr, and a 5xx from a paged slot that just fell over is
-	// exactly the sample the rollout dashboard must not lose. "" until the
-	// request reaches a slot, which tags as kv_backend:unknown.
-	servedKVBackend string
+	// exactly the sample the rollout dashboard must not lose. Zero value until
+	// the request reaches a slot, which tags unknown on both dimensions.
+	servedKVBackend kvBackendAttribution
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -957,7 +958,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// both (the attempt-0 path emits neither, unchanged).
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
 				s.recordRejection(d.rejectionInfoWithDecision("dispatch", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, decision))
-				s.recordRequestOutcome(d.model, d.kvBackendTag(), classifyOutcomeByCode(http.StatusTooManyRequests))
+				s.recordRequestOutcome(d.model, d.kvBackendAttribution(), classifyOutcomeByCode(http.StatusTooManyRequests))
 			}
 			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
@@ -2649,8 +2650,9 @@ exhausted:
 			s.ddIncr("routing.unservable_reclassified", []string{"model:" + d.model})
 		}
 		// Resolved once: the telemetry event and the OR-uptime counter must agree
-		// on which slot's backend this failure belongs to (v0.8.0 paged rollout).
-		kvBackend := d.kvBackendTag()
+		// on which slot's backend this failure belongs to, and on whether that
+		// backend was chosen or degraded into (v0.8.0 paged rollout).
+		kvBackend := d.kvBackendAttribution()
 		s.emitRequest(r.Context(), protocol.SeverityError, d.requestID,
 			fmt.Sprintf("inference failed after %d attempt(s)", d.attempt+1),
 			map[string]any{
@@ -2658,7 +2660,7 @@ exhausted:
 				"attempt":     d.attempt + 1,
 				"status_code": statusCode,
 				"last_error":  d.lastErr,
-				"kv_backend":  kvBackend,
+				"kv_backend":  normalizeKVBackendTag(kvBackend.Backend),
 			})
 		if s.metrics != nil {
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
@@ -2769,7 +2771,7 @@ exhausted:
 	// once per dispatched request (disjoint from the exhausted branch above and
 	// from pre-dispatch rejections).
 	if d.stream {
-		s.recordRequestOutcome(d.model, d.kvBackendTag(), orClassSuccess)
+		s.recordRequestOutcome(d.model, d.kvBackendAttribution(), orClassSuccess)
 	}
 
 	d.writeCommittedResponse()
@@ -2982,9 +2984,9 @@ func (d *dispatchState) writeCommittedResponse() {
 		s.handleNonStreamingResponseWithFirstChunk(sw, r, pr, firstChunks)
 		switch {
 		case sw.status == http.StatusOK:
-			s.recordRequestOutcome(d.model, d.kvBackendTag(), orClassSuccess)
+			s.recordRequestOutcome(d.model, d.kvBackendAttribution(), orClassSuccess)
 		case sw.status > 0:
-			s.recordRequestOutcome(d.model, d.kvBackendTag(), classifyOutcomeByCode(sw.status))
+			s.recordRequestOutcome(d.model, d.kvBackendAttribution(), classifyOutcomeByCode(sw.status))
 		}
 	}
 }

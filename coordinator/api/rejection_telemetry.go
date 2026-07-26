@@ -110,14 +110,15 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	// route-outcome terminal, so it contributes its single outcome here.
 	//
 	// No KV backend: a pre-dispatch rejection never reached a slot, so there is
-	// nothing to attribute it to. "" normalizes to kv_backend:unknown — booking
-	// it to a real backend would invent a data point.
+	// nothing to attribute it to. The zero attribution normalizes to
+	// kv_backend:unknown / kv_backend_fallback:unknown — booking it to a real
+	// backend, or to "did not degrade", would invent a data point.
 	if info.stage != "dispatch" {
 		model := info.resolvedModel
 		if model == "" {
 			model = info.requestedModel
 		}
-		s.recordRequestOutcome(model, "", orUptimeClassForRejection(info.httpStatus))
+		s.recordRequestOutcome(model, kvBackendAttribution{}, orUptimeClassForRejection(info.httpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.

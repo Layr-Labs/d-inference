@@ -184,6 +184,10 @@ public enum EngineV2Factory {
                 ssdPrefixCache: ssdPrefixCache,
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
+                // Same value the INFO event below reports, but on a channel
+                // that cannot be dropped: the bridge republishes it on every
+                // heartbeat as `BackendSlotCapacity.kv_backend_fallback_reason`.
+                kvBackendFallbackReason: build.kvBackendFallbackReason,
                 emitTelemetry: emitTelemetry
             )
         } catch {

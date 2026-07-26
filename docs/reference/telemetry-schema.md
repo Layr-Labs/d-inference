@@ -226,6 +226,38 @@ UNKNOWN, matching `BackendSlotCapacity.KVBackend`'s `*string` + `omitempty`
 contract on the heartbeat wire. Never substitute a third vocabulary value such as
 `"unknown"`: omission has to stay distinguishable from an observation.
 
+**`kv_backend` has a heartbeat-only companion: `kv_backend_fallback_reason`.**
+It is deliberately **not** a telemetry-event field and is **not** in the
+three-way allowlist — it rides `BackendSlotCapacity` on the heartbeat
+([`messages.go`](../../coordinator/protocol/messages.go),
+[`Types.swift`](../../provider-swift/Sources/ProviderCore/Protocol/Types.swift)),
+the same channel as `kv_backend` itself. Protocol changes are a TWO-way sync
+(Go + Swift); the three-way parity guard
+(`coordinator/api/telemetry_allowlist_parity_test.go`) governs
+`telemetryFieldAllowlist` only and neither sees nor requires this key. It is
+recorded here because this page is where the `kv_backend` semantics live and a
+reader must not infer the wrong omission rule.
+
+It carries the provider's degrade reason verbatim — `kill_switch`,
+`kernel_preflight: …`, `physical_capacity: …`, `ineligible: …`,
+`pool_construction_capacity: …` — when a slot resolved to a backend other than
+the one it was configured for. The resolved kind alone cannot separate an
+operator who chose contiguous from a paged slot that fell back, and those are
+opposite signals: a choice and a regression. `.auto` resolves **contiguous** in
+v0.8.0 with paged opt-in per slot, so the live case today is a
+`engine_v2_kv_backend = "paged"` fleet running under `DARKBLOOM_CBV2_PAGED_KV=0`
+— it serves contiguous by design, and nothing else on the wire says so.
+
+**Its omission rule is the INVERSE of `kv_backend`'s, and the two must be read
+as a pair.** Absent `kv_backend` is UNKNOWN; absent `kv_backend_fallback_reason`
+on a slot that DID name a `kv_backend` is an authoritative "this slot did not
+degrade". Both keys ship in v0.8.0, so there is no build that reports one and
+not the other. The reason is untrusted free text and never reaches a metric tag
+verbatim: `registry.KVBackendFallbackTag` folds it onto the bounded class
+vocabulary (`none`, the five producer classes, `other`, `unknown`), which is
+what the `kv_backend_fallback:` tag on `inference.ttft_ms`,
+`inference.decode_tps` and `inference.request_outcome` carries.
+
 ## v0.8.0 field semantics
 
 ### Paged KV pool

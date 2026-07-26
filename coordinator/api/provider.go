@@ -2160,7 +2160,7 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		// histograms segmented by the SLOT that served — (providerID, pr.Model),
 		// never the provider alone, because one box can hold several models on
 		// different backends during a staged rollout. See kv_backend_metrics.go.
-		s.emitRequestBackendLatency(pr.Model, s.kvBackendTag(providerID, pr.Model),
+		s.emitRequestBackendLatency(pr.Model, s.kvBackendAttribution(providerID, pr.Model),
 			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
 
 		// Resolve provider identity for payout.

@@ -276,12 +276,12 @@ func TestRequestOutcomeSegmentsByServingSlotBackend(t *testing.T) {
 		d.noteServingSlot()
 		// Every failover path clears these before the exhaustion ladder runs.
 		d.provider, d.pr = nil, nil
-		srv.recordRequestOutcome(d.model, d.kvBackendTag(), orClassProvider5xx)
+		srv.recordRequestOutcome(d.model, d.kvBackendAttribution(), orClassProvider5xx)
 	}
 
 	// A pre-dispatch rejection never reached a slot: unattributable, and it must
 	// say so rather than borrow a backend.
-	srv.recordRequestOutcome(model, "", orClassRateLimited)
+	srv.recordRequestOutcome(model, kvBackendAttribution{}, orClassRateLimited)
 
 	_ = dd.Statsd.Flush()
 	outcomes := findMetrics(collector.drain(), metricRequestOutcome)
@@ -332,21 +332,21 @@ func TestDispatchKVBackendTagFollowsTheServingSlot(t *testing.T) {
 
 	d := &dispatchState{s: srv, model: model}
 	// Never reached a slot yet.
-	if got := d.kvBackendTag(); got != registry.KVBackendUnknown {
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendUnknown {
 		t.Fatalf("before dispatch = %q, want %q", got, registry.KVBackendUnknown)
 	}
 
 	d.pr = &registry.PendingRequest{RequestID: "req-latch", ProviderID: primary.ID, Model: model}
 	d.noteServingSlot()
 	d.pr = nil
-	if got := d.kvBackendTag(); got != registry.KVBackendPaged {
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendPaged {
 		t.Errorf("after failover cleared d.pr = %q, want %q (the latch is what keeps a crashed "+
 			"paged slot's 5xx attributable)", got, registry.KVBackendPaged)
 	}
 
 	// Speculative backup takes over: the live pending request wins.
 	d.pr = &registry.PendingRequest{RequestID: "req-latch-backup", ProviderID: backup.ID, Model: model}
-	if got := d.kvBackendTag(); got != registry.KVBackendContiguous {
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendContiguous {
 		t.Errorf("after a backup win = %q, want %q", got, registry.KVBackendContiguous)
 	}
 }
@@ -403,8 +403,16 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 	if kvBackendTagKey != "kv_backend:" {
 		t.Errorf("kvBackendTagKey = %q; must match the heartbeat wire key", kvBackendTagKey)
 	}
+	if kvBackendFallbackTagKey != "kv_backend_fallback:" {
+		t.Errorf("kvBackendFallbackTagKey = %q; must match the heartbeat wire key", kvBackendFallbackTagKey)
+	}
 	if got := normalizeKVBackendTag(""); got != registry.KVBackendUnknown {
 		t.Errorf("normalizeKVBackendTag(\"\") = %q, want %q", got, registry.KVBackendUnknown)
+	}
+	// "" is UNKNOWN here too, never "none": a call site with no serving slot
+	// has established nothing about whether a slot degraded.
+	if got := normalizeKVBackendFallbackTag(""); got != registry.KVFallbackUnknown {
+		t.Errorf("normalizeKVBackendFallbackTag(\"\") = %q, want %q", got, registry.KVFallbackUnknown)
 	}
 	for _, bad := range []float64{0, -1} {
 		if usableMetricSample(bad) {
@@ -414,9 +422,10 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 
 	// No Datadog client configured: helpers must not panic.
 	srv, _, _ := billingTestServer(t)
-	srv.emitRequestBackendLatency("m", registry.KVBackendPaged, 12, 34)
-	if got := srv.kvBackendTag("no-such-provider", "m"); got != registry.KVBackendUnknown {
-		t.Errorf("kvBackendTag for an unknown provider = %q", got)
+	srv.emitRequestBackendLatency("m", kvBackendAttribution{Backend: registry.KVBackendPaged}, 12, 34)
+	if got := srv.kvBackendAttribution("no-such-provider", "m"); got.Backend != registry.KVBackendUnknown ||
+		got.Fallback != registry.KVFallbackUnknown {
+		t.Errorf("attribution for an unknown provider = %+v", got)
 	}
 }
 
@@ -431,7 +440,7 @@ func TestUnmeasurableRequestEmitsNoBackendSample(t *testing.T) {
 	defer dd.Close()
 	srv.SetDatadog(dd)
 
-	srv.emitRequestBackendLatency("m", registry.KVBackendPaged, 0, 0)
+	srv.emitRequestBackendLatency("m", kvBackendAttribution{Backend: registry.KVBackendPaged}, 0, 0)
 	_ = dd.Statsd.Flush()
 	packets := collector.drain()
 	if hasMetric(packets, metricRequestTTFT) || hasMetric(packets, metricRequestDecodeTPS) {

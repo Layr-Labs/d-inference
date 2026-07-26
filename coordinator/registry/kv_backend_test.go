@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
@@ -29,6 +30,17 @@ func kvHeartbeat(slots ...protocol.BackendSlotCapacity) *protocol.HeartbeatMessa
 }
 
 func kvStr(s string) *string { return &s }
+
+// kvSlotDegraded is a slot that resolved to `backend` because paged FELL BACK,
+// carrying the provider's reason.
+func kvSlotDegraded(model, backend, reason string) protocol.BackendSlotCapacity {
+	return protocol.BackendSlotCapacity{
+		Model:                   model,
+		State:                   "running",
+		KVBackend:               &backend,
+		KVBackendFallbackReason: &reason,
+	}
+}
 
 // registerKVProvider registers a provider under a deterministic id and returns
 // that id.
@@ -253,5 +265,166 @@ func TestSlotKVBackendUnknownProviderIsUnknown(t *testing.T) {
 	}
 	if got := r.SlotKVBackendTag("", ""); got != KVBackendUnknown {
 		t.Errorf("empty ids = %q, want %q", got, KVBackendUnknown)
+	}
+}
+
+// The ticket in one test: two slots serving `contiguous`, one by choice and one
+// because it was configured paged and paged did not happen. Before the fallback
+// reason they were the same observation. BOTH halves are asserted — a field
+// that is always present is not a signal, so the clean slot reporting `none`
+// matters exactly as much as the degraded one reporting its class.
+func TestSlotKVBackendFallbackSeparatesChoiceFromDegrade(t *testing.T) {
+	r := New(testLogger())
+	const model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+	chose := registerKVProvider(t, r, "box-chose-contiguous")
+	fell := registerKVProvider(t, r, "box-degraded-to-contiguous")
+	legacy := registerKVProvider(t, r, "box-pre-080")
+
+	r.Heartbeat(chose, kvHeartbeat(kvSlot(model, kvStr(KVBackendContiguous))))
+	r.Heartbeat(fell, kvHeartbeat(kvSlotDegraded(
+		model, KVBackendContiguous, "kernel_preflight: paged kernels unavailable")))
+	r.Heartbeat(legacy, kvHeartbeat(kvSlot(model, nil)))
+
+	// The resolved kind CANNOT tell the first two apart. That is the defect.
+	if r.SlotKVBackendTag(chose, model) != r.SlotKVBackendTag(fell, model) {
+		t.Fatalf("premise broken: the two slots should agree on the resolved kind")
+	}
+
+	// The fallback dimension can.
+	chooseReason, chooseObserved := r.SlotKVBackendFallback(chose, model)
+	if !chooseObserved {
+		t.Fatal("a slot that named a backend must count as observed")
+	}
+	if chooseReason != "" {
+		t.Errorf("deliberate contiguous reported reason %q, want none", chooseReason)
+	}
+	fellReason, fellObserved := r.SlotKVBackendFallback(fell, model)
+	if !fellObserved || fellReason != "kernel_preflight: paged kernels unavailable" {
+		t.Errorf("degraded slot = (%q, %v), want the verbatim reason", fellReason, fellObserved)
+	}
+
+	// Tags: `none` and the class are different populations, and the legacy
+	// provider is neither — absence of the reason on a slot that never named a
+	// backend is UNKNOWN, not "did not degrade".
+	for _, tc := range []struct {
+		id           string
+		wantBackend  string
+		wantFallback string
+	}{
+		{chose, KVBackendContiguous, KVFallbackNone},
+		{fell, KVBackendContiguous, KVFallbackKernelPreflight},
+		{legacy, KVBackendUnknown, KVFallbackUnknown},
+	} {
+		backend, fallback := r.SlotKVBackendTags(tc.id, model)
+		if backend != tc.wantBackend || fallback != tc.wantFallback {
+			t.Errorf("%s = (%q, %q), want (%q, %q)",
+				tc.id, backend, fallback, tc.wantBackend, tc.wantFallback)
+		}
+	}
+}
+
+// The kind and the reason are ONE observation. A slot that degrades, is
+// reloaded and comes back clean must stop reporting the degrade — a reason that
+// only ever gets written is a permanent false positive on a healthy slot.
+func TestSlotKVBackendFallbackClearsOnACleanReload(t *testing.T) {
+	r := New(testLogger())
+	id := registerKVProvider(t, r, "box-reloading")
+	const model = "gemma"
+
+	r.Heartbeat(id, kvHeartbeat(kvSlotDegraded(model, KVBackendContiguous, "kill_switch")))
+	if _, fallback := r.SlotKVBackendTags(id, model); fallback != KVFallbackKillSwitch {
+		t.Fatalf("degraded slot = %q, want %q", fallback, KVFallbackKillSwitch)
+	}
+
+	// Operator clears the kill switch and the slot reloads onto paged.
+	r.Heartbeat(id, kvHeartbeat(kvSlot(model, kvStr(KVBackendPaged))))
+	backend, fallback := r.SlotKVBackendTags(id, model)
+	if backend != KVBackendPaged {
+		t.Errorf("reloaded kind = %q, want %q", backend, KVBackendPaged)
+	}
+	if fallback != KVFallbackNone {
+		t.Errorf("reloaded fallback = %q, want %q — the stale degrade was never cleared",
+			fallback, KVFallbackNone)
+	}
+
+	// A heartbeat that names no backend at all leaves BOTH halves alone, so a
+	// slot torn down mid-request keeps its attribution.
+	r.Heartbeat(id, kvHeartbeat())
+	if backend, fallback := r.SlotKVBackendTags(id, model); backend != KVBackendPaged || fallback != KVFallbackNone {
+		t.Errorf("after the slot vanished = (%q, %q), want (%q, %q)",
+			backend, fallback, KVBackendPaged, KVFallbackNone)
+	}
+}
+
+// The reason is untrusted free text that becomes a metric tag, so it is folded
+// onto a bounded class vocabulary and clamped in storage.
+func TestKVBackendFallbackTagVocabulary(t *testing.T) {
+	for _, tc := range []struct {
+		reason   string
+		observed bool
+		want     string
+	}{
+		// The five shipped producer classes, with and without detail.
+		{"kill_switch", true, KVFallbackKillSwitch},
+		{"kernel_preflight: MTLLibrary compile failed", true, KVFallbackKernelPreflight},
+		{"physical_capacity: unknown KV byte rate", true, KVFallbackPhysicalCapacity},
+		{"ineligible: sliding-window layout", true, KVFallbackIneligible},
+		{"pool_construction_capacity: needed 3, available 1", true, KVFallbackPoolConstruction},
+		// Observed with no reason is the authoritative "did not degrade".
+		{"", true, KVFallbackNone},
+		// Unobserved says nothing at all — never `none`.
+		{"", false, KVFallbackUnknown},
+		{"kill_switch", false, KVFallbackUnknown},
+		// Cardinality fence: a future or malformed class is bucketed, and the
+		// unbounded detail never reaches the tag.
+		{"quantum_flux: 12345", true, KVFallbackOther},
+		{"needed 3221225472 bytes", true, KVFallbackOther},
+	} {
+		if got := KVBackendFallbackTag(tc.reason, tc.observed); got != tc.want {
+			t.Errorf("KVBackendFallbackTag(%q, %v) = %q, want %q",
+				tc.reason, tc.observed, got, tc.want)
+		}
+	}
+}
+
+// A hostile or future provider must not park an unbounded string in coordinator
+// state for the life of the session, but the class must still survive.
+func TestSlotKVBackendFallbackReasonIsClamped(t *testing.T) {
+	r := New(testLogger())
+	id := registerKVProvider(t, r, "box-verbose")
+	const model = "gemma"
+
+	long := "ineligible: " + strings.Repeat("x", maxKVFallbackReasonBytes*4)
+	r.Heartbeat(id, kvHeartbeat(kvSlotDegraded(model, KVBackendContiguous, long)))
+
+	stored, observed := r.SlotKVBackendFallback(id, model)
+	if !observed {
+		t.Fatal("slot not observed")
+	}
+	if len(stored) != maxKVFallbackReasonBytes {
+		t.Errorf("stored %d bytes, want the clamp %d", len(stored), maxKVFallbackReasonBytes)
+	}
+	// Truncation is from the tail: the leading class the metric groups on is
+	// exactly what must survive.
+	if _, fallback := r.SlotKVBackendTags(id, model); fallback != KVFallbackIneligible {
+		t.Errorf("clamped reason tagged %q, want %q", fallback, KVFallbackIneligible)
+	}
+}
+
+// A slot that names no backend contributes nothing, even if it somehow carries
+// a reason: the pair is gated on the kind, so a reason alone cannot manufacture
+// an observation out of a provider that reported no backend.
+func TestSlotKVBackendFallbackIgnoredWithoutAKind(t *testing.T) {
+	r := New(testLogger())
+	id := registerKVProvider(t, r, "box-reason-only")
+	const model = "gemma"
+
+	reason := "kill_switch"
+	r.Heartbeat(id, kvHeartbeat(protocol.BackendSlotCapacity{
+		Model: model, State: "running", KVBackendFallbackReason: &reason,
+	}))
+	backend, fallback := r.SlotKVBackendTags(id, model)
+	if backend != KVBackendUnknown || fallback != KVFallbackUnknown {
+		t.Errorf("reason without a kind = (%q, %q), want both unknown", backend, fallback)
 	}
 }

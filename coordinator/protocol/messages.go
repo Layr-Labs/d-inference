@@ -302,6 +302,43 @@ type BackendSlotCapacity struct {
 	// it. Acting on the backend kind is a separate change.
 	KVBackend *string `json:"kv_backend,omitempty"`
 
+	// KVBackendFallbackReason says WHY this slot's engine ended up on
+	// KVBackend instead of the backend it was asked for — the provider's
+	// `EngineV2Factory.ProductionBuild.kvBackendFallbackReason`, verbatim:
+	// "kill_switch", "kernel_preflight: …", "physical_capacity: …",
+	// "ineligible: …", "pool_construction_capacity: …".
+	//
+	// KVBackend alone cannot answer the question the v0.8.0 rollout has to
+	// ask. A slot reporting "contiguous" is either an operator who chose
+	// contiguous or an operator who chose paged on a box where paged did not
+	// happen — a choice and a regression, indistinguishable.
+	//
+	// `.auto` resolves CONTIGUOUS in v0.8.0 (the flip to paged was made and
+	// reverted: paged ADOPTION is not transparent — an adopted paged slot
+	// answers differently from its own cold run on the same prompt), so
+	// paged is opt-in per slot. That makes the live degrade class today
+	// "kill_switch": a fleet configured `engine_v2_kv_backend = "paged"`
+	// running under DARKBLOOM_CBV2_PAGED_KV=0 serves contiguous, and the
+	// kill switch degrades rather than refuses by design. The
+	// preflight/capacity/ineligible classes stay wired and light up the day
+	// a paged selection is allowed to degrade on failure again.
+	//
+	// ABSENT MEANS NO DEGRADE — deliberately the OPPOSITE of KVBackend,
+	// where absent means unknown. Read the two as a pair: both keys ship in
+	// v0.8.0, so a slot that named a KVBackend is running a build that also
+	// names this whenever there is one. KVBackend present + this nil is an
+	// authoritative "did not degrade"; only KVBackend nil is unknown. See
+	// registry.KVBackendFallbackTag, which is the one place that mapping
+	// lives.
+	//
+	// UNTRUSTED, UNBOUNDED-ISH free text. The provider caps it, but nothing
+	// here may forward it to a metric tag: registry.KVBackendFallbackTag
+	// folds it onto a bounded class vocabulary first.
+	//
+	// MEASUREMENT ONLY — decoded for observability; routing is NOT gated on
+	// it, exactly like KVBackend above.
+	KVBackendFallbackReason *string `json:"kv_backend_fallback_reason,omitempty"`
+
 	// Engine-health (first-token wedge) signals — low-cardinality, NON-PRIVATE
 	// diagnostics that let the coordinator SEE a wedged MLX/Metal first-token
 	// path (provider emits the preamble, then the first blocking eval never

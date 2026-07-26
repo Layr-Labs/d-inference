@@ -162,6 +162,18 @@ extension EngineV2Bridge {
             // telemetry event, which rides a droppable best-effort sink and
             // is therefore not a fleet inventory.
             kvBackend: kvBackendKind.rawValue,
+            // …and WHY it is that kind, when the kind is not what was
+            // asked for. Without this the two populations the v0.8.0
+            // rollout must separate — contiguous-by-choice and
+            // paged-that-fell-back — are the same value on the wire. With
+            // `.auto` resolving contiguous and paged opt-in per slot, the
+            // live case is a paged-configured fleet under the
+            // `DARKBLOOM_CBV2_PAGED_KV` kill switch: it serves contiguous,
+            // deliberately, and nothing else on the wire says so.
+            // nil ⇒ no degrade (see `BackendSlotCapacity`); it is NOT the
+            // unknown state, which is `kvBackend` itself being absent.
+            kvBackendFallbackReason: Self.heartbeatFallbackReason(
+                kvBackendFallbackReason),
             stepsExecuted: Int64(wedgeMonitor.lastStepsSample),
             admits: Int64(wedgeMonitor.admits),
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
@@ -169,6 +181,22 @@ extension EngineV2Bridge {
             secondsSinceLastFirstToken: wedgeMonitor.secondsSinceLastFirstToken(now: now),
             wedgeSuspected: wedgeMonitor.wedgeSuspected(now: now)
         )
+    }
+
+    /// Longest fallback reason the heartbeat will carry. The reasons are
+    /// built from interpolated errors (`"kernel_preflight: \(error)"`), so
+    /// their length is bounded by whatever MLX/Metal produced — and unlike
+    /// the once-per-load telemetry event, this rides EVERY heartbeat of
+    /// every slot. Truncation loses tail detail, never the leading class
+    /// token the coordinator groups on.
+    static let maxHeartbeatFallbackReasonLength = 200
+
+    /// Clamp a fallback reason to the heartbeat budget. nil stays nil: the
+    /// absence is the "did not degrade" signal and must never become "".
+    static func heartbeatFallbackReason(_ reason: String?) -> String? {
+        guard let reason else { return nil }
+        guard reason.count > maxHeartbeatFallbackReasonLength else { return reason }
+        return String(reason.prefix(maxHeartbeatFallbackReasonLength))
     }
 
     /// Number of requests currently active on this bridge (heartbeat

@@ -562,3 +562,101 @@ func TestBackendSlotCapacityKVBackendExplicitEmptyCompatibility(t *testing.T) {
 		t.Fatalf("explicit empty kv_backend should survive marshal, got %s", reencoded)
 	}
 }
+
+// `kv_backend_fallback_reason` is the OTHER half of the rollout discriminator,
+// and its omission semantics are the INVERSE of `kv_backend`'s: absent means
+// the slot did NOT degrade, not that the answer is unknown. Both halves are
+// pinned here in one test because a field that is always present is not a
+// signal — the degraded case proving the reason arrives is worth nothing
+// unless the clean case proves the key stays off the wire.
+func TestBackendSlotCapacityKVBackendFallbackReasonRoundTrip(t *testing.T) {
+	// 1. DEGRADED — the slot was configured paged, paged did not happen, it
+	//    serves contiguous and SAYS SO. Without the reason this row is
+	//    byte-identical to an operator who configured contiguous on purpose.
+	contiguous := "contiguous"
+	reason := "pool_construction_capacity: needed 3221225472, available 2147483648"
+	msg := HeartbeatMessage{
+		Type:   TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &BackendCapacity{
+			Slots: []BackendSlotCapacity{{
+				Model:                   "gemma-4-26b-qat-4bit",
+				State:                   "running",
+				KVBackend:               &contiguous,
+				KVBackendFallbackReason: &reason,
+			}},
+		},
+	}
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(data, []byte(`"kv_backend_fallback_reason":"pool_construction_capacity:`)) {
+		t.Fatalf("kv_backend_fallback_reason missing from wire: %s", data)
+	}
+	var decoded HeartbeatMessage
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.BackendCapacity == nil || len(decoded.BackendCapacity.Slots) != 1 {
+		t.Fatalf("decoded slots = %+v", decoded.BackendCapacity)
+	}
+	slot := decoded.BackendCapacity.Slots[0]
+	if slot.KVBackendFallbackReason == nil {
+		t.Fatal("degraded slot decoded a nil reason — the degrade is invisible again")
+	}
+	if *slot.KVBackendFallbackReason != reason {
+		t.Fatalf("reason = %q, want %q", *slot.KVBackendFallbackReason, reason)
+	}
+	// The resolved kind is unchanged by the degrade: the slot really is
+	// serving contiguous. The pair is what carries the meaning.
+	if slot.KVBackend == nil || *slot.KVBackend != contiguous {
+		t.Fatalf("degraded slot's resolved kind = %v, want contiguous", slot.KVBackend)
+	}
+
+	// 2. NOT DEGRADED — an operator who chose contiguous. Same model, same
+	//    state, same resolved kind, and the key must be ABSENT from the wire:
+	//    not "", not "none". Encoded from a slot IDENTICAL to the degraded one
+	//    apart from the reason, so the byte comparison below is exactly the
+	//    question the rollout dashboard asks.
+	degradedSlot, err := json.Marshal(BackendSlotCapacity{
+		Model: "gemma-4-26b-qat-4bit", State: "running",
+		KVBackend: &contiguous, KVBackendFallbackReason: &reason,
+	})
+	if err != nil {
+		t.Fatalf("marshal degraded slot: %v", err)
+	}
+	clean, err := json.Marshal(BackendSlotCapacity{
+		Model: "gemma-4-26b-qat-4bit", State: "running", KVBackend: &contiguous,
+	})
+	if err != nil {
+		t.Fatalf("marshal clean: %v", err)
+	}
+	if bytes.Contains(clean, []byte("kv_backend_fallback_reason")) {
+		t.Fatalf("a slot that did not degrade must omit the key entirely, got %s", clean)
+	}
+	var cleanSlot BackendSlotCapacity
+	if err := json.Unmarshal(clean, &cleanSlot); err != nil {
+		t.Fatalf("unmarshal clean: %v", err)
+	}
+	if cleanSlot.KVBackendFallbackReason != nil {
+		t.Fatalf("clean slot decoded reason %q, want nil", *cleanSlot.KVBackendFallbackReason)
+	}
+	// The whole ticket in one assertion: before this field, these two slots
+	// were the same bytes and the fleet could not tell a choice from a
+	// regression.
+	if bytes.Equal(degradedSlot, clean) {
+		t.Fatalf("degraded and deliberate contiguous slots are byte-identical: %s", clean)
+	}
+
+	// 3. PRE-0.8.0 — neither key. Reading absence as "did not degrade" here
+	//    would be wrong, which is why the pair is read together: no
+	//    `kv_backend` at all is the UNKNOWN state.
+	var legacy BackendSlotCapacity
+	if err := json.Unmarshal([]byte(`{"model":"qwen","state":"running"}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.KVBackend != nil || legacy.KVBackendFallbackReason != nil {
+		t.Fatalf("legacy slot decoded %+v, want both nil", legacy)
+	}
+}

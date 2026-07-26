@@ -57,23 +57,24 @@ const (
 // so the tag is always present for dashboard grouping. No-op when Datadog is
 // unconfigured (ddIncr guards nil).
 //
-// kvBackend is the KV-cache backend of the SLOT that served (or last attempted)
-// the request — the v0.8.0 paged-rollout dimension (Gate G5). Because the class
-// tag already splits success from every failure kind, adding it here segments
-// the error rate's numerator AND denominator at once, which is what makes
-// "is paged 503ing more than contiguous" answerable. "" normalizes to
-// registry.KVBackendUnknown: a request that never reached a slot (pre-dispatch
-// rejection) is genuinely unattributable, and must never be booked to a real
-// backend.
-func (s *Server) recordRequestOutcome(model, kvBackend, class string) {
+// attr is the KV-backend attribution of the SLOT that served (or last
+// attempted) the request — the v0.8.0 paged-rollout dimensions (Gate G5).
+// Because the class tag already splits success from every failure kind, adding
+// them here segments the error rate's numerator AND denominator at once, which
+// is what makes "is paged 503ing more than contiguous" answerable — and the
+// fallback dimension is what keeps "contiguous" from silently pooling operator
+// choice together with paged slots that degraded. The zero value normalizes to
+// unknown on both: a request that never reached a slot (pre-dispatch rejection)
+// is genuinely unattributable, and must never be booked to a real backend or
+// counted as a slot that did not degrade.
+func (s *Server) recordRequestOutcome(model string, attr kvBackendAttribution, class string) {
 	if model == "" {
 		model = "unknown"
 	}
-	s.ddIncr(metricRequestOutcome, []string{
+	s.ddIncr(metricRequestOutcome, append([]string{
 		"model:" + model,
 		"class:" + class,
-		kvBackendTagKey + normalizeKVBackendTag(kvBackend),
-	})
+	}, attr.tags()...))
 }
 
 // orUptimeClassForRejection maps a rejection's HTTP status to an OR-uptime class.

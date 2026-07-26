@@ -558,13 +558,14 @@ type Provider struct {
 	// Live backend capacity from heartbeats (nil for providers without capacity reporting)
 	BackendCapacity *protocol.BackendCapacity
 
-	// kvBackends is the last KV-cache backend each SLOT (keyed by model) named
-	// on a heartbeat, for the v0.8.0 paged rollout's per-backend segmentation.
+	// kvBackends is the last KV-cache backend observation each SLOT (keyed by
+	// model) named on a heartbeat — the resolved kind AND, when the slot
+	// degraded, why — for the v0.8.0 paged rollout's per-backend segmentation.
 	// Sticky within a provider session and deliberately NOT cleared by a nil
 	// BackendCapacity, so a slot that crashes or is evicted mid-request can
 	// still be attributed. A missing key is UNKNOWN and must never read as a
 	// backend kind. Guarded by p.mu; see kv_backend.go for the full contract.
-	kvBackends map[string]string
+	kvBackends map[string]slotKVBackend
 
 	// Reputation tracking
 	Reputation Reputation

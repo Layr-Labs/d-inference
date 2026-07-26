@@ -81,12 +81,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// memory-unbounded slot cap.
     public var maxModelSlots: UInt64
     /// Box-wide concurrent-request cap per v2 engine slot
-    /// (`engine_v2_max_concurrent` under `[backend]`). Default 4 — the
-    /// CBv2 product target. Clamped to [1, 8] at use: the engine's KV
-    /// byte-ledger admission binds long before count does, and caps past 8
-    /// recreate the batch-collapse regime the one-engine release exists to
-    /// kill. The coordinator sees the effective value in heartbeat
-    /// `max_concurrency`.
+    /// (`engine_v2_max_concurrent` under `[backend]`). Default
+    /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4
+    /// with the `.auto` flip to paged KV. The two are one decision, not
+    /// two: measured gemma-4 / M4 Max aggregate decode puts paged at
+    /// 0.92x of contiguous at B=1, 0.98x at B=4 and 1.17x at B=8, so the
+    /// crossover sits near B=5 and a paged box that never reaches 8 is
+    /// strictly worse off than one that stayed contiguous. Clamped to
+    /// [1, 8] at use: the engine's KV byte-ledger admission binds long
+    /// before count does, and caps past 8 recreate the batch-collapse
+    /// regime the one-engine release exists to kill. The coordinator sees
+    /// the effective value in heartbeat `max_concurrency`.
     public var engineV2MaxConcurrent: UInt64
     /// Optional per-model override map
     /// (`engine_v2_max_concurrent_by_model` under `[backend]`, TOML table
@@ -164,13 +169,34 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// knob no longer exists. Not encoded back out.
     public internal(set) var retiredKeysPresent: [String] = []
 
+    /// The v0.8.0 box-wide concurrency cap, and the single source for BOTH
+    /// the memberwise default and the ``init(from:)`` fallback.
+    ///
+    /// They are one constant because they drifted apart exactly once and it
+    /// was expensive: the memberwise default moved 4 -> 8 while the decode
+    /// fallback stayed at 4, so every provider that loaded a `provider.toml`
+    /// — which is every provider in the fleet — kept B=4 while `.auto`
+    /// flipped to paged. That is the one combination the measurements call
+    /// strictly worse than not flipping at all.
+    public static let defaultEngineV2MaxConcurrent: UInt64 = 8
+
+    /// The cap pre-v0.8.0 releases GENERATED into `provider.toml`.
+    ///
+    /// `TOMLEncoder` emits every non-optional `CodingKeys` member, so any
+    /// config ever written by `ConfigManager.save` carries an explicit
+    /// `engine_v2_max_concurrent = 4` — byte-identical to an operator who
+    /// typed it. Disambiguated once, by absence of
+    /// ``ProviderConfig/configVersion``; see
+    /// ``ProviderConfig/legacyMaxConcurrentMigrationID``.
+    public static let legacyGeneratedMaxConcurrent: UInt64 = 4
+
     public init(
         port: UInt16 = 8100,
         model: String? = nil,
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
-        engineV2MaxConcurrent: UInt64 = 8,
+        engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],
@@ -239,7 +265,8 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         self.idleTimeoutMins = try container.decodeIfPresent(UInt64.self, forKey: .idleTimeoutMins) ?? 60
         self.maxModelSlots = try container.decodeIfPresent(UInt64.self, forKey: .maxModelSlots) ?? 3
         self.engineV2MaxConcurrent =
-            try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent) ?? 4
+            try container.decodeIfPresent(UInt64.self, forKey: .engineV2MaxConcurrent)
+            ?? Self.defaultEngineV2MaxConcurrent
         self.engineV2MaxConcurrentByModel =
             try container.decodeIfPresent(
                 [String: UInt64].self, forKey: .engineV2MaxConcurrentByModel) ?? [:]
@@ -299,25 +326,78 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
+    /// Schema version of the `provider.toml` this config came from
+    /// (`config_version`, top level, written by the startup stamp in
+    /// `migrateConfigIfNeeded`).
+    ///
+    /// Its whole job is to date the file. A pre-v0.8.0 config and a
+    /// hand-written one are byte-identical wherever it matters, so
+    /// "absent" is the only evidence that an `engine_v2_max_concurrent = 4`
+    /// was GENERATED rather than chosen. That evidence is spent once, at
+    /// the migration below; from the stamp on, 4 means 4 forever.
+    ///
+    /// Decoding always reports ``currentConfigVersion`` — the field
+    /// describes the schema this process speaks, and the pre-stamp state
+    /// is reported through ``appliedMigrations`` instead.
+    public var configVersion: Int
+    /// Ids of the one-time migrations this decode applied, for the startup
+    /// WARN (see `RetiredKnobWarnings`). Derived, never encoded — the same
+    /// contract as ``BackendSettings/retiredKeysPresent``.
+    public internal(set) var appliedMigrations: [String] = []
+
+    /// Current `provider.toml` schema version. 1 = v0.8.0, the release that
+    /// flipped `.auto` to paged and raised the concurrency default 4 -> 8.
+    public static let currentConfigVersion = 1
+
+    /// Stable id of the one-time pre-v0.8.0 concurrency migration.
+    public static let legacyMaxConcurrentMigrationID = "engine_v2_max_concurrent:4->8"
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
-        schedule: ScheduleConfig? = nil
+        schedule: ScheduleConfig? = nil,
+        configVersion: Int = ProviderConfig.currentConfigVersion
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
+        self.configVersion = configVersion
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case backend
+        case coordinator
+        case schedule
+        case configVersion = "config_version"
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.provider = try container.decodeIfPresent(ProviderSettings.self, forKey: .provider) ?? ProviderSettings(name: "darkbloom")
-        self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
+        var backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
+
+        // One-time pre-v0.8.0 concurrency migration.
+        //
+        // Deliberately narrow: it fires only on an UNSTAMPED file holding
+        // the EXACT value old releases generated. An operator who picked 1,
+        // 2, 3, 5, 6 or 7 is never rewritten, because no release ever
+        // generated those. The single unavoidable casualty is a deliberate
+        // 4 in a pre-v0.8.0 file, which is indistinguishable from the
+        // generated one by construction — it is raised once, announced by
+        // `RetiredKnobWarnings`, and sticks the moment it is re-set.
+        let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
+        if onDiskVersion == nil,
+            backend.engineV2MaxConcurrent == BackendSettings.legacyGeneratedMaxConcurrent {
+            backend.engineV2MaxConcurrent = BackendSettings.defaultEngineV2MaxConcurrent
+            self.appliedMigrations = [Self.legacyMaxConcurrentMigrationID]
+        }
+        self.backend = backend
+        self.configVersion = Self.currentConfigVersion
     }
 
     /// Generate a default config based on detected hardware.

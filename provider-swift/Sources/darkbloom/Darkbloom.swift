@@ -171,6 +171,16 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
     ("wss://api.dev.darkbloom.xyz", "api.dev.darkbloom.xyz"),
 ]
 
+/// Top-level `provider.toml` key carrying the schema version. Its ABSENCE is
+/// what dates a file to before v0.8.0 — see `ProviderConfig.configVersion`.
+private let configVersionKey = "config_version"
+
+/// Matches ONLY a whole `engine_v2_max_concurrent = 4` assignment line — the
+/// exact value pre-v0.8.0 releases generated. Anchored to the full line so it
+/// cannot touch `[backend.engine_v2_max_concurrent_by_model]` or a `4` in it.
+private let legacyMaxConcurrentAssignment =
+    #"(?m)^[ \t]*engine_v2_max_concurrent[ \t]*=[ \t]*4[ \t]*$"#
+
 /// Migrate stale config values in-place. Runs on every startup; idempotent.
 ///
 /// 1. **Legacy path**: if the resolved config lives at a non-canonical path
@@ -178,6 +188,9 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
 ///    file there (keeping the old one for backward compat).
 /// 2. **Coordinator URL**: if the TOML text contains a known stale
 ///    coordinator URL (localhost, dev), rewrite it to production in-place.
+/// 3. **Schema stamp**: if the TOML text carries no `config_version`, it was
+///    written before v0.8.0, so stamp it — raising a generated
+///    `engine_v2_max_concurrent = 4` to the v0.8.0 default on the way.
 func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderConfig {
     let fm = FileManager.default
     guard fm.fileExists(atPath: configPath.path) else { return config }
@@ -222,6 +235,24 @@ func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderC
         }
     }
 
+    // --- 3. v0.8.0 config_version stamp (+ generated concurrency default) ---
+    // Runs on any unstamped file, even one whose concurrency line needs no
+    // change. The stamp is the whole point: it is what lets a LATER hand-edit
+    // back to 4 stick, instead of being migrated again on the next boot.
+    // The in-memory value was already raised at decode
+    // (`ProviderConfig.init(from:)`); this only makes it durable and visible.
+    var raisedConcurrency = stampConfigVersion(in: configPath)
+    if copiedToCanonical {
+        raisedConcurrency = stampConfigVersion(in: canonicalPath) || raisedConcurrency
+    }
+    if raisedConcurrency {
+        printError(
+            "  Migrated [backend] engine_v2_max_concurrent "
+                + "\(BackendSettings.legacyGeneratedMaxConcurrent) -> "
+                + "\(BackendSettings.defaultEngineV2MaxConcurrent) "
+                + "(pre-v0.8.0 generated default; re-set it to keep the old value)")
+    }
+
     if didMigrateURL {
         let source = migratedLabel ?? "stale URL"
         printError("  Migrated coordinator URL from \(source) to api.darkbloom.dev")
@@ -257,6 +288,44 @@ private func rewriteStaleURLs(in path: URL) -> String? {
     } catch {
         return nil
     }
+}
+
+/// Stamp `config_version` into a `provider.toml` written before v0.8.0,
+/// raising the generated `engine_v2_max_concurrent = 4` to the current
+/// default on the way through. Returns whether that concurrency line was
+/// rewritten. An already-stamped or unreadable file is left untouched, so
+/// this runs at most once per config.
+///
+/// Text surgery rather than `ConfigManager.save`, for the same reason
+/// `rewriteStaleURLs` is: a `TOMLEncoder` round-trip would drop the
+/// operator's comments AND their retired `[backend]` keys, and startup still
+/// needs those keys present in order to warn about them.
+///
+/// Internal rather than `private` (unlike `rewriteStaleURLs`) so
+/// `DarkbloomCLITests` can drive it over a temp file: it edits an operator's
+/// config in place, and `migrateConfigIfNeeded` cannot be exercised directly
+/// without its legacy-path branch writing into the real `~/.config`.
+func stampConfigVersion(in path: URL) -> Bool {
+    guard var content = try? String(contentsOf: path, encoding: .utf8),
+        !content.contains(configVersionKey)
+    else { return false }
+
+    let legacy = content.range(of: legacyMaxConcurrentAssignment, options: .regularExpression)
+    if let legacy {
+        content.replaceSubrange(
+            legacy,
+            with: "engine_v2_max_concurrent = \(BackendSettings.defaultEngineV2MaxConcurrent)")
+    }
+    // A top-level key is legal only ahead of the first table header, and
+    // position 0 always satisfies that.
+    content = "\(configVersionKey) = \(ProviderConfig.currentConfigVersion)\n" + content
+
+    do {
+        try content.write(to: path, atomically: true, encoding: .utf8)
+    } catch {
+        return false
+    }
+    return legacy != nil
 }
 
 func describeConfigPath(_ snapshot: RuntimeSnapshot) -> String {

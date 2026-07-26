@@ -109,6 +109,8 @@ It is created automatically on first start. The TOML schema is defined in
 `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`.
 
 ```toml
+config_version = 1
+
 [provider]
 name = "darkbloom-mac16-1"
 memory_reserve_gb = 4
@@ -136,6 +138,18 @@ end = "08:00"
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).
 - `backend.max_model_slots` — maximum resident models at once (default 3).
+- `config_version` — schema version of this file, written automatically on
+  first start after upgrading. It only dates the file, so the provider can
+  tell a value the previous release GENERATED from one you chose. Leave it
+  alone; deleting it re-runs the one-time upgrade migrations below.
+- `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
+  engine slot (default 8 as of v0.8.0, clamped to `[1, 8]`). Raised from 4
+  alongside the paged KV cache, which only overtakes contiguous above ~5
+  concurrent rows. A `provider.toml` written before v0.8.0 carries an
+  explicit `= 4` that the old release generated; because that is
+  indistinguishable from a deliberate 4, first start after upgrading raises
+  it to 8 once, logs a warning saying so, and stamps `config_version`. If
+  you want 4, set it again afterwards — from then on it is honoured.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` (default — contiguous for every model), experimental `"paged"`,
   or `"contiguous"`. Vision (VLM) models are NOT forced to contiguous. The

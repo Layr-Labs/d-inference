@@ -1,6 +1,7 @@
 import Foundation
 
-/// One warning per retired knob an operator is still setting.
+/// One warning per retired knob an operator is still setting, plus one per
+/// one-time config migration this decode applied silently.
 ///
 /// WHY THIS IS NOT IN THE SERVE LOOP. These warnings used to live inline at
 /// the top of `ProviderLoop.run()`, which meant only the coordinator-serving
@@ -14,8 +15,9 @@ import Foundation
 /// `messages` is pure so the wording is testable without a daemon, a
 /// coordinator, or a config file on disk.
 public enum RetiredKnobWarnings {
-    /// Every retired-knob warning this config + environment earns, in a
-    /// stable order: environment variables first, then `[backend]` keys.
+    /// Every config warning this config + environment earns, in a stable
+    /// order: environment variables, then `[backend]` retired keys, then
+    /// applied migrations.
     public static func messages(
         config: ProviderConfig,
         environment: [String: String] = ProcessInfo.processInfo.environment
@@ -34,6 +36,21 @@ public enum RetiredKnobWarnings {
             out.append(
                 "provider.toml sets [backend] \(retired), which is a RETIRED knob and is "
                     + "IGNORED — remove the key")
+        }
+        // One-time migrations applied during decode. The operator's file on
+        // disk still reads the OLD value until the startup stamp rewrites
+        // it, so a silent migration would leave the file and the running
+        // behaviour disagreeing with nothing to explain the gap.
+        if config.appliedMigrations.contains(ProviderConfig.legacyMaxConcurrentMigrationID) {
+            let old = BackendSettings.legacyGeneratedMaxConcurrent
+            let new = BackendSettings.defaultEngineV2MaxConcurrent
+            out.append(
+                "provider.toml predates v0.8.0 (no config_version) and leaves [backend] "
+                    + "engine_v2_max_concurrent at \(old), the default the OLD release generated — "
+                    + "raising it to \(new). v0.8.0 serves .auto on paged KV, which only overtakes "
+                    + "contiguous above ~5 concurrent rows, so \(old) would be slower than not "
+                    + "flipping at all. If you chose \(old) deliberately, set it again: this "
+                    + "migration runs once and an explicit \(old) is honoured from then on.")
         }
         return out
     }

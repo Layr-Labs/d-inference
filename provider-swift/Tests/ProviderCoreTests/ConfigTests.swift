@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -225,4 +226,148 @@ import Testing
     #expect(decoded.backend.startupPreloadTimeoutSecs == 90)
     #expect(decoded.backend.startupSelftest == false)
     #expect(decoded.provider.updateJitterSeconds == 60)
+}
+
+// MARK: - engine_v2_max_concurrent: v0.8.0 default + pre-v0.8.0 migration
+//
+// v0.8.0 flips `.auto` to paged KV, which only overtakes contiguous above
+// ~5 concurrent rows (measured gemma-4 / M4 Max aggregate decode: 0.92x at
+// B=1, 0.98x at B=4, 1.17x at B=8). Paged at B=4 is therefore strictly worse
+// than not flipping, which makes the concurrency default part of the flip
+// rather than an independent knob.
+
+@Test func maxConcurrentAbsentKeyDefaultsToEight() throws {
+    // No `[backend]` section at all...
+    let bare = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    """)
+    #expect(bare.backend.engineV2MaxConcurrent == 8)
+
+    // ...and a `[backend]` section that simply omits the key.
+    let partial = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    port = 8100
+    """)
+    #expect(partial.backend.engineV2MaxConcurrent == 8)
+
+    // What actually reaches the engine slot: the decoded cap through the
+    // [1, 8] product clamp. This is the number the paged/contiguous
+    // crossover is measured against.
+    #expect(ProviderLoop.clampEngineV2Concurrency(partial.backend.engineV2MaxConcurrent) == 8)
+}
+
+// The bug this whole section exists for: the memberwise default moved 4 -> 8
+// while `init(from:)` kept its own literal `?? 4`, so every provider that
+// loaded a config file — i.e. all of them — stayed at B=4 while `.auto` went
+// paged. Pin the two together so they cannot drift again.
+@Test func maxConcurrentMemberwiseAndDecodeDefaultsCannotDrift() throws {
+    let decoded = try JSONDecoder().decode(
+        BackendSettings.self, from: Data(#"{}"#.utf8))
+    #expect(decoded.engineV2MaxConcurrent == BackendSettings().engineV2MaxConcurrent)
+    #expect(decoded.engineV2MaxConcurrent == BackendSettings.defaultEngineV2MaxConcurrent)
+}
+
+@Test func maxConcurrentExplicitEightStaysEight() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    engine_v2_max_concurrent = 8
+    """)
+
+    #expect(config.backend.engineV2MaxConcurrent == 8)
+    // 8 is the new default, so nothing was migrated — the operator gets no
+    // warning for agreeing with us.
+    #expect(config.appliedMigrations.isEmpty)
+}
+
+// A pre-v0.8.0 `provider.toml` carries an EXPLICIT `engine_v2_max_concurrent
+// = 4` — `TOMLEncoder` emits every non-optional key, the same reason every
+// field config still carries `kv_quant` (see
+// `configParsingRetiresKVQuantWithoutLosingNeighbours`). Absence of
+// `config_version` is the only thing that dates such a file, so it is spent
+// here: the generated 4 is raised once and announced.
+@Test func maxConcurrentUnstampedGeneratedFourIsRaisedToEightAndAnnounced() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    port = 8100
+    engine_v2_max_concurrent = 4
+    """)
+
+    #expect(config.backend.engineV2MaxConcurrent == 8)
+    #expect(config.appliedMigrations == [ProviderConfig.legacyMaxConcurrentMigrationID])
+
+    // The operator is told, on the shared startup surface every serve mode
+    // uses, including how to keep 4.
+    let messages = RetiredKnobWarnings.messages(config: config, environment: [:])
+    #expect(messages.count == 1)
+    let warning = try #require(messages.first)
+    #expect(warning.contains("engine_v2_max_concurrent"))
+    #expect(warning.contains("config_version"))
+    #expect(warning.contains("set it again"))
+}
+
+// The migration burns exactly one boot. Once the file is stamped, 4 is just a
+// number an operator chose, and it is honoured verbatim forever.
+@Test func maxConcurrentStampedFourIsHonouredNotMigrated() throws {
+    let config = ConfigManager.parse("""
+    config_version = 1
+
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    engine_v2_max_concurrent = 4
+    """)
+
+    #expect(config.backend.engineV2MaxConcurrent == 4)
+    #expect(config.appliedMigrations.isEmpty)
+    #expect(RetiredKnobWarnings.messages(config: config, environment: [:]).isEmpty)
+}
+
+// Blast radius: ONLY the value old releases actually generated is ambiguous.
+// Every other cap in range was necessarily typed by a human, so an unstamped
+// file carrying one is left exactly as written.
+@Test func maxConcurrentUnstampedNonGeneratedValuesAreNeverRewritten() throws {
+    for chosen in [1, 2, 3, 5, 6, 7, 8] as [UInt64] {
+        let config = ConfigManager.parse("""
+        [provider]
+        name = "test-provider"
+
+        [backend]
+        engine_v2_max_concurrent = \(chosen)
+        """)
+        #expect(config.backend.engineV2MaxConcurrent == chosen)
+        #expect(config.appliedMigrations.isEmpty)
+    }
+}
+
+// The stamp has to survive the serializer, or a deliberate 4 could never be
+// written back and would be re-migrated on every boot.
+@Test func configVersionStampRoundTripsAndPinsADeliberateFour() throws {
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(engineV2MaxConcurrent: 4),
+        coordinator: CoordinatorSettings()
+    )
+
+    let toml = ConfigManager.serialize(original)
+    #expect(toml.contains("config_version"))
+    // A top-level key is only valid TOML ahead of the first table header.
+    let firstTable = try #require(toml.range(of: "["))
+    let stamp = try #require(toml.range(of: "config_version"))
+    #expect(stamp.lowerBound < firstTable.lowerBound)
+
+    let decoded = ConfigManager.parse(toml)
+    #expect(decoded.configVersion == ProviderConfig.currentConfigVersion)
+    #expect(decoded.backend.engineV2MaxConcurrent == 4)
+    #expect(decoded.appliedMigrations.isEmpty)
 }

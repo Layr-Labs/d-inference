@@ -1490,9 +1490,10 @@ struct EngineV2FailLoudFactoryTests {
             from: Data(#"{"engine_v2": false}"#.utf8)
         )
         #expect(off.retiredKeysPresent == ["engine_v2"])
-        // New concurrency keys: default 4, per-model override map.
+        // New concurrency keys: default 8 as of v0.8.0 (raised with the
+        // `.auto` paged flip — see ConfigTests), per-model override map.
         let absent = try decoder.decode(BackendSettings.self, from: Data(#"{}"#.utf8))
-        #expect(absent.engineV2MaxConcurrent == 4)
+        #expect(absent.engineV2MaxConcurrent == 8)
         #expect(absent.engineV2MaxConcurrentByModel.isEmpty)
         let configured = try decoder.decode(
             BackendSettings.self,
@@ -1523,9 +1524,10 @@ struct EngineV2FailLoudFactoryTests {
         #expect(config.backend.engineV2MaxConcurrentByModel == [
             "gemma-4-26b-qat-4bit": 2, "gpt-oss-20b": 8,
         ])
-        // Defaults when the keys are absent.
+        // Defaults when the keys are absent. A pre-v0.8.0 file instead carries
+        // a serialized `= 4`, which ConfigTests covers separately.
         let defaults = ConfigManager.parse("[provider]\nname = \"cfg-test\"\n")
-        #expect(defaults.backend.engineV2MaxConcurrent == 4)
+        #expect(defaults.backend.engineV2MaxConcurrent == 8)
         #expect(defaults.backend.engineV2MaxConcurrentByModel.isEmpty)
     }
 

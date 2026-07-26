@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -382,37 +383,69 @@ const releasedMetallibName = "mlx.metallib"
 // entire value is that it cannot be fooled by a local build.
 func requirePinnedReleasedProvider(t *testing.T, path string) {
 	t.Helper()
-	info, err := os.Stat(path)
-	require.NoError(t, err, "released provider binary is unreadable: %s", path)
-	require.False(t, info.IsDir(), "released provider binary is a directory: %s", path)
-	require.NotZero(t, info.Mode()&0o111,
-		"released provider binary is not executable: %s", path)
-	require.Equal(t, pinnedReleasedDigest(t, "BINARY_SHA256"), fileDigest(t, path),
-		"DARKBLOOM_PROVIDER_BINARY is not the hash-pinned released v0.7.12 artifact; "+
-			"fetch it with scripts/fetch-v0712-provider.sh")
-
-	metallib := filepath.Join(filepath.Dir(path), releasedMetallibName)
-	metallibInfo, err := os.Stat(metallib)
-	require.NoError(t, err,
-		"released v0.7.12 metallib is missing beside the binary: %s", metallib)
-	require.False(t, metallibInfo.IsDir(),
-		"released v0.7.12 metallib is a directory: %s", metallib)
-	require.Equal(t, pinnedReleasedDigest(t, "METALLIB_SHA256"), fileDigest(t, metallib),
-		"%s is not the hash-pinned released v0.7.12 metallib; the bundle beside "+
-			"DARKBLOOM_PROVIDER_BINARY has drifted — re-fetch it with "+
-			"scripts/fetch-v0712-provider.sh", metallib)
+	require.NoError(t, verifyPinnedBundle(path,
+		pinnedReleasedDigest(t, "BINARY_SHA256"),
+		pinnedReleasedDigest(t, "METALLIB_SHA256")),
+		"the bundle at DARKBLOOM_PROVIDER_BINARY is not the hash-pinned released "+
+			"v0.7.12 artifact; re-fetch it with scripts/fetch-v0712-provider.sh")
 }
 
-// fileDigest returns the lowercase hex SHA-256 of the file at path.
-func fileDigest(t *testing.T, path string) string {
-	t.Helper()
+// verifyPinnedBundle checks both halves of the bundle against their pinned
+// digests and returns the first mismatch. It is split out from
+// requirePinnedReleasedProvider so every rejection path — including a
+// drifted or missing metallib beside a correct executable — is testable
+// without a copy of the real released artifact.
+func verifyPinnedBundle(binaryPath, wantBinary, wantMetallib string) error {
+	info, err := os.Stat(binaryPath)
+	if err != nil {
+		return fmt.Errorf("released provider binary is unreadable: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("released provider binary is a directory: %s", binaryPath)
+	}
+	if info.Mode()&0o111 == 0 {
+		return fmt.Errorf("released provider binary is not executable: %s", binaryPath)
+	}
+	got, err := digestFile(binaryPath)
+	if err != nil {
+		return err
+	}
+	if got != wantBinary {
+		return fmt.Errorf("released provider binary digest %s does not match pinned %s (%s)",
+			got, wantBinary, binaryPath)
+	}
+
+	metallib := filepath.Join(filepath.Dir(binaryPath), releasedMetallibName)
+	metallibInfo, err := os.Stat(metallib)
+	if err != nil {
+		return fmt.Errorf("released v0.7.12 metallib is missing beside the binary: %w", err)
+	}
+	if metallibInfo.IsDir() {
+		return fmt.Errorf("released v0.7.12 metallib is a directory: %s", metallib)
+	}
+	got, err = digestFile(metallib)
+	if err != nil {
+		return err
+	}
+	if got != wantMetallib {
+		return fmt.Errorf("released v0.7.12 metallib digest %s does not match pinned %s (%s)",
+			got, wantMetallib, metallib)
+	}
+	return nil
+}
+
+// digestFile returns the lowercase hex SHA-256 of the file at path.
+func digestFile(path string) (string, error) {
 	file, err := os.Open(path)
-	require.NoError(t, err)
+	if err != nil {
+		return "", err
+	}
 	defer file.Close()
 	digest := sha256.New()
-	_, err = io.Copy(digest, file)
-	require.NoError(t, err)
-	return hex.EncodeToString(digest.Sum(nil))
+	if _, err := io.Copy(digest, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 // pinnedReleasedDigest reads the named <VAR>_SHA256 assignment out of
@@ -473,13 +506,39 @@ func TestIntegrationMixedVersionGateContract(t *testing.T) {
 		}
 	})
 
-	t.Run("metallib_drift_fails_the_pin", func(t *testing.T) {
-		// requirePinnedReleasedProvider reads the metallib as a sibling of the
-		// binary; prove that a bundle whose metallib does not match is rejected
-		// rather than accepted because only the executable was checked.
-		dir := t.TempDir()
-		drifted := filepath.Join(dir, releasedMetallibName)
-		require.NoError(t, os.WriteFile(drifted, []byte("not the released metallib"), 0o644))
-		require.NotEqual(t, pinnedReleasedDigest(t, "METALLIB_SHA256"), fileDigest(t, drifted))
+	// The executable is correct in every case below; only the metallib
+	// varies. Before this gate verified METALLIB_SHA256 all three passed.
+	t.Run("metallib_is_enforced_beside_a_correct_binary", func(t *testing.T) {
+		wantMetallib := pinnedReleasedDigest(t, "METALLIB_SHA256")
+		newBundle := func(t *testing.T, metallib []byte) (dir, binary, binaryDigest string) {
+			t.Helper()
+			dir = t.TempDir()
+			binary = filepath.Join(dir, "darkbloom")
+			require.NoError(t, os.WriteFile(binary, []byte("released executable"), 0o755))
+			digest, err := digestFile(binary)
+			require.NoError(t, err)
+			if metallib != nil {
+				require.NoError(t,
+					os.WriteFile(filepath.Join(dir, releasedMetallibName), metallib, 0o644))
+			}
+			return dir, binary, digest
+		}
+
+		_, binary, binaryDigest := newBundle(t, []byte("drifted metallib"))
+		require.ErrorContains(t, verifyPinnedBundle(binary, binaryDigest, wantMetallib),
+			"metallib digest",
+			"a drifted metallib beside a correct binary was accepted")
+
+		_, binary, binaryDigest = newBundle(t, nil)
+		require.ErrorContains(t, verifyPinnedBundle(binary, binaryDigest, wantMetallib),
+			"metallib is missing",
+			"a bundle with no metallib at all was accepted")
+
+		// Matching metallib beside a matching binary is the only accepted case.
+		matching := []byte("released metallib bytes")
+		matchingDigest := sha256.Sum256(matching)
+		_, binary, binaryDigest = newBundle(t, matching)
+		require.NoError(t, verifyPinnedBundle(
+			binary, binaryDigest, hex.EncodeToString(matchingDigest[:])))
 	})
 }

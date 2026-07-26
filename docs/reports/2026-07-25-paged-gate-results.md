@@ -1330,6 +1330,37 @@ negative. Use fixed-string mode, or escape. This produced a false "grep is
 unreliable" conclusion that was itself retracted — and had it stood, it
 would have caused a *true* negative to be discarded.
 
+**3. Cite `git grep <pat> HEAD -- <path>`, not the working tree.** The
+grep rule above has a blind spot: a grep against a MUTATING worktree is
+valid only until the next agent's edit lands. An agent's `EngineLoopV2`
+citations were correct when taken and two lines off an hour later, through
+no error of theirs. HEAD is stable; the worktree is not.
+
+**4. Verify against content, never against the message that claims it.**
+Two people independently mis-reported a file's state this session by
+reading a commit message or a peer's summary of their own change instead
+of the file. Both were confident and both were wrong.
+
+Worked example of all four failing at once, recorded because it is mine.
+Asked whether a doc's "provider returns 503, coordinator reroutes" claim
+was citable, I ran `grep StatusServiceUnavailable coordinator/api/*.go |
+head -6`, saw six billing hits, and concluded the inference path had none.
+The `head -6` truncated an alphabetical list exactly where
+`billing_handlers.go` ends — twelve non-billing files carry it, and
+`consumer.go` alone has 19 sites. I then grepped the identifiers
+`requeue|reroute`, got zero, and called the behaviour absent; it exists as
+the "unbounded fault-failover ladder" with a `dispatch_to_capacity_503`
+counter. I asserted a citation had been dropped without opening the file —
+it was present. And I quoted a guard at `:586` read from a worktree five
+agents were editing; HEAD said `:543`. Four rules, four violations, inside
+one message that was itself recording rule 3.
+
+The claim was substantially TRUE. Removing it was still right, for a
+different reason: a provider-side quickstart should not assert
+coordinator routing behaviour. Recording the correct reason matters,
+because the next person to need that path will grep for it, find it, and
+rightly distrust everything around it.
+
 Corollary worth keeping: **a negative needs a control.** "Symbol absent
 from file A" is only evidence once the same single-branch pattern is shown
 to match in sibling file B. Two load-bearing negatives here

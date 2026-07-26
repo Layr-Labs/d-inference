@@ -700,3 +700,48 @@ the condition that makes our symmetric watermark preempt RUNNING decodes.
 today's symmetric ceiling that pressure converts directly into preemptions
 which are deterministically full-cost on gemma-4. With it, the same
 pressure expresses as deferred admissions.
+
+### Refinement: sharing moves the tiling, it does not remove it
+
+Block sharing lifts the 20 GiB disk ceiling, but the reason sidecars tile
+is a property of RINGS, not of disks. `SSDPrefixCache.swift:1146-1152`
+states it:
+
+> a donor's ring holds "exactly the last W positions ending at its own
+> absolute offset, which is a mid-block position for all but 1 in
+> blockSize requests... Successive donations end at different offsets and
+> their covered ranges TILE, which is what eventually completes a
+> boundary's window. A boundary whose tiling is incomplete is simply not
+> restorable, and the adopter replays."
+
+A finished donor's ring holds one window ending at ITS final offset.
+Sharing those pages by pointer serves adopters matching at that boundary;
+every other boundary still needs coverage from some other donor.
+
+So: **link 5 unblocks the capability and is bounded by disk; block sharing
+lifts the disk bound and improves tiling density; neither removes the
+requirement that a boundary's window be fully covered before it is
+restorable.** Where vLLM does better here it is a population effect —
+many concurrent requests' retained blocks tile naturally in-pool — not an
+absence of the requirement.
+
+---
+
+## Provenance
+
+Five agents, read against `vllm-project/vllm @ b153ae6089` (2026-07-26).
+The gemma-4 geometry is confirmed by two independent sources: the
+operator's checkpoint on disk and a verbatim in-repo literal
+(`CBv2LastQueryPrefillTests.swift:775-791`) that cannot go vacuous.
+The sliding-window measurements were EXECUTED on this M4 Max against
+vLLM's real `SlidingWindowManager` and `HybridKVCacheCoordinator`.
+
+Every headline claim here survived being challenged by a peer, and the
+corrections above are the ones that survived challenge in turn. Ten
+substantive claims were retracted during review, including four of the
+five agents correcting their own submitted findings. Three agents cited
+the wrong checkout at some point — root cause is that the default cwd has
+no top-level `PagedKVPool.swift`, so path resolution silently lands in
+`.claude/worktrees/release-v070/`, where `pageCount`/`usablePageCount`
+differ semantically. That is a standing hazard for anyone working across
+these four trees.

@@ -534,7 +534,7 @@ how often ESTABLISHED rows are destroyed. Neither discounts the other.
 A FIFTH delta falls out of this, and it is the mechanism behind vLLM's
 confidence in recompute-over-swap: **vLLM re-enters the prefix-cache
 lookup on resume.** Its waiting-loop lookup is gated on
-`num_computed_tokens == 0` (`scheduler.py:717`), which a preempted request
+`num_computed_tokens == 0` (`vllm/v1/core/sched/scheduler.py:718`), which a preempted request
 satisfies precisely because `_preempt_request` zeroed it. There is a test
 named for the behaviour. We structurally cannot — and making it possible
 is new work at the submit-only call site, not a side effect of link 5.
@@ -1285,3 +1285,23 @@ Same class as the four-tree `cwd` trap recorded above. When lifting a
 line-number citation out of this document, re-resolve the path before
 acting on it; a successful `read` is not evidence the path was the
 intended one.
+
+### Citations in this document were machine-verified
+
+Every `.py` citation above was checked against the clone: file resolves,
+line range is in bounds, and for the load-bearing ones the anchor text
+actually falls inside the cited range (whitespace-normalised across the
+window, because docstrings wrap and a naive single-line match reports
+false failures on correct citations).
+
+Result: 17 distinct citations, **one defect** — `scheduler.py:717` was
+both off by one (the predicate is at 718) and ambiguous, since the clone
+holds five files named `scheduler.py`. Corrected to
+`vllm/v1/core/sched/scheduler.py:718`.
+
+The general failure mode, worth knowing before trusting any citation in a
+message stream: **anchors sit a few lines BEFORE the cited start**,
+because it is natural to cite a function's body while quoting its
+docstring header. That is invisible on re-reading, since the surrounding
+code looks right either way. Bare basenames compound it — `scheduler.py`
+is not a citation in a tree with five of them.

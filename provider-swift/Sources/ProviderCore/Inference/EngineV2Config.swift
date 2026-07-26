@@ -8,7 +8,7 @@
 //   * The old `DARKBLOOM_ENGINE_V2` / `DARKBLOOM_ENGINE_V2_MODELS` env
 //     switches and the `engine_v2` provider-config key are RETIRED. The
 //     config key is still parsed (a startup WARN fires when an operator
-//     set `engine_v2 = false` — see `ProviderLoop.run()`), but selection
+//     set `engine_v2 = false` — see `RetiredKnobWarnings`), but selection
 //     is unconditionally v2. Rollback is release-level (re-point latest
 //     to the previous release), not a per-box switch.
 //   * Which MODELS can serve is architecture-derived at scan/advertise
@@ -28,8 +28,9 @@ import MLXLMCommon
 // MARK: - Retired selection surface
 
 /// Retired v0.7.0–v0.7.4 selection knobs, kept ONLY so startup can warn
-/// operators who still set them (`ProviderLoop.run()`); nothing consults
-/// them for selection anymore.
+/// operators who still set them (`RetiredKnobWarnings`, emitted by
+/// `Start.run()` for every serving mode); nothing consults them for
+/// selection anymore.
 public enum EngineV2Config {
     /// RETIRED master flag (was the per-box kill switch). Ignored.
     public static let environmentFlag = "DARKBLOOM_ENGINE_V2"

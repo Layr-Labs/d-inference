@@ -126,6 +126,42 @@ import Testing
     #expect(decoded.backend.retiredKeysPresent.isEmpty)
 }
 
+// The warning text docs/provider/beta-features.md promises, produced by the
+// single shared emitter `Start.run()` calls before it picks a serving mode.
+// It used to be inlined in `ProviderLoop.run()`, which `darkbloom start
+// --local` never builds — a standalone operator upgrading a provider.toml
+// that still set `kv_quant` was told nothing at all.
+@Test func retiredKnobWarningsNameEveryRetiredConfigKeyAndEnvVar() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    kv_quant = true
+    engine_v2 = false
+    """)
+
+    let messages = RetiredKnobWarnings.messages(config: config, environment: [:])
+    #expect(messages.count == 2)
+    #expect(messages.contains(
+        "provider.toml sets [backend] kv_quant, which is a RETIRED knob and is "
+            + "IGNORED — remove the key"))
+    #expect(messages.contains { $0.contains("[backend] engine_v2,") })
+
+    // Retired ENV vars earn their own line, ahead of the config keys.
+    let withEnv = RetiredKnobWarnings.messages(
+        config: config, environment: ["DARKBLOOM_COMPILED_DECODE": "1"])
+    #expect(withEnv.count == 3)
+    #expect(withEnv.first?.hasPrefix("DARKBLOOM_COMPILED_DECODE is retired") == true)
+
+    // A clean config earns silence — no warning fatigue for the common box.
+    let clean = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+    """)
+    #expect(RetiredKnobWarnings.messages(config: clean, environment: [:]).isEmpty)
+}
+
 // MARK: - Startup preload + rollover jitter keys
 
 @Test func configParsingDefaultsStartupPreloadKeys() throws {

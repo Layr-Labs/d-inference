@@ -30,6 +30,19 @@ enum KVBackendPosture {
         return max(4 * refreshPeriod, 10)
     }
 
+    /// How long a snapshot may go unrefreshed before the daemon is called
+    /// WEDGED rather than merely slow. Twice the warning bar — eight missed
+    /// writes — floored at the 90 s `DaemonState.isStale` default so an
+    /// ordinary fast-heartbeat box keeps exactly the bar it always had.
+    /// The derivation only starts to bind above a ~23 s heartbeat, and that
+    /// is the whole point: at `heartbeat_interval_secs = 200` the daemon
+    /// legitimately rewrites every 100 s, so a fixed 90 s bar would call a
+    /// healthy daemon wedged during every normal interval, withhold its
+    /// backend verdict, and exit `doctor` non-zero.
+    static func wedgedAfterSeconds(heartbeatIntervalSecs: UInt64) -> Double {
+        max(8 * refreshPeriodSeconds(heartbeatIntervalSecs: heartbeatIntervalSecs), 90)
+    }
+
     /// The daemon's own write period, for telling an operator what cadence
     /// they should have seen.
     static func refreshPeriodSeconds(heartbeatIntervalSecs: UInt64) -> Double {
@@ -117,6 +130,35 @@ enum KVBackendPosture {
     }
 }
 
+/// The operator's CONFIGURED backend selection, as `doctor` reads it out of
+/// provider.toml before consulting any daemon.
+///
+/// Kept distinct from what the slots report because the two answer different
+/// questions: config is the INTENT, slots are the EVIDENCE. A staged rollout
+/// with intent and no evidence is the case the verdict below must not
+/// certify.
+struct KVBackendSelection: Equatable {
+    /// `[backend] engine_v2_kv_backend`.
+    var global: String
+    /// `[backend] engine_v2_kv_backend_by_model`.
+    var byModel: [String: String]
+
+    static let auto = KVBackendSelection(global: "auto", byModel: [:])
+
+    /// Every non-`auto` selection on record, named the way the operator
+    /// wrote it so the fix is obvious from the doctor line alone.
+    var explicitRequests: [String] {
+        var out: [String] = []
+        if global != "auto" {
+            out.append("engine_v2_kv_backend = \"\(global)\"")
+        }
+        for (model, backend) in byModel.sorted(by: { $0.key < $1.key }) where backend != "auto" {
+            out.append("\(model) = \"\(backend)\"")
+        }
+        return out
+    }
+}
+
 // MARK: - doctor
 
 /// Pure diagnosis of "is this box serving the KV backend it was told to?",
@@ -131,7 +173,8 @@ enum KVPostureDiagnosis {
         state: DaemonState?,
         daemonRunning: Bool,
         now: Double,
-        heartbeatIntervalSecs: UInt64
+        heartbeatIntervalSecs: UInt64,
+        configured: KVBackendSelection = .auto
     ) -> [DoctorCheck] {
         guard daemonRunning else {
             // `doctor` already prints "Daemon: NOT running" above; a backend
@@ -160,7 +203,8 @@ enum KVPostureDiagnosis {
         // Freshness is a fault in its own right: a running daemon that has
         // stopped rewriting its snapshot is wedged, and every live field
         // below it is a guess.
-        let wedged = state.isStale(now: now)
+        let wedged = age > KVBackendPosture.wedgedAfterSeconds(
+            heartbeatIntervalSecs: heartbeatIntervalSecs)
         if wedged {
             out.append(
                 DoctorCheck(
@@ -203,7 +247,7 @@ enum KVPostureDiagnosis {
             return out
         }
 
-        out.append(backendCheck(slots: slots))
+        out.append(backendCheck(slots: slots, configured: configured))
         return out
     }
 
@@ -213,12 +257,31 @@ enum KVPostureDiagnosis {
     /// explicit request is a claim someone verifies against, so a refusal
     /// (no engine built, box serving nothing for that model) and a silent
     /// degrade (kill switch, VLM veto) both FAIL.
-    static func backendCheck(slots: [DaemonState.SlotPosture]) -> DoctorCheck {
+    ///
+    /// The slots alone cannot answer this. `engine_v2_kv_backend = "paged"`
+    /// with startup preload off — or after an idle unload — leaves
+    /// `slots: []`, and reading intent solely off the slots would then
+    /// conclude nobody asked for anything and certify a paged rollout that
+    /// never loaded a paged engine. `configured` carries the intent so that
+    /// case WARNs.
+    static func backendCheck(
+        slots: [DaemonState.SlotPosture],
+        configured: KVBackendSelection = .auto
+    ) -> DoctorCheck {
         let explicit = slots.filter { $0.kvBackendRequested != "auto" }
         guard !explicit.isEmpty else {
             let summary = slots.isEmpty
                 ? "no models loaded"
                 : slots.map { "\($0.model)=\($0.kvBackend ?? "none")" }.joined(separator: ", ")
+            let requested = configured.explicitRequests
+            guard requested.isEmpty else {
+                return DoctorCheck(
+                    name: "kv backend posture",
+                    status: .warn,
+                    detail: "config requests \(requested.joined(separator: ", ")) but no slot "
+                        + "reports an explicit backend (\(summary)) — nothing on this box has "
+                        + "loaded, let alone proved, the backend it was configured for")
+            }
             return DoctorCheck(
                 name: "kv backend posture",
                 status: .pass,

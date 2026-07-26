@@ -252,4 +252,67 @@ struct KVBackendPostureTests {
             state: nil, daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat)
         #expect(check(noFile, "kv backend posture")?.status == .warn)
     }
+
+    @Test("doctor WARNS on an explicit config selection that has no slot behind it")
+    func doctorWarnsOnConfiguredBackendWithNoSlots() {
+        // The operator surface's worst outcome: `engine_v2_kv_backend =
+        // "paged"` box-wide, startup preload off (or an idle unload), so the
+        // state file carries `slots: []`. Reading intent off the slots alone
+        // concludes nobody asked for anything and PASSES — certifying a
+        // paged rollout that never loaded, let alone proved, a paged engine.
+        let checks = KVPostureDiagnosis.checks(
+            state: state(slots: []),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: KVBackendSelection(global: "paged", byModel: [:]))
+        let verdict = check(checks, "kv backend posture")
+        #expect(verdict?.status == .warn)
+        #expect(verdict?.detail.contains("engine_v2_kv_backend = \"paged\"") == true)
+        #expect(verdict?.detail.contains("no models loaded") == true)
+
+        // A per-model override is just as explicit and must not be lost either.
+        let byModel = KVPostureDiagnosis.checks(
+            state: state(slots: []),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: KVBackendSelection(global: "auto", byModel: ["gemma-4-26b": "paged"]))
+        #expect(check(byModel, "kv backend posture")?.status == .warn)
+        #expect(check(byModel, "kv backend posture")?.detail
+            .contains("gemma-4-26b = \"paged\"") == true)
+
+        // Genuinely-auto config with nothing loaded is still a PASS: there is
+        // no claim outstanding for the box to have failed.
+        let auto = KVPostureDiagnosis.checks(
+            state: state(slots: []),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: .auto)
+        #expect(check(auto, "kv backend posture")?.status == .pass)
+        #expect(check(auto, "kv backend posture")?.detail
+            .contains("no explicit backend request (auto)") == true)
+    }
+
+    @Test("doctor sizes the wedge bar off the configured heartbeat, not a fixed 90s")
+    func doctorWedgeBarFollowsConfiguredHeartbeat() {
+        let slots: [DaemonState.SlotPosture] = [
+            .init(model: "m", kvBackend: "paged", kvBackendRequested: "paged")
+        ]
+        // heartbeat 200s => the daemon legitimately rewrites every 100s, so a
+        // 150s-old snapshot is one ordinary interval, not a wedge. Under the
+        // fixed 90s default this FAILED and withheld the backend verdict.
+        let slowHeartbeat = KVPostureDiagnosis.checks(
+            state: state(slots: slots), daemonRunning: true, now: 1150,
+            heartbeatIntervalSecs: 200)
+        #expect(check(slowHeartbeat, "daemon state freshness")?.status != .fail)
+        #expect(check(slowHeartbeat, "kv backend posture")?.status == .pass)
+
+        // Eight missed writes on the same heartbeat IS a wedge.
+        let reallyWedged = KVPostureDiagnosis.checks(
+            state: state(slots: slots), daemonRunning: true, now: 1900,
+            heartbeatIntervalSecs: 200)
+        #expect(check(reallyWedged, "daemon state freshness")?.status == .fail)
+        #expect(check(reallyWedged, "kv backend posture")?.detail
+            .contains("verdict withheld") == true)
+
+        // A fast heartbeat keeps the historical 90s bar exactly.
+        #expect(KVBackendPosture.wedgedAfterSeconds(heartbeatIntervalSecs: heartbeat) == 90)
+        #expect(KVBackendPosture.wedgedAfterSeconds(heartbeatIntervalSecs: 200) == 800)
+    }
 }

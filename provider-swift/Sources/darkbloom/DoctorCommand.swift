@@ -46,12 +46,17 @@ struct Doctor: AsyncParsableCommand {
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?
         // Appended to the detailed checks so a refused explicit paged
-        // request exits non-zero like any other FAIL.
+        // request exits non-zero like any other FAIL. The configured
+        // selection goes in alongside the state because an explicit
+        // selection with no loaded slot is invisible in the state file.
         checks.append(contentsOf: KVPostureDiagnosis.checks(
             state: daemonState,
             daemonRunning: daemonRunning,
             now: Date().timeIntervalSince1970,
-            heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs))
+            heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs,
+            configured: KVBackendSelection(
+                global: snapshot.config.backend.engineV2KVBackend,
+                byModel: snapshot.config.backend.engineV2KVBackendByModel)))
 
         // The high-signal diagnosis first (sectioned, with fixes).
         let rendered = DiagnosticReportRenderer.render(diagnosis)

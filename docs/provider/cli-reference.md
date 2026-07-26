@@ -150,12 +150,18 @@ Two of the detailed checks cover the KV-backend rollout:
 
 | Check | Fails when |
 |-------|-----------|
-| `daemon state freshness` | The daemon is running but has not rewritten its state file for 90 s — it is wedged, and every live value below it is a guess. |
+| `daemon state freshness` | The daemon is running but has not rewritten its state file for eight write periods — it is wedged, and every live value below it is a guess. The bar is derived from `heartbeat_interval_secs` (the daemon writes every half-heartbeat) with a 90 s floor, so raising the heartbeat does not make a healthy daemon look wedged. |
 | `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
 
 `auto` never fails this check — it resolves to contiguous by design. When
 the state file is past the wedge bar the backend verdict is WITHHELD rather
 than asserted from a snapshot that may predate a reload.
+
+An explicit `engine_v2_kv_backend` with no slot behind it — startup preload
+off, or every slot idle-unloaded — WARNs rather than passes: nothing on the
+box has loaded, let alone proved, the backend it was configured for. Under
+`--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
+which is the point: an unproven paged rollout must not certify.
 
 ## `darkbloom verify`
 

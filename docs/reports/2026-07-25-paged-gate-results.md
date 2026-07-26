@@ -1428,3 +1428,103 @@ from file A" is only evidence once the same single-branch pattern is shown
 to match in sibling file B. Two load-bearing negatives here
 (`retainPage` has no callers; FlashAttention never sets
 `reorder_batch_threshold`) were re-established that way after the scare.
+
+
+---
+
+# Why MTP is slow on paged — measured
+
+Root-caused at gemma-4-26B-A4B geometry (30 layers, 25 sliding w=1024/hd=256
++ 5 full hd=512, 16 query heads), B=1, fp16, M4 Max, 7 paired in-process
+reps, shipping config (`partitionTargetDefault = 0`).
+
+| | paged | contiguous | delta |
+|---|---:|---:|---:|
+| rectangular verify, k=3, ctx=1024 | **7.339 ms** | **5.122 ms** | **+2.217 ms** |
+
+The reported engine gap was 16.422 − 14.214 = +2.208 ms. **The KV layer
+alone accounts for 100.4% of it** — nothing left for the model body, the
+drafter, or finalize bookkeeping.
+
+## The paged kernel is BETTER, and that is why it loses
+
+OLS over columns ∈ {1,2,3,4,6,8}:
+
+    paged       1.464 + 1.4843 × cols     (49.5 µs per column per layer)
+    contiguous  2.831 + 0.5827 × cols     (19.4 µs per column per layer)
+
+Paged's FIXED cost is **lower** (1.46 vs 2.83 ms). Its marginal cost is
+**2.55× steeper**. Break-even is **1.52 columns**, so paged wins at k=0 —
+plain decode, which is 100% of production today — and loses at every
+k ≥ 1, linearly worse with k. That is the direct explanation of the sign
+flip: forcing k=1 gives **+14.7% on contiguous and −5.8% on paged.**
+
+It is not a worse kernel. It is a kernel optimised for the wrong shape of
+work, and MTP is the only thing that asks for the wrong shape:
+`PagedAttentionKernel.decode` is TWO dispatches (part + merge), so a k=3
+round issues `2 × (1+k) × 30 = 240` where contiguous issues 120 slice
+SDPAs.
+
+## Two ablations rule out the obvious answers
+
+**Not bandwidth.** Paged verify is FLAT across a 16× context sweep
+(9.77 / 9.77 / 7.72 / 6.98 / 8.34 ms at ctx 256→4096) while contiguous
+grows monotonically (3.79 → 5.94). Excess KV traffic would scale with
+context. It does not.
+
+**Not occupancy.** A PTOK target A/B at 0/32/128/512 shows no material
+benefit (best is 3.6%, inside noise). Split-K partition sizing is not the
+lever — and re-enabling adaptation would reintroduce the batch-composition
+nondeterminism `partitionTargetDefault = 0` was just landed to remove.
+
+## Attribution of the 2.217 ms
+
+| term | ms | share |
+|---|---:|---:|
+| extra dispatch PAIRS from the per-column loop | ~2.0 | **~90%** |
+| drafter capture gather materialisation | ~0.14 | ~6% |
+| per-column seqinfo host→device uploads | 0.07 | 3.2% |
+| `CBv2MTPCaptureFence` full-tensor `sum()` | ~0.03 | ~1.5% |
+
+## Four premises disproved — including two of mine
+
+- **Rollback is not the cost.** The paged transaction is bookkeeping only;
+  no staging buffer exists. Ironically *contiguous* is the backend that
+  stages.
+- **`maxSpeculativeSpan` headroom is not the cost.** Static geometry
+  checked at plan time — host integer comparisons.
+- **Page-table updates are not the cost.** `tableVersion` bumps only when
+  `ensurePage` appends; at most one of the 1+k columns can bump, on
+  ~(1+k)/16 of rounds.
+- **No extra device pass for rejected drafts.** Page release is deferred to
+  a single drain over a normally-empty array.
+
+## Ranked fixes
+
+1. **Batch the 1+k verify columns into ONE paged dispatch per layer.**
+   Blocking for shipping MTP-on with paged. Hoist the KV write out of the
+   column loop (one `write` already scatters n tokens in a single
+   dispatch), then pack columns onto the kernel's batch axis. 3 dispatches
+   per layer instead of 8 at k=3. **No Metal changes.** Requires a parity
+   test that packed output is bit-identical to the per-column loop.
+   *Medium, ~150 lines.*
+2. **Reduce the CaptureFence `sum()` to a one-element probe.** The edge it
+   publishes ALREADY EXISTS — `PagedKVPool.gather` publishes an identical
+   back-edge with a single element, and its own comment says so. Currently
+   reads ~13 MiB to establish a dependency a 4-byte read already
+   established. *Trivial, one expression.*
+3. Cache per-column seqinfo — **do not do separately**, subsumed by 1.
+4. Tune PTOK — **do not do.** Measured null, and it would undo the
+   invariance fix.
+
+## Landing order matters, and getting it wrong regresses paged
+
+The depth-controller accounting bug and this penalty are fully independent
+— one changes WHICH k is chosen, the other what a chosen k COSTS. But:
+
+> **Land the paged verify fix BEFORE the depth-controller fix.**
+
+Fixing the controller alone pushes it toward k ≥ 1, which is exactly where
+paged is genuinely slower. That would regress the backend this release is
+named for. After fix 1 the cost curve is flat enough in k that the
+corrected controller's deeper speculation is profitable on both backends.

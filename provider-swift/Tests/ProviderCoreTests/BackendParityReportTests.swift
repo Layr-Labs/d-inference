@@ -210,7 +210,9 @@ struct BackendParityReportTests {
                     secondPrefillTokensSaved: saved,
                     cacheHits: 1,
                     cacheMisses: 1,
-                    adoptionTokenExact: exact))
+                    adoptionTokenExact: exact,
+                    adoptionComparedTokens: exact == nil ? 0 : 48,
+                    probeResolvedBackend: selection))
         }
 
         // The real gemma-4 shape: 2,816 of 28,672 skipped = 9.8%.
@@ -219,7 +221,12 @@ struct BackendParityReportTests {
             candidate: arm("paged", saved: 2816, bound: 25600, exact: true))
         #expect(thin.verdict == .pass)
         #expect(thin.detail.contains("9.8%"))
+        #expect(thin.detail.contains("over 48 completion tokens"))
+        #expect(thin.detail.contains("token 20"))
         #expect(thin.detail.contains("NOT as 'adoption is exact'"))
+        // A PASS must not imply it covered the SSD tier, which is where the
+        // measured divergence actually came from.
+        #expect(thin.detail.contains("does not cover the SSD tier"))
 
         // Unmeasured must say the verdict is about counts only, and must not
         // imply the answer was checked.
@@ -234,8 +241,22 @@ struct BackendParityReportTests {
         // be quoted without the other.
         let summary = BackendParityCriteria.prefixSummary(
             arm("paged", saved: 2816, bound: 25600, exact: true).prefixReuse!)
-        #expect(summary.contains("adoptionExact=true"))
+        #expect(summary.contains("adoptionExact=true/48tok"))
         #expect(summary.contains("reused=9.8%"))
+        #expect(summary.contains("probeResolved=paged"))
+
+        // A probe arm that DEGRADED must not be readable as a real paged
+        // measurement. Same resolved string as an honest `.auto` contiguous
+        // arm, so only the reason distinguishes them.
+        let degraded = BackendParityObservation.PrefixReuse(
+            capabilitySupported: true,
+            promptTokens: 28672,
+            adoptionTokenExact: true,
+            adoptionComparedTokens: 48,
+            probeResolvedBackend: "contiguous",
+            probeFallbackReason: "kill_switch")
+        let degradedSummary = BackendParityCriteria.prefixSummary(degraded)
+        #expect(degradedSummary.contains("probeResolved=contiguous(DEGRADED: kill_switch)"))
     }
 
     // MARK: - Exit status

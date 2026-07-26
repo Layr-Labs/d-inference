@@ -500,6 +500,23 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// therefore means NOT MEASURED and must never be read as exact —
         /// the criterion says so out loud rather than passing quietly.
         public let adoptionTokenExact: Bool?
+        /// Completion tokens the exactness comparison actually covered. This
+        /// is the oracle's WINDOW and bounds what it could possibly have seen:
+        /// the measured paged adoption divergence appears at completion token
+        /// 20, so an 8-token window reports "exact" for a defect it stopped
+        /// before. `adoptionTokenExact` must never be quoted without it.
+        public let adoptionComparedTokens: Int
+        /// What the PROBE's own engine resolved to, and why it degraded if it
+        /// did. The probe builds a separate engine per arm, so it can degrade
+        /// independently of the arm engine and today does so invisibly.
+        ///
+        /// Both halves are required and neither substitutes for the other: an
+        /// `.auto` arm resolving contiguous is a legitimate choice, while a
+        /// `.paged` arm degraded by a kill switch or a missing kernel resource
+        /// resolves to the SAME string and is a silently-wrong measurement.
+        /// Only the reason separates them.
+        public let probeResolvedBackend: String?
+        public let probeFallbackReason: String?
         /// Non-nil when no measurement could be taken at all.
         public let unavailableReason: String?
 
@@ -520,6 +537,9 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             cacheMisses: Int = 0,
             cacheTokensSaved: Int = 0,
             adoptionTokenExact: Bool? = nil,
+            adoptionComparedTokens: Int = 0,
+            probeResolvedBackend: String? = nil,
+            probeFallbackReason: String? = nil,
             unavailableReason: String? = nil
         ) {
             self.capabilitySupported = capabilitySupported
@@ -538,6 +558,9 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             self.cacheMisses = cacheMisses
             self.cacheTokensSaved = cacheTokensSaved
             self.adoptionTokenExact = adoptionTokenExact
+            self.adoptionComparedTokens = adoptionComparedTokens
+            self.probeResolvedBackend = probeResolvedBackend
+            self.probeFallbackReason = probeFallbackReason
             self.unavailableReason = unavailableReason
         }
     }
@@ -1414,12 +1437,17 @@ public enum BackendParityCriteria {
             return Double(arm.secondPrefillTokensSaved) / Double(arm.promptTokens) * 100
         }
         if let weakest = exercised.min() {
-            detail += ". Adoption was token-exact against each arm's OWN cold request, but "
-                + "note the sample: the thinner arm actually skipped only "
-                + String(format: "%.1f", weakest) + "% of its prompt "
+            let window = [base, cand].map(\.adoptionComparedTokens).min() ?? 0
+            detail += ". Adoption was token-exact against each arm's OWN cold request over "
+                + "\(window) completion tokens — the WINDOW bounds what could be seen, and a "
+                + "known paged adoption divergence appears at token 20, so read a short "
+                + "window as no evidence rather than weak evidence. The thinner arm also "
+                + "skipped only " + String(format: "%.1f", weakest) + "% of its prompt "
                 + "(the rest was frozen replay, which re-does the cold arithmetic and so "
                 + "cannot diverge). Read this as 'the adoption performed here was exact', "
-                + "NOT as 'adoption is exact'"
+                + "NOT as 'adoption is exact'. Scope: the probe adopts from the IN-PROCESS "
+                + "PrefixCacheV2, so a PASS does not cover the SSD tier — that path shares "
+                + "the restore and frozen-replay machinery but stages its bytes differently"
         } else {
             detail += ". Adoption exactness was NOT MEASURED on either arm, so this verdict "
                 + "is about token COUNTS only and says nothing about whether reuse changes "
@@ -1638,12 +1666,23 @@ public enum BackendParityCriteria {
         // splitting them is how a thin measurement gets quoted as a strong one.
         switch reuse.adoptionTokenExact {
         case .some(true): summary += ", adoptionExact=true"
+            summary += "/\(reuse.adoptionComparedTokens)tok"
         case .some(false): summary += ", adoptionExact=FALSE"
+            summary += "/\(reuse.adoptionComparedTokens)tok"
         case nil: summary += ", adoptionExact=not_measured"
         }
         if reuse.promptTokens > 0, reuse.adoptionTokenExact != nil {
             let pct = Double(reuse.secondPrefillTokensSaved) / Double(reuse.promptTokens) * 100
             summary += ", reused=" + String(format: "%.1f", pct) + "%"
+        }
+        // What the PROBE ran on, never the requested selection. Both halves:
+        // a degraded `.paged` arm and an honest `.auto` arm print the same
+        // kind and only the reason tells them apart.
+        if let resolved = reuse.probeResolvedBackend {
+            summary += ", probeResolved=\(resolved)"
+            if let reason = reuse.probeFallbackReason {
+                summary += "(DEGRADED: \(reason))"
+            }
         }
         summary += ", cache(hits=\(reuse.cacheHits),misses=\(reuse.cacheMisses),"
         summary += "tokensSaved=\(reuse.cacheTokensSaved))"

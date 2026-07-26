@@ -728,9 +728,18 @@ public enum BackendParityHarness {
         // donation is published at the first request's terminal, off the
         // engine step thread, so an overlapping second request would race it
         // and report a miss for a reason that is not the backend's.
+        //
+        // The completion budget is the adoption oracle's WINDOW, not decor.
+        // It was hardcoded `min(8, ...)` when this probe only had to observe
+        // that reuse happened; now that the two streams are compared for
+        // exactness, an 8-token window cannot see a divergence at token 20 —
+        // which is exactly where the measured paged adoption defect appears.
+        // A truncated window reports "exact" for a defect it stopped before,
+        // so the operator's `--parity-max-tokens` governs it.
+        let adoptionWindow = max(1, configuration.maxTokens)
         let first = await generateWithUsage(
             engine: box.engine, id: 4001, name: "prefix-1", tokens: prompt,
-            maxTokens: min(8, configuration.maxTokens), eos: eos)
+            maxTokens: adoptionWindow, eos: eos)
 
         // ...and the terminal EVENT is not the donation either. Poll the cache
         // until the entry appears, exactly as CBv2MTPEngineMixedTests does
@@ -745,7 +754,7 @@ public enum BackendParityHarness {
 
         let second = await generateWithUsage(
             engine: box.engine, id: 4002, name: "prefix-2", tokens: prompt,
-            maxTokens: min(8, configuration.maxTokens), eos: eos)
+            maxTokens: adoptionWindow, eos: eos)
         let stats = cache.stats()
 
         // Shut down HERE, not in a defer-spawned Task: the next arm builds its
@@ -782,11 +791,25 @@ public enum BackendParityHarness {
         let adoptionTokenExact: Bool? = adopted
             ? first.row.tokens == second.row.tokens
             : nil
+        // The window the comparison ACTUALLY covered. A verdict of "exact"
+        // over 8 tokens and one over 48 are different claims and must not
+        // print the same; the shorter stream bounds what could be observed.
+        let adoptionComparedTokens = adopted
+            ? min(first.row.tokens.count, second.row.tokens.count)
+            : 0
+        // The backend this PROBE actually built, not the one requested. The
+        // probe constructs its own engine per arm, so it can degrade
+        // independently of the arm engine (kill switch, kernel preflight, a
+        // binary copied without its resource bundle). A silently-contiguous
+        // arm reporting "paged adoption exact" is the precise failure this
+        // criterion exists to prevent.
         log("arm \(selection.rawValue): prefix reuse "
             + "\(describe(firstUsage.prefixCacheOutcome))->"
             + "\(describe(secondUsage.prefixCacheOutcome)), "
+            + "resolved=\(box.kind.rawValue), "
             + "finish=\(first.row.finishReason)/\(second.row.finishReason), "
-            + "adoptionExact=\(adoptionTokenExact.map(String.init) ?? "not_measured"), "
+            + "adoptionExact=\(adoptionTokenExact.map(String.init) ?? "not_measured") "
+            + "over \(adoptionComparedTokens) tokens, "
             + "matched=\(secondUsage.prefixCacheMatchedTokens), "
             + "saved=\(secondUsage.prefixCachePrefillTokensSaved), "
             + "replayBound=\(replayBound), prompt=\(promptTokens), donated=\(donatedEntries)")
@@ -808,7 +831,10 @@ public enum BackendParityHarness {
             cacheHits: stats.hits,
             cacheMisses: stats.misses,
             cacheTokensSaved: stats.tokensSaved,
-            adoptionTokenExact: adoptionTokenExact)
+            adoptionTokenExact: adoptionTokenExact,
+            adoptionComparedTokens: adoptionComparedTokens,
+            probeResolvedBackend: box.kind.rawValue,
+            probeFallbackReason: box.fallbackReason)
     }
 
     static let donationTimeoutSeconds = 10.0

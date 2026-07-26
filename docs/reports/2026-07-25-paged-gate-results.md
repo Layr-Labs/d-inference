@@ -1051,3 +1051,34 @@ deliberately checks the cache bound and the row bound SEPARATELY and
 refuses to derive one from the other (`PagedKVPool.swift:543-580`), naming
 exactly this: "window 1024, chunk 512 -> cache-bound; window 128, chunk
 2048 -> row-bound."
+
+---
+
+## The unifying statement
+
+vLLM's capture **is not a data movement at all.** `cache_full_blocks`
+(`block_pool.py:225-300`) does nothing but insert `hash -> block-object`
+mappings and queue events; the hashes are precomputed on the Request from
+token ids; there are **zero tensor operations anywhere in the path.** The
+KV bytes are already in the block.
+
+That is why vLLM can afford to capture inline on the scheduler thread
+every single step, and why it needs no handle / eval / queue apparatus at
+all.
+
+Our capture needs a handle-then-materialise split **only because we
+materialise a snapshot into separate storage.** If pages were shared by
+pointer, capture would collapse to bookkeeping for us too, and the entire
+donation-thread machinery would be unnecessary.
+
+So the recommendations compose more tightly than the ranking above
+suggests. Block sharing does not merely lift the disk ceiling and improve
+coverage:
+
+> **it deletes the reason capture is expensive in the first place.**
+
+Every finding in this document reduces to one root: **we move KV bytes
+where vLLM moves references.** The 25,600-token floor, the tiling
+requirement, the 200 MiB sidecars, the 20 GiB ceiling, the two-thread
+donation split, and `retainPage`'s zero callers are six symptoms of that
+single choice.

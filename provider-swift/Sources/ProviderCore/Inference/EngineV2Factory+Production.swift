@@ -437,8 +437,9 @@ extension EngineV2Factory {
     ///
     /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
     /// order): the caller passes the operator selection with slot vetoes
-    /// (VLM) already applied; `.auto` is always contiguous. Paged remains
-    /// an explicit experimental selection.
+    /// (VLM) already applied; as of v0.8.0 `.auto` resolves PAGED (see
+    /// `case .auto: resolvedKind = .paged` below, :545), so paged is the
+    /// shipped default rather than an explicit experimental selection.
     /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
     /// THIS deepest layer so no call path (benchmarks included) bypasses
     /// it, and it DEGRADES rather than refuses — an operator override is

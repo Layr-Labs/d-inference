@@ -59,8 +59,8 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: """
         Sweep: KV backend the decode engine is built with — auto|contiguous|paged \
-        (default auto, which resolves to PAGED since v0.8.0 but still degrades \
-        to contiguous on kill switch, kernel preflight, or pool capacity). An \
+        (default auto, which resolves to CONTIGUOUS — v0.8.0 flipped it to paged \
+        and reverted before release: paged adoption is not transparent). An \
         explicit paged selection FAILS the run rather than degrading: if paged \
         cannot be served, engine construction throws, the cell records no \
         samples, and the command exits non-zero naming the reason — so a paged \

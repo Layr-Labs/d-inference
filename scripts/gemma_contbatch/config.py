@@ -10,12 +10,14 @@ DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 # The canonical posture this release is measured under. Both defaults are
 # load-bearing:
 #
-#   paged      — `auto` is a SELECTION, not an outcome: it degrades to
-#                contiguous on kill switch, kernel preflight, or pool
-#                capacity, so an `auto` run can report green while measuring
-#                the rollback backend. An explicit `paged` refuses instead of
-#                degrading, which is the only way this wrapper can promise it
-#                measured what it says it measured.
+#   paged      — since the v0.8.0 flip was reverted, `auto` resolves
+#                CONTIGUOUS and paged is opt-in per slot, so an `auto` run
+#                measures the fallback backend by construction. `auto` also
+#                degrades silently (kill switch, kernel preflight, pool
+#                capacity) while an explicit `paged` REFUSES, which is the
+#                only way this wrapper can promise it measured what it names.
+#                A paged number is now a claim about an opt-in posture, so it
+#                has to be requested by name.
 #   1,2,4,8    — paged-vs-contiguous aggregate decode crosses over at ~B=5
 #                (measured on gemma-4 / M4 Max: 0.92x at B=1, 0.98x at B=4,
 #                1.17x at B=8). A curve that stops at 4 structurally cannot

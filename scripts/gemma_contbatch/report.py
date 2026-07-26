@@ -96,6 +96,13 @@ def kv_backend_lines(kv_backend: dict) -> list[str]:
         f"| Descriptors | {', '.join(f'`{item}`' for item in kv_backend['resolvedDescriptors']) or 'none'} |",
     ]
     by_batch = kv_backend["byBatchSize"]
+    if kv_backend["degrades"]:
+        # The only place a reader learns WHY paged was not served: kill
+        # switch, kernel preflight, pool capacity, or a binary copied without
+        # its `pagedattention.metal` resource bundle.
+        lines.append(
+            f"| Degraded because | {'; '.join(kv_backend['degrades'])} |"
+        )
     if by_batch:
         per_cell = ", ".join(
             f"B={batch}: `{kind}`"

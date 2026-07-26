@@ -176,6 +176,48 @@ class ResolveKVBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "unrecognised KV backend kind"):
             resolve_kv_backend(make_args(), sweep)
 
+    def test_degrade_reason_is_carried_not_just_the_kind(self):
+        # With paged opt-in, a deliberately paged slot quietly serving
+        # contiguous is the failure that matters, and only the reason
+        # distinguishes a kill switch from a binary copied without its
+        # `pagedattention.metal` resource bundle.
+        sweep = make_sweep(
+            resolved="contiguous (fallback: kernel_preflight: pagedattention.metal not found)"
+        )
+        block = resolve_kv_backend(make_args(), sweep)
+        self.assertEqual(
+            block["degrades"],
+            ["kernel_preflight: pagedattention.metal not found"],
+        )
+        self.assertIn("pagedattention.metal", block["postureViolations"][0])
+
+    def test_a_degrade_that_kept_the_kind_is_still_a_violation(self):
+        # The kill switch degrades an explicit selection without changing the
+        # resolved kind's agreement in every case; a run that was degraded at
+        # all did not honour the selection it names.
+        sweep = make_sweep(resolved="paged (fallback: DARKBLOOM_CBV2_PAGED_KV=0)")
+        block = resolve_kv_backend(make_args(), sweep)
+        self.assertEqual(
+            block["postureViolations"],
+            ["--kv-backend paged was degraded: DARKBLOOM_CBV2_PAGED_KV=0"],
+        )
+
+    def test_unmeasured_cell_names_the_batch_size_and_the_reason(self):
+        # Not the generic "expected positive metric at decode[6]...": each
+        # cell builds its own concurrency-sized engine, so a lost B=8 is the
+        # most likely and most expensive cell to lose.
+        sweep = make_sweep(
+            unmeasured=[{"batchSize": 8, "reason": "engine_v2: no KV byte headroom"}]
+        )
+        with self.assertRaisesRegex(RuntimeError, r"B=8: engine_v2: no KV byte headroom"):
+            resolve_kv_backend(make_args(), sweep)
+
+    def test_report_without_coverage_is_refused(self):
+        sweep = make_sweep()
+        del sweep["decodeCoverage"]
+        with self.assertRaisesRegex(RuntimeError, "predates schema 4"):
+            resolve_kv_backend(make_args(), sweep)
+
 
 class BackendPinTests(unittest.TestCase):
     def setUp(self):

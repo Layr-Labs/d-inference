@@ -2,20 +2,25 @@
 
 A decode curve is only comparable to another decode curve if both were
 produced by the same KV backend. Nothing else in this harness can establish
-that: `--kv-backend auto` is a *selection*, and since v0.8.0 it resolves paged
-but still degrades to contiguous on the fleet kill switch, on kernel
-preflight, or on pool capacity. A degraded run measures the rollback backend
-while every other check in this wrapper stays green, and a percentage delta
-against a baseline recorded on the other backend is a backend change wearing a
-performance change's clothes.
+that: `--kv-backend auto` is a *selection*. It resolves contiguous (the
+v0.8.0 flip to paged was reverted -- paged adoption is not transparent), and
+an explicit `paged` can still be vetoed by the fleet kill switch. A run that
+did not build the backend it names measures the fallback while every other
+check in this wrapper stays green, and a percentage delta against a baseline
+recorded on the other backend is a backend change wearing a performance
+change's clothes.
 
 So the resolved backend is extracted per decode cell, recorded in the report,
 and pinned before any delta is computed.
 
 Vocabulary is the resolved *kind* -- "paged" or "contiguous" -- matching
 `EngineV2KVBackendKind.rawValue` and the `kv_backend` field the coordinator
-records per slot. The engine's verbatim descriptor (which may carry a
-"(fallback: ...)" tail) is kept alongside it for diagnosis.
+records per slot. The engine's verbatim descriptor carries a
+"(fallback: <reason>)" tail on a degrade, and that reason is extracted into
+`degrades`: with paged opt-in, a deliberately paged slot quietly serving
+contiguous is the failure that matters, and the reason is the only thing
+that distinguishes a kill switch from a missing `pagedattention.metal`
+resource bundle beside the binary.
 """
 
 from __future__ import annotations
@@ -47,18 +52,58 @@ def backend_kind(descriptor: str, path: str) -> str:
     return kind
 
 
+def degrade_reason(descriptor: str) -> str | None:
+    """The `(fallback: ...)` tail of an engine descriptor, if any."""
+    marker = " (fallback: "
+    if marker not in descriptor or not descriptor.endswith(")"):
+        return None
+    return descriptor.split(marker, 1)[1][:-1]
+
+
+def validate_decode_coverage(sweep: dict) -> None:
+    """Every requested decode cell must have produced a measurement.
+
+    Since schema 4 the sweep says which cells it set out to measure and which
+    ones never built an engine. Without this the operator sees the generic
+    "expected positive metric at decode[6].aggregateTokensPerSecond" instead
+    of the batch size that went missing and the construction error that took
+    it out -- and with paged refusing per cell (each builds its own engine,
+    sized by its own concurrency), a lost B=8 is the single most likely and
+    most expensive cell to lose.
+    """
+    coverage = sweep.get("decodeCoverage")
+    if not isinstance(coverage, dict):
+        raise RuntimeError(
+            "throughput sweep did not report a decodeCoverage block; the "
+            "darkbloom binary predates schema 4 and cannot say whether every "
+            "requested decode cell was measured"
+        )
+    unmeasured = coverage.get("unmeasured") or []
+    if unmeasured:
+        raise RuntimeError(
+            f"{len(unmeasured)} of {len(coverage.get('requestedBatchSizes') or [])} "
+            "requested decode cells built no engine: "
+            + "; ".join(
+                f"B={cell.get('batchSize')}: {cell.get('reason')}"
+                for cell in unmeasured
+            )
+        )
+
+
 def resolve_kv_backend(args: argparse.Namespace, sweep: dict) -> dict:
     """Selection versus resolved backend, per decode cell.
 
-    Raises when the sweep predates the structured `kvBackend` block or when a
-    cell reports no backend at all -- an unattributable curve must not be
-    silently recorded as if it were attributable.
+    Raises when the sweep predates the structured blocks, when a requested
+    cell went unmeasured, or when a cell reports no backend at all -- an
+    unattributable curve must not be silently recorded as if it were
+    attributable.
 
     Returns the report block. `postureViolations` is non-empty when the run
     did not measure a single, named backend end to end; the caller writes the
     artifact anyway (the operator needs it precisely then) and fails the
     process off the list.
     """
+    validate_decode_coverage(sweep)
     block = sweep.get("kvBackend")
     if not isinstance(block, dict):
         raise RuntimeError(
@@ -75,6 +120,7 @@ def resolve_kv_backend(args: argparse.Namespace, sweep: dict) -> dict:
         )
 
     descriptors: list[str] = []
+    degrades: list[str] = []
     kinds_by_batch: dict[str, list[str]] = {}
     for index, sample in enumerate(sweep.get("decode", [])):
         path = f"decode[{index}].resolvedKVBackend"
@@ -87,6 +133,9 @@ def resolve_kv_backend(args: argparse.Namespace, sweep: dict) -> dict:
         kind = backend_kind(descriptor, path)
         if descriptor not in descriptors:
             descriptors.append(descriptor)
+        reason = degrade_reason(descriptor)
+        if reason is not None and reason not in degrades:
+            degrades.append(reason)
         batch = str(sample.get("batchSize"))
         seen = kinds_by_batch.setdefault(batch, [])
         if kind not in seen:
@@ -109,20 +158,29 @@ def resolve_kv_backend(args: argparse.Namespace, sweep: dict) -> dict:
             f"mixed KV backend population across the decode curve ({mixed})"
         )
     # `auto` promises nothing, so there is nothing to hold it to. An explicit
-    # selection is a claim, and OPEN-9 made it a refusal rather than a
-    # degrade -- a resolved kind that disagrees with it means the refusal
-    # leaked.
+    # selection is a claim -- a resolved kind that disagrees with it, or a
+    # degrade of any kind under it, means the refusal path leaked.
     if selection in KNOWN_KINDS:
         wrong = [kind for kind in resolved if kind != selection]
         if wrong:
             violations.append(
                 f"--kv-backend {selection} resolved {', '.join(wrong)}"
+                + (f" ({'; '.join(degrades)})" if degrades else "")
+            )
+        elif degrades:
+            violations.append(
+                f"--kv-backend {selection} was degraded: {'; '.join(degrades)}"
             )
 
     return {
         "selection": selection,
         "resolved": resolved,
         "resolvedDescriptors": descriptors,
+        # The fallback reasons behind any degrade, verbatim. On a paged
+        # request this is the only on-box surface that names WHY paged was
+        # not served -- kill switch, kernel preflight, pool capacity, or a
+        # binary copied without its `pagedattention.metal` resource bundle.
+        "degrades": degrades,
         "byBatchSize": {
             batch: "+".join(kinds) for batch, kinds in kinds_by_batch.items()
         },

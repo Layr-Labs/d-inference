@@ -32,6 +32,7 @@ def sweep_payload(
     selection: str = "paged",
     resolved: str = "paged",
     resolved_by_batch: dict[int, str] | None = None,
+    unmeasured: list[dict] | None = None,
 ) -> dict:
     """A `--sweep` report.
 
@@ -70,7 +71,7 @@ def sweep_payload(
                 }
             )
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
         "hardware": dict(HARDWARE),
@@ -83,6 +84,10 @@ def sweep_payload(
         },
         "notes": [f"kv backend: selection={selection}, resolved={' + '.join(seen)}"],
         "kvBackend": {"selection": selection, "resolved": seen},
+        "decodeCoverage": {
+            "requestedBatchSizes": sorted(batch_sizes),
+            "unmeasured": list(unmeasured or []),
+        },
     }
 
 

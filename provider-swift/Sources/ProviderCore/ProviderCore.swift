@@ -168,5 +168,17 @@ public enum ProviderCore {
     // DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS=0 and
     // DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0; the opt-in mixed-step prefill
     // quota is DARKBLOOM_CBV2_MIXED_PREFILL_CAP.
-    public static let version = "0.7.15"
+    //
+    // 0.8.0 — PagedAttention. The paged KV backend reaches parity with
+    // contiguous: prefix reuse at an identical bound on both gemma-4
+    // (25,600) and gpt-oss (1,536), packed prefill and vision spans ACTIVE,
+    // per-sequence KV 1.00x at 1k/10k/100k, and 1.27x aggregate decode from
+    // B=4 to B=8 where contiguous gains only 1.07x. The ring is 65 pages.
+    // `.auto` STILL RESOLVES TO CONTIGUOUS pending the G3/G4 canary soaks;
+    // opt in with engine_v2_kv_backend = "paged", roll back with
+    // DARKBLOOM_CBV2_PAGED_KV=0. Note gemma-4 greedy token ids differ under
+    // paged — measurably more accurate against an fp32 reference, but not
+    // identical. kv-quantization and the compiled [B,1] decode path are
+    // removed; `kv_quant` is accepted and ignored via RetiredCodingKeys.
+    public static let version = "0.8.0"
 }

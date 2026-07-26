@@ -531,19 +531,42 @@ extension EngineV2Factory {
         switch kvBackend {
         case .contiguous: resolvedKind = .contiguous
         case .paged: resolvedKind = .paged
-        // v0.8.0: `.auto` resolves PAGED. Flipped once every measurable
-        // gate passed on real weights and the two non-measurable ones
-        // (G3/G4, 24-hour canary soaks) were accepted as an operational
-        // step rather than a code gate. Roll back fleet-wide with
-        // `DARKBLOOM_CBV2_PAGED_KV=0`, which lands on the kill-switch
-        // degrade below — not on a refusal.
+        // v0.8.0: `.auto` resolves CONTIGUOUS. The flip to paged was made
+        // and then REVERTED on measurement, and the reason is a hard
+        // blocker rather than a tuning question: paged ADOPTION is not
+        // transparent. Measured on gemma-4 at a 28,672-token prompt, one
+        // process, one paged slot, backend label confirmed on every
+        // sample:
+        //
+        //   paged      cold    -> "...many times"     (deterministic, run twice, byte-identical)
+        //   paged      adopted -> "...What would..."  (differs from its OWN cold, token 20 of 32)
+        //   contiguous cold    -> "...What would..."
+        //   contiguous adopted -> "...What would..."  (exact)
+        //
+        // So on paged the answer depends on whether a prefix-cache hit
+        // occurred — state the caller cannot see or control. Note WHICH
+        // answer paged-adopted gives: the CONTIGUOUS one, not its own
+        // paged-cold one. Frozen-full replay reads CACHED keys, matching
+        // what contiguous always did, while paged cold goes through
+        // `PagedLayerCache.prefillKVWritingChunk`. Cold prefill itself is
+        // deterministic, so this is adoption, not accumulation noise.
+        //
+        // Suspects, in order: `restoringWindowsAtBoundary` collapsing
+        // `replayTokens` to zero on `frozenFullReplay`
+        // (`PrefixReusePlan.swift:214-216`, the WS-4.2 sidecar path this
+        // release adds), then the deleted extra prefill chunk
+        // (`PrefixReusePlan.swift:120-152`, `PagedKVBackend.swift:301-319`).
+        //
+        // Paged remains fully available per-slot via
+        // `engine_v2_kv_backend = "paged"`. Re-flip only when paged
+        // adopted == paged cold on this prompt.
         //
         // This is only a win alongside `engineV2MaxConcurrent = 8`.
         // Measured on gemma-4/M4 Max, paged-vs-contiguous aggregate decode:
         // 0.92x at B=1, 0.98x at B=4, 1.17x at B=8. The crossover is ~B=5,
         // so flipping the backend while leaving the batch at 4 buys a
         // storage change and no throughput. The two move together.
-        case .auto: resolvedKind = .paged
+        case .auto: resolvedKind = .contiguous
         }
         var fallbackReason: String?
         // DEGRADE, not refuse — even on an explicit paged selection. This

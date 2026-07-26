@@ -672,17 +672,26 @@ public enum BackendParityCriteria {
     ///     knob (investigation committed at 977a5893e). A bar the incumbent
     ///     fails under a REACHABLE configuration cannot judge a challenger.
     ///
-    ///     Reachable, deliberately — not "sanctioned". v0.8.0 declines to
-    ///     bless a non-default value, but nothing refuses one: `AttentionV1`
-    ///     reads the variable at runtime and accepts any `value >= 0` with no
-    ///     version gate (`AttentionV1.swift:35-41`), and blocking simply
-    ///     turns on at `> 0` (`:48`). This argument needs only the code
-    ///     fact. An operator CAN stand the incumbent in a configuration
-    ///     where it fails this bar, so the bar cannot convict a challenger —
-    ///     whether or not the release blesses that configuration. Do NOT
-    ///     "reconcile" this with release policy by weakening it: policy does
-    ///     not close the path, and the earlier wording ("a supported
-    ///     configuration") invited exactly that misreading.
+    ///     Reachable AND, as of 810d64861, sanctioned. v0.8.0 splits this
+    ///     knob by VALUE: `=0` (sub-blocking off) is unsupported for a
+    ///     MEMORY reason unrelated to exactness, while a non-default NONZERO
+    ///     value such as 128 -> 8 is supported and merely outside the
+    ///     measured fleet. The configuration this argument rests on is
+    ///     therefore blessed as well as reachable.
+    ///
+    ///     The argument is still pinned to REACHABILITY rather than to that
+    ///     blessing, on purpose: policy moves, code does not. `AttentionV1`
+    ///     reads the variable at runtime and accepts any `value >= 0` with
+    ///     no version gate (`AttentionV1.swift:35-41`), blocking turning on
+    ///     at `> 0` (`:48`). An operator CAN stand the incumbent in a
+    ///     configuration where it fails this bar, so the bar cannot convict
+    ///     a challenger — whether or not a given release blesses it.
+    ///
+    ///     History, so this is not re-litigated a third time: the original
+    ///     wording said "a supported configuration", a blanket ban on the
+    ///     knob briefly made that read false, and the ban was then withdrawn
+    ///     as wrong in both directions. The reachability framing is kept
+    ///     because it survives whichever way policy lands next.
     ///
     ///     Nor would retiring the knob restore this criterion as a FAIL
     ///     gate. The knob is the cheapest DEMONSTRATION of the sensitivity,

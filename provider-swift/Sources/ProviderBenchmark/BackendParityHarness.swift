@@ -128,7 +128,8 @@ public enum BackendParityHarness {
         let facts = try await container.perform { ctx -> Facts in
             let weightBytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
             let prompts = parityPrompts.map { text in
-                (name: shortName(text), tokens: ctx.tokenizer.encode(text: text))
+                (name: shortName(text), tokens: chatPromptTokens(
+                    tokenizer: ctx.tokenizer, text: text))
             }
             let seed = ctx.tokenizer.encode(
                 text: ThroughputSweep.seedText, addSpecialTokens: false)
@@ -1101,6 +1102,45 @@ public enum BackendParityHarness {
             "token comparisons are over RAW SAMPLED TOKEN IDS with temperature 0; text "
                 + "equality is a strictly weaker oracle and is not used.")
         return notes
+    }
+
+    /// Tokenize a parity prompt the way PRODUCTION tokenizes one: through the
+    /// checkpoint's chat template.
+    ///
+    /// Not cosmetic, and not a fidelity nicety. An instruct checkpoint handed
+    /// a bare completion string answers it the way the base model would —
+    /// which on `gemma-4-e2b-it-4bit` means emitting end-of-turn IMMEDIATELY.
+    /// Measured: every parity row returned `1 tokens, stop`, so the numerics
+    /// control compared THREE argmax decisions and reported TOKEN-EXACT, a
+    /// confident-sounding verdict drawn from a sample with no power to
+    /// contradict it. The gate could not fail there because the decode ended
+    /// before it started. e2b is also the checkpoint the measured paged
+    /// adoption divergence lives on, so it is precisely the one the control
+    /// must be able to speak about.
+    ///
+    /// gpt-oss and gemma-4-26B already decoded their full budget untemplated,
+    /// so this changes what those two are asked, not whether they answer.
+    ///
+    /// A tokenizer with no usable template falls back to raw encoding and the
+    /// caller SAYS SO on stderr. Silently serving a different prompt shape
+    /// than the one claimed is the failure this whole harness is built to
+    /// refuse.
+    static func chatPromptTokens(
+        tokenizer: any Tokenizer,
+        text: String
+    ) -> [Int] {
+        let messages: [[String: any Sendable]] = [["role": "user", "content": text]]
+        if let templated = try? tokenizer.applyChatTemplate(
+            messages: messages, tools: nil, additionalContext: nil),
+            !templated.isEmpty
+        {
+            return templated
+        }
+        log("  prompt '\(shortName(text))': NO USABLE CHAT TEMPLATE — falling back to raw "
+            + "text. An instruct checkpoint may answer a bare completion prompt with an "
+            + "immediate end-of-turn, which yields a one-token row and a control with no "
+            + "power; check the row lengths before trusting any verdict from this run.")
+        return tokenizer.encode(text: text)
     }
 
     static func shortName(_ text: String) -> String {

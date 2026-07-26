@@ -1392,6 +1392,14 @@ coordinator routing behaviour. Recording the correct reason matters,
 because the next person to need that path will grep for it, find it, and
 rightly distrust everything around it.
 
+**5. Cite what survives the refactor.** Rule 3 says cite HEAD, but HEAD
+is not enough when a file is actively being rewritten. An anchor was taken
+against HEAD, verified correct, and was dead minutes later when the file's
+owner removed 253 lines — the knob it named was only ever *described*
+there, never implemented. Cite the definition site that survives, or cite
+by symbol and let the reader grep. This is the same class as the defect
+that ticket was fixing: a docstring number no code could reach.
+
 Corollary worth keeping: **a negative needs a control.** "Symbol absent
 from file A" is only evidence once the same single-branch pattern is shown
 to match in sibling file B. Two load-bearing negatives here

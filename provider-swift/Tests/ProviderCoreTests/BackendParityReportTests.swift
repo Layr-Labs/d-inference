@@ -68,6 +68,95 @@ struct BackendParityReportTests {
                 cacheTokensSaved: prefillTokensSaved))
     }
 
+    /// An arm carrying ONLY a prefix-reuse block, for the criteria that read
+    /// only that block. Every parameter defaults to the gemma-4-26B-A4B shape
+    /// the prefix-reuse gates are written against — 28,672-token prompt,
+    /// 28,416 matched, frozen full replay — so a test names the one or two
+    /// fields it is actually perturbing and nothing else.
+    ///
+    /// Deliberately NOT `healthyArm` with more defaults: these arms carry no
+    /// rows, no MTP and no capability probes, and that absence is load-bearing
+    /// for anything that reaches `evaluate`. Two builders, two shapes.
+    private func prefixArm(
+        _ selection: String,
+        supported: Bool = true,
+        strategy: String? = "frozen_full_replay",
+        unsupportedReason: String? = nil,
+        bound: Int = 25600,
+        promptTokens: Int = 28672,
+        donated: Int = 1,
+        first: String = "miss",
+        second: String = "hit",
+        firstFinish: String = "",
+        matched: Int = 28416,
+        saved: Int = 2816,
+        hits: Int = 1,
+        misses: Int = 1,
+        tokensSaved: Int = 0,
+        exact: Bool? = nil,
+        comparedTokens: Int = 0,
+        probeResolved: String? = nil
+    ) -> BackendParityObservation {
+        BackendParityObservation(
+            selection: selection, resolvedBackend: selection,
+            prefixReuse: BackendParityObservation.PrefixReuse(
+                capabilitySupported: supported,
+                capabilityStrategy: strategy,
+                capabilityUnsupportedReason: unsupportedReason,
+                replayBoundTokens: bound,
+                promptTokens: promptTokens,
+                donatedEntries: donated,
+                firstOutcome: first,
+                secondOutcome: second,
+                firstFinishReason: firstFinish,
+                secondMatchedTokens: matched,
+                secondPrefillTokensSaved: saved,
+                cacheHits: hits,
+                cacheMisses: misses,
+                cacheTokensSaved: tokensSaved,
+                adoptionTokenExact: exact,
+                adoptionComparedTokens: comparedTokens,
+                probeResolvedBackend: probeResolved))
+    }
+
+    /// An arm carrying rows and an MTP block, for the token-exactness criteria.
+    /// `tokens` drives both the plain and the MTP rows, since the criteria that
+    /// read this compare the two against each other.
+    private func mtpArm(
+        _ selection: String,
+        tokens: [Int] = [1, 2, 3],
+        finish: String = "stop",
+        driverConstructed: Bool = true,
+        inactiveReason: String? = nil,
+        rounds: Int = 4,
+        draftedTokens: Int = 16,
+        acceptedTokens: Int = 9,
+        prefixReuse: BackendParityObservation.PrefixReuse? = nil,
+        capabilities: Bool = false
+    ) -> BackendParityObservation {
+        let rows = [row("a", tokens, finish: finish)]
+        return BackendParityObservation(
+            selection: selection, resolvedBackend: selection,
+            rows: rows,
+            mtp: BackendParityObservation.MTP(
+                rows: rows,
+                driverConstructed: driverConstructed,
+                inactiveReason: inactiveReason,
+                rounds: rounds,
+                draftedTokens: draftedTokens,
+                acceptedTokens: acceptedTokens),
+            // Non-optional with an `.undetermined("not probed")` default, so
+            // "no capabilities" is the ABSENCE of a probe, not a negative
+            // result — leave it to the type rather than passing a false.
+            packedPrefill: capabilities
+                ? BackendParityObservation.Capability(active: true, detail: "probe active")
+                : .undetermined("not probed"),
+            visionSpans: capabilities
+                ? BackendParityObservation.Capability(active: true, detail: "span served")
+                : .undetermined("not probed"),
+            prefixReuse: prefixReuse)
+    }
+
     private var baseline: BackendParityObservation {
         healthyArm(selection: "contiguous", resolved: "contiguous")
     }
@@ -84,25 +173,11 @@ struct BackendParityReportTests {
     /// correctness.
     @Test("adoption that changes the answer is a FAIL, whatever the counts say")
     func inexactAdoptionFailsRegardlessOfSavings() {
+        // Identical savings on both arms: the count comparison this criterion
+        // used to be is a clean PASS here.
         func arm(_ selection: String, exact: Bool?) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: true,
-                    capabilityStrategy: "frozen_full_replay",
-                    replayBoundTokens: 1536,
-                    promptTokens: 28672,
-                    donatedEntries: 1,
-                    firstOutcome: "miss",
-                    secondOutcome: "hit",
-                    secondMatchedTokens: 28416,
-                    // Identical savings on both arms: the count comparison
-                    // this criterion used to be is a clean PASS here.
-                    secondPrefillTokensSaved: 26880,
-                    cacheHits: 1,
-                    cacheMisses: 1,
-                    cacheTokensSaved: 28416,
-                    adoptionTokenExact: exact))
+            prefixArm(
+                selection, bound: 1536, saved: 26880, tokensSaved: 28416, exact: exact)
         }
 
         // Counts agree exactly, so the savings comparison cannot fault this —
@@ -146,20 +221,7 @@ struct BackendParityReportTests {
     @Test("only an ASYMMETRIC adoption divergence may be read as a backend defect")
     func symmetricInexactnessIsNotABackendIndictment() {
         func arm(_ selection: String, exact: Bool?) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: true,
-                    replayBoundTokens: 25600,
-                    promptTokens: 28672,
-                    donatedEntries: 1,
-                    firstOutcome: "miss",
-                    secondOutcome: "hit",
-                    secondMatchedTokens: 28416,
-                    secondPrefillTokensSaved: 2816,
-                    cacheHits: 1,
-                    cacheMisses: 1,
-                    adoptionTokenExact: exact))
+            prefixArm(selection, strategy: nil, exact: exact)
         }
 
         // One arm exact, one not: precision cannot explain it, so the backend
@@ -196,23 +258,10 @@ struct BackendParityReportTests {
         func arm(
             _ selection: String, saved: Int, bound: Int, exact: Bool?
         ) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: true,
-                    capabilityStrategy: "frozen_full_replay",
-                    replayBoundTokens: bound,
-                    promptTokens: 28672,
-                    donatedEntries: 1,
-                    firstOutcome: "miss",
-                    secondOutcome: "hit",
-                    secondMatchedTokens: 28416,
-                    secondPrefillTokensSaved: saved,
-                    cacheHits: 1,
-                    cacheMisses: 1,
-                    adoptionTokenExact: exact,
-                    adoptionComparedTokens: exact == nil ? 0 : 48,
-                    probeResolvedBackend: selection))
+            prefixArm(
+                selection, bound: bound, saved: saved, exact: exact,
+                comparedTokens: exact == nil ? 0 : 48,
+                probeResolved: selection)
         }
 
         // The gemma-4-26B-A4B shape specifically: bound 25,600, so 2,816 of
@@ -816,13 +865,9 @@ struct BackendParityReportTests {
         // Booking it as FAIL would blame the backend for the pairing.
         let reason = "model/drafter pair cannot prove matching MTP target identity"
         func arm(_ selection: String) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                rows: [row("a", [1, 2, 3])],
-                mtp: BackendParityObservation.MTP(
-                    rows: [row("a", [1, 2, 3])],
-                    driverConstructed: false,
-                    inactiveReason: reason))
+            mtpArm(
+                selection, driverConstructed: false, inactiveReason: reason,
+                rounds: 0, draftedTokens: 0, acceptedTokens: 0)
         }
         let result = BackendParityCriteria.mtpTokenExactness(
             baseline: arm("contiguous"), candidate: arm("paged"))
@@ -1078,15 +1123,9 @@ struct BackendParityReportTests {
     func bothArmsEmptyMTPIsNotADraftFailure() {
         let finish = "submit_error: capacity refused the request"
         func arm(_ selection: String, tokens: [Int]) -> BackendParityObservation {
-            let reason = tokens.isEmpty ? finish : "stop"
-            return BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                rows: [row("a", tokens, finish: reason)],
-                mtp: BackendParityObservation.MTP(
-                    rows: [row("a", tokens, finish: reason)],
-                    driverConstructed: true,
-                    rounds: 0,
-                    draftedTokens: 0))
+            mtpArm(
+                selection, tokens: tokens, finish: tokens.isEmpty ? finish : "stop",
+                rounds: 0, draftedTokens: 0, acceptedTokens: 0)
         }
         let refused = BackendParityCriteria.mtpTokenExactness(
             baseline: arm("contiguous", tokens: []), candidate: arm("paged", tokens: []))
@@ -1109,16 +1148,7 @@ struct BackendParityReportTests {
     func mtpSelfComparisonNeedsGeneratedTokens() {
         let finish = "submit_error: capacity refused the request"
         func arm(_ selection: String, tokens: [Int]) -> BackendParityObservation {
-            let reason = tokens.isEmpty ? finish : "stop"
-            return BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                rows: [row("a", tokens, finish: reason)],
-                mtp: BackendParityObservation.MTP(
-                    rows: [row("a", tokens, finish: reason)],
-                    driverConstructed: true,
-                    rounds: 4,
-                    draftedTokens: 16,
-                    acceptedTokens: 9))
+            mtpArm(selection, tokens: tokens, finish: tokens.isEmpty ? finish : "stop")
         }
         // Drafts WERE produced, so the inert-drafter FAIL does not apply. This
         // is the path that used to certify "MTP reproduced each backend's OWN
@@ -1160,17 +1190,10 @@ struct BackendParityReportTests {
     func evaluateRefusesZeroEvidenceEndToEnd() {
         let finish = "submit_error: capacity refused the request"
         func arm(_ selection: String) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                rows: [row("a", [], finish: finish)],
-                mtp: BackendParityObservation.MTP(
-                    rows: [row("a", [], finish: finish)],
-                    driverConstructed: true, rounds: 3, draftedTokens: 9),
-                packedPrefill: BackendParityObservation.Capability(
-                    active: true, detail: "probe active"),
-                visionSpans: BackendParityObservation.Capability(
-                    active: true, detail: "span served"),
-                prefixReuse: baseline.prefixReuse)
+            mtpArm(
+                selection, tokens: [], finish: finish,
+                rounds: 3, draftedTokens: 9, acceptedTokens: 0,
+                prefixReuse: baseline.prefixReuse, capabilities: true)
         }
         let criteria = BackendParityCriteria.evaluate(
             baseline: arm("contiguous"), candidate: arm("paged"))
@@ -1256,20 +1279,14 @@ struct BackendParityReportTests {
         func arm(
             _ selection: String, _ bound: Int, _ saved: Int, _ supported: Bool
         ) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: supported,
-                    capabilityStrategy: supported ? "frozen_full_replay" : nil,
-                    capabilityUnsupportedReason: supported
-                        ? nil : "paged_hybrid_requires_dual_cursor",
-                    replayBoundTokens: bound,
-                    promptTokens: 28672,
-                    donatedEntries: 1,
-                    firstOutcome: "miss",
-                    secondOutcome: saved > 0 ? "hit" : "adoption_failed",
-                    secondMatchedTokens: 28416,
-                    secondPrefillTokensSaved: saved))
+            prefixArm(
+                selection,
+                supported: supported,
+                strategy: supported ? "frozen_full_replay" : nil,
+                unsupportedReason: supported ? nil : "paged_hybrid_requires_dual_cursor",
+                bound: bound,
+                second: saved > 0 ? "hit" : "adoption_failed",
+                saved: saved)
         }
         return (
             arm("contiguous", 25600, baselineSaved, true),
@@ -1321,18 +1338,7 @@ struct BackendParityReportTests {
         func arm(_ selection: String, _ bound: Int, _ saved: Int)
             -> BackendParityObservation
         {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: true,
-                    capabilityStrategy: "frozen_full_replay",
-                    replayBoundTokens: bound,
-                    promptTokens: 28672,
-                    donatedEntries: 1,
-                    firstOutcome: "miss",
-                    secondOutcome: "hit",
-                    secondMatchedTokens: 28416,
-                    secondPrefillTokensSaved: saved))
+            prefixArm(selection, bound: bound, saved: saved)
         }
         let result = BackendParityCriteria.prefixReuse(
             baseline: arm("contiguous", 1536, 26880),
@@ -1374,19 +1380,20 @@ struct BackendParityReportTests {
             hits: Int = 0, misses: Int = 0, finish: String = "",
             supported: Bool = true, unsupportedReason: String? = nil
         ) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: "paged", resolvedBackend: "paged",
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: supported,
-                    capabilityUnsupportedReason: unsupportedReason,
-                    replayBoundTokens: 1536,
-                    promptTokens: 28672,
-                    donatedEntries: 0,
-                    firstOutcome: firstOutcome,
-                    secondOutcome: secondOutcome,
-                    firstFinishReason: finish,
-                    cacheHits: hits,
-                    cacheMisses: misses))
+            prefixArm(
+                "paged",
+                supported: supported,
+                strategy: nil,
+                unsupportedReason: unsupportedReason,
+                bound: 1536,
+                donated: 0,
+                first: firstOutcome,
+                second: secondOutcome,
+                firstFinish: finish,
+                matched: 0,
+                saved: 0,
+                hits: hits,
+                misses: misses)
         }
         func detail(_ observation: BackendParityObservation) -> String {
             let result = BackendParityCriteria.prefixReuse(
@@ -1430,16 +1437,9 @@ struct BackendParityReportTests {
         // gemma-4: 25 windowed layers x 1024 = 25600 contiguous, +maxWindow =
         // 26624 paged. A 1024-token probe measures the prompt, not the backend.
         func arm(_ selection: String, _ bound: Int) -> BackendParityObservation {
-            BackendParityObservation(
-                selection: selection, resolvedBackend: selection,
-                prefixReuse: BackendParityObservation.PrefixReuse(
-                    capabilitySupported: true,
-                    capabilityStrategy: "frozen_full_replay",
-                    replayBoundTokens: bound,
-                    promptTokens: 1024,
-                    donatedEntries: 4,
-                    firstOutcome: "miss",
-                    secondOutcome: "skipped_policy"))
+            prefixArm(
+                selection, bound: bound, promptTokens: 1024, donated: 4,
+                second: "skipped_policy", matched: 0, saved: 0, hits: 0, misses: 0)
         }
         let result = BackendParityCriteria.prefixReuse(
             baseline: arm("contiguous", 25600), candidate: arm("paged", 26624))

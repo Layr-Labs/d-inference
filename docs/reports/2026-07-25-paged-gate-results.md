@@ -890,3 +890,66 @@ block-times of resident life per block).
 So the corrected reading of item 3 is not "wire block sharing." It is
 **move capture from retire-time to step-time**, which is the same change
 vLLM made and the reason their floor is one block.
+
+### SUPERSEDED: vLLM has no tiling requirement at all
+
+The "sharing moves the tiling, it does not remove it" section above is
+retracted. It was reasoned from our ring; it was then MEASURED against
+vLLM's real `KVCacheManager` and is false.
+
+One donor, 8,192 tokens, window 1,024, run in 512-token chunks with
+`remove_skipped_blocks` firing each chunk, then freed. Adopters at
+boundaries far behind the donor's final offset:
+
+    boundary 1024 -> 1008/1008    boundary 6144 -> 6128/6128
+    boundary 2048 -> 2032/2032    boundary 7168 -> 7152/7152
+    boundary 4096 -> 4080/4080    boundary 8192 -> 8176/8176
+
+Every boundary at the theoretical maximum. The donor's LIVE window at the
+end covered only `[7168, 8192)`, yet all of `[0, 8192)` stayed adoptable.
+(The uniform 16-token shortfall is `max_cache_hit_length = num_tokens - 1`
+— the last token must recompute for logits. Not a gap.)
+
+Mechanism: `cache_blocks` inserts every full block at its ABSOLUTE index
+as it fills, and `remove_skipped_blocks` frees the physical block while
+**`free_blocks` never removes the hash-map entry** — so history stays
+hit-able and `touch()` resurrects it.
+
+The real bound, also measured: shrink the pool to 600 blocks against 512
+blocks of donor history and boundaries 1024 and 4096 return hit=0, with
+only the tail surviving. **So the limit is LRU eviction — graceful
+degradation under pressure, not absence by construction.** A far weaker
+constraint than tiling.
+
+Which means the tiling requirement is entirely OUR artifact of end-of-life
+capture, and dense capture removes it rather than relocating it.
+
+### Implementation hazard: capture must run INSIDE the chunk
+
+"Four block-times of headroom" is true for the default config but is NOT
+a property of the system, and the safe-sounding form is the wrong one.
+Capture runs per prefill CHUNK, and the ring is sized FROM the chunk:
+
+    ringPageCount = ceil(max(maxWindowExposure + maxSpeculativeSpan,
+                             maxPrefillChunk) / pageSize)
+
+so residency measured in chunks is `max(1032, chunk) / chunk`, which
+decays toward 1 as the chunk grows:
+
+    chunk  512  (shipping default) -> ring   65 pages = 1040 tok = 2.03 chunks
+    chunk 1024                     -> ring   65 pages = 1040 tok = 1.02 chunks
+    chunk 2048                     -> ring  128 pages = 2048 tok = 1.00 chunks
+
+At the shipping chunk there are two chunks of slack. At any chunk at or
+above the window there is essentially NONE — raising the chunk raises the
+ring by exactly as much, so a block written early in a chunk is nearly
+lapped by the end of that same chunk.
+
+> **A capture pass must run WITHIN the chunk that wrote the block.** A
+> design that captures "at the next chunk boundary" is correct at 512 and
+> silently wrong at 1024 — no error, just missing blocks and a quiet
+> fallback to replay.
+
+`maxPrefillChunk` is already a lockstep parameter in production
+(`EngineV2Factory+Production.swift:657-667`). Treat chunk size as an INPUT
+to the capture design, not a knob tuned afterward.

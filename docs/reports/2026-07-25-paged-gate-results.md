@@ -1023,3 +1023,31 @@ Both this and the capture hazard share one root, and it is the honest
 architectural difference underneath them: **on our side the prefill chunk
 size is a LOCKSTEP parameter coupling the scheduler to KV geometry. vLLM
 has no such coupling anywhere.**
+
+**Scoping, because the two shipping models land on OPPOSITE sides of the
+threshold.** `ringPageCount` takes a `max`, so the chunk is inert until it
+exceeds the window term — and at the shipping chunk of 512:
+
+    gemma-4  w=1024 chunk= 512 -> max=1032 ->  65 pages   window-bound
+             w=1024 chunk=1024 -> max=1032 ->  65 pages   still inert
+             w=1024 chunk=2048 -> max=2048 -> 128 pages   now binding
+
+    gpt-oss  w= 128 chunk= 512 -> max= 512 ->  32 pages   CHUNK-BOUND
+             w= 128 chunk=1024 -> max=1024 ->  64 pages   linear already
+             w= 128 chunk=2048 -> max=2048 -> 128 pages   4x the charge
+
+> So "prefill chunk feeds admission capacity" is **true on gpt-oss and
+> false on gemma-4 at shipping values.** On gemma-4 there are 520 tokens
+> of slack before the knob costs anything; on gpt-oss every token is
+> charged to every sliding row immediately, because `pageDemand` for a
+> long sliding row is `min(ceil(len/16), ring)` = the ring.
+
+Taking the coupling as general would over-restrict gemma-4 tuning and
+under-restrict gpt-oss. The guidance is: **check `max(window + 8, chunk)`
+before changing `prefillChunkSize`.**
+
+The pool already documents both regimes — `checkedRingPageCount`
+deliberately checks the cache bound and the row bound SEPARATELY and
+refuses to derive one from the other (`PagedKVPool.swift:543-580`), naming
+exactly this: "window 1024, chunk 512 -> cache-bound; window 128, chunk
+2048 -> row-bound."

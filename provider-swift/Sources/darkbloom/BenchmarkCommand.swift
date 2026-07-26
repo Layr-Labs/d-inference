@@ -58,16 +58,20 @@ struct Benchmark: AsyncParsableCommand {
     var decodeIterations = ThroughputSweep.defaultDecodeIterations
 
     @Option(name: .long, help: """
-        Sweep: KV backend the decode engine is built with — auto|contiguous|paged \
-        (default auto, which resolves to CONTIGUOUS — v0.8.0 flipped it to paged \
-        and reverted before release: paged adoption is not transparent). An \
-        explicit paged selection FAILS the run rather than degrading: if paged \
-        cannot be served, engine construction throws, the cell records no \
-        samples, and the command exits non-zero naming the reason — so a paged \
-        benchmark can never measure contiguous. Only DARKBLOOM_CBV2_PAGED_KV=0 \
-        still degrades an explicit selection. The backend that actually served \
-        is recorded per cell in decode[].resolvedKVBackend and de-duplicated in \
-        the report's kvBackend block.
+        KV backend EVERY engine this command builds is built with — \
+        auto|contiguous|paged (default auto, which resolves to CONTIGUOUS — \
+        v0.8.0 flipped it to paged and reverted before release: paged adoption \
+        is not transparent). Applies to --sweep, --scheduler-prefill and \
+        --arrival-invariance alike, so the three phases of a wrapper run can \
+        never measure different arms. An explicit paged selection FAILS the \
+        run rather than degrading: if paged cannot be served, engine \
+        construction throws, the cell records no samples, and the command \
+        exits non-zero naming the reason — so a paged benchmark can never \
+        measure contiguous. Only DARKBLOOM_CBV2_PAGED_KV=0 still degrades an \
+        explicit selection. The backend that actually served is recorded per \
+        measured engine (decode[].resolvedKVBackend, \
+        samples[].resolvedKVBackend) and de-duplicated in each report's \
+        kvBackend block.
         """)
     var kvBackend = "auto"
 

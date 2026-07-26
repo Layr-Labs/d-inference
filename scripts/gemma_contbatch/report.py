@@ -77,12 +77,16 @@ def lookup_comparison(
 
 
 def kv_backend_lines(kv_backend: dict) -> list[str]:
-    """Requested backend versus the one every decode cell actually built.
+    """Requested backend versus the one every engine actually built.
 
     Rendered as its own section rather than a configuration row because the
     selection is an input and the resolution is a result: an operator reading
     `paged` in the configuration table has been told what was asked for, not
     what was measured.
+
+    Per phase as well as per decode cell. The three phases build their own
+    engines, so "this run measured paged" is three separate claims, and the
+    row is the only place a reader can see one of them fail.
     """
     resolved = kv_backend["resolved"] or ["none"]
     lines = [
@@ -111,6 +115,12 @@ def kv_backend_lines(kv_backend: dict) -> list[str]:
             for batch, kind in sorted(by_batch.items(), key=lambda kv: int(kv[0]))
         )
         lines.append(f"| Per batch size | {per_cell} |")
+    by_phase = kv_backend["byPhase"]
+    if by_phase:
+        per_phase = ", ".join(
+            f"{phase}: `{kind}`" for phase, kind in by_phase.items()
+        )
+        lines.append(f"| Per phase | {per_phase} |")
     return lines
 
 

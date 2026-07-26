@@ -111,6 +111,49 @@ def sweep_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
     ]
 
 
+def scheduler_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
+    """The full `darkbloom benchmark --scheduler-prefill` argv.
+
+    Carries `--kv-backend` for the same reason the sweep does. This phase
+    builds a FRESH production engine per measurement, so without the
+    selection every TTFT number came off `.auto` -- CONTIGUOUS -- while the
+    sweep beside it measured paged, and the report attributed both to one
+    backend. There is no batch-size curve to forward: each cold prefill is a
+    single request, `maxConcurrentRequests: 1` by construction.
+    """
+    return benchmark + [
+        "--scheduler-prefill",
+        "--prefill-lengths",
+        ",".join(map(str, args.prefill_lengths)),
+        "--kv-backend",
+        args.kv_backend,
+        "--prefill-iterations",
+        str(args.iterations),
+    ]
+
+
+def arrival_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
+    """The full `darkbloom benchmark --arrival-invariance` argv.
+
+    Same pin, one engine: every arrival topology is measured on a single warm
+    engine, so this phase resolves exactly one backend and an unpinned run
+    resolved `.auto`'s. No batch-size curve here either -- the concurrency is
+    the widest arrival pattern (burst, 4 rows), fixed by the topologies the
+    benchmark defines rather than by a flag.
+    """
+    return benchmark + [
+        "--arrival-invariance",
+        "--kv-backend",
+        args.kv_backend,
+        "--arrival-prompt-tokens",
+        str(args.arrival_prompt_tokens),
+        "--arrival-decode-tokens",
+        str(args.arrival_decode_tokens),
+        "--arrival-iterations",
+        str(args.iterations),
+    ]
+
+
 def main() -> int:
     args = parse_args()
     repo_root = Path(__file__).resolve().parents[2]
@@ -155,30 +198,8 @@ def main() -> int:
     # fails, and that report is the whole diagnostic.
     try:
         sweep = run_json(sweep_argv(benchmark, args), provider_dir)
-        scheduler = run_json(
-            benchmark
-            + [
-                "--scheduler-prefill",
-                "--prefill-lengths",
-                ",".join(map(str, args.prefill_lengths)),
-                "--prefill-iterations",
-                str(args.iterations),
-            ],
-            provider_dir,
-        )
-        arrival = run_json(
-            benchmark
-            + [
-                "--arrival-invariance",
-                "--arrival-prompt-tokens",
-                str(args.arrival_prompt_tokens),
-                "--arrival-decode-tokens",
-                str(args.arrival_decode_tokens),
-                "--arrival-iterations",
-                str(args.iterations),
-            ],
-            provider_dir,
-        )
+        scheduler = run_json(scheduler_argv(benchmark, args), provider_dir)
+        arrival = run_json(arrival_argv(benchmark, args), provider_dir)
     except BenchmarkCommandFailure as failure:
         return persist_failed_report(failure, output_dir)
 
@@ -188,10 +209,10 @@ def main() -> int:
         "arrivalInvariance": arrival,
     }
     validate_raw_outputs(args, sweep, scheduler, arrival)
-    # The backend the decode cells were actually built with. Extracted before
-    # the summary so a curve that cannot name its backend never reaches a
-    # report, let alone a comparison.
-    kv_backend = resolve_kv_backend(args, sweep)
+    # The backend every phase was actually built with. Extracted before the
+    # summary so a run that cannot name its backends never reaches a report,
+    # let alone a comparison.
+    kv_backend = resolve_kv_backend(args, sweep, scheduler, arrival)
     summary = summarize(sweep, scheduler, arrival)
     model_snapshot = resolve_model_snapshot(raw_outputs)
     hardware = sweep["hardware"]

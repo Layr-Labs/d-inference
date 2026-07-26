@@ -421,9 +421,7 @@ public enum ThroughputSweep {
                 return EngineParts(
                     engine: build.engine,
                     eosTokenIds: ctx.configuration.eosTokenIds,
-                    resolvedBackend: build.kvBackendFallbackReason.map {
-                        "\(build.kvBackendKind.rawValue) (fallback: \($0))"
-                    } ?? build.kvBackendKind.rawValue)
+                    resolvedBackend: build.resolvedKVBackendDescriptor)
             }
         } catch {
             // Since OPEN-9 this is the path an explicit `--kv-backend paged`

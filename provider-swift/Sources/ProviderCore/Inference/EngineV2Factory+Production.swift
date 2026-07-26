@@ -351,6 +351,16 @@ extension EngineV2Factory {
         /// never ran.
         public let pagedPoolDType: String?
 
+        /// The resolved backend as a benchmark artifact records it: the kind,
+        /// with any degrade reason carried in a `(fallback: <reason>)` tail.
+        /// One spelling for every report, because the wrapper parses the kind
+        /// off the leading word and the reason out of the tail — two producers
+        /// formatting this differently would make one of them unreadable.
+        public var resolvedKVBackendDescriptor: String {
+            kvBackendFallbackReason.map { "\(kvBackendKind.rawValue) (fallback: \($0))" }
+                ?? kvBackendKind.rawValue
+        }
+
         public init(
             engine: any CBv2Engine,
             kvBackendKind: EngineV2KVBackendKind,

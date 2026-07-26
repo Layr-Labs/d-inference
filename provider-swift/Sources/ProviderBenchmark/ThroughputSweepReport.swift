@@ -170,21 +170,11 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// because the release gates parse it: `scripts/gemma_contbatch` refuses
     /// to diff two reports whose resolved backends differ, and a prose
     /// sentence is not a contract a gate can hold.
-    public struct KVBackend: Codable, Sendable {
-        /// The `--kv-backend` selection the run was launched with:
-        /// "auto" | "contiguous" | "paged".
-        public let selection: String
-        /// Distinct resolved-backend descriptors across every decode cell,
-        /// in first-seen order. EMPTY means no cell ever built an engine.
-        /// More than one entry means the run measured a MIXED population and
-        /// its curve cannot be read as one backend's.
-        public let resolved: [String]
-
-        public init(selection: String, resolved: [String]) {
-            self.selection = selection
-            self.resolved = resolved
-        }
-    }
+    ///
+    /// The same record the scheduler-prefill and arrival phases carry — one
+    /// type, so a wrapper that pins the sweep's backend pins theirs the same
+    /// way.
+    public typealias KVBackend = BenchmarkKVBackend
 
     /// A requested decode cell that produced no measurement because its
     /// engine never built.

@@ -16,7 +16,11 @@ from pathlib import Path
 #       `configuration.batchSizes` ladder, and a required top-level
 #       `kvBackend` block added (requested selection, resolved backends,
 #       per-batch-size resolution, posture violations).
-SCHEMA_VERSION = 3
+#   4 — `kvBackend.byPhase` added (required): the backend EVERY phase built,
+#       not just the decode curve's. The scheduler-prefill and arrival
+#       commands now take the selection too, so `kvBackend.resolved` is the
+#       whole run's population rather than the sweep's.
+SCHEMA_VERSION = 4
 
 
 DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"

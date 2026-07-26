@@ -68,6 +68,49 @@ def make_sweep(**overrides) -> dict:
     )
 
 
+def make_scheduler(**overrides) -> dict:
+    return fixtures.scheduler_payload(
+        prefill_lengths=PREFILL_LENGTHS, iterations=ITERATIONS, **overrides
+    )
+
+
+def make_arrival(**overrides) -> dict:
+    return fixtures.arrival_payload(
+        iterations=ITERATIONS, prompt_tokens=512, decode_tokens=64, **overrides
+    )
+
+
+def resolve(
+    args: argparse.Namespace | None = None,
+    sweep: dict | None = None,
+    scheduler: dict | None = None,
+    arrival: dict | None = None,
+) -> dict:
+    """`resolve_kv_backend` over all three phases of a run.
+
+    Unless a test hands in its own payload, the two non-sweep phases agree
+    with the sweep's first decode cell: the wrapper now forwards one
+    selection to all three commands, so agreement is the ordinary case and a
+    test that wants a mixed-arm run says so explicitly.
+    """
+    args = make_args() if args is None else args
+    sweep = make_sweep() if sweep is None else sweep
+    # `.get` chains: tests that strip the sweep's block to prove it is
+    # required must still reach `resolve_kv_backend` to be refused there.
+    selection = sweep.get("kvBackend", {}).get("selection", "paged")
+    resolved = sweep["decode"][0].get("resolvedKVBackend") or "paged"
+    return resolve_kv_backend(
+        args,
+        sweep,
+        make_scheduler(selection=selection, resolved=resolved)
+        if scheduler is None
+        else scheduler,
+        make_arrival(selection=selection, resolved=resolved)
+        if arrival is None
+        else arrival,
+    )
+
+
 class SweepArgvTests(unittest.TestCase):
     def test_forwards_backend_and_batch_sizes(self):
         argv = runner.sweep_argv(["darkbloom", "benchmark", "--model", "m"], make_args())
@@ -101,6 +144,66 @@ class SweepArgvTests(unittest.TestCase):
         self.assertNotIn("--max-batch", argv)
 
 
+class PhaseArgvTests(unittest.TestCase):
+    """Every engine-constructing command carries the selection, not just the
+    sweep. Without this the two phases below took `--kv-backend`'s default,
+    which is `auto`, which resolves CONTIGUOUS -- so a run reporting "paged"
+    measured contiguous for two of its three phases."""
+
+    def test_scheduler_prefill_carries_the_selection(self):
+        argv = runner.scheduler_argv(
+            ["darkbloom", "benchmark", "--model", "m"], make_args()
+        )
+        self.assertEqual(
+            argv,
+            [
+                "darkbloom",
+                "benchmark",
+                "--model",
+                "m",
+                "--scheduler-prefill",
+                "--prefill-lengths",
+                "128,512",
+                "--kv-backend",
+                "paged",
+                "--prefill-iterations",
+                "2",
+            ],
+        )
+
+    def test_arrival_invariance_carries_the_selection(self):
+        argv = runner.arrival_argv(
+            ["darkbloom", "benchmark", "--model", "m"], make_args()
+        )
+        self.assertEqual(
+            argv,
+            [
+                "darkbloom",
+                "benchmark",
+                "--model",
+                "m",
+                "--arrival-invariance",
+                "--kv-backend",
+                "paged",
+                "--arrival-prompt-tokens",
+                "512",
+                "--arrival-decode-tokens",
+                "64",
+                "--arrival-iterations",
+                "2",
+            ],
+        )
+
+    def test_a_deliberate_auto_run_forwards_auto_everywhere(self):
+        args = make_args(kv_backend="auto")
+        for argv in (
+            runner.sweep_argv(["darkbloom"], args),
+            runner.scheduler_argv(["darkbloom"], args),
+            runner.arrival_argv(["darkbloom"], args),
+        ):
+            self.assertEqual(argv[argv.index("--kv-backend") + 1], "auto")
+
+
 class DefaultPostureTests(unittest.TestCase):
     def test_defaults_are_paged_and_reach_eight(self):
         with mock.patch.object(sys, "argv", ["benchmark-gemma-contbatch.py"]):
@@ -123,15 +226,23 @@ class DefaultPostureTests(unittest.TestCase):
 
 class ResolveKVBackendTests(unittest.TestCase):
     def test_records_selection_and_resolution_separately(self):
-        block = resolve_kv_backend(make_args(), make_sweep())
+        block = resolve()
         self.assertEqual(block["selection"], "paged")
         self.assertEqual(block["resolved"], ["paged"])
         self.assertEqual(block["byBatchSize"], {"1": "paged", "2": "paged", "4": "paged", "8": "paged"})
+        self.assertEqual(
+            block["byPhase"],
+            {
+                "throughputSweep": "paged",
+                "schedulerPrefill": "paged",
+                "arrivalInvariance": "paged",
+            },
+        )
         self.assertEqual(block["postureViolations"], [])
 
     def test_degraded_cell_is_a_violation_not_a_green_run(self):
-        # The defect this ticket exists for: `auto` holding paged at B=1 and
-        # degrading at B=8 while every other check stays green.
+        # `auto` holding paged at B=1 and degrading at B=8 while every other
+        # check stays green.
         sweep = make_sweep(
             selection="auto",
             resolved_by_batch={
@@ -141,16 +252,53 @@ class ResolveKVBackendTests(unittest.TestCase):
                 8: "contiguous (fallback: pool capacity)",
             },
         )
-        block = resolve_kv_backend(make_args(kv_backend="auto"), sweep)
+        block = resolve(make_args(kv_backend="auto"), sweep)
         self.assertEqual(block["resolved"], ["contiguous", "paged"])
         self.assertEqual(block["byBatchSize"]["8"], "contiguous")
-        self.assertEqual(len(block["postureViolations"]), 1)
-        self.assertIn("mixed KV backend population", block["postureViolations"][0])
-        self.assertIn("B=8: contiguous", block["postureViolations"][0])
+        decode_violation = next(
+            item for item in block["postureViolations"] if "decode curve" in item
+        )
+        self.assertIn("mixed KV backend population", decode_violation)
+        self.assertIn("B=8: contiguous", decode_violation)
+
+    def test_a_phase_on_the_other_backend_is_a_violation(self):
+        # The defect this ticket exists for: the sweep names paged and the
+        # two phases beside it, unpinned, measured whatever `.auto` resolved.
+        # `.auto` resolves CONTIGUOUS, and on the models production serves
+        # that is the arm with adoption-exactness evidence against it -- so a
+        # report that averaged the three would attribute contiguous behaviour
+        # to a paged run.
+        block = resolve(
+            scheduler=make_scheduler(selection="paged", resolved="contiguous")
+        )
+        self.assertEqual(block["resolved"], ["contiguous", "paged"])
+        self.assertEqual(block["byPhase"]["schedulerPrefill"], "contiguous")
+        self.assertEqual(block["byPhase"]["throughputSweep"], "paged")
+        mixed = next(
+            item for item in block["postureViolations"] if "across phases" in item
+        )
+        self.assertIn("schedulerPrefill: contiguous", mixed)
+        self.assertIn("arrivalInvariance: paged", mixed)
+        # And the explicit selection was not honoured end to end.
+        self.assertIn(
+            "--kv-backend paged resolved contiguous", block["postureViolations"]
+        )
+
+    def test_phase_degrade_reason_reaches_the_report(self):
+        # A phase that degraded is the only place its reason is recorded; the
+        # sweep block cannot speak for an engine it did not build.
+        block = resolve(
+            arrival=make_arrival(
+                selection="paged",
+                resolved="contiguous (fallback: kill_switch)",
+            )
+        )
+        self.assertEqual(block["degrades"], ["kill_switch"])
+        self.assertEqual(block["byPhase"]["arrivalInvariance"], "contiguous")
 
     def test_explicit_paged_resolving_contiguous_is_a_violation(self):
         sweep = make_sweep(selection="paged", resolved="contiguous")
-        block = resolve_kv_backend(make_args(), sweep)
+        block = resolve(sweep=sweep)
         self.assertEqual(
             block["postureViolations"], ["--kv-backend paged resolved contiguous"]
         )
@@ -158,23 +306,42 @@ class ResolveKVBackendTests(unittest.TestCase):
     def test_report_without_the_block_is_refused(self):
         sweep = make_sweep()
         del sweep["kvBackend"]
-        with self.assertRaisesRegex(RuntimeError, "predates schema 3"):
-            resolve_kv_backend(make_args(), sweep)
+        with self.assertRaisesRegex(RuntimeError, "did not report a kvBackend block"):
+            resolve(sweep=sweep)
+
+    def test_phase_without_the_block_is_refused(self):
+        # An old binary accepts `--kv-backend` on these modes (the flag is
+        # declared on the command) and ignores it. Absent evidence is refused
+        # rather than read as agreement.
+        scheduler = make_scheduler()
+        del scheduler["kvBackend"]
+        with self.assertRaisesRegex(
+            RuntimeError, "scheduler prefill did not report a kvBackend block"
+        ):
+            resolve(scheduler=scheduler)
+
+    def test_phase_running_another_selection_is_refused(self):
+        # Exactly what an unforwarded flag looks like from the report: the
+        # phase ran `auto` while the wrapper asked for paged.
+        with self.assertRaisesRegex(
+            RuntimeError, r"arrival invariance ran --kv-backend 'auto'"
+        ):
+            resolve(arrival=make_arrival(selection="auto", resolved="contiguous"))
 
     def test_cell_without_a_resolved_backend_is_refused(self):
         sweep = make_sweep()
         sweep["decode"][2]["resolvedKVBackend"] = None
         with self.assertRaisesRegex(RuntimeError, "without recording a backend"):
-            resolve_kv_backend(make_args(), sweep)
+            resolve(sweep=sweep)
 
     def test_selection_drift_between_wrapper_and_binary_is_refused(self):
         with self.assertRaisesRegex(RuntimeError, "but this wrapper requested"):
-            resolve_kv_backend(make_args(kv_backend="contiguous"), make_sweep())
+            resolve(make_args(kv_backend="contiguous"))
 
     def test_unknown_kind_is_refused_rather_than_compared(self):
         sweep = make_sweep(resolved_by_batch={1: "quantized-pages"})
         with self.assertRaisesRegex(RuntimeError, "unrecognised KV backend kind"):
-            resolve_kv_backend(make_args(), sweep)
+            resolve(sweep=sweep)
 
     def test_degrade_reason_is_carried_not_just_the_kind(self):
         # With paged opt-in, a deliberately paged slot quietly serving
@@ -187,9 +354,7 @@ class ResolveKVBackendTests(unittest.TestCase):
             "kernel_preflight: MLXLMCommon resource bundle missing beside the "
             "executable — copy the .bundle alongside the binary"
         )
-        block = resolve_kv_backend(
-            make_args(), make_sweep(resolved=f"contiguous (fallback: {reason})")
-        )
+        block = resolve(sweep=make_sweep(resolved=f"contiguous (fallback: {reason})"))
         self.assertEqual(block["degrades"], [reason])
         # Verbatim in the violation, so the operator reads a packaging fix
         # rather than a hardware verdict.
@@ -200,7 +365,7 @@ class ResolveKVBackendTests(unittest.TestCase):
         # resolved kind's agreement in every case; a run that was degraded at
         # all did not honour the selection it names.
         sweep = make_sweep(resolved="paged (fallback: DARKBLOOM_CBV2_PAGED_KV=0)")
-        block = resolve_kv_backend(make_args(), sweep)
+        block = resolve(sweep=sweep)
         self.assertEqual(
             block["postureViolations"],
             ["--kv-backend paged was degraded: DARKBLOOM_CBV2_PAGED_KV=0"],
@@ -214,18 +379,18 @@ class ResolveKVBackendTests(unittest.TestCase):
             unmeasured=[{"batchSize": 8, "reason": "engine_v2: no KV byte headroom"}]
         )
         with self.assertRaisesRegex(RuntimeError, r"B=8: engine_v2: no KV byte headroom"):
-            resolve_kv_backend(make_args(), sweep)
+            resolve(sweep=sweep)
 
     def test_report_without_coverage_is_refused(self):
         sweep = make_sweep()
         del sweep["decodeCoverage"]
         with self.assertRaisesRegex(RuntimeError, "predates schema 4"):
-            resolve_kv_backend(make_args(), sweep)
+            resolve(sweep=sweep)
 
 
 class BackendPinTests(unittest.TestCase):
     def setUp(self):
-        self.current = resolve_kv_backend(make_args(), make_sweep())
+        self.current = resolve()
 
     def test_matching_backend_compares(self):
         baseline = {"kvBackend": dict(self.current)}
@@ -237,6 +402,10 @@ class BackendPinTests(unittest.TestCase):
                 "selection": "contiguous",
                 "resolved": ["contiguous"],
                 "byBatchSize": dict.fromkeys(["1", "2", "4", "8"], "contiguous"),
+                "byPhase": dict.fromkeys(
+                    ["throughputSweep", "schedulerPrefill", "arrivalInvariance"],
+                    "contiguous",
+                ),
             }
         }
         with self.assertRaises(RuntimeError) as caught:
@@ -250,10 +419,31 @@ class BackendPinTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "does not record a resolved KV backend"):
             validate_kv_backend_pin({"summary": {}}, self.current)
 
+    def test_baseline_without_per_phase_backends_refuses(self):
+        # A schema-3 baseline recorded its decode curve's backend and nothing
+        # about the two phases beside it, which is precisely the run whose
+        # prefill and arrival numbers came off the other arm.
+        baseline = {"kvBackend": {k: v for k, v in self.current.items() if k != "byPhase"}}
+        with self.assertRaisesRegex(RuntimeError, "records no per-phase KV backend"):
+            validate_kv_backend_pin(baseline, self.current)
+
+    def test_per_phase_disagreement_refuses_even_when_the_curve_matches(self):
+        # Identical decode curves, different prefill engines: every
+        # schedulerTTFT delta the report tabulates is cross-population.
+        baseline = {"kvBackend": dict(self.current)}
+        baseline["kvBackend"]["byPhase"] = dict(
+            self.current["byPhase"], schedulerPrefill="contiguous"
+        )
+        with self.assertRaises(RuntimeError) as caught:
+            validate_kv_backend_pin(baseline, self.current)
+        self.assertIn(
+            "schedulerPrefill: 'paged' (baseline 'contiguous')", str(caught.exception)
+        )
+
     def test_per_cell_disagreement_refuses_even_when_the_set_matches(self):
         # Both runs saw {paged, contiguous}, but on different batch sizes, so
         # every per-batch delta in the report is cross-population.
-        mixed = resolve_kv_backend(
+        mixed = resolve(
             make_args(kv_backend="auto"),
             make_sweep(selection="auto", resolved_by_batch={8: "contiguous"}),
         )
@@ -267,6 +457,7 @@ class BackendPinTests(unittest.TestCase):
                     "4": "paged",
                     "8": "paged",
                 },
+                "byPhase": dict(mixed["byPhase"]),
             }
         }
         with self.assertRaises(RuntimeError) as caught:
@@ -279,17 +470,33 @@ class BackendPinTests(unittest.TestCase):
 class DryRunTests(unittest.TestCase):
     """`main()` end to end with the subprocess boundary replaced."""
 
-    def run_main(self, args: argparse.Namespace, sweep: dict, output_dir: Path) -> int:
+    def run_main(
+        self,
+        args: argparse.Namespace,
+        sweep: dict,
+        output_dir: Path,
+        phase_resolved: str | None = None,
+    ) -> int:
         args.output_dir = str(output_dir)
+        selection = sweep["kvBackend"]["selection"]
+        # The two non-sweep phases now run the same selection; by default they
+        # resolve what the sweep's first cell did, and a test that wants a
+        # mixed-arm run overrides it.
+        resolved = phase_resolved or sweep["decode"][0]["resolvedKVBackend"]
         payloads = {
             "--sweep": sweep,
             "--scheduler-prefill": fixtures.scheduler_payload(
-                prefill_lengths=args.prefill_lengths, iterations=args.iterations
+                prefill_lengths=args.prefill_lengths,
+                iterations=args.iterations,
+                selection=selection,
+                resolved=resolved,
             ),
             "--arrival-invariance": fixtures.arrival_payload(
                 iterations=args.iterations,
                 prompt_tokens=args.arrival_prompt_tokens,
                 decode_tokens=args.arrival_decode_tokens,
+                selection=selection,
+                resolved=resolved,
             ),
         }
         self.commands: list[list[str]] = []
@@ -332,9 +539,19 @@ class DryRunTests(unittest.TestCase):
         self.assertEqual(report["kvBackend"]["resolved"], ["paged"])
         self.assertEqual(report["configuration"]["batchSizes"], BATCH_SIZES)
         self.assertNotIn("maxBatch", report["configuration"])
-        # The forwarded flags, as actually handed to the binary.
+        # The forwarded flags, as actually handed to the binary -- on EVERY
+        # command, not just the sweep.
+        for command in self.commands:
+            self.assertEqual(command[command.index("--kv-backend") + 1], "paged")
+        self.assertEqual(
+            report["kvBackend"]["byPhase"],
+            {
+                "throughputSweep": "paged",
+                "schedulerPrefill": "paged",
+                "arrivalInvariance": "paged",
+            },
+        )
         sweep_command = next(item for item in self.commands if "--sweep" in item)
-        self.assertIn("--kv-backend", sweep_command)
         self.assertEqual(
             sweep_command[sweep_command.index("--batch-sizes") + 1], "1,2,4,8"
         )
@@ -372,6 +589,10 @@ class DryRunTests(unittest.TestCase):
                 "resolved": ["contiguous"],
                 "resolvedDescriptors": ["contiguous"],
                 "byBatchSize": dict.fromkeys(["1", "2", "4", "8"], "contiguous"),
+                "byPhase": dict.fromkeys(
+                    ["throughputSweep", "schedulerPrefill", "arrivalInvariance"],
+                    "contiguous",
+                ),
                 "postureViolations": [],
             }
             baseline_path = output_dir / "baseline.json"
@@ -384,6 +605,33 @@ class DryRunTests(unittest.TestCase):
                     output_dir,
                 )
         self.assertIn("compare across backend populations", str(caught.exception))
+
+    def test_a_phase_measuring_the_other_backend_fails_the_run(self):
+        # End to end: the sweep resolves paged, the two commands beside it
+        # resolve contiguous. Before the pin this was the DEFAULT shape of a
+        # paged run and nothing in the artifact said so.
+        with tempfile.TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+            status = self.run_main(
+                make_args(), make_sweep(), output_dir, phase_resolved="contiguous"
+            )
+            report = self.latest_report(output_dir)
+            markdown = (output_dir / "gemma-contbatch-latest.md").read_text(
+                encoding="utf-8"
+            )
+
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            report["kvBackend"]["byPhase"],
+            {
+                "throughputSweep": "paged",
+                "schedulerPrefill": "contiguous",
+                "arrivalInvariance": "contiguous",
+            },
+        )
+        self.assertIn("- KV backend posture: FAIL", markdown)
+        # Visible in the artifact, not merely inferable from the violation.
+        self.assertIn("schedulerPrefill: `contiguous`", markdown)
 
     def test_comparison_against_a_matching_paged_baseline_proceeds(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -91,16 +91,31 @@ def sweep_payload(
     }
 
 
-def scheduler_payload(*, prefill_lengths: list[int], iterations: int) -> dict:
+def scheduler_payload(
+    *,
+    prefill_lengths: list[int],
+    iterations: int,
+    selection: str = "paged",
+    resolved: str = "paged",
+) -> dict:
+    """A `--scheduler-prefill` report.
+
+    Every measurement builds its own engine, so the backend is recorded per
+    sample and de-duplicated into the phase's `kvBackend` block, exactly as
+    the binary emits it.
+    """
     return {
+        "schemaVersion": 1,
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
+        "kvBackend": {"selection": selection, "resolved": [resolved]},
         "samples": [
             {
                 "promptTokens": length,
                 "iteration": iteration,
                 "ttftMs": 50.0 + length,
                 "msPerPrefillToken": (50.0 + length) / length,
+                "resolvedKVBackend": resolved,
             }
             for length in prefill_lengths
             for iteration in range(1, iterations + 1)
@@ -108,7 +123,14 @@ def scheduler_payload(*, prefill_lengths: list[int], iterations: int) -> dict:
     }
 
 
-def arrival_payload(*, iterations: int, prompt_tokens: int, decode_tokens: int) -> dict:
+def arrival_payload(
+    *,
+    iterations: int,
+    prompt_tokens: int,
+    decode_tokens: int,
+    selection: str = "paged",
+    resolved: str = "paged",
+) -> dict:
     tolerance = 5.0
     patterns = []
     for name, delays in EXPECTED_ARRIVAL_PATTERNS.items():
@@ -164,7 +186,8 @@ def arrival_payload(*, iterations: int, prompt_tokens: int, decode_tokens: int) 
     return {
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
-        "schemaVersion": 2,
+        "schemaVersion": 3,
+        "kvBackend": {"selection": selection, "resolved": [resolved]},
         "promptTokensPerRequest": prompt_tokens,
         "decodeTokensPerRequest": decode_tokens,
         "arrivalToleranceMs": tolerance,

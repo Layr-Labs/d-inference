@@ -4,6 +4,24 @@ import ProviderCore
 import ProviderBenchmark
 
 extension Benchmark {
+    /// The `--kv-backend` selection, for EVERY mode that builds an engine.
+    ///
+    /// The flag is declared on the command, not on the sweep, so all three
+    /// modes have always accepted it — but only the sweep used to read it,
+    /// which meant `--scheduler-prefill` and `--arrival-invariance` silently
+    /// took the `.auto` default while the sweep beside them measured what was
+    /// asked for. `.auto` resolves CONTIGUOUS, so those two phases measured
+    /// the OTHER arm of a paged run and said nothing about it.
+    func resolvedKVBackendSelection() throws -> EngineV2KVBackendSelection {
+        guard let backend = EngineV2KVBackendSelection(
+            rawValue: kvBackend.trimmingCharacters(in: .whitespaces).lowercased())
+        else {
+            printError("--kv-backend must be one of: auto, contiguous, paged")
+            throw ExitCode.failure
+        }
+        return backend
+    }
+
     /// Drive `ThroughputSweep` for the resolved model and print the JSON report
     /// to stdout. Progress lines go to stderr (inside `ThroughputSweep`) so
     /// stdout stays a single parseable JSON document.
@@ -37,12 +55,7 @@ extension Benchmark {
             }
             batches = Array(1 ... maxBatch)
         }
-        guard let backend = EngineV2KVBackendSelection(
-            rawValue: kvBackend.trimmingCharacters(in: .whitespaces).lowercased())
-        else {
-            printError("--kv-backend must be one of: auto, contiguous, paged")
-            throw ExitCode.failure
-        }
+        let backend = try resolvedKVBackendSelection()
 
         let report = try await ThroughputSweep.run(
             modelID: modelID,
@@ -137,7 +150,8 @@ extension Benchmark {
             modelID: modelID,
             modelDirectory: modelDirectory,
             promptLengths: lengths,
-            iterations: prefillIterations
+            iterations: prefillIterations,
+            kvBackend: try resolvedKVBackendSelection()
         )
 
         print(try report.jsonString())
@@ -165,7 +179,8 @@ extension Benchmark {
             modelDirectory: modelDirectory,
             promptTokens: arrivalPromptTokens,
             decodeTokens: arrivalDecodeTokens,
-            iterations: arrivalIterations
+            iterations: arrivalIterations,
+            kvBackend: try resolvedKVBackendSelection()
         )
         print(try report.jsonString())
     }

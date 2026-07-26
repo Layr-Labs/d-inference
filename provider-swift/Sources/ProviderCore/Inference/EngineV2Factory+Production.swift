@@ -15,10 +15,11 @@
 //     families the engine is correct-by-construction for; GPT-OSS's
 //     `newCacheV2` also primes its sinks-activation probe at build time),
 //   * a KV backend sized from the unified-memory KV budget —
-//     `PagedKVBackend` for "auto" as of v0.8.0 (`case .auto: resolvedKind =
-//     .paged`, :546), slabs capped by `PagedKVPhysicalCapacityPolicy` and
-//     committed lazily (`.atFirstAdmission`), or `CBv2ContiguousKVBackend`
-//     for "contiguous", a slot veto, or an `.auto` model paged cannot serve,
+//     `CBv2ContiguousKVBackend` for "auto" (grep `case .auto: resolvedKind`;
+//     a v0.8.0 flip to paged was reverted because paged ADOPTION is not
+//     exact against paged COLD), or `PagedKVBackend` for an explicit
+//     "paged", slabs capped by `PagedKVPhysicalCapacityPolicy` and
+//     committed lazily (`.atFirstAdmission`),
 //   * `CBv2LayerCacheBank` over the model-built caches,
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).
@@ -437,9 +438,9 @@ extension EngineV2Factory {
     ///
     /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
     /// order): the caller passes the operator selection with slot vetoes
-    /// (VLM) already applied; as of v0.8.0 `.auto` resolves PAGED (see
-    /// `case .auto: resolvedKind = .paged` below, :546), so paged is the
-    /// shipped default rather than an explicit experimental selection.
+    /// (VLM) already applied; `.auto` resolves CONTIGUOUS (grep
+    /// `case .auto: resolvedKind` below for the reverted-flip rationale),
+    /// so paged arrives here only as an explicit operator selection.
     /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
     /// THIS deepest layer so no call path (benchmarks included) bypasses
     /// it, and it DEGRADES rather than refuses — an operator override is

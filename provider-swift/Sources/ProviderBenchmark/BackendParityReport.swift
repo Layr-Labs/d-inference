@@ -1257,20 +1257,45 @@ public enum BackendParityCriteria {
 
         // Exactness BEFORE arithmetic, and unconditional on it: a backend that
         // saves prefill by returning a different answer has not saved
-        // anything. Judged per arm against that arm's OWN cold request, so
-        // this can only fire for its own stated reason.
+        // anything. Judged per arm against that arm's OWN cold request.
+        //
+        // But WHICH arms differ is the whole signal, because a cold prefill
+        // and an adopted replay do not take the same floating-point path even
+        // when adoption is correct — different chunk boundaries, different
+        // accumulation order. On a precision-sensitive model that drift alone
+        // can move an argmax (gemma-4 amplifies it ~1,300x over gpt-oss, which
+        // is why `token_exactness` reads UNAVAILABLE there). So a raw "the
+        // tokens differ" must NEVER be reported as a paged defect on its own:
+        // symmetric inexactness is a property of the MODEL, and only an
+        // asymmetry — one backend exact, the other not, same prompt, same
+        // process — isolates the backend. Both still FAIL, because a cache the
+        // caller cannot see must not change the answer either way, but they
+        // are never allowed to read alike.
         let inexact = [(baseline.label, base), (candidate.label, cand)]
             .filter { $0.1.adoptionTokenExact == false }
         if !inexact.isEmpty {
+            let exactArms = [(baseline.label, base), (candidate.label, cand)]
+                .filter { $0.1.adoptionTokenExact == true }
+            var detail = "adoption CHANGED THE ANSWER on "
+                + inexact.map(\.0).joined(separator: " and ")
+                + ": the adopting request returned different tokens than the cold "
+                + "request for the SAME prompt at temperature 0, so the reported "
+                + "savings are not savings — prefill was skipped that was needed. "
+                + "Token counts are only meaningful conditional on exactness, which "
+                + "is why this outranks the comparison below"
+            if let exact = exactArms.first {
+                detail += ". ASYMMETRIC, which isolates the backend: \(exact.0) adopted "
+                    + "the same prefix on the same prompt in the same process and stayed "
+                    + "exact, so precision sensitivity cannot explain this one"
+            } else {
+                detail += ". SYMMETRIC — every measured arm is inexact, so this is a "
+                    + "property of the MODEL (a cold prefill and an adopted replay "
+                    + "accumulate differently, and this checkpoint's argmax is sensitive "
+                    + "enough to show it), NOT evidence against either backend. Do not "
+                    + "cite it as one; see the precision caveat on token_exactness"
+            }
             return .init(
-                id: id, title: title, verdict: .fail,
-                detail: "adoption CHANGED THE ANSWER on "
-                    + inexact.map(\.0).joined(separator: " and ")
-                    + ": the adopting request returned different tokens than the cold "
-                    + "request for the SAME prompt at temperature 0, so the reported "
-                    + "savings are not savings — the backend skipped prefill it needed. "
-                    + "Token counts are only meaningful conditional on exactness, which "
-                    + "is why this outranks the comparison below",
+                id: id, title: title, verdict: .fail, detail: detail,
                 measurements: measurements)
         }
 

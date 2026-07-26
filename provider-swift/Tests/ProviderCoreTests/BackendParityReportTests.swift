@@ -110,16 +110,19 @@ struct BackendParityReportTests {
         let inexactCandidate = BackendParityCriteria.prefixReuse(
             baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: false))
         #expect(inexactCandidate.verdict == .fail)
-        #expect(inexactCandidate.detail.contains("adoption CHANGED THE ANSWER"))
-        #expect(inexactCandidate.detail.contains("paged"))
-        #expect(!inexactCandidate.detail.contains("contiguous"))
+        // The ACCUSATION names only the offending arm. `contiguous` does
+        // appear later, as the exact arm that proves the divergence is
+        // asymmetric — exonerating, not accused — so assert on the clause
+        // rather than on the bare substring.
+        #expect(inexactCandidate.detail.hasPrefix("adoption CHANGED THE ANSWER on paged:"))
+        #expect(!inexactCandidate.detail.contains("ANSWER on contiguous"))
 
         // The incumbent is not exempt: an inexact BASELINE is equally a FAIL,
         // and is named rather than quietly setting the bar.
         let inexactBaseline = BackendParityCriteria.prefixReuse(
             baseline: arm("contiguous", exact: false), candidate: arm("paged", exact: true))
         #expect(inexactBaseline.verdict == .fail)
-        #expect(inexactBaseline.detail.contains("contiguous"))
+        #expect(inexactBaseline.detail.hasPrefix("adoption CHANGED THE ANSWER on contiguous:"))
 
         // Both exact: the criterion falls through to the savings comparison.
         let bothExact = BackendParityCriteria.prefixReuse(
@@ -133,6 +136,53 @@ struct BackendParityReportTests {
             baseline: arm("contiguous", exact: nil), candidate: arm("paged", exact: nil))
         #expect(unmeasured.verdict == .pass)
         #expect(!unmeasured.detail.contains("adoption CHANGED THE ANSWER"))
+    }
+
+    /// A cold prefill and an adopted replay accumulate differently even when
+    /// adoption is correct, and gemma-4's argmax is sensitive enough to show
+    /// it. So "the tokens differ" on its own cannot indict a backend — only an
+    /// ASYMMETRY can. Both shapes FAIL, because a cache the caller cannot see
+    /// must not change the answer; they must never read alike.
+    @Test("only an ASYMMETRIC adoption divergence may be read as a backend defect")
+    func symmetricInexactnessIsNotABackendIndictment() {
+        func arm(_ selection: String, exact: Bool?) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                prefixReuse: BackendParityObservation.PrefixReuse(
+                    capabilitySupported: true,
+                    replayBoundTokens: 25600,
+                    promptTokens: 28672,
+                    donatedEntries: 1,
+                    firstOutcome: "miss",
+                    secondOutcome: "hit",
+                    secondMatchedTokens: 28416,
+                    secondPrefillTokensSaved: 2816,
+                    cacheHits: 1,
+                    cacheMisses: 1,
+                    adoptionTokenExact: exact))
+        }
+
+        // One arm exact, one not: precision cannot explain it, so the backend
+        // is named. This is the shape that disqualified paged as a default.
+        let asymmetric = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: false))
+        #expect(asymmetric.verdict == .fail)
+        #expect(asymmetric.detail.contains("ASYMMETRIC"))
+        #expect(asymmetric.detail.contains("precision sensitivity cannot explain"))
+
+        // Both arms inexact: a model property. Still a FAIL, but it must state
+        // that it is not evidence against either backend, or someone will cite
+        // it as one.
+        let symmetric = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: false), candidate: arm("paged", exact: false))
+        #expect(symmetric.verdict == .fail)
+        #expect(symmetric.detail.contains("SYMMETRIC"))
+        #expect(symmetric.detail.contains("property of the MODEL"))
+        #expect(symmetric.detail.contains("NOT evidence against either backend"))
+        #expect(!symmetric.detail.contains("ASYMMETRIC"))
+
+        // The two readings must be distinguishable, which is the entire point.
+        #expect(asymmetric.detail != symmetric.detail)
     }
 
     // MARK: - Exit status

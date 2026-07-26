@@ -126,9 +126,14 @@ public enum ThroughputSweep {
             efficiency: efficiency
         )
 
+        let coverage = ThroughputSweepReport.DecodeCoverage(
+            requestedBatchSizes: decodeOutcome.requestedBatchSizes,
+            unmeasured: decodeOutcome.unmeasuredCells)
+
         let notes = makeNotes(
             hardware: hardware, efficiency: efficiency, derived: derived,
-            kvBackend: kvBackend, resolvedBackends: decodeOutcome.resolvedBackends)
+            kvBackend: kvBackend, resolvedBackends: decodeOutcome.resolvedBackends,
+            coverage: coverage)
 
         // Only when NOTHING ran. A failure alongside cells that did resolve is
         // a partial result, not the story of the run, and must not be
@@ -156,7 +161,8 @@ public enum ThroughputSweep {
             kvBackend: ThroughputSweepReport.KVBackend(
                 selection: kvBackend.rawValue,
                 resolved: decodeOutcome.resolvedBackends),
-            decodeConstructionFailure: constructionFailure
+            decodeConstructionFailure: constructionFailure,
+            decodeCoverage: coverage
         )
     }
 
@@ -218,8 +224,15 @@ public enum ThroughputSweep {
     /// contiguous on kill switch, kernel preflight, or pool capacity, and a
     /// release gate that cannot see the degradation silently measures the
     /// wrong backend. Since OPEN-9 an EXPLICIT `.paged` no longer degrades at
-    /// all: it refuses, every cell fails to construct, and `constructionFailure`
-    /// is the only record of why the curve is empty.
+    /// all: it refuses, and `constructionFailure` is the only record of why
+    /// the curve is empty.
+    ///
+    /// Refusal is per CELL, not per run: every batch size builds its own
+    /// engine with its own `maxConcurrentRequests`, which feeds paged
+    /// physical-capacity planning, so B=1 can resolve paged while B=8
+    /// refuses. `requestedBatchSizes` versus `unmeasuredCells` is that
+    /// partial case — invisible in `resolvedBackends`, which stays non-empty
+    /// as long as ANY cell built.
     private struct DecodeOutcome {
         var samples: [ThroughputSweepReport.DecodeSample] = []
         /// Distinct resolved-backend descriptors, in first-seen order. EMPTY
@@ -229,12 +242,30 @@ public enum ThroughputSweep {
         /// `resolvedBackends` is empty — otherwise some cells did run and a
         /// single failure is a partial result, not the story of the run.
         var constructionFailure: String?
+        /// Every batch size the sweep set out to measure, ascending.
+        var requestedBatchSizes: [Int] = []
+        /// The requested cells that never built an engine. One entry per
+        /// batch size: a cell that refused in ANY repetition is unmeasured,
+        /// since the median it contributes to is then computed over a
+        /// placeholder zero.
+        var unmeasuredCells: [ThroughputSweepReport.UnmeasuredCell] = []
 
         /// Returns true when `descriptor` had not been seen before.
         @discardableResult
         mutating func record(_ descriptor: String?) -> Bool {
             guard let descriptor, !resolvedBackends.contains(descriptor) else { return false }
             resolvedBackends.append(descriptor)
+            return true
+        }
+
+        /// Returns true when this batch size had not already been recorded
+        /// as unmeasured.
+        @discardableResult
+        mutating func recordUnmeasured(batchSize: Int, reason: String) -> Bool {
+            guard !unmeasuredCells.contains(where: { $0.batchSize == batchSize })
+            else { return false }
+            unmeasuredCells.append(
+                ThroughputSweepReport.UnmeasuredCell(batchSize: batchSize, reason: reason))
             return true
         }
     }
@@ -273,6 +304,7 @@ public enum ThroughputSweep {
         log("decode sweep: batch sizes \(sizes), \(genTokens) tok/seq, prompt \(promptLen) tok/seq, \(repetitions) repetition(s), kv backend selection \(kvBackend.rawValue)")
 
         var outcome = DecodeOutcome()
+        outcome.requestedBatchSizes = sizes
 
         // Warm-up at B=1 with a short generation to compile decode kernels
         // (CBv2 compiled decode pays its cold start here, not in a sample).
@@ -296,7 +328,12 @@ public enum ThroughputSweep {
                 if outcome.record(resolved), let resolved {
                     log("  engine resolved kv backend: \(resolved)")
                 }
-                if let failure { outcome.constructionFailure = failure }
+                if let failure {
+                    outcome.constructionFailure = failure
+                    if outcome.recordUnmeasured(batchSize: batchSize, reason: failure) {
+                        log("  B=\(batchSize): NO measurement — \(failure)")
+                    }
+                }
                 let secs = seconds(maxElapsed)
                 let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
                 let perSeq = aggregate / Double(batchSize)
@@ -535,7 +572,8 @@ public enum ThroughputSweep {
         efficiency: Double,
         derived: ThroughputSweepReport.Derived,
         kvBackend: EngineV2KVBackendSelection,
-        resolvedBackends: [String]
+        resolvedBackends: [String],
+        coverage: ThroughputSweepReport.DecodeCoverage
     ) -> [String] {
         var notes: [String] = []
         notes.append(
@@ -544,6 +582,16 @@ public enum ThroughputSweep {
                     ? "n/a (no decode cells ran)"
                     : resolvedBackends.joined(separator: " + "))
                 + " — decode numbers describe the RESOLVED backend, not the selection.")
+        if !coverage.unmeasured.isEmpty {
+            notes.append(
+                "UNMEASURED: \(coverage.unmeasured.count) of "
+                    + "\(coverage.requestedBatchSizes.count) requested decode cells built no "
+                    + "engine — "
+                    + coverage.unmeasured
+                        .map { "B=\($0.batchSize): \($0.reason)" }
+                        .joined(separator: "; ")
+                    + ". Their samples are placeholder zeros, not measurements.")
+        }
         notes.append(
             "implied per-token read assumes \(Int(efficiency * 100))% of \(hardware.memoryBandwidthGbs) GB/s peak bandwidth.")
         notes.append(

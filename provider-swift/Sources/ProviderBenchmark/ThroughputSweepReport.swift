@@ -13,7 +13,9 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// 2 adds the optional `decodeConstructionFailure` block.
     /// 3 adds the required `kvBackend` block and the per-cell
     /// `decode[].resolvedKVBackend`.
-    public static let currentSchemaVersion = 3
+    /// 4 adds the required `decodeCoverage` block: which cells were ASKED
+    /// for versus which ones actually produced a measurement.
+    public static let currentSchemaVersion = 4
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -182,6 +184,51 @@ public struct ThroughputSweepReport: Codable, Sendable {
         }
     }
 
+    /// A requested decode cell that produced no measurement because its
+    /// engine never built.
+    ///
+    /// Each cell builds its own engine with its own `maxConcurrentRequests`,
+    /// which is an input to paged physical-capacity planning — so B=1 can
+    /// resolve paged while B=8 refuses for want of a concurrency-sized pool.
+    /// The cell still appears in `decode` as a placeholder zero (dropping it
+    /// would silently shorten the curve); this is the record that the zero is
+    /// an absence, not an observation.
+    public struct UnmeasuredCell: Codable, Sendable {
+        /// The batch size the operator asked for and did not get.
+        public let batchSize: Int
+        /// The construction error for this cell, verbatim.
+        public let reason: String
+
+        public init(batchSize: Int, reason: String) {
+            self.batchSize = batchSize
+            self.reason = reason
+        }
+    }
+
+    /// Requested-versus-measured decode cells.
+    ///
+    /// `decodeConstructionFailure` only speaks when NOTHING ran. A sweep
+    /// where one cell of four refused is not a total failure and not a clean
+    /// run either, and until this block existed that middle case was
+    /// unrepresentable: the failed cell's error was discarded and the curve
+    /// carried a zero that read like a measurement. An EXPLICIT
+    /// `--kv-backend` names a promise about every requested cell, so
+    /// `darkbloom benchmark` exits non-zero off `unmeasured` — see
+    /// `Benchmark.sweepFailureMessage`.
+    public struct DecodeCoverage: Codable, Sendable {
+        /// Every batch size the sweep set out to measure, ascending, after
+        /// the non-positive entries are dropped.
+        public let requestedBatchSizes: [Int]
+        /// The requested cells that never built an engine, one entry per
+        /// batch size in first-seen order. EMPTY on a fully measured run.
+        public let unmeasured: [UnmeasuredCell]
+
+        public init(requestedBatchSizes: [Int], unmeasured: [UnmeasuredCell]) {
+            self.requestedBatchSizes = requestedBatchSizes
+            self.unmeasured = unmeasured
+        }
+    }
+
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
@@ -197,6 +244,11 @@ public struct ThroughputSweepReport: Codable, Sendable {
     /// the JSON entirely on a healthy run, so successful reports keep their
     /// existing shape.
     public let decodeConstructionFailure: DecodeConstructionFailure?
+    /// Requested versus measured decode cells. Always present since schema
+    /// 4: a curve that quietly skipped a cell is not the curve that was
+    /// asked for, and `decodeConstructionFailure` above only fires when
+    /// EVERY cell failed.
+    public let decodeCoverage: DecodeCoverage
 
     public init(
         schemaVersion: Int = ThroughputSweepReport.currentSchemaVersion,
@@ -208,7 +260,9 @@ public struct ThroughputSweepReport: Codable, Sendable {
         derived: Derived,
         notes: [String],
         kvBackend: KVBackend = KVBackend(selection: "auto", resolved: []),
-        decodeConstructionFailure: DecodeConstructionFailure? = nil
+        decodeConstructionFailure: DecodeConstructionFailure? = nil,
+        decodeCoverage: DecodeCoverage = DecodeCoverage(
+            requestedBatchSizes: [], unmeasured: [])
     ) {
         self.schemaVersion = schemaVersion
         self.modelID = modelID
@@ -220,6 +274,7 @@ public struct ThroughputSweepReport: Codable, Sendable {
         self.notes = notes
         self.kvBackend = kvBackend
         self.decodeConstructionFailure = decodeConstructionFailure
+        self.decodeCoverage = decodeCoverage
     }
 
     // MARK: - Derived assembly

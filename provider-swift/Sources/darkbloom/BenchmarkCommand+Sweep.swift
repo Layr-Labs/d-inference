@@ -63,7 +63,8 @@ extension Benchmark {
         print(try report.jsonString())
 
         if let message = Self.sweepFailureMessage(
-            backend: backend, failure: report.decodeConstructionFailure)
+            backend: backend, failure: report.decodeConstructionFailure,
+            coverage: report.decodeCoverage)
         {
             printError(message)
             throw ExitCode.failure
@@ -79,20 +80,43 @@ extension Benchmark {
     /// canary fleet this benchmark IS the safety net for the paged rollout,
     /// so it must not report success on total failure.
     ///
+    /// The same holds one cell at a time. Every batch size builds its own
+    /// engine sized by its own `maxConcurrentRequests`, which feeds paged
+    /// physical-capacity planning, so `--batch-sizes 1,2,4,8` can resolve
+    /// paged at B=1 and refuse at B=8 for want of a concurrency-sized pool.
+    /// `decodeConstructionFailure` stays nil there (something ran), the
+    /// refused cell contributes a zero to the curve, and the operator named
+    /// a cell that silently did not happen. The release headline number is
+    /// B=8, so that is precisely the cell a capacity regression takes out.
+    ///
     /// Only for an EXPLICIT `--kv-backend`. `auto` keeps its old behaviour
-    /// exactly: it promised nothing about the backend, so a run that could
-    /// not build one is an ordinary bad run rather than a broken guarantee,
-    /// and scripts pinned to today's exit status must not start failing.
+    /// exactly: it promised nothing about the backend, so a degraded or
+    /// unbuildable cell is an ordinary bad run rather than a broken
+    /// guarantee, and scripts pinned to today's exit status must not start
+    /// failing. That asymmetry is the one
+    /// `EngineV2KVBackendPolicy.degradesPagedFailure` already encodes for
+    /// the engine; this is the same rule at the benchmark's exit status.
     ///
     /// The message names the REASON, not just the count: "no decode cells"
     /// alone sends the reader back to the stderr log to find out why.
     static func sweepFailureMessage(
         backend: EngineV2KVBackendSelection,
-        failure: ThroughputSweepReport.DecodeConstructionFailure?
+        failure: ThroughputSweepReport.DecodeConstructionFailure?,
+        coverage: ThroughputSweepReport.DecodeCoverage = .init(
+            requestedBatchSizes: [], unmeasured: [])
     ) -> String? {
-        guard backend != .auto, let failure else { return nil }
-        return "--kv-backend \(backend.rawValue) produced no decode cells: "
-            + failure.reason
+        guard backend != .auto else { return nil }
+        if let failure {
+            return "--kv-backend \(backend.rawValue) produced no decode cells: "
+                + failure.reason
+        }
+        guard !coverage.unmeasured.isEmpty else { return nil }
+        let cells = coverage.unmeasured
+            .map { "B=\($0.batchSize): \($0.reason)" }
+            .joined(separator: "; ")
+        return "--kv-backend \(backend.rawValue) left "
+            + "\(coverage.unmeasured.count) of \(coverage.requestedBatchSizes.count) "
+            + "requested decode cells unmeasured — \(cells)"
     }
 
     func runSchedulerPrefillBenchmark(

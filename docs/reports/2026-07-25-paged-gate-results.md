@@ -862,3 +862,31 @@ So the contrast is exact:
 That is upstream of the 200 MiB / 20 GiB sidecar caveat rather than beside
 it, and it is why vLLM's sliding-window coverage does not depend on
 donors' final offsets tiling.
+
+### What this does to the ranking: producer vs consumer
+
+Capture-as-you-fill pays **per block** instead of persisting a whole
+window at end of life, which collapses the disk ceiling AND the tiling
+requirement at once — the two caveats attached to the sharing item above
+are the same artifact seen twice.
+
+That resolves into a cleaner structure than the flat ranking above:
+
+| role | item | without it |
+|---|---|---|
+| **consumer** | link 5 — bridge `stagedWindow` into the restore path | capability stays dark; the planner refuses |
+| **producer** | capture windowed blocks as they fill | coverage depends on donors' final offsets tiling, and each donation costs 200 MiB against a 20 GiB box |
+
+**Both are needed, and the producer determines how much the consumer is
+worth.** Link 5 against end-of-life capture works but is tiling-limited
+and disk-bound. Link 5 against dense capture is the regime vLLM actually
+runs in.
+
+vLLM demonstrates dense capture is a real operating point rather than a
+hypothesis, and our geometry permits it without touching the ring (~1,040
+tokens of sliding residency against 256-token blocks — about four
+block-times of resident life per block).
+
+So the corrected reading of item 3 is not "wire block sharing." It is
+**move capture from retire-time to step-time**, which is the same change
+vLLM made and the reason their floor is one block.

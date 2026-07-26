@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
@@ -57,6 +58,20 @@ type Suite struct {
 	Coordinator *Coordinator
 	Providers   []*Provider
 	Users       []UserAccount
+
+	// privacyMu guards privacyAtRegistration, written once during Start and
+	// read afterwards from test goroutines.
+	privacyMu sync.Mutex
+	// privacyAtRegistration snapshots every provider's self-reported
+	// privacy_capabilities block exactly as it arrived over the wire, taken
+	// immediately BEFORE waitForProviderRegistration force-trusts the fleet.
+	// Force-trust overwrites most of that block with synthetic `true`s and
+	// materialises an empty one when the provider sent none, so an assertion
+	// made on the live registry copy after Start cannot fail. Tests that need
+	// the provider's actual claim read it through ReportedPrivacyCapabilities.
+	// A key is present for every provider that registered; a nil value means
+	// that provider reported no block at all.
+	privacyAtRegistration map[string]*protocol.PrivacyCapabilities
 }
 
 type Coordinator struct {
@@ -360,10 +375,20 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 
 	time.Sleep(3 * time.Second)
 
+	// Snapshot each provider's self-reported privacy_capabilities BEFORE the
+	// force-trust mutation below overwrites it; see privacyAtRegistration.
+	snapshot := make(map[string]*protocol.PrivacyCapabilities)
+
 	// Force-trust all providers and link them to a user account so the
 	// payout destination check passes when billing is enabled.
 	s.Coordinator.Registry.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
+		if reported := p.PrivacyCapabilities; reported != nil {
+			copied := *reported
+			snapshot[p.ID] = &copied
+		} else {
+			snapshot[p.ID] = nil
+		}
 		p.Status = registry.StatusOnline
 		p.TrustLevel = registry.TrustSelfSigned
 		p.ChallengeVerifiedSIP = true
@@ -386,9 +411,33 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 		}
 		p.Mu().Unlock()
 	})
+	s.privacyMu.Lock()
+	s.privacyAtRegistration = snapshot
+	s.privacyMu.Unlock()
 	s.Logger.Info("providers force-trusted for testing")
 
 	return nil
+}
+
+// ReportedPrivacyCapabilities returns the privacy_capabilities block the
+// given provider sent at registration, as captured before the testbed
+// force-trusted the fleet. The returned pointer is a copy the caller may
+// freely inspect; a nil block with ok==true means the provider registered
+// and reported no privacy_capabilities at all, which is a real and
+// distinguishable outcome. ok==false means no provider with that ID was
+// present when the snapshot was taken.
+//
+// Assert against this, not against Registry state: the live registry copy
+// has been overwritten with synthetic values by waitForProviderRegistration.
+func (s *Suite) ReportedPrivacyCapabilities(providerID string) (*protocol.PrivacyCapabilities, bool) {
+	s.privacyMu.Lock()
+	defer s.privacyMu.Unlock()
+	reported, ok := s.privacyAtRegistration[providerID]
+	if !ok || reported == nil {
+		return nil, ok
+	}
+	copied := *reported
+	return &copied, true
 }
 
 func (c *Coordinator) Start(ctx context.Context, logger *slog.Logger) error {

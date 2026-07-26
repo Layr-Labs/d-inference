@@ -82,12 +82,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var maxModelSlots: UInt64
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
-    /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4
-    /// with the `.auto` flip to paged KV. The two are one decision, not
-    /// two: measured gemma-4 / M4 Max aggregate decode puts paged at
-    /// 0.92x of contiguous at B=1, 0.98x at B=4 and 1.17x at B=8, so the
-    /// crossover sits near B=5 and a paged box that never reaches 8 is
-    /// strictly worse off than one that stayed contiguous. Clamped to
+    /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4.
+    /// This was originally coupled to the `.auto` paged flip; that flip
+    /// was reverted (paged adoption is not transparent — adopted output
+    /// differs from its own cold output on the same prompt), but the
+    /// raise stands on its own: B=8 is the better operating point on
+    /// either backend, with contiguous gaining ~1.07x from B=4 to B=8
+    /// and paged ~1.27x. Clamped to
     /// [1, 8] at use: the engine's KV byte-ledger admission binds long
     /// before count does, and caps past 8 recreate the batch-collapse
     /// regime the one-engine release exists to kill. The coordinator sees
@@ -99,17 +100,18 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — resolves PAGED as of v0.8.0, see
-    /// `EngineV2Factory+Production.swift:546`), "paged", or
-    /// "contiguous". VLM slots
+    /// `[backend]`): "auto" (default — resolves CONTIGUOUS; grep
+    /// `case .auto: resolvedKind` in `EngineV2Factory+Production.swift`),
+    /// experimental "paged", or "contiguous". VLM slots
     /// are NOT forced to contiguous: the veto at
     /// `EngineV2KVBackendPolicy.swift:162` (`guard isVLM,
     /// !pagedHonorsSpanMasks`) fires only when the paged
     /// cache does not affirm span masks, and
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
     /// `EngineV2SlotFactory.swift:190` passes — is `true`, so the veto
-    /// is inert and VLM slots route paged. Under "auto" a model that
-    /// cannot serve
+    /// is inert and a VLM slot that ASKED for paged gets it. (Under
+    /// "auto" every slot is contiguous regardless.) A model that cannot
+    /// serve
     /// paged falls back to contiguous with an INFO event; under an
     /// explicit "paged" it REFUSES the load instead, so a paged fleet
     /// can never silently serve contiguous. Fleet kill switch
@@ -177,9 +179,9 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// They are one constant because they drifted apart exactly once and it
     /// was expensive: the memberwise default moved 4 -> 8 while the decode
     /// fallback stayed at 4, so every provider that loaded a `provider.toml`
-    /// — which is every provider in the fleet — kept B=4 while `.auto`
-    /// flipped to paged. That is the one combination the measurements call
-    /// strictly worse than not flipping at all.
+    /// — which is every provider in the fleet — silently kept B=4 while
+    /// the release believed it had moved to 8. The drift is the bug here,
+    /// independent of which KV backend `.auto` happens to select.
     public static let defaultEngineV2MaxConcurrent: UInt64 = 8
 
     /// The cap pre-v0.8.0 releases GENERATED into `provider.toml`.
@@ -348,7 +350,7 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public internal(set) var appliedMigrations: [String] = []
 
     /// Current `provider.toml` schema version. 1 = v0.8.0, the release that
-    /// flipped `.auto` to paged and raised the concurrency default 4 -> 8.
+    /// raised the concurrency default 4 -> 8.
     public static let currentConfigVersion = 1
 
     /// Stable id of the one-time pre-v0.8.0 concurrency migration.

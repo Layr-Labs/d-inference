@@ -47,9 +47,9 @@ public enum RetiredKnobWarnings {
             out.append(
                 "provider.toml predates v0.8.0 (no config_version) and leaves [backend] "
                     + "engine_v2_max_concurrent at \(old), the default the OLD release generated — "
-                    + "raising it to \(new). v0.8.0 serves .auto on paged KV, which only overtakes "
-                    + "contiguous above ~5 concurrent rows, so \(old) would be slower than not "
-                    + "flipping at all. If you chose \(old) deliberately, set it again: this "
+                    + "raising it to \(new), the v0.8.0 default. B=\(new) is the better "
+                    + "operating point on either KV backend (contiguous gains ~1.07x from "
+                    + "B=\(old) to B=\(new)). If you chose \(old) deliberately, set it again: this "
                     + "migration runs once and an explicit \(old) is honoured from then on.")
         }
         return out

@@ -174,17 +174,25 @@ public enum ProviderCore {
     // (25,600) and gpt-oss (1,536), packed prefill and vision spans ACTIVE,
     // per-sequence KV 1.00x at 1k/10k/100k, and 1.27x aggregate decode from
     // B=4 to B=8 where contiguous gains only 1.07x. The ring is 65 pages.
-    // `.auto` RESOLVES TO PAGED as of v0.8.0
-    // (`EngineV2Factory+Production.swift:546`), and the box-wide
-    // concurrency default moves 4 -> 8 with it — one decision, not two.
-    // At a fixed batch, paged-vs-contiguous aggregate decode is 0.92x at
-    // B=1, 0.98x at B=4 and 1.17x at B=8, so the crossover is ~B=5 and a
-    // paged box that never reaches 8 is worse off than one that stayed
-    // contiguous. A `provider.toml` written before v0.8.0 carries the
-    // generated `engine_v2_max_concurrent = 4`; it is raised once, warned
-    // about, and stamped with `config_version`. Roll back the backend with
-    // engine_v2_kv_backend = "contiguous" or the fleet-wide
-    // DARKBLOOM_CBV2_PAGED_KV=0. Note gemma-4 greedy token ids differ under
+    // `.auto` STAYS CONTIGUOUS. The flip to paged was made and then
+    // reverted before release: paged ADOPTION is not transparent.
+    // Measured on gemma-4 at a 28,672-token prompt, one process, one
+    // paged slot, paged cold is deterministic (byte-identical across
+    // runs) but paged ADOPTED diverges from its own cold output at token
+    // 20 of 32 — same prompt, same config, a different answer depending
+    // on cache state the caller cannot see. Contiguous adoption is exact
+    // in every arm. That is disqualifying for a default and acceptable
+    // for an opt-in, so paged stays available per-slot via
+    // engine_v2_kv_backend = "paged"; re-flip when paged adopted ==
+    // paged cold on that prompt. Grep `case .auto: resolvedKind` in
+    // `EngineV2Factory+Production.swift` for the live answer.
+    //
+    // The box-wide concurrency default DOES move 4 -> 8, and stands on
+    // its own: contiguous gains ~1.07x from B=4 to B=8. A `provider.toml`
+    // written before v0.8.0 carries the generated
+    // `engine_v2_max_concurrent = 4`; it is raised once, warned about,
+    // and stamped with `config_version`.
+    // Note gemma-4 greedy token ids differ under
     // paged — measurably more accurate against an fp32 reference, but not
     // identical. kv-quantization and the compiled [B,1] decode path are
     // removed; `kv_quant` is accepted and ignored via RetiredCodingKeys.

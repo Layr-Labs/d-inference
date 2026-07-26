@@ -230,11 +230,11 @@ import Testing
 
 // MARK: - engine_v2_max_concurrent: v0.8.0 default + pre-v0.8.0 migration
 //
-// v0.8.0 flips `.auto` to paged KV, which only overtakes contiguous above
-// ~5 concurrent rows (measured gemma-4 / M4 Max aggregate decode: 0.92x at
-// B=1, 0.98x at B=4, 1.17x at B=8). Paged at B=4 is therefore strictly worse
-// than not flipping, which makes the concurrency default part of the flip
-// rather than an independent knob.
+// v0.8.0 raises the box-wide concurrency default 4 -> 8. It was originally
+// coupled to flipping `.auto` to paged KV; that flip was reverted (paged
+// adoption is not transparent — adopted output differs from its own cold
+// output on the same prompt), but the raise stands on its own: contiguous
+// gains ~1.07x from B=4 to B=8.
 
 @Test func maxConcurrentAbsentKeyDefaultsToEight() throws {
     // No `[backend]` section at all...

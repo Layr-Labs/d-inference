@@ -254,8 +254,8 @@ enum KVPostureDiagnosis {
     /// The verdict: did every EXPLICIT backend request get honoured?
     ///
     /// `auto` is never a failure — it promises nothing, so whichever
-    /// backend it lands on is by definition honoured. (It starts at PAGED
-    /// as of v0.8.0 and still degrades to contiguous on failure.) An
+    /// backend it lands on is by definition honoured. (It resolves
+    /// contiguous, and would still degrade there on failure.) An
     /// explicit request is a claim someone verifies against, so a refusal
     /// (no engine built, box serving nothing for that model) and a silent
     /// degrade (kill switch, VLM veto) both FAIL.

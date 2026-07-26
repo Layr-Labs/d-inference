@@ -18,9 +18,10 @@ from .baseline import (
     validate_baseline_pins,
 )
 from .checks import assert_finite
-from .config import parse_args
+from .config import SCHEMA_VERSION, parse_args
 from .environment import performance_environment
 from .process import (
+    BenchmarkCommandFailure,
     atomic_write,
     capture,
     capture_optional,
@@ -38,6 +39,44 @@ from .validation import validate_raw_outputs
 def safe_label(label: str) -> str:
     normalized = "".join(character if character.isalnum() else "-" for character in label)
     return "-".join(part for part in normalized.split("-") if part).lower()
+
+
+def resolve_output_dir(args: argparse.Namespace, repo_root: Path) -> Path:
+    output_dir = Path(args.output_dir)
+    if not output_dir.is_absolute():
+        output_dir = repo_root / output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def persist_failed_report(failure: BenchmarkCommandFailure, output_dir: Path) -> int:
+    """Keep the structured report a failed benchmark deliberately printed.
+
+    An explicit `--kv-backend` sweep that cannot build a requested cell prints
+    its report and exits non-zero on purpose -- the report names the cells it
+    could not measure and why. The status is propagated verbatim; only the
+    discard is fixed.
+    """
+    print(str(failure), file=sys.stderr)
+    if failure.report is None:
+        return failure.returncode
+    path = output_dir / "gemma-contbatch-failed.json"
+    atomic_write(
+        path,
+        json.dumps(
+            {
+                "schemaVersion": SCHEMA_VERSION,
+                "failedCommand": shlex.join(failure.command),
+                "exitStatus": failure.returncode,
+                "report": failure.report,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+    )
+    print(f"Failed-run report: {path}", file=sys.stderr)
+    return failure.returncode
 
 
 def sweep_argv(benchmark: list[str], args: argparse.Namespace) -> list[str]:
@@ -110,32 +149,38 @@ def main() -> int:
     if not binary.is_file() or not metallib.is_file():
         raise RuntimeError("release binary or mlx.metallib is missing")
 
+    output_dir = resolve_output_dir(args, repo_root)
     benchmark = [str(binary), "benchmark", "--model", args.model]
-    sweep = run_json(sweep_argv(benchmark, args), provider_dir)
-    scheduler = run_json(
-        benchmark
-        + [
-            "--scheduler-prefill",
-            "--prefill-lengths",
-            ",".join(map(str, args.prefill_lengths)),
-            "--prefill-iterations",
-            str(args.iterations),
-        ],
-        provider_dir,
-    )
-    arrival = run_json(
-        benchmark
-        + [
-            "--arrival-invariance",
-            "--arrival-prompt-tokens",
-            str(args.arrival_prompt_tokens),
-            "--arrival-decode-tokens",
-            str(args.arrival_decode_tokens),
-            "--arrival-iterations",
-            str(args.iterations),
-        ],
-        provider_dir,
-    )
+    # Parse before aborting: a refused sweep prints its report and THEN
+    # fails, and that report is the whole diagnostic.
+    try:
+        sweep = run_json(sweep_argv(benchmark, args), provider_dir)
+        scheduler = run_json(
+            benchmark
+            + [
+                "--scheduler-prefill",
+                "--prefill-lengths",
+                ",".join(map(str, args.prefill_lengths)),
+                "--prefill-iterations",
+                str(args.iterations),
+            ],
+            provider_dir,
+        )
+        arrival = run_json(
+            benchmark
+            + [
+                "--arrival-invariance",
+                "--arrival-prompt-tokens",
+                str(args.arrival_prompt_tokens),
+                "--arrival-decode-tokens",
+                str(args.arrival_decode_tokens),
+                "--arrival-iterations",
+                str(args.iterations),
+            ],
+            provider_dir,
+        )
+    except BenchmarkCommandFailure as failure:
+        return persist_failed_report(failure, output_dir)
 
     raw_outputs = {
         "throughputSweep": sweep,
@@ -155,9 +200,8 @@ def main() -> int:
     # baseline below, so the two can never describe different runs.
     environment = performance_environment(os.environ)
     report = {
-        # 2: the arrival summary carries the measured delivered-topology
-        # evidence (offsets, arrival error, tolerance, discarded attempts).
-        "schemaVersion": 2,
+        # See config.SCHEMA_VERSION for what each version changed.
+        "schemaVersion": SCHEMA_VERSION,
         "generatedAt": generated_at,
         "label": args.label,
         "modelID": args.model,
@@ -215,10 +259,6 @@ def main() -> int:
 
     assert_finite(report)
     markdown = markdown_report(report)
-    output_dir = Path(args.output_dir)
-    if not output_dir.is_absolute():
-        output_dir = repo_root / output_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     suffix = f"-{safe_label(args.label)}" if args.label else ""
     stem = f"gemma-contbatch-{timestamp}{suffix}"

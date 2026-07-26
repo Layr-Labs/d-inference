@@ -6,6 +6,19 @@ import argparse
 from pathlib import Path
 
 
+# Schema of the *wrapper* report (distinct from the per-benchmark payload
+# schemas the Swift binary stamps onto `raw.*`). Consumers dispatch on it, so
+# any field rename or required addition bumps it.
+#
+#   2 — the arrival summary carries measured delivered-topology evidence
+#       (offsets, arrival error, tolerance, discarded attempts).
+#   3 — `configuration.maxBatch` REMOVED in favour of the enumerated
+#       `configuration.batchSizes` ladder, and a required top-level
+#       `kvBackend` block added (requested selection, resolved backends,
+#       per-batch-size resolution, posture violations).
+SCHEMA_VERSION = 3
+
+
 DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 # The canonical posture this release is measured under. Both defaults are
 # load-bearing:

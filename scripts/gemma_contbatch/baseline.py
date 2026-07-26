@@ -13,6 +13,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .config import SCHEMA_VERSION
 from .environment import baseline_environment
 
 
@@ -184,6 +185,27 @@ def validate_environment_pin(baseline: dict, environment: dict[str, str]) -> Non
     )
 
 
+def validate_schema_version_pin(baseline: dict) -> None:
+    """Refuse a baseline written against a different wrapper schema.
+
+    Schema 3 removed `configuration.maxBatch` and added the `kvBackend`
+    block. A schema-2 baseline therefore records a batch ladder this runner
+    cannot see and no backend at all, so every pin below it reads absent
+    fields as "not recorded" and the comparison silently comes out as a
+    same-shape delta between two different experiments. Fail here instead.
+    """
+    recorded = baseline.get("schemaVersion")
+    if recorded == SCHEMA_VERSION:
+        return
+    raise RuntimeError(
+        f"baseline schemaVersion is {recorded!r}, this runner writes "
+        f"{SCHEMA_VERSION}; the two reports do not describe the same fields "
+        f"(schema 3 replaced configuration.maxBatch with configuration."
+        f"batchSizes and added the kvBackend block); "
+        + "re-record the baseline with this runner, or " + NO_COMPARE_HINT
+    )
+
+
 def validate_baseline_pins(
     args: argparse.Namespace,
     baseline: dict,
@@ -192,6 +214,9 @@ def validate_baseline_pins(
     environment: dict[str, str],
 ) -> None:
     """Every pin that must hold before a delta can be read as an engine delta."""
+    # First: every pin below reads named fields, and a schema mismatch makes
+    # "absent" indistinguishable from "unrecorded".
+    validate_schema_version_pin(baseline)
     validate_model_pin(baseline, args.model, model_snapshot)
     validate_hardware_pin(baseline, hardware)
     validate_configuration_pin(args, baseline)

@@ -643,8 +643,9 @@ with the span path costed at full `L`.
 > "requires 0.3 first (activation memory doubles)" dependency is void.
 > (2) Both rows are computed at heads = 8, which is gemma-4's KV-head count.
 > The score tensor is materialised after the GQA repeat, so the multiplier is
-> the QUERY-head count, 16 (`num_attention_heads 16`,
-> `2026-07-25-paged-gate-results.md:569-571`). The table understates its own
+> the QUERY-head count, 16 — see the gemma-4 config dump in
+> `2026-07-25-paged-gate-results.md` (grep `num_attention_heads`; :600 at time
+> of writing, and it has already moved once). The table understates its own
 > model by 2x.
 >
 > The parametric reserve shipped provider-side with zero call sites and was

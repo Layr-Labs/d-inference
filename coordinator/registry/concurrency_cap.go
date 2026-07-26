@@ -285,6 +285,31 @@ func soloTPSSeedForClass(model, chipClass string) (float64, bool) {
 	return v, ok
 }
 
+// soloTransferDestBoundLocked is the upper bound the DESTINATION provider's own
+// hardware places on a cross-class solo transfer, for use when that provider's
+// chip class contributed no sample of its own.
+//
+// It is resolvedDecodeTPS(p) — the registration benchmark, else the
+// sqrt(memory_bandwidth) proxy — with one exclusion: resolvedDecodeTPS returns
+// a hard-coded 1.0 for a provider that reports neither, and clamping to that
+// sentinel would pin an otherwise-fine box to cap 1 purely because it went
+// quiet. A provider is never capped at 1 by its own silence (see the
+// before-first-completion note on resolvedSoloModelTPSLocked), so absent both
+// signals this reports no bound and the transfer keeps whatever the seed and
+// class-count arms gave it.
+//
+// The rate is model-AGNOSTIC, which is exactly why it may only ever lower a
+// transferred value and never raise one: it under-states fast models (a ~57
+// tok/s gpt-oss reads ~28 through the bandwidth proxy), so using it as a
+// ceiling is conservative while using it as a floor would not be. Caller holds
+// p.mu.
+func soloTransferDestBoundLocked(p *Provider) (float64, bool) {
+	if p.DecodeTPS <= 0 && p.Hardware.MemoryBandwidthGBs <= 0 {
+		return 0, false
+	}
+	return resolvedDecodeTPS(p), true
+}
+
 // qualityCapOvercommitForModelLocked resolves the overcommit for a model: the
 // per-model override when one exists for the resolved build id, else the global
 // value. Caller holds r.mu.
@@ -336,22 +361,39 @@ type soloModelTPS struct {
 // When cross-class transfer is admissible. Steps (2) and (3) hand a provider a
 // rate its own chip class did not produce, so the transferred value needs an
 // upper bound or a fast class silently sets a slow class's cap — the exact
-// over-admission this whole cap exists to prevent. Exactly three things can
-// supply that bound, and at least one MUST hold:
+// over-admission this whole cap exists to prevent. Three things can supply
+// that bound, and at least one MUST hold:
 //
 //   - a modelSoloTPSSeedEnv seed applies to THIS provider's chip class
 //     (soloTPSSeedForClass) — the configured cold-start estimate clamps the
 //     transfer from above;
 //   - the provider's own class contributed at least one sample, so the min of
 //     per-class medians cannot exceed what its own class demonstrated;
-//   - at least two classes contributed, so the minimum is a genuine
-//     cross-class minimum rather than one class's median wearing that name.
+//   - at least two classes contributed. This one is WEAKER than it looks and
+//     is not a bound on the destination: the min over {M4 Max, M3 Max} is
+//     still a Max-tier rate, and handing it to an unsampled M1 Pro over-states
+//     that box by 4x. It is admitted anyway because it is a partial brake —
+//     refusing it drops to (4)/(5), and resolvedDecodeTPS is usually FASTER
+//     than the cross-class min (a mixed box benchmarked on gpt-oss reads 93
+//     tok/s), so refusing would LOOSEN the cap in most fleet shapes rather
+//     than tighten it. Measured: over 600 shapes where this arm is the sole
+//     admission reason, refusing loosens 338, tightens 81, no change in 181.
+//     soloTransferDestBoundLocked below supplies the bound this arm lacks.
 //
 // With none of them, the "min of per-class medians" is a single fast class's
 // rate being applied to an unsampled slower one — one M4 Max sample setting an
 // unseeded M1 Pro's rate. That is refused: the resolver drops to (4)/(5),
 // which is the pre-per-model behaviour and errs toward serving rather than
 // toward capping a box from evidence about different hardware.
+//
+// Reachability note for whoever edits crossClassBounded next: the third arm
+// cannot fire on the current production fleet. The shipped
+// EIGENINFERENCE_MODEL_SOLO_TPS_SEED carries UNQUALIFIED entries for both
+// served models ("gemma-4-26b-qat-4bit=14,gpt-oss-20b=30"), and an unqualified
+// entry resolves through modelSoloTPSSeedFleet for EVERY chip class, so
+// hasSeed is true fleet-wide and the first arm always short-circuits it. The
+// arm is live only for a model added without an unqualified seed entry.
+// TestSoloSeedUnqualifiedEntryMakesEveryClassSeeded pins that.
 //
 // What a provider reports BEFORE its first completion: nothing. The bridge's
 // EWMA (EngineV2Bridge.observedDecodeTpsEwma) is 0 until updateDecodeTpsEwma
@@ -390,6 +432,19 @@ func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloMod
 		// cold-start estimate. Applies at both sample floors.
 		if allTPS > 0 && hasSeed && seed < allTPS {
 			allTPS = seed
+		}
+		// Destination-clamp it too, when this provider's own class contributed
+		// nothing. The seed clamp above only fires for a seeded class, and
+		// allClasses > 1 bounds the transfer against the sampled POPULATION,
+		// not against the box receiving it. This box's own hardware evidence
+		// does bound it: a rate it cannot sustain on any model is not one it
+		// sustains on this one. Model-agnostic, so it can only ever LOWER a
+		// transferred rate — never widen one, and never applied when the class
+		// has its own samples (those are strictly better evidence).
+		if allTPS > 0 && classN == 0 {
+			if own, ok := soloTransferDestBoundLocked(p); ok && own < allTPS {
+				allTPS = own
+			}
 		}
 		// ...and refuse it outright when nothing bounds it (see above). An
 		// unbounded transfer is not conservative just because the function it

@@ -1025,3 +1025,153 @@ func TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer(t *testing.T) {
 		}
 	})
 }
+
+// benchClassProvider is classProvider with a real registration benchmark, so
+// soloTransferDestBoundLocked has a destination bound to clamp with that is
+// distinguishable from the sqrt(400) = 20 fixture default.
+func benchClassProvider(t *testing.T, reg *Registry, id, model, family, tier string, decodeTPS float64) *Provider {
+	t.Helper()
+	p := classProvider(t, reg, id, model, family, tier)
+	p.mu.Lock()
+	p.DecodeTPS = decodeTPS
+	p.mu.Unlock()
+	return p
+}
+
+// TestSoloCrossClassTransferClampedToDestinationHardware covers the hole that
+// `allClasses > 1` leaves open. That arm asks whether the sampled POPULATION
+// contains more than one class; it never asks whether the box RECEIVING the
+// transfer can sustain the result. With M4 Max and M3 Max both sampled, the
+// min is still a Max-tier rate, and an unsampled M1 Pro inherits it.
+//
+// Removing the arm does not fix that. Measured over 600 fleet shapes where the
+// arm is the sole admission reason, refusing the transfer LOOSENS the cap in
+// 338 and tightens it in only 81, because the refusal path is
+// resolvedDecodeTPS(p) — a mixed box benchmarked on gpt-oss reads 93 tok/s,
+// far above any gemma cross-class min. The bound has to come from the
+// destination box, not from deleting the population check: clamping to
+// resolvedDecodeTPS is tighter than the status quo in 129 of those shapes and
+// looser in none.
+func TestSoloCrossClassTransferClampedToDestinationHardware(t *testing.T) {
+	const (
+		m4Max = 70.0
+		m3Max = 65.0
+	)
+	twoFastClasses := func(reg *Registry) {
+		for range qualityCapSoloMinSamples {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", m4Max)
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", m3Max)
+		}
+	}
+
+	// (a) The reported case. Two sampled classes satisfy `allClasses > 1`, so
+	// the transfer is admitted — but it is clamped to the 18 tok/s this M1 Pro
+	// actually benchmarked, not the 65 that is merely the slower of two
+	// machines it is not.
+	t.Run("min_of_two_fast_classes_clamped_to_own_rate", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		reg.SetDedicatedModels([]string{"gemma-4"})
+		p := benchClassProvider(t, reg, "m1pro", gemmaBuild, "M1", "Pro", 18)
+		twoFastClasses(reg)
+
+		got := resolveSolo(reg, p, gemmaBuild)
+		if got.tps != 18 || !got.perModel {
+			t.Fatalf("unsampled M1|Pro resolved %+v, want the 18 tok/s it benchmarked — %v is the min of two Max-tier classes, which bounds the sampled population, not this box",
+				got, m3Max)
+		}
+		// The clamp must actually move admission, not just the number.
+		clampedCap := effCapResolved(reg, p, gemmaBuild)
+		reg.mu.RLock()
+		p.mu.Lock()
+		unclampedCap := reg.effectiveMaxConcurrencyForModelRateLocked(p, gemmaBuild, soloModelTPS{tps: m3Max, perModel: true})
+		p.mu.Unlock()
+		reg.mu.RUnlock()
+		if clampedCap >= unclampedCap {
+			t.Fatalf("clamped cap = %d, unclamped cap = %d — the clamp must tighten admission, not merely relabel the rate",
+				clampedCap, unclampedCap)
+		}
+	})
+
+	// (b) The clamp is a CEILING on a transfer, never a floor and never a
+	// widening. A box that benchmarked faster than the cross-class min keeps
+	// the min: its own rate is model-agnostic and over-states a slow model.
+	t.Run("faster_destination_keeps_the_cross_class_min", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := benchClassProvider(t, reg, "m2max", gemmaBuild, "M2", "Max", 93)
+		twoFastClasses(reg)
+
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != m3Max || !got.perModel {
+			t.Fatalf("destination benchmarked 93 resolved %+v, want the cross-class min %v — the clamp may only lower a transfer", got, m3Max)
+		}
+	})
+
+	// (c) The clamp is gated on the destination class having contributed
+	// NOTHING. A solo sample from this box's own class is strictly better
+	// evidence about this model than a model-agnostic hardware proxy, so it
+	// must not be pulled down to that proxy.
+	t.Run("own_class_sample_outranks_the_hardware_proxy", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := benchClassProvider(t, reg, "m1pro-sampled", gemmaBuild, "M1", "Pro", 18)
+		twoFastClasses(reg)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M1|Pro", 30)
+
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 30 || !got.perModel {
+			t.Fatalf("M1|Pro with its own 30 tok/s sample resolved %+v, want 30 — a measured own-class rate outranks the 18 tok/s model-agnostic benchmark", got)
+		}
+	})
+
+	// (d) resolvedDecodeTPS returns a hard-coded 1.0 for a provider reporting
+	// neither a benchmark nor a bandwidth. Clamping to that sentinel would pin
+	// the box to cap 1 for being quiet, which the resolver documents it must
+	// never do. Absent both signals there is no destination bound at all.
+	t.Run("silent_provider_is_not_clamped_to_the_sentinel", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := classProvider(t, reg, "silent", gemmaBuild, "M1", "Pro")
+		p.mu.Lock()
+		p.DecodeTPS = 0
+		p.Hardware.MemoryBandwidthGBs = 0
+		p.mu.Unlock()
+		twoFastClasses(reg)
+
+		got := resolveSolo(reg, p, gemmaBuild)
+		if got.tps != m3Max {
+			t.Fatalf("silent provider resolved %+v, want the unclamped %v — a 1.0 sentinel is not evidence and must not become a bound", got, m3Max)
+		}
+		if cap := effCapResolved(reg, p, gemmaBuild); cap <= 1 {
+			t.Fatalf("silent provider cap = %d, want > 1 — a provider must never be capped at 1 by its own silence", cap)
+		}
+	})
+}
+
+// TestSoloSeedUnqualifiedEntryMakesEveryClassSeeded records why the
+// `allClasses > 1` arm of crossClassBounded cannot fire on the production
+// fleet, which is not visible from the resolver and is the first thing anyone
+// re-litigating that arm needs to know.
+//
+// The shipped seed carries UNQUALIFIED entries for both served models.
+// soloSeedFleetFallbacks turns each into a fleet-wide fallback (clamped to the
+// slowest class-qualified value for the same model), so soloTPSSeedForClass
+// returns ok for EVERY chip class, including ones no operator named. hasSeed
+// is therefore true fleet-wide and short-circuits the later arms.
+//
+// If this fails because an unqualified entry was dropped, the `allClasses > 1`
+// arm becomes live in production and its weakness stops being latent.
+func TestSoloSeedUnqualifiedEntryMakesEveryClassSeeded(t *testing.T) {
+	reg := New(testLogger())
+	enablePerModelQualityCap(t, reg, prodSoloTPSSeed(t), "", "")
+
+	// Classes the seed does not name, including the identity an unrecognized
+	// chip reaches the coordinator with.
+	for _, class := range []string{"M1|Pro", "M2|Ultra", "M3|Max", "Unknown|Unknown"} {
+		for _, model := range []string{gemmaBuild, gptossBuild} {
+			if _, ok := soloTPSSeedForClass(model, class); !ok {
+				t.Fatalf("soloTPSSeedForClass(%q, %q) reports no seed — the unqualified entry that makes hasSeed true fleet-wide is gone, so crossClassBounded now leans on `allClasses > 1`, which bounds the sampled population and not the destination box",
+					model, class)
+			}
+		}
+	}
+}

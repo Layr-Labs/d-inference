@@ -138,19 +138,37 @@ end = "08:00"
 - `backend.max_model_slots` — maximum resident models at once (default 3).
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` (default — contiguous for every model), experimental `"paged"`,
-  or `"contiguous"`. Vision models always serve contiguous. Under `"auto"`, a
+  or `"contiguous"`. Vision (VLM) models are NOT forced to contiguous. The
+  VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:155`)
+  fires only when the paged cache does not affirm multimodal span masks, and
+  `PagedLayerCache.honorsSpanMaskContextsByConstruction` is `true`
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:982`),
+  which is what the slot factory passes
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:190`),
+  so the veto is inert today and VLM slots route paged like any other model.
+  Under `"auto"`, a
   model the paged kernel cannot serve falls back to contiguous automatically;
-  under an explicit `"paged"` the model FAILS to load instead (503, and the
-  coordinator reroutes), so a paged fleet can never silently serve contiguous.
+  under an explicit `"paged"` the model REFUSES to load instead, with the
+  underlying reason attached:
+  `EngineV2KVBackendPolicy.degradesPagedFailure`
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:176-180`)
+  returns `false` for — and only for — an explicit `.paged` selection, so a
+  paged fleet can never silently serve contiguous.
   Per-model overrides: `engine_v2_kv_backend_by_model` (TOML table of model
   id → value). Fleet kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0`
   (survives restarts — it is forwarded into the launchd service
-  environment); the kill switch always falls back and never fails, so
-  pulling it on a paged fleet gives you contiguous service, not 503s. An
-  explicit paged
-  model eagerly commits a separately capped physical pool derived from useful
-  concurrent context demand, live memory, machine size, and Metal buffer
-  limits; it never preallocates the full logical admission grant.
+  environment); the kill switch always degrades and never refuses, so
+  pulling it on a paged fleet gives you contiguous service, not failed
+  loads. An explicit paged model PLANS a separately capped physical pool
+  derived from useful concurrent context demand, live memory, machine size,
+  and Metal buffer limits, but does not commit it eagerly: slabs become
+  MLX-resident lazily, at first admission
+  (`PagedKVPhysicalCapacityPolicy.slabCommitment = .atFirstAdmission`,
+  `provider-swift/Sources/ProviderCore/Inference/PagedKVPhysicalCapacityPolicy.swift:58`),
+  so an admitted-but-idle pool contributes 0 bytes of idle residency
+  (`PagedKVPhysicalCapacityPolicy.idleResidencyBytes`, same file:101). It
+  never preallocates the full logical admission grant.
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.
 

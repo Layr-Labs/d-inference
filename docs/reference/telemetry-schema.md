@@ -102,8 +102,8 @@ The coordinator silently drops any `fields` key not in this set. Keys must be ke
 | `route` | Go, TS |
 | `kv_backend` | Go, Swift, TS |
 | `prefix_reuse_backend` | Go, Swift, TS |
-| `pages_pinned` | Go, Swift, TS |
-| `cow_events` | Go, Swift, TS |
+| `pages_pinned` | **none** — deliberately excluded from all three mirrors (`coordinator/api/telemetry_handlers.go:153`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift:285`, `console-ui/src/lib/telemetry-types.ts:150`); see "no producer" below |
+| `cow_events` | **none** — deliberately excluded from all three mirrors (`coordinator/api/telemetry_handlers.go:153`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift:285`, `console-ui/src/lib/telemetry-types.ts:150`); see "no producer" below |
 | `pool_utilization` | Go, Swift, TS |
 | `pool_bytes` | Go, Swift, TS |
 | `pool_deferred_growth_bytes` | Go, Swift, TS |

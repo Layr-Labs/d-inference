@@ -96,7 +96,13 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
     /// `[backend]`): "auto" (default — contiguous for every current and
     /// future model), experimental "paged", or "contiguous". VLM slots
-    /// always force contiguous. Under "auto" a model that cannot serve
+    /// are NOT forced to contiguous: the veto at
+    /// `EngineV2KVBackendPolicy.swift:155` fires only when the paged
+    /// cache does not affirm span masks, and
+    /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
+    /// `EngineV2SlotFactory.swift:190` passes — is `true`, so the veto
+    /// is inert and VLM slots route paged. Under "auto" a model that
+    /// cannot serve
     /// paged falls back to contiguous with an INFO event; under an
     /// explicit "paged" it REFUSES the load instead, so a paged fleet
     /// can never silently serve contiguous. Fleet kill switch

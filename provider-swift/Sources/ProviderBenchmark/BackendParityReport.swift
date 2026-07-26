@@ -459,6 +459,16 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// `CBv2Usage.prefixCacheOutcome` on the first and second submissions.
         public let firstOutcome: String
         public let secondOutcome: String
+        /// How each submission TERMINATED. Recorded because the outcome above
+        /// cannot be read on its own: the engine's forced-terminal paths
+        /// (`EngineLoopV2.watchdogTick`, `forceFinishStreamsOnShutdownTimeout`)
+        /// report the SEEDED usage snapshot rather than the request's real
+        /// prefix record, and `CBv2Usage`'s default `prefixCacheOutcome` is
+        /// `.disabled`. So a `disabled` here means EITHER "no cache was
+        /// configured" OR "this request was force-terminated and its prefix
+        /// record was never read" — and only the finish reason separates them.
+        public let firstFinishReason: String
+        public let secondFinishReason: String
         public let secondMatchedTokens: Int
         /// The number that matters: prefill tokens the second request did not
         /// have to recompute.
@@ -478,6 +488,8 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             donatedEntries: Int = 0,
             firstOutcome: String = "",
             secondOutcome: String = "",
+            firstFinishReason: String = "",
+            secondFinishReason: String = "",
             secondMatchedTokens: Int = 0,
             secondPrefillTokensSaved: Int = 0,
             cacheHits: Int = 0,
@@ -493,6 +505,8 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             self.donatedEntries = donatedEntries
             self.firstOutcome = firstOutcome
             self.secondOutcome = secondOutcome
+            self.firstFinishReason = firstFinishReason
+            self.secondFinishReason = secondFinishReason
             self.secondMatchedTokens = secondMatchedTokens
             self.secondPrefillTokensSaved = secondPrefillTokensSaved
             self.cacheHits = cacheHits
@@ -682,8 +696,13 @@ public enum BackendParityCriteria {
     ///     The argument is still pinned to REACHABILITY rather than to that
     ///     blessing, on purpose: policy moves, code does not. `AttentionV1`
     ///     reads the variable at runtime and accepts any `value >= 0` with
-    ///     no version gate (`AttentionV1.swift:35-41`), blocking turning on
-    ///     at `> 0` (`:48`). An operator CAN stand the incumbent in a
+    ///     no version gate. Anchors are the SYMBOLS, not the lines: grep
+    ///     `AttentionV1.queryBlockSize` for the env parse, and
+    ///     `shouldBlockQueries` for the `queryBlockSize > 0 && L >
+    ///     queryBlockSize` predicate that turns blocking on. (:35-41 and
+    ///     :48 as of this writing, but that file is under concurrent edit —
+    ///     the line numbers are a decaying hint, the symbols are not.)
+    ///     An operator CAN stand the incumbent in a
     ///     configuration where it fails this bar, so the bar cannot convict
     ///     a challenger — whether or not a given release blesses it.
     ///
@@ -1114,18 +1133,21 @@ public enum BackendParityCriteria {
         ]
 
         // The first request's donation never landed, so the second request had
-        // nothing to match. That is the HARNESS failing to set the experiment
-        // up, not the backend failing to reuse, and calling it a regression
-        // would be a fabricated finding.
-        var undonated: [String] = []
-        if base.donatedEntries == 0 { undonated.append(baseline.label) }
-        if cand.donatedEntries == 0 { undonated.append(candidate.label) }
+        // nothing to match. Three DIFFERENT failures reach this point and they
+        // used to render identically, which made the criterion unfalsifiable
+        // in the same shape the MTP criterion had: a probe that never enabled
+        // the cache and a backend that genuinely refused to donate both read
+        // "the probe never ran". `donationDiagnosis` separates them.
+        var undonated: [(label: String, reuse: BackendParityObservation.PrefixReuse)] = []
+        if base.donatedEntries == 0 { undonated.append((baseline.label, base)) }
+        if cand.donatedEntries == 0 { undonated.append((candidate.label, cand)) }
         if !undonated.isEmpty {
             return .init(
                 id: id, title: title, verdict: .unavailable,
                 detail: "no prefix was donated to the cache on "
-                    + undonated.joined(separator: " and ")
-                    + ", so the second request had nothing to match — the probe never ran",
+                    + undonated.map { "\($0.label) (\(donationDiagnosis($0.reuse)))" }
+                        .joined(separator: " and ")
+                    + ", so the second request had nothing to match",
                 measurements: measurements)
         }
 
@@ -1312,6 +1334,55 @@ public enum BackendParityCriteria {
         }
     }
 
+    /// Why an arm donated nothing. "Cache was off" and "cache was on and the
+    /// donor did not publish" are DIFFERENT failures with different owners,
+    /// and rendering them identically is what let a non-measurement read as a
+    /// harness hiccup for a whole release cycle.
+    ///
+    /// The discriminator is that `disabled` is the ONLY outcome
+    /// `EngineV2.makePrefixLookup` can return with a nil cache — it is the
+    /// first guard in that function, and every other outcome is produced past
+    /// it. `PrefixCacheV2`'s hit/miss counters say the same thing from the
+    /// other side: they only advance inside `lookup`, which that guard
+    /// protects. So either signal is positive proof a cache was LIVE,
+    /// whatever the terminal usage went on to claim.
+    static func donationDiagnosis(_ reuse: BackendParityObservation.PrefixReuse) -> String {
+        let lookups = reuse.cacheHits + reuse.cacheMisses
+        let outcomes = [reuse.firstOutcome, reuse.secondOutcome].filter { !$0.isEmpty }
+        let cacheProvenLive = lookups > 0 || outcomes.contains { $0 != "disabled" }
+        let finish = reuse.firstFinishReason
+        let finishNote = finish.isEmpty ? "finish not recorded" : "finish=\(finish)"
+
+        if !reuse.capabilitySupported {
+            return "prefix reuse is UNSUPPORTED for this backend and layout"
+                + (reuse.capabilityUnsupportedReason.map { " (\($0))" } ?? "")
+                + " — EngineV2.init drops the cache, so nothing could ever donate"
+        }
+        if !cacheProvenLive {
+            return "CACHE OFF: no lookup ever reached the cache and every submission "
+                + "reported 'disabled' — prefix caching was not active for this probe, so "
+                + "the run measured the harness, not the backend"
+        }
+        if reuse.firstOutcome == "disabled" {
+            return "MIS-REPORTED: the donor reported 'disabled', but this arm also shows "
+                + "\(lookups) cache lookup(s) and a second outcome of "
+                + "'\(reuse.secondOutcome)' — both unreachable without a LIVE cache. The "
+                + "donor's terminal (\(finishNote)) therefore bypassed its per-request "
+                + "prefix record and fell back to CBv2Usage's default outcome. That is an "
+                + "engine TELEMETRY defect in the forced-terminal paths, which publish the "
+                + "seeded usage snapshot; it is NOT a cache-configuration problem and NOT "
+                + "evidence the backend cannot reuse"
+        }
+        if !finish.isEmpty, finish != "stop", finish != "length" {
+            return "the donor did not finish cleanly (\(finishNote)); "
+                + "EngineLoopV2.donationIntent refuses to donate from a cancelled, error or "
+                + "terminal finish because partial KV is not a confirmed prefix"
+        }
+        return "the donor reported '\(reuse.firstOutcome)' (\(finishNote)) over \(lookups) "
+            + "lookup(s) against a live cache, but no entry was indexed before the donation "
+            + "timeout — a real donation-path failure, not a configuration gap"
+    }
+
     static func prefixSummary(_ reuse: BackendParityObservation.PrefixReuse) -> String {
         var summary = "capability=\(reuse.capabilitySupported ? "supported" : "unsupported")"
         if let strategy = reuse.capabilityStrategy { summary += "(\(strategy))" }
@@ -1320,6 +1391,11 @@ public enum BackendParityCriteria {
         summary += ", prompt=\(reuse.promptTokens)"
         summary += ", donated=\(reuse.donatedEntries)"
         summary += ", outcomes=\(reuse.firstOutcome)->\(reuse.secondOutcome)"
+        // Omitted rather than printed empty while the harness half of this
+        // change is still uncommitted, so the line never reads `finish=/`.
+        if !reuse.firstFinishReason.isEmpty || !reuse.secondFinishReason.isEmpty {
+            summary += ", finish=\(reuse.firstFinishReason)/\(reuse.secondFinishReason)"
+        }
         summary += ", matched=\(reuse.secondMatchedTokens)"
         summary += ", saved=\(reuse.secondPrefillTokensSaved)"
         summary += ", cache(hits=\(reuse.cacheHits),misses=\(reuse.cacheMisses),"

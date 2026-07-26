@@ -210,7 +210,29 @@ and the drafter stops engaging entirely.
 |---|---|
 | token exactness | **PASS** — 144/144 identical |
 | MTP / packed prefill / vision spans | UNAVAILABLE — model facts, not backend faults |
-| prefix reuse | **PASS** — paged 2,304 = contiguous 2,304, bound 1,536 both |
+| prefix reuse | **PASS** — paged 26,880 = contiguous 26,880, bound 1,536 both |
+
+**Correction (2026-07-25).** This row previously read "paged 2,304 =
+contiguous 2,304". That figure was not wrong, but it was measured at a
+DIFFERENT probe length than the gemma-4 table above, and the two were
+presented as if commensurable. Prefix saving is fully determined:
+`saved = floor((prompt-1)/blockSize)*blockSize - replayBound`, from
+`maxLookupBlocks` (grep `maxLookupBlocks`, `BlockHasher.swift`) and
+`prefillTokensSaved: replayStart` (grep `prefillTokensSaved`,
+`PrefixReusePlan.swift`), with `blockSize` 256 (grep `defaultBlockSize`)
+and `replayBound = windowCount * maxWindow`. At `--parity-prefix-tokens
+28672` with gpt-oss's 12x128 bound that is `28,416 - 1,536 = 26,880`;
+**2,304 is only reachable at a prompt of 3,841-4,096**, i.e. a ~4k probe.
+Confirmed three ways: the arithmetic, a live re-run whose paged arm
+measured `saved=26,880, matched=28,416` at prompt 28,672, and
+`v0.8.0-notes.md` (grep `26,880`), which independently records 26,880 for
+gpt-oss from this same harness. The gemma-4 row above (2,816 = 28,416 -
+25,600) IS at 28,672 and is unchanged.
+
+Read the two models' savings as separate measurements, never as a pair:
+at one prompt length these numbers are an order of magnitude apart, and
+at 4,096 the gemma-4 arm reports UNAVAILABLE rather than 2,816, because
+3,840 matched tokens sit below its 25,600 bound and save nothing.
 
 **Zero FAILs. Zero EXPECTED_SHORTFALLs.** Both `EXPECTED_SHORTFALL`
 verdicts that existed earlier in this pass disappeared when the cause was

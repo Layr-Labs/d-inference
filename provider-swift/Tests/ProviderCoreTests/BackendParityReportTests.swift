@@ -959,6 +959,69 @@ struct BackendParityReportTests {
         #expect(result.detail.contains("paged"))
     }
 
+    /// The three ways an arm can donate nothing must never render alike. They
+    /// have different owners — an operator, the engine's telemetry, and the
+    /// donation path — and a single shared sentence sends every one of them to
+    /// the wrong person. This is the shape that made the MTP criterion
+    /// structurally unable to fail, caught here before it ships again.
+    @Test("undonated arms name WHICH failure occurred, and never share a sentence")
+    func undonatedDiagnosisSeparatesTheThreeCauses() {
+        func arm(
+            _ firstOutcome: String, _ secondOutcome: String,
+            hits: Int = 0, misses: Int = 0, finish: String = "",
+            supported: Bool = true, unsupportedReason: String? = nil
+        ) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: "paged", resolvedBackend: "paged",
+                prefixReuse: BackendParityObservation.PrefixReuse(
+                    capabilitySupported: supported,
+                    capabilityUnsupportedReason: unsupportedReason,
+                    replayBoundTokens: 1536,
+                    promptTokens: 28672,
+                    donatedEntries: 0,
+                    firstOutcome: firstOutcome,
+                    secondOutcome: secondOutcome,
+                    firstFinishReason: finish,
+                    cacheHits: hits,
+                    cacheMisses: misses))
+        }
+        func detail(_ observation: BackendParityObservation) -> String {
+            let result = BackendParityCriteria.prefixReuse(
+                baseline: baseline, candidate: observation)
+            #expect(result.verdict == .unavailable)
+            return result.detail
+        }
+
+        // 1. Genuinely off: nothing ever reached the cache and every
+        //    submission said so. The operator's problem.
+        let off = detail(arm("disabled", "disabled"))
+        #expect(off.contains("CACHE OFF"))
+
+        // 2. The live gpt-oss anomaly: `disabled` on the donor while the SAME
+        //    arm records lookups and a non-disabled second outcome. Both are
+        //    unreachable past `EngineV2.makePrefixLookup`'s nil-cache guard, so
+        //    the pair is a contradiction and the usage is what is wrong.
+        let misreported = detail(arm("disabled", "miss", misses: 2, finish: "terminal(watchdog)"))
+        #expect(misreported.contains("MIS-REPORTED"))
+        #expect(misreported.contains("terminal(watchdog)"))
+        #expect(!misreported.contains("CACHE OFF"))
+
+        // 3. Live cache, clean donor, nothing indexed — the only one of the
+        //    three that is a real donation-path failure.
+        let realFailure = detail(arm("miss", "miss", misses: 2, finish: "length"))
+        #expect(realFailure.contains("real donation-path failure"))
+        #expect(!realFailure.contains("CACHE OFF"))
+        #expect(!realFailure.contains("MIS-REPORTED"))
+
+        // An unsupported capability is its own cause and outranks all three.
+        let unsupported = detail(
+            arm("disabled", "disabled", supported: false, unsupportedReason: "unknown_backend"))
+        #expect(unsupported.contains("UNSUPPORTED"))
+        #expect(unsupported.contains("unknown_backend"))
+
+        #expect(Set([off, misreported, realFailure, unsupported]).count == 4)
+    }
+
     @Test("a probe prompt under the frozen-replay bound is UNAVAILABLE, not a failure")
     func belowReplayBoundIsUnavailable() {
         // gemma-4: 25 windowed layers x 1024 = 25600 contiguous, +maxWindow =

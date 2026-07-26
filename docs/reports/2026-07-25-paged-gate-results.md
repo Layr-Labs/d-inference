@@ -138,8 +138,14 @@ rates above, not modelled ones.
 ### Verdict: PASS, and the reason is load-bearing
 
 `b = floor((tps/floor - 1)/k)` with `floor = 15` (`EIGENINFERENCE_MIN_DECODE_TPS`)
-and the re-fitted `k = 0.39` requires **61.8 tok/s** to earn a cap of 8. Both
-backends measure well past it, so there is ~1.6x headroom.
+and the re-fitted `k = 0.39` gives the strict quality batch; production then
+applies `cap = ceil(b × overcommit)` at overcommit 1.2. A cap of 8 therefore
+needs `b` to reach only 6 — `ceil(6 × 1.2) = 8` — which requires
+**50.10 tok/s**, not the 61.8 a hand-inversion of `qualityConcurrency` alone
+implies. Both backends measure well past it, so there is ~2x headroom.
+
+The test derives this from `soloTPSForCap` rather than restating a closed form,
+so the bar tracks `defaultQualityCapOvercommit` if it ever moves.
 
 The third row is the important one. Rev 1 of the plan claimed "no code change
 is required to test the batching hypothesis." That was wrong, and this is why:
@@ -271,7 +277,7 @@ Not a paged defect, and not new:
 
 | gate | verdict |
 |---|---|
-| G0a — coordinator dispatches 8 | **PASS**, pinned by test; needs 61.8 tok/s, measures 98.8 |
+| G0a — coordinator dispatches 8 | **PASS**, pinned by test; needs 50.10 tok/s, measures 98.8 |
 | G0b — batching pays | **PASS** — paged 1.27x from B=4 to B=8, contiguous 1.07x |
 | G1 — paged sized correctly | **PASS** — 1.00x contiguous at 1k, 10k, 100k |
 | G2 — parity | **PASS** — every evaluable criterion, both models |

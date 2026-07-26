@@ -75,7 +75,7 @@ struct PagedKernelPreflightTests {
                 executableURL: child.executable,
                 childTimeout: 5)
             Issue.record("noisy failing child unexpectedly passed")
-        } catch PagedKernelPreflightError.childFailed(let status) {
+        } catch PagedKernelPreflightError.childFailed(let status, _) {
             #expect(status == 9)
         } catch {
             Issue.record("unexpected preflight error: \(error)")

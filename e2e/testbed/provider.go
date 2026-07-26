@@ -155,7 +155,10 @@ func findProviderBinary() string {
 // watchdog, which would outlive the test process.
 func BuildProviderTOML(cfg ProviderConfig, providerIndex int) (string, error) {
 	backend := ResolveKVBackend(cfg.KVBackend)
-	maxConcurrent := ResolveMaxConcurrent(cfg.MaxConcurrent)
+	maxConcurrent, err := ResolveMaxConcurrent(cfg.MaxConcurrent)
+	if err != nil {
+		return "", err
+	}
 	if backend == "" && maxConcurrent == 0 {
 		return "", nil
 	}

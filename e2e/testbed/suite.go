@@ -537,6 +537,13 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 	if err != nil {
 		return fmt.Errorf("provider %d config: %w", p.ProviderIndex, err)
 	}
+	// Logged UNCONDITIONALLY, and before the file exists, because the case
+	// worth seeing in a green log is the one that writes no file: a run nobody
+	// pinned reads back "provider default" here instead of reading back
+	// nothing at all.
+	p.Logger.Info("provider KV posture",
+		"provider", p.ProviderIndex,
+		"posture", DescribeKVPosture(cfg))
 	if generated != "" {
 		configPath := filepath.Join(p.StateDir, "provider.toml")
 		if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
@@ -548,10 +555,7 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 			_, statErr := os.Stat(canonical)
 			p.canonicalConfigExisted = statErr == nil
 		}
-		p.Logger.Info("provider config written",
-			"path", configPath,
-			"kv_backend", ResolveKVBackend(cfg.KVBackend),
-			"max_concurrent", ResolveMaxConcurrent(cfg.MaxConcurrent))
+		p.Logger.Info("provider config written", "path", configPath)
 	}
 
 	cmd := execCommandContext(ctx, p.BinaryPath, args...)

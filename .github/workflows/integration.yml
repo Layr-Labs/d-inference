@@ -88,13 +88,80 @@ jobs:
           print(f"Pinned exact-cache snapshot: {selected.name}")
           PY
 
-      - name: Run integration + profile tests
+      # THE PAGED GATE. Pinned to an EXPLICIT paged posture, not left on the
+      # provider's default, because `.auto` is ALLOWED to degrade: a paged
+      # preflight, capacity-planning or pool-construction failure silently
+      # lands an `.auto` slot on contiguous and the suite still passes. That
+      # made this job green whether or not paged ever ran.
+      #
+      # `EngineV2KVBackendPolicy.degradesPagedFailure` returns false for an
+      # explicit `.paged` selection: it REFUSES the load with
+      # `EngineV2ProductionError.pagedUnavailable` instead of degrading. So a
+      # paged regression that trips that path now fails this step rather than
+      # quietly swapping the system under test.
+      #
+      # The cap is pinned WITH the backend and not inherited. Selecting a
+      # backend makes the testbed hand the provider a TOML, which moves it onto
+      # its config-decoder defaults, and that path still reads
+      # `engine_v2_max_concurrent` as 4. Paged at B=4 measures 0.98x of
+      # contiguous against 1.17x at B=8, so setting the backend alone would
+      # have bought the B=1 regression and none of the throughput.
+      - name: Run integration + profile tests (paged @ 8 — migration gate)
+        env:
+          DARKBLOOM_TESTBED_KV_BACKEND: paged
+          DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
         run: |
+          set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
+          # The one silent hole an explicit paged selection does NOT close: the
+          # fleet kill switch is an override, not a failure, so it degrades
+          # without refusing. Fail loudly rather than measure contiguous.
+          if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
+            echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
+                 "the kill switch degrades paged silently and voids this gate"
+            exit 1
+          fi
+          echo "KV posture requested: engine_v2_kv_backend=$DARKBLOOM_TESTBED_KV_BACKEND" \
+               "engine_v2_max_concurrent=$DARKBLOOM_TESTBED_MAX_CONCURRENT" \
+               "DARKBLOOM_CBV2_PAGED_KV=<unset>"
+          echo "Explicit paged refuses rather than degrades, so a green run here" \
+               "served paged. Grep the log for 'provider KV posture' to confirm."
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
             -run 'TestIntegration|TestProfile'
 
+      # Default-posture lane. The step above is the only one that pins a
+      # backend, so without this NOTHING would still exercise what a stock
+      # install actually does: launch with no `--config` at all, on `.auto`,
+      # at the provider's own memberwise cap. That is a different code path
+      # from the gate — no TOML is written, no `--config` argument is added,
+      # and the config-migration cleanup never engages — so it cannot be
+      # inferred from a green paged run.
+      #
+      # Deliberately UNSET rather than `DARKBLOOM_TESTBED_KV_BACKEND=auto`:
+      # naming `auto` would write a TOML and thereby change the launch path
+      # and drop the cap to the decoder's 4, testing neither default.
+      #
+      # COST, honestly: this is a second provider boot plus a second
+      # gpt-oss-20b load (warm HF cache, but the weights still page in) for
+      # two inference round-trips. Same shape as the reverse-compat lane
+      # below, which the repo already budgets 15m for the same two tests.
+      # Step budget for the job goes 25+15+15=55m to 25+10+15+15=65m against
+      # a 90m job timeout.
+      - name: Run default-posture smoke (.auto, no --config)
+        run: |
+          set -euo pipefail
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
+          echo "KV posture requested: provider default (no testbed override)"
+          go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+            -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
+
+      # The paged env is scoped to the gate STEP on purpose — do not promote it
+      # to the job's `env:`. This lane and the reverse one below run RELEASED
+      # v0.7.12 binaries, and a job-level setting would make the current
+      # testbed hand a v0.7.12 provider a TOML selecting a backend that release
+      # does not have.
       - name: Verify current coordinator with released v0.7.12 provider
         run: |
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"

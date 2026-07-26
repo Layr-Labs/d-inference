@@ -76,6 +76,65 @@ struct BackendParityReportTests {
         healthyArm(selection: "paged", resolved: "paged")
     }
 
+    /// The gate this criterion could not previously fail. A backend may adopt
+    /// a prefix, skip exactly as much prefill as the baseline, and return a
+    /// DIFFERENT answer than it would have cold — which is what paged did at
+    /// token 20 of 32 while the criterion reported exact parity, because
+    /// "26,880 = 26,880" is a true statement about counts and silent about
+    /// correctness.
+    @Test("adoption that changes the answer is a FAIL, whatever the counts say")
+    func inexactAdoptionFailsRegardlessOfSavings() {
+        func arm(_ selection: String, exact: Bool?) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                prefixReuse: BackendParityObservation.PrefixReuse(
+                    capabilitySupported: true,
+                    capabilityStrategy: "frozen_full_replay",
+                    replayBoundTokens: 1536,
+                    promptTokens: 28672,
+                    donatedEntries: 1,
+                    firstOutcome: "miss",
+                    secondOutcome: "hit",
+                    secondMatchedTokens: 28416,
+                    // Identical savings on both arms: the count comparison
+                    // this criterion used to be is a clean PASS here.
+                    secondPrefillTokensSaved: 26880,
+                    cacheHits: 1,
+                    cacheMisses: 1,
+                    cacheTokensSaved: 28416,
+                    adoptionTokenExact: exact))
+        }
+
+        // Counts agree exactly, so the savings comparison cannot fault this —
+        // only the exactness oracle can.
+        let inexactCandidate = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: false))
+        #expect(inexactCandidate.verdict == .fail)
+        #expect(inexactCandidate.detail.contains("adoption CHANGED THE ANSWER"))
+        #expect(inexactCandidate.detail.contains("paged"))
+        #expect(!inexactCandidate.detail.contains("contiguous"))
+
+        // The incumbent is not exempt: an inexact BASELINE is equally a FAIL,
+        // and is named rather than quietly setting the bar.
+        let inexactBaseline = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: false), candidate: arm("paged", exact: true))
+        #expect(inexactBaseline.verdict == .fail)
+        #expect(inexactBaseline.detail.contains("contiguous"))
+
+        // Both exact: the criterion falls through to the savings comparison.
+        let bothExact = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: true))
+        #expect(bothExact.verdict == .pass)
+
+        // NOT MEASURED must not fail the run — but it must not silently pass
+        // as exact either. It leaves the verdict to the counts, which is what
+        // every artifact predating the oracle contains.
+        let unmeasured = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: nil), candidate: arm("paged", exact: nil))
+        #expect(unmeasured.verdict == .pass)
+        #expect(!unmeasured.detail.contains("adoption CHANGED THE ANSWER"))
+    }
+
     // MARK: - Exit status
 
     @Test("an all-skipped run does NOT exit 0 as if it passed")
@@ -413,6 +472,48 @@ struct BackendParityReportTests {
         #expect(decoded.numericsControl == control)
         #expect(report.renderTable().contains("control (paged pool dtype float16 -> "
             + "float32): NOT token-exact"))
+    }
+
+    @Test("a report with NO control says so loudly instead of saying nothing")
+    func absentControlIsNeverSilent() {
+        // The state that actually shipped. `numericsControl` was declared,
+        // stored and rendered while no call site built one, and the render
+        // was `if let` with no else — so a run that never asked the question
+        // produced a table IDENTICAL, in this region, to one where the
+        // control ran and held. Absence must be the loudest of the three.
+        let absent = BackendParityReport(
+            modelID: "m", modelPath: "/tmp/m",
+            arms: [baseline.arm, candidate.arm],
+            criteria: BackendParityCriteria.evaluate(
+                baseline: baseline, candidate: candidate))
+        #expect(absent.numericsControl == nil)
+        let table = absent.renderTable()
+        #expect(table.contains("control: NOT SUPPLIED"))
+        #expect(table.contains("nothing here distinguishes a backend difference from "
+            + "ordinary numerical drift"))
+        // It must not read as a control that ran, in EITHER direction.
+        #expect(!table.contains("TOKEN-EXACT"))
+        #expect(!table.contains("CONTROL HELD"))
+
+        // Discrimination, not branch exercise: the only thing that changes
+        // below is that a control REACHED the report. It is still the most
+        // pessimistic control there is — one that could not run — and it must
+        // STILL render differently from absence, because "we asked and could
+        // not answer" and "we never asked" are different facts with different
+        // owners. A guard keyed on anything but nil-ness would collapse them.
+        let inconclusive = BackendParityReport(
+            modelID: "m", modelPath: "/tmp/m",
+            arms: [baseline.arm, candidate.arm],
+            numericsControl: BackendParityReport.NumericsControl(
+                perturbation: "paged pool dtype float16 -> float32",
+                tokenExact: nil,
+                detail: "the candidate arm did not serve paged rows"),
+            criteria: BackendParityCriteria.evaluate(
+                baseline: baseline, candidate: candidate))
+        let asked = inconclusive.renderTable()
+        #expect(asked.contains("control (paged pool dtype float16 -> float32): NOT RUN"))
+        #expect(asked.contains("the candidate arm did not serve paged rows"))
+        #expect(!asked.contains("NOT SUPPLIED"))
     }
 
     @Test("token exactness NEVER fails: a divergence is UNAVAILABLE with the first flip")

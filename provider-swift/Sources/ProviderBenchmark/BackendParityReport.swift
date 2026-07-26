@@ -233,11 +233,24 @@ public struct BackendParityReport: Codable, Sendable {
         }
         lines.append("")
         if let numericsControl {
-            lines.append("")
             lines.append("  control (\(numericsControl.perturbation)): "
                 + (numericsControl.tokenExact.map { $0 ? "TOKEN-EXACT" : "NOT token-exact" }
                     ?? "NOT RUN"))
             lines.append("        \(numericsControl.detail)")
+        } else {
+            // An ABSENT control gets a louder line than a failed one, because
+            // absence is the state that shipped: this field was declared,
+            // stored and rendered for a whole wave while no call site built
+            // one, and `if let` with no else meant the table said NOTHING —
+            // indistinguishable, to any reader, from a control that ran and
+            // held. Whatever else a G2 table does, it states whether the
+            // question was asked.
+            lines.append("  control: NOT SUPPLIED")
+            lines.append("        no numerics control reached this report, so nothing here "
+                + "distinguishes a backend difference from ordinary numerical drift. "
+                + "BackendParityHarness always supplies one (UNAVAILABLE with a reason "
+                + "when it could not run), so a report without one did not come from a "
+                + "live --parity run.")
         }
         for criterion in criteria {
             lines.append("  [\(criterion.verdict.rawValue)] \(criterion.title)")
@@ -476,6 +489,17 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         public let cacheHits: Int
         public let cacheMisses: Int
         public let cacheTokensSaved: Int
+        /// Did the ADOPTING submission return the same tokens the cold one
+        /// did? Both probe requests submit the SAME prompt at temperature 0,
+        /// so under exact adoption the two streams are identical and any
+        /// difference is adoption changing the answer.
+        ///
+        /// Non-nil ONLY when the second submission actually adopted (outcome
+        /// `hit`); on a miss there is no adoption to judge and a difference
+        /// would mean nondeterminism, which is a different finding. `nil`
+        /// therefore means NOT MEASURED and must never be read as exact —
+        /// the criterion says so out loud rather than passing quietly.
+        public let adoptionTokenExact: Bool?
         /// Non-nil when no measurement could be taken at all.
         public let unavailableReason: String?
 
@@ -495,6 +519,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             cacheHits: Int = 0,
             cacheMisses: Int = 0,
             cacheTokensSaved: Int = 0,
+            adoptionTokenExact: Bool? = nil,
             unavailableReason: String? = nil
         ) {
             self.capabilitySupported = capabilitySupported
@@ -512,6 +537,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             self.cacheHits = cacheHits
             self.cacheMisses = cacheMisses
             self.cacheTokensSaved = cacheTokensSaved
+            self.adoptionTokenExact = adoptionTokenExact
             self.unavailableReason = unavailableReason
         }
     }
@@ -1154,6 +1180,26 @@ public enum BackendParityCriteria {
 
     // MARK: prefix reuse
 
+    /// Two questions, and the second one is why this criterion exists at all.
+    ///
+    /// 1. Did the candidate SKIP at least as much prefill as the baseline?
+    /// 2. Did skipping it change the answer?
+    ///
+    /// (2) was absent until an adoption defect walked straight through a PASS:
+    /// paged adopted diverged from paged COLD at token 20 of 32 while this
+    /// criterion reported exact parity, because "26,880 = 26,880" is a true
+    /// statement about token COUNTS and silent about correctness. Savings are
+    /// meaningful only conditional on exactness, so a proven-inexact adoption
+    /// is a FAIL here regardless of how much work it appeared to save.
+    ///
+    /// WHAT A PASS DOES NOT PROVE. The exactness half is WITHIN-ARM: each
+    /// backend's adopting request is compared against its OWN cold request,
+    /// never against the other backend. That is deliberate — it crosses no
+    /// backend boundary and so inherits none of the base-decode divergence
+    /// that makes `token_exactness` unsatisfiable on gemma-4 — but it means a
+    /// PASS says NOTHING about the two backends agreeing with each other.
+    /// `token_exactness` is the criterion for that question; this one cannot
+    /// answer it and must not be read as if it had.
     static func prefixReuse(
         baseline: BackendParityObservation,
         candidate: BackendParityObservation
@@ -1206,6 +1252,25 @@ public enum BackendParityCriteria {
                     + undonated.map { "\($0.label) (\(donationDiagnosis($0.reuse)))" }
                         .joined(separator: " and ")
                     + ", so the second request had nothing to match",
+                measurements: measurements)
+        }
+
+        // Exactness BEFORE arithmetic, and unconditional on it: a backend that
+        // saves prefill by returning a different answer has not saved
+        // anything. Judged per arm against that arm's OWN cold request, so
+        // this can only fire for its own stated reason.
+        let inexact = [(baseline.label, base), (candidate.label, cand)]
+            .filter { $0.1.adoptionTokenExact == false }
+        if !inexact.isEmpty {
+            return .init(
+                id: id, title: title, verdict: .fail,
+                detail: "adoption CHANGED THE ANSWER on "
+                    + inexact.map(\.0).joined(separator: " and ")
+                    + ": the adopting request returned different tokens than the cold "
+                    + "request for the SAME prompt at temperature 0, so the reported "
+                    + "savings are not savings — the backend skipped prefill it needed. "
+                    + "Token counts are only meaningful conditional on exactness, which "
+                    + "is why this outranks the comparison below",
                 measurements: measurements)
         }
 

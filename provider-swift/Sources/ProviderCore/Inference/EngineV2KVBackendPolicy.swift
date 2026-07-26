@@ -76,7 +76,7 @@ public enum EngineV2KVBackendPolicy {
     /// wins over the global value). `unrecognized` carries a raw value
     /// that failed to parse so the caller can WARN once; the returned
     /// selection is then `.auto`, which as of v0.8.0 resolves PAGED
-    /// (`EngineV2Factory+Production.swift:545`), not contiguous.
+    /// (`EngineV2Factory+Production.swift:546`), not contiguous.
     public static func parseSelection(
         global: String,
         byModel: [String: String],

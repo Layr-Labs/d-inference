@@ -151,22 +151,29 @@ end = "08:00"
   it to 8 once, logs a warning saying so, and stamps `config_version`. If
   you want 4, set it again afterwards — from then on it is honoured.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` (default — contiguous for every model), experimental `"paged"`,
+  `"auto"` (default — resolves PAGED as of v0.8.0, `case .auto: resolvedKind
+  = .paged` in
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift:546`),
+  `"paged"`,
   or `"contiguous"`. Vision (VLM) models are NOT forced to contiguous. The
   VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:155`)
+  (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:162`)
   fires only when the paged cache does not affirm multimodal span masks, and
   `PagedLayerCache.honorsSpanMaskContextsByConstruction` is `true`
   (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:982`),
   which is what the slot factory passes
   (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:190`),
   so the veto is inert today and VLM slots route paged like any other model.
-  Under `"auto"`, a
-  model the paged kernel cannot serve falls back to contiguous automatically;
+  Because `"auto"` now starts at paged, the concurrency cap above matters:
+  paged only overtakes contiguous above ~5 concurrent rows, so leaving
+  `engine_v2_max_concurrent` low (say 2) gives you paged at a small loss,
+  not a win. Under `"auto"`, a
+  model the paged kernel cannot serve still falls back to contiguous
+  automatically;
   under an explicit `"paged"` the model REFUSES to load instead, with the
   underlying reason attached:
   `EngineV2KVBackendPolicy.degradesPagedFailure`
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:176-180`)
+  (`selection != .paged`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:183`)
   returns `false` for — and only for — an explicit `.paged` selection, so a
   paged fleet can never silently serve contiguous.
   Per-model overrides: `engine_v2_kv_backend_by_model` (TOML table of model

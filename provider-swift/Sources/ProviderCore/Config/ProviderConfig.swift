@@ -99,10 +99,12 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — contiguous for every current and
-    /// future model), experimental "paged", or "contiguous". VLM slots
+    /// `[backend]`): "auto" (default — resolves PAGED as of v0.8.0, see
+    /// `EngineV2Factory+Production.swift:546`), "paged", or
+    /// "contiguous". VLM slots
     /// are NOT forced to contiguous: the veto at
-    /// `EngineV2KVBackendPolicy.swift:155` fires only when the paged
+    /// `EngineV2KVBackendPolicy.swift:162` (`guard isVLM,
+    /// !pagedHonorsSpanMasks`) fires only when the paged
     /// cache does not affirm span masks, and
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
     /// `EngineV2SlotFactory.swift:190` passes — is `true`, so the veto

@@ -630,3 +630,73 @@ Also: link 5 restores BY COPY into private pages (`installWindow` ->
 It is independent of `retainPage`/refcount>1 sharing and moves
 `pagesInUse` toward sharing by exactly zero pages. The two items do not
 substitute for each other.
+
+## Closing three items
+
+### The kernel constraint is REGISTERS, in a cleaner form
+
+Supersedes `BLOCK_Q · (1 + NSG) <= 8`, which was the wrong bound (it was
+threadgroup memory, and it was not head-dim independent). The binding
+constraint is the per-thread accumulator, and it drops out clean —
+independent of GQA and of NSG entirely:
+
+> **`BLOCK_Q · hpt <= 1024 / headDim`**
+
+    global   D=512  ->  M <= 2   today M=2   ALREADY AT CAP, BLOCK_Q pinned at 1
+    sliding  D=256  ->  M <= 4   today M=2   room for BLOCK_Q=2
+
+Same conclusion as before, correct mechanism, correct per-family numbers.
+vLLM's `BLOCK_Q = BLOCK_M // num_queries_per_kv` has neither coupling.
+
+### The granularity number is 32 tokens, and the scaling runs the other way
+
+Read from the operator's actual checkpoint, identical across the
+4bit/8bit/qat copies on this box. Per-token KV is **sliding 8192 B**
+(2·8·256·2) vs **global 4096 B** (2·2·512·2) — sliding is the BIGGER page,
+so vLLM's unify scales the GLOBAL block up, not the sliding one:
+
+    sliding blk 16 x 8192  =  global blk 32 x 4096  =  131,072 B
+    scheduler_block_size = LCM(16,32) = 32 tokens     hash granularity = GCD = 16
+
+> **gemma-4-26B-A4B minimum prefix-reuse granularity under vLLM: 32 tokens.
+> Ours: 25,600. Ratio 800x.** p50 979 -> 960 reusable (98.1%).
+
+Structural note: vLLM forms **six** KV cache groups for this model, not
+two. `group_size` is the min layer count (5), and 25 is not < 5·1.5, so the
+sliding layers split into five 5-layer groups plus one full group. They
+collapse to two SpecGroups for lookup, and a block counts as cached only if
+present in all five sliding group ids at once. The group abstraction is
+sized by the REPEATING PATTERN, not by attention type — which is what keeps
+per-block residency at 1x instead of N-layers x.
+
+### Link 5 and block sharing are SEQUENCED, not independent
+
+The 20 GiB / 200 MiB ceiling is a cost of OUR chosen restore mechanism —
+copy whole windows to an SSD sidecar — not of the capability. vLLM pays
+nothing extra: the windowed K/V it reuses is the same in-pool blocks the
+request already holds, retained by refcount rather than copied to disk.
+
+**If sharing lands, link 5's payload can come from live pages and the disk
+budget stops binding.** Do not rank them as two separate wins that each
+need paying for.
+
+### And the watermark must land FIRST
+
+Donation does not stall steps — `enqueueDonation` hands the work to a
+serial `.utility` queue off the critical path. But **donor pages stay
+pinned out of the pool until the donation materialises**:
+`releaseDonationStateOnEngineQueue` runs only after `donate` returns.
+
+Link 5 raises donation VOLUME (the floor collapses to `minEffectiveTokens`)
+and donation SIZE (~200 MiB of sliding snapshot) simultaneously, on a
+deprioritised serial queue — so the backlog grows exactly under load. More
+retired rows pinning more pages shrinks the free pool, which is precisely
+the condition that makes our symmetric watermark preempt RUNNING decodes.
+
+> So link 5 does not merely fail to reduce the watermark's value — it
+> **increases** it, transiently, at peak donation churn.
+
+**Land the asymmetric watermark before or with link 5, never after.** Under
+today's symmetric ceiling that pressure converts directly into preemptions
+which are deterministically full-cost on gemma-4. With it, the same
+pressure expresses as deferred admissions.

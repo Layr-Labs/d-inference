@@ -159,20 +159,26 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("auto is contiguous for GPT-OSS and cannot drift with family defaults")
-    func autoServesContiguousForGPTOSS() async throws {
+    @Test("auto is PAGED for GPT-OSS and cannot drift with family defaults")
+    func autoServesPagedForGPTOSS() async throws {
         let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .auto)
-        #expect(build.kvBackendKind == .contiguous)
+        // v0.8.0 flipped `.auto` from contiguous to paged. This assertion is
+        // the anti-drift guard for that decision in BOTH directions: it
+        // caught the flip when it landed, and it will catch a silent revert.
+        #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
+        // Paged reports the PHYSICAL pool it committed, not the logical
+        // admission grant a contiguous slot advertises, so this is
+        // deliberately not `gateTestCapacity`.
         let snapshot = build.engine.capacity()
-        #expect(snapshot.kvBytesBackendCapacity == gateTestCapacity)
+        #expect(snapshot.kvBytesBackendCapacity > 0)
         await build.engine.shutdown()
     }
 
-    @Test("auto resolves contiguous for Gemma-4 (bf16 KV stays opt-in)")
-    func autoServesContiguousForGemma() async throws {
+    @Test("auto resolves PAGED for Gemma-4 (bf16 KV stays opt-in)")
+    func autoServesPagedForGemma() async throws {
         let build = try makeBuild(model: try tinyGemma4Text(), kvBackend: .auto)
-        #expect(build.kvBackendKind == .contiguous)
+        #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
         await build.engine.shutdown()
     }

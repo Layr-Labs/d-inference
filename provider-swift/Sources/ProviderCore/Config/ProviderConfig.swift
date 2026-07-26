@@ -170,7 +170,7 @@ public struct BackendSettings: Sendable, Equatable, Codable {
         enabledModels: [String] = [],
         idleTimeoutMins: UInt64 = 60,
         maxModelSlots: UInt64 = 3,
-        engineV2MaxConcurrent: UInt64 = 4,
+        engineV2MaxConcurrent: UInt64 = 8,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],

@@ -229,6 +229,49 @@ extension EngineV2Factory {
         return overflow ? Int.max : nativeRate
     }
 
+    /// Per-token KV rate for the RESOLVED backend, including the paged
+    /// pool's page dtype. This is the figure the slot publishes as
+    /// `kv_bytes_per_token` and divides the pool's byte capacity by to get
+    /// `activeTokenBudgetMax` (`EngineV2Bridge+Capacity`), so it must be
+    /// what a token ACTUALLY costs, not what it costs at the nominal rate.
+    ///
+    /// Under `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` every page is 4 bytes
+    /// per element instead of 2, so the whole row doubles — windowed
+    /// layers included. That is why this is a flat 2x and NOT
+    /// `fullRowsUseFP32`: that flag adds only the owning-full-attention
+    /// delta (`+ fp16FullKVBytesPerToken`), which is right for GPT-OSS's
+    /// fp32 full rows on the CONTIGUOUS backend and wrong here, where the
+    /// sliding-window pages doubled too.
+    ///
+    /// Without this the byte figure is correct and the divisor is half the
+    /// truth, so the slot advertises ~2x the tokens it can hold — which
+    /// defeats the pool bound in `EngineV2Bridge+Capacity` that exists
+    /// precisely to keep advertised capacity from over-routing past pool
+    /// truth. It is NOT an over-admission: paged rows are admitted by
+    /// `CBv2PagedKVResidency` against real pages, and the shared-KV ledger
+    /// is gated `kvBackendKind == .contiguous` (`EngineV2Bridge`), so a
+    /// paged slot never reserves against it.
+    ///
+    /// The two adjustments are mutually exclusive by construction:
+    /// `fullRowsUseFP32` requires a resolved CONTIGUOUS backend and
+    /// `pagedPoolDType` is non-nil only on a resolved PAGED one. If both
+    /// ever arrive together the result over-counts, which under-advertises
+    /// — the safe direction.
+    static func processKVBytesPerToken(
+        nominalFP16BytesPerToken: Int,
+        fp16FullKVBytesPerToken: Int,
+        fullRowsUseFP32: Bool,
+        pagedPoolDType: String?
+    ) -> Int {
+        let base = nativeKVBytesPerToken(
+            nominalFP16BytesPerToken: nominalFP16BytesPerToken,
+            fp16FullKVBytesPerToken: fp16FullKVBytesPerToken,
+            fullRowsUseFP32: fullRowsUseFP32)
+        guard pagedPoolDType == pagedPoolDTypeName(.float32) else { return base }
+        let (doubled, overflow) = base.multipliedReportingOverflow(by: 2)
+        return overflow ? Int.max : doubled
+    }
+
     /// Build the real `EngineV2` over a loaded model.
     ///
     /// - Parameters:
@@ -487,7 +530,19 @@ extension EngineV2Factory {
         switch kvBackend {
         case .contiguous: resolvedKind = .contiguous
         case .paged: resolvedKind = .paged
-        case .auto: resolvedKind = .contiguous
+        // v0.8.0: `.auto` resolves PAGED. Flipped once every measurable
+        // gate passed on real weights and the two non-measurable ones
+        // (G3/G4, 24-hour canary soaks) were accepted as an operational
+        // step rather than a code gate. Roll back fleet-wide with
+        // `DARKBLOOM_CBV2_PAGED_KV=0`, which lands on the kill-switch
+        // degrade below — not on a refusal.
+        //
+        // This is only a win alongside `engineV2MaxConcurrent = 8`.
+        // Measured on gemma-4/M4 Max, paged-vs-contiguous aggregate decode:
+        // 0.92x at B=1, 0.98x at B=4, 1.17x at B=8. The crossover is ~B=5,
+        // so flipping the backend while leaving the batch at 4 buys a
+        // storage change and no throughput. The two move together.
+        case .auto: resolvedKind = .paged
         }
         var fallbackReason: String?
         // DEGRADE, not refuse — even on an explicit paged selection. This

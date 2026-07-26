@@ -87,7 +87,7 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         hardware: HardwareInfo? = nil,
-        engineV2MaxConcurrent: UInt64 = 4,
+        engineV2MaxConcurrent: UInt64 = 8,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],

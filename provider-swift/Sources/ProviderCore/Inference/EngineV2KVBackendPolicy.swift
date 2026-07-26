@@ -27,7 +27,11 @@
 //      no call path can bypass it. Forwarded through the launchd plist
 //      (`LaunchAgent.passthroughEnvKeys`) so an operator kill survives
 //      install/restart — the same rationale as the SSD tier's switch.
-//   4. "auto" is production-safe and permanently resolves CONTIGUOUS.
+//   4. "auto" is production-safe and resolves PAGED as of v0.8.0.
+//      Contiguous remains fully supported and is one config value away
+//      (`engine_v2_kv_backend = "contiguous"`), plus the fleet-wide kill
+//      switch DARKBLOOM_CBV2_PAGED_KV=0. It is NOT deprecated: it is the
+//      rollback target and the parity reference the gates measure against.
 //      Paged is experimental and requires the explicit "paged" selection.
 //      This is intentionally not a family table: adding a future model
 //      family cannot silently turn a stale/default config into paged.
@@ -51,7 +55,9 @@ public enum EngineV2KVBackendKind: String, Sendable, Equatable {
 
 /// Operator-facing backend selection (`engine_v2_kv_backend`).
 public enum EngineV2KVBackendSelection: String, Sendable, Equatable, CaseIterable {
-    /// Production default: contiguous for every current and future model.
+    /// Production default: PAGED for every current and future model as of
+    /// v0.8.0. Slot vetoes and the kill switch can still land it on
+    /// contiguous; `.auto` means "we choose", not "we promise paged".
     case auto
     /// Force paged. VLM slots still resolve contiguous (slot veto), but a
     /// paged FAILURE refuses instead of degrading — see layer 5.

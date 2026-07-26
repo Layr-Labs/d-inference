@@ -94,11 +94,33 @@ answer.
 Peak RSS at 32k: contiguous 14.914 GiB, paged 14.861 GiB.
 
 Note paged is slightly FASTER at long prefill (+5.7% at 8k, +4.9% at 32k).
-The migration plan predicted paged could not help prefill because there is
-no paged prefill kernel — that was right about the kernel and wrong about
-the outcome. The gain is query sub-blocking (WS-0.2p): paged previously
-built one full `[l, kL]` score tensor and now blocks at q=128, which cuts
-the score-tensor traffic contiguous had already avoided since #85.
+The gain is query sub-blocking (WS-0.2p): paged previously built one full
+`[l, kL]` score tensor and now blocks at q=128, cutting score-tensor
+traffic contiguous had already avoided since #85.
+
+CORRECTION, recorded because this repo repeated it for months and it is
+wrong in a way that hides real work. The migration plan said paged could
+not help prefill because "there is no paged prefill kernel". There IS one.
+`PagedAttentionKernel.supportedHeadDims` is `[64, 128, 256, 512]`
+(PagedAttentionKernel.swift:159) and it already runs gemma-4's 512-wide
+global layers split two-heads-per-threadgroup. The `{64, 80, 128}` ceiling
+that motivated the claim belongs to MLX's FUSED SDPA, which binds only the
+prefill path (`attendQueryBlock` -> `MLXFast.scaledDotProductAttention`,
+PagedLayerCache.swift:833-835).
+
+What is actually true is narrower and more actionable: the paged kernel is
+gated to decode by `precondition(q.dim(2) == 1)`
+(PagedAttentionKernel.swift:577), so prefill cannot use it and every
+prefill chunk pays a full history copy through `PagedKVPool.gather`, whose
+own doc says it "materializes a copy (MLX gathers always do)".
+
+Lifting that gate is not a one-line change: it is a two-pass
+flash-decoding design whose `q_smem[HPT * D]` has no token axis, and the
+threadgroup-memory budget it would resize is what
+`PagedKVBackend.init` refuses shapes on at engine build -- deliberately,
+because exceeding `threadgroupMemoryLimit` is an UNCATCHABLE process
+fatal. The honest unit is "re-derive the threadgroup budget with a
+query-tile axis", which is still far smaller than writing a kernel.
 
 ## G0a — Does the coordinator actually dispatch 8?
 
@@ -221,3 +243,107 @@ green gate: **gemma-4 greedy outputs change under paged.** They are not
 worse — measurably more accurate against an fp32 reference — but they are
 different, and the same is already true across a shipped latency knob.
 That is a call for a product owner, not a test.
+
+---
+
+# What vLLM does that we do not
+
+Read against `vllm-project/vllm @ b153ae6089e9ec3272c423340d2116da97b904ce`
+(2026-07-26). Five agents; every claim below is cited to source and the
+sliding-window findings were EXECUTED on this M4 Max, not inferred.
+
+## The root cause of our 25,600-token prefix-reuse floor is the RING
+
+vLLM's minimum prompt for a hybrid prefix-cache hit is **one block, 16
+tokens** — not window-granular, not window x layers.
+
+Measured against the real `SlidingWindowManager` and
+`HybridKVCacheCoordinator`, built to gemma-4's shape (25 sliding w=1024 +
+5 full), on Apple Silicon with no CUDA:
+
+| probe | result |
+|---|---|
+| 25,600-token prompt, only the last 64 sliding blocks cached | 100% hit, **0 tokens recomputed** |
+| p50 = 979 tokens | **976 reused (99.7%)**, sliding identical to full attention |
+
+A sliding-window hit needs only the window-sized CONTIGUOUS RUN of blocks
+ending at the hit boundary. Every out-of-window position resolves to a
+null sentinel that is never read, because SWA masking already excludes it.
+Persist and bound — never replay.
+
+**vLLM's sliding rows are not rings.** They are position-indexed
+block-table rows sized to `max_model_len`, whose out-of-window entries are
+overwritten with a sentinel and whose physical pages are freed
+mid-request. A ring cannot express "positions 0..24,576 are absent AND
+that is correct", which is exactly why our cache hit starts empty and
+replays. The floor is a consequence of the ring, not of the cache design.
+
+Two related corrections to our own framing:
+- **Layers do not multiply.** One `block_id` addresses every layer in a KV
+  cache group (`kv_cache_utils.py:1140-1200`). Residency is window-sized.
+- **Below the window there is no window requirement at all**
+  (`single_type_kv_cache_manager.py:941-949`).
+
+## `retainPage` has zero callers
+
+We built the hard half — a block-granular SHA-256 prefix chain, the same
+construction vLLM uses — and never wired sharing to it. Adoption COPIES
+the donor's KV into fresh pages instead of aliasing them.
+
+Confining sharing to FULL blocks needs no copy-on-write at all: our
+frontier page is private by construction and `256 % 16 == 0` is already an
+unconditional invariant. vLLM shipped full-blocks-only for years.
+
+The reservation obstacle is smaller than it looks. vLLM's
+`full_sequence_must_fit` mode is structurally identical to ours and
+already sharing-aware: **a shared page held by another row costs the
+admitting row zero reservation; a shared page sitting free costs one.**
+That is reservation arithmetic, not occupancy gating, so our no-throw
+guarantee on `CBv2SequenceKV.update` can stay. The work is splitting
+`pageDemand`, which today serves three roles at once.
+
+## Our watermark is symmetric; vLLM's is not
+
+vLLM charges its reserve only to WAITING/PREEMPTED requests and only when
+the batch is non-empty (`kv_cache_manager.py:459-466`). Ours is one
+ceiling for every caller.
+
+So at 95% occupancy a RUNNING decode row asking for one more token throws
+`capacityExhausted`, and we preempt — `numComputedTokens = 0`, a
+979-token re-prefill. vLLM lets those decodes run into the last 5% and
+refuses only new admissions.
+
+This costs us more than it would cost vLLM. Their docs justify
+recompute-only preemption on the grounds that "prefix caching being better
+(zero overhead) and therefore on by default" makes re-prefill nearly free.
+**We inherited the preemption model without the prefix caching that makes
+it cheap.**
+
+## Confirmed negatives — do not spend time here
+
+- **Long prefill delaying decodes in the same step: vLLM does not solve it
+  either.** Its only knob ships disabled, exactly as our
+  `mixedStepPrefillTokenCap` does. Ours is arguably the better design; just
+  turn it on.
+- **Our SchedulerV2 is already a faithful vLLM V1 port**, and cites vLLM
+  line numbers in its own docstrings. Step composition, preemption trigger,
+  victim selection, recovery mode and FCFS break-vs-continue are parity.
+- **Do not build**: copy-on-write, beam fork (`vllm/core/` is deleted),
+  cascade attention (gated off for sliding-window models, needs >= 8
+  requests — could never fire for gemma-4 or gpt-oss), block de-dup, or
+  SLO-aware admission (vLLM has none).
+
+## Ranked
+
+| # | change | shape |
+|---|---|---|
+| 1 | Asymmetric watermark | two branches |
+| 2 | Position-indexed sliding rows + null sentinel — retires the ring | structural, zero CUDA, proven on this machine |
+| 3 | Alias on adopt (reuse 2.3% -> ~100%) | hash->page map, `retainPage` caller, split `pageDemand` |
+| 4 | Lift `L==1` — kills the prefill gather copy | re-derive the threadgroup budget with a query-tile axis |
+| 5 | `ref_cnt == 0` means evictable-but-hit-able | small |
+| 6 | Invert PTOK: segment-count constexpr, length at runtime | small; retires the JIT ladder |
+| 7 | Hash granularity 256 -> 16-64 · `pendingSamples` skip-don't-break | one line each |
+
+2 and 3 compound: the sentinel design is what makes sliding blocks
+shareable at all, and aliasing is what makes sharing free.

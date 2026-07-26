@@ -20,9 +20,9 @@ import (
 	"github.com/eigeninference/d-inference/e2e/testbed"
 )
 
-// mixedVersionSIPRequired is the named reason this lane skips. The pinned
-// v0.7.12 artifact is a RELEASE build, and at that tag the SIP check is
-// startup-fatal with no escape hatch:
+// mixedVersionSIPRequired is the named reason the PROVIDER-BOOTED half of
+// this lane cannot run. The pinned v0.7.12 artifact is a RELEASE build, and
+// at that tag the SIP check is startup-fatal with no escape hatch:
 //
 //	git show v0.7.12:provider-swift/Sources/ProviderCore/Security/SecurityHardening.swift
 //	  :371 public func verifySecurityPosture() throws -> SecurityPosture {
@@ -39,26 +39,110 @@ const mixedVersionSIPRequired = "MIXED_VERSION_SIP_REQUIRED: the hash-pinned rel
 	"provider is a release build whose verifySecurityPosture() throws SecurityError.sipDisabled " +
 	"before serving (SecurityHardening.swift:371-375, called under #if !DEBUG from " +
 	"ProviderLoop+Serve.swift:378-379, no env override at that tag), so it cannot register on a " +
-	"host whose SIP is not enabled and this gate cannot run here"
+	"host whose SIP is not enabled and the provider-booted half of this gate cannot run here"
 
-// mixedVersionSkipReason maps a measured host SIP state to the reason this
-// lane cannot run, or "" when it can. Separated from the measurement so the
-// gate's decision is testable for every state without a SIP-disabled host —
-// the regression that produced the opaque suite.Start timeout was exactly a
-// silent change to this decision.
-func mixedVersionSkipReason(state sipState) string {
-	if state == sipEnabled {
-		return ""
+// Coverage markers this lane prints, one per tier it actually reached.
+//
+// CI asserts on these rather than on the exit code because `go test` exits 0
+// for a skipped test, for a test whose `-run` pattern matched nothing, and
+// for a package with no tests at all. The exit code therefore cannot tell
+// "verified the pinned bundle" apart from "ran nothing" — which is precisely
+// how this lane came to report green while never executing. integration.yml
+// greps for the artifact marker and fails the step when it is absent.
+const (
+	mixedVersionTierArtifactOK = "MIXED_VERSION_TIER_ARTIFACT_OK"
+	mixedVersionTierFullOK     = "MIXED_VERSION_TIER_FULL_OK"
+)
+
+// mixedVersionExpect is the coverage tier a runner is DESIGNATED to reach,
+// read from DARKBLOOM_MIXED_VERSION_EXPECT.
+//
+// It exists because two different things were previously collapsed into one
+// `t.Skip`: whether a host CAN boot the released provider (a fact about the
+// host's SIP state) and whether a host is ALLOWED to leave that half unrun
+// (a policy about CI). Collapsing them means the designated runner skips
+// silently and forever. Blacksmith's macOS runners are SIP-disabled, so the
+// honest designation there is `artifact`; point this lane at a SIP-enabled
+// runner and set `full`, and a skip is red instead of green.
+type mixedVersionExpect string
+
+const (
+	// expectAny is a developer laptop: whatever the host can do is fine.
+	expectAny mixedVersionExpect = ""
+	// expectArtifact designates a runner that MUST verify the pinned bundle.
+	// The booted half may skip with a named reason.
+	expectArtifact mixedVersionExpect = "artifact"
+	// expectFull designates a runner that MUST reach the booted half. A skip
+	// there is a CI regression, not a property of the artifact.
+	expectFull mixedVersionExpect = "full"
+)
+
+// parseMixedVersionExpect rejects unrecognised values instead of folding them
+// into expectAny: a typo'd `ful` must not silently downgrade a designated
+// runner back to a permanently green skip.
+func parseMixedVersionExpect(raw string) (mixedVersionExpect, error) {
+	switch expect := mixedVersionExpect(raw); expect {
+	case expectAny, expectArtifact, expectFull:
+		return expect, nil
+	default:
+		return expectAny, fmt.Errorf(
+			"DARKBLOOM_MIXED_VERSION_EXPECT=%q is not %q, %q or unset", raw, expectArtifact, expectFull)
 	}
-	return mixedVersionSIPRequired
+}
+
+// mixedVersionDecision is the fate of the provider-booted half, decided after
+// the artifact half has already run.
+type mixedVersionDecision int
+
+const (
+	// mixedVersionRun boots the released provider and asserts the whole surface.
+	mixedVersionRun mixedVersionDecision = iota
+	// mixedVersionSkipBooted: the host cannot boot the released provider and
+	// was not designated to. The artifact half has still gated.
+	mixedVersionSkipBooted
+	// mixedVersionFail: the host cannot boot the released provider but was
+	// designated to.
+	mixedVersionFail
+)
+
+// mixedVersionDecide maps (designated tier, measured SIP) to the fate of the
+// booted half and the reason to print. Pure, so the whole matrix is testable
+// without a SIP-disabled host. Both regressions this lane has suffered — the
+// opaque suite.Start timeout, and the permanent green skip on the only runner
+// that executes it — were silent changes to this decision.
+func mixedVersionDecide(expect mixedVersionExpect, state sipState) (mixedVersionDecision, string) {
+	if state == sipEnabled {
+		return mixedVersionRun, ""
+	}
+	if expect == expectFull {
+		return mixedVersionFail, mixedVersionSIPRequired +
+			"; DARKBLOOM_MIXED_VERSION_EXPECT=full designated this runner as one that MUST " +
+			"reach the released provider, so this is a CI misconfiguration rather than a " +
+			"property of the artifact — point the lane at a SIP-enabled runner, or set the " +
+			"expectation to artifact and accept that only the bundle pins are gated here"
+	}
+	return mixedVersionSkipBooted, mixedVersionSIPRequired
 }
 
 // TestIntegrationMixedVersionReleasedV0712Provider is the forward
 // compatibility gate: the CANDIDATE coordinator must keep serving the
 // hash-pinned RELEASED v0.7.12 provider across every public endpoint.
 //
-// Why this lane requires SIP instead of tolerating its absence
-// ------------------------------------------------------------
+// The lane has two tiers, and the split is the whole point
+// -------------------------------------------------------
+// ARTIFACT tier — verifies that DARKBLOOM_PROVIDER_BINARY is the exact
+// released bundle, both the executable and the metallib beside it, by
+// SHA-256 read from scripts/fetch-v0712-provider.sh. It needs no provider
+// process, no SIP and no GPU, so it runs on EVERY host. This is the check
+// that catches a mis-registered release or a hand-assembled bundle, and it
+// is unconditional for that reason.
+//
+// BOOTED tier — everything below, which requires the released provider to
+// register. It cannot run on a SIP-disabled host, for the reason named on
+// mixedVersionSIPRequired.
+//
+// Why the booted tier skips rather than hangs, and why that is not enough
+// ----------------------------------------------------------------------
 // An earlier revision removed the `csrutil status` precondition on the
 // premise that "the provider's own SIP check is a warning —
 // collectSecurityPosture logs and returns a posture anyway". That premise
@@ -70,31 +154,54 @@ func mixedVersionSkipReason(state sipState) string {
 // SIP-disabled hosts — it converted an explicit red into an opaque
 // suite.Start timeout.
 //
-// A gate that physically cannot run must SAY SO, so this skips with a
-// named reason. What it asserts WHEN it runs is unchanged and unweakened:
-// every precondition past the SIP gate is a require, never a Skip.
+// Replacing that timeout with a named skip was honest but insufficient: the
+// Blacksmith runner in .github/workflows/integration.yml IS SIP-disabled, so
+// the named skip meant the only released-provider lane we have never ran and
+// always reported green. A gate that cannot fail is not a gate. Hence the
+// artifact tier above, which that runner does execute, and
+// DARKBLOOM_MIXED_VERSION_EXPECT, which lets CI declare the tier a given
+// runner must reach so a skip below the declared tier is red.
 //
-// Non-vacuity does not rest on the SIP probe. It rests on running against
-// the real released artifact, required here by SHA-256 for both the
-// executable and its metallib, read from the single source of truth in
-// scripts/fetch-v0712-provider.sh. A locally built or drifted bundle fails
-// the gate loudly instead of quietly passing it.
+// What it asserts WHEN it runs is unchanged and unweakened: every
+// precondition past the SIP decision is a require, never a Skip.
 func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 	if os.Getenv("DARKBLOOM_MIXED_VERSION") != "1" {
 		t.Skip("set DARKBLOOM_MIXED_VERSION=1 with the verified v0.7.12 binary")
 	}
-	// Measured once, before anything can block on a provider that will not
-	// start. The security_posture subtest reuses this value rather than
-	// re-shelling out.
-	hostSIP := hostSIPState(t)
-	if reason := mixedVersionSkipReason(hostSIP); reason != "" {
-		t.Skip(reason)
-	}
+	expect, err := parseMixedVersionExpect(os.Getenv("DARKBLOOM_MIXED_VERSION_EXPECT"))
+	require.NoError(t, err)
+
+	// ---- ARTIFACT tier: runs on every host, SIP or not. ----
+	//
+	// Deliberately ahead of the SIP decision. Opting in with
+	// DARKBLOOM_MIXED_VERSION=1 and no bundle, or with the wrong bundle, is
+	// now red on a SIP-disabled host too, where it used to be a silent skip.
 	binaryPath := os.Getenv("DARKBLOOM_PROVIDER_BINARY")
 	require.NotEmpty(t, binaryPath,
 		"mandatory v0.7.12 compatibility gate requires DARKBLOOM_PROVIDER_BINARY "+
 			"(scripts/fetch-v0712-provider.sh prints the path)")
-	requirePinnedReleasedProvider(t, binaryPath)
+	if !t.Run("pinned_released_artifact", func(t *testing.T) {
+		requirePinnedReleasedProvider(t, binaryPath)
+	}) {
+		t.Fatal("released bundle failed its pins; not proceeding to the booted half")
+	}
+	t.Log(mixedVersionTierArtifactOK + ": the executable and metallib at " +
+		"DARKBLOOM_PROVIDER_BINARY match the digests pinned in " +
+		"scripts/fetch-v0712-provider.sh")
+
+	// ---- BOOTED tier: needs the released provider to register. ----
+	//
+	// Measured once, before anything can block on a provider that will not
+	// start. The security_posture subtest reuses this value rather than
+	// re-shelling out.
+	hostSIP := hostSIPState(t)
+	switch decision, reason := mixedVersionDecide(expect, hostSIP); decision {
+	case mixedVersionFail:
+		t.Fatal(reason)
+	case mixedVersionSkipBooted:
+		t.Skip(reason)
+	case mixedVersionRun:
+	}
 	t.Setenv("DARKBLOOM_CBV2_MTP", "0")
 	t.Setenv("DARKBLOOM_PREFIX_CACHE", "1")
 
@@ -278,6 +385,15 @@ func TestIntegrationMixedVersionReleasedV0712Provider(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, http.StatusRequestEntityTooLarge, response.StatusCode, string(body))
 	})
+
+	// Emitted only from the tail of a clean run, so its presence in the job
+	// log means the released provider actually booted and every endpoint
+	// above was exercised. common.Fail propagates to the parent, so a failed
+	// subtest suppresses it.
+	if !t.Failed() {
+		t.Log(mixedVersionTierFullOK + ": booted the hash-pinned released v0.7.12 " +
+			"provider and exercised the whole compatibility surface")
+	}
 }
 
 func postMixedVersionRequest(
@@ -342,10 +458,11 @@ const (
 	sipDisabled
 )
 
-// hostSIPState measures the runner's SIP state without deciding whether the
-// test may run. Unlike the preamble it replaced, it never fails the gate:
-// the compatibility surface under test does not depend on SIP, so the state
-// only selects which posture assertion is the correct one.
+// hostSIPState measures the runner's SIP state. It only measures: what the
+// state means for the lane is mixedVersionDecide's job, and which posture
+// assertion is correct is the security_posture subtest's. Keeping the probe
+// free of policy is what makes the whole decision matrix testable on a host
+// of any SIP state.
 func hostSIPState(t *testing.T) sipState {
 	t.Helper()
 	output, err := exec.Command("/usr/bin/csrutil", "status").CombinedOutput()
@@ -478,21 +595,71 @@ func pinnedReleasedDigest(t *testing.T, variable string) string {
 	return ""
 }
 
-// TestIntegrationMixedVersionGateContract pins the two properties whose loss
-// produced blocker B3: the lane must announce that it cannot run rather than
-// stalling in suite.Start, and it must pin BOTH halves of the released
-// bundle. It needs no host, no binary and no SIP state, so it runs wherever
-// the compatibility lane itself is filtered in.
+// TestIntegrationMixedVersionGateContract pins the properties whose loss
+// produced blocker B3 and its follow-on: the lane must announce that its
+// booted half cannot run rather than stalling in suite.Start, a runner
+// DESIGNATED to reach that half must go red instead of skipping, and both
+// halves of the released bundle must stay pinned. It needs no host, no
+// binary and no SIP state, so it runs wherever the compatibility lane itself
+// is filtered in.
 func TestIntegrationMixedVersionGateContract(t *testing.T) {
-	t.Run("skips_when_sip_is_not_enabled", func(t *testing.T) {
-		require.Empty(t, mixedVersionSkipReason(sipEnabled),
-			"gate must run on a SIP-enabled host")
+	t.Run("booted_half_decision_matrix", func(t *testing.T) {
+		// A SIP-enabled host runs the booted half whatever CI declares.
+		for _, expect := range []mixedVersionExpect{expectAny, expectArtifact, expectFull} {
+			decision, reason := mixedVersionDecide(expect, sipEnabled)
+			require.Equal(t, mixedVersionRun, decision, "expect=%q", expect)
+			require.Empty(t, reason)
+		}
 		// The released v0.7.12 binary throws SecurityError.sipDisabled before
-		// it registers in both of these states, so both must skip loudly.
-		require.Equal(t, mixedVersionSIPRequired, mixedVersionSkipReason(sipDisabled))
-		require.Equal(t, mixedVersionSIPRequired, mixedVersionSkipReason(sipIndeterminate))
+		// it registers in both non-enabled states, so neither can boot it.
+		for _, state := range []sipState{sipDisabled, sipIndeterminate} {
+			for _, expect := range []mixedVersionExpect{expectAny, expectArtifact} {
+				decision, reason := mixedVersionDecide(expect, state)
+				require.Equal(t, mixedVersionSkipBooted, decision,
+					"state=%d expect=%q", state, expect)
+				require.Equal(t, mixedVersionSIPRequired, reason)
+			}
+			// This is the case the reviewer caught: on the runner designated
+			// to execute this lane, a skip must be red. Without it the only
+			// released-provider gate we have reports green while never
+			// starting the released provider.
+			decision, reason := mixedVersionDecide(expectFull, state)
+			require.Equal(t, mixedVersionFail, decision,
+				"a runner designated full must fail, not skip (state=%d)", state)
+			require.Contains(t, reason, "MIXED_VERSION_SIP_REQUIRED")
+			require.Contains(t, reason, "DARKBLOOM_MIXED_VERSION_EXPECT=full",
+				"failure must name the designation that turned the skip red")
+		}
 		require.Contains(t, mixedVersionSIPRequired, "MIXED_VERSION_SIP_REQUIRED",
 			"skip reason must be greppable in CI output")
+	})
+
+	t.Run("expectation_parses_or_rejects", func(t *testing.T) {
+		for raw, want := range map[string]mixedVersionExpect{
+			"": expectAny, "artifact": expectArtifact, "full": expectFull,
+		} {
+			got, err := parseMixedVersionExpect(raw)
+			require.NoError(t, err, "%q", raw)
+			require.Equal(t, want, got)
+		}
+		// A typo must be red, never a silent downgrade to expectAny — that
+		// would hand back the permanent green skip this designation exists
+		// to prevent.
+		for _, raw := range []string{"ful", "FULL", "artifacts", "1", "true"} {
+			_, err := parseMixedVersionExpect(raw)
+			require.Error(t, err, "%q must be rejected, not folded into unset", raw)
+		}
+	})
+
+	t.Run("tier_markers_are_distinct_and_greppable", func(t *testing.T) {
+		// integration.yml greps these out of the job log; `go test` exits 0
+		// for a skip and for a `-run` pattern that matched nothing, so the
+		// markers are the only evidence a tier actually executed.
+		require.NotEqual(t, mixedVersionTierArtifactOK, mixedVersionTierFullOK)
+		require.NotContains(t, mixedVersionTierFullOK, mixedVersionTierArtifactOK,
+			"a grep for the artifact marker must not be satisfied by the full marker alone "+
+				"or vice versa")
+		require.NotContains(t, mixedVersionTierArtifactOK, mixedVersionTierFullOK)
 	})
 
 	t.Run("both_bundle_pins_are_read_from_the_fetch_script", func(t *testing.T) {

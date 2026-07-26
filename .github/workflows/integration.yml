@@ -175,21 +175,66 @@ jobs:
       # v0.7.12 binaries, and a job-level setting would make the current
       # testbed hand a v0.7.12 provider a TOML selecting a backend that release
       # does not have.
+      #
+      # DARKBLOOM_MIXED_VERSION_EXPECT declares the coverage tier THIS runner
+      # must reach, and the lane goes red when it falls short of it.
+      #
+      #   artifact — verify the pinned v0.7.12 executable + metallib digests.
+      #              Needs no provider process, so it runs anywhere.
+      #   full     — additionally boot the released provider and exercise
+      #              every compatibility endpoint. Requires SIP ENABLED: the
+      #              v0.7.12 release build throws SecurityError.sipDisabled
+      #              before it registers (see mixedVersionSIPRequired).
+      #
+      # `artifact` and not `full`, because blacksmith-12vcpu-macos-latest is
+      # SIP-DISABLED and no SIP-enabled runner is available to this repo.
+      # Declaring `full` here would only make the step permanently red, which
+      # is not a gate either. Declaring `artifact` states plainly what this
+      # runner covers and, via the marker grep below, makes the lane fail if
+      # it stops covering even that. When a SIP-enabled runner exists, move
+      # this step to it and flip this to `full`: a skip is then red.
       - name: Verify current coordinator with released v0.7.12 provider
+        env:
+          DARKBLOOM_MIXED_VERSION_EXPECT: artifact
         run: |
+          set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
-          # Recorded, not enforced. The gate used to hard-require SIP and so
-          # went red (never ran) on a SIP-disabled runner. It is now pinned to
-          # the released binary's SHA-256 instead; the only SIP-dependent
-          # assertion adapts to whatever this prints. Reported here so a run
-          # that cannot cover the positive sip_enabled round-trip says so.
+          # Recorded, not enforced: SIP state is a property of the runner, not
+          # of the candidate. What IS enforced is the tier grep below.
           echo "Runner SIP state: $(/usr/bin/csrutil status 2>&1 || true)"
           RELEASED_PROVIDER=$(./scripts/fetch-v0712-provider.sh "$RUNNER_TEMP/released-providers")
+          MIXED_VERSION_LOG="$RUNNER_TEMP/mixed-version.log"
           DARKBLOOM_MIXED_VERSION=1 \
           DARKBLOOM_PROVIDER_BINARY="$RELEASED_PROVIDER" \
             go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-              -run TestIntegrationMixedVersionReleasedV0712Provider
+              -run TestIntegrationMixedVersionReleasedV0712Provider \
+            2>&1 | tee "$MIXED_VERSION_LOG"
+          # `go test` exits 0 for a skipped test, for a `-run` pattern that
+          # matched nothing, and for a package with no tests — so the exit
+          # code above cannot distinguish "gated the release artifact" from
+          # "ran nothing at all". That is exactly how this lane previously
+          # reported green while never executing. Require the tier marker.
+          if ! grep -q MIXED_VERSION_TIER_ARTIFACT_OK "$MIXED_VERSION_LOG"; then
+            echo "::error::mixed-version lane did not reach its declared" \
+                 "DARKBLOOM_MIXED_VERSION_EXPECT=artifact tier: no" \
+                 "MIXED_VERSION_TIER_ARTIFACT_OK in the log. The released v0.7.12" \
+                 "bundle pins were NOT verified — the lane was skipped, filtered" \
+                 "out, or renamed. This step gates nothing until that is fixed."
+            exit 1
+          fi
+          if grep -q MIXED_VERSION_TIER_FULL_OK "$MIXED_VERSION_LOG"; then
+            echo "::notice::mixed-version lane reached the FULL tier: the released" \
+                 "v0.7.12 provider booted and every compatibility endpoint was" \
+                 "exercised."
+          else
+            echo "::warning::mixed-version lane reached the ARTIFACT tier only:" \
+                 "the released v0.7.12 executable and metallib digests are verified," \
+                 "but the provider was NOT booted and no compatibility request was" \
+                 "served. Grep MIXED_VERSION_SIP_REQUIRED for why. Run this step on a" \
+                 "SIP-enabled runner with DARKBLOOM_MIXED_VERSION_EXPECT=full to gate" \
+                 "the wire surface."
+          fi
 
       # Reverse lane: the RELEASED v0.7.12 coordinator against the CANDIDATE
       # provider. Named for v0.7.13 until v0.7.15; the pinned tag below has

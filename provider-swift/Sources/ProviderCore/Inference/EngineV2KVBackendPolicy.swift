@@ -119,23 +119,27 @@ public enum EngineV2KVBackendPolicy {
     /// itself when the capability becomes real and re-arms if it regresses,
     /// on this backend or any future one, with no second edit here.
     ///
-    /// WHAT A VLM SLOT TRADES BY GOING PAGED, so it is written down rather
-    /// than discovered. Prefix reuse still works — `CBv2PrefixReuseCapability
-    /// .derive` returns `.frozenFullReplay` for `.pagedFP16` on gemma-4's
-    /// windowed-then-full shape — but paged pays ONE EXTRA WINDOW of replay
-    /// over contiguous: `conservativeReplayBoundTokens` is
-    /// `windowCount * maxWindow + maxWindow`, not `windowCount * maxWindow`.
-    /// The reason is a real difference between the two prefill paths, not a
-    /// safety margin. Contiguous's `CBv2FrozenReplayFullSequenceKV.update`
-    /// discards the replayed projections and returns CACHED keys for the
-    /// whole chunk, diagonal included, so it is exact from the first
-    /// position whose sliding cone fits. `PagedLayerCache.prefillKV`
-    /// assembles `gather([base, queryStart)) ++ chunk`, and the chunk half
-    /// is the freshly projected K/V the layer was just called with — so a
-    /// frozen paged row is exact BEFORE the current chunk and poisoned
-    /// inside it, pushing the first exact position back by at most one
-    /// `maxPrefillChunk`. A paged VLM slot is therefore slightly colder on
-    /// a prefix hit than a contiguous one; it is not reuse-free.
+    /// WHAT A VLM SLOT TRADES BY GOING PAGED: as of the frozen-chunk
+    /// gather, NOTHING on prefix reuse. This paragraph used to record a
+    /// one-window penalty; it is gone, and the history matters because the
+    /// penalty was real and someone may remember it.
+    ///
+    /// `CBv2PrefixReuseCapability.derive` returns `.frozenFullReplay` for
+    /// `.pagedFP16` on gemma-4's windowed-then-full shape, at
+    /// `windowCount * maxWindow` — the SAME expression contiguous gets, from
+    /// the same shared case. Paged formerly paid one extra `maxWindow`
+    /// because `PagedLayerCache.prefillKV` assembled
+    /// `gather([base, queryStart)) ++ chunk` with the chunk half being the
+    /// freshly projected K/V the layer was handed, so a frozen paged row was
+    /// exact BEFORE the current chunk and poisoned inside it. It now gathers
+    /// the CACHED keys for the frozen chunk instead — matching what
+    /// contiguous's `CBv2FrozenReplayFullSequenceKV.update` always did — so
+    /// the first exact position is no longer pushed back and the slack was
+    /// deleted rather than tolerated.
+    ///
+    /// Measured at exact parity on both models: gemma-4 25,600 and gpt-oss
+    /// 1,536, each equal to contiguous. Do not re-derive these from this
+    /// comment; they follow from `cbv2RequiredRecompute`.
     ///
     /// A veto is POLICY ("we choose not to"), not failure ("we cannot"),
     /// so it is SILENT: it forces contiguous even for an explicit paged

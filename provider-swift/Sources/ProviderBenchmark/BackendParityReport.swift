@@ -123,12 +123,71 @@ public struct BackendParityReport: Codable, Sendable {
         }
     }
 
+    /// A SAME-BACKEND control: perturb the candidate backend in a way that
+    /// should be numerically irrelevant and see whether the token stream
+    /// survives it.
+    ///
+    /// This is the question a cross-backend token comparison cannot answer
+    /// about itself. If the incumbent flips under a benign same-backend
+    /// change, then no cross-backend token difference on that model is
+    /// attributable to the backend — and that must be established per RUN and
+    /// per MODEL, not inherited from a one-off experiment in someone's notes.
+    ///
+    /// The perturbation is the paged pool dtype (fp16 -> fp32), reachable
+    /// only since `DARKBLOOM_CBV2_PAGED_KV_DTYPE` landed. The arm is trusted
+    /// ONLY when `ProductionBuild.pagedPoolDType` confirms fp32 actually
+    /// served; a silently-ignored knob would otherwise masquerade as
+    /// agreement, which is exactly the failure class this gate exists to
+    /// catch.
+    public struct NumericsControl: Codable, Sendable, Equatable {
+        /// What was perturbed, in operator vocabulary.
+        public let perturbation: String
+        /// nil when the control could not be run at all; `detail` says why.
+        /// Deliberately tri-state, like `Capability`.
+        public let tokenExact: Bool?
+        public let detail: String
+        /// First flip against the unperturbed arm, when not exact.
+        public let firstFlip: String?
+
+        public init(
+            perturbation: String,
+            tokenExact: Bool?,
+            detail: String,
+            firstFlip: String? = nil
+        ) {
+            self.perturbation = perturbation
+            self.tokenExact = tokenExact
+            self.detail = detail
+            self.firstFlip = firstFlip
+        }
+
+        /// Leading clause for `token_exactness`, so the reader meets "the
+        /// incumbent also flips here" BEFORE the divergence it explains.
+        public var headline: String {
+            switch tokenExact {
+            case false:
+                return "CONTROL SAYS THIS IS NOT A BACKEND DIFFERENCE — \(perturbation) "
+                    + "on the SAME backend also flips (\(firstFlip ?? detail)), so a "
+                    + "numerically benign change is enough to move these tokens and no "
+                    + "cross-backend token comparison on this model is meaningful."
+            case true:
+                return "CONTROL HELD — \(perturbation) on the SAME backend was token-exact, "
+                    + "so this cross-backend difference is NOT explained by benign numerics."
+            case nil:
+                return "CONTROL NOT RUN (\(detail)), so nothing here distinguishes a backend "
+                    + "difference from ordinary numerical drift."
+            }
+        }
+    }
+
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
     /// The MTP assistant, when one was supplied. Nil means MTP was not run.
     public let assistantModelID: String?
     public let arms: [Arm]
+    /// The same-backend numerics control, when one could be run.
+    public let numericsControl: NumericsControl?
     public let criteria: [Criterion]
     public let notes: [String]
 
@@ -138,6 +197,7 @@ public struct BackendParityReport: Codable, Sendable {
         modelPath: String,
         assistantModelID: String? = nil,
         arms: [Arm],
+        numericsControl: NumericsControl? = nil,
         criteria: [Criterion],
         notes: [String] = []
     ) {
@@ -146,6 +206,7 @@ public struct BackendParityReport: Codable, Sendable {
         self.modelPath = modelPath
         self.assistantModelID = assistantModelID
         self.arms = arms
+        self.numericsControl = numericsControl
         self.criteria = criteria
         self.notes = notes
     }
@@ -171,6 +232,13 @@ public struct BackendParityReport: Codable, Sendable {
             lines.append(line)
         }
         lines.append("")
+        if let numericsControl {
+            lines.append("")
+            lines.append("  control (\(numericsControl.perturbation)): "
+                + (numericsControl.tokenExact.map { $0 ? "TOKEN-EXACT" : "NOT token-exact" }
+                    ?? "NOT RUN"))
+            lines.append("        \(numericsControl.detail)")
+        }
         for criterion in criteria {
             lines.append("  [\(criterion.verdict.rawValue)] \(criterion.title)")
             lines.append("        \(criterion.detail)")
@@ -282,11 +350,23 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// render to the same string.
         public let tokens: [Int]
         public let finishReason: String
+        /// Per emitted token, the top-1 minus top-2 logprob gap — i.e. how
+        /// much slack the argmax had. Softmax is monotone, so this gap IS the
+        /// logit gap.
+        ///
+        /// Without it a cross-backend token difference cannot be attributed:
+        /// on a model whose argmax is a near-tie, a numerically BENIGN change
+        /// flips the token, and the criterion would blame the backend for
+        /// arithmetic. Empty when logprobs were not requested.
+        public let margins: [Float]
 
-        public init(prompt: String, tokens: [Int], finishReason: String) {
+        public init(
+            prompt: String, tokens: [Int], finishReason: String, margins: [Float] = []
+        ) {
             self.prompt = prompt
             self.tokens = tokens
             self.finishReason = finishReason
+            self.margins = margins
         }
     }
 
@@ -484,10 +564,11 @@ public enum BackendParityCriteria {
     /// arm.
     public static func evaluate(
         baseline: BackendParityObservation,
-        candidate: BackendParityObservation
+        candidate: BackendParityObservation,
+        control: BackendParityReport.NumericsControl? = nil
     ) -> [BackendParityReport.Criterion] {
         [
-            tokenExactness(baseline: baseline, candidate: candidate),
+            tokenExactness(baseline: baseline, candidate: candidate, control: control),
             mtpTokenExactness(baseline: baseline, candidate: candidate),
             packedPrefill(baseline: baseline, candidate: candidate),
             visionSpans(baseline: baseline, candidate: candidate),
@@ -526,11 +607,92 @@ public enum BackendParityCriteria {
         return nil
     }
 
+    /// Relative precision of the fp16 KV the paged pool stores (11-bit
+    /// significand). Derived from the storage dtype, NOT tuned.
+    static let fp16RelativeEpsilon: Float = 1.0 / 2048.0
+
+    /// Whether the baseline's argmax at `index` had more slack than the
+    /// STORAGE precision — i.e. "was this decision resolvable in fp16 at all".
+    ///
+    /// Read the scope carefully, because the obvious misreading is wrong.
+    /// This does NOT answer "was the perturbation small". The perturbation
+    /// that flips these tokens is ULP-scale at its ORIGIN (a storage-order
+    /// difference) but is no longer small by the time it reaches the logits:
+    /// P1_DivergenceRootCause measured a 3.657 contested-vocabulary delta
+    /// against a 0.604 margin at gemma-4's first flip — 6.1x, which is why it
+    /// flips — while the prompt that does NOT flip inverts the ratio exactly
+    /// as drift predicts (margin 4.508 against a 0.691 delta, 0.15x). Single
+    /// layer deltas decay with depth (layers 0-9 give 4.0-9.4, layer 29 alone
+    /// gives 0.244), so the arrival magnitude is amplification through 30
+    /// residual layers and 240 top-8-of-128 MoE selections, not storage noise.
+    ///
+    /// So a `resolvable: true` answer means the fp16 cache could represent the
+    /// gap, and nothing more. It is reported as context beside the first flip;
+    /// it is NEVER the reason the criterion declines to score, which is
+    /// unconditional (see `tokenExactness`).
+    ///
+    /// Returns nil when no margin was captured (logprobs not requested), so a
+    /// caller cannot claim slack it did not measure.
+    static func argmaxResolvable(
+        row: BackendParityObservation.Row, index: Int
+    ) -> (resolvable: Bool, margin: Float, floor: Float)? {
+        guard index >= 0, index < row.margins.count else { return nil }
+        let margin = row.margins[index]
+        // Logit scale at that position, approximated by the margin's own
+        // order plus unity so a near-zero margin still yields a sane floor.
+        let floor = max(1, abs(margin)) * fp16RelativeEpsilon
+        return (margin > floor, margin, floor)
+    }
+
+    /// Index of the first diverging token across rows, for the margin lookup.
+    static func firstDivergingRow(
+        baseline: [BackendParityObservation.Row],
+        candidate: [BackendParityObservation.Row]
+    ) -> (row: BackendParityObservation.Row, index: Int)? {
+        guard baseline.count == candidate.count else { return nil }
+        for (base, cand) in zip(baseline, candidate) where base.prompt == cand.prompt {
+            if let index = firstDivergence(base.tokens, cand.tokens) {
+                return (base, index)
+            }
+        }
+        return nil
+    }
+
     // MARK: token exactness
 
+    /// Free-running greedy token exactness, as a PASS-ONLY signal.
+    ///
+    /// It can confirm parity and it can never accuse. Two independent reasons,
+    /// both established by measurement rather than argument:
+    ///
+    ///  1. The incumbent fails it too. P1_DivergenceRootCause showed
+    ///     contiguous-against-CONTIGUOUS diverging on 2 of these same 3
+    ///     gemma-4 prompts with no backend involved, purely by moving
+    ///     `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK` 128 -> 8, a shipped operator
+    ///     knob (investigation committed at 977a5893e). A bar the incumbent
+    ///     fails under a supported configuration cannot judge a challenger.
+    ///
+    ///     The mechanism is storage-order drift, amplified roughly 1,300x
+    ///     relative to gpt-oss by gemma-4's attention scale of 1.0 at head
+    ///     dim 256/512 and its MoE routing density, landing on decisions
+    ///     whose margins are smaller than the amplified perturbation. NOT
+    ///     "ulp-only": ULP-scale is the ORIGIN, not the arrival. At the
+    ///     first flip the contested-vocabulary delta is 3.657 against a
+    ///     0.604 margin (6.1x, so it flips); the prompt that holds inverts
+    ///     that ratio (margin 4.508, delta 0.691, 0.15x).
+    ///  2. Past the FIRST flip the comparison is not even well-posed. The two
+    ///     arms are then decoding different contexts, so every later position
+    ///     compares two unrelated conversations. Only the first flip per row
+    ///     is a real observation, which is exactly what `rowMismatch`
+    ///     reports — never a "divergence rate".
+    ///
+    /// So: identical streams PASS, anything else is UNAVAILABLE carrying the
+    /// first-flip evidence and the measured argmax slack. It stays a genuine
+    /// gate on models whose argmax is stable — gpt-oss passes it outright.
     static func tokenExactness(
         baseline: BackendParityObservation,
-        candidate: BackendParityObservation
+        candidate: BackendParityObservation,
+        control: BackendParityReport.NumericsControl? = nil
     ) -> BackendParityReport.Criterion {
         let title = "token exactness: greedy decode produces IDENTICAL token ids on both backends"
         let id = BackendParityReport.CriterionID.tokenExactness
@@ -552,10 +714,38 @@ public enum BackendParityCriteria {
         ]
 
         if let mismatch = rowMismatch(baseline: baseline.rows, candidate: candidate.rows) {
-            measurements["divergence"] = mismatch
+            measurements["firstFlip"] = mismatch
+            if let control {
+                measurements["control"] = control.tokenExact.map {
+                    $0 ? "TOKEN-EXACT" : "NOT token-exact"
+                } ?? "NOT RUN"
+            }
+            // The control LEADS. A reader must meet "the incumbent also flips
+            // here" before the divergence it explains, for the same reason
+            // EXPECTED_SHORTFALL rides the summary line.
+            var detail = control.map { "\($0.headline) " } ?? ""
+            detail += "\(candidate.label) diverged from \(baseline.label) at the first "
+                + "flip: \(mismatch). NOT scored as a regression: free-running greedy "
+                + "decode is a PASS-ONLY signal here, because the incumbent fails it too "
+                + "(contiguous-vs-contiguous diverges on this model under the shipped "
+                + "DARKBLOOM_CBV2_ATTN_QUERY_BLOCK knob, 977a5893e), and because past the "
+                + "first flip the two arms decode different contexts so later positions "
+                + "compare unrelated conversations"
+            if let first = firstDivergingRow(
+                baseline: baseline.rows, candidate: candidate.rows),
+                let probe = argmaxResolvable(row: first.row, index: first.index)
+            {
+                measurements["argmaxMargin"] = String(format: "%.3e", probe.margin)
+                measurements["resolvableFloor"] = String(format: "%.3e", probe.floor)
+                detail += ". The baseline's argmax at that flip had a top1-top2 gap of "
+                    + "\(String(format: "%.2e", probe.margin)) against a "
+                    + "\(String(format: "%.2e", probe.floor)) floor from the fp16 KV the "
+                    + "pool stores, so the tie was "
+                    + (probe.resolvable ? "resolvable" : "NOT resolvable")
+                    + " at that precision"
+            }
             return .init(
-                id: id, title: title, verdict: .fail,
-                detail: "\(candidate.label) diverged from \(baseline.label): \(mismatch)",
+                id: id, title: title, verdict: .unavailable, detail: detail,
                 measurements: measurements)
         }
 
@@ -646,25 +836,36 @@ public enum BackendParityCriteria {
         }
 
         if let mismatch = rowMismatch(baseline: base.rows, candidate: cand.rows) {
-            var failed = measurements
-            failed["divergence"] = mismatch
-            // Attribution matters. MTP verification emits the TARGET's own
-            // argmaxes, so if plain greedy decode already differs between
-            // these backends the MTP rows inherit that difference and MTP is
-            // not the defect. Still a FAIL — the bar is token equality — but
-            // reported against the right subsystem.
-            var detail = "MTP output diverged: \(mismatch)"
+            var evidence = measurements
+            evidence["divergence"] = mismatch
+            // Attribution decides the VERDICT here, not just the wording.
+            // MTP verification emits the TARGET's own argmaxes, so when plain
+            // greedy decode already diverges the MTP rows inherit it — and
+            // that base divergence is itself unscoreable (the incumbent fails
+            // it too, see `tokenExactness`). Booking this as an MTP FAIL would
+            // charge MTP for free-running drift the backends did not cause.
             if let inherited = rowMismatch(
                 baseline: baseline.rows, candidate: candidate.rows)
             {
-                failed["inheritedFromBaseDecode"] = inherited
-                detail += " — NOTE: plain greedy decode already diverges between these "
-                    + "backends, so this is inherited from the base decode path rather "
-                    + "than introduced by MTP; fix token_exactness first"
+                evidence["inheritedFromBaseDecode"] = inherited
+                return .init(
+                    id: id, title: title, verdict: .unavailable,
+                    detail: "MTP output diverged, but plain greedy decode already diverges "
+                        + "between these backends, so this is INHERITED from the base "
+                        + "decode path and not introduced by MTP. Base decode divergence "
+                        + "is itself a PASS-only signal (the incumbent fails it under a "
+                        + "shipped knob), so MTP token equality cannot be scored on this "
+                        + "model. Drafts WERE produced on both arms, which is the part "
+                        + "this criterion can still confirm: \(mismatch)",
+                    measurements: evidence)
             }
+            // Base decode agrees and only the MTP rows differ. That IS an MTP
+            // defect and the one case this criterion can indict.
             return .init(
-                id: id, title: title, verdict: .fail, detail: detail,
-                measurements: failed)
+                id: id, title: title, verdict: .fail,
+                detail: "MTP output diverged while plain greedy decode agrees, so the "
+                    + "difference is introduced by MTP itself: \(mismatch)",
+                measurements: evidence)
         }
 
         return .init(
@@ -829,11 +1030,20 @@ public enum BackendParityCriteria {
         }
 
         // The structural allowance, derived from the two measured
-        // capabilities rather than hardcoded: paged's frozen-replay bound is
-        // contiguous's plus exactly one `maxWindow`
-        // (`CBv2PrefixReuseCapability.derive`, WS-4.1), so the difference of
-        // the arms' bounds IS that maxWindow. Zero or negative means the
-        // candidate claims no extra bound and owes no shortfall.
+        // capabilities rather than hardcoded. It USED to be one `maxWindow`:
+        // paged's frozen-replay bound was contiguous's plus that term, so the
+        // difference of the arms' bounds was the allowance.
+        //
+        // As of the frozen-chunk gather the two bounds are the SAME
+        // expression, so on today's engine this evaluates to ZERO and a paged
+        // prefill shortfall is UNEXCUSED — it reports FAIL, not
+        // EXPECTED_SHORTFALL. That is the intended outcome and the reason the
+        // allowance is derived rather than written down: it retired itself
+        // when the cause was fixed, with no edit here.
+        //
+        // It stays because a future backend may legitimately carry a bound of
+        // its own, and because a non-zero value must never again be assumed
+        // to mean `maxWindow` specifically.
         let structuralAllowance = max(0, cand.replayBoundTokens - base.replayBoundTokens)
         let shortfall = base.secondPrefillTokensSaved - cand.secondPrefillTokensSaved
 

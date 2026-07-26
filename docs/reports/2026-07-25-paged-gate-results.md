@@ -795,3 +795,46 @@ second) but resizes the second item. Moving to absolutely-indexed shared
 blocks does not merely lift the 20 GiB disk ceiling; it **removes the
 tiling requirement itself**, which is the larger effect and is the actual
 reason vLLM's floor is one block.
+
+### CORRECTION to the section above: it is capture policy, not addressing
+
+The "rings carry no absolute position" framing is WRONG and is retracted.
+Our ring IS absolutely indexed: the slot for absolute position `p` is
+`(p / pageSize) % ringPages`, a pure function of `p` and donor-independent
+— `PagedSequenceKV.swift:11-13` states it as a bijection onto
+`p % (ringPages · pageSize)`, and `gatherRange` calls the resulting page
+list "the CANONICAL slot of every requested position." Two rows at the
+same absolute positions occupy the same ring slots.
+
+The actual cause is **bounded retention plus end-of-life capture**. The
+donor computed `[0, L)` but the ring physically holds only the last
+`ringPages · pageSize` positions, so at donation time only a trailing
+window survives to be snapshotted. So:
+
+> vLLM caches blocks **as they fill** — dense, every absolute index
+> (`cache_full_blocks`), and gets sparse only when `retention_interval`
+> opts in. We snapshot **what a row still holds** at donation.
+> **Same axis, opposite default. The delta is capture-time policy, not
+> coordinate systems.**
+
+That is independently fixable here without touching the ring, and our own
+geometry says there is room: `ringPageCount` gives gemma-4 sliding 65
+pages = **1,040 tokens** of residency against a **256-token** prefix block
+(`BlockHasher.defaultBlockSize`). A block written during prefill stays
+resident about **four block-times** before the ring laps it. Capturing
+windowed blocks as they fill is geometrically available; nothing forces
+the once-at-the-end snapshot that creates the tiling requirement.
+
+This also revises the 200 MiB / 20 GiB caveat DOWN in importance: 200 MiB
+is the cost of persisting a whole window per donation, which is an
+artifact of end-of-life snapshotting rather than of the capability.
+
+### How to cost item 4 honestly
+
+- **Gather-round-trip elimination** — unambiguous, tile-shape independent,
+  survives every correction in this document. Rank on this alone.
+- **2x M-axis on the 25 sliding layers** — real, but paid for with NSG
+  8 -> 4, and UNMEASURED. It is budget arithmetic from verified constants,
+  not a benchmark. Treat as a hypothesis to test after the kernel exists,
+  never as a projected speedup.
+- **The 5 global layers** — nothing. `BLOCK_Q` is pinned at 1 outright.

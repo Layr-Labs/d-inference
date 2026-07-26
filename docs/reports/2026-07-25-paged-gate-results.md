@@ -168,10 +168,41 @@ build, real weights.
 | criterion | verdict |
 |---|---|
 | token exactness | UNAVAILABLE — the bar is unsatisfiable, see below |
-| MTP | UNAVAILABLE — inherited from the same positions |
+| MTP | **PASS** — lossless against each backend's own decode; see re-score below |
 | packed prefill | **PASS** — active on both backends |
 | vision spans | **PASS** — active on both backends |
 | prefix reuse | **PASS** — paged 2,816 = contiguous 2,816, bound 25,600 both |
+
+**MTP re-scored, and it moved.** The row above was UNAVAILABLE — "inherited
+from the same positions" — when the criterion diffed the two arms' MTP token
+streams against each other. That form could not fail here: gemma-4's base
+decode diverges on 2 of 3 parity prompts, so every MTP divergence classified
+as inherited and the criterion was structurally unable to reach a FAIL on
+this model. It now scores each arm's MTP output against that arm's OWN plain
+greedy output, which crosses no backend boundary and so inherits none of that
+drift. Re-measured on the same box and the same checkpoints
+(`--parity-max-tokens 48 --parity-prefix-tokens 28672`):
+
+```
+contiguous: driver=true, rounds=5, drafted=5, accepted=4  MTP vs own decode: token-exact
+paged:      driver=true, rounds=5, drafted=5, accepted=3  MTP vs own decode: token-exact
+```
+
+Drafts were produced AND accepted on both arms, and MTP still reproduced each
+backend's plain decode token for token — so the PASS is earned, not vacuous.
+The two arms' MTP streams do still differ from each other, but with MTP
+token-exact against its own target on both sides that difference is now
+*provably* exactly the base-decode divergence `token_exactness` reports,
+rather than an attribution inferred from "the base also diverges". Every
+other verdict in this table reproduced unchanged, prefix reuse included
+(2,816 = 2,816, bound 25,600 both). The run evaluates 4 criteria where it
+previously evaluated 3.
+
+Caveat on the bar, so a PASS is not over-read: greedy argmax is a coarse,
+non-monotone detector — token-identical is not numerically identical. A
+numeric witness cannot simply be bolted on here, because requesting top-k
+logprobs on the MTP arm pulls rows off the verification path onto the sampler
+and the drafter stops engaging entirely.
 
 ### gpt-oss-20b-MXFP4-Q8 — **exit 0**
 

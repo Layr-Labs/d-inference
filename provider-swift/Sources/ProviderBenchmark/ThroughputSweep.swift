@@ -49,14 +49,15 @@ public enum ThroughputSweep {
     ///
     /// `kvBackend` is the operator-facing selection handed to the production
     /// factory. `.auto` resolves CONTIGUOUS: the v0.8.0 flip to paged was
-    /// reverted because paged adoption is not transparent — on gemma-4 at a
-    /// 28,672-token prompt, paged ADOPTED diverges from paged COLD at token
-    /// 20 of 32 while contiguous adoption is exact, so the same prompt and
-    /// config answer differently depending on cache state the caller cannot
-    /// see. Paged is opt-in per slot; an explicit `.paged` REFUSES rather
-    /// than degrading. Either way the selection is not the outcome, so the
-    /// report carries the backend each cell ACTUALLY built with — per cell
-    /// in `decode[].resolvedKVBackend`, and de-duplicated in the `kvBackend`
+    /// reverted because paged adoption is not transparent — on
+    /// gemma-4-e2b-it-4bit with 28,416 CACHED tokens, paged ADOPTED diverges
+    /// from paged COLD at completion token 20 of 32 while contiguous
+    /// adoption is exact, so the same prompt and config answer differently
+    /// depending on cache state the caller cannot see. Paged is opt-in per
+    /// slot; an explicit `.paged` REFUSES rather than degrading. Either way
+    /// the selection is not the outcome, so the report carries the backend
+    /// each cell ACTUALLY built with — per cell in
+    /// `decode[].resolvedKVBackend`, and de-duplicated in the `kvBackend`
     /// block.
     public static func run(
         modelID: String,

@@ -328,6 +328,15 @@ class ResolveKVBackendTests(unittest.TestCase):
         ):
             resolve(arrival=make_arrival(selection="auto", resolved="contiguous"))
 
+    def test_phase_that_named_no_backend_at_all_is_a_violation(self):
+        # An empty `resolved` list is not agreement: the phase reported the
+        # selection and then named no engine, so its numbers belong to no arm.
+        scheduler = make_scheduler()
+        scheduler["kvBackend"]["resolved"] = []
+        block = resolve(scheduler=scheduler)
+        self.assertIn("schedulerPrefill resolved no KV backend", block["postureViolations"])
+        self.assertNotIn("schedulerPrefill", block["byPhase"])
+
     def test_cell_without_a_resolved_backend_is_refused(self):
         sweep = make_sweep()
         sweep["decode"][2]["resolvedKVBackend"] = None

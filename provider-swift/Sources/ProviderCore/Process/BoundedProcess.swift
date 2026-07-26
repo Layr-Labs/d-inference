@@ -55,6 +55,7 @@ enum BoundedProcess {
         // is bounded so a child that streams cannot grow this unboundedly.
         var stderrPipe: Pipe?
         let tailBox = StderrTailBox(limit: captureStderrTail)
+        let drained = DispatchSemaphore(value: 0)
         if captureStderrTail > 0 {
             let pipe = Pipe()
             stderrPipe = pipe
@@ -63,6 +64,7 @@ enum BoundedProcess {
                 let chunk = handle.availableData
                 if chunk.isEmpty {
                     handle.readabilityHandler = nil
+                    drained.signal()
                     return
                 }
                 tailBox.append(chunk)
@@ -70,6 +72,14 @@ enum BoundedProcess {
         } else {
             process.standardError = FileHandle.nullDevice
         }
+        // Drain to EOF before anyone reads the tail. `waitUntilExit()` says
+        // the CHILD is gone, not that the readability handler has consumed
+        // the pipe -- a child that writes a short diagnostic and exits fast
+        // can be reaped before its bytes are delivered, and then the tail
+        // reads empty and the diagnosis is lost exactly when it is shortest
+        // and most useful. The handler signals on the zero-length read that
+        // means EOF; the wait is bounded so a stuck reader cannot outlive
+        // the process it was observing.
         defer {
             stderrPipe?.fileHandleForReading.readabilityHandler = nil
             try? stderrPipe?.fileHandleForReading.close()
@@ -93,6 +103,7 @@ enum BoundedProcess {
             throw Failure.signalled(signal: process.terminationStatus)
         }
         guard process.terminationStatus == 0 else {
+            if captureStderrTail > 0 { _ = drained.wait(timeout: .now() + 2) }
             throw Failure.exited(
                 status: process.terminationStatus, stderrTail: tailBox.tail())
         }

@@ -216,13 +216,27 @@ public enum BackendParityHarness {
 
         let baseline = observations[0]
         let candidate = observations[1]
+
+        // The control runs LAST: it needs the candidate arm's rows to compare
+        // against, and running it after both arms keeps only one live engine
+        // on the container at a time.
+        let control = await probeNumericsControl(
+            container: container,
+            serving: facts.serving,
+            candidate: candidate,
+            kvCapacity: kvCapacity,
+            facts: (eos: facts.eosTokenIds, prompts: facts.prompts),
+            configuration: configuration)
+        Memory.clearCache()
+
         return BackendParityReport(
             modelID: modelID,
             modelPath: modelDirectory.path,
             assistantModelID: assistantModelID,
             arms: observations.map(\.arm),
+            numericsControl: control,
             criteria: BackendParityCriteria.evaluate(
-                baseline: baseline, candidate: candidate),
+                baseline: baseline, candidate: candidate, control: control),
             notes: makeNotes(baseline: baseline, candidate: candidate, isVLM: isVLM))
     }
 
@@ -250,6 +264,11 @@ public enum BackendParityHarness {
         let engine: any CBv2Engine
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
+        /// Dtype of the pages the PAGED pool was ACTUALLY built with, nil on
+        /// contiguous. Read off the constructed pool by the factory, so the
+        /// fp32 control arm can prove fp32 served rather than assuming the
+        /// env knob was honoured.
+        let pagedPoolDType: String?
     }
 
     /// `CBv2MTPDrafter` is `AnyObject` and deliberately NOT `Sendable` — it
@@ -298,7 +317,8 @@ public enum BackendParityHarness {
         for prompt in facts.prompts {
             let row = await generate(
                 engine: box.engine, id: UInt64(rows.count + 1), name: prompt.name,
-                tokens: prompt.tokens, maxTokens: configuration.maxTokens, eos: facts.eos)
+                tokens: prompt.tokens, maxTokens: configuration.maxTokens, eos: facts.eos,
+                topLogprobs: 2)
             rows.append(row)
             log("  row '\(prompt.name)': \(row.tokens.count) tokens, \(row.finishReason)")
         }
@@ -351,13 +371,17 @@ public enum BackendParityHarness {
         maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)?,
         drafter: DrafterBox?,
-        mtpConfig: CBv2MTPConfig
+        mtpConfig: CBv2MTPConfig,
+        environmentOverrides: [String: String] = [:]
     ) async throws -> EngineBox {
         // Inside `perform` for the same reason ThroughputSweep is: pool
         // allocation and the paged kernel preflight want serialized GPU
         // access. The serving model itself is NOT re-resolved here — see the
         // comment in `run`.
-        try await container.perform { _ -> EngineBox in
+        let environment = environmentOverrides.isEmpty
+            ? ProcessInfo.processInfo.environment
+            : ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, new in new }
+        return try await container.perform { _ -> EngineBox in
             let build = try EngineV2Factory.makeProductionBuild(
                 model: serving.model,
                 tokenizer: serving.tokenizer,
@@ -366,11 +390,13 @@ public enum BackendParityHarness {
                 maxConcurrentRequests: maxConcurrentRequests,
                 mtpDrafter: drafter?.drafter,
                 mtpConfig: mtpConfig,
-                kvBackend: selection)
+                kvBackend: selection,
+                environment: environment)
             return EngineBox(
                 engine: build.engine,
                 kind: build.kvBackendKind,
-                fallbackReason: build.kvBackendFallbackReason)
+                fallbackReason: build.kvBackendFallbackReason,
+                pagedPoolDType: build.pagedPoolDType)
         }
     }
 
@@ -393,7 +419,13 @@ public enum BackendParityHarness {
 
     // MARK: - Generation
 
-    /// One greedy generation, collecting RAW token ids.
+    /// One greedy generation, collecting RAW token ids and — when
+    /// `topLogprobs >= 2` — the per-token argmax slack.
+    ///
+    /// The slack is what lets the report say whether a cross-backend token
+    /// difference was even resolvable at the precision the KV is stored in.
+    /// Requesting it costs a top-k on rows that ask; rows that do not ask pay
+    /// nothing (`DefaultSamplerV2` takes the batch max).
     private static func generate(
         engine: any CBv2Engine,
         id: UInt64,
@@ -402,14 +434,15 @@ public enum BackendParityHarness {
         maxTokens: Int,
         eos: Set<Int>,
         prefixCacheEnabled: Bool = false,
-        multimodal: CBv2MultimodalInput? = nil
+        multimodal: CBv2MultimodalInput? = nil,
+        topLogprobs: Int = 0
     ) async -> BackendParityObservation.Row {
         let stream: AsyncStream<CBv2Event>
         do {
             stream = try engine.submit(CBv2Request(
                 id: CBv2RequestID(id),
                 promptTokens: tokens,
-                sampling: CBv2SamplingParams(temperature: 0.0),
+                sampling: CBv2SamplingParams(temperature: 0.0, topLogprobs: topLogprobs),
                 maxTokens: maxTokens,
                 stopTokens: eos,
                 prefixCacheEnabled: prefixCacheEnabled,
@@ -419,15 +452,27 @@ public enum BackendParityHarness {
                 prompt: name, tokens: [], finishReason: "submit_error: \(error)")
         }
         var collected: [Int] = []
+        var margins: [Float] = []
         var reason = "unterminated"
         for await event in stream {
             switch event {
-            case .delta(_, let emitted, _): collected.append(contentsOf: emitted)
+            case .delta(_, let emitted, let logprobs):
+                collected.append(contentsOf: emitted)
+                guard let logprobs else { continue }
+                for entry in logprobs {
+                    // Softmax is monotone, so the top1-top2 LOGPROB gap is the
+                    // top1-top2 LOGIT gap. A single candidate means the
+                    // runner-up was not requested; record no slack rather than
+                    // inventing infinite confidence.
+                    let ranked = entry.topLogprobs.map(\.logprob).sorted(by: >)
+                    guard ranked.count >= 2 else { continue }
+                    margins.append(ranked[0] - ranked[1])
+                }
             case .finished(let finish, _): reason = describe(finish)
             }
         }
         return BackendParityObservation.Row(
-            prompt: name, tokens: collected, finishReason: reason)
+            prompt: name, tokens: collected, finishReason: reason, margins: margins)
     }
 
     /// Same, but also surfaces the terminal `CBv2Usage` (prefix-cache facts).
@@ -723,6 +768,7 @@ public enum BackendParityHarness {
         log("arm \(selection.rawValue): prefix reuse "
             + "\(describe(firstUsage.prefixCacheOutcome))->"
             + "\(describe(secondUsage.prefixCacheOutcome)), "
+            + "finish=\(first.row.finishReason)/\(second.row.finishReason), "
             + "matched=\(secondUsage.prefixCacheMatchedTokens), "
             + "saved=\(secondUsage.prefixCachePrefillTokensSaved), "
             + "replayBound=\(replayBound), prompt=\(promptTokens), donated=\(donatedEntries)")
@@ -735,6 +781,8 @@ public enum BackendParityHarness {
             donatedEntries: donatedEntries,
             firstOutcome: describe(firstUsage.prefixCacheOutcome),
             secondOutcome: describe(secondUsage.prefixCacheOutcome),
+            firstFinishReason: first.row.finishReason,
+            secondFinishReason: second.row.finishReason,
             secondMatchedTokens: max(
                 secondUsage.prefixCacheMatchedTokens, secondUsage.prefixCacheHitTokens),
             secondPrefillTokensSaved: max(
@@ -758,6 +806,159 @@ public enum BackendParityHarness {
             try? await Task.sleep(for: .milliseconds(25))
         }
         return cache.stats().entryCount
+    }
+
+    // MARK: - Probe: same-backend numerics control
+
+    /// Rebuild the CANDIDATE backend with fp32 pages and re-run the parity
+    /// prompts against it.
+    ///
+    /// This is the control a cross-backend token comparison cannot perform on
+    /// itself: if flipping the pool dtype — a change that alters no
+    /// algorithm, only storage precision — moves the tokens, then a benign
+    /// perturbation is enough to move them and the cross-backend difference
+    /// is not attributable to the backend. Establishing that PER RUN and PER
+    /// MODEL is the point; inheriting it from a one-off experiment in
+    /// someone's notes is not the same thing.
+    ///
+    /// Reachable only since `DARKBLOOM_CBV2_PAGED_KV_DTYPE` landed. The other
+    /// candidate lever, `CBv2AttentionV1.queryBlockSize`, is a process-wide
+    /// `static let` resolved from `ProcessInfo` at first touch and cannot be
+    /// varied in-process at all.
+    private static func probeNumericsControl(
+        container: ModelContainer,
+        serving: ServingModel,
+        candidate: BackendParityObservation,
+        kvCapacity: Int,
+        facts: (eos: Set<Int>, prompts: [(name: String, tokens: [Int])]),
+        configuration: Configuration
+    ) async -> BackendParityReport.NumericsControl {
+        let perturbation = "paged pool dtype float16 -> float32"
+
+        guard candidate.resolvedBackend == EngineV2KVBackendKind.paged.rawValue,
+            !candidate.rows.isEmpty
+        else {
+            return .init(
+                perturbation: perturbation, tokenExact: nil,
+                detail: "the candidate arm did not serve paged rows "
+                    + "(resolved \(candidate.resolvedBackend ?? "nothing"), "
+                    + "\(candidate.rows.count) rows), so there is nothing to perturb")
+        }
+
+        let box: EngineBox
+        do {
+            box = try await buildEngine(
+                container: container, serving: serving, selection: .paged,
+                kvCapacity: kvCapacity,
+                maxConcurrentRequests: max(configuration.packedProbeRows, 2),
+                prefixCache: nil, drafter: nil, mtpConfig: CBv2MTPConfig(),
+                // Literal rather than EngineV2Factory.pagedPoolDTypeEnvKey:
+                // that constant is internal to ProviderCore.
+                environmentOverrides: ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32"])
+        } catch {
+            return .init(
+                perturbation: perturbation, tokenExact: nil,
+                detail: "the fp32 control engine would not build: \(error)")
+        }
+
+        // Trust the arm ONLY on the RESOLVED dtype. A silently ignored knob
+        // would hand back a second fp16 arm that agrees with the first and
+        // looks like a clean control — the precise failure this gate exists
+        // to catch, and the one it would be most embarrassing to ship inside.
+        guard box.pagedPoolDType == "float32" else {
+            await box.engine.shutdown()
+            return .init(
+                perturbation: perturbation, tokenExact: nil,
+                detail: "requested fp32 pages but the pool resolved "
+                    + "\(box.pagedPoolDType ?? "nil") — the perturbation never happened, "
+                    + "so this arm is NOT a control")
+        }
+
+        var rows: [BackendParityObservation.Row] = []
+        for (index, prompt) in facts.prompts.enumerated() {
+            rows.append(await generate(
+                engine: box.engine, id: UInt64(6000 + index), name: prompt.name,
+                tokens: prompt.tokens, maxTokens: configuration.maxTokens, eos: facts.eos,
+                topLogprobs: 2))
+        }
+
+        // Shut the fp32 engine down BEFORE any verdict below: each one is
+        // terminal for this arm, and an early return that skipped the
+        // shutdown would leave a second multi-GiB pool resident for the rest
+        // of the run.
+        await box.engine.shutdown()
+        Memory.clearCache()
+
+        // fp32 pages halve the seats AND, per P4_FrozenChunkGather, run under
+        // an admission ledger that still charges 2 bytes/element
+        // (`CBv2PrefixReuseCapability.fullKVBytesPerToken` hardcodes it and
+        // `derive` never sees a dtype), so the fp32 arm's admitted
+        // concurrency is NOT comparable to the fp16 arm's. That is harmless
+        // for this control only because admission never binds at probe size —
+        // three short prompts, run SEQUENTIALLY, against a multi-GiB pool.
+        // Verify rather than assume it: a capacity refusal would surface as a
+        // submit error or a non-clean terminal, and would make the arm
+        // measure admission instead of numerics.
+        //
+        // An ALLOWLIST of clean terminals, not a blocklist of known-bad
+        // prefixes. `describe(CBv2FinishReason)` can grow a case, and
+        // `generate` already adds two reasons of its own (`submit_error:`,
+        // `unterminated`) that no `CBv2FinishReason` spells — a blocklist
+        // waves through every reason nobody thought to enumerate, which is
+        // the shape of gate this whole probe exists to refuse.
+        let cleanTerminals: Set<String> = ["stop", "length"]
+        let unclean = rows.filter { !cleanTerminals.contains($0.finishReason) }
+        guard unclean.isEmpty else {
+            return .init(
+                perturbation: perturbation, tokenExact: nil,
+                detail: "the fp32 control arm hit \(unclean.count) non-clean terminal(s) "
+                    + "(\(unclean.map(\.finishReason).joined(separator: "; "))) — fp32 halves "
+                    + "the pool's seats and its byte accounting under-counts, so this arm "
+                    + "measured admission rather than numerics and is NOT a control")
+        }
+
+        // Rows that EXIST but carry no tokens compare equal, and `rowMismatch`
+        // is blind to that by construction, so the exactness branch below
+        // would book "the perturbation changed nothing" off a control that
+        // decoded nothing — absence rendered as agreement, the same defect the
+        // token criterion refuses one layer up. Same helper as that criterion,
+        // deliberately, so the two can never drift apart.
+        if let blocker = BackendParityCriteria.zeroEvidenceBlocker(
+            baselineLabel: "paged fp16 pages", baselineRows: candidate.rows,
+            candidateLabel: "paged fp32 pages", candidateRows: rows)
+        {
+            return .init(
+                perturbation: perturbation, tokenExact: nil,
+                detail: "the control could not be scored — \(blocker)")
+        }
+
+        if let mismatch = BackendParityCriteria.rowMismatch(
+            baseline: candidate.rows, candidate: rows)
+        {
+            log("control: paged fp32 vs paged fp16 NOT token-exact — \(mismatch)")
+            return .init(
+                perturbation: perturbation, tokenExact: false,
+                detail: "paged with fp32 pages diverged from paged with fp16 pages on the "
+                    + "SAME backend: \(mismatch)",
+                firstFlip: mismatch)
+        }
+
+        // Carry the SAMPLE SIZE into the verdict. "Token-exact" over three
+        // one-token rows — what an instruct checkpoint gives you when the
+        // parity prompts reach it untemplated and it stops immediately — and
+        // token-exact over 144 tokens are the same word for very different
+        // evidence, and this string is what someone deciding whether a
+        // divergence is precision-related actually reads.
+        let total = rows.reduce(0) { $0 + $1.tokens.count }
+        let shortest = rows.map(\.tokens.count).min() ?? 0
+        log("control: paged fp32 vs paged fp16 token-exact over \(total) tokens "
+            + "(shortest row \(shortest))")
+        return .init(
+            perturbation: perturbation, tokenExact: true,
+            detail: "paged with fp32 pages produced token ids IDENTICAL to paged with fp16 "
+                + "pages across \(rows.count) prompts and \(total) tokens (shortest row "
+                + "\(shortest)), so this model's argmax survives a benign storage-precision "
+                + "change over that many decode steps")
     }
 
     // MARK: - Probe: MTP
@@ -798,6 +999,14 @@ public enum BackendParityHarness {
                 unavailableReason: "MTP engine construction failed: \(error)")
         }
 
+        // NO `topLogprobs` here, deliberately. MTP verification bypasses the
+        // sampler and emits raw target argmaxes; asking a row for top-k
+        // logprobs pulls it back onto the sampler path and the drafter stops
+        // engaging — measured, not theorised: adding it took this arm from
+        // rounds=5/drafted=5 to rounds=0/drafted=0 on both backends while
+        // `driverConstructed` stayed true, i.e. it manufactured exactly the
+        // silent no-op this criterion exists to detect. The margin instrument
+        // belongs to the base decode comparison only.
         var rows: [BackendParityObservation.Row] = []
         for (index, prompt) in prompts.enumerated() {
             rows.append(await generate(

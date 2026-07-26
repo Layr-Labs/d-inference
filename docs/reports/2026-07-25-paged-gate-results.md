@@ -1252,3 +1252,36 @@ there.
 And the caution that survives: pointer sharing removes the cost from the
 step path and removes the tiling requirement, **but not from persistence.
 The 200 MiB changes character rather than vanishing.**
+
+**The design economy, read first-hand at
+`vllm/v1/kv_offload/cpu/policies/base.py:20-33`:** the tri-state is not an
+enum and not a separate flag. It is ONE `ctypes.c_int32`:
+
+```python
+_fields_ = [("ref_cnt", ctypes.c_int32), ("block_id", ctypes.c_int64)]
+...
+# initialize block as "not ready" (ref_cnt = -1)
+self.ref_cnt = -1
+...
+def is_ready(self) -> bool:
+    return self.ref_cnt >= 0
+```
+
+The **sign** carries readiness; the **magnitude** carries pin count. They
+reused the field that already does eviction protection rather than adding
+state — the same economy as `block_pool`'s ref_cnt doubling as
+"in the free queue or not." Worth copying as-is: our equivalent would not
+need a new field either.
+
+### A citation hazard for whoever implements this
+
+The readiness code was first cited here as `kv_offload/base.py`. That file
+EXISTS — 17.5 KB, holding the `OffloadKey`/`LoadStoreSpec` surface — so
+the wrong path resolves to a real file and reads as plausible rather than
+erroring. Two of the three bad citations in this investigation had that
+shape: **wrong-but-resolvable**, not missing.
+
+Same class as the four-tree `cwd` trap recorded above. When lifting a
+line-number citation out of this document, re-resolve the path before
+acting on it; a successful `read` is not evidence the path was the
+intended one.

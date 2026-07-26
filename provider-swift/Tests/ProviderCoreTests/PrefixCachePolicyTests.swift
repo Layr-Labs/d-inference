@@ -57,7 +57,7 @@ struct PrefixCachePolicyTests {
         }
     }
 
-    @Test("typed capability enables frozen hybrids on both backends, paged with a wider bound")
+    @Test("typed capability enables frozen hybrids on both backends, at one shared bound")
     func reusableLayoutSafety() {
         let full = CBv2LayerKind(
             attention: .full, headDim: 64, kvHeads: 4, queryHeads: 8)
@@ -86,34 +86,46 @@ struct PrefixCachePolicyTests {
         #expect(hybrid.plan(matchedBoundary: 512)?.restoredFullTokens == 512)
 
         // Paged hybrids WERE refused (`pagedHybridRequiresDualCursor`) until
-        // WS-4.1's dual cursor landed. They are now supported, and pay one
-        // extra `maxWindow` over contiguous: `PagedLayerCache.prefillKV`
-        // assembles `gather ++ chunk` and the chunk half is freshly projected,
-        // so a frozen paged row is exact only BEFORE the current chunk. The
-        // planner cannot see `maxPrefillChunk` (pool config, not model shape),
-        // so it buys `maxWindow` of slack and `PagedKVBackend
-        // .makeSequenceState(adopting:)` re-checks against the real chunk.
+        // WS-4.1's dual cursor landed, and for a while afterwards they were
+        // supported but paid one extra `maxWindow` over contiguous, because
+        // `PagedLayerCache.prefillKV` handed attention `gather ++ chunk` with
+        // the chunk half freshly projected. That term is gone:
+        // `prefillKVWritingChunk` now gathers the CACHED keys for a frozen
+        // chunk, so `derive` returns `windowCount * maxWindow` from ONE shared
+        // expression for both backends.
+        //
+        // So the invariant is no longer "paged is wider" but the strictly
+        // stronger "paged is EQUAL". Asserted as equality rather than deleted:
+        // this is the only place watching that relation, and a reintroduced
+        // paged-specific slack term must break a test rather than quietly
+        // widen the bound again.
         let pagedHybrid = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, full],
             backendSelection: .paged)
         #expect(pagedHybrid.isSupported)
         #expect(pagedHybrid.unsupportedReason == nil)
         #expect(pagedHybrid.strategy == .frozenFullReplay)
+        #expect(pagedHybrid.backend == .pagedFP16)
         let contiguousHybrid = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, full],
             backendSelection: .contiguous)
+        #expect(contiguousHybrid.backend == .contiguousUnquantized)
         #expect(
             pagedHybrid.conservativeReplayBoundTokens
-                == contiguousHybrid.conservativeReplayBoundTokens + 128,
-            "paged pays replayBound + one maxWindow")
+                == contiguousHybrid.conservativeReplayBoundTokens,
+            "the two backends must share one replay bound")
+        // …and it is the real one, not two matching zeroes.
+        #expect(pagedHybrid.conservativeReplayBoundTokens == 128)
 
-        // A KILLED paged slot has degraded to a contiguous row and is
-        // resolved as one, so it keeps the narrower contiguous bound.
+        // A KILLED paged slot has degraded to a contiguous row and is resolved
+        // as one. The bound can no longer show that (both are 128), so the
+        // assertion moved to the field that still discriminates.
         let killedPagedHybrid = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: [windowed, full],
             backendSelection: .paged,
             pagedKilled: true)
         #expect(killedPagedHybrid.strategy == .frozenFullReplay)
+        #expect(killedPagedHybrid.backend == .contiguousUnquantized)
         #expect(
             killedPagedHybrid.conservativeReplayBoundTokens
                 == contiguousHybrid.conservativeReplayBoundTokens)
@@ -143,13 +155,22 @@ struct PrefixCachePolicyTests {
     func boundFollowsBackendSelection() {
         let gemma = kinds(sliding: 25, window: 1024, full: 5)
         // Derived from the SAME resolver as `prefixReuseCapability`, so the
-        // two can never describe different backends for one slot — and since
-        // WS-4.1 that genuinely matters: a paged hybrid pays one extra
-        // `maxWindow` (1,024) for the freshly-projected chunk half of
-        // `gather ++ chunk`, so 26,624 against contiguous's 25,600.
-        for selection in [EngineV2KVBackendSelection.auto, .contiguous] {
+        // two can never describe different backends for one slot. What that
+        // buys is now invisible in the NUMBER: since the frozen paged gather
+        // was proved exact, `derive` returns `windowCount * maxWindow` from one
+        // shared expression for `.contiguousUnquantized` and `.pagedFP16`
+        // alike, so every selection below reads 25,600. Resolution is
+        // therefore asserted where it is still observable — on the resolved
+        // capability's `backend` — and the numeric equality is pinned, so a
+        // reintroduced paged slack term breaks this test instead of silently
+        // re-diverging the two callers.
+        for selection in [EngineV2KVBackendSelection.auto, .contiguous, .paged] {
             let capability = PrefixCachePolicy.prefixReuseCapability(
                 layerKinds: gemma, backendSelection: selection)
+            #expect(
+                capability.backend
+                    == (selection == .paged ? .pagedFP16 : .contiguousUnquantized),
+                "\(selection) must resolve to its own backend")
             #expect(
                 PrefixCachePolicy.adoptionBoundTokens(
                     layerKinds: gemma, backendSelection: selection) == 25_600)
@@ -158,20 +179,32 @@ struct PrefixCachePolicyTests {
                     capability: capability, layerKinds: gemma,
                     windowResidency: .replayed) == 25_600)
         }
+        // The bound is READ from the capability it is handed, never re-derived
+        // from `layerKinds` — `layerKinds` is consulted only for sidecar
+        // geometry. Hand it gpt-oss's capability with gemma's layout and it
+        // must answer gpt-oss's 1,536; a re-derivation (the shape a hardcoded
+        // `.contiguousUnquantized` takes) would answer gemma's 25,600. This is
+        // what still fails if the resolver is bypassed, now that both backends
+        // agree numerically.
+        let gpt = kinds(sliding: 12, window: 128, full: 12)
+        #expect(
+            PrefixCachePolicy.adoptionBoundTokens(
+                capability: PrefixCachePolicy.prefixReuseCapability(
+                    layerKinds: gpt, backendSelection: .paged),
+                layerKinds: gemma,
+                windowResidency: .replayed) == 1_536)
+        // Paged's 25,600 sits EXACTLY on the long-hybrid threshold, so the
+        // 1,536 floor still applies — narrowing the bound must not relax it.
         let paged = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: gemma, backendSelection: .paged)
-        #expect(
-            PrefixCachePolicy.adoptionBoundTokens(
-                layerKinds: gemma, backendSelection: .paged) == 26_624)
-        #expect(
-            PrefixCachePolicy.adoptionBoundTokens(
-                capability: paged, layerKinds: gemma,
-                windowResidency: .replayed) == 26_624)
-        // Still over the 25,600 long-hybrid threshold, so the 1,536 floor
-        // applies on paged too — the wider bound must not quietly relax it.
         #expect(PrefixCachePolicy.minEffectiveTokens(
-            capability: paged, adoptionBoundTokens: 26_624, environment: [:]) == 1_536)
-        // A killed paged slot has degraded to a contiguous row.
+            capability: paged, adoptionBoundTokens: 25_600, environment: [:]) == 1_536)
+        // A killed paged slot has degraded to a contiguous row; the bound no
+        // longer moves, so the backend field carries the claim.
+        #expect(
+            PrefixCachePolicy.prefixReuseCapability(
+                layerKinds: gemma, backendSelection: .paged, pagedKilled: true)
+                .backend == .contiguousUnquantized)
         #expect(
             PrefixCachePolicy.adoptionBoundTokens(
                 layerKinds: gemma, backendSelection: .paged, pagedKilled: true) == 25_600)
@@ -311,17 +344,22 @@ struct PrefixCachePolicyTests {
             #expect(contiguous.isSupported)
             #expect(contiguous.strategy == .frozenFullReplay)
 
-            // Paged qualifies too since WS-4.1's dual cursor, at one extra
-            // `maxWindow` over contiguous for the freshly-projected chunk.
+            // Paged qualifies too since WS-4.1's dual cursor, and since the
+            // frozen chunk gather was proved exact it qualifies at contiguous's
+            // bound exactly — no extra `maxWindow` for a freshly-projected
+            // chunk half, because there is no longer a freshly-projected half.
             let paged = PrefixCachePolicy.prefixReuseCapability(
                 layerKinds: kinds,
                 backendSelection: .paged)
             #expect(paged.isSupported)
             #expect(paged.unsupportedReason == nil)
             #expect(paged.strategy == .frozenFullReplay)
+            #expect(paged.backend == .pagedFP16)
+            #expect(contiguous.backend == .contiguousUnquantized)
             #expect(
                 paged.conservativeReplayBoundTokens
-                    > contiguous.conservativeReplayBoundTokens)
+                    == contiguous.conservativeReplayBoundTokens,
+                "both production layouts must bound identically on both backends")
         }
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gpt) == 1_536)
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma) == 25_600)

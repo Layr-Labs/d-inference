@@ -556,3 +556,77 @@ a window AT**, which is exactly what makes link 5 awkward to feed.
 `installWindow`'s `row.fastForward(to: snapshot.base)` is the
 absolute-positioning primitive, and it is the property vLLM gets for free
 from position-indexed rows.
+
+## LAST correction — the amortisation claim was wrong for 25 of 30 layers
+
+The "already exactly saturated at both head dims" finding above was read
+off the Swift decoder DEFAULTS (`numAttentionHeads 8 / numKeyValueHeads
+1`). Those are placeholders and they disagree between MLXLLM and MLXVLM.
+
+The real config, read independently from the checkpoint on disk AND
+present in-repo as a verbatim literal (`CBv2LastQueryPrefillTests.swift:774-791`):
+
+    num_attention_heads 16   head_dim 256    num_key_value_heads 8
+    global_head_dim 512      num_global_key_value_heads 2
+    attention_k_eq_v true    sliding_window 1024   30 layers
+
+So the two layer families are ASYMMETRIC and only one is saturated:
+
+| | D | GQA | hpt | acc | headroom |
+|---|---:|---:|---:|---:|---|
+| sliding (25L) | 256 | **2** | 2 | 16/32 | **2x free** |
+| global (5L) | 512 | 8 | 2 | 32/32 | at cap |
+
+Recomputed against `headsPerThreadgroup` / `partThreadgroupBytes` directly
+(`maxAccumulatorFloatsPerThread = 32`, `threadgroupMemoryLimit = 32768`,
+`mergeRecordMetaFloats = 2`):
+
+    sliding  BQ=1: acc=16/32  NSG=8  18,560 B  M-rows=2   <- today
+             BQ=2: acc=32/32  NSG=4  20,608 B  M-rows=4   FITS
+             BQ=4: acc=64/32                              register spill
+    global   BQ=1: acc=32/32  NSG=4  20,544 B  M-rows=2   <- today
+             BQ=2: acc=64/32                              register spill
+             BQ=4:                            32,832 B    FATAL
+
+`BQ=4` on global is still byte-identical to the historical process fatal.
+
+**Corrected statement:** the M-axis amortisation win is unavailable on the
+5 global layers and a 2x on the 25 sliding layers — which is where p50
+traffic lives.
+
+**A cost that has not been priced:** `BQ=2` on sliding forces `NSG` from 8
+down to 4, because the merge buffer scales with both. It trades simdgroup
+parallelism for M-axis amortisation. Whether that is net positive is a
+MEASUREMENT, not a derivation, and nobody has run it. Do not file this as
+a free doubling.
+
+For scale: at GQA=2 vLLM's formula gives `BLOCK_M=16`, `BLOCK_Q=8`, so 16
+M-rows against our reachable 4.
+
+## Link 5 is bounded by disk budget, not just plumbing
+
+Two numbers from our own source that belong next to the "it is only a
+bridge" framing:
+
+- A sliding snapshot is `windowCount x window` positions of real K/V —
+  **200 MiB per gemma-4 donation** (`CBv2SlidingWindowDonation.swift:10-11`).
+- The box-wide SSD budget is **20 GiB across ALL models**
+  (`PrefixCachePolicy.swift:53`, clamped to `min(20 GiB, free/2)`).
+
+That is ~100 sidecars for the entire box, competing with the
+full-attention blocks already using that budget.
+
+And the two effects interact adversely: flipping the gate collapses
+`adoptionBoundTokens` to 0, which drops the donation floor to just
+`minEffectiveTokens` — so donation VOLUME rises sharply at the same moment
+each donation becomes 200 MiB more expensive. Uncosted.
+
+Link 5 still ranks first — it trades bandwidth we have against forward
+passes we do not, and it unblocks the 2.3%. But it is "bounded by a 20 GiB
+box-wide budget at ~200 MiB per sidecar," not "cheap."
+
+Also: link 5 restores BY COPY into private pages (`installWindow` ->
+`fastForward` + chunked `write` -> `ensurePage` -> `allocatePage`).
+It is independent of `retainPage`/refcount>1 sharing and moves
+`pagesInUse` toward sharing by exactly zero pages. The two items do not
+substitute for each other.

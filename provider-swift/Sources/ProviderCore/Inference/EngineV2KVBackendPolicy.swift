@@ -32,9 +32,9 @@
 //      (`engine_v2_kv_backend = "contiguous"`), plus the fleet-wide kill
 //      switch DARKBLOOM_CBV2_PAGED_KV=0. It is NOT deprecated: it is the
 //      rollback target and the parity reference the gates measure against.
-//      Paged is experimental and requires the explicit "paged" selection.
-//      This is intentionally not a family table: adding a future model
-//      family cannot silently turn a stale/default config into paged.
+//      Paged is the shipped default, not an experimental opt-in; an
+//      explicit "paged" resolves what "auto" does, differing only in
+//      layer 5. Not a family table: no future family diverges silently.
 //   5. Failure handling, and it depends on WHO asked. Kernel preflight,
 //      physical-capacity planning, and `PagedKVBackend` construction can
 //      each fail. Under "auto" they degrade to contiguous — a

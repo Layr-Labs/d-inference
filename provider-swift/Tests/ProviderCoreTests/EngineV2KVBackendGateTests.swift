@@ -2,7 +2,7 @@
 //
 // KV-backend GATE tests over the REAL `EngineV2Factory.makeProductionBuild`
 // with tiny real-family models (JSON-decoded configs, random-init weights,
-// no downloads): production-safe `auto` (always contiguous), the fleet
+// no downloads): production-safe `auto` (PAGED as of v0.8.0), the fleet
 // kill switch at the deepest layer, explicit selections, and the
 // degrade-or-REFUSE split — an explicit paged request that cannot be
 // served throws `EngineV2ProductionError.pagedUnavailable` with the reason
@@ -159,26 +159,25 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("auto is PAGED for GPT-OSS and cannot drift with family defaults")
-    func autoServesPagedForGPTOSS() async throws {
+    @Test("auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults")
+    func autoServesContiguousForGPTOSS() async throws {
         let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .auto)
-        // v0.8.0 flipped `.auto` from contiguous to paged. This assertion is
-        // the anti-drift guard for that decision in BOTH directions: it
-        // caught the flip when it landed, and it will catch a silent revert.
-        #expect(build.kvBackendKind == .paged)
+        // `.auto` is CONTIGUOUS. A flip to paged was made and reverted on
+        // measurement: paged adoption is not transparent (see the rationale
+        // at EngineV2Factory+Production.swift's `.auto` case). This
+        // assertion guards BOTH directions — it caught the flip when it
+        // landed and it will catch an unintended re-flip.
+        #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == nil)
-        // Paged reports the PHYSICAL pool it committed, not the logical
-        // admission grant a contiguous slot advertises, so this is
-        // deliberately not `gateTestCapacity`.
         let snapshot = build.engine.capacity()
-        #expect(snapshot.kvBytesBackendCapacity > 0)
+        #expect(snapshot.kvBytesBackendCapacity == gateTestCapacity)
         await build.engine.shutdown()
     }
 
-    @Test("auto resolves PAGED for Gemma-4 (bf16 KV stays opt-in)")
-    func autoServesPagedForGemma() async throws {
+    @Test("auto resolves CONTIGUOUS for Gemma-4 (bf16 KV stays opt-in)")
+    func autoServesContiguousForGemma() async throws {
         let build = try makeBuild(model: try tinyGemma4Text(), kvBackend: .auto)
-        #expect(build.kvBackendKind == .paged)
+        #expect(build.kvBackendKind == .contiguous)
         #expect(build.kvBackendFallbackReason == nil)
         await build.engine.shutdown()
     }

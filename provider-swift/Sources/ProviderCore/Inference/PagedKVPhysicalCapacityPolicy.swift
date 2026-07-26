@@ -1,6 +1,6 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Physical-capacity policy for the experimental paged KV backend.
+// Physical-capacity policy for the paged KV backend.
 //
 // A slot's logical unified-memory grant is an admission ceiling, not an
 // instruction to preallocate that many bytes. The paged pool's slabs are a

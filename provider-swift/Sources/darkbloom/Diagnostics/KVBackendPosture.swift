@@ -145,17 +145,44 @@ struct KVBackendSelection: Equatable {
 
     static let auto = KVBackendSelection(global: "auto", byModel: [:])
 
-    /// Every non-`auto` selection on record, named the way the operator
-    /// wrote it so the fix is obvious from the doctor line alone.
-    var explicitRequests: [String] {
-        var out: [String] = []
+    /// Every non-`auto` selection on record, paired with the model it names —
+    /// nil for the box-wide global, which names none. Phrased the way the
+    /// operator wrote it so the fix is obvious from the doctor line alone.
+    private var explicit: [(phrase: String, model: String?)] {
+        var out: [(phrase: String, model: String?)] = []
         if global != "auto" {
-            out.append("engine_v2_kv_backend = \"\(global)\"")
+            out.append(("engine_v2_kv_backend = \"\(global)\"", nil))
         }
         for (model, backend) in byModel.sorted(by: { $0.key < $1.key }) where backend != "auto" {
-            out.append("\(model) = \"\(backend)\"")
+            out.append(("\(model) = \"\(backend)\"", model))
         }
         return out
+    }
+
+    /// The explicit requests that no slot stands behind, named the same way.
+    ///
+    /// `proven` is the slot list filtered to slots reporting an explicit
+    /// request of their own — the only evidence a CLI has. Presence, not
+    /// quality: a slot serving the wrong backend is a mismatch the caller
+    /// reports on, whereas a request whose model never loaded has nothing to
+    /// report on at all, and that silence is what this catches.
+    ///
+    /// SCOPE decides which slot may vouch for which request, and conflating
+    /// the two is the defect: honouring model B's paged request says nothing
+    /// about model A's. A per-model override names its model, so only a slot
+    /// for THAT model counts. The global names none — `parseSelection`
+    /// resolves `byModel[modelID] ?? global` — so any slot carrying no
+    /// override of its own vouches for it. A listed model takes its request
+    /// from `byModel` whatever the value there is, which is why the key's
+    /// PRESENCE and not its value is what stops that slot from vouching.
+    func unprovenRequests(provenBy proven: [DaemonState.SlotPosture]) -> [String] {
+        let models = Set(proven.map(\.model))
+        return explicit.compactMap { request in
+            if let model = request.model {
+                return models.contains(model) ? nil : request.phrase
+            }
+            return proven.contains { byModel[$0.model] == nil } ? nil : request.phrase
+        }
     }
 }
 
@@ -260,35 +287,30 @@ enum KVPostureDiagnosis {
     /// (no engine built, box serving nothing for that model) and a silent
     /// degrade (kill switch, VLM veto) both FAIL.
     ///
-    /// The slots alone cannot answer this. `engine_v2_kv_backend = "paged"`
-    /// with startup preload off — or after an idle unload — leaves
-    /// `slots: []`, and reading intent solely off the slots would then
-    /// conclude nobody asked for anything and certify a paged rollout that
-    /// never loaded a paged engine. `configured` carries the intent so that
-    /// case WARNs.
+    /// The slots alone cannot answer this, and neither can "SOME slot reports
+    /// an explicit backend". Intent is checked per REQUEST, against the slot
+    /// that could vouch for that request:
+    ///
+    ///  - `engine_v2_kv_backend = "paged"` with startup preload off — or
+    ///    after an idle unload — leaves `slots: []`. Reading intent solely
+    ///    off the slots concludes nobody asked for anything and certifies a
+    ///    paged rollout that never loaded a paged engine.
+    ///  - With two models explicitly configured and only ONE of them loaded,
+    ///    the loaded one makes the slot-derived intent non-empty. Consulting
+    ///    `configured` only for an EMPTY slot list then passes the box as
+    ///    "every explicit request honoured" while the other model's request
+    ///    has no slot behind it at all — the same defect, partially loaded,
+    ///    and harder to catch because a genuinely honoured request is what
+    ///    does the vouching.
     static func backendCheck(
         slots: [DaemonState.SlotPosture],
         configured: KVBackendSelection = .auto
     ) -> DoctorCheck {
         let explicit = slots.filter { $0.kvBackendRequested != "auto" }
-        guard !explicit.isEmpty else {
-            let summary = slots.isEmpty
-                ? "no models loaded"
-                : slots.map { "\($0.model)=\($0.kvBackend ?? "none")" }.joined(separator: ", ")
-            let requested = configured.explicitRequests
-            guard requested.isEmpty else {
-                return DoctorCheck(
-                    name: "kv backend posture",
-                    status: .warn,
-                    detail: "config requests \(requested.joined(separator: ", ")) but no slot "
-                        + "reports an explicit backend (\(summary)) — nothing on this box has "
-                        + "loaded, let alone proved, the backend it was configured for")
-            }
-            return DoctorCheck(
-                name: "kv backend posture",
-                status: .pass,
-                detail: "no explicit backend request (auto); \(summary)")
-        }
+        let unproven = configured.unprovenRequests(provenBy: explicit)
+        let summary = slots.isEmpty
+            ? "no models loaded"
+            : slots.map { "\($0.model)=\($0.kvBackend ?? "none")" }.joined(separator: ", ")
 
         var failures: [String] = []
         var honoured: [String] = []
@@ -311,11 +333,16 @@ enum KVPostureDiagnosis {
             }
         }
 
+        // A refusal outranks an outstanding request: that model is serving
+        // nothing, which is both worse and actionable now. The outstanding
+        // request rides along rather than waiting for the FAIL to clear.
         if !failures.isEmpty {
-            return DoctorCheck(
-                name: "kv backend posture",
-                status: .fail,
-                detail: failures.joined(separator: "; "))
+            var detail = failures.joined(separator: "; ")
+            if !unproven.isEmpty {
+                detail += "; config also requests \(unproven.joined(separator: ", ")) "
+                    + "with no slot behind it"
+            }
+            return DoctorCheck(name: "kv backend posture", status: .fail, detail: detail)
         }
         if !unknown.isEmpty {
             return DoctorCheck(
@@ -323,15 +350,20 @@ enum KVPostureDiagnosis {
                 status: .warn,
                 detail: "no resolved backend reported for \(unknown.joined(separator: ", "))")
         }
-        if honoured.isEmpty {
-            // Explicit request on record, nothing loaded to prove it works.
-            // With refusal-on-failure that is indistinguishable from "the
-            // rollout never got off the ground", so say so rather than pass.
+        guard unproven.isEmpty else {
             return DoctorCheck(
                 name: "kv backend posture",
                 status: .warn,
-                detail: "an explicit backend was requested but no slot is loaded, "
-                    + "so nothing on this box confirms it can serve")
+                detail: "config requests \(unproven.joined(separator: ", ")) but no slot reports "
+                    + "that request (\(summary)) — nothing on this box has loaded, let alone "
+                    + "proved, the backend it was configured for")
+        }
+        if honoured.isEmpty {
+            // Nothing explicit anywhere: not in config, not on a slot.
+            return DoctorCheck(
+                name: "kv backend posture",
+                status: .pass,
+                detail: "no explicit backend request (auto); \(summary)")
         }
         return DoctorCheck(
             name: "kv backend posture",

@@ -289,6 +289,72 @@ struct KVBackendPostureTests {
             .contains("no explicit backend request (auto)") == true)
     }
 
+    @Test("doctor WARNS on an explicit request whose model never loaded, even when another's did")
+    func doctorWarnsOnPartiallyLoadedExplicitRequests() {
+        // The `slots: []` defect in its partially-loaded shape. Two models
+        // are explicitly configured paged; only B ever loaded. B's slot makes
+        // the slot-derived intent non-empty, so the configured intent was
+        // never consulted and the verdict PASSED — "every explicit request
+        // honoured" — while A's paged request has no slot behind it at all.
+        // An honoured request for one model is not evidence about another.
+        let checks = KVPostureDiagnosis.checks(
+            state: state(slots: [
+                .init(model: "b-model", kvBackend: "paged", kvBackendRequested: "paged")
+            ]),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: KVBackendSelection(
+                global: "auto", byModel: ["a-model": "paged", "b-model": "paged"]))
+        let verdict = check(checks, "kv backend posture")
+        #expect(verdict?.status == .warn)
+        #expect(verdict?.detail.contains("a-model = \"paged\"") == true)
+        // Only the unproven request is named as the problem; B is fine, and
+        // naming it would send the operator after a model that is serving.
+        #expect(verdict?.detail.contains("b-model = \"paged\"") == false)
+
+        // Scope decides who can vouch for whom. A box-wide explicit request
+        // is honoured by any slot that carries no override of its own, so
+        // this one is proven and PASSES...
+        let globalProven = KVPostureDiagnosis.checks(
+            state: state(slots: [
+                .init(model: "b-model", kvBackend: "paged", kvBackendRequested: "paged")
+            ]),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: KVBackendSelection(global: "paged", byModel: [:]))
+        #expect(check(globalProven, "kv backend posture")?.status == .pass)
+
+        // ...whereas the only loaded slot taking its request from its OWN
+        // override says nothing about the box-wide one, which is then still
+        // outstanding.
+        let globalUnproven = KVPostureDiagnosis.checks(
+            state: state(slots: [
+                .init(
+                    model: "b-model", kvBackend: "contiguous", kvBackendRequested: "contiguous")
+            ]),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: KVBackendSelection(
+                global: "paged", byModel: ["b-model": "contiguous"]))
+        let scoped = check(globalUnproven, "kv backend posture")
+        #expect(scoped?.status == .warn)
+        #expect(scoped?.detail.contains("engine_v2_kv_backend = \"paged\"") == true)
+
+        // A refusal still outranks an unproven request: the box is serving
+        // nothing for that model, which is the more urgent fault, and the
+        // outstanding request is carried along rather than dropped.
+        let refused = KVPostureDiagnosis.checks(
+            state: state(slots: [
+                .init(
+                    model: "b-model", kvBackend: nil, kvBackendRequested: "paged",
+                    loadError: "kernel preflight failed")
+            ]),
+            daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat,
+            configured: KVBackendSelection(
+                global: "auto", byModel: ["a-model": "paged", "b-model": "paged"]))
+        let refusedVerdict = check(refused, "kv backend posture")
+        #expect(refusedVerdict?.status == .fail)
+        #expect(refusedVerdict?.detail.contains("REFUSED") == true)
+        #expect(refusedVerdict?.detail.contains("a-model = \"paged\"") == true)
+    }
+
     @Test("doctor sizes the wedge bar off the configured heartbeat, not a fixed 90s")
     func doctorWedgeBarFollowsConfiguredHeartbeat() {
         let slots: [DaemonState.SlotPosture] = [

@@ -166,10 +166,11 @@ extension EngineV2Bridge {
             // asked for. Without this the two populations the v0.8.0
             // rollout must separate — contiguous-by-choice and
             // paged-that-fell-back — are the same value on the wire. With
-            // `.auto` resolving contiguous and paged opt-in per slot, the
-            // live case is a paged-configured fleet under the
-            // `DARKBLOOM_CBV2_PAGED_KV` kill switch: it serves contiguous,
-            // deliberately, and nothing else on the wire says so.
+            // `.auto` resolving paged, the common case is a box that could
+            // not build paged and degraded (kernel preflight, physical
+            // capacity, ineligibility, pool construction); the deliberate
+            // case is the `DARKBLOOM_CBV2_PAGED_KV` kill switch. Nothing
+            // else on the wire separates them.
             // nil ⇒ no degrade (see `BackendSlotCapacity`); it is NOT the
             // unknown state, which is `kvBackend` itself being absent.
             kvBackendFallbackReason: Self.heartbeatFallbackReason(

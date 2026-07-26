@@ -27,14 +27,13 @@
 //      no call path can bypass it. Forwarded through the launchd plist
 //      (`LaunchAgent.passthroughEnvKeys`) so an operator kill survives
 //      install/restart — the same rationale as the SSD tier's switch.
-//   4. "auto" resolves CONTIGUOUS. v0.8.0 briefly flipped it to paged and
-//      reverted before release: paged ADOPTION is not transparent — a paged
-//      slot serving an adopted prefix diverges from its OWN cold decode
-//      (gemma-4 @ 28,672 tokens, token 20 of 32), so the same prompt answers
-//      differently by cache state the caller cannot see. Paged is an opt-in
-//      per-slot value, NOT deprecated: it is the parity reference the gates
-//      measure against; re-flip when paged-adopted == paged-cold. Not a
-//      family table: no future family diverges silently.
+//   4. "auto" resolves PAGED as of v0.8.0 — the release's headline
+//      decision. The evidence (prefix-cache adoption exactness on the
+//      served catalog, throughput, the known greedy-token-id change) is
+//      argued once at `case .auto: resolvedKind` in
+//      `EngineV2Factory.prepareProductionBackend`; do not restate it here.
+//      Not a family table: `.auto` means "we choose", so the vetoes above
+//      and the failure handling below can still land a slot on contiguous.
 //   5. Failure handling, and it depends on WHO asked. Kernel preflight,
 //      physical-capacity planning, and `PagedKVBackend` construction can
 //      each fail. Under "auto" they degrade to contiguous — a
@@ -75,8 +74,8 @@ public enum EngineV2KVBackendPolicy {
     /// Parse the operator selection for `modelID` (per-model override
     /// wins over the global value). `unrecognized` carries a raw value
     /// that failed to parse so the caller can WARN once; the returned
-    /// selection is then `.auto`, which resolves CONTIGUOUS (grep
-    /// `case .auto: resolvedKind` in `EngineV2Factory+Production.swift`).
+    /// selection is then `.auto`, which resolves PAGED (see
+    /// `EngineV2Factory.prepareProductionBackend`).
     public static func parseSelection(
         global: String,
         byModel: [String: String],

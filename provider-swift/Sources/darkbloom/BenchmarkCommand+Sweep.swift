@@ -10,8 +10,8 @@ extension Benchmark {
     /// modes have always accepted it — but only the sweep used to read it,
     /// which meant `--scheduler-prefill` and `--arrival-invariance` silently
     /// took the `.auto` default while the sweep beside them measured what was
-    /// asked for. `.auto` resolves CONTIGUOUS, so those two phases measured
-    /// the OTHER arm of a paged run and said nothing about it.
+    /// asked for, so a `--kv-backend contiguous` run measured the OTHER arm
+    /// in two of its three phases and said nothing about it.
     func resolvedKVBackendSelection() throws -> EngineV2KVBackendSelection {
         guard let backend = EngineV2KVBackendSelection(
             rawValue: kvBackend.trimmingCharacters(in: .whitespaces).lowercased())

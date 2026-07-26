@@ -174,18 +174,17 @@ public enum ProviderCore {
     // (25,600) and gpt-oss (1,536), packed prefill and vision spans ACTIVE,
     // per-sequence KV 1.00x at 1k/10k/100k, and 1.27x aggregate decode from
     // B=4 to B=8 where contiguous gains only 1.07x. The ring is 65 pages.
-    // `.auto` STAYS CONTIGUOUS. The flip to paged was made and then
-    // reverted before release: paged ADOPTION is not transparent.
-    // Measured on gemma-4 at a 28,672-token prompt, one process, one
-    // paged slot, paged cold is deterministic (byte-identical across
-    // runs) but paged ADOPTED diverges from its own cold output at token
-    // 20 of 32 — same prompt, same config, a different answer depending
-    // on cache state the caller cannot see. Contiguous adoption is exact
-    // in every arm. That is disqualifying for a default and acceptable
-    // for an opt-in, so paged stays available per-slot via
-    // engine_v2_kv_backend = "paged"; re-flip when paged adopted ==
-    // paged cold on that prompt. Grep `case .auto: resolvedKind` in
-    // `EngineV2Factory+Production.swift` for the live answer.
+    // `.auto` RESOLVES PAGED — the release's headline change. On the two
+    // models production actually serves (gemma-4-26B-A4B-it-qat and
+    // gpt-oss-20b-MXFP4-Q8) paged prefix-cache ADOPTION is exact and
+    // CONTIGUOUS is the arm that diverges from its own cold decode; the
+    // reverse holds only on gemma-4-e2b-it-4bit, an e2e fixture that
+    // appears zero times in the catalog. KNOWN AND ACCEPTED: gemma-4
+    // greedy token ids differ from contiguous — closer to an fp32
+    // reference, but different. Roll back fleet-wide with
+    // DARKBLOOM_CBV2_PAGED_KV=0 (degrades, never refuses) or per slot
+    // with engine_v2_kv_backend = "contiguous". See
+    // `case .auto: resolvedKind` in `EngineV2Factory+Production.swift`.
     //
     // The box-wide concurrency default DOES move 4 -> 8, and stands on
     // its own: contiguous gains ~1.07x from B=4 to B=8. A `provider.toml`

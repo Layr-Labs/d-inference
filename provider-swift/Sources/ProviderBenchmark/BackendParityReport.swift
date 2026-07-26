@@ -510,11 +510,13 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// did. The probe builds a separate engine per arm, so it can degrade
         /// independently of the arm engine and today does so invisibly.
         ///
-        /// Both halves are required and neither substitutes for the other: an
-        /// `.auto` arm resolving contiguous is a legitimate choice, while a
-        /// `.paged` arm degraded by a kill switch or a missing kernel resource
-        /// resolves to the SAME string and is a silently-wrong measurement.
-        /// Only the reason separates them.
+        /// Both halves are required and neither substitutes for the other:
+        /// `.auto` resolves paged as of v0.8.0, so an arm reporting
+        /// contiguous — under `.auto` or under an explicit `.paged` degraded
+        /// by a kill switch or a missing kernel resource — resolves to the
+        /// SAME string whether it was configured that way or fell back to it,
+        /// and only the reason separates a choice from a silently-wrong
+        /// measurement.
         public let probeResolvedBackend: String?
         public let probeFallbackReason: String?
         /// Non-nil when no measurement could be taken at all.

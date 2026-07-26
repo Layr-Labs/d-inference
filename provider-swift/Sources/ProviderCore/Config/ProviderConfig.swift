@@ -82,13 +82,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var maxModelSlots: UInt64
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
-    /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4.
-    /// This was originally coupled to the `.auto` paged flip; that flip
-    /// was reverted (paged adoption is not transparent — adopted output
-    /// differs from its own cold output on the same prompt), but the
-    /// raise stands on its own: B=8 is the better operating point on
-    /// either backend, with contiguous gaining ~1.07x from B=4 to B=8
-    /// and paged ~1.27x. Clamped to
+    /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4
+    /// alongside the `.auto` paged flip, though the raise does not depend
+    /// on it: B=8 is the better operating point on either backend, with
+    /// contiguous gaining ~1.07x from B=4 to B=8 and paged ~1.27x.
+    /// Clamped to
     /// [1, 8] at use: the engine's KV byte-ledger admission binds long
     /// before count does, and caps past 8 recreate the batch-collapse
     /// regime the one-engine release exists to kill. The coordinator sees
@@ -100,18 +98,17 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — resolves CONTIGUOUS; grep
-    /// `case .auto: resolvedKind` in `EngineV2Factory+Production.swift`),
-    /// experimental "paged", or "contiguous". VLM slots
-    /// are NOT forced to contiguous: the veto at
-    /// `EngineV2KVBackendPolicy.swift:162` (`guard isVLM,
+    /// `[backend]`): "auto" (default — resolves PAGED as of v0.8.0; see
+    /// `EngineV2Factory.prepareProductionBackend`), "paged", or
+    /// "contiguous". VLM slots
+    /// are NOT forced to contiguous: the veto in
+    /// `EngineV2KVBackendPolicy.applySlotVetoes` (`guard isVLM,
     /// !pagedHonorsSpanMasks`) fires only when the paged
     /// cache does not affirm span masks, and
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
-    /// `EngineV2SlotFactory.swift:190` passes — is `true`, so the veto
-    /// is inert and a VLM slot that ASKED for paged gets it. (Under
-    /// "auto" every slot is contiguous regardless.) A model that cannot
-    /// serve
+    /// `EngineV2SlotFactory` passes — is `true`, so the veto
+    /// is inert and a VLM slot gets paged under "auto" like any other.
+    /// A model that cannot serve
     /// paged falls back to contiguous with an INFO event; under an
     /// explicit "paged" it REFUSES the load instead, so a paged fleet
     /// can never silently serve contiguous. Fleet kill switch

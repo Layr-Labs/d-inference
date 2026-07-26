@@ -153,7 +153,10 @@ Two of the detailed checks cover the KV-backend rollout:
 | `daemon state freshness` | The daemon is running but has not rewritten its state file for eight write periods — it is wedged, and every live value below it is a guess. The bar is derived from `heartbeat_interval_secs` (the daemon writes every half-heartbeat) with a 90 s floor, so raising the heartbeat does not make a healthy daemon look wedged. |
 | `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
 
-`auto` never fails this check — it resolves to contiguous by design. When
+`auto` never fails this check — it promises nothing, so whichever backend it
+lands on is honoured by definition. It resolves paged as of v0.8.0 and
+degrades to contiguous on a box that cannot serve paged, so an `auto` slot
+reporting contiguous is expected output, not a finding. When
 the state file is past the wedge bar the backend verdict is WITHHELD rather
 than asserted from a snapshot that may predate a reload.
 

@@ -230,11 +230,9 @@ import Testing
 
 // MARK: - engine_v2_max_concurrent: v0.8.0 default + pre-v0.8.0 migration
 //
-// v0.8.0 raises the box-wide concurrency default 4 -> 8. It was originally
-// coupled to flipping `.auto` to paged KV; that flip was reverted (paged
-// adoption is not transparent — adopted output differs from its own cold
-// output on the same prompt), but the raise stands on its own: contiguous
-// gains ~1.07x from B=4 to B=8.
+// v0.8.0 raises the box-wide concurrency default 4 -> 8, alongside the
+// `.auto` flip to paged KV. The raise does not depend on that flip:
+// contiguous gains ~1.07x from B=4 to B=8 and paged ~1.27x.
 
 @Test func maxConcurrentAbsentKeyDefaultsToEight() throws {
     // No `[backend]` section at all...

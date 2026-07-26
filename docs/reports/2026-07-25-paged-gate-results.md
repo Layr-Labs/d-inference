@@ -281,22 +281,26 @@ Not a paged defect, and not new:
 
 ## Verdict on the default flip
 
-**The code is ready. The flip is not signed, and the reason is G3/G4.**
+**The flip shipped. `.auto` resolves PAGED in v0.8.0.**
 
-Every gate that can be measured on one machine passes. What remains are
-two 24-hour canary gates against a real fleet, which cannot be
-compressed. The plan named them for a reason: this migration has no
-canary fleet, so the soak IS the canary.
+Every gate that can be measured on one machine passes. G3/G4 are the two
+24-hour canary gates and they did NOT run — this migration has no canary
+fleet, so there was never a soak to wait for, and holding the default
+back for a gate that cannot be executed would have deferred it forever.
+The decision was taken on the single-machine evidence above plus the
+adoption-exactness result that arrived after this report was first
+written: on the two models production actually serves, PAGED is the arm
+whose prefix-cache adoption is exact and contiguous is the arm that
+diverges. See `case .auto: resolvedKind` in
+`EngineV2Factory+Production.swift` for the argument as shipped.
 
-`.auto` therefore still resolves to contiguous. Flipping it is a one-line
-change plus the operator action in the release notes, and the rollback is
-`DARKBLOOM_CBV2_PAGED_KV=0`.
+Rollback is `DARKBLOOM_CBV2_PAGED_KV=0`, which degrades every slot to
+contiguous without refusing a load.
 
-One product decision must be made explicitly rather than inherited from a
+One product decision was made explicitly rather than inherited from a
 green gate: **gemma-4 greedy outputs change under paged.** They are not
 worse — measurably more accurate against an fp32 reference — but they are
-different, and the same is already true across a shipped latency knob.
-That is a call for a product owner, not a test.
+different. That call was taken by the product owner, not by a test.
 
 ---
 

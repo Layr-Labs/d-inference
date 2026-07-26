@@ -112,12 +112,11 @@ enum PrefixCachePolicy {
     /// from the backend actually built (`EngineV2SlotFactory` maps
     /// `preparedBackend.kind` to `.paged`/`.contiguous`), so `.auto` never
     /// reaches here — it is grouped with `.contiguous` only as a safe
-    /// default. Treat that grouping as defensive, not as a fact about
-    /// `.auto`: config-level `.auto` resolves contiguous today (grep
-    /// `case .auto: resolvedKind` in `EngineV2Factory+Production.swift`),
-    /// but it flipped to paged and back within v0.8.0, so a caller passing
-    /// a raw, unresolved selection would declare the wrong capability the
-    /// next time it moves.
+    /// default. Treat that grouping as defensive, and as ACTIVELY WRONG
+    /// about config-level `.auto`, which resolves PAGED as of v0.8.0 (see
+    /// `EngineV2Factory.prepareProductionBackend`): a caller passing a raw,
+    /// unresolved selection would declare a contiguous capability for a
+    /// paged slot. Resolve first, always.
     /// Explicit paged selection remains eligible only for layouts
     /// whose ordinary single-cursor replay is exact; interleaved hybrids fail
     /// cold until a separately-proven paged dual-cursor row exists.

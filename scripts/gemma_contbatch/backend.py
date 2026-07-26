@@ -2,9 +2,10 @@
 
 A decode curve is only comparable to another decode curve if both were
 produced by the same KV backend. Nothing else in this harness can establish
-that: `--kv-backend auto` is a *selection*. It resolves contiguous (the
-v0.8.0 flip to paged was reverted -- paged adoption is not transparent), and
-an explicit `paged` can still be vetoed by the fleet kill switch. A run that
+that: `--kv-backend auto` is a *selection*. It resolves paged as of v0.8.0
+(see the provider's `EngineV2Factory.prepareProductionBackend`) but degrades
+to contiguous on a box that cannot serve paged, and an explicit `paged` can
+still be vetoed by the fleet kill switch. A run that
 did not build the backend it names measures the fallback while every other
 check in this wrapper stays green, and a percentage delta against a baseline
 recorded on the other backend is a backend change wearing a performance
@@ -17,7 +18,7 @@ Vocabulary is the resolved *kind* -- "paged" or "contiguous" -- matching
 `EngineV2KVBackendKind.rawValue` and the `kv_backend` field the coordinator
 records per slot. The engine's verbatim descriptor carries a
 "(fallback: <reason>)" tail on a degrade, and that reason is extracted into
-`degrades`: with paged opt-in, a deliberately paged slot quietly serving
+`degrades`: a slot that meant to serve paged and quietly served
 contiguous is the failure that matters, and only the reason separates a
 machine that cannot serve paged from one that simply was not PACKAGED for
 it -- the kernel preflight resolves its SwiftPM resource bundle relative to

@@ -313,15 +313,14 @@ type BackendSlotCapacity struct {
 	// contiguous or an operator who chose paged on a box where paged did not
 	// happen — a choice and a regression, indistinguishable.
 	//
-	// `.auto` resolves CONTIGUOUS in v0.8.0 (the flip to paged was made and
-	// reverted: paged ADOPTION is not transparent — an adopted paged slot
-	// answers differently from its own cold run on the same prompt), so
-	// paged is opt-in per slot. That makes the live degrade class today
-	// "kill_switch": a fleet configured `engine_v2_kv_backend = "paged"`
-	// running under DARKBLOOM_CBV2_PAGED_KV=0 serves contiguous, and the
-	// kill switch degrades rather than refuses by design. The
-	// preflight/capacity/ineligible classes stay wired and light up the day
-	// a paged selection is allowed to degrade on failure again.
+	// `.auto` resolves PAGED in v0.8.0 (see the provider's
+	// EngineV2Factory.prepareProductionBackend), so EVERY class above is
+	// live on the default fleet. "kernel_preflight", "physical_capacity",
+	// "ineligible" and "pool_construction_capacity" mean this box could not
+	// serve paged and degraded — the rollout's primary failure signal.
+	// "kill_switch" means DARKBLOOM_CBV2_PAGED_KV=0 and is a deliberate
+	// operator override that degrades rather than refuses by design. Do not
+	// alert on the two the same way.
 	//
 	// ABSENT MEANS NO DEGRADE — deliberately the OPPOSITE of KVBackend,
 	// where absent means unknown. Read the two as a pair: both keys ship in

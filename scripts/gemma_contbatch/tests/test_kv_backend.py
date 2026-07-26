@@ -146,9 +146,9 @@ class SweepArgvTests(unittest.TestCase):
 
 class PhaseArgvTests(unittest.TestCase):
     """Every engine-constructing command carries the selection, not just the
-    sweep. Without this the two phases below took `--kv-backend`'s default,
-    which is `auto`, which resolves CONTIGUOUS -- so a run reporting "paged"
-    measured contiguous for two of its three phases."""
+    sweep. Without this the two phases below took `--kv-backend`'s default of
+    `auto` and resolved whatever it happened to land on, so a run reporting
+    one backend could have measured the other for two of its three phases."""
 
     def test_scheduler_prefill_carries_the_selection(self):
         argv = runner.scheduler_argv(
@@ -262,12 +262,11 @@ class ResolveKVBackendTests(unittest.TestCase):
         self.assertIn("B=8: contiguous", decode_violation)
 
     def test_a_phase_on_the_other_backend_is_a_violation(self):
-        # The defect this ticket exists for: the sweep names paged and the
-        # two phases beside it, unpinned, measured whatever `.auto` resolved.
-        # `.auto` resolves CONTIGUOUS, and on the models production serves
-        # that is the arm with adoption-exactness evidence against it -- so a
-        # report that averaged the three would attribute contiguous behaviour
-        # to a paged run.
+        # The defect this ticket exists for: the sweep names one backend and
+        # the two phases beside it, unpinned, measured whatever their own
+        # engine resolved -- a degrade to contiguous being the likely way
+        # they diverge. A report that averaged the three would attribute
+        # contiguous behaviour to a paged run.
         block = resolve(
             scheduler=make_scheduler(selection="paged", resolved="contiguous")
         )

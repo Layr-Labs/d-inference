@@ -173,10 +173,10 @@ enum EngineV2SlotFactory {
         // ASK rather than assume. A veto is policy, so it is silent even
         // for an explicit paged request. kv_quant is gone from the product
         // entirely — it is no longer a veto, no longer a parameter, and no
-        // longer warned about. `auto` resolves contiguous; the fleet kill
-        // switch, physical-capacity planning, and the degrade-or-REFUSE
-        // decision for an explicit paged request live in
-        // `makeProductionBuild`.
+        // longer warned about. `auto` resolves PAGED as of v0.8.0; that
+        // resolution, the fleet kill switch, physical-capacity planning,
+        // and the degrade-or-REFUSE decision for an explicit paged request
+        // all live in `EngineV2Factory.prepareProductionBackend`.
         let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
             global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
         if let unrecognized = parsedKVBackend.unrecognized {

@@ -1181,3 +1181,52 @@ at every setting with zero slack. The two facts point at the same
 implementation — handle captured inline, materialisation off-thread with
 an explicit deadline — which is required there and merely correct on
 gemma-4.
+
+---
+
+## The hazard is solved upstream — vLLM's offload tier has our exact problem
+
+The section above calls per-block capture "the single place where a
+plausible implementation ships a data-corruption bug," and prescribes an
+explicit deadline or retention. **There is a cheaper answer, and vLLM
+already runs it** — in its GPU -> CPU -> storage offloading tier, which is
+the one place vLLM also has bytes to move and therefore hits the same
+"index entry exists before its bytes are readable" problem we do.
+
+- Lookup is **tri-state**: MISS / HIT_PENDING / HIT
+  (`kv_offload/cpu/manager.py:130-140`), HIT_PENDING when the block is not
+  yet ready.
+- Readiness is encoded in the **sign of the refcount**: `is_ready` is
+  `ref_cnt >= 0` (`kv_offload/base.py:32-33`), and blocks are constructed
+  at `ref_cnt = -1` — "initialize block as 'not ready'" (`:24-25`). One
+  signed int carries all three states: **-1 store in flight, 0 resident
+  and evictable, >0 pinned during transfer.**
+- Stated as design principle at `kv_offload/tiering/manager.py:15-20`:
+  "Transparent retry mechanism — return None from `lookup()` to signal
+  'data is being promoted, try later'", and "`ref_cnt` as eviction
+  protection".
+
+**So the synchronous unit is smaller than a handle — it is a NAME.**
+Publish the block's name inline at write time in a not-ready state
+(integers only, on the step thread), then let handle construction and
+materialisation finish off-thread and flip the entry ready. An adopter
+that arrives early gets pending and falls back to compute — the same
+graceful degradation already measured for LRU eviction, **not a
+correctness hazard.**
+
+Ordering: **name inline -> handle + eval off-thread -> entry flips ready.**
+That is the cheapest of the three, which matters most on gpt-oss, where
+there is exactly one chunk of slack at every setting.
+
+### And a correction to the unifying statement
+
+"We move bytes where vLLM moves references" is true of vLLM's in-GPU path
+and is why its `cache_full_blocks` is free. But it is not a thread-model
+advantage: **the moment vLLM has bytes to move, it grows the same
+machinery we have** — async transfer, eviction protection, readiness
+states.
+
+So our donation-queue design is not a deficiency. **It is what this
+problem looks like when the tier is real.** What we are missing is not the
+architecture; it is the readiness protocol that lets the cheap part happen
+inline.

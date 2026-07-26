@@ -224,9 +224,12 @@ struct BackendParityReportTests {
         #expect(thin.detail.contains("over 48 completion tokens"))
         #expect(thin.detail.contains("token 20"))
         #expect(thin.detail.contains("NOT as 'adoption is exact'"))
-        // A PASS must not imply it covered the SSD tier, which is where the
-        // measured divergence actually came from.
-        #expect(thin.detail.contains("does not cover the SSD tier"))
+        // A PASS must not imply it covered the SSD tier — and must not be
+        // invertible into "so the defect is in the SSD tier" either. The tier
+        // the diverging adoption used was never pinned, so a green run here
+        // exonerates neither.
+        #expect(thin.detail.contains("says nothing about the SSD tier"))
+        #expect(thin.detail.contains("neither tier is exonerated"))
 
         // Unmeasured must say the verdict is about counts only, and must not
         // imply the answer was checked.

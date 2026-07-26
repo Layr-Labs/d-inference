@@ -530,7 +530,7 @@ func TestQualityCapPerModelTPSPostmortemRegression(t *testing.T) {
 	t.Run("solo_median_recorded", func(t *testing.T) {
 		run(t, func(reg *Registry) {
 			for _, v := range []float64{12, 13, 14, 15, 16} {
-				reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", v)
+				reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", v)
 			}
 		})
 	})
@@ -576,7 +576,7 @@ func TestQualityCapPerModelTPSKillSwitchRestoresOldBehavior(t *testing.T) {
 	reg := New(testLogger())
 	enablePerModelQualityCap(t, reg, gemmaBuild+"=14", "false", "")
 	for range 10 {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	}
 	p := mixedBoxProvider(t, reg, "mixed-93", 93)
 
@@ -599,7 +599,7 @@ func TestQualityCapPerModelRateCapsWithoutRegistrationBenchmark(t *testing.T) {
 	reg := New(testLogger())
 	enablePerModelQualityCap(t, reg, "", "", "")
 	for i := 0; i < 5; i++ {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	}
 
 	mkNoBenchmark := func(id string) *Provider {

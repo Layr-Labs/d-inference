@@ -314,18 +314,16 @@ type soloModelTPS struct {
 //     keyed by chipClassKey (family+tier) so a fast tier never lends its rate
 //     to a slow one — once it has ≥ qualityCapSoloMinSamples samples;
 //  2. the MIN of the per-class solo medians across chip classes (conservative
-//     cross-class transfer, SoloMedianAllChips), same total-sample floor. When
-//     a modelSoloTPSSeedEnv seed applies TO THIS PROVIDER'S CHIP CLASS
-//     (soloTPSSeedForClass), it is an upper bound on that transfer:
-//     observations from faster classes cannot widen an unsampled slower class's
-//     cap above its configured cold-start estimate;
+//     cross-class transfer, SoloMedianAllChips), same total-sample floor, and
+//     only when that minimum is actually BOUNDED for this provider — see
+//     "when cross-class transfer is admissible" below;
 //  3. the same-class solo median with FEWER than qualityCapSoloMinSamples
-//     samples (but at least one), then the same-chip-agnostic cross-class
-//     median under the same relaxation, seed-clamped as in (2). These are
-//     under-sampled but they are still MEASURED and still solo-gated, and the
-//     alternative below them is a model-AGNOSTIC hardware proxy: preferring
-//     sqrt(memory_bandwidth) over the provider's own measurement of this exact
-//     model is strictly worse information. See the note on convergence below;
+//     samples (but at least one), then the bounded cross-class median under
+//     the same relaxation. These are under-sampled but they are still
+//     MEASURED and still solo-gated, and the alternative below them is a
+//     model-AGNOSTIC hardware proxy: preferring sqrt(memory_bandwidth) over
+//     the provider's own measurement of this exact model is strictly worse
+//     information. See the note on convergence below;
 //  4. the modelSoloTPSSeedEnv seed for this provider's chip class when there
 //     is no measured rate at all — the class-qualified entry, else the
 //     fleet-wide entry clamped to the slowest class the operator named
@@ -334,6 +332,26 @@ type soloModelTPS struct {
 //     below);
 //  5. the provider-level resolvedDecodeTPS(p) — exactly the pre-per-model
 //     behavior, including its sqrt-bandwidth fallback semantics.
+//
+// When cross-class transfer is admissible. Steps (2) and (3) hand a provider a
+// rate its own chip class did not produce, so the transferred value needs an
+// upper bound or a fast class silently sets a slow class's cap — the exact
+// over-admission this whole cap exists to prevent. Exactly three things can
+// supply that bound, and at least one MUST hold:
+//
+//   - a modelSoloTPSSeedEnv seed applies to THIS provider's chip class
+//     (soloTPSSeedForClass) — the configured cold-start estimate clamps the
+//     transfer from above;
+//   - the provider's own class contributed at least one sample, so the min of
+//     per-class medians cannot exceed what its own class demonstrated;
+//   - at least two classes contributed, so the minimum is a genuine
+//     cross-class minimum rather than one class's median wearing that name.
+//
+// With none of them, the "min of per-class medians" is a single fast class's
+// rate being applied to an unsampled slower one — one M4 Max sample setting an
+// unseeded M1 Pro's rate. That is refused: the resolver drops to (4)/(5),
+// which is the pre-per-model behaviour and errs toward serving rather than
+// toward capping a box from evidence about different hardware.
 //
 // What a provider reports BEFORE its first completion: nothing. The bridge's
 // EWMA (EngineV2Bridge.observedDecodeTpsEwma) is 0 until updateDecodeTpsEwma
@@ -366,14 +384,18 @@ func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloMod
 			return soloModelTPS{tps: classTPS, perModel: true}
 		}
 		seed, hasSeed := soloTPSSeedForClass(model, chipClass)
+		allTPS, allN, allClasses := r.tpsRegistry.SoloMedianAllChips(model)
 		// Seed-clamp the cross-class transfer: observations from faster classes
 		// cannot widen an unsampled slower class's cap above its configured
 		// cold-start estimate. Applies at both sample floors.
-		allTPS, allN := r.tpsRegistry.SoloMedianAllChips(model)
 		if allTPS > 0 && hasSeed && seed < allTPS {
 			allTPS = seed
 		}
-		if allN >= qualityCapSoloMinSamples && allTPS > 0 {
+		// ...and refuse it outright when nothing bounds it (see above). An
+		// unbounded transfer is not conservative just because the function it
+		// came from is named for a minimum.
+		crossClassBounded := hasSeed || classN > 0 || allClasses > 1
+		if crossClassBounded && allN >= qualityCapSoloMinSamples && allTPS > 0 {
 			return soloModelTPS{tps: allTPS, perModel: true}
 		}
 		// Measured but under-sampled. Ranked below both trusted medians and
@@ -383,7 +405,7 @@ func (r *Registry) resolvedSoloModelTPSLocked(p *Provider, model string) soloMod
 		if classN > 0 && classTPS > 0 {
 			return soloModelTPS{tps: classTPS, perModel: true}
 		}
-		if allN > 0 && allTPS > 0 {
+		if crossClassBounded && allN > 0 && allTPS > 0 {
 			return soloModelTPS{tps: allTPS, perModel: true}
 		}
 		if hasSeed {

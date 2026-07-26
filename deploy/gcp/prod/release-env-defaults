@@ -35,3 +35,10 @@ EIGENINFERENCE_PROMPT_SIDECAR_MAX_CONNECTIONS=64
 EIGENINFERENCE_PROMPT_SIDECAR_MAX_LOADED_CONTRACTS=8
 EIGENINFERENCE_PROMPT_SIDECAR_MAX_TOKENS=1048576
 EIGENINFERENCE_PROMPT_SIDECAR_MEMORY_LIMIT_MIB=1024
+
+# v0.8.0 cold-start solo decode rates, chip-CLASS scoped (build-id[@Family|Tier]).
+# The TPS registry is in-memory and restart-wiped, so without this the quality
+# cap falls to the model-agnostic sqrt(memory_bandwidth) proxy on every restart.
+# It is also the upper bound on cross-class solo-median transfer. Keep the
+# unqualified entries conservative: they apply to every class not named here.
+EIGENINFERENCE_MODEL_SOLO_TPS_SEED=gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4|Max=70,gpt-oss-20b=30,gpt-oss-20b@M4|Max=70

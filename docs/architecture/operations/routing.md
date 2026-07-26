@@ -122,8 +122,8 @@ fails:
 | # | Source | Advances to the next step when |
 |---|---|---|
 | 1 | Per-(model, chip **class**) solo median (`SoloMedian`) | fewer than `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` (default 5) gated samples, or the median is 0 |
-| 2 | MIN of per-class solo medians across chip classes (`SoloMedianAllChips`), clamped from above by the seed | fewer than the same sample floor in total, or 0 |
-| 3 | The same two medians again with the sample floor **relaxed to ≥ 1** — under-sampled but still measured and still solo-gated (cross-class still seed-clamped) | the model has no solo sample at all on this coordinator |
+| 2 | MIN of per-class solo medians across chip classes (`SoloMedianAllChips`), clamped from above by the seed, and only when the transfer is **bounded** (below) | fewer than the same sample floor in total, 0, or unbounded |
+| 3 | The same two medians again with the sample floor **relaxed to ≥ 1** — under-sampled but still measured and still solo-gated (cross-class still seed-clamped and bounded) | the model has no solo sample at all on this coordinator |
 | 4 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` for this build id **and this chip class** — the `build-id@Family|Tier` entry when present, else the unqualified entry clamped to the slowest class named for that model | no seed entry of either shape |
 | 5 | `resolvedDecodeTPS(p)` — the registration benchmark `decode_tps`, else `sqrt(memory_bandwidth)` | terminal |
 
@@ -131,6 +131,22 @@ fails:
 the **whole box** was uncontended (Σ running+waiting ≤ 1 across all slots) and
 the reporting slot had a running decode (`NumRunning > 0`) — see
 `soloSampleEligible`. That gate is what keeps a measured rate a *solo* rate.
+
+Steps 2 and 3 hand a provider a rate its own chip class did not produce, so the
+transferred value needs an upper bound. **At least one of three things must
+supply it**, or the transfer is refused outright and the chain drops to step
+4/5:
+
+- a seed applies to this provider's chip class (`soloTPSSeedForClass`);
+- the provider's own class contributed ≥ 1 sample, so the min of per-class
+  medians cannot exceed what its own class demonstrated;
+- ≥ 2 classes contributed, so the minimum is a genuine cross-class minimum.
+
+With none of them the "MIN of per-class medians" is a *single* class's median
+wearing the name of a minimum — one M4 Max sample setting an unsampled M1 Pro's
+rate, the exact over-admission the class keying exists to prevent. Production
+seeds every catalog model, so in practice this refusal is the backstop for a
+model nobody seeded.
 
 The step-2/3 clamp and step 4 both use the **class-scoped** seed
 (`soloTPSSeedForClass`). A seed is a measurement of one chip class: the

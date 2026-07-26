@@ -71,7 +71,8 @@ func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
 // SoloMedianAllChips is the CONSERVATIVE cross-class transfer used when a
 // provider's own chip class has too few solo samples: it returns the MINIMUM
 // of the per-class medians across every chip class that has at least one solo
-// sample for the model, plus the TOTAL sample count across those classes.
+// sample for the model, the TOTAL sample count across those classes, and the
+// number of CLASSES that contributed a positive median.
 //
 // SAFETY INVARIANT: the resolver must never hand a slow box a rate faster than
 // its own class demonstrated. Pooling every sample into one median (the old
@@ -81,36 +82,44 @@ func (r *TPSRegistry) SoloMedian(model, chipClass string) (float64, int) {
 // exceed the slowest class's typical rate: worst case it UNDER-caps a fast box
 // (safe, quality-protective), never over-caps a slower one.
 //
-// The returned int is the total sample count across classes, so the resolver's
-// existing >= qualityCapSoloMinSamples trust floor is unchanged. The
-// tpsKey.ChipFamily field carries the chip-class string for solo entries, so
-// grouping by key.Model + key.ChipFamily groups by class.
-func (r *TPSRegistry) SoloMedianAllChips(model string) (float64, int) {
+// That invariant has a precondition the resolver must check, which is why the
+// class count is returned: the minimum is only a CROSS-CLASS bound when more
+// than one class contributed. With a single sampled class the "min" is just
+// that one class's own median wearing the name of a minimum, and handing it to
+// a provider of a different, unsampled class bounds nothing at all — one M4
+// Max sample would set an unsampled M1 Pro's rate. See
+// resolvedSoloModelTPSLocked, which refuses that transfer unless a seed or the
+// provider's own samples bound it.
+//
+// The total sample count keeps the resolver's >= qualityCapSoloMinSamples trust
+// floor unchanged. The tpsKey.ChipFamily field carries the chip-class string
+// for solo entries, so grouping by key.Model + key.ChipFamily groups by class.
+func (r *TPSRegistry) SoloMedianAllChips(model string) (tps float64, samples, classes int) {
 	r.mu.RLock()
 	perClass := make(map[string][]float64)
-	for key, samples := range r.soloSamples {
-		if key.Model != model || len(samples) == 0 {
+	for key, s := range r.soloSamples {
+		if key.Model != model || len(s) == 0 {
 			continue
 		}
 		// append copies the values, so perClass is safe to sort after RUnlock.
-		perClass[key.ChipFamily] = append(perClass[key.ChipFamily], samples...)
+		perClass[key.ChipFamily] = append(perClass[key.ChipFamily], s...)
 	}
 	r.mu.RUnlock()
 
-	minMedian, total := 0.0, 0
-	have := false
-	for _, samples := range perClass {
-		// samples is a private copy; medianOfCopied sorts it in place.
-		m := medianOfCopied(samples)
-		total += len(samples)
+	minMedian, total, classCount := 0.0, 0, 0
+	for _, s := range perClass {
+		// s is a private copy; medianOfCopied sorts it in place.
+		m := medianOfCopied(s)
+		total += len(s)
 		if m <= 0 {
 			continue
 		}
-		if !have || m < minMedian {
-			minMedian, have = m, true
+		if classCount == 0 || m < minMedian {
+			minMedian = m
 		}
+		classCount++
 	}
-	return minMedian, total
+	return minMedian, total, classCount
 }
 
 // medianOfCopied returns the median of samples, sorting in place (callers pass

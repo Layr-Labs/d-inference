@@ -120,10 +120,11 @@ func TestSoloMedianFIFOCap(t *testing.T) {
 
 // TestSoloMedianAllChipsMinOfClassMedians pins the CONSERVATIVE cross-class
 // transfer: SoloMedianAllChips returns the MINIMUM of the per-class medians
-// (never the pooled median, which a fast, sample-heavy class can dominate) plus
-// the TOTAL sample count. A slow class (m1, median 20) and a fast class (m4,
-// median 30) → the min (20), so the rate can never exceed the slowest class's
-// typical rate and can never over-cap a slow box.
+// (never the pooled median, which a fast, sample-heavy class can dominate), the
+// TOTAL sample count, and the number of CLASSES behind that minimum. A slow
+// class (m1, median 20) and a fast class (m4, median 30) → the min (20), so the
+// rate can never exceed the slowest class's typical rate and can never over-cap
+// a slow box.
 func TestSoloMedianAllChipsMinOfClassMedians(t *testing.T) {
 	r := NewTPSRegistry()
 	r.RecordSolo("model", "m1", 20)
@@ -132,20 +133,33 @@ func TestSoloMedianAllChipsMinOfClassMedians(t *testing.T) {
 	r.RecordSolo("model", "m4", 30)
 	r.RecordSolo("model", "m4", 30)
 	r.RecordSolo("other-model", "m4", 999) // different model must not pollute
-	tps, n := r.SoloMedianAllChips("model")
-	if tps != 20 || n != 5 {
-		t.Fatalf("SoloMedianAllChips = (%v, %d), want (20, 5) — min of class medians, total count", tps, n)
+	tps, n, classes := r.SoloMedianAllChips("model")
+	if tps != 20 || n != 5 || classes != 2 {
+		t.Fatalf("SoloMedianAllChips = (%v, %d, %d), want (20, 5, 2) — min of class medians, total count, class count", tps, n, classes)
 	}
 
 	// A fast class with MANY samples must not drag the min up: the pooled median
 	// would be 30, but the slow class's median (12) is what a slow box can do.
 	r2 := NewTPSRegistry()
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		r2.RecordSolo("m", "M4|Max", 30) // fast, sample-heavy
 	}
 	r2.RecordSolo("m", "M1", 12) // slow, one sample
-	if tps, n := r2.SoloMedianAllChips("m"); tps != 12 || n != 21 {
-		t.Fatalf("SoloMedianAllChips = (%v, %d), want (12, 21) — fast class must not dominate the min", tps, n)
+	if tps, n, classes := r2.SoloMedianAllChips("m"); tps != 12 || n != 21 || classes != 2 {
+		t.Fatalf("SoloMedianAllChips = (%v, %d, %d), want (12, 21, 2) — fast class must not dominate the min", tps, n, classes)
+	}
+
+	// The class count is what lets the resolver tell a genuine cross-class
+	// minimum from a single class's median wearing that name.
+	r3 := NewTPSRegistry()
+	r3.RecordSolo("m", "M4|Max", 70)
+	if tps, n, classes := r3.SoloMedianAllChips("m"); tps != 70 || n != 1 || classes != 1 {
+		t.Fatalf("SoloMedianAllChips = (%v, %d, %d), want (70, 1, 1) — one class is not a cross-class minimum", tps, n, classes)
+	}
+
+	// No samples at all: no classes.
+	if tps, n, classes := NewTPSRegistry().SoloMedianAllChips("m"); tps != 0 || n != 0 || classes != 0 {
+		t.Fatalf("SoloMedianAllChips on an empty store = (%v, %d, %d), want (0, 0, 0)", tps, n, classes)
 	}
 }
 
@@ -304,7 +318,7 @@ func TestResolvedSoloModelTPSFallbackChain(t *testing.T) {
 
 	// (a) per-(model, chip) median wins over cross-chip and seed once trusted.
 	for _, v := range []float64{10, 12, 12, 12, 30} {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", v)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", v)
 	}
 	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 12 || !got.perModel {
 		t.Fatalf("per-chip solo median = %+v, want tps 12, perModel true", got)
@@ -477,12 +491,12 @@ func TestResolvedSoloModelTPSMinSampleFloor(t *testing.T) {
 	}
 
 	for range 5 {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	}
 	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
 		t.Fatalf("below min samples = %+v, want the under-sampled measured rate (14, perModel true), not the provider-level 93", got)
 	}
-	reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+	reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 14 || !got.perModel {
 		t.Fatalf("at min samples = %+v, want (14, perModel true)", got)
 	}
@@ -495,7 +509,7 @@ func TestResolvedSoloModelTPSKillSwitch(t *testing.T) {
 	enablePerModelQualityCap(t, reg, gemmaBuild+"=14", "false", "")
 	p := mixedBoxProvider(t, reg, "mixed", 93)
 	for i := 0; i < 10; i++ {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	}
 	if got := resolveSolo(reg, p, gemmaBuild); got.tps != 93 || got.perModel {
 		t.Fatalf("kill switch off: resolver = %+v, want provider-level (93, perModel false)", got)
@@ -555,25 +569,19 @@ func TestSoloSeedColdStart(t *testing.T) {
 	}
 }
 
-// prodSoloTPSSeed returns the EIGENINFERENCE_MODEL_SOLO_TPS_SEED value shipped
-// in deploy/environments/prod.env. Reading the real file rather than pinning a
-// copy is deliberate: the P1 this suite defends is a bad VALUE in that file,
-// so a test asserting against a hand-copied CSV would keep passing while prod
-// regressed. The repository root is located by walking up for the file itself
-// (the Go module root is coordinator/, one level below it).
-func prodSoloTPSSeed(t *testing.T) string {
+// repoFile locates a repository-relative file by walking up from the test's
+// working directory (the Go module root is coordinator/, one level below the
+// repository root).
+func repoFile(t *testing.T, rel string) string {
 	t.Helper()
-	const rel = "deploy/environments/prod.env"
 	dir, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("getwd: %v", err)
 	}
-	var path string
 	for {
 		candidate := filepath.Join(dir, rel)
 		if _, statErr := os.Stat(candidate); statErr == nil {
-			path = candidate
-			break
+			return candidate
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -581,18 +589,93 @@ func prodSoloTPSSeed(t *testing.T) string {
 		}
 		dir = parent
 	}
+}
+
+// envValue returns the value of key in a KEY=VALUE deploy file, failing when
+// the key is absent.
+func envValue(t *testing.T, path, key string) string {
+	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	const key = modelSoloTPSSeedEnv + "="
 	for _, line := range strings.Split(string(raw), "\n") {
-		if after, ok := strings.CutPrefix(strings.TrimSpace(line), key); ok {
+		if after, ok := strings.CutPrefix(strings.TrimSpace(line), key+"="); ok {
 			return after
 		}
 	}
-	t.Fatalf("%s carries no %s line", path, modelSoloTPSSeedEnv)
+	t.Fatalf("%s carries no %s line", path, key)
 	return ""
+}
+
+// soloSeedDeployFiles are the two files that must carry
+// EIGENINFERENCE_MODEL_SOLO_TPS_SEED, authoritative one first:
+//
+//   - deploy/gcp/prod/release-env-defaults is what refresh-env.sh merges into
+//     /etc/d-inference/env, so it is the only one that reaches a coordinator;
+//   - deploy/environments/prod.env is the sanitized reference operators read.
+//     Its own header says it is not consumed directly.
+//
+// The seed lived ONLY in the reference file for an entire release, so the
+// coordinator never saw it. Pinning both — and requiring them to agree — is
+// what stops that from recurring in either direction.
+var soloSeedDeployFiles = [...]string{
+	"deploy/gcp/prod/release-env-defaults",
+	"deploy/environments/prod.env",
+}
+
+// prodSoloTPSSeed returns the EIGENINFERENCE_MODEL_SOLO_TPS_SEED value the
+// production coordinator actually receives, and fails when the sanitized
+// reference has drifted from it. Reading the real files rather than pinning a
+// copy is deliberate: the P1 this suite defends is a bad VALUE in them, so a
+// test asserting against a hand-copied CSV would keep passing while prod
+// regressed.
+func prodSoloTPSSeed(t *testing.T) string {
+	t.Helper()
+	authoritative := envValue(t, repoFile(t, soloSeedDeployFiles[0]), modelSoloTPSSeedEnv)
+	for _, rel := range soloSeedDeployFiles[1:] {
+		if got := envValue(t, repoFile(t, rel), modelSoloTPSSeedEnv); got != authoritative {
+			t.Fatalf("%s carries %s=%q but the authoritative %s carries %q — a coordinator would run the second value while operators read the first",
+				rel, modelSoloTPSSeedEnv, got, soloSeedDeployFiles[0], authoritative)
+		}
+	}
+	return authoritative
+}
+
+// TestSoloSeedReachesProductionEnv pins the deploy half of the blocker: the
+// seed must live in the file refresh-env.sh merges into /etc/d-inference/env
+// AND in the manifest that refuses a coordinator env missing it. Present in
+// neither, the whole chip-class-scoped seed above is dead configuration.
+func TestSoloSeedReachesProductionEnv(t *testing.T) {
+	// Parses to a usable seed table with a class-qualified entry — an
+	// unqualified-only CSV would re-create the fleet-wide over-admission.
+	seed := parseModelFloatMap(prodSoloTPSSeed(t))
+	if len(seed) == 0 {
+		t.Fatalf("%s in %s parses to no usable entries", modelSoloTPSSeedEnv, soloSeedDeployFiles[0])
+	}
+	qualified := 0
+	for key := range seed {
+		if strings.Contains(key, soloSeedClassSep) {
+			qualified++
+		}
+	}
+	if qualified == 0 {
+		t.Fatalf("%s carries no %q class-qualified entry — an unqualified-only seed is the fleet-wide value this suite exists to prevent",
+			modelSoloTPSSeedEnv, soloSeedClassSep)
+	}
+
+	// refresh-env.sh hard-fails a coordinator env that lacks a manifest key,
+	// so listing it here is what makes the seed non-optional in production.
+	manifest, err := os.ReadFile(repoFile(t, "deploy/gcp/prod/required-env-keys.txt"))
+	if err != nil {
+		t.Fatalf("read required-env-keys.txt: %v", err)
+	}
+	for _, line := range strings.Split(string(manifest), "\n") {
+		if strings.TrimSpace(line) == modelSoloTPSSeedEnv {
+			return
+		}
+	}
+	t.Fatalf("deploy/gcp/prod/required-env-keys.txt does not list %s — refresh-env would accept a coordinator env without it", modelSoloTPSSeedEnv)
 }
 
 // classProvider is a single-model provider on a named chip class whose slot
@@ -797,7 +880,7 @@ func TestWarmPoolSnapshotDecodeSampleUsesSoloResolver(t *testing.T) {
 	p.BackendCapacity.Slots[0].ObservedDecodeTPS = 2.6 // collapsed contended EWMA
 	p.mu.Unlock()
 	for i := 0; i < 5; i++ {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	}
 
 	snap := reg.warmPoolFleetSnapshot(time.Now())[gemmaBuild]
@@ -817,7 +900,7 @@ func TestSoloResolverConvergesAcrossManyBoxes(t *testing.T) {
 	reg := New(testLogger())
 	enablePerModelQualityCap(t, reg, "", "", "")
 	for i := 0; i < 5; i++ {
-		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3", 14)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M3|Max", 14)
 	}
 	for i, bench := range []float64{58, 73, 93} {
 		p := mixedBoxProvider(t, reg, fmt.Sprintf("box-%d", i), bench)
@@ -825,4 +908,120 @@ func TestSoloResolverConvergesAcrossManyBoxes(t *testing.T) {
 			t.Fatalf("box benchmarked %v tok/s: gemma cap = %d, want 2 regardless of the provider-level benchmark", bench, got)
 		}
 	}
+}
+
+// TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer is the second half of
+// the seed blocker. TestSoloSeedIsChipClassScoped covers the SEEDED path; this
+// one covers what the fleet actually looked like while
+// EIGENINFERENCE_MODEL_SOLO_TPS_SEED reached no coordinator at all (it lived
+// only in deploy/environments/prod.env, which nothing consumes, and was absent
+// from deploy/gcp/prod/release-env-defaults).
+//
+// With no seed installed, hasSeed is false for every model, so the seed clamp
+// on the cross-class transfer never fires. SoloMedianAllChips is described as
+// the MIN of per-class medians, but with a single sampled class that "minimum"
+// is that one class's own rate — so ONE M4 Max sample became the per-model
+// rate of an unsampled M1 Pro, the precise over-admission the class keying
+// exists to prevent, arriving through the path meant to prevent it.
+//
+// The resolver must now refuse a cross-class transfer that nothing bounds and
+// drop to the provider-level chain instead. It must NOT refuse the bounded
+// transfers — that would make a real fix out of a blunt one.
+func TestSoloSeedAbsentRefusesUnboundedCrossClassTransfer(t *testing.T) {
+	// gemma-4 is dedicated in production, so the fall-through is the
+	// sqrt(memory_bandwidth) proxy and the cap difference is observable.
+	const fastTPS = 70.0
+	newFleet := func(seed string) (*Registry, *Provider) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, seed, "", "")
+		reg.SetDedicatedModels([]string{"gemma-4"})
+		return reg, classProvider(t, reg, "m1pro", gemmaBuild, "M1", "Pro")
+	}
+	// The cap one unbounded M4 Max sample would have granted the M1 Pro.
+	unboundedCap := wantQualityCap(fastTPS, 15, 8, defaultQualityCapOvercommit)
+
+	// (a) The reviewer's case: one fast-class sample, no seed, and a provider
+	// on a slower class that has never been sampled.
+	t.Run("one_fast_sample_no_seed", func(t *testing.T) {
+		reg, p := newFleet("")
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", fastTPS)
+
+		got := resolveSolo(reg, p, gemmaBuild)
+		if got.tps == fastTPS || got.perModel {
+			t.Fatalf("unseeded M1|Pro resolved %+v — it inherited the single M4 Max sample as a per-model rate", got)
+		}
+		reg.mu.RLock()
+		p.mu.Lock()
+		wantFallback := resolvedDecodeTPS(p)
+		p.mu.Unlock()
+		reg.mu.RUnlock()
+		if got.tps != wantFallback {
+			t.Fatalf("unseeded M1|Pro resolved %v, want the provider-level fallback %v", got.tps, wantFallback)
+		}
+		if cap := effCapResolved(reg, p, gemmaBuild); cap >= unboundedCap {
+			t.Fatalf("unseeded M1|Pro cap = %d, want < %d (the cap the unbounded %v tok/s transfer granted)",
+				cap, unboundedCap, fastTPS)
+		}
+	})
+
+	// (b) The same hole at the TRUSTED sample floor: five samples are still
+	// five samples of the WRONG class. Sample count is not a class bound.
+	t.Run("trusted_floor_single_class_no_seed", func(t *testing.T) {
+		reg, p := newFleet("")
+		for range qualityCapSoloMinSamples {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", fastTPS)
+		}
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps == fastTPS || got.perModel {
+			t.Fatalf("unseeded M1|Pro resolved %+v at the trusted floor — %d samples of one foreign class still bound nothing",
+				got, qualityCapSoloMinSamples)
+		}
+	})
+
+	// (c) Installing the seed is what makes the transfer admissible again, and
+	// it lands on the conservative class-scoped floor rather than the fast
+	// sample. This is the shipped release-env-defaults value.
+	t.Run("prod_seed_bounds_the_same_fleet", func(t *testing.T) {
+		reg, p := newFleet(prodSoloTPSSeed(t))
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", fastTPS)
+
+		got := resolveSolo(reg, p, gemmaBuild)
+		if got.tps != 14 || !got.perModel {
+			t.Fatalf("seeded M1|Pro resolved %+v, want the clamped seed 14 as a per-model rate", got)
+		}
+		if cap := effCapResolved(reg, p, gemmaBuild); cap != 2 {
+			t.Fatalf("seeded M1|Pro cap = %d, want 2 (seed 14 ≤ floor 15 → quality batch 1 × overcommit)", cap)
+		}
+	})
+
+	// (d) Two contributing classes make the minimum a REAL cross-class
+	// minimum, so the transfer stays admissible with no seed at all. Without
+	// this the fix would be a blanket disable of steps (2)/(3).
+	t.Run("two_classes_still_transfer_unseeded", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := classProvider(t, reg, "m2pro", gemmaBuild, "M2", "Pro")
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", fastTPS)
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M1|Max", 12)
+
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 12 || !got.perModel {
+			t.Fatalf("unseeded M2|Pro resolved %+v, want 12 (min across two sampled classes), never the fast %v", got, fastTPS)
+		}
+	})
+
+	// (e) A provider whose OWN class contributed is bounded by its own
+	// evidence: the min can never exceed what its class demonstrated, seed or
+	// no seed.
+	t.Run("own_class_sample_bounds_transfer_unseeded", func(t *testing.T) {
+		reg := New(testLogger())
+		enablePerModelQualityCap(t, reg, "", "", "")
+		p := classProvider(t, reg, "m1pro-sampled", gemmaBuild, "M1", "Pro")
+		for range qualityCapSoloMinSamples {
+			reg.tpsRegistry.RecordSolo(gemmaBuild, "M4|Max", fastTPS)
+		}
+		reg.tpsRegistry.RecordSolo(gemmaBuild, "M1|Pro", 13)
+
+		if got := resolveSolo(reg, p, gemmaBuild); got.tps != 13 || !got.perModel {
+			t.Fatalf("unseeded M1|Pro with one own-class sample resolved %+v, want 13 (its own class), never the fast %v", got, fastTPS)
+		}
+	})
 }

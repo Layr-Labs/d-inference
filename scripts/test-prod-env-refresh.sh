@@ -48,26 +48,33 @@ grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_RESTART_MAX_IN_WINDOW=3' "$ENV_FILE"
 grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_RESTART_COOLDOWN_MS=30000' "$ENV_FILE"
 [ "$(ls "$ENV_DIR"/env.bak.* | wc -l | tr -d ' ')" -eq 1 ]
 
-missing="$TEST_ROOT/missing.env"
-cp "$ENV_FILE" "$missing"
-awk '$0 !~ /^EIGENINFERENCE_HEALTH_EJECTION=/' "$missing" > "$missing.tmp"
-mv "$missing.tmp" "$missing"
-if SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$missing" \
-    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check >/dev/null 2>&1
-then
-    echo "refresh accepted a dropped live tuning key" >&2
-    exit 1
-fi
+# Negative cases MUST live inside $ENV_DIR: an env file outside it trips the
+# path guard before any manifest check runs, so a case placed outside would
+# pass whatever the manifest logic did. Assert the reason, not just the exit.
+expect_refresh_failure() {
+    local label=$1 file=$2 want=$3 out
+    if out=$(SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$file" \
+        REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check 2>&1)
+    then
+        echo "refresh accepted $label" >&2
+        exit 1
+    fi
+    if ! printf '%s' "$out" | grep -Fq "$want"; then
+        echo "refresh rejected $label for the wrong reason: $out" >&2
+        exit 1
+    fi
+}
 
-duplicate="$TEST_ROOT/duplicate.env"
+missing="$ENV_DIR/missing.env"
+awk '$0 !~ /^EIGENINFERENCE_HEALTH_EJECTION=/' "$ENV_FILE" > "$missing"
+chmod 0600 "$missing"
+expect_refresh_failure "a dropped live tuning key" "$missing" \
+    "required existing variables are missing or empty: EIGENINFERENCE_HEALTH_EJECTION"
+
+duplicate="$ENV_DIR/duplicate.env"
 cp "$ENV_FILE" "$duplicate"
 printf 'DOMAIN=duplicate\n' >> "$duplicate"
-if SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$duplicate" \
-    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --check >/dev/null 2>&1
-then
-    echo "refresh accepted a duplicate key" >&2
-    exit 1
-fi
+expect_refresh_failure "a duplicate key" "$duplicate" "duplicate env key DOMAIN"
 
 custom="$ENV_DIR/custom.env"
 cp "$ENV_FILE" "$custom"
@@ -89,6 +96,30 @@ grep -Fxq \
     "$custom"
 grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_STARTUP_TIMEOUT_MS=9000' "$custom"
 grep -Fxq 'EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS=750' "$custom"
+
+# A required key that release-env-defaults SUPPLIES must bootstrap. The box not
+# having it yet is the entire reason the release ships a default, so demanding
+# it pre-merge would make such a key impossible to introduce — the deploy would
+# hard-fail on every box instead of installing it. EIGENINFERENCE_MODEL_SOLO_TPS_SEED
+# is the first key in both manifests and shipped absent from prod for a release.
+seed_key=EIGENINFERENCE_MODEL_SOLO_TPS_SEED
+grep -q "^$seed_key=" "$DEFAULTS"
+grep -Fxq "$seed_key" "$REQUIRED"
+
+bootstrap="$ENV_DIR/bootstrap.env"
+awk -v k="^$seed_key=" '$0 !~ k' "$ENV_FILE" > "$bootstrap"
+chmod 0600 "$bootstrap"
+SKIP_PERSISTENCE_CHECK=1 ENV_DIR="$ENV_DIR" ENV_FILE="$bootstrap" \
+    REQUIRED_FILE="$REQUIRED" DEFAULTS_FILE="$DEFAULTS" "$REFRESH" --apply >/dev/null
+grep -Fxq "$(grep "^$seed_key=" "$DEFAULTS")" "$bootstrap"
+
+# ...but a BLANKED value is a misconfiguration, not a bootstrap: the merge only
+# adds absent keys, so the post-merge check must still reject it.
+blanked="$ENV_DIR/blanked.env"
+sed "s/^$seed_key=.*/$seed_key=/" "$ENV_FILE" > "$blanked"
+chmod 0600 "$blanked"
+expect_refresh_failure "a blanked release-default key" "$blanked" \
+    "required existing variables are missing or empty: $seed_key"
 
 marker="$TEST_ROOT/path-injection-ran"
 if SKIP_PERSISTENCE_CHECK=1 \

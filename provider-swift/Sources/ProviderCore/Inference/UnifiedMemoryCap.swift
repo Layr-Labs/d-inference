@@ -73,11 +73,14 @@ public enum UnifiedMemoryCap {
     /// are pinned to batch 1 on both backends (`CBv2AttentionV1`'s
     /// `spanContext == nil || (B == 1 && L > 1)`, `PagedLayerCache`'s
     /// "span-bearing chunks are never packed"), so at most ONE is ever live —
-    /// which is why this floor survives contact rather than scaling with the
     /// batch. Separately, `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=0` unblocks TEXT on
-    /// both backends: the one supported configuration where this floor is
-    /// provably wrong for the common case. Either way the answer is the env
-    /// override, not a per-model formula.
+    /// both backends: the one OPERATOR-REACHABLE configuration where this
+    /// floor is provably wrong for the common case. That is a fact about the
+    /// code and holds whatever we sanction — as a matter of release policy
+    /// v0.8.0 separately declines to sanction a non-default value for that
+    /// knob, because it also voids the G2 token-exactness gate (see the
+    /// release notes). Either way the answer here is the env override, not a
+    /// per-model formula.
     static let defaultActivationReserveBytes: UInt64 = 3 * 1024 * 1024 * 1024  // 3 GiB
 
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap

@@ -179,17 +179,21 @@ class ResolveKVBackendTests(unittest.TestCase):
     def test_degrade_reason_is_carried_not_just_the_kind(self):
         # With paged opt-in, a deliberately paged slot quietly serving
         # contiguous is the failure that matters, and only the reason
-        # distinguishes a kill switch from a binary copied without its
-        # `pagedattention.metal` resource bundle.
-        sweep = make_sweep(
-            resolved="contiguous (fallback: kernel_preflight: pagedattention.metal not found)"
+        # separates a machine that cannot serve paged from one that was not
+        # PACKAGED for it: the preflight resolves its SwiftPM resource bundle
+        # relative to the executable, so a bare `cp` of the binary without
+        # the `.bundle` disables paged on a perfectly capable box.
+        reason = (
+            "kernel_preflight: MLXLMCommon resource bundle missing beside the "
+            "executable — copy the .bundle alongside the binary"
         )
-        block = resolve_kv_backend(make_args(), sweep)
-        self.assertEqual(
-            block["degrades"],
-            ["kernel_preflight: pagedattention.metal not found"],
+        block = resolve_kv_backend(
+            make_args(), make_sweep(resolved=f"contiguous (fallback: {reason})")
         )
-        self.assertIn("pagedattention.metal", block["postureViolations"][0])
+        self.assertEqual(block["degrades"], [reason])
+        # Verbatim in the violation, so the operator reads a packaging fix
+        # rather than a hardware verdict.
+        self.assertIn(reason, block["postureViolations"][0])
 
     def test_a_degrade_that_kept_the_kind_is_still_a_violation(self):
         # The kill switch degrades an explicit selection without changing the

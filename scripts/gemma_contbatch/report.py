@@ -98,8 +98,10 @@ def kv_backend_lines(kv_backend: dict) -> list[str]:
     by_batch = kv_backend["byBatchSize"]
     if kv_backend["degrades"]:
         # The only place a reader learns WHY paged was not served: kill
-        # switch, kernel preflight, pool capacity, or a binary copied without
-        # its `pagedattention.metal` resource bundle.
+        # switch, kernel preflight, pool capacity, or the SwiftPM resource
+        # bundle missing beside the executable — the last being a packaging
+        # fault on a capable machine, which reads as a hardware verdict if
+        # the reason is not shown verbatim.
         lines.append(
             f"| Degraded because | {'; '.join(kv_backend['degrades'])} |"
         )

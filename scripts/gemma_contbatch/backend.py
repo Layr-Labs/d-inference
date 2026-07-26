@@ -18,9 +18,11 @@ Vocabulary is the resolved *kind* -- "paged" or "contiguous" -- matching
 records per slot. The engine's verbatim descriptor carries a
 "(fallback: <reason>)" tail on a degrade, and that reason is extracted into
 `degrades`: with paged opt-in, a deliberately paged slot quietly serving
-contiguous is the failure that matters, and the reason is the only thing
-that distinguishes a kill switch from a missing `pagedattention.metal`
-resource bundle beside the binary.
+contiguous is the failure that matters, and only the reason separates a
+machine that cannot serve paged from one that simply was not PACKAGED for
+it -- the kernel preflight resolves its SwiftPM resource bundle relative to
+the executable, so a bare `cp` of the binary without the `.bundle` beside it
+disables paged on a box that is perfectly capable of running it.
 """
 
 from __future__ import annotations
@@ -178,8 +180,9 @@ def resolve_kv_backend(args: argparse.Namespace, sweep: dict) -> dict:
         "resolvedDescriptors": descriptors,
         # The fallback reasons behind any degrade, verbatim. On a paged
         # request this is the only on-box surface that names WHY paged was
-        # not served -- kill switch, kernel preflight, pool capacity, or a
-        # binary copied without its `pagedattention.metal` resource bundle.
+        # not served -- kill switch, kernel preflight, pool capacity, or the
+        # resource bundle missing beside the executable (a packaging fault,
+        # not a capability one).
         "degrades": degrades,
         "byBatchSize": {
             batch: "+".join(kinds) for batch, kinds in kinds_by_batch.items()

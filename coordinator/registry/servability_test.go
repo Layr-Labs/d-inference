@@ -3,33 +3,36 @@ package registry
 import "testing"
 
 // TestColdTokenBudgetEstimate pins the pure cold post-load KV-budget estimator.
-// The provider's activation reserve is max(flat floor, per-token score tensor),
-// so the budget is piecewise-linear around the crossover
-// servabilityActivationFloorGB*bytesPerGB / servabilityActivationBytesPerToken
-// = 3*2^30/65536 = 49152 tokens:
+// The provider's activation reserve is a FLAT floor — it does not scale with
+// context, batch, or attention posture (UnifiedMemoryCap
+// .defaultActivationReserveBytes) — so this is one linear expression with no
+// regimes and no crossover:
 //
 //	postLoadGB = servabilityCapFraction*total - size*coldLoadCatalogGBToMemGiB
 //	postLoadB  = postLoadGB * bytesPerGB
 //	floorB     = servabilityActivationFloorGB * bytesPerGB   // 3*2^30
-//	tokens     = (postLoadB - floorB) / kvBytesPerToken      // floor binds
-//	if tokens > 49152:
-//	    tokens = postLoadB / (kvBytesPerToken + 65536)       // score binds
+//	tokens     = (postLoadB - floorB) / kvBytesPerToken
 //
 // with servabilityCapFraction=0.90, servabilityActivationFloorGB=3.0,
-// servabilityActivationBytesPerToken=65536,
 // coldLoadCatalogGBToMemGiB≈1.1175870895385742, bytesPerGB=1<<30, and
 // kvBytesPerToken<=0 → 400000.
+//
+// A per-token score-tensor surcharge (65536 B/token above a 49152-token
+// crossover) briefly made this piecewise. It was removed because the provider
+// gate it claimed to mirror never charged it — see
+// TestColdTokenBudgetMirrorsProviderReserveArithmetic.
 func TestColdTokenBudgetEstimate(t *testing.T) {
-	// (a) Roomy node: total=64, size=12, kvpt=400000. Long-context regime —
-	// the score tensor, not the 3 GiB floor, is what the provider holds back.
-	//   padded    = 12 * 1.1175870895385742           = 13.41104507446289
-	//   postLoadGB= 0.90*64 - 13.41104507446289       = 44.18895492553711 GB
-	//   postLoadB = 44.18895492553711 * 2^30          = 47447529062.4 B
-	//   floor-bound tokens = (47447529062.4 - 3221225472) / 400000 = 110565.75
-	//   110565.75 > 49152, so the score tensor binds instead:
-	//   tokens    = int64(47447529062.4 / 465536)     = 101920
-	// (Flat-3-GiB predecessor: 110565 — 8% optimistic at this context.)
-	const wantRoomy = int64(101920)
+	// (a) Roomy node: total=64, size=12, kvpt=400000 — a gpt-oss-shaped cold
+	// slot with room for a long context. One regime, so the arithmetic runs
+	// straight through:
+	//   padded    = 12 * 1.1175870895385742      = 13.41104507446289
+	//   postLoadGB= 0.90*64 - 13.41104507446289  = 44.18895492553711 GB
+	//   postLoadB = 44.18895492553711 * 2^30     = 47447529062.4 B
+	//   tokens    = (47447529062.4 - 3221225472) / 400000 = 110565.75
+	// The retired piecewise formula answered 101920 here — 8% TIGHTER than the
+	// provider it claimed to mirror, on a model that materialises no score
+	// tensor at all. That gap is the defect.
+	const wantRoomy = int64(110565)
 	if got := coldTokenBudgetEstimate(64, 12, 400000); got != wantRoomy {
 		t.Fatalf("roomy estimate = %d, want %d", got, wantRoomy)
 	}
@@ -57,35 +60,40 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 		t.Fatalf("reserve-bound estimate = %d, want 0 (weights fit, activation floor does not)", got)
 	}
 
-	// (b2) Floor regime: a 48 GB node loading 28 GB of gemma-4 weights lands
-	// BELOW the crossover, so the flat floor is still the whole reserve and the
-	// estimate is unchanged from the pre-parametric formula.
-	//   padded    = 28 * 1.1175870895385742     = 31.292438507080078
+	// (b2) A 48 GB node loading 28 GB of gemma-4 weights. gemma-4 is the
+	// COMPOSED-attention model (head_dim 256 sliding / 512 full, both outside
+	// MLX's fused set), and it is charged exactly what fused gpt-oss is: the
+	// flat floor, nothing more — because that is all the provider holds back.
+	//   padded    = 28 * 1.1175870895385742      = 31.292438507080078
 	//   postLoadGB= 0.90*48 - 31.292438507080078 = 11.907561492919925 GB
 	//   tokens    = (11.907561492919925*2^30 - 3221225472) / 400000 = 23911.05
-	//   23911 <= 49152 → floor branch wins.
 	if got := coldTokenBudgetEstimate(48, 28, 400000); got != int64(23911) {
-		t.Fatalf("floor-regime estimate = %d, want 23911", got)
+		t.Fatalf("gemma-4-shaped estimate = %d, want 23911", got)
 	}
 
-	// (b3) The two regimes must JOIN, not jump. Sweeping node size across the
-	// crossover has to stay monotone and continuous; a branch inversion, or a
-	// floor charged ON TOP OF the per-token cost rather than instead of it,
-	// shows up here as a step backwards or a cliff. Each 0.05 GB step adds
-	// 0.045*2^30 bytes = at most ~121 tokens in either regime.
+	// (b3) FLAT means LINEAR: equal steps in node memory must buy equal
+	// tokens, everywhere. The slope is 0.90*2^30/400000 = 2415.9 tokens per GB,
+	// so a 0.05 GB step buys 120.8 — i.e. 120 or 121 after truncation, and
+	// nothing else. Re-introduce a piecewise reserve and this fails twice: the
+	// slope above the crossover collapses to ~104/step, and the crossover
+	// itself plants one anomalous step in the sweep (the retired formula's
+	// deltas over this exact range ran 103..121, and it began diverging at
+	// total=24.95).
 	prev := int64(0)
 	for total := 20.0; total <= 30.0; total += 0.05 {
 		got := coldTokenBudgetEstimate(total, 1, 400000)
-		if got < prev {
-			t.Fatalf("budget went backwards at total=%.2f: %d after %d", total, got, prev)
-		}
-		if prev > 0 && got-prev > 200 {
-			t.Fatalf("regime discontinuity at total=%.2f: %d jumped from %d", total, got, prev)
+		if prev > 0 {
+			if d := got - prev; d < 120 || d > 121 {
+				t.Fatalf("non-linear step at total=%.2f: %d after %d (delta %d, want 120-121)",
+					total, got, prev, d)
+			}
 		}
 		prev = got
 	}
+	// The sweep must actually cover the region where the retired crossover sat,
+	// or the linearity check above never had a chance to catch it.
 	if prev <= 49152 {
-		t.Fatalf("sweep ended at %d tokens, never crossed the 49152 regime boundary", prev)
+		t.Fatalf("sweep ended at %d tokens, never reached the retired 49152 crossover region", prev)
 	}
 
 	// (c) kvBytesPerToken <= 0 falls back to the kvCacheBytesPerToken default
@@ -117,6 +125,98 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	if got := coldTokenBudgetEstimate(64, -1, 400000); got != 0 {
 		t.Fatalf("modelSizeGB<0 estimate = %d, want 0", got)
 	}
+}
+
+// TestColdTokenBudgetMirrorsProviderReserveArithmetic is the regression for the
+// coordinator/provider activation-reserve desync.
+//
+// coldTokenBudgetEstimate exists to reproduce ONE thing: the post-load KV budget
+// UnifiedMemoryCap will actually leave a freshly-loaded slot. That budget is
+// cap − paddedWeights − a FLAT 3 GiB reserve, and once the slot is resident the
+// provider reports precisely it back as active_token_budget_max
+// (EngineV2Bridge+Capacity: kvBytesCapacity / kvBytesPerToken), which
+// snapshotStructuralBudget then prefers. The cold estimate must therefore
+// converge to the warm report — for EVERY model, including one whose attention
+// composes.
+//
+// The shipped defect: the coordinator charged every cold model a 65536 B/token
+// score-tensor surcharge that no provider gate ever held back
+// (UnifiedMemoryCap.ActivationReserveShape had zero call sites, so every gate
+// took the flat floor). That made this predictor strictly TIGHTER than the gate
+// it mirrors and 429'd prompts the fleet could serve. gpt-oss-20b — head_dim 64,
+// inside MLX's fused-SDPA set {64, 80, 128}, so it materialises no score tensor
+// whatsoever — was surcharged anyway.
+//
+// Both fleet models are pinned, against the provider formula recomputed
+// independently below rather than against a copied literal, so a surcharge
+// re-added for EITHER attention posture breaks this.
+func TestColdTokenBudgetMirrorsProviderReserveArithmetic(t *testing.T) {
+	for _, tc := range []struct {
+		model         string
+		posture       string
+		totalMemoryGB float64
+		modelSizeGB   float64
+	}{
+		// head_dim 64 → FUSED. No prefill score tensor exists for this model,
+		// and it was the loudest victim of the surcharge.
+		{"gpt-oss-20b", "fused, head_dim 64", 64, 12},
+		// head_dim 256 (sliding) / 512 (full) → COMPOSED. This one really does
+		// materialise the larger score tensor, and the provider STILL holds
+		// back only the flat floor for it, so the coordinator must too.
+		{"gemma-4-26b", "composed, head_dim 256/512", 128, 28},
+	} {
+		got := coldTokenBudgetEstimate(tc.totalMemoryGB, tc.modelSizeGB, 400000)
+		want := providerPostLoadTokenBudget(tc.totalMemoryGB, tc.modelSizeGB, 400000)
+		if got != want {
+			t.Errorf("%s (%s): cold estimate = %d, want the provider's own post-load budget %d",
+				tc.model, tc.posture, got, want)
+		}
+		// Premise: both shapes sit ABOVE the retired 49152-token crossover, so
+		// a re-added surcharge would move them. Without this the case could
+		// pass vacuously on inputs where the flat floor bound either way.
+		if got <= 49152 {
+			t.Errorf("%s: budget %d is below the retired crossover — case no longer discriminates",
+				tc.model, got)
+		}
+	}
+
+	// Direction matters more than any single point: across the fleet's real box
+	// sizes and weight footprints the coordinator must never land BELOW the
+	// provider. Coming in tighter is what turns into a terminal 429 on a prompt
+	// the provider would have served; coming in looser only costs a declined
+	// load, which dispatch retries elsewhere.
+	for _, totalGB := range []float64{24, 36, 48, 64, 96, 128, 192, 512} {
+		for _, sizeGB := range []float64{1, 12, 20, 28, 40} {
+			got := coldTokenBudgetEstimate(totalGB, sizeGB, 400000)
+			want := providerPostLoadTokenBudget(totalGB, sizeGB, 400000)
+			if got < want {
+				t.Fatalf("total=%.0fGB size=%.0fGB: cold estimate %d is TIGHTER than the provider's %d",
+					totalGB, sizeGB, got, want)
+			}
+		}
+	}
+}
+
+// providerPostLoadTokenBudget recomputes the PROVIDER's post-load KV token
+// budget from the provider's own constants, in bytes throughout — deliberately
+// not sharing coldTokenBudgetEstimate's GB-then-bytes ordering:
+//
+//	UnifiedMemoryCap.kvBudgetBytes = 0.90*physical − paddedWeights − 3 GiB
+//	active_token_budget_max        = kvBudgetBytes / kvBytesPerToken
+//
+// The 3 GiB is spelled out rather than read from servabilityActivationFloorGB on
+// purpose: if one side's reserve is retuned and the other is not, this literal
+// is what fails. (bytesPerGB and coldLoadCatalogGBToMemGiB are shared because
+// they are unit conversions, not policy.)
+func providerPostLoadTokenBudget(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64) int64 {
+	const providerActivationReserveBytes = 3 * float64(bytesPerGB) // UnifiedMemoryCap.defaultActivationReserveBytes
+	capBytes := 0.90 * totalMemoryGB * float64(bytesPerGB)
+	weightBytes := modelSizeGB * coldLoadCatalogGBToMemGiB * float64(bytesPerGB)
+	free := capBytes - weightBytes - providerActivationReserveBytes
+	if free <= 0 {
+		return 0
+	}
+	return int64(free / float64(kvBytesPerToken))
 }
 
 // TestSnapshotStructuralBudget pins how a single provider's snapshot maps to a

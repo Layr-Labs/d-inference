@@ -120,6 +120,43 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: 5 * gib, env: [:]) == 5 * gib)
 }
 
+/// `defaultActivationReserveBytes` is not a local tuning knob. The coordinator
+/// hard-codes the same figure (`servabilityActivationFloorGB = 3.0`, in
+/// `coordinator/registry/servability.go`) and subtracts it in
+/// `coldTokenBudgetEstimate` to predict what THIS gate will leave a freshly
+/// loaded slot. A cold slot sends no heartbeat, so the coordinator has no way
+/// to observe a provider that quietly retuned the reserve — the two figures
+/// stay equal only because someone moves both.
+///
+/// FLATNESS is the other half of that contract. A per-model reserve scaled by
+/// batch, context, head count and attention posture (`ActivationReserveShape` /
+/// `peakPrefillScoreBytes`) once lived in this file. It was deleted because it
+/// shipped on the coordinator side and never on this one: every gate here kept
+/// taking the floor while the coordinator charged composed AND fused models a
+/// per-token surcharge, leaving the predictor strictly TIGHTER than the gate it
+/// mirrors and 429ing prompts the fleet could serve. Anything that makes this
+/// figure depend on the model has to land on both sides in one change.
+@Test func activationReserveIsFlatAndIsTheFigureTheCoordinatorMirrors() {
+    #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 3 * gib)
+
+    // The coordinator's cold estimate subtracts ONE reserve and assumes both
+    // provider gates hold back that same figure. They must: the load gate
+    // carving out less than the KV gate is the exact cross-phase bug
+    // `loadHeadroomBytes` documents (a model admitted with zero serveable KV).
+    let reserve = UnifiedMemoryCap.defaultActivationReserveBytes
+    let phys: UInt64 = 128 * gib
+    let weights: UInt64 = 28 * gib  // gemma-4-26b, the composed-attention model
+    let cap = UnifiedMemoryCap.hardCapBytes(physicalBytes: phys)
+    let carvedByKVGate = cap - weights - UnifiedMemoryCap.kvBudgetBytes(
+        physicalBytes: phys, residentWeightBytes: weights,
+        activationReserveBytes: reserve)
+    let carvedByLoadGate =
+        UnifiedMemoryCap.loadHeadroomBytes(activationReserveBytes: reserve)
+        - UnifiedMemoryCap.minimumLoadKVBytes
+    #expect(carvedByKVGate == reserve)
+    #expect(carvedByLoadGate == reserve)
+}
+
 // MARK: - canAdmit (the general N-model load gate)
 
 @Test func canAdmitBothModelsWhenTheyFitUnderCap() {

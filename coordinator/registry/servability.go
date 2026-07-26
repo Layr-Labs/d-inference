@@ -44,32 +44,19 @@ const (
 	// servabilityCapFraction mirrors the provider's UnifiedMemoryCap default
 	// (90% of physical memory usable for MLX).
 	servabilityCapFraction = 0.90
-	// servabilityActivationFloorGB mirrors the FLOOR half of the provider's
-	// activation reserve (UnifiedMemoryCap.defaultActivationReserveBytes,
-	// 3 GiB): the measured non-attention working set held back on top of
-	// weights before any KV cache. It does not scale with anything.
+	// servabilityActivationFloorGB mirrors the provider's activation reserve
+	// (UnifiedMemoryCap.defaultActivationReserveBytes, 3 GiB): the working set
+	// held back on top of weights before any KV cache. It is FLAT on the
+	// provider — every model, every attention posture, every batch — so it is
+	// flat here. It does not scale with anything.
+	//
+	// A per-token surcharge for composed-attention models (head_dim outside
+	// MLX's fused-SDPA set {64, 80, 128}) briefly lived beside it and has been
+	// removed: the provider half it claimed to mirror was never wired, so the
+	// coordinator was charging for a reserve no provider ever held. See
+	// coldTokenBudgetEstimate's "Mirroring, not modelling" note before adding
+	// any term here.
 	servabilityActivationFloorGB = 3.0
-	// servabilityActivationBytesPerToken mirrors the CONTEXT-SCALING half
-	// (UnifiedMemoryCap.peakPrefillScoreBytes), which the provider gained when
-	// the flat 3 GiB reserve stopped being true. A model whose head_dim misses
-	// MLX's fused-SDPA set {64, 80, 128} — gemma-4 is 256/512 — materialises a
-	// [rows, heads, C, kL] fp32 score tensor per prefill step, so its cost is
-	// LINEAR in kL and therefore a per-token surcharge on top of the KV bytes
-	// each token already costs:
-	//
-	//	attentionHeads(8) * 4 B (fp32) * liveQueryRows(2048) = 65536 B/token
-	//
-	// liveQueryRows is the provider's own step bound (maxBatchedTokensPerStep)
-	// for the UNBLOCKED prefill path — span-bearing vision chunks, the one path
-	// query sub-blocking (#85) does not cover and the only one whose L may
-	// exceed prefillChunkSize. gemma-4's 8 KV heads are the basis; a GQA model's
-	// query-head count is the true multiplier, so this sits at the OPTIMISTIC
-	// end on purpose, matching this predictor's fail-toward-serving contract.
-	//
-	// RETUNE TRIGGER: this tracks maxBatchedTokensPerStep, so §13.2's 6.2
-	// (2048 -> 4096) doubles it to 131072. Nothing detects that automatically —
-	// the coordinator never sees the provider's scheduler config.
-	servabilityActivationBytesPerToken = 65536
 )
 
 // ServabilityReason is the low-cardinality reason a request was judged
@@ -100,18 +87,10 @@ type ServabilityVerdict struct {
 }
 
 // coldTokenBudgetEstimate approximates the token budget a cold (on-disk, not yet
-// loaded) provider would have AFTER loading the model. The provider holds back
+// loaded) provider would have AFTER loading the model. The provider holds back a
+// flat activation reserve on top of the padded weights, so the budget is
 //
-//	reserve(t) = max(activationFloor, activationBytesPerToken * t)
-//
-// on top of the padded weights, so the budget is the largest t satisfying
-//
-//	t*kvBytesPerToken + reserve(t) <= cap*totalMemoryGB - paddedWeightsGB
-//
-// which is piecewise-linear with a single crossover at
-// activationFloor/activationBytesPerToken (49152 tokens at today's constants):
-// below it the flat floor binds and a token pays only KV; above it the score
-// tensor scales with context and the two per-token costs simply add.
+//	(cap*totalMemoryGB - paddedWeightsGB - activationFloor) / kvBytesPerToken
 //
 // paddedWeightsGB uses the same catalog→padded-GiB conversion the cold-load gate
 // uses (coldLoadCatalogGBToMemGiB). kvBytesPerToken prefers the provider-reported
@@ -120,21 +99,36 @@ type ServabilityVerdict struct {
 // min-KV load floor) so the predictor errs toward serving. Returns 0 when the
 // inputs are unusable or no headroom remains.
 //
-// # Deliberate divergence from the provider's own formula
+// # Mirroring, not modelling
 //
-// The provider evaluates its reserve at a CEILING it can see — its configured
-// maxContextLength, its scheduler's step/chunk sizes, and the slot's real
-// per-layer head counts — and holds that many bytes back unconditionally. The
-// coordinator sees none of those: a cold slot has no heartbeat at all, and even
-// a warm one reports neither maxBatchedTokensPerStep nor head counts. Rather
-// than guess the provider's ceiling (a duplicated constant that drifts the
-// moment either side is retuned — the exact failure this replaces), the
-// coordinator solves the SELF-CONSISTENT point: it charges the score tensor at
-// exactly the context it is predicting the provider can hold. The two agree
-// when the predicted budget equals the provider's maxContextLength and the
-// coordinator is optimistic below it — the safe direction for a gate whose
-// false-NO is a 429. Only servabilityActivationBytesPerToken is shared, and it
-// is a shape constant (heads x fp32 x step rows), not a memory figure.
+// This function's only job is to reproduce the PROVIDER's own reserve arithmetic
+// for a slot that has no heartbeat yet. It is not an independent opinion about
+// how much memory prefill needs. UnifiedMemoryCap.kvBudgetBytes computes
+// cap − Σweights − reserve with reserve flat at 3 GiB, and a resident slot
+// reports exactly that back as active_token_budget_max (EngineV2Bridge+Capacity:
+// kvBytesCapacity / kvBytesPerToken) — which snapshotStructuralBudget prefers
+// whenever it exists. So the cold estimate has to converge to the warm report as
+// the slot loads, and it does, because both are the same subtraction.
+//
+// That is why there is no attention-posture term here. A composed-attention
+// model (gemma-4: head_dim 256 sliding / 512 full) really does materialise a
+// bigger prefill score tensor than a fused one (gpt-oss: head_dim 64, inside
+// MLX's fused-SDPA set), but the provider does not charge it — UnifiedMemoryCap
+// holds back 3 GiB either way. Charging it here made this gate strictly TIGHTER
+// than the gate it mirrors and 429'd prompts every provider in the fleet could
+// have served. Whether 3 GiB is the right number is the provider's question,
+// answered in one place; a second opinion here can only desync. Retune this ONLY
+// when defaultActivationReserveBytes moves.
+//
+// Being optimistic is the safe direction because the coordinator is not the
+// backstop. The provider is, and its checks are measurement-based, not
+// estimates: the load gate refuses a model that cannot clear reserve + 1 GiB of
+// serveable KV (loadHeadroomBytes), the post-load probe unloads one whose
+// MEASURED live KV headroom is below that (loadIsServeable), and every
+// reservation is checked against real MLX active+cache bytes
+// (liveKVHeadroomBytes). An over-generous estimate therefore costs a declined
+// load, which the dispatch path retries elsewhere — strictly better than a
+// terminal 429 on a request that was servable all along.
 func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64) int64 {
 	if totalMemoryGB <= 0 || modelSizeGB <= 0 {
 		return 0
@@ -150,13 +144,7 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 	}
 	postLoadBytes := postLoadGB * float64(bytesPerGB)
 	floorBytes := servabilityActivationFloorGB * float64(bytesPerGB)
-	// Below the crossover the flat floor is the whole reserve.
 	tokens := (postLoadBytes - floorBytes) / float64(kvpt)
-	if tokens > floorBytes/servabilityActivationBytesPerToken {
-		// Above it the score tensor dominates and scales with the context, so
-		// every token carries both costs.
-		tokens = postLoadBytes / float64(kvpt+servabilityActivationBytesPerToken)
-	}
 	if tokens <= 0 {
 		return 0
 	}

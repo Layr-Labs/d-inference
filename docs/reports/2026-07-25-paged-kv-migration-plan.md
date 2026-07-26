@@ -631,6 +631,32 @@ vision chunks remain unblocked (0.2), so the parametric reserve must be
 `f(maxBatchedTokensPerStep, maxContext, heads, subBlockSize, spanChunkMaxL)`
 with the span path costed at full `L`.
 
+> **RETIRED — Track E is closed and the table above is wrong.** Two errors, one
+> fatal. (1) The `concurrent prefills` axis does not apply to the span path,
+> which is the only path this section is really costing. Span-bearing chunks
+> are pinned to batch 1 on BOTH backends —
+> `AttentionV1.swift:153` and `:379` (`spanContext == nil || (B == 1 && L > 1)`)
+> and `PagedLayerCache.swift:228-230` (`precondition(boundSpanContext == nil ||
+> b == 1, "span-bearing chunks are never packed")`) — so at most ONE span score
+> tensor is ever live and raising `maxBatchedTokensPerStep` does not multiply
+> it. The `8 (after §13.2) → 13.1 GB` row is **unreachable**; §13 item 6.2's
+> "requires 0.3 first (activation memory doubles)" dependency is void.
+> (2) Both rows are computed at heads = 8, which is gemma-4's KV-head count.
+> The score tensor is materialised after the GQA repeat, so the multiplier is
+> the QUERY-head count, 16 (`num_attention_heads 16`,
+> `2026-07-25-paged-gate-results.md:569-571`). The table understates its own
+> model by 2x.
+>
+> The parametric reserve shipped provider-side with zero call sites and was
+> deleted; the coordinator mirror that DID ship was charging a surcharge no
+> provider gate held back, which 429'd servable prompts. Both sides are now
+> flat at 3 GiB. Measured transient peak-over-weights (M4 Max 128 GB,
+> 2026-07-10) is 3.40 GiB for gemma-4 and 2.20 GiB for gpt-oss at B=4, i.e. the
+> dominant term is non-attention working set — which this table does not model
+> at all, and which is 0 under this formula for the fused model that spends
+> 2.20 GiB of it. Retune the flat floor against a measurement, in both repos,
+> or not at all.
+
 > **Rev 1 pointed at the wrong coordinator file.** It said to thread this
 > through `freeMemoryAdmits` (`registry/scheduler.go:1301`). That function is
 > **reserve-blind by design** — it charges flat tokens against the
@@ -1596,3 +1622,4 @@ Every item below was verified against `e65b5bbc1` / `abd1985`.
 | 24 | — (absent) | **New:** paged prefill gets none of #85's memory win and adds a gathered copy (§7.0.2p). |
 | 25 | — (absent) | **New:** multi-model co-residency under paged is known-broken and unscheduled (§15). |
 | 26 | — (absent) | **New:** `effectiveTPSLoadFactor = 0.27` mispredicts CBv2 B=8 by ~16x and drives four systems (§3.4). |
+| 27 | §7.0.3's B=8 → 13.1 GB score-tensor row; Track E "parametric activation reserve" | **Unreachable and retired.** Span chunks are batch-1-pinned on both backends (`AttentionV1.swift:153`/`:379`, `PagedLayerCache.swift:228-230`), so the step batch never multiplies the span score tensor; the table is also computed at KV heads (8) not query heads (16). Provider-side machinery deleted, coordinator mirror flattened — both sides now hold a flat 3 GiB (§7.0.3). |

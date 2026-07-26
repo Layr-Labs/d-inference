@@ -56,9 +56,9 @@ func TestProviderBudgetFitsWarmSlotLiveBudget(t *testing.T) {
 func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 	// gemma-4-26b shape: 28 GB catalog weights on a 48 GB box. Padded weights
 	// = 28 × ~1.1176 ≈ 31.3 GiB ≤ free_for_load 32 → the weight gate admits.
-	// 48 GB leaves ~11.9 GB post-load, which puts the budget in the activation
-	// reserve's FLOOR regime (below the 49152-token crossover), so the flat
-	// 3 GiB — not the per-token score tensor — is what is held back here.
+	// 48 GB leaves ~11.9 GB post-load, out of which the provider holds back the
+	// flat 3 GiB activation reserve — the same amount for every model, whatever
+	// its attention posture (UnifiedMemoryCap.defaultActivationReserveBytes).
 	freeForLoad := 32.0
 	snap := routingSnapshot{
 		totalMemoryGB:   48,
@@ -115,7 +115,7 @@ func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	model := "cold-budget-model"
 	// 28 GB weights on a 48 GB node: min_ram 36 ≤ 48 passes the hardware gate,
 	// and the post-load budget is coldTokenBudgetEstimate(48, 28, 0) = 23911
-	// (floor regime — see TestColdTokenBudgetEstimate case (b2)).
+	// (see TestColdTokenBudgetEstimate case (b2)).
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
 	makeWarmPoolColdProvider(t, reg, "cold-48gb", model, 80, 48, 0)
 

@@ -270,6 +270,63 @@ struct BackendParityReportTests {
         #expect(result.measurements["paged"] == "2 rows, 5 tokens, finish=stop")
     }
 
+    // MARK: - Zero-evidence rows
+
+    /// An arm whose submissions were REFUSED. `BackendParityHarness.generate`
+    /// returns a real `Row` for a failed submit — empty token list, a
+    /// `submit_error` finish reason — so the arm looks populated to anything
+    /// that only counts rows, and two such arms compare EQUAL.
+    private func refusedArm(
+        _ selection: String,
+        finish: String = "submit_error: capacity refused the request"
+    ) -> BackendParityObservation {
+        BackendParityObservation(
+            selection: selection, resolvedBackend: selection,
+            rows: [row("a", [], finish: finish), row("b", [], finish: finish)])
+    }
+
+    @Test("both arms failing to submit is UNAVAILABLE, never parity over zero tokens")
+    func bothArmsGeneratingNothingIsNotAPass() {
+        let finish = "submit_error: capacity refused the request"
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: refusedArm("contiguous", finish: finish),
+            candidate: refusedArm("paged", finish: finish))
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .pass)
+        // The reason must be NAMED, and the name is the submission failure.
+        #expect(result.detail.contains(finish))
+        #expect(result.detail.contains("NOTHING WAS COMPARED"))
+        #expect(result.detail.contains("NOT agreement"))
+        #expect(result.measurements["paged"] == "2 rows, 0 tokens, finish=\(finish)")
+
+        // Discrimination, not branch exercise: the ONLY thing that changes
+        // below is that tokens were actually generated. Same arms, same row
+        // count, same prompts, same order — so a guard keyed on anything but
+        // the ABSENCE OF TOKENS would move this verdict too, and a guard that
+        // simply refused more often would fail here.
+        func served(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [row("a", [11, 12]), row("b", [13])])
+        }
+        let agreed = BackendParityCriteria.tokenExactness(
+            baseline: served("contiguous"), candidate: served("paged"))
+        #expect(agreed.verdict == .pass)
+        #expect(agreed.detail.contains("3 generated token ids identical"))
+        #expect(!agreed.detail.contains("NOTHING WAS COMPARED"))
+    }
+
+    @Test("one arm generating nothing is named, not reported as a first flip")
+    func oneEmptyArmIsNamedRatherThanDiffed() {
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: refusedArm("paged"))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("paged generated no tokens"))
+        #expect(result.detail.contains("submit_error"))
+        // A zero-length stream is an ABSENCE, not a divergence at token 0.
+        #expect(!result.detail.contains("first flip"))
+    }
+
     // MARK: - Same-backend numerics control
 
     private func drifted() -> BackendParityObservation {
@@ -463,7 +520,8 @@ struct BackendParityReportTests {
         let result = BackendParityCriteria.tokenExactness(
             baseline: baseline, candidate: empty)
         #expect(result.verdict == .unavailable)
-        #expect(result.detail.contains("no greedy rows"))
+        #expect(result.detail.contains("no rows at all"))
+        #expect(result.detail.contains("nothing to compare"))
     }
 
     @Test("firstDivergence points at the index where the streams part")
@@ -780,7 +838,120 @@ struct BackendParityReportTests {
         let result = BackendParityCriteria.mtpTokenExactness(
             baseline: baseline, candidate: noRows)
         #expect(result.verdict == .unavailable)
-        #expect(result.detail.contains("no MTP rows were captured"))
+        #expect(result.detail.contains("emitted no tokens to score"))
+        #expect(result.detail.contains("no rows at all"))
+    }
+
+    @Test("an MTP arm that generated nothing on BOTH backends is not an inert drafter")
+    func bothArmsEmptyMTPIsNotADraftFailure() {
+        let finish = "submit_error: capacity refused the request"
+        func arm(_ selection: String, tokens: [Int]) -> BackendParityObservation {
+            let reason = tokens.isEmpty ? finish : "stop"
+            return BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [row("a", tokens, finish: reason)],
+                mtp: BackendParityObservation.MTP(
+                    rows: [row("a", tokens, finish: reason)],
+                    driverConstructed: true,
+                    rounds: 0,
+                    draftedTokens: 0))
+        }
+        let refused = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: []), candidate: arm("paged", tokens: []))
+        #expect(refused.verdict == .unavailable)
+        #expect(refused.verdict != .fail)
+        #expect(refused.detail.contains("generated NOTHING on either backend"))
+        #expect(refused.detail.contains(finish))
+
+        // Discrimination: byte-identical MTP counters, but the engine actually
+        // SERVED the rows. A driver that emits the target's own tokens while
+        // drafting nothing is the gemma-4 silent no-op and must still FAIL.
+        let inert = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: [1, 2, 3]),
+            candidate: arm("paged", tokens: [1, 2, 3]))
+        #expect(inert.verdict == .fail)
+        #expect(inert.detail.contains("produced no drafts"))
+    }
+
+    @Test("MTP losslessness measured over zero tokens is UNAVAILABLE, not token-exact")
+    func mtpSelfComparisonNeedsGeneratedTokens() {
+        let finish = "submit_error: capacity refused the request"
+        func arm(_ selection: String, tokens: [Int]) -> BackendParityObservation {
+            let reason = tokens.isEmpty ? finish : "stop"
+            return BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [row("a", tokens, finish: reason)],
+                mtp: BackendParityObservation.MTP(
+                    rows: [row("a", tokens, finish: reason)],
+                    driverConstructed: true,
+                    rounds: 4,
+                    draftedTokens: 16,
+                    acceptedTokens: 9))
+        }
+        // Drafts WERE produced, so the inert-drafter FAIL does not apply. This
+        // is the path that used to certify "MTP reproduced each backend's OWN
+        // plain greedy decode" across zero generated tokens.
+        let empty = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: []), candidate: arm("paged", tokens: []))
+        #expect(empty.verdict == .unavailable)
+        #expect(empty.verdict != .pass)
+        #expect(empty.detail.contains(finish))
+
+        let served = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: [5, 6]),
+            candidate: arm("paged", tokens: [5, 6]))
+        #expect(served.verdict == .pass)
+        #expect(served.detail.contains("MTP reproduced each backend's OWN plain greedy decode"))
+    }
+
+    @Test("an MTP stream of empty rows is not scored against a real plain decode")
+    func hollowMTPStreamIsUnavailableNotAFail() {
+        // Before the zero-evidence guard this reached `rowMismatch`, which
+        // read "2 rows of nothing vs 2 rows of tokens" as an MTP divergence
+        // and booked a FAIL against paged for what is a submission failure.
+        let finish = "submit_error: capacity refused the request"
+        let hollow = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: [row("a", [], finish: finish), row("b", [], finish: finish)],
+                driverConstructed: true, rounds: 4, draftedTokens: 20))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: hollow)
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .fail)
+        #expect(result.detail.contains("emitted no tokens to score"))
+        #expect(result.detail.contains(finish))
+    }
+
+    @Test("a whole run where neither arm generated a token reports no token parity")
+    func evaluateRefusesZeroEvidenceEndToEnd() {
+        let finish = "submit_error: capacity refused the request"
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [row("a", [], finish: finish)],
+                mtp: BackendParityObservation.MTP(
+                    rows: [row("a", [], finish: finish)],
+                    driverConstructed: true, rounds: 3, draftedTokens: 9),
+                packedPrefill: BackendParityObservation.Capability(
+                    active: true, detail: "probe active"),
+                visionSpans: BackendParityObservation.Capability(
+                    active: true, detail: "span served"),
+                prefixReuse: baseline.prefixReuse)
+        }
+        let criteria = BackendParityCriteria.evaluate(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        let token = criteria.first {
+            $0.id == BackendParityReport.CriterionID.tokenExactness.rawValue
+        }
+        let mtp = criteria.first {
+            $0.id == BackendParityReport.CriterionID.mtpTokenExactness.rawValue
+        }
+        #expect(token?.verdict == .unavailable)
+        #expect(mtp?.verdict == .unavailable)
+        // The token criteria abstained; nothing was converted into a FAIL.
+        #expect(criteria.allSatisfy { $0.verdict != .fail })
     }
 
     // MARK: - Capability criteria

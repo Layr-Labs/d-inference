@@ -747,12 +747,23 @@ public enum BackendParityCriteria {
         if let blocker = comparisonBlocker(baseline: baseline, candidate: candidate) {
             return .init(id: id, title: title, verdict: .unavailable, detail: blocker)
         }
-        if baseline.rows.isEmpty || candidate.rows.isEmpty {
+        // Rows that EXIST but carry no tokens are not evidence. Both arms
+        // hitting the same submission failure yields equal-length arrays of
+        // EMPTY token streams with equal `submit_error` finish reasons, and
+        // `rowMismatch` reports two empty streams as identical — so the PASS
+        // branch below would book "the backends agree" off a run that
+        // generated nothing. "The arms agreed" and "there was nothing to
+        // compare" must never render the same way.
+        if let blocker = zeroEvidenceBlocker(
+            baselineLabel: baseline.label, baselineRows: baseline.rows,
+            candidateLabel: candidate.label, candidateRows: candidate.rows)
+        {
             return .init(
-                id: id, title: title, verdict: .unavailable,
-                detail: "no greedy rows were generated "
-                    + "(\(baseline.label): \(baseline.rows.count), "
-                    + "\(candidate.label): \(candidate.rows.count))")
+                id: id, title: title, verdict: .unavailable, detail: blocker,
+                measurements: [
+                    baseline.label: tokenSummary(baseline.rows),
+                    candidate.label: tokenSummary(candidate.rows),
+                ])
         }
 
         var measurements: [String: String] = [
@@ -798,10 +809,20 @@ public enum BackendParityCriteria {
         }
 
         let total = baseline.rows.reduce(0) { $0 + $1.tokens.count }
+        // The SHORTEST row, not only the total. A run whose prompts each emit
+        // one token before `stop` clears the zero-evidence guard above and
+        // reports agreement over three tokens — true, and far thinner than
+        // "3 prompts matched" sounds. Disclosing the shortest row makes that
+        // thinness unmissable without inventing a minimum-token threshold,
+        // which would refuse genuine passes on short-answer prompts. Measured
+        // on gemma-4-e2b-it-4bit, where raw un-templated parity prompts do
+        // exactly this.
+        let shortest = baseline.rows.map(\.tokens.count).min() ?? 0
         return .init(
             id: id, title: title, verdict: .pass,
             detail: "\(baseline.rows.count) prompts, \(total) generated token ids identical "
-                + "between \(baseline.label) and \(candidate.label), finish reasons equal",
+                + "between \(baseline.label) and \(candidate.label), finish reasons equal "
+                + "(shortest row \(shortest) token\(shortest == 1 ? "" : "s"))",
             measurements: measurements)
     }
 
@@ -930,6 +951,26 @@ public enum BackendParityCriteria {
                 measurements: measurements)
         }
 
+        // Both arms' MTP streams are EMPTY, which is NOT the same as an inert
+        // drafter and must not be scored as one. A failed submission still
+        // returns a `Row` — empty token list, `submit_error:` finish reason —
+        // so `producedDrafts` below would read "no drafts produced" off a run
+        // in which the engine never served the request at all, and book an
+        // engine-side refusal as an MTP defect.
+        if let baseEmpty = zeroEvidenceReason(base.rows),
+            let candEmpty = zeroEvidenceReason(cand.rows)
+        {
+            return .init(
+                id: id, title: title, verdict: .unavailable,
+                detail: "the MTP arm generated NOTHING on either backend "
+                    + "(\(baseline.label): \(baseEmpty); \(candidate.label): \(candEmpty))"
+                    + " — no MTP output was served on either side, so this measures a "
+                    + "submission failure rather than MTP behaviour: there is no stream "
+                    + "to score for losslessness, and no evidence either way about the "
+                    + "drafter. The finish reasons above name the cause",
+                measurements: measurements)
+        }
+
         // Drafts-produced comes FIRST. A no-op drafter emits the target's own
         // tokens, so the token comparison below would pass on nothing.
         var inert: [String] = []
@@ -944,26 +985,43 @@ public enum BackendParityCriteria {
                 measurements: measurements)
         }
 
-        if base.rows.isEmpty || cand.rows.isEmpty {
+        // Rows can exist and carry nothing, and `rowMismatch` reads two such
+        // streams as token-exact — so without this the self-comparison below
+        // would certify MTP losslessness over zero MTP tokens.
+        var emptyMTP: [String] = []
+        if let reason = zeroEvidenceReason(base.rows) {
+            emptyMTP.append("\(baseline.label): \(reason)")
+        }
+        if let reason = zeroEvidenceReason(cand.rows) {
+            emptyMTP.append("\(candidate.label): \(reason)")
+        }
+        if !emptyMTP.isEmpty {
             return .init(
                 id: id, title: title, verdict: .unavailable,
-                detail: "drafts were produced but no MTP rows were captured "
-                    + "(\(baseline.label): \(base.rows.count), \(candidate.label): \(cand.rows.count))",
+                detail: "drafts were produced but the MTP arm emitted no tokens to score ("
+                    + emptyMTP.joined(separator: "; ") + ") — with no MTP output there is "
+                    + "nothing to compare against the plain decode",
                 measurements: measurements)
         }
 
-        // The own-target comparison needs a target. Without plain rows there
-        // is nothing to measure losslessness against, and silently comparing
-        // the arms to each other instead is the failure mode this criterion
-        // was rewritten to remove.
-        if baseline.rows.isEmpty || candidate.rows.isEmpty {
+        // The own-target comparison needs a target. With no plain rows — or
+        // with plain rows that generated nothing — there is nothing to measure
+        // losslessness against, and silently comparing the arms to each other
+        // instead is the failure mode this criterion was rewritten to remove.
+        var emptyPlain: [String] = []
+        if let reason = zeroEvidenceReason(baseline.rows) {
+            emptyPlain.append("\(baseline.label): \(reason)")
+        }
+        if let reason = zeroEvidenceReason(candidate.rows) {
+            emptyPlain.append("\(candidate.label): \(reason)")
+        }
+        if !emptyPlain.isEmpty {
             return .init(
                 id: id, title: title, verdict: .unavailable,
-                detail: "MTP rows were captured but the plain greedy rows they must be "
-                    + "compared against are missing (\(baseline.label): "
-                    + "\(baseline.rows.count), \(candidate.label): \(candidate.rows.count))"
-                    + " — with no own-target decode there is nothing to measure MTP "
-                    + "losslessness against",
+                detail: "MTP rows were captured but the plain greedy decode they must be "
+                    + "compared against generated nothing ("
+                    + emptyPlain.joined(separator: "; ") + ") — with no own-target decode "
+                    + "there is nothing to measure MTP losslessness against",
                 measurements: measurements)
         }
 
@@ -1257,6 +1315,66 @@ public enum BackendParityCriteria {
 
     // MARK: - Comparators
 
+    /// Why a token stream is not evidence: it has no rows at all, or it has
+    /// rows and not one of them generated a token. Nil when at least one
+    /// token was generated.
+    ///
+    /// `rowMismatch` is blind to this BY CONSTRUCTION, and that blindness is
+    /// how a gate reports parity over nothing. When a submission fails,
+    /// `BackendParityHarness.generate` still returns a `Row` — empty token
+    /// list, `submit_error:` finish reason — so two arms that failed the same
+    /// way produce equal-length arrays of empty streams which compare EQUAL,
+    /// and every token criterion in this file then takes its PASS branch over
+    /// zero generated tokens. Same shape as the two other gates-that-cannot-
+    /// fail fixed on this PR: absence rendered as agreement.
+    ///
+    /// The rendered reason names the finish reasons the rows carried, because
+    /// that is where the actual cause (the submission failure) is recorded.
+    static func zeroEvidenceReason(_ rows: [BackendParityObservation.Row]) -> String? {
+        guard !rows.isEmpty else { return "no rows at all" }
+        guard rows.allSatisfy({ $0.tokens.isEmpty }) else { return nil }
+        let reasons = Set(rows.map(\.finishReason).filter { !$0.isEmpty }).sorted()
+        return "\(rows.count) row(s), 0 generated tokens, "
+            + (reasons.isEmpty
+                ? "no finish reason recorded"
+                : "finish=\(reasons.joined(separator: "/"))")
+    }
+
+    /// The blocking reason when a PAIR of token streams cannot be compared at
+    /// all, or nil when both arms generated something.
+    ///
+    /// The two cases are deliberately worded apart. "Neither arm generated
+    /// anything" is an absence of evidence and must never read like
+    /// agreement; "one arm generated nothing" is an asymmetry whose empty
+    /// side still carries no information about the other.
+    static func zeroEvidenceBlocker(
+        baselineLabel: String,
+        baselineRows: [BackendParityObservation.Row],
+        candidateLabel: String,
+        candidateRows: [BackendParityObservation.Row]
+    ) -> String? {
+        switch (zeroEvidenceReason(baselineRows), zeroEvidenceReason(candidateRows)) {
+        case (nil, nil):
+            return nil
+        case (.some(let baseReason), .some(let candReason)):
+            return "NOTHING WAS COMPARED — this is NOT agreement between the backends. "
+                + "Neither arm generated a token (\(baselineLabel): \(baseReason); "
+                + "\(candidateLabel): \(candReason)), and two empty token streams are "
+                + "trivially identical, so scoring them would report an absence of "
+                + "evidence as parity. The finish reasons above name the cause"
+        case (.some(let baseReason), nil):
+            return "\(baselineLabel) generated no tokens (\(baseReason)) while "
+                + "\(candidateLabel) generated \(tokenSummary(candidateRows)) — an empty "
+                + "stream carries no information about the other arm, so there is nothing "
+                + "to compare"
+        case (nil, .some(let candReason)):
+            return "\(candidateLabel) generated no tokens (\(candReason)) while "
+                + "\(baselineLabel) generated \(tokenSummary(baselineRows)) — an empty "
+                + "stream carries no information about the other arm, so there is nothing "
+                + "to compare"
+        }
+    }
+
     /// Every per-row divergence between two token-id streams, or nil when
     /// every row matches exactly (ids AND finish reason).
     ///
@@ -1309,7 +1427,7 @@ public enum BackendParityCriteria {
     static func tokenSummary(_ rows: [BackendParityObservation.Row]) -> String {
         let total = rows.reduce(0) { $0 + $1.tokens.count }
         let reasons = Set(rows.map(\.finishReason)).sorted().joined(separator: "/")
-        return "\(rows.count) rows, \(total) tokens, finish=\(reasons)"
+        return "\(rows.count) rows, \(total) tokens, finish=\(reasons.isEmpty ? "none" : reasons)"
     }
 
     static func mtpSummary(_ mtp: BackendParityObservation.MTP) -> String {

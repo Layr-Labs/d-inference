@@ -1392,14 +1392,41 @@ public enum BackendParityCriteria {
                 measurements: measurements)
         }
 
+        // Disclose how much of the prompt adoption actually SKIPPED, because
+        // that is the exactness oracle's sample size and it is often small.
+        // `frozenFullReplay` replays `min(matched, replayBound)` of the match,
+        // so on gemma-4 at 28,672 the adopting request re-does 89% of the
+        // prompt and only ~10% is genuinely adopted. "Adoption was exact"
+        // there is a much smaller claim than it sounds, and a reader deciding
+        // whether to trust paged adoption needs the denominator.
+        //
+        // Disclosed, never enforced: a reuse-fraction threshold would turn a
+        // thin measurement into a refusal to measure, which is the failure
+        // this criterion has already been fixed for twice.
+        var detail = "\(candidate.label) saved \(cand.secondPrefillTokensSaved) prefill tokens, "
+            + ">= \(base.secondPrefillTokensSaved) on \(baseline.label)"
+        if structuralAllowance > 0 {
+            detail += " — and it beat the \(structuralAllowance)-token structural allowance, "
+                + "which is surprising and worth checking"
+        }
+        let exercised = [base, cand].compactMap { arm -> Double? in
+            guard arm.promptTokens > 0, arm.adoptionTokenExact != nil else { return nil }
+            return Double(arm.secondPrefillTokensSaved) / Double(arm.promptTokens) * 100
+        }
+        if let weakest = exercised.min() {
+            detail += ". Adoption was token-exact against each arm's OWN cold request, but "
+                + "note the sample: the thinner arm actually skipped only "
+                + String(format: "%.1f", weakest) + "% of its prompt "
+                + "(the rest was frozen replay, which re-does the cold arithmetic and so "
+                + "cannot diverge). Read this as 'the adoption performed here was exact', "
+                + "NOT as 'adoption is exact'"
+        } else {
+            detail += ". Adoption exactness was NOT MEASURED on either arm, so this verdict "
+                + "is about token COUNTS only and says nothing about whether reuse changes "
+                + "the answer"
+        }
         return .init(
-            id: id, title: title, verdict: .pass,
-            detail: "\(candidate.label) saved \(cand.secondPrefillTokensSaved) prefill tokens, "
-                + ">= \(base.secondPrefillTokensSaved) on \(baseline.label)"
-                + (structuralAllowance > 0
-                    ? " — and it beat the \(structuralAllowance)-token structural allowance, "
-                        + "which is surprising and worth checking"
-                    : ""),
+            id: id, title: title, verdict: .pass, detail: detail,
             measurements: measurements)
     }
 
@@ -1606,6 +1633,18 @@ public enum BackendParityCriteria {
         }
         summary += ", matched=\(reuse.secondMatchedTokens)"
         summary += ", saved=\(reuse.secondPrefillTokensSaved)"
+        // The oracle's verdict and its sample size travel together: "exact"
+        // over 9.8% of a prompt is a far smaller claim than over 56%, and
+        // splitting them is how a thin measurement gets quoted as a strong one.
+        switch reuse.adoptionTokenExact {
+        case .some(true): summary += ", adoptionExact=true"
+        case .some(false): summary += ", adoptionExact=FALSE"
+        case nil: summary += ", adoptionExact=not_measured"
+        }
+        if reuse.promptTokens > 0, reuse.adoptionTokenExact != nil {
+            let pct = Double(reuse.secondPrefillTokensSaved) / Double(reuse.promptTokens) * 100
+            summary += ", reused=" + String(format: "%.1f", pct) + "%"
+        }
         summary += ", cache(hits=\(reuse.cacheHits),misses=\(reuse.cacheMisses),"
         summary += "tokensSaved=\(reuse.cacheTokensSaved))"
         return summary

@@ -185,6 +185,59 @@ struct BackendParityReportTests {
         #expect(asymmetric.detail != symmetric.detail)
     }
 
+    /// A PASS must carry its own sample size. `frozenFullReplay` replays
+    /// `min(matched, replayBound)`, so on gemma-4 at 28,672 only ~10% of the
+    /// prompt is genuinely adopted and the other 89% re-does the cold
+    /// arithmetic and cannot diverge. "Adoption was exact" over that sample
+    /// is a far smaller claim than it sounds, and the verdict is where a
+    /// reader will stop.
+    @Test("a PASS discloses how much of the prompt adoption actually exercised")
+    func passDisclosesAdoptionSampleSize() {
+        func arm(
+            _ selection: String, saved: Int, bound: Int, exact: Bool?
+        ) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                prefixReuse: BackendParityObservation.PrefixReuse(
+                    capabilitySupported: true,
+                    capabilityStrategy: "frozen_full_replay",
+                    replayBoundTokens: bound,
+                    promptTokens: 28672,
+                    donatedEntries: 1,
+                    firstOutcome: "miss",
+                    secondOutcome: "hit",
+                    secondMatchedTokens: 28416,
+                    secondPrefillTokensSaved: saved,
+                    cacheHits: 1,
+                    cacheMisses: 1,
+                    adoptionTokenExact: exact))
+        }
+
+        // The real gemma-4 shape: 2,816 of 28,672 skipped = 9.8%.
+        let thin = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", saved: 2816, bound: 25600, exact: true),
+            candidate: arm("paged", saved: 2816, bound: 25600, exact: true))
+        #expect(thin.verdict == .pass)
+        #expect(thin.detail.contains("9.8%"))
+        #expect(thin.detail.contains("NOT as 'adoption is exact'"))
+
+        // Unmeasured must say the verdict is about counts only, and must not
+        // imply the answer was checked.
+        let unmeasured = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", saved: 2816, bound: 25600, exact: nil),
+            candidate: arm("paged", saved: 2816, bound: 25600, exact: nil))
+        #expect(unmeasured.verdict == .pass)
+        #expect(unmeasured.detail.contains("NOT MEASURED"))
+        #expect(!unmeasured.detail.contains("token-exact"))
+
+        // The summary carries verdict and sample size together, so neither can
+        // be quoted without the other.
+        let summary = BackendParityCriteria.prefixSummary(
+            arm("paged", saved: 2816, bound: 25600, exact: true).prefixReuse!)
+        #expect(summary.contains("adoptionExact=true"))
+        #expect(summary.contains("reused=9.8%"))
+    }
+
     // MARK: - Exit status
 
     @Test("an all-skipped run does NOT exit 0 as if it passed")

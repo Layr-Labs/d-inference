@@ -76,11 +76,12 @@ public enum UnifiedMemoryCap {
     /// batch. Separately, `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=0` unblocks TEXT on
     /// both backends: the one OPERATOR-REACHABLE configuration where this
     /// floor is provably wrong for the common case. That is a fact about the
-    /// code and holds whatever we sanction — as a matter of release policy
-    /// v0.8.0 separately declines to sanction a non-default value for that
-    /// knob, because it also voids the G2 token-exactness gate (see the
-    /// release notes). Either way the answer here is the env override, not a
-    /// per-model formula.
+    /// code and holds whatever we sanction; as policy, v0.8.0 declines to
+    /// sanction `0` specifically for this reason. A non-default but NON-ZERO
+    /// width is a different matter and stays supported here — sub-blocking is
+    /// still on and the score tensor gets SMALLER, so it costs exactness
+    /// (summation order), not memory. Either way the answer here is the env
+    /// override, not a per-model formula.
     static let defaultActivationReserveBytes: UInt64 = 3 * 1024 * 1024 * 1024  // 3 GiB
 
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap

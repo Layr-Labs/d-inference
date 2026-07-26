@@ -159,25 +159,26 @@ struct EngineV2KVBackendGateTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 
-    @Test("auto is CONTIGUOUS for GPT-OSS and cannot drift with family defaults")
-    func autoServesContiguousForGPTOSS() async throws {
+    @Test("auto is PAGED for GPT-OSS and cannot drift with family defaults")
+    func autoServesPagedForGPTOSS() async throws {
         let build = try makeBuild(model: try tinyGPTOSS(), kvBackend: .auto)
-        // `.auto` is CONTIGUOUS. A flip to paged was made and reverted on
-        // measurement: paged adoption is not transparent (see the rationale
-        // at EngineV2Factory+Production.swift's `.auto` case). This
-        // assertion guards BOTH directions — it caught the flip when it
-        // landed and it will catch an unintended re-flip.
-        #expect(build.kvBackendKind == .contiguous)
+        // `.auto` is PAGED as of v0.8.0 — see the rationale at
+        // EngineV2Factory+Production.swift's `.auto` case. This assertion
+        // guards BOTH directions: it caught the first flip, it caught the
+        // revert, and it will catch a silent third change.
+        #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
+        // Paged reports the PHYSICAL pool it committed, not the logical
+        // admission grant a contiguous slot advertises.
         let snapshot = build.engine.capacity()
-        #expect(snapshot.kvBytesBackendCapacity == gateTestCapacity)
+        #expect(snapshot.kvBytesBackendCapacity > 0)
         await build.engine.shutdown()
     }
 
-    @Test("auto resolves CONTIGUOUS for Gemma-4 (bf16 KV stays opt-in)")
-    func autoServesContiguousForGemma() async throws {
+    @Test("auto resolves PAGED for Gemma-4 (bf16 KV stays opt-in)")
+    func autoServesPagedForGemma() async throws {
         let build = try makeBuild(model: try tinyGemma4Text(), kvBackend: .auto)
-        #expect(build.kvBackendKind == .contiguous)
+        #expect(build.kvBackendKind == .paged)
         #expect(build.kvBackendFallbackReason == nil)
         await build.engine.shutdown()
     }

@@ -542,42 +542,50 @@ extension EngineV2Factory {
         switch kvBackend {
         case .contiguous: resolvedKind = .contiguous
         case .paged: resolvedKind = .paged
-        // v0.8.0: `.auto` resolves CONTIGUOUS. The flip to paged was made
-        // and then REVERTED on measurement, and the reason is a hard
-        // blocker rather than a tuning question: paged ADOPTION is not
-        // transparent. Measured on gemma-4 at a 28,672-token prompt, one
-        // process, one paged slot, backend label confirmed on every
-        // sample:
+        // v0.8.0: `.auto` resolves PAGED. This is the release's headline
+        // decision and it was made twice — flipped, reverted on evidence
+        // from `gemma-4-e2b-it-4bit`, then re-flipped when that evidence
+        // turned out not to describe production.
         //
-        //   paged      cold    -> "...many times"     (deterministic, run twice, byte-identical)
-        //   paged      adopted -> "...What would..."  (differs from its OWN cold, token 20 of 32)
-        //   contiguous cold    -> "...What would..."
-        //   contiguous adopted -> "...What would..."  (exact)
+        // WHY PAGED, measured on the real slot path with the SSD tier, six
+        // arms, backend label confirmed on every one, cold-twin
+        // byte-identical throughout. Prefix-cache ADOPTION exactness:
         //
-        // So on paged the answer depends on whether a prefix-cache hit
-        // occurred — state the caller cannot see or control. Note WHICH
-        // answer paged-adopted gives: the CONTIGUOUS one, not its own
-        // paged-cold one. Frozen-full replay reads CACHED keys, matching
-        // what contiguous always did, while paged cold goes through
-        // `PagedLayerCache.prefillKVWritingChunk`. Cold prefill itself is
-        // deterministic, so this is adoption, not accumulation noise.
+        //   model                     paged        contiguous
+        //   gemma-4-26B-A4B-it-qat    EXACT        DIVERGES at byte 4
+        //   gpt-oss-20b-MXFP4-Q8      EXACT        DIVERGES
+        //   gemma-4-e2b-it-4bit       diverges     exact
         //
-        // Suspects, in order: `restoringWindowsAtBoundary` collapsing
-        // `replayTokens` to zero on `frozenFullReplay`
-        // (`PrefixReusePlan.swift:214-216`, the WS-4.2 sidecar path this
-        // release adds), then the deleted extra prefill chunk
-        // (`PrefixReusePlan.swift:120-152`, `PagedKVBackend.swift:301-319`).
+        // The first two are the ENTIRE production catalog. e2b appears zero
+        // times in it — it is an e2e fixture. So on every model we actually
+        // serve, contiguous is the arm that returns a different answer when
+        // a prefix-cache hit occurs, and paged is the arm that does not.
         //
-        // Paged remains fully available per-slot via
-        // `engine_v2_kv_backend = "paged"`. Re-flip only when paged
-        // adopted == paged cold on this prompt.
+        // The split follows the RESOLVED backend 6/6, including a control
+        // nobody designed: an arm that REQUESTED paged, resolved contiguous
+        // under the kill switch, and diverged with the contiguous rows.
+        // Requested does not predict; resolved does.
         //
-        // This is only a win alongside `engineV2MaxConcurrent = 8`.
-        // Measured on gemma-4/M4 Max, paged-vs-contiguous aggregate decode:
-        // 0.92x at B=1, 0.98x at B=4, 1.17x at B=8. The crossover is ~B=5,
-        // so flipping the backend while leaving the batch at 4 buys a
-        // storage change and no throughput. The two move together.
-        case .auto: resolvedKind = .contiguous
+        // Throughput agrees rather than trading off: 1.27x aggregate decode
+        // from B=4->B=8 against contiguous's 1.07x, and faster long prefill.
+        // The B=1 case is 0.92x, which is the idle case — the coordinator's
+        // quality cap returns 8 for gemma-4 on either backend's measured
+        // solo rate.
+        //
+        // KNOWN AND ACCEPTED. gemma-4 greedy token ids differ from
+        // contiguous. Measurably closer to an fp32 reference (7-17x on the
+        // full-attention layers) but DIFFERENT — same prompt, different
+        // text. That is a product decision, taken explicitly.
+        //
+        // The e2e exact-cache lane runs e2b, the one checkpoint where paged
+        // adoption is the inexact arm, so that lane is expected red until
+        // either the e2b paged path is fixed or the fixture moves to a
+        // served model. It is kept pinned rather than silenced.
+        //
+        // Roll back fleet-wide with `DARKBLOOM_CBV2_PAGED_KV=0`, which
+        // lands on the kill-switch degrade below, not on a refusal. Per
+        // slot: `engine_v2_kv_backend = "contiguous"`.
+        case .auto: resolvedKind = .paged
         }
         var fallbackReason: String?
         // DEGRADE, not refuse — even on an explicit paged selection. This

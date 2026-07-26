@@ -347,3 +347,114 @@ it cheap.**
 
 2 and 3 compound: the sentinel design is what makes sliding blocks
 shareable at all, and aliasing is what makes sharing free.
+
+## CONVERGED FINDINGS — corrections after peer review
+
+Five agents cross-checked each other and three of the conclusions above
+moved. Recorded because the corrected versions are cheaper AND more
+precise than what they replace.
+
+### The 25,600 is CORRECT arithmetic, not a mis-derivation
+
+Withdrawn: "a design artifact, not physics." It is the RECEPTIVE FIELD of
+25 stacked sliding layers of width 1024 — recomputing position p exactly
+needs correct hidden states N·W tokens back, and depth compounds the cone
+linearly (`CONTRACT-DECISIONS.md:15`). Those are real forward-pass tokens:
+`replayStart` feeds `rec.numComputedTokens` and the scheduler chunks
+`[C, M)` as ordinary prompt.
+
+The two findings reconcile once you see they measure different things:
+- "layers do not multiply" is about STORAGE — one block id addresses every
+  layer in a group, so residency is 1x not N x.
+- N·W is about NUMERICAL EXACTNESS UNDER RECOMPUTE.
+
+**Storing windowed KV costs 1x and eliminates the N x replay entirely.**
+That is exactly why vLLM's number is ~0: it never recomputes a windowed
+layer.
+
+### The 2.3% has an exact mechanism: the planner REFUSES
+
+At any `M <= 25,600`, `cbv2RequiredRecompute` returns `M`, so
+`replayStart = 0` and `PrefixReusePlan.swift:218` returns **nil**. Not a
+weak plan — no plan. At p50 979 tokens we are ~26x under the threshold, so
+the refusal is unconditional rather than marginal.
+
+### FOUR of the five links are already built
+
+The windowed-restore chain, verified end to end:
+
+| # | link | state |
+|---|---|---|
+| 1 | planner flag `restoringWindowsAtBoundary` | built, **tested** (2 callers pass true), no production caller |
+| 2 | plan with R=0 (`requiresExactWindowRestore`) | built, tested |
+| 3 | backend restore branch | built |
+| 4 | row-side install (`PagedKVBackend.installWindow:462-477`) | **built and live** |
+| 5 | the BRIDGE that supplies the payload | **MISSING** |
+
+The provider half is built and tested too: `adoptionBoundTokens` returns 0
+under `.restoredFromSidecar`, pinned at `replayed == 25_600,
+restored == 0` on the real gemma fixture.
+
+Link 5 is: fetch `SSDPrefixCache.stagedWindow(requestID:)` (:1810, never
+called), bridge each window to `CBv2PagedWindowSnapshot`, place it at the
+windowed layer indices, pass `restoringWindowsAtBoundary: true`, and flip
+`pagedWindowRestoreLanded` — the deliberate fail-closed gate whose comment
+already describes exactly this condition.
+
+**So this is payload plumbing between two built halves, not new
+machinery.** The refusal path is already proven: `makeFrozenFullState`
+validates every layer before reserving a page and throws rather than
+half-installing; `applyAdoption` catches and cold-prefills.
+
+### The Apple-specific constraint, in one line
+
+On Metal the query tile and the simdgroup count are NOT independent knobs.
+They are one budget imposed by the 32 KB threadgroup cap:
+
+> **`BLOCK_Q · (1 + NSG) <= 8`**
+
+because `headsPerThreadgroup` caps `hpt·D` at 1024 floats, making the
+total `≈ 4 · BLOCK_Q · 1024 · (1 + NSG)` bytes — essentially independent
+of head dim. Verified: predicted 20,480 vs actual 20,544 (D=512) and
+20,608 (D=256).
+
+`BLOCK_Q = 4` lands on **32,832 B** — byte-identical to a process fatal
+this codebase already shipped and fixed ("sizing these by GQA is exactly
+the bug that made Gemma-4 global layers a 32,832 B process fatal").
+Whoever takes the L==1 work would re-introduce it to the byte. Put that
+number in the ticket.
+
+vLLM's `BLOCK_Q = BLOCK_M // num_queries_per_kv` has no such coupling.
+**The M-axis packing technique ports; the freedom to size it does not.**
+
+### Rank 1 is worth strictly MORE to us than to vLLM
+
+Sharpened from "probably" to exact. Our preempt path clears the plan —
+`SchedulerV2.swift:782-783` sets `numComputedTokens = 0` AND
+`prefixReusePlan = nil` — and the planner refuses any plan below 25,600.
+So a preempted 979-token row replays **all 979 tokens with certainty**,
+not in expectation.
+
+vLLM's recompute-over-swap choice rests on prefix caching absorbing the
+re-prefill. On gemma-4 that premise is not merely weaker for us — it is
+structurally inapplicable. Which inverts the naive reading of this whole
+exercise: the asymmetric watermark is worth more here than it is upstream.
+
+### Sequencing note
+
+The sentinel item and the L==1 item are independently sized but their
+failure modes are coupled, one way. Today's poison pad fails SAFE by being
+unreachable; a sentinel inside a valid range fails OPEN if the mask is
+wrong, because zeros are not neutral in a softmax (exp(0)=1). That
+analysis assumes BLOCK_Q=1 — which is exactly what the kernel work
+changes. With a query tile, one tile spans rows at different absolute
+positions, so the mask stops being a tile-level property.
+
+vLLM splits this deliberately: `compute_tile_loop_bounds` prunes whole
+tiles using the UNION across the Q-block (an optimisation), and
+`compute_kv_seq_mask` masks per ELEMENT with a per-row `query_abs_pos`
+(the correctness argument). Conflating them is the bug, and it only
+becomes possible once BLOCK_Q > 1.
+
+Cheapest order: sentinel first at BLOCK_Q=1 semantics, kernel second, with
+the re-proof owned by the kernel ticket.

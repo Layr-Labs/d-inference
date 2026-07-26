@@ -458,3 +458,101 @@ becomes possible once BLOCK_Q > 1.
 
 Cheapest order: sentinel first at BLOCK_Q=1 semantics, kernel second, with
 the re-proof owned by the kernel ticket.
+
+## FINAL corrections — three claims above are wrong
+
+### 1. The M-axis amortisation win is UNAVAILABLE, not merely constrained
+
+There is a tighter budget than the 32 KB threadgroup cap: the per-thread
+REGISTER accumulator, `maxAccumulatorFloatsPerThread = 32`
+(`PagedAttentionKernel.swift:387`). It is **already exactly saturated at
+both gemma-4 head dims**:
+
+    global   D=512, hpt=2  ->  2 x 16 = 32 floats   (at cap)
+    sliding  D=256, hpt=4  ->  4 x  8 = 32 floats   (at cap)
+
+Not a coincidence — `headsPerThreadgroup` picks the largest divisor of GQA
+that lands on the cap. gemma-4 is GQA 8 at both dims
+(`Gemma4Text.swift:147,:154`), so this holds unconditionally.
+
+A query tile gives every token its own `m`/`l`/`acc`, so per-thread floats
+become `BLOCK_Q · HPT · D/32`, i.e. **`BLOCK_Q · HPT <= 1024/D`** — at
+most 2 on global layers, 4 on sliding.
+
+The KV tile a threadgroup loads is amortised across exactly `BLOCK_Q ·
+HPT` rows of the M axis, and that product is PINNED. **Adding a token to
+the tile costs exactly one head.** vLLM's `BLOCK_Q = BLOCK_M //
+num_queries_per_kv` works because M is a free 16 rows; ours is a fixed
+budget already spent in full.
+
+So the unified-kernel amortisation argument is dead at our head dims.
+Item 4 still ranks where it does, justified by exactly ONE thing:
+**eliminating the prefill gather round-trip**, which is independent of
+tile shape and survives all three narrowings.
+
+The two limits also bind differently, which is worth keeping: threadgroup
+memory is an uncatchable process fatal refused statically; the register
+cap is a validated level, so exceeding it degrades rather than crashes.
+
+### 2. vLLM has the same coupling — the FAILURE MODE is the delta
+
+Withdrawn: "vLLM's BLOCK_Q has no such coupling."
+`triton_unified_attention.py:932-935` pins `BLOCK_M = 16` and derives
+`BLOCK_Q = BLOCK_M // num_queries_per_kv`. Since `BLOCK_M = BLOCK_Q · gqa`,
+both systems hold the product of query tile and head split constant. The
+query tile is not a free knob there either, and vLLM's one hand-tuned
+exception is gated to Blackwell.
+
+What actually does not port:
+
+> Ours is a **static compile-time refusal**, because overrunning the
+> threadgroup limit is an uncatchable process fatal. Triton allocates
+> shared memory itself and **degrades occupancy** instead of dying.
+
+The technique ports. The tile does not, and the failure mode is the reason.
+
+### 3. Windowed restore does NOT reduce preemption cost — the two items are complementary
+
+The tempting inference — "once link 5 lands, adoption succeeds with zero
+replay, so preemption stops being expensive" — is **false**.
+
+`applyAdoption` has exactly ONE call site in the engine
+(`EngineLoopV2.swift:853`), fired on the submit path immediately after
+`scheduler.enqueue`. There is no adoption attempt anywhere on the resume
+path, and the preempt path destroys the plan outright
+(`SchedulerV2.swift:782-783` sets `numComputedTokens = 0` AND
+`prefixReusePlan = nil`).
+
+**A preempted row has permanently passed the only point at which adoption
+could occur.** It cold-prefills its full sequence on resume,
+unconditionally, whether or not link 5 ever ships.
+
+So the asymmetric watermark and windowed restore are complementary:
+restore reduces cold-start cost for NEW requests; the watermark reduces
+how often ESTABLISHED rows are destroyed. Neither discounts the other.
+
+A FIFTH delta falls out of this, and it is the mechanism behind vLLM's
+confidence in recompute-over-swap: **vLLM re-enters the prefix-cache
+lookup on resume.** Its waiting-loop lookup is gated on
+`num_computed_tokens == 0` (`scheduler.py:717`), which a preempted request
+satisfies precisely because `_preempt_request` zeroed it. There is a test
+named for the behaviour. We structurally cannot — and making it possible
+is new work at the submit-only call site, not a side effect of link 5.
+
+### 4. Granularity is 16 OR 32 tokens, not a flat 16
+
+gemma-4's head dims are asymmetric (256 sliding / 512 global), so vLLM's
+`unify_kv_cache_spec_page_size` scales the sliding block up to 32 and
+`scheduler_block_size = LCM(32,16) = 32`. With `attention_k_eq_v` set the
+pages re-equalise and both stay 16.
+
+p50 reuse is 98.1% or 99.7% respectively — either way 800-1600x below our
+25,600. And the sliding contiguous-run requirement is 1024 tokens in BOTH
+geometries: it tracks the WINDOW, not the block size, and only binds above
+the window, which our p50 is not.
+
+Sharper framing for the ring: **a ring has no absolute position to install
+a window AT**, which is exactly what makes link 5 awkward to feed.
+`installWindow`'s `row.fastForward(to: snapshot.base)` is the
+absolute-positioning primitive, and it is the property vLLM gets for free
+from position-indexed rows.

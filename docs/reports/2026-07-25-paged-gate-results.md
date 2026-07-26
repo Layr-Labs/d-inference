@@ -131,3 +131,93 @@ which is the relaxed solo-rate tier added this wave (trust a real solo sample
 below the 5-sample floor). A second test pins that dependency explicitly, so
 if anyone removes the relaxed tier the failure names the cause instead of
 silently reverting the fleet to B=1.
+
+---
+
+# FINAL GATE RESULTS — all measurable gates
+
+Re-measured after the full completion pass. Apple M4 Max, 128 GB, release
+build, real weights.
+
+## G2 — parity, both models, `darkbloom benchmark --parity`
+
+### gemma-4-26B-A4B-it-qat-4bit (+ qat-assistant drafter) — **exit 0**
+
+| criterion | verdict |
+|---|---|
+| token exactness | UNAVAILABLE — the bar is unsatisfiable, see below |
+| MTP | UNAVAILABLE — inherited from the same positions |
+| packed prefill | **PASS** — active on both backends |
+| vision spans | **PASS** — active on both backends |
+| prefix reuse | **PASS** — paged 2,816 = contiguous 2,816, bound 25,600 both |
+
+### gpt-oss-20b-MXFP4-Q8 — **exit 0**
+
+| criterion | verdict |
+|---|---|
+| token exactness | **PASS** — 144/144 identical |
+| MTP / packed prefill / vision spans | UNAVAILABLE — model facts, not backend faults |
+| prefix reuse | **PASS** — paged 2,304 = contiguous 2,304, bound 1,536 both |
+
+**Zero FAILs. Zero EXPECTED_SHORTFALLs.** Both `EXPECTED_SHORTFALL`
+verdicts that existed earlier in this pass disappeared when the cause was
+fixed, which is the signal the harness was designed to give.
+
+## Why token exactness reads UNAVAILABLE rather than FAIL
+
+**The bar fails the incumbent.** Changing only
+`DARKBLOOM_CBV2_ATTN_QUERY_BLOCK` from 128 to 8 — a shipped operator
+latency knob whose own doc says results "can differ in the last ulp" —
+makes contiguous diverge from contiguous at token 1 and token 0 on 2 of
+the same 3 prompts, with no backend involved.
+
+The in-process control agrees: paged fp32 against paged fp16, same
+backend, flips 2 of 3 rows. One position yields **three different tokens
+from three configurations of the same weights** — contiguous 100, paged
+fp16 107, paged fp32 101.
+
+Root cause is storage-order drift amplified ~1,300x relative to gpt-oss by
+gemma-4's attention scale of 1.0 at head_dim 256/512 and its
+top-8-of-128 MoE routing across 30 layers. ULP is the ORIGIN, not the
+arrival: at the decision the perturbation is 3.657 against a top-2 margin
+of 0.604 (6.1x, flips), while the non-flipping prompt is 0.691 against
+4.508 (0.15x, holds).
+
+Not a paged defect, and not new:
+- paged prefill is **bit-identical** to contiguous — 0.00000 across all
+  262,144 logits
+- against an fp32 reference, paged is **at parity on sliding layers and
+  7-17x MORE accurate on gemma-4's full-attention layers**
+- the divergence **predates this wave's ring shrink** — byte-identical at
+  the old 97-page geometry
+
+## Gate summary
+
+| gate | verdict |
+|---|---|
+| G0a — coordinator dispatches 8 | **PASS**, pinned by test; needs 61.8 tok/s, measures 98.8 |
+| G0b — batching pays | **PASS** — paged 1.27x from B=4 to B=8, contiguous 1.07x |
+| G1 — paged sized correctly | **PASS** — 1.00x contiguous at 1k, 10k, 100k |
+| G2 — parity | **PASS** — every evaluable criterion, both models |
+| G5 — observable by backend | **PASS** — segmentable end to end |
+| G3 — gpt-oss 24h canary | **NOT RUN** — time-based |
+| G4 — gemma-4 24h canary | **NOT RUN** — time-based |
+
+## Verdict on the default flip
+
+**The code is ready. The flip is not signed, and the reason is G3/G4.**
+
+Every gate that can be measured on one machine passes. What remains are
+two 24-hour canary gates against a real fleet, which cannot be
+compressed. The plan named them for a reason: this migration has no
+canary fleet, so the soak IS the canary.
+
+`.auto` therefore still resolves to contiguous. Flipping it is a one-line
+change plus the operator action in the release notes, and the rollback is
+`DARKBLOOM_CBV2_PAGED_KV=0`.
+
+One product decision must be made explicitly rather than inherited from a
+green gate: **gemma-4 greedy outputs change under paged.** They are not
+worse — measurably more accurate against an fp32 reference — but they are
+different, and the same is already true across a shipped latency knob.
+That is a call for a product owner, not a test.

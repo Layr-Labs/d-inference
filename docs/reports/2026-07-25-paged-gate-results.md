@@ -953,3 +953,19 @@ lapped by the end of that same chunk.
 `maxPrefillChunk` is already a lockstep parameter in production
 (`EngineV2Factory+Production.swift:657-667`). Treat chunk size as an INPUT
 to the capture design, not a knob tuned afterward.
+
+**The remedy is structural, not disciplinary.** vLLM never has this hazard
+because free, allocate and capture happen inside ONE call:
+`kv_cache_manager.py:500` runs `remove_skipped_blocks`, then allocation,
+then `:559` runs `cache_blocks` — all in the same invocation of
+`allocate_slots`, with the free deliberately ordered first ("call this
+function before allocating new blocks to reduce the number of evicted
+blocks", `:496-497`).
+
+So a block is always inserted into the hash map in the same step that
+allocated it, before anything can reclaim it. **There is no window in
+which a written-but-uncaptured block can be lost.**
+
+Adopting that ordering — capture in the same call that writes, never on a
+later boundary — removes the chunk-size coupling as a CORRECTNESS concern
+and leaves it as a residency-tuning one. That is the shape to build.

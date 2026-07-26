@@ -648,6 +648,13 @@ independent of GQA and of NSG entirely:
 Same conclusion as before, correct mechanism, correct per-family numbers.
 vLLM's `BLOCK_Q = BLOCK_M // num_queries_per_kv` has neither coupling.
 
+`BLOCK_Q=4` is NOT a further win on sliding, and the reason is worth
+pinning so nobody re-scopes it: at `HPT=2` it needs 64 accumulator floats
+against a budget of 32 (memory fits at 24,704 B — registers bind first),
+and at `HPT=1` it fits both but yields M-axis `4 x 1 = 4`, IDENTICAL to
+`BLOCK_Q=2 / HPT=2`, while doubling the threadgroup splits. Memory
+headroom on the sliding layers is real and is not available amortisation.
+
 ### The granularity number is 32 tokens, and the scaling runs the other way
 
 Read from the operator's actual checkpoint, identical across the
@@ -730,7 +737,7 @@ absence of the requirement.
 ## Provenance
 
 Five agents, read against `vllm-project/vllm @ b153ae6089` (2026-07-26).
-The gemma-4 geometry is confirmed by two independent sources: the
+The gemma-4 geometry is confirmed by three independent sources: the
 operator's checkpoint on disk and a verbatim in-repo literal
 (`CBv2LastQueryPrefillTests.swift:775-791`) that cannot go vacuous.
 The sliding-window measurements were EXECUTED on this M4 Max against
@@ -745,3 +752,46 @@ no top-level `PagedKVPool.swift`, so path resolution silently lands in
 `.claude/worktrees/release-v070/`, where `pageCount`/`usablePageCount`
 differ semantically. That is a standing hazard for anyone working across
 these four trees.
+
+---
+
+## The root cause, one level below everything above
+
+Both the 25,600 floor and the tiling requirement are the same defect seen
+twice:
+
+> **vLLM's shareable unit is an ABSOLUTELY-POSITIONED BLOCK. Ours is a
+> window snapshot defined relative to where a donor stopped.**
+
+vLLM: `block_hashes[i]` covers tokens `[i·bs, (i+1)·bs)` counted from
+token 0 and chained from token 0 (`kv_cache_utils.py:691-749`); SWA's hit
+scan indexes those same absolute `i`
+(`single_type_kv_cache_manager.py:912-916`); blocks are cached as they
+fill. So ONE donor of length L caches a block at every absolute index in
+`[0, L/bs)`, and an adopter matching at any boundary `M <= L` finds its
+entire contiguous window inside that single donor's output.
+
+Ours: a donor's ring holds the last W positions ending at ITS offset, so
+coverage must be assembled by tiling across donors that happened to stop
+at complementary places.
+
+**Coverage in vLLM is a function of what was COMPUTED. Ours is a function
+of where donors STOPPED.** The first composes trivially; the second
+requires a coincidence.
+
+Honest bound on the claim: vLLM can be configured sparse
+(`VLLM_PREFIX_CACHE_RETENTION_INTERVAL`, defaults to None = dense), and
+under sparsity some boundaries genuinely are not restorable — which is why
+`shared_prefix_boundary` exists to pin junctions. So the coverage
+requirement is real in both systems. The difference is **vLLM pays it only
+when it opts in; we pay it unconditionally, because rings carry no
+absolute position.**
+
+This corrects the "population effect" framing above: vLLM's advantage here
+is architectural, not statistical.
+
+Practical consequence — it reinforces the ordering (link 5 first, sharing
+second) but resizes the second item. Moving to absolutely-indexed shared
+blocks does not merely lift the 20 GiB disk ceiling; it **removes the
+tiling requirement itself**, which is the larger effect and is the actual
+reason vLLM's floor is one block.

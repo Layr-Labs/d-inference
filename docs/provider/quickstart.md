@@ -144,18 +144,25 @@ end = "08:00"
   alone; deleting it re-runs the one-time upgrade migrations below.
 - `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
   engine slot (default 8 as of v0.8.0, clamped to `[1, 8]`). Raised from 4
-  alongside the paged KV cache, which only overtakes contiguous above ~5
-  concurrent rows. A `provider.toml` written before v0.8.0 carries an
+  in v0.8.0 because B=8 is the better operating point on either KV backend
+  (contiguous gains ~1.07x from B=4 to B=8). A `provider.toml` written
+  before v0.8.0 carries an
   explicit `= 4` that the old release generated; because that is
   indistinguishable from a deliberate 4, first start after upgrading raises
   it to 8 once, logs a warning saying so, and stamps `config_version`. If
   you want 4, set it again afterwards — from then on it is honoured.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` (default — resolves PAGED as of v0.8.0, `case .auto: resolvedKind
-  = .paged` in
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift:546`),
-  `"paged"`,
-  or `"contiguous"`. Vision (VLM) models are NOT forced to contiguous. The
+  `"auto"` (default — resolves CONTIGUOUS; grep `case .auto: resolvedKind`
+  in
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`).
+  v0.8.0 briefly flipped `"auto"` to paged and reverted it before release:
+  paged ADOPTION is not transparent. On gemma-4 at a 28,672-token prompt a
+  paged slot serving an adopted prefix diverges from its own cold decode at
+  token 20 of 32, while paged cold is deterministic and contiguous is exact
+  in every arm — same prompt and config, different answer depending on cache
+  state the caller cannot see. Disqualifying for a default, acceptable for
+  an opt-in. Paged stays fully available per slot via `"paged"`.
+  Vision (VLM) models are NOT forced to contiguous. The
   VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
   (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:162`)
   fires only when the paged cache does not affirm multimodal span masks, and
@@ -163,11 +170,12 @@ end = "08:00"
   (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:982`),
   which is what the slot factory passes
   (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:190`),
-  so the veto is inert today and VLM slots route paged like any other model.
-  Because `"auto"` now starts at paged, the concurrency cap above matters:
-  paged only overtakes contiguous above ~5 concurrent rows, so leaving
-  `engine_v2_max_concurrent` low (say 2) gives you paged at a small loss,
-  not a win. Under `"auto"`, a
+  so the veto is inert: a VLM slot that ASKS for paged gets paged, like any
+  other model. It is not asking by default, because `"auto"` is contiguous.
+  If you do opt into paged, the concurrency cap above matters: paged only
+  overtakes contiguous above ~5 concurrent rows, so pairing
+  `engine_v2_kv_backend = "paged"` with a low `engine_v2_max_concurrent`
+  (say 2) buys you paged at a small loss, not a win. Under `"auto"`, a
   model the paged kernel cannot serve still falls back to contiguous
   automatically;
   under an explicit `"paged"` the model REFUSES to load instead, with the

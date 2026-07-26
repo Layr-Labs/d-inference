@@ -175,7 +175,15 @@ end = "08:00"
   `EngineV2KVBackendPolicy.degradesPagedFailure`
   (`selection != .paged`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:183`)
   returns `false` for — and only for — an explicit `.paged` selection, so a
-  paged fleet can never silently serve contiguous.
+  paged fleet can never silently serve contiguous. That refusal surfaces as
+  a 503 and the coordinator reroutes: the engine-construction catch wraps it
+  as `InferenceError.modelLoadFailed`
+  (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:543-549`),
+  `loadErrorStatusCode` maps that case to 503
+  (`same file:975-983`), and the coordinator counts a 503 as
+  `capacityRejection` — no reputation strike — then cools the load-rejecting
+  pair so retries skip it (`coordinator/api/provider.go:2332`, cool-down at
+  `:2343-2351`).
   Per-model overrides: `engine_v2_kv_backend_by_model` (TOML table of model
   id → value). Fleet kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0`
   (survives restarts — it is forwarded into the launchd service

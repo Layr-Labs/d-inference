@@ -15,10 +15,10 @@
 //     families the engine is correct-by-construction for; GPT-OSS's
 //     `newCacheV2` also primes its sinks-activation probe at build time),
 //   * a KV backend sized from the unified-memory KV budget —
-//     `CBv2ContiguousKVBackend` for production "auto" (admission ceiling
-//     only — nothing is preallocated), or the explicitly experimental
-//     `PagedKVBackend`, whose physical slabs are independently capped by
-//     `PagedKVPhysicalCapacityPolicy` before eager materialization,
+//     `PagedKVBackend` for "auto" as of v0.8.0 (`case .auto: resolvedKind =
+//     .paged`, :546), slabs capped by `PagedKVPhysicalCapacityPolicy` and
+//     committed lazily (`.atFirstAdmission`), or `CBv2ContiguousKVBackend`
+//     for "contiguous", a slot veto, or an `.auto` model paged cannot serve,
 //   * `CBv2LayerCacheBank` over the model-built caches,
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).

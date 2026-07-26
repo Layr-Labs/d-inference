@@ -1197,7 +1197,7 @@ the one place vLLM also has bytes to move and therefore hits the same
   (`kv_offload/cpu/manager.py:130-140`), HIT_PENDING when the block is not
   yet ready.
 - Readiness is encoded in the **sign of the refcount**: `is_ready` is
-  `ref_cnt >= 0` (`kv_offload/base.py:32-33`), and blocks are constructed
+  `ref_cnt >= 0` (`kv_offload/cpu/policies/base.py:29-33`), and blocks are constructed
   at `ref_cnt = -1` — "initialize block as 'not ready'" (`:24-25`). One
   signed int carries all three states: **-1 store in flight, 0 resident
   and evictable, >0 pinned during transfer.**
@@ -1230,3 +1230,25 @@ So our donation-queue design is not a deficiency. **It is what this
 problem looks like when the tier is real.** What we are missing is not the
 architecture; it is the readiness protocol that lets the cheap part happen
 inline.
+
+**Why step 1 is safe, stated precisely:** publishing the name touches no
+pages, so **it cannot be lapped.** That removes the chunk-size coupling
+from the CORRECTNESS path entirely — it survives only as residency tuning
+on stages 2 and 3. This is a strictly weaker synchronous requirement than
+"capture the handle inline," and it is what makes the design safe on
+gpt-oss, where there is no ring slack at any chunk size.
+
+Corrected staging for capture-as-they-fill:
+
+    1. publish the NAME inline        step thread, integer state only  <- only synchronous part
+    2. build handle + materialise     existing engine/donationQueue split
+    3. flip the entry to ready
+
+Stage 2 is still required: our bytes genuinely move, and that is not a
+defect — it is what the problem looks like whenever a durable tier is
+real. vLLM's main-path capture is free solely because block == storage
+there.
+
+And the caution that survives: pointer sharing removes the cost from the
+step path and removes the tiling requirement, **but not from persistence.
+The 200 MiB changes character rather than vanishing.**

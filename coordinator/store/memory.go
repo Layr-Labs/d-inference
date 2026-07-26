@@ -143,6 +143,13 @@ type MemoryStore struct {
 	floorDrawSeq       int64
 	floorDrawKeys      map[string]struct{} // "providerKey|epochID" → settled marker
 
+	// Durable-settlement model (in-memory implementation for dev/tests).
+	requestSettlements map[string]*RequestSettlement
+	requestAttempts    map[string]*RequestAttempt
+	attemptTerminals   map[string]*AttemptTerminal
+	settlementEffects  map[string]map[string]*SettlementEffect
+	effectKeys         map[string]string // idempotency key -> effect id
+
 }
 
 // NewMemory creates a new MemoryStore. If adminKey is non-empty it is
@@ -197,6 +204,11 @@ func NewMemory(scfg Config) *MemoryStore {
 		inferenceRejections:           make([]RejectionRecord, 0),
 		providerFloorDraws:            make([]ProviderFloorDraw, 0),
 		floorDrawKeys:                 make(map[string]struct{}),
+		requestSettlements:            make(map[string]*RequestSettlement),
+		requestAttempts:               make(map[string]*RequestAttempt),
+		attemptTerminals:              make(map[string]*AttemptTerminal),
+		settlementEffects:             make(map[string]map[string]*SettlementEffect),
+		effectKeys:                    make(map[string]string),
 	}
 	if scfg.AdminKey != "" {
 		s.keyRecords[scfg.AdminKey] = &APIKey{

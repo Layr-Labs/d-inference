@@ -42,3 +42,30 @@ func TestOrUptimeClassForRejection(t *testing.T) {
 		}
 	}
 }
+
+// TestRequestClassForOutcome pins every legacy orClass* value to its
+// requestClass* counterpart. The two enums are deliberately disjoint string
+// spaces (see inference_outcome.go's requestClass* constants); this is the
+// only place they are reconciled, so every orClass* constant must appear here
+// — an unmapped value silently discards the mark and falls back to the
+// terminal HTTP status inside inferenceOutcomeState.snapshot, which is safe
+// but would hide a future vocabulary drift if left unverified.
+func TestRequestClassForOutcome(t *testing.T) {
+	tests := []struct {
+		orClass string
+		want    string
+	}{
+		{orClassSuccess, requestClassSuccess},
+		{orClassProvider5xx, requestClassProvider5xx},
+		{orClassMidStream, requestClassMidStream},
+		{orClassTimeout, requestClassTimeout},
+		{orClassRateLimited, requestClassExcluded429},
+		{orClassClientError, requestClassIntegrationError},
+		{"unknown_class", ""},
+	}
+	for _, tt := range tests {
+		if got := requestClassForOutcome(tt.orClass); got != tt.want {
+			t.Errorf("requestClassForOutcome(%q) = %q, want %q", tt.orClass, got, tt.want)
+		}
+	}
+}

@@ -1938,6 +1938,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				select {
 				case errMsg, ok := <-pr.ErrorCh:
 					if ok && errMsg.Error != "" {
+						markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 						s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 						s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 						s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
@@ -1955,6 +1956,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				default:
 				}
 				if s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+					markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 					fmt.Fprintf(w, "data: {\"error\":{\"message\":\"provider ended without completion\",\"type\":\"provider_error\"}}\n\n")
@@ -2083,6 +2085,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			if !ok {
 				continue
 			}
+			markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
@@ -2098,6 +2101,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			return
 
 		case <-timer.C:
+			markInferenceOutcome(r.Context(), pr.Model, requestClassTimeout)
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
@@ -2106,6 +2110,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			return
 
 		case <-r.Context().Done():
+			markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 			return
 		}
 	}
@@ -2152,6 +2157,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 				case <-time.After(2 * time.Second):
 				}
 				if !completed && s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID) {
+					markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 					s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_incomplete"})
 					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 					emitter.emitError("provider_error", "provider ended without completion")
@@ -2174,6 +2180,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			if !ok {
 				continue
 			}
+			markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
@@ -2182,6 +2189,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			return
 
 		case <-timer.C:
+			markInferenceOutcome(r.Context(), pr.Model, requestClassTimeout)
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
@@ -2189,6 +2197,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			return
 
 		case <-r.Context().Done():
+			markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 			return
 		}
 	}
@@ -4446,6 +4455,7 @@ reserveProvider:
 		"endpoint", endpoint,
 		"stream", stream,
 	)
+	markInferenceOutcome(r.Context(), model, "")
 
 	// Dynamic TTFT deadline — wait for the first chunk or accepted signal
 	// before committing. This mirrors the chat completions path but without

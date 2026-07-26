@@ -950,7 +950,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// both (the attempt-0 path emits neither, unchanged).
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
 				s.recordRejection(d.rejectionInfoWithDecision("dispatch", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, decision))
-				s.recordRequestOutcome(d.model, classifyOutcomeByCode(http.StatusTooManyRequests))
+				s.recordRequestOutcomeForContext(r.Context(), d.model, classifyOutcomeByCode(http.StatusTooManyRequests))
 			}
 			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
@@ -2481,6 +2481,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 func (d *dispatchState) run() {
 	s := d.s
 	w, r := d.w, d.r
+	markInferenceOutcome(r.Context(), d.model, "")
 	d.preflightLegacyCacheBust()
 
 	// Stop any prefill keepalive goroutine on every exit path. Idempotent and
@@ -2653,9 +2654,9 @@ exhausted:
 		// pre-dispatch rejections emit from recordRejection instead). A failure
 		// after a keepalive committed HTTP 200 is a mid-stream error to the client.
 		if keepaliveCommitted {
-			s.recordRequestOutcome(d.model, orClassMidStream)
+			s.recordRequestOutcomeForContext(r.Context(), d.model, orClassMidStream)
 		} else {
-			s.recordRequestOutcome(d.model, classifyOutcomeByCode(statusCode))
+			s.recordRequestOutcomeForContext(r.Context(), d.model, classifyOutcomeByCode(statusCode))
 		}
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
@@ -2754,7 +2755,7 @@ exhausted:
 	// once per dispatched request (disjoint from the exhausted branch above and
 	// from pre-dispatch rejections).
 	if d.stream {
-		s.recordRequestOutcome(d.model, orClassSuccess)
+		s.recordRequestOutcomeForContext(r.Context(), d.model, orClassSuccess)
 	}
 
 	d.writeCommittedResponse()
@@ -2967,9 +2968,9 @@ func (d *dispatchState) writeCommittedResponse() {
 		s.handleNonStreamingResponseWithFirstChunk(sw, r, pr, firstChunks)
 		switch {
 		case sw.status == http.StatusOK:
-			s.recordRequestOutcome(d.model, orClassSuccess)
+			s.recordRequestOutcomeForContext(r.Context(), d.model, orClassSuccess)
 		case sw.status > 0:
-			s.recordRequestOutcome(d.model, classifyOutcomeByCode(sw.status))
+			s.recordRequestOutcomeForContext(r.Context(), d.model, classifyOutcomeByCode(sw.status))
 		}
 	}
 }

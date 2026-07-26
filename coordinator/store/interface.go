@@ -30,6 +30,12 @@ var ErrInsufficientBalance = errors.New("insufficient balance or account not fou
 // treating every error as not-found.
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict reports that an idempotency key already names different data.
+var ErrConflict = errors.New("conflicting immutable record")
+
+// ErrInvalidTransition reports a stale or disallowed settlement state change.
+var ErrInvalidTransition = errors.New("invalid state transition")
+
 // Store is the union of every storage-domain sub-interface (defined in
 // interface_domains.go). It was split from a single ~150-method god-interface
 // into composed domains so callers can depend on a narrow slice of the
@@ -51,6 +57,7 @@ type Store interface {
 	InviteStore
 	ProviderEarningsStore
 	ProviderStore
+	SettlementStore
 }
 
 // TelemetryEventRecord is the persistence-layer representation of a telemetry

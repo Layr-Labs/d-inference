@@ -11,17 +11,19 @@ import (
 // Each field corresponds to a Set* method on Server that is called during
 // wiring in main.go.
 type ServerConfig struct {
-	Port                string
-	ConsoleURL          string
-	CORSOrigin          string
-	BaseURL             string
-	R2CDNURL            string
-	MinProviderVersion  string
-	AdminKey            string
-	AdminEmails         []string
-	ReleaseKey          string
-	ServiceReservations bool
-	BaseRewards         BaseRewardsConfig
+	Port                       string
+	ConsoleURL                 string
+	CORSOrigin                 string
+	BaseURL                    string
+	R2CDNURL                   string
+	MinProviderVersion         string
+	AdminKey                   string
+	AdminEmails                []string
+	ReleaseKey                 string
+	ServiceReservations        bool
+	OpenRouterKeyIDs           []string
+	OpenRouterCredentialSHA256 []string
+	BaseRewards                BaseRewardsConfig
 }
 
 // BaseRewardsConfig holds the deployment knobs for the provider base-rewards
@@ -49,6 +51,10 @@ func ReadServerConfig() ServerConfig {
 		AdminEmails:         ParseCommaList(env.EnvOr(env.EnvPrefix+"_ADMIN_EMAILS", "")),
 		ReleaseKey:          os.Getenv(env.EnvPrefix + "_RELEASE_KEY"),
 		ServiceReservations: env.EnvBool(env.EnvPrefix+"_SERVICE_RESERVATIONS_ENABLED", false),
+		OpenRouterKeyIDs: ParseCommaList(
+			env.EnvOr(env.EnvPrefix+"_OPENROUTER_KEY_IDS", "")),
+		OpenRouterCredentialSHA256: ParseCommaList(
+			env.EnvOr(env.EnvPrefix+"_OPENROUTER_CREDENTIAL_SHA256", "")),
 		BaseRewards: BaseRewardsConfig{
 			Enabled:        env.EnvBool(env.EnvPrefix+"_BASE_REWARDS", false),
 			ReductionK:     env.EnvFloat(env.EnvPrefix+"_BASE_REWARDS_K", 0), // 0 = additive base income (full floor on top of earnings)

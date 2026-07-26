@@ -1,6 +1,9 @@
 package api
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+)
 
 // OpenRouter-formula uptime instrumentation.
 //
@@ -61,6 +64,38 @@ func (s *Server) recordRequestOutcome(model, class string) {
 		model = "unknown"
 	}
 	s.ddIncr(metricRequestOutcome, []string{"model:" + model, "class:" + class})
+}
+
+func (s *Server) recordRequestOutcomeForContext(ctx context.Context, model, class string) {
+	markInferenceOutcome(ctx, model, requestClassForOutcome(class))
+	s.recordRequestOutcome(model, class)
+}
+
+// requestClassForOutcome translates a legacy OR-uptime class (this file's
+// orClass* constants, the mixed-mode metric's vocabulary) into the disjoint
+// requestClass* vocabulary inference_outcome.go's terminal-status shadow
+// metric uses. The two enums must never silently share string values by
+// coincidence: orClassRateLimited/orClassClientError have no 1:1 counterpart
+// (the shadow metric splits 4xx by exact code), so this mapping is the single
+// place that reconciles them instead of leaking a foreign enum value into
+// inferenceOutcomeState.explicit.
+func requestClassForOutcome(orClass string) string {
+	switch orClass {
+	case orClassSuccess:
+		return requestClassSuccess
+	case orClassProvider5xx:
+		return requestClassProvider5xx
+	case orClassMidStream:
+		return requestClassMidStream
+	case orClassTimeout:
+		return requestClassTimeout
+	case orClassRateLimited:
+		return requestClassExcluded429
+	case orClassClientError:
+		return requestClassIntegrationError
+	default:
+		return ""
+	}
 }
 
 // orUptimeClassForRejection maps a rejection's HTTP status to an OR-uptime class.

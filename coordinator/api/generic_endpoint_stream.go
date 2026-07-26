@@ -52,6 +52,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 				select {
 				case complete, completeOK := <-pr.CompleteCh:
 					if !completeOK {
+						markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 						s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
 						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 						emitter.emitError("provider_error", "provider ended without completion")
@@ -59,11 +60,13 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 					}
 					usage = complete
 				case <-time.After(2 * time.Second):
+					markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 					s.refundReservedBalance(pr, "provider_incomplete:"+pr.RequestID)
 					s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderIncompleteOutcome(pr))
 					emitter.emitError("provider_error", "provider ended without completion")
 					return
 				case <-r.Context().Done():
+					markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 					return
 				}
 				s.noteInferenceSuccess(pr)
@@ -83,6 +86,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 			if !ok {
 				continue
 			}
+			markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 			s.refundReservedBalance(pr, "provider_error:"+pr.RequestID)
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
@@ -91,6 +95,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 			return
 
 		case <-timer.C:
+			markInferenceOutcome(r.Context(), pr.Model, requestClassTimeout)
 			s.refundReservedBalance(pr, "provider_timeout:"+pr.RequestID)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitStreamTimeoutOutcome(pr))
@@ -98,6 +103,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 			return
 
 		case <-r.Context().Done():
+			markInferenceOutcome(r.Context(), pr.Model, requestClassMidStream)
 			return
 		}
 	}

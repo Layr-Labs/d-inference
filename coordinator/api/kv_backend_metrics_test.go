@@ -280,8 +280,10 @@ func TestRequestOutcomeSegmentsByServingSlotBackend(t *testing.T) {
 	}
 
 	// A pre-dispatch rejection never reached a slot: unattributable, and it must
-	// say so rather than borrow a backend.
-	srv.recordRequestOutcome(model, kvBackendAttribution{}, orClassRateLimited)
+	// say so rather than borrow a backend. Named through the constructor, not a
+	// bare zero value — nothing on the emit path coalesces "" any more, so the
+	// "no slot" case has exactly one spelling.
+	srv.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orClassRateLimited)
 
 	_ = dd.Statsd.Flush()
 	outcomes := findMetrics(collector.drain(), metricRequestOutcome)
@@ -309,6 +311,17 @@ func TestRequestOutcomeSegmentsByServingSlotBackend(t *testing.T) {
 	// and the rejection is the rate_limited one.
 	if got := tagCount(outcomes, metricRequestOutcome, kvBackendTagKey+registry.KVBackendUnknown); got != 2 {
 		t.Fatalf("kv_backend:unknown outcomes = %d, want 2; samples=%v", got, outcomes)
+	}
+	// No sample may carry an empty dimension. A bare `kv_backend:` renders as
+	// its own series on the dashboard and pools with nothing, and since the
+	// emit path no longer coalesces, this is where a new call site that forgot
+	// newUnknownKVBackendAttribution() gets caught.
+	for _, p := range outcomes {
+		for _, key := range []string{kvBackendTagKey, kvBackendFallbackTagKey} {
+			if strings.Contains(p, key+",") || strings.HasSuffix(p, key) {
+				t.Errorf("empty %s dimension in %q", key, p)
+			}
+		}
 	}
 	for _, p := range outcomes {
 		if strings.Contains(p, "class:"+orClassRateLimited) &&
@@ -406,13 +419,25 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 	if kvBackendFallbackTagKey != "kv_backend_fallback:" {
 		t.Errorf("kvBackendFallbackTagKey = %q; must match the heartbeat wire key", kvBackendFallbackTagKey)
 	}
-	if got := normalizeKVBackendTag(""); got != registry.KVBackendUnknown {
-		t.Errorf("normalizeKVBackendTag(\"\") = %q, want %q", got, registry.KVBackendUnknown)
+	// The tags carry the producer's values as-is — no defensive coalesce on
+	// the emit path — so the invariant that makes that safe is asserted here:
+	// the "no serving slot" constructor names both dimensions, and the only
+	// other producer (registry.KVBackendTag / KVBackendFallbackTag, pinned in
+	// registry's own tests) never returns "". An empty tag on a dashboard
+	// means a THIRD producer appeared.
+	unknown := newUnknownKVBackendAttribution()
+	if unknown.Backend != registry.KVBackendUnknown {
+		t.Errorf("unknown attribution backend = %q, want %q", unknown.Backend, registry.KVBackendUnknown)
 	}
-	// "" is UNKNOWN here too, never "none": a call site with no serving slot
-	// has established nothing about whether a slot degraded.
-	if got := normalizeKVBackendFallbackTag(""); got != registry.KVFallbackUnknown {
-		t.Errorf("normalizeKVBackendFallbackTag(\"\") = %q, want %q", got, registry.KVFallbackUnknown)
+	// UNKNOWN, never "none": a call site with no serving slot has established
+	// nothing about whether a slot degraded.
+	if unknown.Fallback != registry.KVFallbackUnknown {
+		t.Errorf("unknown attribution fallback = %q, want %q", unknown.Fallback, registry.KVFallbackUnknown)
+	}
+	if got := unknown.appendTags(nil); len(got) != 2 ||
+		got[0] != kvBackendTagKey+registry.KVBackendUnknown ||
+		got[1] != kvBackendFallbackTagKey+registry.KVFallbackUnknown {
+		t.Errorf("unknown attribution tags = %v", got)
 	}
 	for _, bad := range []float64{0, -1} {
 		if usableMetricSample(bad) {
@@ -422,10 +447,18 @@ func TestBackendMetricNamesAndSampleGuards(t *testing.T) {
 
 	// No Datadog client configured: helpers must not panic.
 	srv, _, _ := billingTestServer(t)
-	srv.emitRequestBackendLatency("m", kvBackendAttribution{Backend: registry.KVBackendPaged}, 12, 34)
+	srv.emitRequestBackendLatency("m", kvBackendAttribution{
+		Backend: registry.KVBackendPaged, Fallback: registry.KVFallbackNone,
+	}, 12, 34)
 	if got := srv.kvBackendAttribution("no-such-provider", "m"); got.Backend != registry.KVBackendUnknown ||
 		got.Fallback != registry.KVFallbackUnknown {
 		t.Errorf("attribution for an unknown provider = %+v", got)
+	}
+	// Same resolution when the caller already holds the provider, including
+	// the nil case the WebSocket read loop can never actually hit.
+	if got := srv.providerKVBackendAttribution(nil, "m"); got.Backend != registry.KVBackendUnknown ||
+		got.Fallback != registry.KVFallbackUnknown {
+		t.Errorf("attribution for a nil provider = %+v", got)
 	}
 }
 
@@ -440,7 +473,9 @@ func TestUnmeasurableRequestEmitsNoBackendSample(t *testing.T) {
 	defer dd.Close()
 	srv.SetDatadog(dd)
 
-	srv.emitRequestBackendLatency("m", kvBackendAttribution{Backend: registry.KVBackendPaged}, 0, 0)
+	srv.emitRequestBackendLatency("m", kvBackendAttribution{
+		Backend: registry.KVBackendPaged, Fallback: registry.KVFallbackNone,
+	}, 0, 0)
 	_ = dd.Statsd.Flush()
 	packets := collector.drain()
 	if hasMetric(packets, metricRequestTTFT) || hasMetric(packets, metricRequestDecodeTPS) {

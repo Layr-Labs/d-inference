@@ -176,12 +176,6 @@ extension EngineV2Factory {
         }
     }
 
-    /// Scheduler knobs for the production v2 engine. `maxConcurrentRequests`
-    /// follows the CBv2 product target (4, max 8) rather than the legacy
-    /// scheduler's 24-way ceiling — the v2 rollout is deliberately
-    /// conservative and the coordinator sees the true value in heartbeats.
-    public static let productionMaxConcurrentRequests = 4
-
     /// The model's prefix-cache adoption bound (`PrefixCachePolicy
     /// .adoptionBoundTokens` over the model's own `cbv2LayerKinds`), kept
     /// NEXT TO the authoritative family switch in `makeProductionEngine` so
@@ -305,8 +299,8 @@ extension EngineV2Factory {
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
+        maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -317,8 +311,8 @@ extension EngineV2Factory {
             model: model,
             tokenizer: tokenizer,
             kvBytesCapacity: kvBytesCapacity,
-            prefixCache: prefixCache,
             maxConcurrentRequests: maxConcurrentRequests,
+            prefixCache: prefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             kvBackend: kvBackend,
@@ -464,8 +458,8 @@ extension EngineV2Factory {
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
+        maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -497,7 +491,7 @@ extension EngineV2Factory {
     static func prepareProductionBackend(
         model: any LanguageModel,
         kvBytesCapacity: Int,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,

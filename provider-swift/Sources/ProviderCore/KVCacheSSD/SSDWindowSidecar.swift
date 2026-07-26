@@ -69,24 +69,6 @@ import Foundation
 import MLX
 import MLXLMCommon
 
-// MARK: - Residency
-
-/// Where an adopter's sliding rows come from at the matched boundary. This is
-/// the provider-side residency input to the replay bound; the engine-side
-/// `CBv2PrefixResidencyClass` that WS-4.1 threads through `derive`/`plan` is a
-/// separate, engine-owned symbol and is deliberately not squatted on here.
-enum SSDWindowResidency: String, Sendable, Equatable, CaseIterable {
-    /// Sliding rows start empty at the boundary — the shipped behaviour. The
-    /// engine must replay `windowCount × maxWindow` tokens.
-    case replayed
-    /// Sliding rows are restored from windowed sidecars, so there is nothing
-    /// to replay. Requires `PagedSequenceKV.restoreWindow(_:at:)` (WS-4.1) on
-    /// paged, or `CBv2WindowedSequenceKV` adoption on contiguous — neither of
-    /// which exists yet, so `PrefixCachePolicy.windowResidency` never returns
-    /// this case today.
-    case restoredFromSidecar = "restored_from_sidecar"
-}
-
 // MARK: - Geometry
 
 /// The sliding-layer shape a model's sidecars must carry, derived once from
@@ -162,18 +144,25 @@ struct SSDWindowSidecarGeometry: Sendable, Equatable {
         return total
     }
 
-    /// Plaintext bytes an adoption reads to restore one window
-    /// (`blocksPerWindow` sidecars) — the "+stage read" of WS-4.2.
-    func windowReadBytes(elementSize: Int) -> Int {
-        bytesPerBlock(elementSize: elementSize) * blocksPerWindow
-    }
-
     /// Block indices whose ENTIRE token span lies inside the donated window
     /// `[base, base + tokens)`, clamped to `[0, blockCount)`.
     ///
     /// This is the whole coverage rule. A donating row retains exactly the
     /// last `W` positions ending at its own absolute offset, so `base` is
     /// almost never block-aligned and the leading partial block is dropped.
+    ///
+    /// The `blocksPerWindow` clamp is a BOUNDS GUARD, not arithmetic tidiness,
+    /// and it is deliberately not delegated to the caller. The only production
+    /// caller passes `span()`'s output, which already refuses
+    /// `tokens > windowTokens`, so the clamp does not fire today — but the
+    /// range returned here is fed straight to
+    /// `SSDWindowSidecar.extract(blockIndex:…)`, which slices
+    /// `window.keys[…, start ..< start + blockSize, …]`. A range wider than
+    /// the window makes that slice run off the end of a live MLXArray inside
+    /// the hardened inference process. `extract` re-checks
+    /// (`end <= window.keys.dim(2)`), so today the failure would be a silently
+    /// dropped sidecar rather than a bad read — two independent guards, which
+    /// is the correct number for this one.
     func coveredBlocks(base: Int, tokens: Int, blockCount: Int) -> Range<Int> {
         guard base >= 0, tokens > 0, blockCount > 0 else { return 0 ..< 0 }
         // First whole block at or after `base`.
@@ -407,35 +396,28 @@ enum SSDWindowSidecar {
 
 // MARK: - Donor seam
 
-/// A sequence row that can hand over its sliding window for persistence.
-///
-/// The signature is WS-4.1's frozen
-/// `PagedSequenceKV.windowSnapshot() -> (keys: MLXArray, values: MLXArray,
-/// base: Int)?` (`PagedSeamContract.swift:169-173`), declared here as a
-/// protocol so the provider's donation path can consume it from ANY backend.
-/// Conformances:
-///
-///  * `CBv2WindowedSequenceKV` — below, today. Its `snapshot()` already
-///    returns the ring in temporal order plus the row's absolute offset, so
-///    contiguous gemma-4 can produce sidecars from the state-based donation
-///    overload. This settles the plan's open question at §12: the windowed
-///    sidecar is NOT paged-dependent.
-///  * `PagedSequenceKV` — a one-line retroactive conformance once WS-4.1 adds
-///    the method. It is deliberately NOT written here: the method does not
-///    exist yet.
-///
-/// The PRODUCTION donation path does not use this protocol at all: the
-/// engine already holds the rows and snapshots them on its own thread, so it
-/// hands the triples over through `CBv2SlidingWindowDonating` and the cache
-/// resolves them with `SSDWindowSidecar.windows(fromSnapshots:)`. Both routes
-/// share `SSDWindowSidecar.window(fromSnapshot:)`.
-protocol SSDWindowSnapshotting: AnyObject {
-    func windowSnapshot() -> (keys: MLXArray, values: MLXArray, base: Int)?
-}
-
-extension CBv2WindowedSequenceKV: SSDWindowSnapshotting {
-    /// The contiguous ring's window in the paged seam's shape, resolved
-    /// through the shared `snapshot()` → `(base)` arithmetic.
+extension CBv2WindowedSequenceKV {
+    /// The contiguous ring's window in WS-4.1's frozen
+    /// `PagedSequenceKV.windowSnapshot() -> (keys:values:base:)?` shape
+    /// (`PagedSeamContract.swift:169-173`), resolved through the shared
+    /// `snapshot()` → `(base)` arithmetic. `snapshot()` already returns the
+    /// ring in temporal order plus the row's absolute offset, so contiguous
+    /// gemma-4 produces sidecars with no paged dependency (the plan's open
+    /// question at §12).
+    ///
+    /// Used ONLY by the state-based `SSDPrefixCache.donate(tokens:state:…)`
+    /// overload, which is a `CBv2PrefixCache` requirement but not the
+    /// production route: the engine already holds the rows and snapshots
+    /// them on its own thread, handing the triples over through
+    /// `CBv2SlidingWindowDonating` for the cache to resolve with
+    /// `SSDWindowSidecar.windows(fromSnapshots:)`. Both routes share
+    /// `SSDWindowSidecar.window(fromSnapshot:)`.
+    ///
+    /// This used to be reached through an `SSDWindowSnapshotting` protocol
+    /// with one conformer and a runtime `as?` probe, anticipating a
+    /// `PagedSequenceKV` conformance that WS-4.1 never landed. The probe is
+    /// now a concrete cast; add the protocol back if and when a second row
+    /// type can actually answer.
     func windowSnapshot() -> (keys: MLXArray, values: MLXArray, base: Int)? {
         SSDWindowSidecar.window(fromSnapshot: snapshot())
     }

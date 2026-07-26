@@ -470,7 +470,8 @@ struct EngineV2SlotBuildTests {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
                 tokenizer: WiringStubTokenizer(),
-                kvBytesCapacity: 1 << 20
+                kvBytesCapacity: 1 << 20,
+                maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
         }
     }
@@ -481,7 +482,8 @@ struct EngineV2SlotBuildTests {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
                 tokenizer: WiringStubTokenizer(),
-                kvBytesCapacity: 0
+                kvBytesCapacity: 0,
+                maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
         }
     }

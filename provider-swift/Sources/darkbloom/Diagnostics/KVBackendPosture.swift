@@ -26,8 +26,7 @@ enum KVBackendPosture {
     /// reported as suspect. Four missed writes, floored at 10 s so a fast
     /// heartbeat cannot make an ordinary CLI round-trip look stale.
     static func staleAfterSeconds(heartbeatIntervalSecs: UInt64) -> Double {
-        let refreshPeriod = Double(max(1, heartbeatIntervalSecs / 2))
-        return max(4 * refreshPeriod, 10)
+        max(4 * refreshPeriodSeconds(heartbeatIntervalSecs: heartbeatIntervalSecs), 10)
     }
 
     /// How long a snapshot may go unrefreshed before the daemon is called

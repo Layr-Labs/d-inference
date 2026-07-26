@@ -137,117 +137,34 @@ enum PrefixCachePolicy {
             backend: backend)
     }
 
-    // MARK: - Window residency (WS-4.2)
-
-    /// Whether a row of this shape can INSTALL a restored sliding window.
-    ///
-    /// **Every answer is `false` today, and that is the point of this
-    /// function.** WS-4.2 lands the sidecar format, the write path, the read
-    /// path and the residency plumbing; it does not land a consumer:
-    ///
-    ///   * paged would need WS-4.1's `PagedSequenceKV.restoreWindow(_:at:)`,
-    ///     which does not exist in this repo — only comments reference it;
-    ///   * contiguous would need `CBv2WindowedSequenceKV` adoption of a
-    ///     restored ring, which does not exist either;
-    ///   * and nothing calls `SSDPrefixCache.stagedWindow(requestID:)`, so
-    ///     even a staged window is never handed to the engine.
-    ///
-    /// Reporting a residency no row can honour is not a cosmetic error: it
-    /// collapses the replay bound to zero, so the cache advertises a matched
-    /// prefix as free while the engine still performs its full
-    /// `windowCount × maxWindow` replay. The bound must therefore stay
-    /// conservative until the consumer is real — one edit here, plus its
-    /// test, is the flip.
-
-    /// Flips to `true` when `CBv2WindowedSequenceKV` can adopt a restored
-    /// ring AND the bridge installs `SSDPrefixCache.stagedWindow(requestID:)`.
-    static let contiguousWindowRestoreLanded = false
-    /// Flips to `true` when WS-4.1's `PagedSequenceKV.restoreWindow(_:at:)`
-    /// (taking a `CBv2PagedWindowSnapshot`) exists AND the bridge installs the
-    /// staged window.
-    static let pagedWindowRestoreLanded = false
-
-    static func windowRestoreSupported(
-        backendSelection: EngineV2KVBackendSelection,
-        pagedKilled: Bool = false
-    ) -> Bool {
-        switch backendSelection {
-        case .auto, .contiguous:
-            return contiguousWindowRestoreLanded
-        case .paged:
-            // A KILLED paged slot has degraded to a contiguous row, so it is
-            // answered as contiguous.
-            return pagedKilled ? contiguousWindowRestoreLanded : pagedWindowRestoreLanded
-        }
-    }
-
-    /// Whether an adopter's sliding rows are RESTORED from windowed sidecars
-    /// or replayed.
-    ///
-    /// `.restoredFromSidecar` requires all three of:
-    ///   * a row that can actually accept a restored window
-    ///     (`windowRestoreSupported`) — the fail-closed gate;
-    ///   * the operator knob (`SSDPrefixCachePolicy.windowSidecarEnabled`);
-    ///   * a layout that tiles into whole-block sidecars
-    ///     (`SSDWindowSidecarGeometry.derive` — gpt-oss-20b's 128-token
-    ///     window does not, and correctly keeps its 1,536-token bound).
-    ///
-    /// Note what this does NOT gate: whether sidecars are WRITTEN and READ.
-    /// That is the operator knob alone (`SSDPrefixCacheFactory.make`), so the
-    /// format, the corpus and both paths stay exercised while the accounting
-    /// stays honest.
-    static func windowResidency(
-        layerKinds: [CBv2LayerKind],
-        backendSelection: EngineV2KVBackendSelection,
-        pagedKilled: Bool = false,
-        environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> SSDWindowResidency {
-        guard windowRestoreSupported(
-            backendSelection: backendSelection, pagedKilled: pagedKilled),
-            SSDPrefixCachePolicy.windowSidecarEnabled(environment: environment),
-            SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize) != nil
-        else { return .replayed }
-        return .restoredFromSidecar
-    }
-
     /// Conservative finite-window replay length for the SSD donation/stage
     /// benefit gates; the engine plan remains authoritative per matched
     /// boundary.
     ///
     /// Resolves the backend through `prefixReuseCapability` rather than
-    /// hardcoding `.contiguousUnquantized`, so this and its sibling can no
+    /// hardcoding `.contiguousUnquantized`, so this and the capability can no
     /// longer describe two different backends for the same slot.
+    ///
+    /// WS-4.2 once made this residency-dependent — a boundary whose window
+    /// was restored from sidecars had nothing to replay, so the bound
+    /// collapsed to zero. No row in this repo can install a restored window
+    /// (paged would need `PagedSequenceKV.restoreWindow(_:at:)`, contiguous
+    /// a `CBv2WindowedSequenceKV` ring adoption; neither exists), so the
+    /// collapsed bound was unreachable and the plumbing carrying it has been
+    /// removed. Restoring it means reintroducing a residency input HERE, not
+    /// merely landing a consumer: advertising a matched prefix as free while
+    /// the engine still performs its full `windowCount × maxWindow` replay is
+    /// the failure this conservatism exists to prevent.
     static func adoptionBoundTokens(
         layerKinds: [CBv2LayerKind],
         backendSelection: EngineV2KVBackendSelection = .auto,
-        pagedKilled: Bool = false,
-        windowResidency: SSDWindowResidency = .replayed
+        pagedKilled: Bool = false
     ) -> Int {
-        adoptionBoundTokens(
-            capability: prefixReuseCapability(
-                layerKinds: layerKinds,
-                backendSelection: backendSelection,
-                pagedKilled: pagedKilled),
+        prefixReuseCapability(
             layerKinds: layerKinds,
-            windowResidency: windowResidency)
-    }
-
-    /// Residency-resolved bound for an already-derived capability.
-    ///
-    /// A restored window means the sliding rows are exact AT the boundary, so
-    /// there is nothing to replay and the bound collapses to zero — the whole
-    /// point of WS-4.2. It is gated on the geometry existing so that a
-    /// residency asserted for a layout that cannot produce whole-block
-    /// sidecars still fails closed to replay.
-    static func adoptionBoundTokens(
-        capability: CBv2PrefixReuseCapability,
-        layerKinds: [CBv2LayerKind],
-        windowResidency: SSDWindowResidency
-    ) -> Int {
-        guard windowResidency == .restoredFromSidecar,
-            SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize) != nil
-        else { return capability.conservativeReplayBoundTokens }
-        return 0
+            backendSelection: backendSelection,
+            pagedKilled: pagedKilled
+        ).conservativeReplayBoundTokens
     }
 
     /// Real Gemma QAT evidence is noisy/negative at only 1,024 saved tokens

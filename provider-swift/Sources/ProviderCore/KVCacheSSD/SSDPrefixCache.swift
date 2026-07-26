@@ -124,17 +124,6 @@ public final class SSDPrefixCache:
         /// always-safe answer. The staging benefit gate subtracts it from
         /// `matched`.
         let adoptionBoundTokens: Int
-        /// The bound that applies only at a boundary whose ENTIRE window is
-        /// tiled by present, authenticated sidecars: zero, because there is
-        /// nothing left to replay.
-        ///
-        /// Two fields rather than one because sidecar availability is a
-        /// per-boundary fact, not a cache-wide one. Collapsing the cache-wide
-        /// bound instead makes every candidate — including the ones whose
-        /// tiling is incomplete and which therefore replay in full — advertise
-        /// savings it will not deliver. Defaults to `adoptionBoundTokens`,
-        /// so a cache with no restore consumer can only ever be conservative.
-        let windowRestoredBoundTokens: Int
         /// Nominal fp16 full-row bytes per token used by SSD replay planning.
         /// The slot factory independently gives every contiguous request a
         /// resolved native-width process reservation before staging.
@@ -177,7 +166,6 @@ public final class SSDPrefixCache:
             maxStageBytes: Int,
             maxStageMillis: Int,
             windowSidecar: SSDWindowSidecarGeometry? = nil,
-            windowRestoredBoundTokens: Int? = nil,
             nowSeconds: @escaping @Sendable () -> Int64
         ) {
             self.modelId = modelId
@@ -185,7 +173,6 @@ public final class SSDPrefixCache:
             self.weightHash = weightHash
             self.blockSize = blockSize
             self.adoptionBoundTokens = adoptionBoundTokens
-            self.windowRestoredBoundTokens = windowRestoredBoundTokens ?? adoptionBoundTokens
             self.nominalFullKVBytesPerToken = max(0, nominalFullKVBytesPerToken)
             self.layoutEpoch = layoutEpoch
             self.epochStore = epochStore
@@ -727,7 +714,7 @@ public final class SSDPrefixCache:
             // is exactly what a windowed sidecar persists. Probed through the
             // donor seam so contiguous and (once WS-4.1 lands) paged rows both
             // participate without this path knowing which backend it holds.
-            windows.append((state[i] as? SSDWindowSnapshotting)?.windowSnapshot())
+            windows.append((state[i] as? CBv2WindowedSequenceKV)?.windowSnapshot())
             guard Self.isCacheable(kind), let seq = state[i] else {
                 snapshots.append(nil)
                 continue
@@ -1175,7 +1162,9 @@ public final class SSDPrefixCache:
         // and host copies on the engine's donation queue for nothing. Advisory
         // exactly like the block pre-check: the consumer's per-entry
         // `tryConsume` remains the authority for races.
-        let elementSize = geometry.layers
+        // `.lazy` so this stops at the first present layer instead of building
+        // a 25-element array (gemma-4's sliding-layer count) to read index 0.
+        let elementSize = geometry.layers.lazy
             .compactMap { windows[$0.index]?.keys.dtype.size }.first ?? 0
         let sidecarBytes = geometry.bytesPerBlock(elementSize: elementSize)
         guard sidecarBytes > 0,
@@ -1345,12 +1334,10 @@ public final class SSDPrefixCache:
         var windowTags: [Data] = []
         while k > 0 {
             let matched = k * config.blockSize
-            // Monotone impossibility test. `windowRestoredBoundTokens` is the
-            // SMALLEST bound this cache can ever apply, and shorter runs match
-            // strictly less, so failing here means no candidate can pass.
-            // (The per-candidate gate below is NOT monotone: a shorter
-            // boundary can have a complete tiling where a longer one does not.)
-            guard matched - min(config.windowRestoredBoundTokens, matched)
+            // Monotone impossibility test: shorter runs match strictly less
+            // against the same bound, so failing here means no candidate can
+            // pass and the loop can stop rather than count down to 1.
+            guard matched - min(config.adoptionBoundTokens, matched)
                 >= config.minEffectiveTokens
             else { return finish(.skippedCost) }
             guard let sizes = index.fileBytes(tags16: tags16[0 ..< k]) else {
@@ -1367,7 +1354,11 @@ public final class SSDPrefixCache:
             }
             windowTags = windowSidecarTags(
                 geometry: windowGeometry, chainHashes: hashes, cacheSalt: salt, blocks: k)
-            if let windowSizes = index.fileBytes(tags16: windowTags[...]), !windowTags.isEmpty {
+            // Emptiness FIRST: `fileBytes` takes the index lock, and with the
+            // sidecar knob off (the default) `windowTags` is always empty, so
+            // testing it second bought an index-lock acquisition per trim
+            // iteration — up to ~112 on a long prompt — to learn nothing.
+            if !windowTags.isEmpty, let windowSizes = index.fileBytes(tags16: windowTags[...]) {
                 for size in windowSizes {
                     let (sum, overflow) = runBytes.addingReportingOverflow(max(0, size))
                     guard !overflow else { return finish(.skippedCapacity) }
@@ -1379,13 +1370,10 @@ public final class SSDPrefixCache:
                 // replays. Never shortens the block run.
                 windowTags = []
             }
-            // The bound must describe the window this boundary will ACTUALLY
-            // get. Charging the cache-wide restored bound to a candidate whose
-            // tiling is incomplete advertises savings the adopter cannot
-            // deliver — it still performs the full replay.
-            let bound = windowTags.isEmpty
-                ? config.adoptionBoundTokens : config.windowRestoredBoundTokens
-            if matched - min(bound, matched) >= config.minEffectiveTokens,
+            // A restored window does NOT shorten the replay: no row can
+            // install one, so every boundary is judged against the same
+            // conservative bound whether or not its tiling is complete.
+            if matched - min(config.adoptionBoundTokens, matched) >= config.minEffectiveTokens,
                 runBytes <= config.maxStageBytes,
                 SSDPrefixCachePolicy.estimatedStageMillis(bytes: runBytes) <= config.maxStageMillis
             {
@@ -1401,7 +1389,7 @@ public final class SSDPrefixCache:
         // false cold fallbacks under a full but correctly-accounted budget.
         let terminalTag = tags16[k - 1]
         let reservationKey = reservationKey(forRequestID: requestID)
-        let attached = lock.withLock { () -> (deviceBytes: Int, hasWindow: Bool)? in
+        let attachedDeviceBytes = lock.withLock { () -> Int? in
             guard !closed,
                 !destructiveChangeInProgress,
                 cacheEpochMatches(stageEpoch)
@@ -1412,20 +1400,16 @@ public final class SSDPrefixCache:
             else { return nil }
             existing.openTickets.insert(requestID)
             tickets[requestID] = terminalTag
-            return (existing.deviceBytes, existing.window != nil)
+            return existing.deviceBytes
         }
-        if let attached {
-            // The saving belongs to the entry we joined, not to our probe: an
-            // entry staged without a window still costs its adopter the full
-            // replay, whatever this request's own index probe just saw.
+        if let attachedDeviceBytes {
             let matched = k * config.blockSize
-            let bound = attached.hasWindow
-                ? config.windowRestoredBoundTokens : config.adoptionBoundTokens
             return finish(.staged(
                 matchedTokens: matched,
-                expectedPrefillTokensSaved: max(0, matched - min(bound, matched)),
+                expectedPrefillTokensSaved: max(
+                    0, matched - min(config.adoptionBoundTokens, matched)),
                 shortenedByCorruption: false),
-                deviceBytes: attached.deviceBytes)
+                deviceBytes: attachedDeviceBytes)
         }
         // Multi-block conversion temporarily holds three full representations:
         // decrypted host Data, per-block MLX inputs, and concatenated outputs.
@@ -1477,14 +1461,10 @@ public final class SSDPrefixCache:
                 break
             }
         }
-        // Re-apply the benefit gate to the (possibly shortened) run. A
-        // corruption-shortened run ends at a DIFFERENT boundary than the one
-        // the trim loop tiled, and never restores a window (below), so it can
-        // only be judged against the conservative replay bound.
+        // Re-apply the benefit gate to the (possibly shortened) run against
+        // the same conservative replay bound the trim loop used.
         let matched = usableBlocks * config.blockSize
-        var settledBound = usableBlocks == k && !windowTags.isEmpty
-            ? config.windowRestoredBoundTokens
-            : config.adoptionBoundTokens
+        let settledBound = config.adoptionBoundTokens
         guard usableBlocks > 0, matched - min(settledBound, matched) >= config.minEffectiveTokens
         else {
             await releaseReservation(reservationKey)
@@ -1555,18 +1535,9 @@ public final class SSDPrefixCache:
             restoredWindow = readWindowSidecars(
                 geometry: geometry, chainHashes: hashes, cacheSalt: salt, blocks: usableBlocks)
         }
-        // A sidecar that was indexed but unreadable leaves this boundary on
-        // the replay path after all, so the benefit has to be re-settled
-        // against the conservative bound — and re-gated, since a run that only
-        // cleared the floor on the strength of a restored window is not worth
-        // staging without one.
-        if restoredWindow == nil, settledBound != config.adoptionBoundTokens {
-            settledBound = config.adoptionBoundTokens
-            guard matched - min(settledBound, matched) >= config.minEffectiveTokens else {
-                await releaseReservation(reservationKey)
-                return finish(.skippedCost)
-            }
-        }
+        // No re-settle is needed for a sidecar that was indexed but turned
+        // out unreadable: the benefit was never credited to the window in the
+        // first place, because no row can install one.
         let effective = matched - min(settledBound, matched)
         var exactDeviceBytes = 0
         for entry in prefix {
@@ -1631,7 +1602,7 @@ public final class SSDPrefixCache:
         // entry's per-entry reservation.
         enum StageResolution {
             case created
-            case attached(deviceBytes: Int, hasWindow: Bool)
+            case attached(deviceBytes: Int)
             case failed
         }
         let resolution: StageResolution = lock.withLock {
@@ -1645,7 +1616,7 @@ public final class SSDPrefixCache:
             {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = terminalTag
-                return .attached(deviceBytes: existing.deviceBytes, hasWindow: existing.window != nil)
+                return .attached(deviceBytes: existing.deviceBytes)
             }
             let usedTag = tags16[usableBlocks - 1]
             if let existing = stagedEntries[usedTag],
@@ -1654,7 +1625,7 @@ public final class SSDPrefixCache:
             {
                 existing.openTickets.insert(requestID)
                 tickets[requestID] = usedTag
-                return .attached(deviceBytes: existing.deviceBytes, hasWindow: existing.window != nil)
+                return .attached(deviceBytes: existing.deviceBytes)
             }
             stagedEntries[usedTag] = StagedEntry(
                 matched: matched, prefix: prefix, window: restoredWindow,
@@ -1670,16 +1641,13 @@ public final class SSDPrefixCache:
         case .failed:
             await releaseReservation(reservationKey)
             return finish(.skippedPolicy)
-        case .attached(let attachedDeviceBytes, let attachedHasWindow):
-            // Redundant with the winner's per-entry reservation. The saving is
-            // the WINNER's: our own window read does not apply to an entry we
-            // did not create.
+        case .attached(let attachedDeviceBytes):
+            // Redundant with the winner's per-entry reservation.
             await releaseReservation(reservationKey)
-            let attachedBound = attachedHasWindow
-                ? config.windowRestoredBoundTokens : config.adoptionBoundTokens
             return finish(.staged(
                 matchedTokens: matched,
-                expectedPrefillTokensSaved: max(0, matched - min(attachedBound, matched)),
+                expectedPrefillTokensSaved: max(
+                    0, matched - min(config.adoptionBoundTokens, matched)),
                 shortenedByCorruption: shortenedByCorruption),
                 deviceBytes: attachedDeviceBytes)
         case .created:
@@ -1731,20 +1699,6 @@ public final class SSDPrefixCache:
         return (blocks - geometry.blocksPerWindow ..< blocks).map {
             lookupKeys.windowTag16(chainHash: chainHashes[$0], cacheSalt: cacheSalt)
         }
-    }
-
-    /// Whether EVERY sidecar tiling the window that ends at block boundary
-    /// `blocks` is currently indexed — the same predicate the staging trim
-    /// loop applies, in the RAM index only (no I/O), so a donation-settlement
-    /// receipt can describe the replay an adopter would really face.
-    private func windowTilingComplete(
-        chainHashes: [Data], cacheSalt: String, blocks: Int
-    ) -> Bool {
-        let tags = windowSidecarTags(
-            geometry: config.windowSidecar, chainHashes: chainHashes,
-            cacheSalt: cacheSalt, blocks: blocks)
-        guard !tags.isEmpty else { return false }
-        return index.fileBytes(tags16: tags[...]) != nil
     }
 
     /// Read, authenticate and reassemble the sliding window that ends at
@@ -1805,8 +1759,18 @@ public final class SSDPrefixCache:
 
     /// WS-4.2 adoption seam: the donor's sliding window staged for
     /// `requestID`, indexed by model layer. nil ⇒ nothing was restored and the
-    /// adopter must replay. Consumed by WS-4.1's `restoreWindow(_:at:)`, via
-    /// `CBv2PagedWindowSnapshot(keys:values:base:)`.
+    /// adopter must replay.
+    ///
+    /// NO ENGINE CONSUMER EXISTS YET — this would be read by WS-4.1's
+    /// `restoreWindow(_:at:)` via `CBv2PagedWindowSnapshot(keys:values:base:)`,
+    /// which is not in this repo. It is kept because the path that FILLS it
+    /// (`readWindowSidecars` → decrypt → authenticate → `rebuildWindow`) does
+    /// run in production whenever the sidecar knob is on, is counted in the
+    /// `windowsRestored` stat printed by `logSSDPrefixCacheStats`, and has no
+    /// other observation point: deleting this accessor would delete the only
+    /// way any test can prove that live code still round-trips the format
+    /// byte-exactly. Landing a consumer does NOT on its own let the replay
+    /// bound collapse — see `PrefixCachePolicy.adoptionBoundTokens`.
     func stagedWindow(requestID: String) -> [SSDWindowSidecar.Window?]? {
         lock.withLock {
             guard let tag = tickets[requestID], let staged = stagedEntries[tag] else { return nil }
@@ -2190,17 +2154,12 @@ public final class SSDPrefixCache:
             }
         }
         let readyTokens = readableBlocks * config.blockSize
-        // The receipt has to describe the replay the ADOPTER will face. That
-        // is the restored bound only when this boundary's window is fully
-        // tiled by present sidecars; otherwise the adopter replays in full and
-        // a zero-recompute receipt would send the coordinator a prefix that
-        // does not exist.
-        let recompute = min(
-            windowTilingComplete(
-                chainHashes: chainHashes, cacheSalt: cacheSalt, blocks: readableBlocks)
-                ? config.windowRestoredBoundTokens
-                : config.adoptionBoundTokens,
-            readyTokens)
+        // The receipt has to describe the replay the ADOPTER will face, and
+        // that is the full conservative bound at every boundary: no row can
+        // install a restored window, so a complete sidecar tiling does not
+        // shorten it. A zero-recompute receipt would send the coordinator a
+        // prefix that does not exist.
+        let recompute = min(config.adoptionBoundTokens, readyTokens)
         let expectedSaved = max(0, readyTokens - recompute)
         guard expectedSaved >= config.minEffectiveTokens else { return false }
         guard let durableSizes = index.fileBytes(tags16: tags16.prefix(readableBlocks))

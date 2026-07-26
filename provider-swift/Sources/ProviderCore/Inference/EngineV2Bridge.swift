@@ -141,6 +141,13 @@ public actor EngineV2Bridge {
     /// clamping or re-slice policy may branch on it — those key off
     /// `kvBackendKind`, which is the backend that actually exists.
     public let kvBackendFallbackReason: String?
+    /// `kvBackendFallbackReason` already clamped to the heartbeat budget.
+    /// Stored rather than recomputed because the reason is fixed at
+    /// construction while the heartbeat rebuilds every slot's capacity every
+    /// few seconds, and the clamp costs two O(n) grapheme walks
+    /// (`String.count`, then `prefix`) that would otherwise run per slot per
+    /// tick for a value that cannot have changed.
+    let clampedKVBackendFallbackReason: String?
     let tokenizer: TokenizerHandle
     /// Resolved stop-token set (model EOS ∪ tokenizer EOS ∪ extra EOS
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
@@ -314,6 +321,8 @@ public actor EngineV2Bridge {
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
         self.kvBackendFallbackReason = kvBackendFallbackReason
+        self.clampedKVBackendFallbackReason =
+            Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
             eosTokenIds: eosTokenIds,
             tokenizerEOSTokenId: tokenizer.inner.eosTokenId,

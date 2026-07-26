@@ -71,10 +71,14 @@ func (s *Server) recordRequestOutcome(model string, attr kvBackendAttribution, c
 	if model == "" {
 		model = "unknown"
 	}
-	s.ddIncr(metricRequestOutcome, append([]string{
-		"model:" + model,
-		"class:" + class,
-	}, attr.tags()...))
+	if s == nil || s.dd == nil {
+		return
+	}
+	tags := attr.appendTags(append(make([]string, 0, 4),
+		"model:"+model,
+		"class:"+class,
+	))
+	s.ddIncr(metricRequestOutcome, tags)
 }
 
 // orUptimeClassForRejection maps a rejection's HTTP status to an OR-uptime class.

@@ -669,11 +669,9 @@ func TestQualityConcurrencyMatchesDefiningInequality(t *testing.T) {
 // TestQualityCapEightRequiresSoloRateNotOvercommit).
 func TestQualityCapReachesProviderReportedConcurrency(t *testing.T) {
 	const floor = 15.0
-	// measuredGemmaSoloTPS is the CBv2 v2-paged B=1 per-request decode rate for
-	// gemma-4-26b-qat-4bit on an M4 Max — the shipping engine's own number, and
-	// the conservative one (eager measures 101.8):
-	// libs/mlx-swift-lm/benchmarks/reports/gemma4-26b-qat4bit-paged-gate-2026-07-09.md
-	const measuredGemmaSoloTPS = 99.5
+	// See measured_rates_test.go: this is the PER-REQUEST paged rate from the
+	// engine benchmark, not the aggregate rate the v0.8.0 gate report quotes.
+	const measuredGemmaSoloTPS = measuredGemmaSoloTPSPaged
 
 	for _, base := range []int{4, 8} {
 		t.Run(fmt.Sprintf("base%d", base), func(t *testing.T) {

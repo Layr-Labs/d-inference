@@ -115,8 +115,10 @@ private func makeBuild(
         model: model,
         tokenizer: StubBridgeTokenizer(),
         kvBytesCapacity: gateTestCapacity,
-        prefixCache: nil,
+        // Deliberately 2, not the production 8: these gates assert BACKEND
+        // SELECTION, and a small pool keeps construction cheap.
         maxConcurrentRequests: 2,
+        prefixCache: nil,
         kvBackend: kvBackend,
         maxContextLength: 2048,
         environment: environment,

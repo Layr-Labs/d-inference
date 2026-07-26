@@ -118,7 +118,7 @@ func (s *Server) recordRejection(info rejectionInfo) {
 		if model == "" {
 			model = info.requestedModel
 		}
-		s.recordRequestOutcome(model, kvBackendAttribution{}, orUptimeClassForRejection(info.httpStatus))
+		s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orUptimeClassForRejection(info.httpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.

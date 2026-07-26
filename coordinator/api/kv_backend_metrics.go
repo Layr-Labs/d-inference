@@ -62,30 +62,29 @@ const kvBackendFallbackTagKey = "kv_backend_fallback:"
 // two tags are only meaningful together: a `contiguous` paired with a stale
 // `none` reads as a deliberate configuration and hides a regression.
 //
-// The zero value is the honest "no serving slot": both dimensions normalize to
-// unknown, never to a real backend or to `none`.
+// Both fields are ALWAYS a named vocabulary value, never "". There is exactly
+// one producer — registry.KVBackendTag / KVBackendFallbackTag, every branch of
+// which returns a constant — and exactly one way to build the "no serving slot"
+// case, newUnknownKVBackendAttribution. Nothing here re-normalizes on the way
+// out; an empty tag would mean a third producer appeared, and the fix belongs
+// there, not in a defensive coalesce that hides it.
 type kvBackendAttribution struct {
 	Backend  string
 	Fallback string
 }
 
-// normalized fills both dimensions in, so the zero value (no serving slot)
-// reads as unknown on both rather than as two empty tags.
-func (a kvBackendAttribution) normalized() kvBackendAttribution {
-	return kvBackendAttribution{
-		Backend:  normalizeKVBackendTag(a.Backend),
-		Fallback: normalizeKVBackendFallbackTag(a.Fallback),
-	}
+// newUnknownKVBackendAttribution is the honest "no serving slot" pair: unknown
+// on both dimensions, never a real backend and never `none`.
+func newUnknownKVBackendAttribution() kvBackendAttribution {
+	backend, fallback := registry.UnknownKVBackendTags()
+	return kvBackendAttribution{Backend: backend, Fallback: fallback}
 }
 
-// tags renders the pair as metric tags. Both dimensions are always present so
-// dashboards can group on either without losing rows.
-func (a kvBackendAttribution) tags() []string {
-	n := a.normalized()
-	return []string{
-		kvBackendTagKey + n.Backend,
-		kvBackendFallbackTagKey + n.Fallback,
-	}
+// appendTags renders the pair onto dst. Callers pass a slice preallocated for
+// their own tags plus these two, so a request outcome costs one allocation
+// rather than a fresh 2-element slice plus an append-grow per call site.
+func (a kvBackendAttribution) appendTags(dst []string) []string {
+	return append(dst, kvBackendTagKey+a.Backend, kvBackendFallbackTagKey+a.Fallback)
 }
 
 // kvBackendAttribution resolves both metric dimensions for the SLOT (provider +
@@ -99,34 +98,22 @@ func (a kvBackendAttribution) tags() []string {
 // pre-0.8.0 providers.
 func (s *Server) kvBackendAttribution(providerID, model string) kvBackendAttribution {
 	if s == nil || s.registry == nil {
-		return kvBackendAttribution{
-			Backend:  registry.KVBackendUnknown,
-			Fallback: registry.KVFallbackUnknown,
-		}
+		return newUnknownKVBackendAttribution()
 	}
 	backend, fallback := s.registry.SlotKVBackendTags(providerID, model)
 	return kvBackendAttribution{Backend: backend, Fallback: fallback}
 }
 
-// normalizeKVBackendTag maps an empty tag to the explicit unknown value so the
-// dimension is always present for dashboard grouping (the same normalization
-// recordRequestOutcome applies to model, and emitClientGone to chip_family).
-// "" reaches here only from a call site with no serving slot at all.
-func normalizeKVBackendTag(kvBackend string) string {
-	if kvBackend == "" {
-		return registry.KVBackendUnknown
+// providerKVBackendAttribution is the same resolution for a caller that ALREADY
+// holds the provider. The WebSocket read loop does: taking providerID back out
+// of it only to have the registry look the provider up again costs a second
+// registry read-lock on the hot per-request completion path.
+func (s *Server) providerKVBackendAttribution(p *registry.Provider, model string) kvBackendAttribution {
+	if s == nil || p == nil {
+		return newUnknownKVBackendAttribution()
 	}
-	return kvBackend
-}
-
-// normalizeKVBackendFallbackTag is the same normalization for the degrade
-// dimension. "" is UNKNOWN, never `none`: a call site with no serving slot has
-// not established that nothing degraded.
-func normalizeKVBackendFallbackTag(fallback string) string {
-	if fallback == "" {
-		return registry.KVFallbackUnknown
-	}
-	return fallback
+	backend, fallback := p.SlotKVBackendTags(model)
+	return kvBackendAttribution{Backend: backend, Fallback: fallback}
 }
 
 // emitRequestBackendLatency records the per-request TTFT and decode-throughput
@@ -134,12 +121,24 @@ func normalizeKVBackendFallbackTag(fallback string) string {
 // the completed route outcome; a non-finite or non-positive value means "not
 // measurable for this request" and is skipped rather than recorded as a zero
 // sample, which would drag a percentile toward the floor.
+//
+// Both guards run BEFORE the tags are built: ddHistogram checks s.dd only after
+// its arguments exist, so an unconfigured Datadog (every test, every dev
+// coordinator) would otherwise pay the tag construction on every completion.
 func (s *Server) emitRequestBackendLatency(model string, attr kvBackendAttribution, ttftMs, decodeTPS float64) {
-	tags := append([]string{"model:" + model}, attr.tags()...)
-	if usableMetricSample(ttftMs) {
+	if s == nil || s.dd == nil {
+		return
+	}
+	ttftUsable := usableMetricSample(ttftMs)
+	decodeUsable := usableMetricSample(decodeTPS)
+	if !ttftUsable && !decodeUsable {
+		return
+	}
+	tags := attr.appendTags(append(make([]string, 0, 3), "model:"+model))
+	if ttftUsable {
 		s.ddHistogram(metricRequestTTFT, ttftMs, tags)
 	}
-	if usableMetricSample(decodeTPS) {
+	if decodeUsable {
 		s.ddHistogram(metricRequestDecodeTPS, decodeTPS, tags)
 	}
 }
@@ -163,6 +162,7 @@ func (d *dispatchState) noteServingSlot() {
 		return
 	}
 	d.servedKVBackend = d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
+	d.servedKVProviderID, d.servedKVModel = pr.ProviderID, pr.Model
 }
 
 // kvBackendAttribution is the KV-backend metric pair for this dispatch. It
@@ -170,9 +170,23 @@ func (d *dispatchState) noteServingSlot() {
 // is attributed to the backup's slot rather than the primary's, and falls back
 // to the latch once a failover has cleared it. A dispatch that never reached a
 // slot tags as unknown on both dimensions.
+//
+// The live case reuses the latch when it was taken for the SAME (provider,
+// model), which is every ordinary request: noteServingSlot latches at dispatch
+// and the success path reads it again at commit, so re-resolving would take a
+// second registry read lock per request for a value that provably has not
+// moved. A speculative backup shows up as a KEY MISMATCH, not as a stale
+// latch, and still re-resolves.
 func (d *dispatchState) kvBackendAttribution() kvBackendAttribution {
 	if pr := d.pr; pr != nil && pr.ProviderID != "" {
+		if pr.ProviderID == d.servedKVProviderID && pr.Model == d.servedKVModel {
+			return d.servedKVBackend
+		}
 		return d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
 	}
-	return d.servedKVBackend.normalized()
+	if d.servedKVProviderID == "" {
+		// Never latched: no attempt ever reached a slot.
+		return newUnknownKVBackendAttribution()
+	}
+	return d.servedKVBackend
 }

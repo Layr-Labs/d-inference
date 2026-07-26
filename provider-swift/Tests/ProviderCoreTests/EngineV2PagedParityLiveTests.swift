@@ -95,6 +95,9 @@ struct EngineV2PagedParityLiveTests {
             model: live.model,
             tokenizer: live.tokenizer.inner,
             kvBytesCapacity: 8 * Self.gib,
+            // The fleet's cap, not a test-local number: a parity arm sized
+            // differently from production measures a different engine.
+            maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent),
             prefixCache: nil,
             kvBackend: kvBackend)
         let bridge = EngineV2Bridge(

@@ -149,7 +149,7 @@ struct PrefixCachePolicyTests {
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: []) == 0)
     }
 
-    // MARK: - Residency- and backend-aware bound (WS-4.2)
+    // MARK: - Backend-aware bound
 
     @Test("adoptionBoundTokens resolves the backend instead of hardcoding contiguous")
     func boundFollowsBackendSelection() {
@@ -174,25 +174,19 @@ struct PrefixCachePolicyTests {
             #expect(
                 PrefixCachePolicy.adoptionBoundTokens(
                     layerKinds: gemma, backendSelection: selection) == 25_600)
-            #expect(
-                PrefixCachePolicy.adoptionBoundTokens(
-                    capability: capability, layerKinds: gemma,
-                    windowResidency: .replayed) == 25_600)
+            #expect(capability.conservativeReplayBoundTokens == 25_600)
         }
-        // The bound is READ from the capability it is handed, never re-derived
-        // from `layerKinds` — `layerKinds` is consulted only for sidecar
-        // geometry. Hand it gpt-oss's capability with gemma's layout and it
-        // must answer gpt-oss's 1,536; a re-derivation (the shape a hardcoded
+        // The bound is the CAPABILITY's, never re-derived from `layerKinds`.
+        // gpt-oss's capability must answer gpt-oss's 1,536 whatever layout sits
+        // beside it; a re-derivation (the shape a hardcoded
         // `.contiguousUnquantized` takes) would answer gemma's 25,600. This is
         // what still fails if the resolver is bypassed, now that both backends
         // agree numerically.
         let gpt = kinds(sliding: 12, window: 128, full: 12)
         #expect(
-            PrefixCachePolicy.adoptionBoundTokens(
-                capability: PrefixCachePolicy.prefixReuseCapability(
-                    layerKinds: gpt, backendSelection: .paged),
-                layerKinds: gemma,
-                windowResidency: .replayed) == 1_536)
+            PrefixCachePolicy.prefixReuseCapability(
+                layerKinds: gpt, backendSelection: .paged
+            ).conservativeReplayBoundTokens == 1_536)
         // Paged's 25,600 sits EXACTLY on the long-hybrid threshold, so the
         // 1,536 floor still applies — narrowing the bound must not relax it.
         let paged = PrefixCachePolicy.prefixReuseCapability(
@@ -208,94 +202,44 @@ struct PrefixCachePolicyTests {
         #expect(
             PrefixCachePolicy.adoptionBoundTokens(
                 layerKinds: gemma, backendSelection: .paged, pagedKilled: true) == 25_600)
-        // The shipped default is unchanged: no argument ⇒ replayed contiguous.
+        // The shipped default is unchanged.
         #expect(PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma) == 25_600)
     }
 
-    @Test("a restored window collapses the bound and, with it, the long-hybrid floor")
-    func restoredWindowCollapsesTheFloor() {
+    @Test("the sidecar knob cannot collapse the replay bound")
+    func sidecarKnobDoesNotCollapseTheBound() {
         let gemma = kinds(sliding: 25, window: 1024, full: 5)
-        let gpt = kinds(sliding: 12, window: 128, full: 12)
-        let gemmaCapability = PrefixCachePolicy.prefixReuseCapability(
-            layerKinds: gemma, backendSelection: .contiguous)
-
-        let replayed = PrefixCachePolicy.adoptionBoundTokens(
-            capability: gemmaCapability, layerKinds: gemma, windowResidency: .replayed)
-        let restored = PrefixCachePolicy.adoptionBoundTokens(
-            capability: gemmaCapability, layerKinds: gemma,
-            windowResidency: .restoredFromSidecar)
-        #expect(replayed == 25_600)
-        #expect(restored == 0)
-
-        // The 1,536 long-hybrid floor exists because saving 1,024 tokens was
-        // inside the noise of a 25,600-token replay. With no replay it does
-        // not apply, so the generic 1,024 governs. Donation floor:
-        // 25,600 + 1,536 = 27,136 ⇒ 0 + 1,024 = 1,024.
-        #expect(PrefixCachePolicy.minEffectiveTokens(
-            capability: gemmaCapability, adoptionBoundTokens: replayed,
-            environment: [:]) == 1_536)
-        #expect(PrefixCachePolicy.minEffectiveTokens(
-            capability: gemmaCapability, adoptionBoundTokens: restored,
-            environment: [:]) == 1_024)
-        // The environment can still only RAISE it.
-        #expect(PrefixCachePolicy.minEffectiveTokens(
-            capability: gemmaCapability, adoptionBoundTokens: restored,
-            environment: [SSDPrefixCachePolicy.minEffectiveTokensFlag: "2048"]) == 2_048)
-
-        // gpt-oss-20b's 128-token window does not tile into 256-token blocks,
-        // so asserting residency for it must still fail closed to replay.
-        let gptCapability = PrefixCachePolicy.prefixReuseCapability(
-            layerKinds: gpt, backendSelection: .contiguous)
-        #expect(PrefixCachePolicy.adoptionBoundTokens(
-            capability: gptCapability, layerKinds: gpt,
-            windowResidency: .restoredFromSidecar) == 1_536)
-    }
-
-    @Test("residency stays REPLAYED while no row can install a restored window")
-    func residencyFailsClosedWithoutAConsumer() {
-        let gemma = kinds(sliding: 25, window: 1024, full: 5)
-        let gpt = kinds(sliding: 12, window: 128, full: 12)
         let on = [SSDPrefixCachePolicy.windowSidecarFlag: "1"]
 
-        // Nothing in this repo consumes a staged window: there is no
-        // `restoreWindow(_:at:)` on any row, and nothing calls
-        // `SSDPrefixCache.stagedWindow(requestID:)`. Every backend must
-        // therefore answer `false`, killed or not.
+        // WS-4.2 once let a boundary whose window was fully tiled by sidecars
+        // claim a ZERO replay bound. Nothing in this repo can install a
+        // restored window — there is no `restoreWindow(_:at:)` on any row —
+        // so that collapse was unreachable and its plumbing is gone. The
+        // property that matters is what remains: turning the knob on cannot
+        // make the cache advertise a matched prefix as free while the engine
+        // still replays 25,600 tokens. If a consumer ever lands, the residency
+        // input has to come BACK to `adoptionBoundTokens` deliberately, and
+        // this assertion is what will fail to say so.
         for selection in [EngineV2KVBackendSelection.auto, .contiguous, .paged] {
             for killed in [false, true] {
                 #expect(
-                    !PrefixCachePolicy.windowRestoreSupported(
-                        backendSelection: selection, pagedKilled: killed),
-                    "\(selection)/killed=\(killed) must not claim a restore consumer")
-                // …so the residency is `.replayed` with the knob ON, for a
-                // layout that tiles perfectly, on every backend.
-                #expect(
-                    PrefixCachePolicy.windowResidency(
+                    PrefixCachePolicy.adoptionBoundTokens(
                         layerKinds: gemma, backendSelection: selection,
-                        pagedKilled: killed, environment: on) == .replayed)
-                #expect(
-                    PrefixCachePolicy.windowResidency(
-                        layerKinds: gemma, backendSelection: selection,
-                        pagedKilled: killed, environment: [:]) == .replayed,
-                    "default must not change the shipped floor")
-                #expect(
-                    PrefixCachePolicy.windowResidency(
-                        layerKinds: gpt, backendSelection: selection,
-                        pagedKilled: killed, environment: on) == .replayed)
+                        pagedKilled: killed) == 25_600,
+                    "\(selection)/killed=\(killed) must charge the full replay")
             }
         }
 
-        // The consequence that matters: the knob cannot collapse gemma-4's
-        // replay bound, so the cache can never advertise a matched prefix as
-        // free while the engine still replays 25,600 tokens. This is the exact
-        // composition `SSDPrefixCacheFactory.make` performs.
+        // The long-hybrid floor rides on that bound: 25,600 ≥ 25,600 ⇒ 1,536,
+        // and the environment can only RAISE it.
         let capability = PrefixCachePolicy.prefixReuseCapability(
             layerKinds: gemma, backendSelection: .contiguous)
-        #expect(PrefixCachePolicy.adoptionBoundTokens(
-            capability: capability,
-            layerKinds: gemma,
-            windowResidency: PrefixCachePolicy.windowResidency(
-                layerKinds: gemma, backendSelection: .contiguous, environment: on)) == 25_600)
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: capability, adoptionBoundTokens: 25_600,
+            environment: [:]) == 1_536)
+        #expect(PrefixCachePolicy.minEffectiveTokens(
+            capability: capability, adoptionBoundTokens: 25_600,
+            environment: [SSDPrefixCachePolicy.minEffectiveTokensFlag: "32768"]) == 32_768)
 
         // …while the knob still switches the sidecar format on, so the write
         // and read paths stay exercised rather than becoming dead code.
@@ -303,10 +247,6 @@ struct PrefixCachePolicyTests {
         #expect(
             SSDWindowSidecarGeometry.derive(
                 layerKinds: gemma, blockSize: PrefixCachePolicy.blockSize) != nil)
-
-        // The flip is these two constants plus a consumer.
-        #expect(!PrefixCachePolicy.contiguousWindowRestoreLanded)
-        #expect(!PrefixCachePolicy.pagedWindowRestoreLanded)
     }
 
     @Test("Gemma QAT and GPT-OSS layouts qualify for v2 on both backends")

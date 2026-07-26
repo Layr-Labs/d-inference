@@ -191,6 +191,13 @@ type dispatchState struct {
 	// exactly the sample the rollout dashboard must not lose. Zero value until
 	// the request reaches a slot, which tags unknown on both dimensions.
 	servedKVBackend kvBackendAttribution
+	// The (provider, model) the latch above was taken for. Not decoration: it
+	// is what lets kvBackendAttribution reuse the latch instead of re-entering
+	// the registry, while still honouring the rule that a LIVE d.pr wins — a
+	// speculative backup that beats the primary must be attributed to the
+	// backup's slot, and that shows up here as a key mismatch.
+	servedKVProviderID string
+	servedKVModel      string
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -2660,7 +2667,7 @@ exhausted:
 				"attempt":     d.attempt + 1,
 				"status_code": statusCode,
 				"last_error":  d.lastErr,
-				"kv_backend":  normalizeKVBackendTag(kvBackend.Backend),
+				"kv_backend":  kvBackend.Backend,
 			})
 		if s.metrics != nil {
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})

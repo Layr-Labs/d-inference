@@ -48,12 +48,16 @@ public enum ThroughputSweep {
     /// per-batch medians.
     ///
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory. Since v0.8.0 `.auto` resolves PAGED and still DEGRADES to
-    /// contiguous on kill switch, preflight, or capacity; an explicit
-    /// `.paged` refuses instead. Either way the selection is not the
-    /// outcome, so the report carries the backend each cell ACTUALLY built
-    /// with — per cell in `decode[].resolvedKVBackend`, and de-duplicated in
-    /// the `kvBackend` block.
+    /// factory. `.auto` resolves CONTIGUOUS: the v0.8.0 flip to paged was
+    /// reverted because paged adoption is not transparent — on gemma-4 at a
+    /// 28,672-token prompt, paged ADOPTED diverges from paged COLD at token
+    /// 20 of 32 while contiguous adoption is exact, so the same prompt and
+    /// config answer differently depending on cache state the caller cannot
+    /// see. Paged is opt-in per slot; an explicit `.paged` REFUSES rather
+    /// than degrading. Either way the selection is not the outcome, so the
+    /// report carries the backend each cell ACTUALLY built with — per cell
+    /// in `decode[].resolvedKVBackend`, and de-duplicated in the `kvBackend`
+    /// block.
     public static func run(
         modelID: String,
         modelDirectory: URL,
@@ -220,12 +224,14 @@ public enum ThroughputSweep {
     }
 
     /// Decode samples plus the KV backend the engine ACTUALLY built for those
-    /// cells. `.auto` is a selection, not an outcome — it degrades to
-    /// contiguous on kill switch, kernel preflight, or pool capacity, and a
-    /// release gate that cannot see the degradation silently measures the
-    /// wrong backend. Since OPEN-9 an EXPLICIT `.paged` no longer degrades at
-    /// all: it refuses, and `constructionFailure` is the only record of why
-    /// the curve is empty.
+    /// cells. A selection is not an outcome: a non-`.paged` selection may
+    /// DEGRADE to contiguous on kill switch, kernel preflight, or pool
+    /// capacity, and a release gate that cannot see the degradation silently
+    /// measures the wrong backend. Since OPEN-9 an EXPLICIT `.paged` no
+    /// longer degrades at all: it refuses, and `constructionFailure` is the
+    /// only record of why the curve is empty. With `.auto` back on
+    /// contiguous, explicit `.paged` — the opt-in — is the selection this
+    /// distinction is load-bearing for.
     ///
     /// Refusal is per CELL, not per run: every batch size builds its own
     /// engine with its own `maxConcurrentRequests`, which feeds paged

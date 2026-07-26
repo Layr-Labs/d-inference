@@ -126,10 +126,13 @@ struct BenchmarkSweepExitTests {
 
     @Test("auto with an unmeasured cell still exits 0")
     func autoPartialCoverageSucceeds() {
-        // Under `auto` a cell that could not build paged is a legitimate
-        // degrade, not a broken promise — the same asymmetry
-        // `EngineV2KVBackendPolicy.degradesPagedFailure` encodes for the
-        // engine. Nil message ⇒ `runThroughputSweep` returns normally ⇒ 0.
+        // Under `auto` the operator named no backend, so a cell that could
+        // not build one is an ordinary bad run, not a broken promise — the
+        // same asymmetry `EngineV2KVBackendPolicy.degradesPagedFailure`
+        // encodes for the engine. `auto` resolves CONTIGUOUS, so a paged
+        // capacity refusal is not even reachable here; what is reachable is
+        // an ordinary construction error, and it keeps its exit status.
+        // Nil message ⇒ `runThroughputSweep` returns normally ⇒ 0.
         #expect(Benchmark.sweepFailureMessage(
             backend: .auto, failure: nil, coverage: coverage()) == nil)
         #expect(ExitCode.success.rawValue == 0)

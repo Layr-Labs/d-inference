@@ -57,9 +57,11 @@ public struct ThroughputSweepReport: Codable, Sendable {
         public let elapsedMs: Double
         /// The KV backend the engine for THIS cell actually built with, or
         /// nil when construction failed and the cell measured nothing. Each
-        /// batch size builds its own engine, so `.auto` can resolve paged at
-        /// B=1 and degrade at B=8 — a single run-wide scalar would hide
-        /// exactly that.
+        /// batch size builds its own engine sized by its own
+        /// `maxConcurrentRequests`, so the outcome can differ per cell —
+        /// explicit `.paged` resolving at B=1 and refusing at B=8, or a
+        /// degrading selection resolving paged at B=1 and contiguous at
+        /// B=8. A single run-wide scalar would hide exactly that.
         public let resolvedKVBackend: String?
 
         public init(

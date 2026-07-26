@@ -1082,3 +1082,64 @@ where vLLM moves references.** The 25,600-token floor, the tiling
 requirement, the 200 MiB sidecars, the 20 GiB ceiling, the two-thread
 donation split, and `retainPage`'s zero callers are six symptoms of that
 single choice.
+
+---
+
+## Three corrections to the sections above
+
+### "Pure scheduling knob" is wrong — the delta is narrower and sharper
+
+`max_num_batched_tokens` DOES size storage in vLLM: the encoder cache
+(`config/scheduler.py:239-240`), LoRA static buffers captured in the
+`torch.compile` graph (`:211`), Inductor's 32- vs 64-bit indexing choice
+(`:213`), and it is baked into the compilation cache key (`:216`) — so
+changing it invalidates compiled artifacts.
+
+The accurate contrast:
+
+> **vLLM's token budget sizes ancillary buffers and the compile key, but
+> never the KV cache** — KV blocks come from a pool sized by memory
+> profiling / `gpu_memory_utilization`, independent of the token budget.
+> **Ours feeds `ringPageCount -> pageDemand -> admission capacity`.**
+
+Both knobs have storage consequences. Only ours has KV-admission
+consequences.
+
+### gpt-oss has NO capture headroom, ever
+
+The regime split applies to the capture rule too, and it is worse than the
+gemma-4 table implies. On gpt-oss the ring IS the chunk at every setting,
+because the window term never binds — so slack is **1.00 chunk at every
+chunk size**. A block written at the start of a 512-token chunk is exactly
+lapped by the end of that same chunk.
+
+So "capture within the chunk that wrote the block" is not a safety margin
+on gpt-oss, it is **the only correct design from day one**, and the
+handle-inline/materialise-off-thread split stops being an optimisation and
+becomes mandatory. A capture design validated only on gemma-4 will pass
+and then silently drop blocks on gpt-oss.
+
+### THE HAZARD: per-block capture must not simply drop the pin
+
+"The lazy handle pins nothing; only the later eval does" was offered as a
+benefit. **It is also the hazard, and it is the one way this
+recommendation becomes a correctness bug.**
+
+Today's safety comes precisely FROM pinning: the donor's state is held
+until `donate()` returns (`EngineLoopV2.swift:2124`), and the
+materialising eval runs inside `donate` on the `.utility` donation queue
+(`PrefixCacheV2.swift:329-337`).
+
+Remove the pin and nothing stops the ring lapping the page before its eval
+completes — and the ring laps in ~2 chunks at chunk 512 on gemma-4 and
+~1 chunk on gpt-oss, racing a **deprioritised serial queue**. The failure
+is silent: a donated entry referencing recycled pages is **other requests'
+bytes**. That is exactly the hazard `requiresMaterializedSnapshots` exists
+to prevent.
+
+> **Per-block capture needs an explicit deadline or retention, not just
+> synchronous handle capture.** Design it in from the start.
+
+This does not change the ranking. It changes what "done" means for the
+producer item, and it is the single place where a plausible-looking
+implementation of these findings would ship a data-corruption bug.

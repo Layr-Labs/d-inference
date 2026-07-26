@@ -182,15 +182,22 @@ jobs:
           done
           swift test --skip-build --filter CBv2PagedSafetyTests
           swift test --skip-build --filter CBv2PrefixCacheHasherTests
-      # NOTE (v0.8.0): every swift-testing `@Test` in this package is
-      # currently UNREACHABLE. `Tests/BenchCBv2Tests` depends on the
-      # BenchCBv2 EXECUTABLE target, so SwiftPM routes the swift-testing
-      # pass at that binary, which rejects `--test-bundle-path` and exits.
-      # Only XCTestCase classes execute — and `swift test` still exits 0,
-      # so these four gates reported GREEN while running nothing. Verified
-      # locally: 70 cases across the four suites DO pass once the
-      # BenchCBv2Tests target is removed. The guards below fail the step on
-      # a zero executed count until the target is split into a library.
+      # NOTE (v0.8.0): the guards below exist because these four gates once
+      # reported GREEN while executing NOTHING. `Tests/BenchCBv2Tests`
+      # depended on the BenchCBv2 EXECUTABLE target, so SwiftPM routed the
+      # swift-testing pass at that binary, which rejects
+      # `--test-bundle-path` and exits — every `@Test` in the package was
+      # unreachable and only XCTestCase classes ran. `swift test` exits 0 in
+      # that state, which is why it went unnoticed.
+      #
+      # FIXED: BenchCBv2 is now split into a `BenchCBv2Core` library plus a
+      # thin executable shim, and the test target depends on the library.
+      # The four suites execute 10 / 14 / 34 / 12 = 70 cases.
+      #
+      # The guards STAY as a permanent tripwire. This failure mode is silent
+      # by construction — a dark suite and a passing one are
+      # indistinguishable by exit code — so any future change that re-routes
+      # the swift-testing pass must be RED here, not green.
       # The four suites below are already compiled by the `swift build
       # --build-tests` step above but were never executed, so the paged-KV
       # migration had no automated numerical gate. They add no compile time,

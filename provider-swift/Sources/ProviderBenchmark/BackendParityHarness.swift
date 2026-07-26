@@ -765,10 +765,28 @@ public enum BackendParityHarness {
                     + "(\(first.row.finishReason) / \(second.row.finishReason))")
         }
 
+        // Whether ADOPTION CHANGED THE ANSWER. Both submissions carry the
+        // SAME prompt at temperature 0, so under exact adoption the two token
+        // streams are identical and any difference is the reuse path
+        // rewriting the output — which the savings comparison, counting
+        // tokens it did not have to prefill, cannot see at all. Main measured
+        // paged adopted diverging from paged cold at token 20 of 32 on
+        // gemma-4 at a 28,672-token prompt while this criterion returned
+        // PASS; this is the data that catches it, and it was already sitting
+        // in the probe being discarded.
+        //
+        // Gated on an actual `.hit`: on a miss there is no adoption to judge
+        // and a difference would be nondeterminism, a different finding with
+        // a different owner. nil is NOT MEASURED, never "exact".
+        let adopted = secondUsage.prefixCacheOutcome == .hit
+        let adoptionTokenExact: Bool? = adopted
+            ? first.row.tokens == second.row.tokens
+            : nil
         log("arm \(selection.rawValue): prefix reuse "
             + "\(describe(firstUsage.prefixCacheOutcome))->"
             + "\(describe(secondUsage.prefixCacheOutcome)), "
             + "finish=\(first.row.finishReason)/\(second.row.finishReason), "
+            + "adoptionExact=\(adoptionTokenExact.map(String.init) ?? "not_measured"), "
             + "matched=\(secondUsage.prefixCacheMatchedTokens), "
             + "saved=\(secondUsage.prefixCachePrefillTokensSaved), "
             + "replayBound=\(replayBound), prompt=\(promptTokens), donated=\(donatedEntries)")
@@ -789,7 +807,8 @@ public enum BackendParityHarness {
                 secondUsage.prefixCachePrefillTokensSaved, secondUsage.prefixCacheHitTokens),
             cacheHits: stats.hits,
             cacheMisses: stats.misses,
-            cacheTokensSaved: stats.tokensSaved)
+            cacheTokensSaved: stats.tokensSaved,
+            adoptionTokenExact: adoptionTokenExact)
     }
 
     static let donationTimeoutSeconds = 10.0

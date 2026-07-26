@@ -800,6 +800,33 @@ public enum BackendParityCriteria {
     /// plain and MTP row sets from the same `parityPrompts`, in the same
     /// order, with the same `maxTokens` and EOS set; `rowMismatch` joins on
     /// the prompt name and refuses a count or order mismatch outright.
+    ///
+    /// KNOWN LIMIT — do not over-read a PASS. Greedy argmax is a COARSE,
+    /// non-monotone detector of numeric divergence: matching tokens do not
+    /// imply matching numerics. The engine's batch-composition invariance
+    /// work measured the gap directly — at unit query gain the attention
+    /// output was already wrong in up to 722 of 4096 elements while the
+    /// decoded tokens stayed identical for 1024 steps; raising the post-norm
+    /// query gain to 8 (an ordinary attention-logit range) saturated the
+    /// output to 4096/4096 differing and flipped a token at step 11. So the
+    /// blindness is worst on FLAT attention and shrinks as the distribution
+    /// peaks. This criterion is scored on real weights and real prompts,
+    /// which is the peaked regime, so it is a genuine detector there — but a
+    /// PASS means "token-identical", never "numerically identical", and a
+    /// synthetic or tiny fixture would weaken it further.
+    ///
+    /// The obvious hardening — carry a numeric witness alongside the tokens —
+    /// is NOT currently available on this path, and the reason is measured
+    /// rather than theoretical. `Row.margins` is the witness the base decode
+    /// uses, but the harness deliberately requests no `topLogprobs` on the
+    /// MTP arm: asking a row for top-k logprobs pulls it off the verification
+    /// path back onto the sampler, and the drafter stops engaging. It took
+    /// that arm from rounds=5/drafted=5 to rounds=0/drafted=0 on BOTH
+    /// backends while `driverConstructed` stayed true — i.e. instrumenting
+    /// for numerics manufactured exactly the silent no-op this criterion
+    /// exists to catch (`BackendParityHarness.probeMTP`). A numeric witness
+    /// here therefore needs a channel that does not run through the sampler,
+    /// not merely a flag flip.
     static func mtpTokenExactness(
         baseline: BackendParityObservation,
         candidate: BackendParityObservation

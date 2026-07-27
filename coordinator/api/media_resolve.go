@@ -136,8 +136,16 @@ type mediaResolveMeta struct {
 	// confirms the owner can actually serve the request BEFORE any fetch, so a
 	// user with no linked/online/capable machine can't drive coordinator egress
 	// and only then receive the self-route-unavailable error.
+	//
+	// traits carries the FULL routing traits, not just HasTools: a constrained
+	// tool_choice raises RequiresToolConstraint, which providerEligibleForTraits
+	// enforces, so reconstructing a partial trait set here would call an owned
+	// provider serviceable and fetch before the real admission rejected it. The
+	// traits are derived from the pre-inline body; runInferenceAdmission re-checks
+	// with the post-inline set, which can only be stricter.
 	selfRoute      bool
 	ownerAccountID string
+	traits         registry.RequestTraits
 }
 
 // resolveRemoteMedia is phase 2 (post-reservation): it fetches remote media
@@ -168,7 +176,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	// terminal response. The later runInferenceAdmission re-checks (idempotent).
 	if meta.selfRoute && mediafetch.HasRemoteMedia(parsed) {
 		if s.selfRouteUnavailable(w, r, meta.ownerAccountID, meta.model,
-			registry.RequestTraits{HasTools: meta.hasTools}, meta.requiresVision) {
+			meta.traits, meta.requiresVision) {
 			return nil, false, false
 		}
 	}

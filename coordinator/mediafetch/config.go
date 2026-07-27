@@ -43,6 +43,8 @@ package mediafetch
 
 import (
 	"fmt"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -143,6 +145,43 @@ type Config struct {
 	// prevents the coordinator from becoming a public-network port scanner. Set
 	// true only for controlled dev/test origins.
 	AllowNonStandardPorts bool
+	// malformedEnv names every EIGENINFERENCE_MEDIA_FETCH_* variable that was SET
+	// but could not be parsed. The shared env helpers fall back silently on a
+	// parse error, which is the right call for a tuning knob and the wrong one
+	// for a kill switch: `ENABLED=flase` typed during an incident would fall back
+	// to the compiled default (true) and keep fetching. ConfigFromEnv records
+	// those keys here and Check reports them, so the boot fails instead.
+	malformedEnv []string
+}
+
+// envBool reads a boolean env var, recording the key when it is set but
+// unparseable instead of silently falling back to the compiled default.
+func (c *Config) envBool(key string, fallback bool) bool {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		c.malformedEnv = append(c.malformedEnv, key)
+		return fallback
+	}
+	return b
+}
+
+// envInt reads an integer env var, recording the key when it is set but
+// unparseable instead of silently falling back to the compiled default.
+func (c *Config) envInt(key string, fallback int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		c.malformedEnv = append(c.malformedEnv, key)
+		return fallback
+	}
+	return n
 }
 
 // DefaultConfig returns the production defaults (feature enabled).
@@ -165,27 +204,31 @@ func DefaultConfig() Config {
 }
 
 // ConfigFromEnv builds a Config from EIGENINFERENCE_MEDIA_FETCH_* env vars,
-// falling back to DefaultConfig for anything unset or unparseable.
+// falling back to DefaultConfig for anything unset.
 //
 // The result is deliberately NOT sanitized: it is the raw operator intent, so
-// AppConfig.Check can fail the boot on a typo (MAX_PARTS=0, TIMEOUT_MS=-1)
-// instead of silently serving a default nobody asked for. NewResolver clamps
-// whatever reaches it, so a Resolver is safe either way.
+// AppConfig.Check can fail the boot on a bad value instead of silently serving a
+// default nobody asked for. Both failure shapes are covered — an out-of-range
+// value (MAX_PARTS=0) trips Check's bounds, and a value that is set but
+// unparseable (ENABLED=flase, TIMEOUT_MS=fast) is recorded in malformedEnv and
+// trips Check too, because a silently-ignored kill switch is exactly the failure
+// an operator cannot afford mid-incident. NewResolver clamps whatever reaches
+// it, so a Resolver is safe either way.
 func ConfigFromEnv() Config {
 	c := DefaultConfig()
-	c.Enabled = env.EnvBool(envEnabled, c.Enabled)
-	c.MaxFileBytes = int64(env.EnvInt(envMaxFileBytes, int(c.MaxFileBytes)))
-	c.MaxTotalBytes = int64(env.EnvInt(envMaxTotalBytes, int(c.MaxTotalBytes)))
-	c.MaxInlinedBytes = int64(env.EnvInt(envMaxInlinedBytes, int(c.MaxInlinedBytes)))
-	c.MaxParts = env.EnvInt(envMaxParts, c.MaxParts)
-	c.FetchTimeout = time.Duration(env.EnvInt(envTimeoutMS, int(c.FetchTimeout/time.Millisecond))) * time.Millisecond
-	c.TotalDeadline = time.Duration(env.EnvInt(envTotalDeadline, int(c.TotalDeadline/time.Millisecond))) * time.Millisecond
-	c.Concurrency = env.EnvInt(envConcurrency, c.Concurrency)
-	c.GlobalConcurrency = env.EnvInt(envGlobalConc, c.GlobalConcurrency)
-	c.MaxImageMegapixels = env.EnvInt(envMaxMegapixels, c.MaxImageMegapixels)
+	c.Enabled = c.envBool(envEnabled, c.Enabled)
+	c.MaxFileBytes = int64(c.envInt(envMaxFileBytes, int(c.MaxFileBytes)))
+	c.MaxTotalBytes = int64(c.envInt(envMaxTotalBytes, int(c.MaxTotalBytes)))
+	c.MaxInlinedBytes = int64(c.envInt(envMaxInlinedBytes, int(c.MaxInlinedBytes)))
+	c.MaxParts = c.envInt(envMaxParts, c.MaxParts)
+	c.FetchTimeout = time.Duration(c.envInt(envTimeoutMS, int(c.FetchTimeout/time.Millisecond))) * time.Millisecond
+	c.TotalDeadline = time.Duration(c.envInt(envTotalDeadline, int(c.TotalDeadline/time.Millisecond))) * time.Millisecond
+	c.Concurrency = c.envInt(envConcurrency, c.Concurrency)
+	c.GlobalConcurrency = c.envInt(envGlobalConc, c.GlobalConcurrency)
+	c.MaxImageMegapixels = c.envInt(envMaxMegapixels, c.MaxImageMegapixels)
 	c.BlocklistDomains = parseBlocklist(env.EnvOr(envBlocklist, ""))
-	c.AllowPrivateIPs = env.EnvBool(envAllowPrivateIP, c.AllowPrivateIPs)
-	c.AllowNonStandardPorts = env.EnvBool(envAllowOtherPorts, c.AllowNonStandardPorts)
+	c.AllowPrivateIPs = c.envBool(envAllowPrivateIP, c.AllowPrivateIPs)
+	c.AllowNonStandardPorts = c.envBool(envAllowOtherPorts, c.AllowNonStandardPorts)
 	return c
 }
 
@@ -259,6 +302,12 @@ func parseBlocklist(csv string) map[string]bool {
 // single-host deployments legitimately set them. NewResolver logs a boot WARN
 // for those instead.
 func (c Config) Check() error {
+	// Reported first: a key that was set but unparseable means the operator asked
+	// for something the process did not do, which matters most for the ENABLED
+	// kill switch — a silent fallback there keeps fetching during an incident.
+	if len(c.malformedEnv) > 0 {
+		return fmt.Errorf("mediafetch: unparseable value(s) for %s", strings.Join(c.malformedEnv, ", "))
+	}
 	if c.MaxFileBytes <= 0 {
 		return fmt.Errorf("mediafetch: MaxFileBytes must be > 0 (%s), got %d", envMaxFileBytes, c.MaxFileBytes)
 	}

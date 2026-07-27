@@ -2538,6 +2538,22 @@ threats:
           request (no redeploy needed for an incident) and authoritatively restores
           the pre-dispatch 400.
         status: implemented
+      - description: >
+          Residual (accepted): on the public route a funded caller whose model IS
+          served by vision-capable providers, but whose providers are momentarily
+          at capacity, drives the fetch and then receives a 429/503 from
+          runInferenceAdmission with the monetary reservation refunded. Fleet
+          ELIGIBILITY is already gated before any fetch (visionToolsFailFast ->
+          HasVisionProviderForModel / HasToolCapableProviderForModel, which run
+          ahead of the media gate), so only transient capacity is affected, and
+          token-rate admission is charged before the fetch and never refunded, so
+          repeat probing consumes the caller's ITPM quota. Duplicating the
+          capacity preflight ahead of resolution was rejected deliberately: the
+          admission gate needs the POST-inline traits (MinPrefixCacheProtocol is
+          derived from body size), so a pre-fetch copy would either answer from
+          the wrong body or have to be kept in sync with the real gate, and it
+          would still race.
+        status: accepted
     open_findings: []
     severity: high
     detection_hint: >

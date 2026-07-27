@@ -1750,6 +1750,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		requiresVision:        requiresVision,
 		selfRoute:             policy.enabled,
 		ownerAccountID:        policy.ownerAccountID,
+		traits:                routingTraits,
 	})
 	if !ok {
 		refundReservation()

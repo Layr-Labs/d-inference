@@ -98,3 +98,43 @@ func TestParseBlocklistCanonicalizesEntries(t *testing.T) {
 		}
 	}
 }
+
+// TestConfigFromEnvRejectsMalformedValues pins the incident-rollback contract:
+// a variable that is SET but unparseable must fail Check, not silently fall back
+// to the compiled default. `ENABLED=flase` typed during an incident previously
+// left the feature ON with no error and no warning anywhere.
+func TestConfigFromEnvRejectsMalformedValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, value string
+	}{
+		{"enabled typo", envEnabled, "flase"},
+		{"allow private ips typo", envAllowPrivateIP, "yes-please"},
+		{"nonstandard ports typo", envAllowOtherPorts, "1.0"},
+		{"max parts not a number", envMaxParts, "eight"},
+		{"timeout not a number", envTimeoutMS, "fast"},
+		{"max file bytes not a number", envMaxFileBytes, "8MiB"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			c := ConfigFromEnv()
+			err := c.Check()
+			if err == nil {
+				t.Fatalf("Check() = nil for %s=%q; a malformed value must fail boot", tc.key, tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("Check() = %v, want the error to name %s", err, tc.key)
+			}
+		})
+	}
+
+	// A well-formed value must still pass, and the recorded-key list must not
+	// leak across reads.
+	t.Setenv(envEnabled, "false")
+	c := ConfigFromEnv()
+	if err := c.Check(); err != nil {
+		t.Fatalf("Check() = %v for a well-formed config", err)
+	}
+	if c.Enabled {
+		t.Error("ENABLED=false must disable the feature")
+	}
+}

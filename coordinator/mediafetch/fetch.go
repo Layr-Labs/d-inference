@@ -204,8 +204,10 @@ func classifyURLError(err error) *Error {
 }
 
 // classifyFetchError maps a client.Do / read failure to a typed Error: SSRF
-// blocks → 403, timeouts → 408, everything else → 502. Consumer-facing messages
-// never echo the URL; the URL/cause is kept in Internal for server-side logs.
+// blocks → 403, timeouts → 408, everything else → 502. NEITHER the consumer
+// message NOR Internal may echo the URL, host, query or the wrapped error:
+// presigned media URLs carry secrets and callers log Error(). Internal is a
+// fixed, non-sensitive cause string — keep it that way.
 func classifyFetchError(err error) error {
 	switch {
 	case errors.Is(err, context.Canceled):

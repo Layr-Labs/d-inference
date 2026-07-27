@@ -646,3 +646,59 @@ func TestMediaFetchRejectedPreservesAPIContract(t *testing.T) {
 		t.Errorf("error.message = %q, want the unchanged public message", body.Error.Message)
 	}
 }
+
+// TestResolveRemoteMediaSelfRouteUsesFullTraits pins that the pre-fetch
+// self-route gate judges serve-ability with the SAME traits the real admission
+// uses. Reconstructing a partial set (HasTools only) called an owned provider
+// serviceable when the request needed a trait it does not advertise — here a
+// constrained tool_choice (RequiresToolConstraint) — so the media was fetched
+// and only then rejected by runInferenceAdmission. That is the exact
+// egress-before-rejection hole the self-route gate exists to close.
+func TestResolveRemoteMediaSelfRouteUsesFullTraits(t *testing.T) {
+	srv, _ := testServer(t)
+	cfg := mediafetch.DefaultConfig()
+	cfg.AllowPrivateIPs = true
+	cfg.AllowNonStandardPorts = true
+	srv.mediaResolver = mediafetch.NewResolver(cfg, srv.logger)
+
+	// An owned, online, vision- and tool-capable machine that does NOT advertise
+	// the tool-constraint protocol: serviceable for HasTools alone, ineligible
+	// once RequiresToolConstraint is included.
+	const owner = "owner-acct"
+	makeVisionRoutableProvider(t, srv.registry, "self-route-traits", "test")
+	for _, id := range srv.registry.ProviderIDs() {
+		if p := srv.registry.GetProvider(id); p != nil {
+			p.Mu().Lock()
+			p.AccountID = owner
+			// Well above the tools version floor, so HasTools alone is satisfied
+			// and ToolConstraintProtocol (left unset, i.e. not v1) is the ONLY
+			// reason the request is ineligible. Without this the provider fails
+			// the floor either way and the test cannot see the trait delta.
+			p.Version = "0.7.6"
+			p.Mu().Unlock()
+		}
+	}
+	// Sanity: the partial trait set the gate used to reconstruct MUST consider
+	// this provider serviceable, or the assertion below proves nothing.
+	if !srv.registry.HasToolCapableProviderForModel("test") {
+		t.Fatal("setup: provider must satisfy the plain tools floor")
+	}
+
+	var hits int32
+	media := httptest.NewServer(pngHandler(t, &hits))
+	defer media.Close()
+
+	raw, parsed := chatBodyBytes(t, media.URL+"/cat.png")
+	w := httptest.NewRecorder()
+	out, _, ok := srv.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, mediaResolveMeta{
+		model: "test", publicModel: "test", requiresVision: true,
+		selfRoute: true, ownerAccountID: owner, hasTools: true,
+		traits: registry.RequestTraits{HasTools: true, RequiresToolConstraint: true},
+	})
+	if ok || out != nil {
+		t.Fatal("a self-route request needing an unadvertised trait must not resolve media")
+	}
+	if n := atomic.LoadInt32(&hits); n != 0 {
+		t.Fatalf("trait-ineligible self-route triggered %d origin fetch(es); want 0", n)
+	}
+}

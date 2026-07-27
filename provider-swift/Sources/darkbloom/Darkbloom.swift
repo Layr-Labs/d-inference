@@ -185,12 +185,6 @@ private let configVersionKey = "config_version"
 /// pass ever corrected it.
 private let configVersionAssignment = #"(?m)^[ \t]*config_version[ \t]*="#
 
-/// Matches ONLY a whole `engine_v2_max_concurrent = 4` assignment line — the
-/// exact value pre-v0.8.0 releases generated. Anchored to the full line so it
-/// cannot touch `[backend.engine_v2_max_concurrent_by_model]` or a `4` in it.
-private let legacyMaxConcurrentAssignment =
-    #"(?m)^[ \t]*engine_v2_max_concurrent[ \t]*=[ \t]*4[ \t]*$"#
-
 /// Migrate stale config values in-place. Runs on every startup; idempotent.
 ///
 /// 1. **Legacy path**: if the resolved config lives at a non-canonical path
@@ -320,11 +314,14 @@ func stampConfigVersion(in path: URL) -> Bool {
         content.range(of: configVersionAssignment, options: .regularExpression) == nil
     else { return false }
 
-    let legacy = content.range(of: legacyMaxConcurrentAssignment, options: .regularExpression)
-    if let legacy {
-        content.replaceSubrange(
-            legacy,
-            with: "engine_v2_max_concurrent = \(BackendSettings.defaultEngineV2MaxConcurrent)")
+    // The legacy-assignment match and rewrite live in ProviderCore
+    // (`LegacyConcurrencyMigration`), shared with the decode-time raise in
+    // `ProviderConfig.init(from:)`: the two halves once disagreed on
+    // `= 4 # comment` (raised in memory, never rewritten on disk), which
+    // stamped the file and silently reverted the box to B=4 from boot 2 on.
+    let rewritten = LegacyConcurrencyMigration.rewriteAssignment(in: content)
+    if let rewritten {
+        content = rewritten
     }
     // A top-level key is legal only ahead of the first table header, and
     // position 0 always satisfies that.
@@ -335,7 +332,7 @@ func stampConfigVersion(in path: URL) -> Bool {
     } catch {
         return false
     }
-    return legacy != nil
+    return rewritten != nil
 }
 
 func describeConfigPath(_ snapshot: RuntimeSnapshot) -> String {

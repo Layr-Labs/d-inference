@@ -283,14 +283,40 @@ public enum DaemonSlotPostureBuilder {
         }
     }
 
+    /// How long the synthetic failed-slot entry outlives its failure without
+    /// a fresh one. One hour — the daemon's own idle-unload horizon
+    /// (`idle_timeout_mins` default): past it, every REAL slot from the
+    /// failure's era has been unloaded and rebuilt on demand anyway, so a
+    /// failure older than that horizon describes a previous era of the box,
+    /// not its current posture — history for the logs, not a live-looking
+    /// `NOT SERVING` row in `status`/`doctor`. Deliberately wedge-scale, not
+    /// stale-scale (`KVBackendPosture.staleAfterSeconds` is ~10 s): a
+    /// genuinely failed slot must not flap out of `doctor` between two
+    /// commands of the same debugging session, and any retry of the load
+    /// refreshes `at` (`recordModelLoadError`), keeping a PERSISTENT failure
+    /// visible for as long as it actually recurs.
+    public static let failureMaxAgeSeconds: Double = 3_600
+
     /// `live` slots first (sorted by model id), then at most one synthetic
-    /// entry for `lastModelLoadError` — and only when that model has no live
-    /// slot, because a model that failed once and then loaded is serving.
+    /// entry for `lastModelLoadError` — and only while that failure is
+    /// CURRENT, all three of:
+    ///
+    ///   * the model has no live slot (a model that failed once and then
+    ///     loaded is serving);
+    ///   * the model is still in the daemon's desired set (`desiredModels`;
+    ///     nil ⇒ unconstrained — an empty `enabled_models` serves anything,
+    ///     so membership proves nothing there). An operator who removed the
+    ///     model resolved the failure the other way, and a row that outlives
+    ///     the config that produced it reports `NOT SERVING` forever for a
+    ///     model nobody wants served;
+    ///   * the failure is younger than ``failureMaxAgeSeconds``.
     public static func build(
         live: [LiveSlot],
         requestedGlobal: String,
         requestedByModel: [String: String],
-        lastModelLoadError: DaemonState.ModelLoadError?
+        lastModelLoadError: DaemonState.ModelLoadError?,
+        desiredModels: Set<String>? = nil,
+        now: Double = Date().timeIntervalSince1970
     ) -> [DaemonState.SlotPosture] {
         func requested(_ modelID: String) -> String {
             EngineV2KVBackendPolicy.parseSelection(
@@ -308,7 +334,9 @@ public enum DaemonSlotPostureBuilder {
                 mtpInactiveReason: $0.mtpInactiveReason)
         }
         if let failure = lastModelLoadError,
-            !live.contains(where: { $0.model == failure.model })
+            !live.contains(where: { $0.model == failure.model }),
+            desiredModels.map({ $0.contains(failure.model) }) ?? true,
+            now - failure.at <= failureMaxAgeSeconds
         {
             out.append(
                 DaemonState.SlotPosture(

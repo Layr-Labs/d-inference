@@ -49,6 +49,91 @@ func TestPrimaryFailureThenBackupTimeoutKeepsRecordedAttempts(t *testing.T) {
 	assertSpeculativeRouteOutcomes(t, st, primaryPR.RequestID, http.StatusInternalServerError, backupPR.RequestID, http.StatusGatewayTimeout)
 }
 
+// TestSpeculativeBackupFailureAttributesBackupKVBackend pins the Gate G5
+// attribution across a mixed-backend speculative race: the primary serves
+// PAGED, the backup CONTIGUOUS, the primary fails first and then the backup's
+// own failure (error or timeout) becomes the terminal one. The terminal
+// outcome tag must follow the BACKUP — the last slot that actually failed.
+// Before racePrimaryFailedWaitBackup re-latched on entry, the ladder fell
+// back to the primary's stale latch and booked the backup's 5xx/timeout under
+// kv_backend:paged, corrupting exactly the per-backend error segmentation the
+// paged rollout is judged on.
+func TestSpeculativeBackupFailureAttributesBackupKVBackend(t *testing.T) {
+	paged, contiguous := registry.KVBackendPaged, registry.KVBackendContiguous
+	for _, tc := range []struct {
+		name          string
+		deadline      time.Duration
+		speculativeAt time.Duration
+		failBackup    func(backupPR *registry.PendingRequest)
+	}{
+		{
+			name:          "backup errors",
+			deadline:      time.Second,
+			speculativeAt: 500 * time.Millisecond,
+			failBackup: func(backupPR *registry.PendingRequest) {
+				backupPR.ErrorCh <- protocol.InferenceErrorMessage{
+					Error:       "backup failed",
+					ErrorReason: "backup_failure",
+					StatusCode:  http.StatusBadGateway,
+				}
+			},
+		},
+		{
+			name:          "backup times out",
+			deadline:      20 * time.Millisecond,
+			speculativeAt: 10 * time.Millisecond,
+			failBackup:    func(*registry.PendingRequest) {},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, primary, primaryPR, backup, backupPR := speculativeFailureTestState(t, tc.deadline, tc.speculativeAt)
+			heartbeatKV := func(p *registry.Provider, backend *string) {
+				d.s.registry.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+					Type:   protocol.TypeHeartbeat,
+					Status: "serving",
+					BackendCapacity: &protocol.BackendCapacity{
+						TotalMemoryGB: 64,
+						Slots: []protocol.BackendSlotCapacity{
+							{Model: d.model, State: "running", KVBackend: backend},
+						},
+					},
+				})
+			}
+			heartbeatKV(primary, &paged)
+			heartbeatKV(backup, &contiguous)
+
+			// Dispatch latched the PRIMARY's slot...
+			d.pr = primaryPR
+			d.noteServingSlot()
+			if got := d.kvBackendAttribution().Backend; got != registry.KVBackendPaged {
+				t.Fatalf("primary latch = %q, want %q", got, registry.KVBackendPaged)
+			}
+			// ...then the primary failed: runRace's ErrorCh arm records the
+			// failure and clears d.provider/d.pr/d.requestID before entering
+			// the backup wait.
+			d.updateSpeculativeFailure(primaryPR, protocol.InferenceErrorMessage{
+				Error:       "primary failed",
+				ErrorReason: "primary_failure",
+				StatusCode:  http.StatusInternalServerError,
+			})
+			d.pr, d.provider, d.requestID = nil, nil, ""
+
+			tc.failBackup(backupPR)
+			if got := d.racePrimaryFailedWaitBackup(backup, backupPR, nil); got != outcomeRetry {
+				t.Fatalf("outcome = %v, want retry", got)
+			}
+
+			// The exhaustion ladder reads the attribution with d.pr cleared:
+			// it must name the backup's backend, not the dead primary's.
+			attr := d.kvBackendAttribution()
+			if attr.Backend != registry.KVBackendContiguous {
+				t.Errorf("terminal attribution = %q, want %q (the backup supplied the last failure)",
+					attr.Backend, registry.KVBackendContiguous)
+			}
+		})
+	}
+}
+
 func TestCapturedRoutingAttemptStillHandlesOrdinaryRetry(t *testing.T) {
 	d, _, primary, primaryPR, _, _ := speculativeFailureTestState(t, time.Second, 500*time.Millisecond)
 	captured := routingAttempt(primary, primaryPR, primaryPR.RequestID, primaryPR.Attempt)

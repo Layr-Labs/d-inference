@@ -63,8 +63,26 @@ extension ProviderLoop {
                 live: lastLiveSlotPostures,
                 requestedGlobal: loopConfig.config.backend.engineV2KVBackend,
                 requestedByModel: loopConfig.config.backend.engineV2KVBackendByModel,
-                lastModelLoadError: lastModelLoadError)
+                lastModelLoadError: lastModelLoadError,
+                desiredModels: desiredModelsForPosture())
         )
+    }
+
+    /// The set of models the daemon's config still asks for, for the
+    /// synthetic failed-slot suppression in `DaemonSlotPostureBuilder`.
+    /// nil when `enabled_models` is empty — that config serves ANY
+    /// downloaded or coordinator-pushed model, so membership proves
+    /// nothing and the builder falls back to age expiry alone. When the
+    /// allowlist is set, the pinned `model` and `preload_models` join it
+    /// so a failure on either is never suppressed by a list that does not
+    /// happen to repeat them.
+    internal func desiredModelsForPosture() -> Set<String>? {
+        let backend = loopConfig.config.backend
+        guard !backend.enabledModels.isEmpty else { return nil }
+        var desired = Set(backend.enabledModels)
+        desired.formUnion(backend.preloadModels)
+        if let pinned = backend.model { desired.insert(pinned) }
+        return desired
     }
 
     /// Records a model-load failure for the diagnostics state file so the

@@ -207,6 +207,121 @@ struct ConfigVersionStampTests {
         }
     }
 
+    /// The decode-time raise and the on-disk rewrite share one predicate
+    /// (`LegacyConcurrencyMigration`), and this pins the case where they
+    /// once disagreed: a trailing inline comment. The TOML decoder ignores
+    /// comments, so boot 1 raised `4 # comment` to 8 in memory — but the
+    /// old full-line regex never matched it, the stamp still landed, and
+    /// boot 2+ honored the literal 4. The comment must also SURVIVE the
+    /// rewrite: text surgery exists precisely to preserve operator prose.
+    @Test(
+        "a legacy 4 with a trailing inline comment is rewritten, comment preserved",
+        arguments: [
+            ("engine_v2_max_concurrent = 4 # upgraded from old default",
+             "engine_v2_max_concurrent = 8 # upgraded from old default"),
+            // Tab-separated comment, multiple spaces.
+            ("engine_v2_max_concurrent = 4\t\t# tuned",
+             "engine_v2_max_concurrent = 8\t\t# tuned"),
+            ("engine_v2_max_concurrent = 4   ; semicolon prose",
+             "engine_v2_max_concurrent = 8   ; semicolon prose"),
+            // No comment at all — the original shape keeps working.
+            ("engine_v2_max_concurrent = 4",
+             "engine_v2_max_concurrent = 8"),
+        ])
+    func rewritesCommentedLegacyFour(line: String, want: String) throws {
+        try withTempConfig(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            \(line)
+            """
+        ) { path in
+            #expect(stampConfigVersion(in: path) == true)
+            let text = try read(path)
+            #expect(text.contains(want))
+            #expect(!text.contains(line) || line == want)
+            #expect(text.hasPrefix("config_version = 1\n"))
+        }
+    }
+
+    /// Both halves agree end to end on the comment shape: the decode of the
+    /// STAMPED rewritten file yields 8 with nothing left to migrate — no
+    /// more one-boot flip-flop.
+    @Test("after the rewrite, a commented config decodes to 8 with no pending migration")
+    func commentedRewriteDecodesCleanly() throws {
+        try withTempConfig(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            engine_v2_max_concurrent = 4  # upgraded from old default
+            """
+        ) { path in
+            #expect(stampConfigVersion(in: path) == true)
+            let config = try ConfigManager.load(from: path)
+            #expect(config.backend.engineV2MaxConcurrent == 8)
+            #expect(config.appliedMigrations.isEmpty)
+        }
+    }
+
+    /// A post-stamp explicit 4 means 4 — comment or not. The stamp is what
+    /// the one-time migration spent; nothing may re-raise after it.
+    @Test("an explicit post-stamp 4 (with or without comment) is never raised")
+    func postStampFourSticks() throws {
+        for line in [
+            "engine_v2_max_concurrent = 4",
+            "engine_v2_max_concurrent = 4 # I really mean it",
+        ] {
+            try withTempConfig(
+                """
+                config_version = 1
+                [provider]
+                name = "test-provider"
+
+                [backend]
+                \(line)
+                """
+            ) { path in
+                #expect(stampConfigVersion(in: path) == false)
+                let text = try read(path)
+                #expect(text.contains(line))
+                let config = try ConfigManager.load(from: path)
+                #expect(config.backend.engineV2MaxConcurrent == 4)
+                #expect(config.appliedMigrations.isEmpty)
+            }
+        }
+    }
+
+    /// Only the exact legacy value is rewritten: `4` with a comment is, but
+    /// `42`, `14`, or an operator's `6 # note` are not — no release ever
+    /// generated those, so they are choices.
+    @Test("non-4 values are untouched, commented or not")
+    func nonFourValuesUntouched() throws {
+        for line in [
+            "engine_v2_max_concurrent = 42",
+            "engine_v2_max_concurrent = 14 # not a legacy 4",
+            "engine_v2_max_concurrent = 6 # chosen",
+        ] {
+            try withTempConfig(
+                """
+                [provider]
+                name = "test-provider"
+
+                [backend]
+                \(line)
+                """
+            ) { path in
+                // The stamp still lands (undated file), but nothing is raised.
+                #expect(stampConfigVersion(in: path) == false)
+                let text = try read(path)
+                #expect(text.contains(line))
+            }
+        }
+    }
+
     /// The rewrite is anchored to a whole assignment line, so neither the
     /// `..._by_model` table header nor a 4 inside it can be caught by it.
     @Test("the per-model override table is never rewritten")

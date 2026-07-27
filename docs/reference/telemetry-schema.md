@@ -112,6 +112,8 @@ The coordinator silently drops any `fields` key not in this set. Keys must be ke
 | `mtp_active` | Go, Swift, TS |
 | `mtp_inactive_reason` | Go, Swift, TS |
 | `mtp_acceptance_rate` | Go, Swift, TS |
+| `mtp_proposed_tokens` | Go, Swift, TS |
+| `mtp_accepted_tokens` | Go, Swift, TS |
 
 This table is not exhaustive: the OOM / memory-pressure, engine-health (first-token
 wedge), eval-in-flight, KV-budget audit, media, and exact-prefix-replay cohorts are
@@ -383,9 +385,20 @@ coordinator routing on a metric the coordinator believes is homogeneous.
 | `mtp_enabled` | bool | `ProviderMTPStatusSnapshot.configured` — MTP is configured and the kill switch is off. |
 | `mtp_active` | bool | `ProviderMTPStatusSnapshot.active` — the drafter is loaded, the engine reports itself active, **and the slot is not inert** (see `inert_kv_unsupported`). A slot executing zero rounds is not active. |
 | `mtp_inactive_reason` | string | Bounded enum, present whenever MTP is not *productively* running. |
-| `mtp_acceptance_rate` | float | `acceptedDraftTokens / proposedTokens` for the reporting window, `[0,1]`; omitted when `proposedTokens == 0`. |
+| `mtp_acceptance_rate` | float | `acceptedDraftTokens / proposedTokens`, cumulative over the slot's lifetime, `[0,1]`; omitted when `proposedTokens == 0`. |
+| `mtp_proposed_tokens` | int | Cumulative `proposedTokens` — the acceptance ratio's denominator, and the **weight** a fleet roll-up must apply per sample. Token count, never token contents. Omitted with the ratio when zero. |
+| `mtp_accepted_tokens` | int | Cumulative `acceptedDraftTokens` — the ratio's numerator. Same omission rule. |
 
-All four are produced by `engine_v2_slot_posture`, an INFO `engine_health` event
+A roll-up must never average the bare per-slot ratios: the events recur per slot
+per minute with cumulative history, so an unweighted mean both over-counts old
+history and weighs a 1/1 slot equally with a 10,000/10,000 slot. Sum
+`mtp_accepted_tokens` / sum `mtp_proposed_tokens` (latest sample per slot, or
+differenced between two samples of the same slot) instead. The counters are
+cumulative rather than per-interval deltas because the telemetry sink drops on
+full — a lost delta is gone forever, while cumulative counters stay differenceable
+across any two samples that did land.
+
+All of these are produced by `engine_v2_slot_posture`, an INFO `engine_health` event
 emitted by a per-bridge sampler on the same 60 s cadence as the MTP metrics log
 (`EngineV2Bridge+MTP.swift`). The sampler runs for **every** slot, MTP or not:
 `mtp_enabled: false` is itself the observation that resolves a partially-MTP fleet,

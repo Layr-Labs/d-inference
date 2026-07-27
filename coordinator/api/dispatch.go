@@ -1928,6 +1928,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
 				d.heldChunks = backupHeld
+				// The backup is now the serving slot; re-latch so a
+				// post-commit failure books under ITS backend, not the
+				// cancelled primary's.
+				d.noteServingSlot()
 				d.commitFirstContent(d.pr, chunk)
 				d.committed = true
 			} else {
@@ -1952,6 +1956,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.pr = backupPR
 					d.requestID = d.pr.RequestID
 					d.heldChunks = backupHeld
+					d.noteServingSlot()
 					d.committed = true
 				}
 			}
@@ -1975,6 +1980,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.pr = backupPR
 			d.requestID = d.pr.RequestID
 			d.heldChunks = backupHeld
+			// The backup is the serving slot from here on: an accepted-wait
+			// failure clears d.pr, and the terminal fallback must read the
+			// backup's backend, not the cancelled primary's.
+			d.noteServingSlot()
 			d.accepted = true
 			return outcomeAccepted
 
@@ -2155,6 +2164,11 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Provider, backupPR *registry.PendingRequest, backupHeld []string) dispatchOutcome {
 	s := d.s
 	r := d.r
+	// The primary already failed and d.pr is cleared: the BACKUP is the only
+	// racer left, so every failure or timeout below is the backup's. Re-latch
+	// now so the terminal outcome names the backup's backend rather than
+	// falling back to the dead primary's latch.
+	d.noteServingSlotFor(backupPR)
 	backupDeadline := time.NewTimer(d.deadline - d.speculativeAt)
 	for {
 		select {

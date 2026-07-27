@@ -291,13 +291,81 @@ func slotPostureBuilderSynthesizesRefusedLoad() {
             model: "gemma-4-26b",
             message: "engine_v2: paged KV backend explicitly requested but unavailable — "
                 + "kernel preflight failed",
-            at: 10))
+            at: 10),
+        now: 20)
 
     #expect(built.count == 1)
     #expect(built[0].model == "gemma-4-26b")
     #expect(built[0].kvBackend == nil, "no engine was built; a fabricated kind would be a lie")
     #expect(built[0].kvBackendRequested == "paged")
     #expect(built[0].loadError?.contains("explicitly requested but unavailable") == true)
+}
+
+@Test("a failure for a model removed from the enabled set is suppressed")
+func slotPostureBuilderSuppressesUnconfiguredFailure() {
+    let failure = DaemonState.ModelLoadError(model: "gemma-4-26b", message: "refused", at: 10)
+
+    // While the model is still desired, the failed row shows.
+    let stillDesired = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: failure,
+        desiredModels: ["gemma-4-26b", "gpt-oss-20b"], now: 20)
+    #expect(stillDesired.count == 1)
+    #expect(stillDesired[0].loadError == "refused")
+
+    // The operator removed the model from `enabled_models`: they resolved
+    // the failure the OTHER way, and the row must go with it rather than
+    // report NOT SERVING forever for a model nobody wants served.
+    let removed = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: failure,
+        desiredModels: ["gpt-oss-20b"], now: 20)
+    #expect(removed.isEmpty)
+
+    // nil ⇒ unconstrained (`enabled_models` empty serves anything), so
+    // membership proves nothing and the row stays.
+    let unconstrained = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: failure,
+        desiredModels: nil, now: 20)
+    #expect(unconstrained.count == 1)
+}
+
+@Test("a failure expires after the idle-unload horizon; a fresh one never does")
+func slotPostureBuilderExpiresStaleFailure() {
+    let trippedAt = 100_000.0
+    let failure = DaemonState.ModelLoadError(
+        model: "gemma-4-26b", message: "refused", at: trippedAt)
+    let build = { (now: Double) in
+        DaemonSlotPostureBuilder.build(
+            live: [], requestedGlobal: "paged", requestedByModel: [:],
+            lastModelLoadError: failure,
+            desiredModels: ["gemma-4-26b"], now: now)
+    }
+
+    // Fresh — and anywhere inside the horizon — the row shows. The bound is
+    // wedge-scale, not stale-scale: a genuinely failed slot must not flap
+    // out of `doctor` between two commands of one debugging session.
+    #expect(build(trippedAt).count == 1)
+    #expect(build(trippedAt + DaemonSlotPostureBuilder.failureMaxAgeSeconds).count == 1)
+
+    // Past the horizon every real slot from the failure's era has been
+    // idle-unloaded and rebuilt anyway; the failure is history, not posture.
+    #expect(build(trippedAt + DaemonSlotPostureBuilder.failureMaxAgeSeconds + 1).isEmpty)
+
+    // A retry refreshes `at` (recordModelLoadError), so a PERSISTENT failure
+    // keeps its row regardless of when the first failure happened.
+    let refreshed = DaemonState.ModelLoadError(
+        model: "gemma-4-26b", message: "refused again", at: trippedAt + 90_000)
+    let rebuilt = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: refreshed,
+        desiredModels: ["gemma-4-26b"], now: trippedAt + 90_010)
+    #expect(rebuilt.count == 1)
+    #expect(rebuilt[0].loadError == "refused again")
+
+    // The horizon IS the idle-unload default — see the constant's rationale.
+    #expect(DaemonSlotPostureBuilder.failureMaxAgeSeconds == 3_600)
 }
 
 @Test("a model that failed once and then loaded reports as serving, not failed")
@@ -310,7 +378,8 @@ func slotPostureBuilderDropsSupersededLoadError() {
         ],
         requestedGlobal: "paged",
         requestedByModel: [:],
-        lastModelLoadError: .init(model: "gemma-4-26b", message: "transient", at: 10))
+        lastModelLoadError: .init(model: "gemma-4-26b", message: "transient", at: 10),
+        now: 20)
 
     #expect(built.count == 1)
     #expect(built[0].kvBackend == "paged")

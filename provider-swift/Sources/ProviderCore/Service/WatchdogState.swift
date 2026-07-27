@@ -78,10 +78,32 @@ public enum WatchdogStateStore {
             .appendingPathComponent(".darkbloom/watchdog-state.json")
     }
 
-    /// Empty state when the file is missing or unreadable (a fresh start).
+    /// Upper bound a genuinely-accumulated crash-loop counter can plausibly
+    /// reach. The counter increments at most once per issued restart and a
+    /// restart costs at least the ~5-minute grace window, so nonstop looping
+    /// accrues ~100k/year; 1,000,000 is roughly a decade of it. Anything
+    /// beyond did not come from this watchdog — it is a corrupt or hostile
+    /// file.
+    public static let maxPlausibleCrashLoopRestarts = 1_000_000
+
+    /// Empty state when the file is missing, unreadable, or SEMANTICALLY
+    /// corrupt (a fresh start — the same fail-open posture as an
+    /// undecodable file).
+    ///
+    /// Semantic bounds matter because valid JSON can still carry a counter
+    /// no honest run produces: `consecutive_crash_loop_restarts: Int.max`
+    /// decodes fine and would trap the `+ 1` in
+    /// `WatchdogPolicy.crashLoopCount` before recovery could act — and
+    /// launchd restarts the crashed watchdog against the same file, turning
+    /// one corrupt write into a permanent watchdog crash loop. A negative or
+    /// implausibly large counter therefore rejects the whole file. (The
+    /// arithmetic in `crashLoopCount` is additionally saturating, so even a
+    /// state constructed around this validation cannot trap.)
     public static func read(from url: URL = WatchdogStateStore.path()) -> WatchdogState {
         guard let data = try? Data(contentsOf: url),
-              let state = try? JSONDecoder().decode(WatchdogState.self, from: data)
+              let state = try? JSONDecoder().decode(WatchdogState.self, from: data),
+              state.consecutiveCrashLoopRestarts >= 0,
+              state.consecutiveCrashLoopRestarts <= maxPlausibleCrashLoopRestarts
         else { return WatchdogState() }
         return state
     }

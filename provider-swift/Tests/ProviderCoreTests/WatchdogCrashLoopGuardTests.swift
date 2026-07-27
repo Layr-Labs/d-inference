@@ -177,6 +177,27 @@ struct WatchdogCrashLoopCountTests {
             0, recordedVersion: nil, installedVersion: "0.8.0") == 0)
     }
 
+    @Test("the counter arithmetic is total: Int.max saturates, negatives clamp — never a trap")
+    func counterArithmeticSaturates() {
+        // `WatchdogStateStore.read` rejects these as corrupt files, but the
+        // pure function must be total regardless of its callers' hygiene: a
+        // trapping `+ 1` would crash the watchdog, and launchd would relaunch
+        // it against the same state file into the same trap — a permanent
+        // watchdog crash loop from one corrupt write.
+        #expect(WatchdogPolicy.crashLoopCount(
+            current: WatchdogState(lastRestartAt: 1_000, consecutiveCrashLoopRestarts: Int.max),
+            effectiveDownSince: 1_060) == Int.max)
+        #expect(WatchdogPolicy.crashLoopCount(
+            current: WatchdogState(lastRestartAt: 1_000, consecutiveCrashLoopRestarts: -7),
+            effectiveDownSince: 1_060) == 1,
+            "a negative counter clamps to a fresh chain, not a nonsense value")
+        // A plausible-but-large counter (a long-suffering box) still just
+        // increments.
+        #expect(WatchdogPolicy.crashLoopCount(
+            current: WatchdogState(lastRestartAt: 1_000, consecutiveCrashLoopRestarts: 500_000),
+            effectiveDownSince: 1_060) == 500_001)
+    }
+
     @Test("the shipped constants are the decided policy: 15 min bound, threshold 3")
     func shippedConstants() {
         #expect(WatchdogPolicy.crashLoopUptimeBoundSeconds == 900)
@@ -327,6 +348,38 @@ struct WatchdogCrashLoopNextStateTests {
         // "legacy state file treated as reset".
         #expect(WatchdogPolicy.versionScopedCrashLoopCount(
             3, recordedVersion: state.lastRestartVersion, installedVersion: "0.8.0") == 1)
+    }
+
+    @Test("the state store rejects semantically corrupt counters as a corrupt file")
+    func storeRejectsCorruptCounters() throws {
+        func read(_ json: String) throws -> WatchdogState {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("watchdog-state-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: url) }
+            try Data(json.utf8).write(to: url)
+            return WatchdogStateStore.read(from: url)
+        }
+        // Valid JSON, impossible counters: the whole file is treated as
+        // corrupt (fresh state) — the same fail-open posture as undecodable
+        // JSON. `Int.max` in particular would otherwise reach the chain's
+        // `+ 1` and trap the watchdog on every launchd relaunch.
+        #expect(try read(
+            #"{"down_since": 100, "last_restart_at": 50, "consecutive_crash_loop_restarts": \#(Int.max)}"#
+        ) == WatchdogState())
+        #expect(try read(
+            #"{"consecutive_crash_loop_restarts": -3}"#
+        ) == WatchdogState())
+        #expect(try read(
+            #"{"consecutive_crash_loop_restarts": \#(WatchdogStateStore.maxPlausibleCrashLoopRestarts + 1)}"#
+        ) == WatchdogState())
+        // Plausible-but-large is a real box, not corruption: kept — up to
+        // and including the bound itself.
+        #expect(try read(
+            #"{"last_restart_at": 50, "consecutive_crash_loop_restarts": 500000}"#
+        ).consecutiveCrashLoopRestarts == 500_000)
+        #expect(try read(
+            #"{"consecutive_crash_loop_restarts": \#(WatchdogStateStore.maxPlausibleCrashLoopRestarts)}"#
+        ).consecutiveCrashLoopRestarts == WatchdogStateStore.maxPlausibleCrashLoopRestarts)
     }
 
     @Test("the counter and version round-trip through the state store")
@@ -764,40 +817,53 @@ struct CrashLoopGuardRecoveryWiringTests {
         // failure counter (same threshold, charged on these same restarts)
         // is walking toward a binary rollback, which fixes paged too —
         // the pre-0.8.0 predecessor resolves `.auto` to contiguous.
+        //
+        // The chain stamps the CANDIDATE's version while it is pending (the
+        // candidate binary is the one launchd boots and crashes): the first
+        // candidate crash rescopes the pre-install chain to 1, and the
+        // recorded version follows what the previous call reported.
         let first = await service.recoverDownProvider(
             autoUpdateEnabled: false, crashLoopRestartCount: 3,
             lastRestartVersion: fixture.oldVersion, now: 200)
         let second = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 4,
-            lastRestartVersion: fixture.oldVersion, now: 300)
+            autoUpdateEnabled: false, crashLoopRestartCount: 2,
+            lastRestartVersion: fixture.newVersion, now: 300)
         #expect(first == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         #expect(second == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(log.actions.contains("chain(1,v\(fixture.newVersion))"),
+            "the first candidate crash rescopes the chain to the candidate version")
+        #expect(log.actions.contains("chain(2,v\(fixture.newVersion))"))
 
         // Third failure: the ROLLBACK fires. Still no trip — the rollback
         // just won, and a guard for a version that is leaving the box would
-        // be a stranded record.
+        // be a stranded record. The chain rescopes AGAIN, to the restored
+        // predecessor (a rollback is a version change too).
         let third = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 5,
-            lastRestartVersion: fixture.oldVersion, now: 400)
+            autoUpdateEnabled: false, crashLoopRestartCount: 3,
+            lastRestartVersion: fixture.newVersion, now: 400)
         #expect(third == .restartIssued(updatedTo: nil, rolledBackTo: "1.0.0"))
+        #expect(log.actions.contains("chain(1,v\(fixture.oldVersion))"))
 
         #expect(!log.actions.contains { $0.hasPrefix("trip") },
             "candidate rollback owns recovery end to end — the guard must never fire")
         #expect(log.actions.filter { $0 == "kickstart" }.count == 4)
 
-        // AFTER the rollback the candidate is gone. If the rolled-back
-        // binary somehow kept crash-looping, the guard may now trip. (The
-        // recorded chain version is oldVersion throughout: `state.current`
-        // stays at the predecessor while a candidate is merely pending, so
-        // every restart above stamped oldVersion — version scoping does not
-        // reset this chain.)
+        // AFTER the rollback the candidate is gone and the restored
+        // predecessor's chain walks its OWN fresh window: if the rolled-back
+        // binary keeps crash-looping, the guard trips for it at the
+        // threshold — stamped with the predecessor's version (the durable
+        // installed record is oldVersion again).
         let postRollback = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 6,
+            autoUpdateEnabled: false, crashLoopRestartCount: 2,
             lastRestartVersion: fixture.oldVersion, now: 500)
         #expect(postRollback == .restartIssued(updatedTo: nil, rolledBackTo: nil))
-        // The rollback restored the predecessor, so the durable installed
-        // record — and therefore the guarded version — is oldVersion again.
-        #expect(log.actions.contains("trip(6,v\(fixture.oldVersion))"))
+        #expect(!log.actions.contains { $0.hasPrefix("trip") },
+            "two post-rollback crashes stay under the threshold")
+        let thirdPostRollback = await service.recoverDownProvider(
+            autoUpdateEnabled: false, crashLoopRestartCount: 3,
+            lastRestartVersion: fixture.oldVersion, now: 600)
+        #expect(thirdPostRollback == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(log.actions.contains("trip(3,v\(fixture.oldVersion))"))
     }
 
     @Test("post-self-update version skew: the guard stamps the INSTALLED daemon version")
@@ -871,6 +937,174 @@ struct CrashLoopGuardRecoveryWiringTests {
         #expect(KVBackendGuardStore.clearIfStale(
             runningVersion: "3.0.0", environment: env) == record)
         #expect(KVBackendGuardStore.read(environment: env) == nil)
+    }
+
+    /// Persist the exact state the P1 review names: a pending candidate that
+    /// IS the installed live layout (v-new), whose rollback was REFUSED and
+    /// whose retry backoff has already expired, while `state.current` still
+    /// names the predecessor (v-old) — `installCandidate` leaves `current`
+    /// unchanged until promotion.
+    private func writeRefusedRollbackCandidateState(
+        fixture: UpdateRecoveryFixture,
+        updater: SelfUpdater,
+        retryNotBefore: Double
+    ) throws {
+        let session = try updater.beginUpdateSession(
+            operation: "test-refused-rollback", timeout: 0)
+        var state = try session.readState()
+        state.current = InstalledReleaseRecord(
+            version: fixture.oldVersion,
+            releaseBundleHash: nil,
+            installedBundleHash: "old-bundle-hash",
+            binaryHash: "old-binary-hash",
+            enclaveHash: "old-enclave-hash",
+            metallibHash: "old-metallib-hash",
+            installGeneration: 1,
+            installedAt: 10)
+        state.candidate = PendingReleaseCandidate(
+            release: InstalledReleaseRecord(
+                version: fixture.newVersion,
+                releaseBundleHash: nil,
+                installedBundleHash: "new-bundle-hash",
+                binaryHash: "new-binary-hash",
+                enclaveHash: "new-enclave-hash",
+                metallibHash: "new-metallib-hash",
+                installGeneration: 2,
+                installedAt: 50),
+            failureCount: UpdateRecoveryState.rollbackThreshold,
+            launchIntent: nil,
+            pendingAttemptID: nil,
+            attemptStartedAt: nil,
+            healthySince: nil,
+            healthyProcessStartedAt: nil,
+            retryNotBefore: retryNotBefore,
+            rollbackBlockedReason: "predecessor bundle unreadable")
+        try session.writeState(state)
+        session.release()
+    }
+
+    @Test("a refused rollback binds the guard to the CANDIDATE version launchd will start")
+    func refusedRollbackStampsCandidateVersion() async throws {
+        // While a pending candidate exists, the LIVE layout is the
+        // candidate's — `state.current` still names the predecessor, and the
+        // watchdog's own process version is commonly that same predecessor.
+        // Once the candidate's rollback is refused, the guard is the one
+        // automated mitigation left, and launchd will kickstart the
+        // CANDIDATE binary: a guard stamped from `current` (or the process
+        // image) would read as stale to the relaunched candidate daemon and
+        // never bind — it would even be deleted at its startup.
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let updater = plainUpdater(fixture)  // process image at oldVersion
+        try writeRefusedRollbackCandidateState(
+            fixture: fixture, updater: updater, retryNotBefore: 900)
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let env = [KVBackendGuardStore.pathEnvKey: url.path]
+        let service = WatchdogRecoveryService(
+            updater: updater,
+            dependencies: .init(
+                kickstartIfLoaded: { true },
+                launchSnapshot: { nil },
+                processAlive: { _ in true },
+                tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
+                    KVBackendCrashLoopGuard.tripWithRollback(
+                        crashCount: crashCount, now: tripNow,
+                        guardedVersion: guardedVersion, lastKnownModel: nil,
+                        environment: env, emitTelemetry: { _ in })
+                },
+                log: { _ in }))
+
+        // The retry backoff (retryNotBefore: 900) has expired at now: the
+        // recovery path re-enters, skips the refused rollback, and trips.
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+            // The chain accumulated on the CANDIDATE's crashes, each stamped
+            // with the candidate version — continuity holds.
+            lastRestartVersion: fixture.newVersion,
+            now: 1_000)
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+
+        let record = KVBackendGuardStore.read(environment: env)
+        #expect(record?.providerVersion == fixture.newVersion,
+            "the guard must bind the candidate launchd will start (\(fixture.newVersion)), not the predecessor `state.current` names (\(fixture.oldVersion))")
+        // The relaunched CANDIDATE daemon honors it...
+        #expect(EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
+            record: record, runningVersion: fixture.newVersion))
+        // ...its startup stale-clear keeps it (same version, not stale)...
+        #expect(KVBackendGuardStore.clearIfStale(
+            runningVersion: fixture.newVersion, environment: env) == nil)
+        #expect(KVBackendGuardStore.read(environment: env) == record)
+        // ...and it never binds the predecessor.
+        #expect(!EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
+            record: record, runningVersion: fixture.oldVersion))
+    }
+
+    @Test("a bookkeeping failure AFTER the kickstart must not undo the guard")
+    func postKickstartWriteFailureKeepsGuard() async throws {
+        // `kickstartIfLoaded()` succeeded — launchd has already issued the
+        // counted restart — and THEN the candidate-state write fails (disk
+        // full, unwritable recovery dir). The attempt returns `.failed`, but
+        // the relaunched daemon is booting NOW: undoing the trip would bring
+        // it up paged and guardless while the chain counter (persisted only
+        // for `.restartIssued`) did not advance either. The undo must be
+        // scoped strictly to exits where the kickstart was NOT issued.
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let updater = plainUpdater(fixture)
+        // A candidate is required so the post-kickstart `markLaunchIssued`
+        // actually mutates state and attempts the failing write; the
+        // refused-rollback shape also makes the trip eligible.
+        try writeRefusedRollbackCandidateState(
+            fixture: fixture, updater: updater, retryNotBefore: 900)
+
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let env = [KVBackendGuardStore.pathEnvKey: url.path]
+        let statePath = fixture.installRoot
+            .appendingPathComponent("recovery/state.json")
+        let service = WatchdogRecoveryService(
+            updater: updater,
+            dependencies: .init(
+                kickstartIfLoaded: {
+                    // The recovery dir dies BETWEEN the kickstart and the
+                    // launch bookkeeping: a directory at the state path makes
+                    // the atomic replace (rename) fail.
+                    try? FileManager.default.removeItem(at: statePath)
+                    try? FileManager.default.createDirectory(
+                        at: statePath, withIntermediateDirectories: false)
+                    return true
+                },
+                launchSnapshot: { nil },
+                processAlive: { _ in true },
+                tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
+                    KVBackendCrashLoopGuard.tripWithRollback(
+                        crashCount: crashCount, now: tripNow,
+                        guardedVersion: guardedVersion, lastKnownModel: nil,
+                        environment: env, emitTelemetry: { _ in })
+                },
+                log: { _ in }))
+
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+            lastRestartVersion: fixture.newVersion,
+            now: 1_000)
+        guard case .failed = outcome else {
+            Issue.record("expected .failed from the post-kickstart write failure, got \(outcome)")
+            return
+        }
+        // The kickstart WAS issued, so the guard survives the bookkeeping
+        // failure and the relaunched daemon boots contiguous.
+        let record = KVBackendGuardStore.read(environment: env)
+        #expect(record?.providerVersion == fixture.newVersion,
+            "the guard must survive a bookkeeping failure after an issued kickstart")
+        #expect(EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
+            record: record, runningVersion: fixture.newVersion))
     }
 
     @Test("a rolled-back re-trip restores the PRE-EXISTING guard, never deletes it")

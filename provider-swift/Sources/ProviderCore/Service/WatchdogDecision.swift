@@ -75,7 +75,17 @@ public enum WatchdogPolicy {
             let downSince = effectiveDownSince,
             downSince - lastRestartAt < uptimeBoundSeconds
         else { return 1 }
-        return current.consecutiveCrashLoopRestarts + 1
+        // Total over ALL inputs — clamped-and-saturating, never trapping.
+        // `WatchdogStateStore.read` already rejects semantically corrupt
+        // counters (negative, absurd) as a corrupt file, but this pure
+        // function must not rely on its callers' hygiene: a persisted
+        // `Int.max` reaching a trapping `+ 1` here would crash the watchdog,
+        // and launchd would relaunch it straight into the same state file
+        // and the same trap — a permanent watchdog crash loop that disables
+        // provider recovery entirely.
+        let previous = max(0, current.consecutiveCrashLoopRestarts)
+        let (chained, overflowed) = previous.addingReportingOverflow(1)
+        return overflowed ? Int.max : chained
     }
 
     /// Scope a computed crash-loop count to the INSTALLED daemon version.

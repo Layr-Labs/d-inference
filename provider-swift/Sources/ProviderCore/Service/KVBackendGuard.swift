@@ -31,7 +31,10 @@ import Foundation
 ///     deletes a mismatched record at startup
 ///     (`KVBackendGuardStore.clearIfStale`). A release is the fleet's only
 ///     fix-delivery vector, so "new version" IS the retry signal.
-///   * MANUAL: `darkbloom doctor --clear-backend-guard`.
+///   * MANUAL: `darkbloom doctor --clear-backend-guard` — which also resets
+///     the persisted crash-loop chain (`watchdog-state.json`), so the
+///     operator's paged retry gets the full `crashLoopTripThreshold` window
+///     instead of re-tripping on its first crash.
 ///
 ///   There is deliberately NO time-based auto-retry: a guard that re-tries
 ///   paged every N hours re-enters the ~5-minute crash loop daily, which is
@@ -201,7 +204,10 @@ public enum KVBackendCrashLoopGuard {
     /// installs and promotes a newer release, so a trip stamped with the
     /// watchdog's compiled-in version would read as stale to the new daemon
     /// and never activate (the daemon even deletes it at startup via
-    /// `clearIfStale`). The caller resolves the honest version the same way
+    /// `clearIfStale`). The caller resolves the honest version as the one
+    /// launchd will actually kickstart: a pending update candidate's release
+    /// version while the candidate owns the live layout (`state.current`
+    /// keeps naming the predecessor until promotion), otherwise the same way
     /// `SelfUpdater.checkForUpdate` does —
     /// `SelfUpdater.effectiveInstalledVersion(processVersion:recorded:)`,
     /// the SemVer-max of the process version and the update-recovery

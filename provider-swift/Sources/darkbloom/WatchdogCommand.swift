@@ -77,6 +77,11 @@ struct Watchdog: AsyncParsableCommand {
         // before anyone could ask it what it was loading, so the last state
         // snapshot's current model is the best available witness.
         let lastKnownModel = daemonState?.currentModel
+        // The version-scoped chain the recovery flow resolved (effective
+        // count + the installed version it is scoped to). Captured out of
+        // the dependency callback; consumed ONLY when the outcome reports an
+        // issued restart, so a deferred/moot recovery persists nothing.
+        let resolvedChain = CrashLoopChainCapture()
         let recovery = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
@@ -94,11 +99,14 @@ struct Watchdog: AsyncParsableCommand {
                 },
                 isPastTickDeadline: { ContinuousClock.now > tickDeadline },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.trip(
+                    KVBackendCrashLoopGuard.tripWithRollback(
                         crashCount: crashCount,
                         now: tripNow,
                         guardedVersion: guardedVersion,
                         lastKnownModel: lastKnownModel)
+                },
+                noteCrashLoopChain: { count, version in
+                    resolvedChain.set(count: count, version: version)
                 },
                 log: { Self.log($0) }
             ),
@@ -113,6 +121,11 @@ struct Watchdog: AsyncParsableCommand {
         // loaded) outcome restarted nothing, so it must not walk the counter
         // toward the backend guard.
         var issuedCrashLoopCount: Int?
+        // Installed daemon version the issued restart booted (resolved by
+        // the recovery flow); persisted alongside the counter so the next
+        // tick's chain is version-scoped. nil (degraded restart path never
+        // resolved one) preserves the recorded version.
+        var issuedCrashLoopVersion: String?
         // Timestamp the final state write persists as `lastRestartAt`. The
         // tick-entry `now` is only the default: the recovery path may legally
         // spend minutes in the update download (bounded by the watchdog
@@ -135,10 +148,17 @@ struct Watchdog: AsyncParsableCommand {
                 inactiveProviderIdentity: providerIdentity,
                 providerProcessAlive: liveness.running,
                 crashLoopRestartCount: crashLoopCount,
+                lastRestartVersion: state.lastRestartVersion,
                 now: now
             )
             if case .restartIssued = outcome {
-                issuedCrashLoopCount = crashLoopCount
+                // Prefer the recovery flow's version-scoped chain (reset to
+                // 1 when the installed version changed); the raw count is
+                // only the degraded-path fallback where no session — and so
+                // no version — could be resolved.
+                let chain = resolvedChain.value
+                issuedCrashLoopCount = chain?.count ?? crashLoopCount
+                issuedCrashLoopVersion = chain?.version
                 persistedNow = Date().timeIntervalSince1970
             }
             persistenceDecision = Self.recordRecoveryOutcome(
@@ -202,9 +222,22 @@ struct Watchdog: AsyncParsableCommand {
             for: persistenceDecision,
             current: state,
             now: persistedNow,
-            crashLoopCount: issuedCrashLoopCount
+            crashLoopCount: issuedCrashLoopCount,
+            crashLoopVersion: issuedCrashLoopVersion
         ), !WatchdogStateStore.write(newState) {
             Self.log("warning: could not persist watchdog state (check ~/.darkbloom)")
+        }
+    }
+
+    /// Thread-safe box for the chain the recovery flow reports through its
+    /// `noteCrashLoopChain` dependency (a `@Sendable` callback cannot write
+    /// a captured local directly).
+    private final class CrashLoopChainCapture: @unchecked Sendable {
+        private let lock = NSLock()
+        private var chain: (count: Int, version: String)?
+        var value: (count: Int, version: String)? { lock.withLock { chain } }
+        func set(count: Int, version: String) {
+            lock.withLock { chain = (count, version) }
         }
     }
 

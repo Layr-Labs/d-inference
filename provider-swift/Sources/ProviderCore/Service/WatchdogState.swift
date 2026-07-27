@@ -13,6 +13,16 @@ public struct WatchdogState: Codable, Equatable, Sendable {
     /// measured from (`WatchdogPolicy.crashLoopCount`), no longer merely
     /// diagnostic.
     public var lastRestartAt: Double?
+    /// The INSTALLED daemon version the last restart booted (resolved by the
+    /// recovery flow through `SelfUpdater.effectiveInstalledVersion` — the
+    /// same source the KV-backend guard stamp uses, so the two can never
+    /// disagree). The crash-loop chain is scoped to this version: a restart
+    /// of a DIFFERENT installed version starts a fresh chain
+    /// (`WatchdogPolicy.versionScopedCrashLoopCount`) — the old binary's
+    /// crashes must not be charged against the release that replaced it.
+    /// nil in pre-guard state files and when the degraded (session-less)
+    /// restart path could not resolve a version.
+    public var lastRestartVersion: String?
     /// Consecutive crash-loop-SHAPED restarts (each issued after the
     /// provider stayed up less than
     /// `WatchdogPolicy.crashLoopUptimeBoundSeconds` since the previous
@@ -25,16 +35,19 @@ public struct WatchdogState: Codable, Equatable, Sendable {
     public init(
         downSince: Double? = nil,
         lastRestartAt: Double? = nil,
+        lastRestartVersion: String? = nil,
         consecutiveCrashLoopRestarts: Int = 0
     ) {
         self.downSince = downSince
         self.lastRestartAt = lastRestartAt
+        self.lastRestartVersion = lastRestartVersion
         self.consecutiveCrashLoopRestarts = consecutiveCrashLoopRestarts
     }
 
     enum CodingKeys: String, CodingKey {
         case downSince = "down_since"
         case lastRestartAt = "last_restart_at"
+        case lastRestartVersion = "last_restart_version"
         case consecutiveCrashLoopRestarts = "consecutive_crash_loop_restarts"
     }
 
@@ -42,6 +55,10 @@ public struct WatchdogState: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         downSince = try container.decodeIfPresent(Double.self, forKey: .downSince)
         lastRestartAt = try container.decodeIfPresent(Double.self, forKey: .lastRestartAt)
+        // Absent in pre-guard state files (nil is the "cannot prove chain
+        // continuity" signal — see `versionScopedCrashLoopCount`).
+        lastRestartVersion =
+            try container.decodeIfPresent(String.self, forKey: .lastRestartVersion)
         // Absent in every pre-guard state file. Defaulted rather than left
         // to fail the decode: `WatchdogStateStore.read` maps a failed decode
         // to a FRESH state, which would silently discard a live `downSince`

@@ -153,6 +153,30 @@ struct WatchdogCrashLoopCountTests {
             "the kickstart stamp keeps the same crash inside the bound")
     }
 
+    @Test("version scoping: same version keeps the chain, a change resets it to 1")
+    func versionScopingDecisionTable() {
+        // Continuity: the chain counted THIS version's restarts.
+        #expect(WatchdogPolicy.versionScopedCrashLoopCount(
+            3, recordedVersion: "0.8.0", installedVersion: "0.8.0") == 3)
+        // A promotion (or rollback) landed since the last restart: the new
+        // binary's first crash is 1, never old-chain + 1 — otherwise the
+        // release shipped to FIX the loop would be guarded on its first
+        // short-lived crash, defeating release-clears-the-guard.
+        #expect(WatchdogPolicy.versionScopedCrashLoopCount(
+            4, recordedVersion: "0.8.0", installedVersion: "0.8.1") == 1)
+        #expect(WatchdogPolicy.versionScopedCrashLoopCount(
+            4, recordedVersion: "0.8.0", installedVersion: "0.7.15") == 1,
+            "a rollback is a version change too")
+        // A legacy state file records no version: continuity is unprovable,
+        // so it resets rather than risking a cross-version chain.
+        #expect(WatchdogPolicy.versionScopedCrashLoopCount(
+            3, recordedVersion: nil, installedVersion: "0.8.0") == 1)
+        // No-chain callers (healthy-path re-entries pass 0) stay at 0 —
+        // scoping must never manufacture a chain.
+        #expect(WatchdogPolicy.versionScopedCrashLoopCount(
+            0, recordedVersion: nil, installedVersion: "0.8.0") == 0)
+    }
+
     @Test("the shipped constants are the decided policy: 15 min bound, threshold 3")
     func shippedConstants() {
         #expect(WatchdogPolicy.crashLoopUptimeBoundSeconds == 900)
@@ -179,6 +203,53 @@ struct WatchdogCrashLoopNextStateTests {
             crashLoopCount: 2)
         #expect(s == WatchdogState(
             downSince: nil, lastRestartAt: now, consecutiveCrashLoopRestarts: 2))
+    }
+
+    @Test("an issued restart stamps the resolved installed version; nil preserves it")
+    func restartStampsVersion() {
+        // The recovery flow resolved a version: stamp it (here, across a
+        // promotion — the version moves with the chain reset).
+        let promoted = WatchdogPolicy.nextState(
+            for: .restart,
+            current: WatchdogState(
+                downSince: now - 400, lastRestartVersion: "0.8.0",
+                consecutiveCrashLoopRestarts: 3),
+            now: now,
+            crashLoopCount: 1,
+            crashLoopVersion: "0.8.1")
+        #expect(promoted == WatchdogState(
+            downSince: nil, lastRestartAt: now, lastRestartVersion: "0.8.1",
+            consecutiveCrashLoopRestarts: 1))
+
+        // The degraded session-less restart resolved no version: preserve
+        // the recorded one — erasing it would read as "cannot prove
+        // continuity" and reset a genuine chain on the next crash.
+        let degraded = WatchdogPolicy.nextState(
+            for: .restart,
+            current: WatchdogState(
+                downSince: now - 400, lastRestartVersion: "0.8.0",
+                consecutiveCrashLoopRestarts: 1),
+            now: now,
+            crashLoopCount: 2,
+            crashLoopVersion: nil)
+        #expect(degraded?.lastRestartVersion == "0.8.0")
+
+        // Non-restart decisions carry the version through untouched.
+        let armed = WatchdogPolicy.nextState(
+            for: .startGrace,
+            current: WatchdogState(
+                lastRestartAt: 42, lastRestartVersion: "0.8.0",
+                consecutiveCrashLoopRestarts: 2),
+            now: now)
+        #expect(armed?.lastRestartVersion == "0.8.0")
+        let healthyReset = WatchdogPolicy.nextState(
+            for: .healthy,
+            current: WatchdogState(
+                lastRestartAt: now - WatchdogPolicy.crashLoopUptimeBoundSeconds - 1,
+                lastRestartVersion: "0.8.0",
+                consecutiveCrashLoopRestarts: 2),
+            now: now)
+        #expect(healthyReset?.lastRestartVersion == "0.8.0")
     }
 
     @Test("a restart outcome that issued nothing keeps the current counter")
@@ -245,21 +316,27 @@ struct WatchdogCrashLoopNextStateTests {
             downSince: nil, lastRestartAt: now - 60, consecutiveCrashLoopRestarts: 2))
     }
 
-    @Test("pre-guard state files decode with a zero counter (no decode failure)")
+    @Test("pre-guard state files decode with a zero counter and nil version (no decode failure)")
     func legacyStateFileDecodes() throws {
         let legacy = #"{"down_since": 123.5, "last_restart_at": 456.75}"#
         let state = try JSONDecoder().decode(WatchdogState.self, from: Data(legacy.utf8))
         #expect(state == WatchdogState(
-            downSince: 123.5, lastRestartAt: 456.75, consecutiveCrashLoopRestarts: 0))
+            downSince: 123.5, lastRestartAt: 456.75, lastRestartVersion: nil,
+            consecutiveCrashLoopRestarts: 0))
+        // And a nil version scopes any recorded chain to a reset —
+        // "legacy state file treated as reset".
+        #expect(WatchdogPolicy.versionScopedCrashLoopCount(
+            3, recordedVersion: state.lastRestartVersion, installedVersion: "0.8.0") == 1)
     }
 
-    @Test("the counter round-trips through the state store")
+    @Test("the counter and version round-trip through the state store")
     func counterRoundTrips() {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("watchdog-state-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let original = WatchdogState(
-            downSince: nil, lastRestartAt: 456.75, consecutiveCrashLoopRestarts: 2)
+            downSince: nil, lastRestartAt: 456.75, lastRestartVersion: "0.8.0",
+            consecutiveCrashLoopRestarts: 2)
         #expect(WatchdogStateStore.write(original, to: url))
         #expect(WatchdogStateStore.read(from: url) == original)
     }
@@ -305,6 +382,48 @@ struct KVBackendGuardStoreTests {
                 record: KVBackendGuardStore.read(environment: env),
                 runningVersion: ProviderCore.version))
         }
+    }
+
+    @Test("semantically hostile timestamps fail OPEN as corrupt, not a trap")
+    func hostileTimestampsFailOpen() throws {
+        // Every one of these DECODES (syntactically valid JSON), so the old
+        // syntax-only check accepted them — and `-1e308` made the
+        // diagnostics' `Int(age)` conversion trap `status`/`doctor` exactly
+        // when they were needed. Semantic validation rejects them at `read`,
+        // so every reader fails open to "no guard" (normal `.auto`).
+        let now = 1_700_000_000.0
+        let hostile: [(String, String)] = [
+            ("-1e308", #"{"tripped_at": -1e308, "provider_version": "0.8.0", "crash_count": 3}"#),
+            ("1e308", #"{"tripped_at": 1e308, "provider_version": "0.8.0", "crash_count": 3}"#),
+            // NaN cannot be written as a JSON literal; null is its wire shape.
+            ("null", #"{"tripped_at": null, "provider_version": "0.8.0", "crash_count": 3}"#),
+            ("plausible future",
+             #"{"tripped_at": \#(now + 7 * 86_400), "provider_version": "0.8.0", "crash_count": 3}"#),
+            ("pre-epoch", #"{"tripped_at": -1, "provider_version": "0.8.0", "crash_count": 3}"#),
+            ("negative crash count",
+             #"{"tripped_at": 1000, "provider_version": "0.8.0", "crash_count": -3}"#),
+        ]
+        for (label, json) in hostile {
+            let (env, url) = tempEnv()
+            defer { try? FileManager.default.removeItem(at: url) }
+            try Data(json.utf8).write(to: url)
+            #expect(
+                KVBackendGuardStore.read(environment: env, now: now) == nil,
+                "\(label) must read as corrupt → no guard")
+            #expect(!EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
+                record: KVBackendGuardStore.read(environment: env, now: now),
+                runningVersion: "0.8.0"))
+        }
+
+        // Skew INSIDE the tolerance is a real record: a trip stamped just
+        // before an NTP step backwards must keep guarding.
+        let (env, url) = tempEnv()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let skewed = KVBackendGuard(
+            trippedAt: now + KVBackendGuardStore.futureSkewToleranceSeconds - 1,
+            providerVersion: "0.8.0", crashCount: 3)
+        #expect(KVBackendGuardStore.write(skewed, environment: env))
+        #expect(KVBackendGuardStore.read(environment: env, now: now) == skewed)
     }
 
     @Test("manual clear removes the record; clearing nothing succeeds")
@@ -465,14 +584,15 @@ struct CrashLoopGuardRecoveryWiringTests {
 
     private func makeService(
         updater: SelfUpdater,
-        log: ActionLog
+        log: ActionLog,
+        kickstartStarts: Bool = true
     ) -> WatchdogRecoveryService {
         WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
                 kickstartIfLoaded: {
-                    log.append("kickstart")
-                    return true
+                    log.append(kickstartStarts ? "kickstart" : "kickstart-refused")
+                    return kickstartStarts
                 },
                 // Injected: tests must never shell out to the real
                 // `launchctl print` for the host's provider job.
@@ -480,7 +600,10 @@ struct CrashLoopGuardRecoveryWiringTests {
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, _, guardedVersion in
                     log.append("trip(\(crashCount),v\(guardedVersion))")
-                    return true
+                    return { log.append("untrip") }
+                },
+                noteCrashLoopChain: { count, version in
+                    log.append("chain(\(count),v\(version))")
                 },
                 log: { _ in }))
     }
@@ -502,11 +625,18 @@ struct CrashLoopGuardRecoveryWiringTests {
             .recoverDownProvider(
                 autoUpdateEnabled: false,
                 crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+                lastRestartVersion: fixture.oldVersion,
                 now: 1_000)
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         // No self-update has ever run in this fixture, so the installed
-        // version IS the process version (the fixture's oldVersion).
-        #expect(log.actions == ["trip(3,v\(fixture.oldVersion))", "kickstart"])
+        // version IS the process version (the fixture's oldVersion), the
+        // recorded chain version matches it (continuity), and the guard is
+        // written before the kickstart — never rolled back on this path.
+        #expect(log.actions == [
+            "chain(3,v\(fixture.oldVersion))",
+            "trip(3,v\(fixture.oldVersion))",
+            "kickstart",
+        ])
     }
 
     @Test("below the threshold, and for callers that do not track the chain, no trip")
@@ -518,11 +648,99 @@ struct CrashLoopGuardRecoveryWiringTests {
         _ = await service.recoverDownProvider(
             autoUpdateEnabled: false,
             crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold - 1,
+            lastRestartVersion: fixture.oldVersion,
             now: 1_000)
         // Default 0: the healthy-path candidate re-entries, which handle a
-        // RUNNING-but-inert process, not the launchd death loop.
+        // RUNNING-but-inert process, not the launchd death loop. (Version
+        // scoping keeps 0 at 0 even though no recorded version is passed.)
         _ = await service.recoverDownProvider(autoUpdateEnabled: false, now: 2_000)
-        #expect(log.actions == ["kickstart", "kickstart"])
+        #expect(log.actions == [
+            "chain(2,v\(fixture.oldVersion))",
+            "kickstart",
+            "chain(0,v\(fixture.oldVersion))",
+            "kickstart",
+        ])
+    }
+
+    @Test("a binary promotion resets the chain: the new install's first crash is 1, not N+1")
+    func promotionResetsChain() async throws {
+        // v0.8.0 tripped at 3, then a candidate stabilized and PROMOTED
+        // (~10 min — under the 15-min healthy reset). The new binary's
+        // first short-lived crash must compute 1, not 4: without the
+        // version scope it would instantly guard the release that was
+        // shipped to fix the loop. Model the post-promotion state: the
+        // durable installed record says newVersion, the chain was recorded
+        // against oldVersion.
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let updater = plainUpdater(fixture)
+
+        let session = try updater.beginUpdateSession(operation: "test-promo", timeout: 0)
+        var state = try session.readState()
+        state.current = InstalledReleaseRecord(
+            version: fixture.newVersion,
+            releaseBundleHash: nil,
+            installedBundleHash: "bundle-hash",
+            binaryHash: "binary-hash",
+            enclaveHash: "enclave-hash",
+            metallibHash: "metallib-hash",
+            installGeneration: 1,
+            installedAt: 50)
+        try session.writeState(state)
+        session.release()
+
+        let log = ActionLog()
+        let outcome = await makeService(updater: updater, log: log)
+            .recoverDownProvider(
+                autoUpdateEnabled: false,
+                crashLoopRestartCount: 4,  // raw: old chain at 3, +1
+                lastRestartVersion: fixture.oldVersion,
+                now: 1_000)
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        // Scoped to 1 for the new install — reported for persistence, and
+        // decisively NOT tripped.
+        #expect(log.actions == ["chain(1,v\(fixture.newVersion))", "kickstart"])
+    }
+
+    @Test("a nil recorded version (legacy state file) cannot prove continuity: reset")
+    func legacyNilVersionResets() async throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let log = ActionLog()
+        _ = await makeService(updater: plainUpdater(fixture), log: log)
+            .recoverDownProvider(
+                autoUpdateEnabled: false,
+                crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+                lastRestartVersion: nil,
+                now: 1_000)
+        #expect(log.actions == ["chain(1,v\(fixture.oldVersion))", "kickstart"],
+            "a legacy chain with no recorded version must reset, not trip")
+    }
+
+    @Test("a refused kickstart rolls the fresh trip back — no stranded guard")
+    func refusedKickstartRollsBackTrip() async throws {
+        // The operator stopped/unloaded the provider between the guard
+        // write and the kickstart (`.noLongerLoaded`): no restart was
+        // issued, the persisted counter correctly does not advance — so
+        // the guard written for that never-issued third restart must not
+        // strand and force contiguous on the next manual start.
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let log = ActionLog()
+        let outcome = await makeService(
+            updater: plainUpdater(fixture), log: log, kickstartStarts: false)
+            .recoverDownProvider(
+                autoUpdateEnabled: false,
+                crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+                lastRestartVersion: fixture.oldVersion,
+                now: 1_000)
+        #expect(outcome == .noLongerLoaded)
+        #expect(log.actions == [
+            "chain(3,v\(fixture.oldVersion))",
+            "trip(3,v\(fixture.oldVersion))",
+            "kickstart-refused",
+            "untrip",
+        ])
     }
 
     @Test("a pending update candidate with a viable rollback path suppresses the trip")
@@ -547,9 +765,11 @@ struct CrashLoopGuardRecoveryWiringTests {
         // is walking toward a binary rollback, which fixes paged too —
         // the pre-0.8.0 predecessor resolves `.auto` to contiguous.
         let first = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 3, now: 200)
+            autoUpdateEnabled: false, crashLoopRestartCount: 3,
+            lastRestartVersion: fixture.oldVersion, now: 200)
         let second = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 4, now: 300)
+            autoUpdateEnabled: false, crashLoopRestartCount: 4,
+            lastRestartVersion: fixture.oldVersion, now: 300)
         #expect(first == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         #expect(second == .restartIssued(updatedTo: nil, rolledBackTo: nil))
 
@@ -557,7 +777,8 @@ struct CrashLoopGuardRecoveryWiringTests {
         // just won, and a guard for a version that is leaving the box would
         // be a stranded record.
         let third = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 5, now: 400)
+            autoUpdateEnabled: false, crashLoopRestartCount: 5,
+            lastRestartVersion: fixture.oldVersion, now: 400)
         #expect(third == .restartIssued(updatedTo: nil, rolledBackTo: "1.0.0"))
 
         #expect(!log.actions.contains { $0.hasPrefix("trip") },
@@ -565,9 +786,14 @@ struct CrashLoopGuardRecoveryWiringTests {
         #expect(log.actions.filter { $0 == "kickstart" }.count == 4)
 
         // AFTER the rollback the candidate is gone. If the rolled-back
-        // binary somehow kept crash-looping, the guard may now trip.
+        // binary somehow kept crash-looping, the guard may now trip. (The
+        // recorded chain version is oldVersion throughout: `state.current`
+        // stays at the predecessor while a candidate is merely pending, so
+        // every restart above stamped oldVersion — version scoping does not
+        // reset this chain.)
         let postRollback = await service.recoverDownProvider(
-            autoUpdateEnabled: false, crashLoopRestartCount: 6, now: 500)
+            autoUpdateEnabled: false, crashLoopRestartCount: 6,
+            lastRestartVersion: fixture.oldVersion, now: 500)
         #expect(postRollback == .restartIssued(updatedTo: nil, rolledBackTo: nil))
         // The rollback restored the predecessor, so the durable installed
         // record — and therefore the guarded version — is oldVersion again.
@@ -613,7 +839,7 @@ struct CrashLoopGuardRecoveryWiringTests {
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.trip(
+                    KVBackendCrashLoopGuard.tripWithRollback(
                         crashCount: crashCount, now: tripNow,
                         guardedVersion: guardedVersion, lastKnownModel: nil,
                         environment: env, emitTelemetry: { _ in })
@@ -623,6 +849,9 @@ struct CrashLoopGuardRecoveryWiringTests {
         let outcome = await service.recoverDownProvider(
             autoUpdateEnabled: false,
             crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+            // The chain accumulated on the NEW daemon: each of its restarts
+            // stamped the resolved installed version, so continuity holds.
+            lastRestartVersion: fixture.newVersion,
             now: 1_000)
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
 
@@ -642,5 +871,45 @@ struct CrashLoopGuardRecoveryWiringTests {
         #expect(KVBackendGuardStore.clearIfStale(
             runningVersion: "3.0.0", environment: env) == record)
         #expect(KVBackendGuardStore.read(environment: env) == nil)
+    }
+
+    @Test("a rolled-back re-trip restores the PRE-EXISTING guard, never deletes it")
+    func rollbackRestoresPreexistingGuard() async throws {
+        // A guard from an earlier completed trip is on disk. A later
+        // recovery attempt RE-trips (refreshing crashCount) but then ends
+        // without a kickstart: the undo must restore the earlier record —
+        // original trippedAt and crashCount — not delete the guard.
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let env = [KVBackendGuardStore.pathEnvKey: url.path]
+
+        let earlier = KVBackendGuard(
+            trippedAt: 100, providerVersion: fixture.oldVersion, crashCount: 3)
+        KVBackendGuardStore.write(earlier, environment: env)
+
+        let service = WatchdogRecoveryService(
+            updater: plainUpdater(fixture),
+            dependencies: .init(
+                kickstartIfLoaded: { false },  // operator stopped it mid-recovery
+                launchSnapshot: { nil },
+                processAlive: { _ in true },
+                tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
+                    KVBackendCrashLoopGuard.tripWithRollback(
+                        crashCount: crashCount, now: tripNow,
+                        guardedVersion: guardedVersion, lastKnownModel: nil,
+                        environment: env, emitTelemetry: { _ in })
+                },
+                log: { _ in }))
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            crashLoopRestartCount: 4,
+            lastRestartVersion: fixture.oldVersion,
+            now: 1_000)
+        #expect(outcome == .noLongerLoaded)
+        #expect(KVBackendGuardStore.read(environment: env) == earlier,
+            "the earlier trip's record must survive the rolled-back re-trip untouched")
     }
 }

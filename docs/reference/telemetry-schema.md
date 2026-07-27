@@ -442,6 +442,13 @@ express:
   so the inert slot's residency is reported, not reclaimed.
 
 `mtp_acceptance_rate` is a per-event ratio and therefore **not** re-aggregatable by a
-plain average — a fleet roll-up must weight each sample by its proposed-token count.
-If weighted aggregation is needed server-side, add `mtp_proposed_tokens` and
-`mtp_accepted_tokens` rather than post-processing the ratio.
+plain average. The counters that make weighted aggregation possible ship alongside
+it: weight each sample by `mtp_proposed_tokens`, i.e. compute
+`sum(mtp_accepted_tokens) / sum(mtp_proposed_tokens)` across slots (latest sample
+per slot for a point-in-time fleet rate). For a windowed rate, difference the
+cumulative counters between two samples of the same slot —
+`Δaccepted / Δproposed` — before summing across slots; treat a counter that went
+*down* as a slot rebuild (engine reconstruction resets the lifetime counters) and
+start the window at the new sample. Never post-process the bare ratios: an
+unweighted mean over-counts old history and weighs a 1/1 slot equally with a
+10,000/10,000 slot.

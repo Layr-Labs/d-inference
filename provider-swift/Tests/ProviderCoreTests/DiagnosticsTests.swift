@@ -403,6 +403,99 @@ func slotPostureBuilderNormalizesUnrecognizedSelection() {
     #expect(built[0].kvBackendRequested == "auto")
 }
 
+// MARK: - Desired set for posture suppression (CLI-selected models)
+
+/// `desiredModelsForPosture` must reflect what the daemon actually SERVES,
+/// not just the config file: `--model X` / `--all` select models outside
+/// `enabled_models` (the launch path seeds them into `loopConfig.models` →
+/// `advertisedModels` while the config object is unchanged), and a failed
+/// load of such a model is a refusal the operator asked to see — suppressing
+/// its synthetic row as "undesired" lets `doctor` pass misleadingly.
+@Suite("Posture desired set (config + CLI selection)")
+struct DesiredModelsForPostureTests {
+
+    private func makeLoop(
+        advertised: [String],
+        enabledModels: [String],
+        pinned: String? = nil,
+        preload: [String] = []
+    ) throws -> ProviderLoop {
+        let config = ProviderLoopConfig(
+            coordinatorURL: "ws://127.0.0.1:0/ignored",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+                memoryGb: 128, memoryAvailableGb: 124,
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546
+            ),
+            models: advertised.map {
+                ModelInfo(id: $0, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
+            },
+            config: ProviderConfig(
+                provider: ProviderSettings(name: "posture-desired-test", memoryReserveGB: 1),
+                backend: BackendSettings(
+                    model: pinned,
+                    enabledModels: enabledModels,
+                    idleTimeoutMins: 0,
+                    preloadModels: preload
+                ),
+                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
+            )
+        )
+        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    }
+
+    @Test("a `--model X` selection outside enabled_models stays desired — its failure shows")
+    func cliModelOverrideIsDesired() async throws {
+        // Launch shape: config allowlists gemma, operator ran `--model org/x`.
+        let loop = try makeLoop(
+            advertised: ["org/x"], enabledModels: ["gemma-4-26b"])
+        let desired = await loop.desiredModelsForPosture()
+        #expect(desired?.contains("org/x") == true,
+            "the CLI-selected model must never be suppressed as undesired")
+        #expect(desired?.contains("gemma-4-26b") == true,
+            "the config allowlist still counts — a config-desired failure shows too")
+
+        // And the suppression it feeds agrees: the failed row survives.
+        let built = DaemonSlotPostureBuilder.build(
+            live: [], requestedGlobal: "auto", requestedByModel: [:],
+            lastModelLoadError: .init(model: "org/x", message: "refused", at: 10),
+            desiredModels: desired, now: 20)
+        #expect(built.count == 1)
+        #expect(built[0].loadError == "refused")
+    }
+
+    @Test("a `--all` selection makes every advertised model desired")
+    func cliAllSelectionIsDesired() async throws {
+        // Launch shape: `--all` advertises every scanned model; config
+        // allowlist names only one of them.
+        let loop = try makeLoop(
+            advertised: ["gemma-4-26b", "gpt-oss-20b", "org/other"],
+            enabledModels: ["gemma-4-26b"])
+        let desired = await loop.desiredModelsForPosture()
+        #expect(desired == ["gemma-4-26b", "gpt-oss-20b", "org/other"])
+    }
+
+    @Test("the config-only path is unchanged: allowlist ∪ pinned ∪ preload ∪ advertised")
+    func configOnlyPathUnchanged() async throws {
+        // Config-driven launch: the advertised set IS the config-filtered
+        // set, so the union adds nothing new.
+        let loop = try makeLoop(
+            advertised: ["gemma-4-26b"],
+            enabledModels: ["gemma-4-26b"],
+            pinned: "org/pinned",
+            preload: ["org/preload"])
+        let desired = await loop.desiredModelsForPosture()
+        #expect(desired == ["gemma-4-26b", "org/pinned", "org/preload"])
+
+        // Empty allowlist still means unconstrained (nil): membership proves
+        // nothing when the daemon serves anything pushed to it.
+        let unconstrained = try makeLoop(
+            advertised: ["org/x"], enabledModels: [])
+        #expect(await unconstrained.desiredModelsForPosture() == nil)
+    }
+}
+
 // MARK: - WarmModelsFormat
 
 @Test func warmModelsLineListsEveryResidentModel() {

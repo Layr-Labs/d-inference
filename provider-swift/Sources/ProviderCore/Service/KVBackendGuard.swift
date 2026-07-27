@@ -98,14 +98,36 @@ public enum KVBackendGuardStore {
             .appendingPathComponent(".darkbloom/kv-backend-guard.json")
     }
 
+    /// How far in the FUTURE a `tripped_at` may sit before the record is
+    /// judged semantically corrupt. Generous (24h) because fleet boxes do
+    /// carry wrong clocks and a trip stamped just before an NTP step
+    /// backwards is a REAL guard — rejecting it would fail-open back into
+    /// the crash loop it stopped. Beyond a day it is not clock skew, it is
+    /// garbage.
+    public static let futureSkewToleranceSeconds: Double = 86_400
+
     /// nil when the record is missing, unreadable, or garbage — the fail-open
     /// contract: `.auto` then resolves normally (paged).
+    ///
+    /// "Garbage" includes SEMANTIC corruption, not just undecodable JSON: a
+    /// syntactically valid file with `tripped_at: -1e308` decodes fine, and
+    /// the `Int()` conversion in the diagnostics age arithmetic would trap
+    /// `status`/`doctor` exactly when the operator needs them. So a decoded
+    /// record whose timestamp is non-finite, negative (pre-epoch), or
+    /// further in the future than clock skew explains is rejected here —
+    /// every reader (factory gate, diagnostics, stale-clear, re-trip) then
+    /// sees one consistent answer: no guard.
     public static func read(
-        environment: [String: String] = ProcessInfo.processInfo.environment
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        now: Double = Date().timeIntervalSince1970
     ) -> KVBackendGuard? {
         let url = path(environment: environment)
         guard let data = try? Data(contentsOf: url),
-            let record = try? JSONDecoder().decode(KVBackendGuard.self, from: data)
+            let record = try? JSONDecoder().decode(KVBackendGuard.self, from: data),
+            record.trippedAt.isFinite,
+            record.trippedAt >= 0,
+            record.trippedAt <= now + futureSkewToleranceSeconds,
+            record.crashCount >= 0
         else { return nil }
         return record
     }
@@ -240,5 +262,46 @@ public enum KVBackendCrashLoopGuard {
         event.version = guardedVersion
         emitEngineHealth(event, sink: emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) })
         return wrote
+    }
+
+    /// `trip`, plus an undo closure that restores the EXACT pre-trip disk
+    /// state — the previous record if one existed (an earlier legitimate
+    /// trip whose crash count this write refreshed), or absence.
+    ///
+    /// The trip is written BEFORE the kickstart so the relaunching daemon
+    /// reads it on its first model load — but that ordering means a recovery
+    /// attempt that then ends WITHOUT issuing the restart (operator stopped
+    /// the provider mid-recovery, kickstart refused/failed) has written a
+    /// guard for a third restart that never happened, while the persisted
+    /// chain counter correctly did not advance. The caller invokes the undo
+    /// on every such exit (`WatchdogRecoveryService.recoverDownProvider`);
+    /// keying the undo to the pre-trip snapshot means it can never delete a
+    /// pre-existing guard from an earlier trip. Returns nil when the record
+    /// could not be persisted (nothing to undo — the trip telemetry was
+    /// still emitted, matching `trip`'s wrote-false behavior).
+    public static func tripWithRollback(
+        crashCount: Int,
+        now: Double,
+        guardedVersion: String,
+        lastKnownModel: String?,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
+    ) -> (@Sendable () -> Void)? {
+        let previous = KVBackendGuardStore.read(environment: environment)
+        guard trip(
+            crashCount: crashCount,
+            now: now,
+            guardedVersion: guardedVersion,
+            lastKnownModel: lastKnownModel,
+            environment: environment,
+            emitTelemetry: emitTelemetry)
+        else { return nil }
+        return {
+            if let previous {
+                KVBackendGuardStore.write(previous, environment: environment)
+            } else {
+                KVBackendGuardStore.clear(environment: environment)
+            }
+        }
     }
 }

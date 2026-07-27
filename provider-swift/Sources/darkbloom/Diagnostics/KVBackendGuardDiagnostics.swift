@@ -71,9 +71,19 @@ enum KVBackendGuardDiagnostics {
 
     /// Coarse human age ("41s", "12m", "5h", "3d") — the reader needs "how
     /// long has this box been off paged", not a timestamp to subtract.
+    ///
+    /// Defensively total: `KVBackendGuardStore.read` already rejects records
+    /// with non-finite/out-of-range timestamps as corrupt, but this function
+    /// renders whatever record it is HANDED (tests build them directly, and
+    /// a future caller may not read through the store), and a diagnostics
+    /// formatter that can trap — `Int(1e308)` does — would take down
+    /// `status`/`doctor` exactly when they are needed. Clamp to the finite
+    /// displayable range instead; ~100,000 years caps any representable age
+    /// while staying far inside `Int` (a wrong "d" figure beats a crash).
     static func ageText(record: KVBackendGuard, now: Double) -> String {
-        let age = max(0, now - record.trippedAt)
-        let seconds = Int(age)
+        let age = now - record.trippedAt
+        let clamped = age.isFinite ? min(max(0, age), 86_400 * 36_500_000) : 0
+        let seconds = Int(clamped)
         if seconds < 60 { return "\(seconds)s" }
         if seconds < 3600 { return "\(seconds / 60)m" }
         if seconds < 86_400 { return "\(seconds / 3600)h" }

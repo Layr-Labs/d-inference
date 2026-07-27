@@ -26,15 +26,29 @@ public struct WatchdogRecoveryService: Sendable {
         /// journaled transaction.
         public var isPastTickDeadline: @Sendable () -> Bool
         /// Trip the crash-loop KV-backend guard: persist the on-disk record
-        /// and emit the trip telemetry (`KVBackendCrashLoopGuard.trip`).
+        /// and emit the trip telemetry (`KVBackendCrashLoopGuard.tripWithRollback`).
         /// `guardedVersion` is the INSTALLED daemon version resolved by the
         /// recovery flow (`SelfUpdater.effectiveInstalledVersion`) — the
         /// watchdog process's own compiled-in version can be stale after a
-        /// self-update. Returns whether the record reached disk. Injectable
-        /// so the decision-flow tests can observe trips (and their ordering
-        /// against the kickstart) without touching the real `~/.darkbloom`.
+        /// self-update. Returns nil when the record could not reach disk;
+        /// otherwise an undo closure that restores the pre-trip disk state,
+        /// invoked when this recovery attempt ends without an issued
+        /// kickstart (the counted restart never happened, so the guard must
+        /// not strand). Injectable so the decision-flow tests can observe
+        /// trips (and their ordering against the kickstart) without touching
+        /// the real `~/.darkbloom`.
         public var tripKVBackendGuard:
-            @Sendable (_ crashCount: Int, _ now: Double, _ guardedVersion: String) -> Bool
+            @Sendable (_ crashCount: Int, _ now: Double, _ guardedVersion: String)
+                -> (@Sendable () -> Void)?
+        /// Reports the version-scoped crash-loop chain this recovery attempt
+        /// resolved: the effective counter value
+        /// (`WatchdogPolicy.versionScopedCrashLoopCount` over the caller's
+        /// raw count) and the installed version it is scoped to. The caller
+        /// persists BOTH — but only when the outcome shows the restart was
+        /// actually issued. A dependency rather than a return value because
+        /// `DownOutcome` is pattern-matched by equality across the decision
+        /// tests and the chain is orthogonal to the outcome shape.
+        public var noteCrashLoopChain: @Sendable (_ count: Int, _ installedVersion: String) -> Void
         public var log: @Sendable (String) -> Void
 
         public init(
@@ -47,10 +61,12 @@ public struct WatchdogRecoveryService: Sendable {
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
-            tripKVBackendGuard: @escaping @Sendable (Int, Double, String) -> Bool = {
-                KVBackendCrashLoopGuard.trip(
+            tripKVBackendGuard: @escaping @Sendable (Int, Double, String)
+                -> (@Sendable () -> Void)? = {
+                KVBackendCrashLoopGuard.tripWithRollback(
                     crashCount: $0, now: $1, guardedVersion: $2, lastKnownModel: nil)
             },
+            noteCrashLoopChain: @escaping @Sendable (Int, String) -> Void = { _, _ in },
             log: @escaping @Sendable (String) -> Void
         ) {
             self.kickstartIfLoaded = kickstartIfLoaded
@@ -60,6 +76,7 @@ public struct WatchdogRecoveryService: Sendable {
             self.terminateStaleLockOwner = terminateStaleLockOwner
             self.isPastTickDeadline = isPastTickDeadline
             self.tripKVBackendGuard = tripKVBackendGuard
+            self.noteCrashLoopChain = noteCrashLoopChain
             self.log = log
         }
     }
@@ -125,18 +142,24 @@ public struct WatchdogRecoveryService: Sendable {
     ///
     /// `crashLoopRestartCount` is the consecutive crash-loop counter value
     /// THIS restart carries if issued (`WatchdogPolicy.crashLoopCount`,
-    /// computed by the caller from the persisted watchdog state). At
-    /// `WatchdogPolicy.crashLoopTripThreshold` the KV-backend guard is
-    /// persisted BEFORE the kickstart below — see the trip site for the
-    /// precedence rules. The default 0 (below any threshold) keeps callers
-    /// that do not track the chain, e.g. the healthy-path candidate
-    /// re-entries, from ever tripping it: those handle a RUNNING-but-inert
-    /// process, not the launchd death loop the guard exists for.
+    /// computed by the caller from the persisted watchdog state), BEFORE
+    /// version scoping: this flow resolves the installed daemon version and
+    /// rescopes the count through
+    /// `WatchdogPolicy.versionScopedCrashLoopCount(_:recordedVersion:installedVersion:)`
+    /// — `lastRestartVersion` is the persisted state's recorded version the
+    /// scoping compares against. At `WatchdogPolicy.crashLoopTripThreshold`
+    /// (of the SCOPED count) the KV-backend guard is persisted BEFORE the
+    /// kickstart below — see the trip site for the precedence rules. The
+    /// default 0 (below any threshold) keeps callers that do not track the
+    /// chain, e.g. the healthy-path candidate re-entries, from ever tripping
+    /// it: those handle a RUNNING-but-inert process, not the launchd death
+    /// loop the guard exists for.
     public func recoverDownProvider(
         autoUpdateEnabled: Bool,
         inactiveProviderIdentity: ProcessIdentity? = nil,
         providerProcessAlive: Bool = false,
         crashLoopRestartCount: Int = 0,
+        lastRestartVersion: String? = nil,
         now: Double
     ) async -> DownOutcome {
         // Monotonic anchor for re-deriving the epoch time later in this call.
@@ -308,6 +331,27 @@ public struct WatchdogRecoveryService: Sendable {
             return .failed(reason)
         }
 
+        // Version-scope the chain: a chain recorded against a DIFFERENT
+        // installed version (a promotion or rollback landed since the last
+        // restart) resets — the new binary's first short-lived crash must
+        // not inherit the old binary's count and instantly guard the release
+        // that was shipped to fix it. Report the scoped chain (count +
+        // version) so the caller persists exactly what this flow acted on,
+        // but only if the restart is actually issued below.
+        let scopedCrashLoopCount = WatchdogPolicy.versionScopedCrashLoopCount(
+            crashLoopRestartCount,
+            recordedVersion: lastRestartVersion,
+            installedVersion: guardedVersion)
+        if scopedCrashLoopCount != crashLoopRestartCount {
+            deps.log(
+                "crash-loop chain reset \(crashLoopRestartCount) → \(scopedCrashLoopCount): "
+                    + "the installed version changed to v\(guardedVersion) "
+                    + "(chain was recorded against "
+                    + (lastRestartVersion.map { "v\($0)" } ?? "no version — legacy state")
+                    + ")")
+        }
+        deps.noteCrashLoopChain(scopedCrashLoopCount, guardedVersion)
+
         // Crash-loop KV-backend guard (v0.8.0). The caller counted this
         // restart as the Nth consecutive crash-loop-shaped one; at the
         // threshold the guard record is persisted HERE — before the update
@@ -330,13 +374,23 @@ public struct WatchdogRecoveryService: Sendable {
         // rollback was REFUSED (blocked reason set) has already lost its fix
         // path, so the backend guard is the one automated mitigation left
         // and may trip.
-        if crashLoopRestartCount >= WatchdogPolicy.crashLoopTripThreshold,
+        // The write is BOUND to the kickstart: any exit below that does not
+        // issue the restart rolls it back (`rollBackTripUnlessKickstarted`)
+        // — the chain counter is only persisted for issued restarts, so a
+        // no-restart exit means the counted third restart never happened and
+        // a stranded guard would force contiguous on the next manual start
+        // for a trip that never completed. The undo restores the pre-trip
+        // disk state, so it can never delete a pre-existing guard from an
+        // earlier completed trip.
+        var undoTrip: (@Sendable () -> Void)?
+        if scopedCrashLoopCount >= WatchdogPolicy.crashLoopTripThreshold,
             rolledBackTo == nil,
             !candidateOwnsRecovery
         {
-            if deps.tripKVBackendGuard(crashLoopRestartCount, now, guardedVersion) {
+            if let undo = deps.tripKVBackendGuard(scopedCrashLoopCount, now, guardedVersion) {
+                undoTrip = undo
                 deps.log(
-                    "crash-loop backend guard tripped after \(crashLoopRestartCount) short-uptime "
+                    "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
                         + "restarts — `.auto` resolves contiguous on this box until the next "
                         + "release or `darkbloom doctor --clear-backend-guard`")
             } else {
@@ -344,6 +398,16 @@ public struct WatchdogRecoveryService: Sendable {
                     "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
                         + "`.auto` will keep resolving paged and the crash loop may continue")
             }
+        }
+        // Every exit below EXCEPT the issued kickstart runs through this.
+        func rollBackTripUnlessKickstarted(_ outcome: DownOutcome) -> DownOutcome {
+            if let undoTrip {
+                undoTrip()
+                deps.log(
+                    "crash-loop backend guard rolled back — recovery ended without an "
+                        + "issued restart, so the counted restart never happened")
+            }
+            return outcome
         }
 
         var updatedTo: String?
@@ -376,7 +440,7 @@ public struct WatchdogRecoveryService: Sendable {
                 deps.log("update skipped because lock became busy: \(reason)")
             case .cancelled(let reason):
                 deps.log("watchdog update cancelled: \(reason)")
-                return .noLongerLoaded
+                return rollBackTripUnlessKickstarted(.noLongerLoaded)
             case .downloadFailed(let reason):
                 deps.log("update check/download failed; restarting current install: \(reason)")
             case .hashMismatch(let expected, let got):
@@ -396,7 +460,7 @@ public struct WatchdogRecoveryService: Sendable {
                     let recoveryReason =
                         "post-refusal update recovery failed: \(error)"
                     deps.log(recoveryReason)
-                    return .failed(recoveryReason)
+                    return rollBackTripUnlessKickstarted(.failed(recoveryReason))
                 }
             }
         }
@@ -437,7 +501,7 @@ public struct WatchdogRecoveryService: Sendable {
                     let before = state
                     state.cancelPendingAttempt()
                     try writeIfChanged(state, before: before)
-                    return .noLongerLoaded
+                    return rollBackTripUnlessKickstarted(.noLongerLoaded)
                 }
                 let before = state
                 _ = state.markLaunchIssued(now: launchNow)
@@ -452,7 +516,10 @@ public struct WatchdogRecoveryService: Sendable {
         } catch {
             let reason = "provider kickstart failed: \(error)"
             deps.log(reason)
-            return .failed(reason)
+            // The chain counter is not advanced for a failed kickstart, so
+            // the next tick recomputes the same count and re-trips: rolling
+            // back here keeps disk state and counter consistent in between.
+            return rollBackTripUnlessKickstarted(.failed(reason))
         }
     }
 

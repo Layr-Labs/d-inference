@@ -78,6 +78,34 @@ public enum WatchdogPolicy {
         return current.consecutiveCrashLoopRestarts + 1
     }
 
+    /// Scope a computed crash-loop count to the INSTALLED daemon version.
+    ///
+    /// The chain counted the RECORDED version's restarts. When the installed
+    /// version differs — a self-update promoted a candidate, or a rollback
+    /// restored the predecessor, since the last restart — this restart is the
+    /// new binary's FIRST, not the old one's Nth: without the reset, a chain
+    /// that reached the trip threshold on v0.8.0 would guard a promoted
+    /// v0.8.1 on its first short-lived crash, defeating the
+    /// release-clears-the-guard design. A nil recorded version (a pre-guard
+    /// legacy state file, or a degraded restart that could not resolve one)
+    /// cannot PROVE continuity, so it also resets — the cost is only that a
+    /// genuine loop takes a fresh `crashLoopTripThreshold` crashes to re-trip.
+    ///
+    /// `installedVersion` is resolved by the recovery flow through
+    /// `SelfUpdater.effectiveInstalledVersion` — the same source the guard
+    /// stamp uses (`WatchdogRecoveryService.recoverDownProvider`), so the
+    /// counter and the guard can never disagree about which version crashed.
+    ///
+    /// `min(count, 1)` rather than a literal 1 so the no-chain callers
+    /// (healthy-path re-entries pass 0) stay below the chain's floor.
+    public static func versionScopedCrashLoopCount(
+        _ count: Int,
+        recordedVersion: String?,
+        installedVersion: String
+    ) -> Int {
+        recordedVersion == installedVersion ? count : min(count, 1)
+    }
+
     public static func decide(
         autoRestartEnabled: Bool,
         providerLoaded: Bool,
@@ -106,28 +134,38 @@ public enum WatchdogPolicy {
     /// Timer state to persist after `decision`, or nil when no write is needed.
     ///
     /// `crashLoopCount` is the counter value an ISSUED `.restart` should
-    /// persist (from ``crashLoopCount(current:effectiveDownSince:uptimeBoundSeconds:)``);
+    /// persist (from ``crashLoopCount(current:effectiveDownSince:uptimeBoundSeconds:)``,
+    /// version-scoped by ``versionScopedCrashLoopCount(_:recordedVersion:installedVersion:)``);
     /// nil keeps the current counter — the caller passes nil when the
     /// recovery outcome shows no restart was actually issued (lock busy,
     /// backoff, provider unloaded), because a restart that never happened
     /// must not walk the chain toward the guard.
+    ///
+    /// `crashLoopVersion` is the INSTALLED daemon version the issued restart
+    /// booted (the version the chain is scoped to); nil — the degraded
+    /// session-less restart path, which cannot resolve one — preserves the
+    /// recorded version rather than erasing it: erasure reads as "cannot
+    /// prove continuity" and would reset a genuine chain on the next crash.
     public static func nextState(
         for decision: WatchdogDecision,
         current: WatchdogState,
         now: Double,
-        crashLoopCount: Int? = nil
+        crashLoopCount: Int? = nil,
+        crashLoopVersion: String? = nil
     ) -> WatchdogState? {
         switch decision {
         case .restart:
             return WatchdogState(
                 downSince: nil,
                 lastRestartAt: now,
+                lastRestartVersion: crashLoopVersion ?? current.lastRestartVersion,
                 consecutiveCrashLoopRestarts: crashLoopCount
                     ?? current.consecutiveCrashLoopRestarts)
         case .startGrace:
             return WatchdogState(
                 downSince: now,
                 lastRestartAt: current.lastRestartAt,
+                lastRestartVersion: current.lastRestartVersion,
                 consecutiveCrashLoopRestarts: current.consecutiveCrashLoopRestarts)
         case .waiting:
             return nil
@@ -148,6 +186,7 @@ public enum WatchdogPolicy {
             return WatchdogState(
                 downSince: nil,
                 lastRestartAt: current.lastRestartAt,
+                lastRestartVersion: current.lastRestartVersion,
                 consecutiveCrashLoopRestarts: resetCounter
                     ? 0 : current.consecutiveCrashLoopRestarts)
         case .disabled, .notManaged:
@@ -159,6 +198,7 @@ public enum WatchdogPolicy {
                 : WatchdogState(
                     downSince: nil,
                     lastRestartAt: current.lastRestartAt,
+                    lastRestartVersion: current.lastRestartVersion,
                     consecutiveCrashLoopRestarts: current.consecutiveCrashLoopRestarts)
         }
     }

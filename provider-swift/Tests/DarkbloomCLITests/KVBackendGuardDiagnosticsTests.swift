@@ -91,6 +91,27 @@ struct KVBackendGuardDiagnosticsTests {
         #expect(age(-50) == "0s")
     }
 
+    @Test("hostile timestamps render a clamped age — never an Int() trap")
+    func hostileTimestampsClamp() {
+        // `KVBackendGuardStore.read` rejects these as corrupt, but the
+        // formatter must be total over whatever record it is handed:
+        // `Int(1e308)` traps, and a crashing `status`/`doctor` is the worst
+        // possible failure mode for a diagnostics line.
+        func render(trippedAt: Double, now: Double = 10_000) -> String {
+            KVBackendGuardDiagnostics.ageText(
+                record: KVBackendGuard(
+                    trippedAt: trippedAt, providerVersion: "x", crashCount: 3),
+                now: now)
+        }
+        #expect(render(trippedAt: -1e308).hasSuffix("d"), "huge age clamps to days")
+        #expect(render(trippedAt: 1e308) == "0s", "future timestamp clamps to zero")
+        // Non-finite inputs make the AGE non-finite; the formatter renders
+        // zero rather than guessing a direction.
+        #expect(render(trippedAt: .nan) == "0s")
+        #expect(render(trippedAt: -.infinity) == "0s")
+        #expect(render(trippedAt: .infinity) == "0s")
+    }
+
     // MARK: - per-slot posture rendering of the degrade reason
 
     @Test("a degraded slot's posture line carries the fallback reason")

@@ -1735,10 +1735,12 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// cost gates: an authenticated but unfunded/over-quota request (or one for a
 	// nonexistent model) can never drive coordinator-side fetches. The token &
 	// routing estimates above count media parts flatly (300/1500 per part), so
-	// they don't need the inlined bytes; the billing reservation is refunded on
-	// any failure. parsed is mutated in place, so the alias-fallback re-marshals
-	// below keep the inlined media.
-	rawBody, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
+	// they don't need the inlined bytes. The billing reservation is refunded on
+	// any failure, and topped up below on success — it was taken while the media
+	// was still a ~100-byte URL. parsed is mutated in place, so every view
+	// derived from the pre-inline body is refreshed via refreshForwardBody.
+	var mediaInlined bool
+	rawBody, mediaInlined, ok = s.resolveRemoteMedia(w, r, rawBody, parsed, timing, mediaResolveMeta{
 		model:                 model,
 		publicModel:           publicModel,
 		stream:                stream,
@@ -1757,17 +1759,18 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Shared routing/capacity admission preflight (self-route / prefer / public
-	// capacity+TTFT gate — see runInferenceAdmission). On the chat path an alias
-	// fallback must refresh the threaded rawBody: re-lowering Responses input→chat
-	// when applicable, which can itself fail with a 400. Thread that as the
-	// onModelFallback callback; resolvedModel uses the new build to match the
-	// pre-extraction behavior.
-	onModelFallback := func(newModel string) bool {
-		rawBody, _ = marshalForwardBody(parsed)
+	// refreshForwardBody re-derives every view of the provider-bound request from
+	// a freshly marshaled `parsed`: the threaded rawBody, the body actually
+	// forwarded to the provider (re-lowered input→chat on the Responses surface,
+	// which can itself fail with a 400), and the routing traits computed from it.
+	// Any in-place mutation of `parsed` MUST go through it — an alias fallback
+	// rewriting the model, or remote media being inlined as data: URIs. Returns
+	// false after writing a terminal response.
+	refreshForwardBody := func(body []byte, forModel string) bool {
+		rawBody = body
 		if !isResponsesAPI {
 			providerBody = rawBody
-			routingTraits = routingTraitsForModel(newModel)
+			routingTraits = routingTraitsForModel(forModel)
 			return true
 		}
 		var err error
@@ -1782,7 +1785,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 				keyID:                 keyIDFromContext(r.Context()),
 				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
 				requestedModel:        publicModel,
-				resolvedModel:         newModel,
+				resolvedModel:         forModel,
 				stream:                stream,
 				estimatedPromptTokens: estimatedPromptTokens,
 				requestedMaxTokens:    requestedMaxTokens,
@@ -1793,8 +1796,51 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", err.Error()))
 			return false
 		}
-		routingTraits = routingTraitsForModel(newModel)
+		routingTraits = routingTraitsForModel(forModel)
 		return true
+	}
+
+	// Remote media was fetched and inlined into `parsed` above, so `providerBody`
+	// (captured before the resolve) and the routing traits derived from it now
+	// describe a body that no longer exists. Without this refresh the coordinator
+	// pays for the fetch and then seals and dispatches the ORIGINAL body still
+	// carrying the http(s) URL, which the provider's data:-only guard rejects.
+	if mediaInlined {
+		if !refreshForwardBody(rawBody, model) {
+			return
+		}
+		// The reservation was taken against a body where the image was a short
+		// URL, so estimateBillingPromptTokens — the guaranteed len(bytes) >= tokens
+		// upper bound the settlement path relies on — was computed over ~100 bytes
+		// of URL instead of the inlined media. Re-reserve against the real body
+		// before dispatch; otherwise settlement's 2x-reservation overage clamp
+		// silently absorbs the difference and underpays the provider.
+		var topUpHandled bool
+		reservedMicroUSD, topUpHandled = s.topUpReservationForInlinedMedia(w, r, parsed, balanceReservationParams{
+			model:                 model,
+			publicModel:           publicModel,
+			billingPromptTokens:   estimateBillingPromptTokens(parsed),
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			stream:                stream,
+			requiresVision:        requiresVision,
+			hasTools:              hasTools,
+			policy:                policy,
+		}, reservedMicroUSD)
+		if topUpHandled {
+			refundReservation()
+			return
+		}
+	}
+
+	// Shared routing/capacity admission preflight (self-route / prefer / public
+	// capacity+TTFT gate — see runInferenceAdmission). On the chat path an alias
+	// fallback must refresh the threaded rawBody; thread that as the
+	// onModelFallback callback. resolvedModel uses the new build to match the
+	// pre-extraction behavior.
+	onModelFallback := func(newModel string) bool {
+		body, _ := marshalForwardBody(parsed)
+		return refreshForwardBody(body, newModel)
 	}
 	var preflightHandled bool
 	model, preflightHandled = s.runInferenceAdmission(w, r, parsed, inferenceAdmissionParams{

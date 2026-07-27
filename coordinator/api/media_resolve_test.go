@@ -117,9 +117,12 @@ func TestResolveRemoteMediaInlinesOnSuccess(t *testing.T) {
 	w := httptest.NewRecorder()
 	timing := &registry.RequestTiming{}
 
-	out, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
+	out, inlined, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
 	if !ok {
 		t.Fatalf("resolveRemoteMedia ok=false, body=%s", w.Body.String())
+	}
+	if !inlined {
+		t.Error("a body whose remote URL was inlined must report inlined=true")
 	}
 	if !bytes.Contains(out, []byte("data:image/png;base64,")) {
 		t.Errorf("returned body not inlined: %.80s", out)
@@ -138,9 +141,9 @@ func TestResolveRemoteMediaNoRemoteNoOp(t *testing.T) {
 	w := httptest.NewRecorder()
 	timing := &registry.RequestTiming{}
 
-	out, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
-	if !ok || !bytes.Equal(out, raw) {
-		t.Fatalf("inline-only body must pass through unchanged (ok=%v)", ok)
+	out, inlined, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, timing, testMeta())
+	if !ok || inlined || !bytes.Equal(out, raw) {
+		t.Fatalf("inline-only body must pass through unchanged (ok=%v inlined=%v)", ok, inlined)
 	}
 	if !timing.MediaFetchedAt.IsZero() {
 		t.Error("MediaFetchedAt must stay zero when nothing was fetched")
@@ -152,8 +155,8 @@ func TestResolveRemoteMediaNilResolverPassthrough(t *testing.T) {
 	raw, parsed := chatBodyBytes(t, "https://example.com/cat.png")
 	w := httptest.NewRecorder()
 
-	out, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta())
-	if !ok || !bytes.Equal(out, raw) {
+	out, inlined, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta())
+	if !ok || inlined || !bytes.Equal(out, raw) {
 		t.Fatal("nil resolver must behave as disabled passthrough")
 	}
 }
@@ -166,7 +169,7 @@ func TestResolveRemoteMediaClientCancellationWritesNoRejection(t *testing.T) {
 	req := plainReq().WithContext(ctx)
 	w := httptest.NewRecorder()
 
-	out, ok := s.resolveRemoteMedia(w, req, raw, parsed, &registry.RequestTiming{}, testMeta())
+	out, _, ok := s.resolveRemoteMedia(w, req, raw, parsed, &registry.RequestTiming{}, testMeta())
 	if ok || out != nil {
 		t.Fatal("client cancellation must stop resolution")
 	}
@@ -191,7 +194,7 @@ func TestResolveRemoteMediaFailureWrites400(t *testing.T) {
 	raw, parsed := chatBodyBytes(t, media.URL+"/fake.png")
 	w := httptest.NewRecorder()
 
-	out, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta())
+	out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta())
 	if ok || out != nil {
 		t.Fatal("invalid content must fail the request")
 	}
@@ -223,7 +226,7 @@ func TestResolveRemoteMediaNeverLogsPresignedURLSecrets(t *testing.T) {
 	raw, parsed := chatBodyBytes(t, media.URL+"/private.png?"+secret)
 	w := httptest.NewRecorder()
 
-	if out, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta()); ok || out != nil {
+	if out, _, ok := s.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, testMeta()); ok || out != nil {
 		t.Fatal("upstream 404 must fail media resolution")
 	}
 	if got := logs.String(); strings.Contains(got, secret) || strings.Contains(got, media.URL) || strings.Contains(got, "/private.png") {
@@ -312,8 +315,9 @@ func TestGateDisabledFallsBackToLegacyReject(t *testing.T) {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 
-	// The new kill switch is authoritative: the legacy rejection flag cannot
-	// turn fetch-disabled rollback into dispatch-then-provider-400.
+	// The retired DARKBLOOM_VISION_REJECT_REMOTE_URLS switch is read nowhere
+	// anymore: setting it must not turn fetch-disabled rollback back into
+	// dispatch-then-provider-400.
 	t.Setenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS", "false")
 	w2 := httptest.NewRecorder()
 	if !s.gateRemoteMediaPreDispatch(w2, plainReq(), parsed, "test", "test", true, false) {
@@ -394,7 +398,7 @@ func TestResolveRemoteMediaSelfRouteUnavailableSkipsFetch(t *testing.T) {
 		model: "test", publicModel: "test", requiresVision: true,
 		selfRoute: true, ownerAccountID: "owner-with-no-machine",
 	}
-	out, ok := srv.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, meta)
+	out, _, ok := srv.resolveRemoteMedia(w, plainReq(), raw, parsed, &registry.RequestTiming{}, meta)
 	if ok || out != nil {
 		t.Fatal("self-route with no serving machine must not resolve media")
 	}
@@ -585,5 +589,60 @@ func TestPreludeDefersRemoteMediaResolution(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&hits); n != 0 {
 		t.Errorf("prelude fetched media %d time(s); must be 0 (resolution is deferred to post-billing)", n)
+	}
+}
+
+// TestMediaRejectionReasonMapping pins the media-failure status → rejection-ledger
+// reason_code mapping. Filing everything but 413 as "bad_param" made a blocked
+// host, a slow origin and a broken upstream indistinguishable from a malformed
+// consumer request on the rejection dashboards.
+func TestMediaRejectionReasonMapping(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"blocked host or resolved address", http.StatusForbidden, "media_blocked"},
+		{"origin took too long", http.StatusRequestTimeout, "upstream_timeout"},
+		{"upstream failed", http.StatusBadGateway, "upstream_error"},
+		{"upstream gateway timeout", http.StatusGatewayTimeout, "upstream_error"},
+		{"media too large", http.StatusRequestEntityTooLarge, "payload_too_large"},
+		{"malformed consumer request", http.StatusBadRequest, "bad_param"},
+		{"unmapped status falls back", http.StatusInternalServerError, "bad_param"},
+	}
+	for _, c := range cases {
+		if got := mediaRejectionReason(c.status); got != c.want {
+			t.Errorf("%s: mediaRejectionReason(%d) = %q, want %q", c.name, c.status, got, c.want)
+		}
+	}
+}
+
+// TestMediaFetchRejectedPreservesAPIContract guards the other half of the remap:
+// the consumer-visible status, error type and message are API contract and must
+// not shift when the internal reason_code changes.
+func TestMediaFetchRejectedPreservesAPIContract(t *testing.T) {
+	s := minimalMediaServer(mediafetch.DefaultConfig())
+	w := httptest.NewRecorder()
+	s.mediaFetchRejected(w, plainReq(), map[string]any{},
+		mediaResolveMeta{model: "test", publicModel: "test"},
+		http.StatusForbidden, "media_blocked", "a media URL host is not allowed")
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", w.Code)
+	}
+	var body struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Error.Type != "media_blocked" {
+		t.Errorf("error.type = %q, want media_blocked", body.Error.Type)
+	}
+	if body.Error.Message != "a media URL host is not allowed" {
+		t.Errorf("error.message = %q, want the unchanged public message", body.Error.Message)
 	}
 }

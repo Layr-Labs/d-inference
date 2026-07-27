@@ -41,9 +41,9 @@ func (s *Server) gateRemoteMediaPreDispatch(w http.ResponseWriter, r *http.Reque
 		return false
 	}
 	if s.mediaResolver == nil || !s.mediaResolver.Enabled() {
-		// Resolver off means authoritative rollback to the data:-only contract;
-		// the older DARKBLOOM_VISION_REJECT_REMOTE_URLS switch must not override it.
-		return s.rejectRemoteMediaURLsAlways(w, r, parsed, model, publicModel, requiresVision, hasTools)
+		// Resolver off means authoritative rollback to the data:-only contract:
+		// one clean pre-dispatch 400 instead of a provider-side one.
+		return s.rejectRemoteMediaURLs(w, r, parsed, model, publicModel, requiresVision, hasTools)
 	}
 	// Sender-sealed requests are never fetched: the sender opted into sealing
 	// the payload to the coordinator, and a fetch would leak request-correlated
@@ -143,16 +143,20 @@ type mediaResolveMeta struct {
 // resolveRemoteMedia is phase 2 (post-reservation): it fetches remote media
 // URLs in the (already tool-schema normalized, JSON-parsed) request and inlines
 // them. On success it returns the body to forward downstream — re-marshaled
-// only when a URL was actually inlined — and ok=true. On any failure it writes
-// the terminal OpenAI-style error response and returns ok=false; the caller
-// must refund the balance reservation and return immediately.
+// only when a URL was actually inlined — inlined=true when it was, and ok=true.
+// On any failure it writes the terminal OpenAI-style error response and returns
+// ok=false; the caller must refund the balance reservation and return
+// immediately.
 //
 // parsed is mutated in place when media is inlined, so callers that also hold
 // the parsed map (routing/alias fallback re-marshals) observe the inlined data:
-// URIs consistently with the returned rawBody.
-func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawBody []byte, parsed map[string]any, timing *registry.RequestTiming, meta mediaResolveMeta) ([]byte, bool) {
+// URIs consistently with the returned rawBody. inlined=true obliges the caller
+// to refresh every view derived from the pre-inline body — the provider-bound
+// body, the routing traits computed from it, and the balance reservation, which
+// was taken while the media was still a ~100-byte URL.
+func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawBody []byte, parsed map[string]any, timing *registry.RequestTiming, meta mediaResolveMeta) (body []byte, inlined bool, ok bool) {
 	if s.mediaResolver == nil || !s.mediaResolver.Enabled() {
-		return rawBody, true
+		return rawBody, false, true
 	}
 
 	// Self-route skips the balance reservation, so nothing has yet gated egress
@@ -165,7 +169,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	if meta.selfRoute && mediafetch.HasRemoteMedia(parsed) {
 		if s.selfRouteUnavailable(w, r, meta.ownerAccountID, meta.model,
 			registry.RequestTraits{HasTools: meta.hasTools}, meta.requiresVision) {
-			return nil, false
+			return nil, false, false
 		}
 	}
 
@@ -176,7 +180,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 			// The client is gone. The caller still refunds the monetary reservation,
 			// but there is no response to write and no rejection/timeout telemetry to
 			// emit: this was not an origin failure.
-			return nil, false
+			return nil, false, false
 		}
 		var me *mediafetch.Error
 		if !errors.As(err, &me) {
@@ -189,10 +193,10 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 		// only stable structured fields.
 		s.logger.Warn("remote media rejected", "code", me.Code, "status", me.Status)
 		s.mediaFetchRejected(w, r, parsed, meta, me.Status, me.Code, me.Public)
-		return nil, false
+		return nil, false, false
 	}
 	if !res.Changed {
-		return rawBody, true
+		return rawBody, false, true
 	}
 
 	// A URL was inlined — re-marshal so the forwarded body reflects the data:
@@ -205,7 +209,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 		s.ddIncr("inference.media_fetch.rejected", []string{"code:remarshal_failed", "model:" + meta.model})
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
 			"failed to process request media"))
-		return nil, false
+		return nil, false, false
 	}
 	// The inlined body must still fit the sealed-frame budget. The dispatch-time
 	// re-check would catch this too, but failing here names the actual cause
@@ -213,7 +217,7 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	if len(newBody) > maxInferenceBodyBytes {
 		s.mediaFetchRejected(w, r, parsed, meta, http.StatusRequestEntityTooLarge, "media_too_large",
 			"the request exceeds the size limit once remote media is inlined; use smaller media or fewer attachments")
-		return nil, false
+		return nil, false, false
 	}
 
 	timing.MediaFetchedAt = time.Now()
@@ -222,16 +226,13 @@ func (s *Server) resolveRemoteMedia(w http.ResponseWriter, r *http.Request, rawB
 	s.ddCount("inference.media_fetch.items", int64(res.Count), modelTag)
 	s.ddCount("inference.media_fetch.bytes", res.Bytes, modelTag)
 	s.ddHistogram("inference.media_fetch.duration_ms", float64(time.Since(start).Milliseconds()), modelTag)
-	return newBody, true
+	return newBody, true, true
 }
 
 // mediaFetchRejected records + writes a terminal media-fetch failure with the
 // standard rejection telemetry shape.
 func (s *Server) mediaFetchRejected(w http.ResponseWriter, r *http.Request, parsed map[string]any, meta mediaResolveMeta, status int, code, message string) {
-	reason := "bad_param"
-	if status == http.StatusRequestEntityTooLarge {
-		reason = "payload_too_large"
-	}
+	reason := mediaRejectionReason(status)
 	s.recordRejection(rejectionInfo{
 		r:                     r,
 		stage:                 "validation",
@@ -250,4 +251,25 @@ func (s *Server) mediaFetchRejected(w http.ResponseWriter, r *http.Request, pars
 	})
 	s.ddIncr("inference.media_fetch.rejected", []string{"code:" + code, "model:" + meta.model})
 	writeJSON(w, status, errorResponse(code, message, withParam("messages")))
+}
+
+// mediaRejectionReason maps a media-fetch failure's HTTP status onto the
+// rejection-ledger reason_code, so the dashboards can tell a malformed consumer
+// request apart from a blocked host, a slow origin and a broken upstream.
+// Filing all of them as "bad_param" made every upstream fault look like a
+// client bug. reason_code is a free-form TEXT column (store/postgres.go), so
+// these values need no schema change.
+func mediaRejectionReason(status int) string {
+	switch status {
+	case http.StatusForbidden:
+		return "media_blocked"
+	case http.StatusRequestTimeout:
+		return "upstream_timeout"
+	case http.StatusBadGateway, http.StatusGatewayTimeout:
+		return "upstream_error"
+	case http.StatusRequestEntityTooLarge:
+		return "payload_too_large"
+	default:
+		return "bad_param"
+	}
 }

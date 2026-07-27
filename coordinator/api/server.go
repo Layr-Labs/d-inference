@@ -701,6 +701,13 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
 
+	// main.go supplies the AppConfig-validated media-fetch config; a nil field
+	// (bare ServerConfig{} literals, tests) falls back to the environment.
+	mediaFetchCfg := mediafetch.ConfigFromEnv()
+	if cfg.MediaFetch != nil {
+		mediaFetchCfg = *cfg.MediaFetch
+	}
+
 	s := &Server{
 		registry:             reg,
 		store:                st,
@@ -719,7 +726,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
-		mediaResolver:        mediafetch.NewResolver(mediafetch.ConfigFromEnv(), logger),
+		mediaResolver:        mediafetch.NewResolver(mediaFetchCfg, logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()

@@ -231,7 +231,12 @@ func main() {
 	//     Secret Manager, never commit). When set, geo lookups use the unmetered
 	//     https://pro.ip-api.com endpoint; unset falls back to the free, 45 req/min
 	//     http://ip-api.com endpoint (graceful, so dev without a key still works).
-	srv := api.NewServer(reg, st, cfg.ServerConfig, logger)
+	// Remote media resolution (mediafetch) is read and validated as part of
+	// AppConfig; hand the validated value to the server instead of letting
+	// NewServer re-read the environment.
+	serverCfg := cfg.ServerConfig
+	serverCfg.MediaFetch = &cfg.MediaFetchCfg
+	srv := api.NewServer(reg, st, serverCfg, logger)
 	var promptProvisioner *promptcontract.Provisioner
 	if cfg.PromptSidecar.Enabled {
 		artifactBaseURL, err := url.Parse(cfg.PromptSidecar.ArtifactBaseURL)

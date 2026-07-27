@@ -2419,18 +2419,25 @@ threats:
       - coordinator/mediafetch/budget.go
       - coordinator/mediafetch/sniff.go
       - coordinator/mediafetch/resolver.go
+      - coordinator/mediafetch/config.go
       - coordinator/api/media_resolve.go
+      - coordinator/api/consumer.go
+      - coordinator/api/inference_admission.go
     mitigations:
       - description: >
           Connect-time IP deny policy in net.Dialer.Control — runs on the
           post-DNS-resolution address of EVERY dial including each redirect hop
-          (DNS-rebinding/TOCTOU-proof). Denies loopback, RFC1918, link-local
-          (incl. 169.254.169.254 cloud metadata), CGNAT, IPv4-mapped IPv6, and
-          IPv6 transition/compatibility spaces that can embed/tunnel denied IPv4
-          destinations (IPv4-compatible ::/96, NAT64, 6to4, Teredo, deprecated
-          6to4 relay anycast), plus deprecated site-local, multicast, unspecified,
-          benchmarking/documentation/reserved ranges, and anything not
-          global-unicast (mediafetch/ssrf.go ipAllowed, fail-closed).
+          (DNS-rebinding/TOCTOU-proof). The IPv6 scope zone is stripped before the
+          policy scan because netip.Prefix.Contains returns false for ANY zoned
+          address, which would otherwise let a "%zone" suffix skip the whole
+          prefix deny list. Denies loopback, RFC1918, link-local (incl.
+          169.254.169.254 cloud metadata), CGNAT, "this network" 0.0.0.0/8,
+          IPv4-mapped IPv6, and IPv6 transition/compatibility spaces that can
+          embed/tunnel denied IPv4 destinations (IPv4-compatible ::/96, NAT64,
+          6to4, Teredo, deprecated 6to4 relay anycast), plus deprecated
+          site-local, multicast, unspecified, benchmarking/documentation/reserved
+          ranges, and anything not global-unicast (mediafetch/ssrf.go ipAllowed,
+          fail-closed).
         status: implemented
       - description: >
           URL policy: http/https schemes only, standard web ports only (HTTP 80,
@@ -2441,7 +2448,13 @@ threats:
           in the query string never leaks to a redirect target), optional operator
           domain blocklist that applies at DNS-label boundaries to each listed
           domain and all of its subdomains
-          (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS).
+          (EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS). Request hosts and
+          blocklist entries are canonicalized identically (canonicalHost:
+          lowercase, UTS-46 IDNA to ASCII, leading/trailing dots trimmed) so the
+          set the policy matches is the set net/http actually dials — a Unicode
+          separator homoglyph (U+3002/U+FF0E/U+FF61) cannot present one host to
+          the blocklist and another to the transport, and the conventional
+          wildcard spelling ".evil.com" cannot store a key that never matches.
         status: implemented
       - description: >
           Content policy: data: URI built from magic-byte sniffing (never the
@@ -2458,27 +2471,39 @@ threats:
           Resource bounds: per-file (8 MiB) cap via io.LimitReader plus one SHARED
           per-request byte budget enforced during every concurrent read (10 MiB +
           one overflow-sentinel byte, rather than checking only after each response
-          returns); duplicate canonical URLs are fetched/accounted once and rewritten
-          at every request location, while the pre-dedup target/part cap (8) prevents
-          duplicate base64 expansion abuse. Content-Length is only a pre-check. No
+          returns). Duplicate canonical URLs are fetched and byte-accounted once
+          and rewritten at every request location, so the raw byte caps do NOT see
+          the per-location base64 multiplication: the projected inlined total
+          (sum over targets of the data: URI length, saturating arithmetic) is
+          therefore checked against MaxInlinedBytes (16 MiB, mirroring
+          api.maxInferenceBodyBytes) BEFORE the request map is mutated, so eight
+          parts sharing one 8 MiB URL are rejected instead of materializing an
+          ~85 MiB marshal buffer. Content-Length is only a pre-check. No
           transparent decompression (gzip bombs), per-request worker cap (4),
           process-wide fetch semaphore (32), per-fetch (15s) and whole-step (25s)
           deadlines, and the post-inline body re-check against the 16 MiB
-          sealed-frame budget.
+          sealed-frame budget. Each fetch worker runs under saferun.Recover: the
+          goroutine parses fully attacker-controlled bytes off the HTTP handler
+          goroutine, where an unrecovered panic would be a process-wide fatal.
         status: implemented
       - description: >
           Cost gating: fetching runs AFTER token-rate admission, the balance
           reservation, and the catalog check (consumer.go phase-2 call site). The
-          balance reservation uses the greater of the raw-byte billing bound and
+          pre-fetch reservation uses the greater of the raw-byte billing bound and
           the media-aware 300/1500-soft-token estimate, so a caller funded only for
-          the short URL cannot drive egress and fail after inlining. Exclusive
+          the short URL cannot drive egress. That floor is NOT an upper bound on
+          real vision tokens, so once the media is inlined the reservation is
+          re-taken against the post-inline byte bound
+          (topUpReservationForInlinedMedia) — without it, settlement's
+          2x-reservation overage clamp would silently absorb the shortfall and
+          recompute the provider payout from the clamped total. Exclusive
           self-route skips the balance reservation, so resolveRemoteMedia first
           runs the self-route serve-ability check (selfRouteUnavailable) before any
           fetch — a caller with no linked/online/capable machine gets the
           self-route error without driving egress. The monetary reservation is
-          refunded on fetch failure; token-rate admission is deliberately retained,
-          matching other post-admission validation failures, so failed URL probes
-          consume quota.
+          refunded on fetch failure and on a failed top-up; token-rate admission is
+          deliberately retained, matching other post-admission validation failures,
+          so failed URL probes consume quota.
         status: implemented
       - description: >
           Sealed requests are never fetched: a sender-sealed payload carrying a
@@ -2495,21 +2520,35 @@ threats:
           internal-network oracle beyond the allowed/blocked bit.
         status: implemented
       - description: >
+          Configuration integrity: every numeric bound is validated at boot
+          (AppConfig.Check -> mediafetch.Config.Check), so an operator typo
+          (MAX_PARTS=0, TIMEOUT_MS=-1) aborts startup instead of silently reverting
+          to a default; NewResolver additionally clamps and WARNs for a
+          programmatically supplied ServerConfig.MediaFetch, and WARNs whenever
+          ALLOW_PRIVATE_IPS or ALLOW_NONSTANDARD_PORTS is on so a production
+          process running without the full SSRF policy is visible in the logs.
+        status: implemented
+      - description: >
           Residual (accepted): the blocked/allowed distinction plus timing still
           leaks coarse reachability of public HTTP/HTTPS origins on ports 80/443
           from the coordinator's egress IP; origins learn the coordinator fetches
           on behalf of requests.
           Operators can disable the feature per deployment via
-          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false (authoritatively restores the
-          pre-dispatch 400, regardless of the legacy vision-rejection flag).
+          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false, which is read LIVE on every
+          request (no redeploy needed for an incident) and authoritatively restores
+          the pre-dispatch 400.
         status: implemented
     open_findings: []
     severity: high
     detection_hint: >
       Any change that adds a coordinator-side fetch of a consumer-supplied URL
       outside coordinator/mediafetch, weakens ipAllowed (new allowlisted range,
-      Is4In6 unmapping or transition-space denies removed), permits non-standard
-      ports by default, lifts DisableCompression, removes the shared read-time byte
-      budget, trusts the response Content-Type header, skips image-header dimension
-      parsing, moves resolveRemoteMedia before the balance reservation, or fetches
-      for sealed requests must be treated as high severity.
+      Is4In6 unmapping, IPv6 zone stripping, or transition-space denies removed),
+      diverges host canonicalization from net/http's idna.Lookup profile, permits
+      non-standard ports by default, lifts DisableCompression, removes the shared
+      read-time byte budget or the projected-inlined-size check, drops
+      saferun.Recover from the fetch workers, trusts the response Content-Type
+      header, skips image-header dimension parsing, moves resolveRemoteMedia before
+      the balance reservation, skips the post-inline reservation top-up, forwards a
+      body to a provider that was captured before inlining, or fetches for sealed
+      requests must be treated as high severity.

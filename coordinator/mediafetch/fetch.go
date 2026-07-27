@@ -32,12 +32,21 @@ func newHTTPClient(cfg Config) *http.Client {
 		Control:   dialControl(cfg.AllowPrivateIPs),
 	}
 	transport := &http.Transport{
-		DialContext:           dialer.DialContext,
-		DisableKeepAlives:     true,
-		DisableCompression:    true, // never auto-inflate: defeats gzip/zip bombs
-		ForceAttemptHTTP2:     false,
-		MaxIdleConns:          cfg.GlobalConcurrency,
-		MaxConnsPerHost:       cfg.Concurrency,
+		DialContext:        dialer.DialContext,
+		DisableKeepAlives:  true,
+		DisableCompression: true, // never auto-inflate: defeats gzip/zip bombs
+		ForceAttemptHTTP2:  false,
+		MaxIdleConns:       cfg.GlobalConcurrency,
+		// PROCESS-WIDE, not per-request: this client is built once per Resolver,
+		// so MaxConnsPerHost bounds every concurrent fetch to a given origin
+		// across ALL requests. Concurrency is the per-REQUEST worker-pool size
+		// (4) — using it here would serialize a media-heavy fleet into waves of
+		// four sockets per CDN, and because DisableKeepAlives means no connection
+		// is ever reused, the queue wait is charged against FetchTimeout and
+		// healthy origins start returning spurious media_fetch_timeout. The
+		// process-wide socket bound belongs to GlobalConcurrency, which is
+		// exactly what globalSem already admits.
+		MaxConnsPerHost:       cfg.GlobalConcurrency,
 		TLSHandshakeTimeout:   cfg.FetchTimeout,
 		ResponseHeaderTimeout: cfg.FetchTimeout,
 		ExpectContinueTimeout: time.Second,

@@ -637,6 +637,25 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT`, `_MAX_PLAN_QPS` | Independent staged-rollout caps inside `on`. Preserve the current approved production stage; defaults apply only when bootstrapping a fresh environment. |
 | `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required whenever routing is `on`. Preserve it byte-for-byte across releases; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
+| `EIGENINFERENCE_MEDIA_FETCH_ENABLED` | Default `true`. Master switch for coordinator-side resolution of remote `http(s)` `image_url`/`video_url` parts into inline `data:` URIs. **Incident rollback lever:** set `false` to restore the previous `400` for remote URLs (inline `data:` URIs keep working). The switch is read live on every request, so editing the env file and reloading the unit is enough — no redeploy, no image rebuild. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_FILE_BYTES` | Default `8388608` (8 MiB). Cap on a single fetched media item, raw bytes before base64. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_TOTAL_BYTES` | Default `10485760` (10 MiB). Cap on the sum of all media fetched for one request (~13.3 MiB once inlined). Authoritative over `MAX_FILE_BYTES`: a per-file cap above this value fails boot. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_INLINED_BYTES` | Default `16777216` (16 MiB). Cap on the rewritten body after inlining; mirrors the coordinator's own forwarded-body limit so an over-large request is refused before it is sealed and rejected downstream. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_PARTS` | Default `8`. Maximum remote media URLs fetched per request; extras are rejected, not silently dropped. |
+| `EIGENINFERENCE_MEDIA_FETCH_TIMEOUT_MS` | Default `15000`. Per-fetch deadline (connect + read) for one origin. |
+| `EIGENINFERENCE_MEDIA_FETCH_TOTAL_DEADLINE_MS` | Default `25000`. Deadline for the whole resolution step across every part of a request. |
+| `EIGENINFERENCE_MEDIA_FETCH_CONCURRENCY` | Default `4`. Per-request fetch worker pool size. |
+| `EIGENINFERENCE_MEDIA_FETCH_GLOBAL_CONCURRENCY` | Default `32`. Process-wide in-flight fetch cap — the bound on outbound sockets a media-heavy burst can open from the TEE. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_IMAGE_MEGAPIXELS` | Default `100`. Header-only pixel-bomb gate for every accepted image format; mirrors the provider's `DARKBLOOM_MAX_IMAGE_MEGAPIXELS`. `0` disables the coordinator-side check (the provider's own pre-raster cap still applies). |
+| `EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS` | Default empty. Comma-separated hostnames refused for the initial request and every redirect hop. The IP-level SSRF policy applies regardless of this list. |
+| `EIGENINFERENCE_MEDIA_FETCH_ALLOW_PRIVATE_IPS` | Default `false`. **Dev/test only — disables an SSRF protection.** `true` removes the connect-time deny policy for loopback/private/link-local/metadata/CGNAT addresses, letting the coordinator be aimed at the TEE's own network. Never set in prod; boot logs a WARN when it is on. |
+| `EIGENINFERENCE_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS` | Default `false`. **Dev/test only — disables an SSRF protection.** `true` permits ports other than 80/443, turning the coordinator into a usable public-network port scanner. Never set in prod; boot logs a WARN when it is on. |
+
+Every numeric knob above is validated at boot: `AppConfig.Check()` → `mediafetch.Config.Check()` rejects any non-positive value and any `MAX_FILE_BYTES` above `MAX_TOTAL_BYTES`, so a typo (`MAX_PARTS=0`, `TIMEOUT_MS=-1`) aborts startup with a `media_fetch: ...` error naming the offending variable rather than silently reverting to a default the operator did not ask for. `NewResolver` still clamps out-of-range values as defense-in-depth for a programmatically supplied `ServerConfig.MediaFetch`, warning about whatever it had to clamp.
+
+The two `ALLOW_*` overrides are deliberately *not* boot errors — dev deployments need them — so they are surfaced as a `media fetch SSRF override enabled` WARN at construction instead. If that line appears in a prod coordinator's startup log, treat it as a misconfiguration incident.
+
+`EIGENINFERENCE_MEDIA_FETCH_ENABLED` ships as a `release-env-defaults` entry and is intentionally **not** listed in `required-env-keys.txt`: `refresh-env.sh` enforces the required-key manifest against the live `/etc/d-inference/env` *before* merging release defaults, so listing a key that no host has yet would fail both `--check` and `--apply`. This matches how every `EIGENINFERENCE_CACHE_ROUTING_*` and `EIGENINFERENCE_PROMPT_SIDECAR_*` key was introduced; it can be promoted into the manifest in a later release, once the key exists on every host.
 
 ## Troubleshooting
 

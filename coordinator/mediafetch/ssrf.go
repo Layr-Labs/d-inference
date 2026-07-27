@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"strings"
 	"syscall"
+
+	"golang.org/x/net/idna"
 )
 
 // errBlockedIP is returned (wrapped) by the dialer Control hook when a socket is
@@ -38,6 +40,7 @@ var blockedMetadataV4 = netip.MustParseAddr("169.254.169.254")
 // that are never a legitimate public media origin. Transition space is denied
 // outright; coordinator hosts are dual-stack and never need it — fail closed.
 var blockedPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"),       // "this network" (RFC 1122); IsUnspecified only matches 0.0.0.0 exactly
 	netip.MustParsePrefix("100.64.0.0/10"),   // CGNAT / RFC 6598 shared address space
 	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments (RFC 6890)
 	netip.MustParsePrefix("192.88.99.0/24"),  // deprecated 6to4 relay anycast (RFC 7526)
@@ -65,7 +68,8 @@ var blockedPrefixes = []netip.Prefix{
 // (169.254/16, fe80::/10) including cloud metadata, unspecified (0.0.0.0, ::),
 // multicast, and anything not classified as a normal global-unicast address.
 // IPv4-mapped IPv6 (::ffff:a.b.c.d) is unmapped first so the inner IPv4 is judged
-// by the IPv4 rules — closing a classic blocklist bypass.
+// by the IPv4 rules — closing a classic blocklist bypass — and any IPv6 zone
+// ("%eth0") is stripped so a zoned address cannot skip the prefix deny set.
 func ipAllowed(ip netip.Addr, allowPrivate bool) bool {
 	if !ip.IsValid() {
 		return false
@@ -75,6 +79,14 @@ func ipAllowed(ip netip.Addr, allowPrivate bool) bool {
 	if ip.Is4In6() {
 		ip = ip.Unmap()
 	}
+	// Strip any IPv6 zone ("fe80::1%eth0"). netip.Prefix.Contains returns false
+	// for EVERY zoned address, so without this the whole blockedPrefixes loop is
+	// silently skipped — a zone suffix survives url.Parse → u.Hostname() →
+	// http.Transport's canonicalAddr → this Control hook, and an unknown zone
+	// name resolves to ZoneId 0 so the kernel still dials the bare address.
+	// Zones are meaningless for an outbound media fetch; drop before any policy
+	// evaluation so BOTH the dial-time hook and direct callers are covered.
+	ip = ip.WithZone("")
 	if allowPrivate {
 		// Dev/test: only reject the obviously-bogus unspecified address.
 		return !ip.IsUnspecified()
@@ -138,6 +150,29 @@ func dialControl(allowPrivate bool) func(network, address string, c syscall.RawC
 	}
 }
 
+// canonicalHost normalizes a hostname so both sides of a blocklist comparison
+// see the same string the transport will actually dial.
+//
+// net/http runs a non-ASCII host through idna.Lookup.ToASCII (UTS-46) in
+// canonicalAddr before dialing, and UTS-46 maps U+3002 IDEOGRAPHIC FULL STOP,
+// U+FF0E FULLWIDTH FULL STOP and U+FF61 HALFWIDTH IDEOGRAPHIC FULL STOP to an
+// ASCII dot. Comparing the raw host would therefore read "evil\u3002com" as one
+// label (no blocklist hit) while the socket connects to evil.com. Applying the
+// same profile the transport uses closes that gap. A host the profile rejects
+// is left as-is: canonicalAddr keeps the raw form on error too, so the raw
+// comparison remains the accurate one.
+func canonicalHost(h string) string {
+	h = strings.ToLower(strings.Trim(h, "[]"))
+	if ascii, err := idna.Lookup.ToASCII(h); err == nil {
+		h = strings.ToLower(ascii)
+	}
+	// A trailing dot (evil.com.) is the DNS-absolute spelling of evil.com; a
+	// leading dot (.evil.com) is the conventional wildcard spelling of a
+	// blocklist entry. Trim both ends so the two sides of the suffix match in
+	// hostAllowed line up regardless of which spelling either used.
+	return strings.Trim(h, ".")
+}
+
 // hostAllowed validates a URL host string (the "host" or "host:port" from a
 // parsed URL) against the optional domain blocklist. A domain entry blocks both
 // itself and every subdomain at a label boundary (evil.com blocks
@@ -149,11 +184,9 @@ func hostAllowed(host string, blocklist map[string]bool) error {
 	if hp, _, err := net.SplitHostPort(host); err == nil {
 		h = hp
 	}
-	h = strings.ToLower(strings.Trim(h, "[]"))
-	// Canonicalize the FQDN form: a trailing dot (evil.com.) is DNS-equivalent to
-	// evil.com but would otherwise miss an exact blocklist lookup. parseBlocklist
-	// strips trailing dots identically so both sides match.
-	h = strings.TrimRight(h, ".")
+	// parseBlocklist canonicalizes entries through the same helper, so an
+	// operator entry and a request host always meet in the same namespace.
+	h = canonicalHost(h)
 	if h == "" {
 		return fmt.Errorf("%w: empty host", errBlockedHost)
 	}

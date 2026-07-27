@@ -21,8 +21,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -422,34 +420,18 @@ func validateMediaParts(parsed map[string]any) (badRef string, ok bool) {
 	return "", true
 }
 
-// visionRejectRemoteEnabled gates the C4 pre-dispatch remote-media-URL rejection.
-// Default ON; DARKBLOOM_VISION_REJECT_REMOTE_URLS=false (or 0) restores the prior
-// dispatch-then-provider-400 behavior (still bounded by C1). Read live so the
-// kill switch toggles without a redeploy.
-func visionRejectRemoteEnabled() bool {
-	v := strings.TrimSpace(os.Getenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS"))
-	if v == "" {
-		return true
-	}
-	on, err := strconv.ParseBool(v)
-	return err != nil || on
-}
-
 // rejectRemoteMediaURLs fails a vision request fast (one terminal 400) when any
 // media part carries a remote/non-inline URL, mirroring the provider's data:-only
 // contract. Pre-dispatch — no provider is contacted. handled=true => caller returns.
+//
+// Unconditional by design, on every surface. The generic (completions +
+// Anthropic) surface never fetches, so forwarding a remote URL there can only
+// end in a provider-side 400 — the dispatch-then-provider-400 behavior this
+// gate exists to eliminate. On the chat surface it is the authoritative
+// data:-only fallback used when EIGENINFERENCE_MEDIA_FETCH_ENABLED=false.
+// The retired DARKBLOOM_VISION_REJECT_REMOTE_URLS kill switch no longer gates
+// it: disabling fetch must never re-enable forwarding.
 func (s *Server) rejectRemoteMediaURLs(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, requiresVision, hasTools bool) (handled bool) {
-	if !visionRejectRemoteEnabled() {
-		return false
-	}
-	return s.rejectRemoteMediaURLsAlways(w, r, parsed, model, publicModel, requiresVision, hasTools)
-}
-
-// rejectRemoteMediaURLsAlways is the authoritative data:-only fallback used
-// when EIGENINFERENCE_MEDIA_FETCH_ENABLED=false. Unlike the legacy C4 wrapper
-// above, it deliberately ignores DARKBLOOM_VISION_REJECT_REMOTE_URLS: disabling
-// fetch must never re-enable dispatch-then-provider-400 behavior.
-func (s *Server) rejectRemoteMediaURLsAlways(w http.ResponseWriter, r *http.Request, parsed map[string]any, model, publicModel string, requiresVision, hasTools bool) (handled bool) {
 	if !requiresVision {
 		return false
 	}
@@ -464,10 +446,12 @@ func (s *Server) rejectRemoteMediaURLsAlways(w http.ResponseWriter, r *http.Requ
 }
 
 // truncateMediaRef bounds a consumer-supplied media reference for inclusion in
-// an error message (URLs can be data: URIs megabytes long).
+// an error message (URLs can be data: URIs megabytes long). The cut is a byte
+// slice, so it can split a multibyte rune; the trailing partial rune is dropped
+// rather than left for encoding/json to turn into U+FFFD.
 func truncateMediaRef(ref string) string {
 	if len(ref) > 200 {
-		return ref[:200] + "…"
+		return strings.ToValidUTF8(ref[:200], "") + "…"
 	}
 	return ref
 }

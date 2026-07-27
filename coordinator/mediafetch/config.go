@@ -42,6 +42,7 @@
 package mediafetch
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -53,6 +54,7 @@ const (
 	envEnabled         = env.EnvPrefix + "_MEDIA_FETCH_ENABLED"
 	envMaxFileBytes    = env.EnvPrefix + "_MEDIA_FETCH_MAX_FILE_BYTES"
 	envMaxTotalBytes   = env.EnvPrefix + "_MEDIA_FETCH_MAX_TOTAL_BYTES"
+	envMaxInlinedBytes = env.EnvPrefix + "_MEDIA_FETCH_MAX_INLINED_BYTES"
 	envMaxParts        = env.EnvPrefix + "_MEDIA_FETCH_MAX_PARTS"
 	envTimeoutMS       = env.EnvPrefix + "_MEDIA_FETCH_TIMEOUT_MS"
 	envTotalDeadline   = env.EnvPrefix + "_MEDIA_FETCH_TOTAL_DEADLINE_MS"
@@ -74,12 +76,19 @@ const (
 // inlines to ~13.3 MiB, leaving ~2.7 MiB for everything else — so a valid
 // request is never fetched only to be rejected by the final 16 MiB body check.
 //
+// DefaultMaxInlinedBytes mirrors that same 16 MiB forwarded-body cap, but bounds
+// what the request COSTS once inlined rather than what is fetched: duplicate
+// parts pointing at one URL are fetched once and written back to EVERY location,
+// so N targets turn one in-budget fetch into N inlined copies. The raw caps
+// cannot see that multiplication; MaxInlinedBytes does.
+//
 // DefaultMaxImageMegapixels mirrors the provider's DARKBLOOM_MAX_IMAGE_MEGAPIXELS
 // default (100 MP, header-read before rasterization) so the coordinator rejects
 // pixel bombs before dispatch instead of shipping them across the fleet.
 const (
 	DefaultMaxFileBytes       int64 = 8 << 20  // 8 MiB per fetched file
 	DefaultMaxTotalBytes      int64 = 10 << 20 // 10 MiB aggregate raw media/request (~13.3 MiB inlined)
+	DefaultMaxInlinedBytes    int64 = 16 << 20 // matches api.maxInferenceBodyBytes (post-inline projection cap)
 	DefaultMaxParts                 = 8        // max remote media parts per request (matches the provider's videos/request cap)
 	DefaultTimeout                  = 15 * time.Second
 	DefaultTotalDeadline            = 25 * time.Second
@@ -98,6 +107,11 @@ type Config struct {
 	MaxFileBytes int64
 	// MaxTotalBytes caps the sum of all fetched media in one request.
 	MaxTotalBytes int64
+	// MaxInlinedBytes caps the projected size of the inlined media once every
+	// data: URI has been written to every request location that references it
+	// (locations × data-URI size). Unlike MaxTotalBytes this counts duplicate
+	// targets, which multiply one fetch into many copies of the same base64 blob.
+	MaxInlinedBytes int64
 	// MaxParts caps the number of remote media URLs fetched per request.
 	MaxParts int
 	// FetchTimeout bounds a single fetch (connect + read), independent of the
@@ -137,6 +151,7 @@ func DefaultConfig() Config {
 		Enabled:               true,
 		MaxFileBytes:          DefaultMaxFileBytes,
 		MaxTotalBytes:         DefaultMaxTotalBytes,
+		MaxInlinedBytes:       DefaultMaxInlinedBytes,
 		MaxParts:              DefaultMaxParts,
 		FetchTimeout:          DefaultTimeout,
 		TotalDeadline:         DefaultTotalDeadline,
@@ -151,11 +166,17 @@ func DefaultConfig() Config {
 
 // ConfigFromEnv builds a Config from EIGENINFERENCE_MEDIA_FETCH_* env vars,
 // falling back to DefaultConfig for anything unset or unparseable.
+//
+// The result is deliberately NOT sanitized: it is the raw operator intent, so
+// AppConfig.Check can fail the boot on a typo (MAX_PARTS=0, TIMEOUT_MS=-1)
+// instead of silently serving a default nobody asked for. NewResolver clamps
+// whatever reaches it, so a Resolver is safe either way.
 func ConfigFromEnv() Config {
 	c := DefaultConfig()
 	c.Enabled = env.EnvBool(envEnabled, c.Enabled)
 	c.MaxFileBytes = int64(env.EnvInt(envMaxFileBytes, int(c.MaxFileBytes)))
 	c.MaxTotalBytes = int64(env.EnvInt(envMaxTotalBytes, int(c.MaxTotalBytes)))
+	c.MaxInlinedBytes = int64(env.EnvInt(envMaxInlinedBytes, int(c.MaxInlinedBytes)))
 	c.MaxParts = env.EnvInt(envMaxParts, c.MaxParts)
 	c.FetchTimeout = time.Duration(env.EnvInt(envTimeoutMS, int(c.FetchTimeout/time.Millisecond))) * time.Millisecond
 	c.TotalDeadline = time.Duration(env.EnvInt(envTotalDeadline, int(c.TotalDeadline/time.Millisecond))) * time.Millisecond
@@ -165,7 +186,7 @@ func ConfigFromEnv() Config {
 	c.BlocklistDomains = parseBlocklist(env.EnvOr(envBlocklist, ""))
 	c.AllowPrivateIPs = env.EnvBool(envAllowPrivateIP, c.AllowPrivateIPs)
 	c.AllowNonStandardPorts = env.EnvBool(envAllowOtherPorts, c.AllowNonStandardPorts)
-	return c.sanitized()
+	return c
 }
 
 // sanitized clamps nonsensical values to safe defaults so a misconfigured env
@@ -178,6 +199,9 @@ func (c Config) sanitized() Config {
 	}
 	if c.MaxTotalBytes <= 0 {
 		c.MaxTotalBytes = DefaultMaxTotalBytes
+	}
+	if c.MaxInlinedBytes <= 0 {
+		c.MaxInlinedBytes = DefaultMaxInlinedBytes
 	}
 	if c.MaxFileBytes > c.MaxTotalBytes {
 		// The aggregate per-request cap is authoritative: a larger per-file cap
@@ -209,16 +233,59 @@ func (c Config) sanitized() Config {
 	return c
 }
 
-// parseBlocklist turns a comma-separated domain list into a lowercased set.
+// parseBlocklist turns a comma-separated domain list into a canonicalized set.
+// Entries go through the same canonicalHost normalization hostAllowed applies to
+// request hosts (lowercase, UTS-46 IDNA, leading/trailing dots trimmed), so
+// neither the FQDN spelling "evil.com." nor the conventional wildcard spelling
+// ".evil.com" nor a Unicode homoglyph separator can store a key that never
+// matches.
 func parseBlocklist(csv string) map[string]bool {
 	out := map[string]bool{}
 	for _, raw := range strings.Split(csv, ",") {
-		// Strip a trailing FQDN dot so "evil.com." and "evil.com" canonicalize the
-		// same way hostAllowed canonicalizes request hosts (no trailing-dot bypass).
-		h := strings.TrimRight(strings.ToLower(strings.TrimSpace(raw)), ".")
-		if h != "" {
+		if h := canonicalHost(strings.TrimSpace(raw)); h != "" {
 			out[h] = true
 		}
 	}
 	return out
+}
+
+// Check validates the configuration, rejecting bounds that would disable a cap
+// outright. sanitized() silently clamps the same fields so a running Resolver is
+// always safe; Check is the loud, boot-time counterpart that makes an operator
+// typo fail the process instead of quietly reverting to a default the operator
+// did not ask for.
+//
+// AllowPrivateIPs / AllowNonStandardPorts are deliberately NOT errors: dev and
+// single-host deployments legitimately set them. NewResolver logs a boot WARN
+// for those instead.
+func (c Config) Check() error {
+	if c.MaxFileBytes <= 0 {
+		return fmt.Errorf("mediafetch: MaxFileBytes must be > 0 (%s), got %d", envMaxFileBytes, c.MaxFileBytes)
+	}
+	if c.MaxTotalBytes <= 0 {
+		return fmt.Errorf("mediafetch: MaxTotalBytes must be > 0 (%s), got %d", envMaxTotalBytes, c.MaxTotalBytes)
+	}
+	if c.MaxFileBytes > c.MaxTotalBytes {
+		return fmt.Errorf("mediafetch: MaxFileBytes (%d) must be <= MaxTotalBytes (%d); the aggregate per-request budget is authoritative",
+			c.MaxFileBytes, c.MaxTotalBytes)
+	}
+	if c.MaxInlinedBytes <= 0 {
+		return fmt.Errorf("mediafetch: MaxInlinedBytes must be > 0 (%s), got %d", envMaxInlinedBytes, c.MaxInlinedBytes)
+	}
+	if c.MaxParts <= 0 {
+		return fmt.Errorf("mediafetch: MaxParts must be > 0 (%s), got %d", envMaxParts, c.MaxParts)
+	}
+	if c.FetchTimeout <= 0 {
+		return fmt.Errorf("mediafetch: FetchTimeout must be > 0 (%s), got %s", envTimeoutMS, c.FetchTimeout)
+	}
+	if c.TotalDeadline <= 0 {
+		return fmt.Errorf("mediafetch: TotalDeadline must be > 0 (%s), got %s", envTotalDeadline, c.TotalDeadline)
+	}
+	if c.Concurrency <= 0 {
+		return fmt.Errorf("mediafetch: Concurrency must be > 0 (%s), got %d", envConcurrency, c.Concurrency)
+	}
+	if c.GlobalConcurrency <= 0 {
+		return fmt.Errorf("mediafetch: GlobalConcurrency must be > 0 (%s), got %d", envGlobalConc, c.GlobalConcurrency)
+	}
+	return nil
 }

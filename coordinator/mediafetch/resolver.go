@@ -11,11 +11,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+
+	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
 // Error is a typed resolution failure carrying the HTTP status + OpenAI-style
@@ -55,11 +59,28 @@ type Resolver struct {
 }
 
 // NewResolver builds a Resolver with a dedicated hardened http.Client. logger
-// may be nil (a no-op logger is used).
+// may be nil (a no-op logger is used). cfg is clamped to safe bounds, so a
+// programmatically supplied Config (api.ServerConfig.MediaFetch) can never
+// disable a cap — the env path fails boot on the same values via Config.Check,
+// but a direct embedder gets defense in depth plus a WARN naming the problem.
 func NewResolver(cfg Config, logger *slog.Logger) *Resolver {
-	cfg = cfg.sanitized()
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
+	}
+	if err := cfg.Check(); err != nil {
+		logger.Warn("media fetch config clamped to defaults", "detail", err.Error())
+	}
+	cfg = cfg.sanitized()
+	if cfg.AllowPrivateIPs || cfg.AllowNonStandardPorts {
+		// These are dev/test escape hatches: together they turn the coordinator
+		// into a LAN/port scanner reachable from any consumer prompt. Config.Check
+		// deliberately does not reject them (single-host deployments need them),
+		// so a boot WARN is the only signal an operator gets that a production
+		// process is running without the full SSRF policy.
+		logger.Warn("media fetch SSRF override enabled",
+			"allow_private_ips", cfg.AllowPrivateIPs,
+			"allow_nonstandard_ports", cfg.AllowNonStandardPorts,
+		)
 	}
 	return &Resolver{
 		cfg:       cfg,
@@ -69,8 +90,11 @@ func NewResolver(cfg Config, logger *slog.Logger) *Resolver {
 	}
 }
 
-// Enabled reports whether remote-media fetching is turned on.
-func (r *Resolver) Enabled() bool { return r.cfg.Enabled }
+// Enabled reports whether remote-media fetching is turned on. The env var is
+// read LIVE on every call so an operator can kill the feature fleet-wide without
+// a redeploy; the Config value is the fallback, which keeps programmatically
+// built Resolvers (tests, embedders) working when the var is unset.
+func (r *Resolver) Enabled() bool { return env.EnvBool(envEnabled, r.cfg.Enabled) }
 
 // mediaRef points at one resolvable URL inside the parsed request: the map that
 // holds it, the key to overwrite with the data: URI, and the declared kind the
@@ -106,7 +130,7 @@ func (r *Resolver) Resolve(ctx context.Context, parsed map[string]any) (Result, 
 	if len(refs) == 0 {
 		return Result{}, nil
 	}
-	if !r.cfg.Enabled {
+	if !r.Enabled() { // live kill switch, same gate the API layer consults
 		return Result{}, &Error{Status: http.StatusBadRequest, Code: "remote_media_disabled",
 			Public:   "remote media URLs are not enabled on this endpoint; send media as an inline base64 data: URI",
 			Internal: "feature disabled via config"}
@@ -133,14 +157,49 @@ func (r *Resolver) Resolve(ctx context.Context, parsed map[string]any) (Result, 
 		return Result{}, err
 	}
 
-	// All fetches succeeded — apply mutations atomically.
+	// Duplicate targets multiply one fetch into many inlined copies: the byte
+	// caps bound what is FETCHED, not what is written back. Eight parts sharing
+	// one in-budget URL inline eight copies of the same base64 blob, so project
+	// the post-inline size BEFORE mutating anything — otherwise the coordinator
+	// builds (and the marshaler retains) a body the API layer can only discard
+	// afterwards. Each data: URI is built once here and reused for the writes.
+	dataURIs := make([]string, len(fetches))
+	for i := range fetches {
+		dataURIs[i] = toDataURI(fetched[i])
+	}
+	if projected := projectedInlinedBytes(fetches, dataURIs); projected > r.cfg.MaxInlinedBytes {
+		return Result{}, &Error{Status: http.StatusRequestEntityTooLarge, Code: "media_too_large",
+			Public:   "the request exceeds the size limit once remote media is inlined; use smaller media or fewer attachments",
+			Internal: fmt.Sprintf("projected inlined %d > MaxInlinedBytes %d", projected, r.cfg.MaxInlinedBytes)}
+	}
+
+	// All fetches succeeded and fit — apply mutations atomically.
 	for i, fetch := range fetches {
-		dataURI := toDataURI(fetched[i])
 		for _, target := range fetch.targets {
-			target.set[target.key] = dataURI
+			target.set[target.key] = dataURIs[i]
 		}
 	}
 	return Result{Changed: true, Count: len(fetches), Bytes: totalBytes}, nil
+}
+
+// projectedInlinedBytes reports how many bytes the inlined data: URIs occupy in
+// the rewritten body: each fetch's URI counts once per request location that
+// references it. MaxTotalBytes cannot express this — it bounds the raw bytes
+// FETCHED, and a duplicated URL is fetched once but written back N times.
+// Accumulation saturates rather than wrapping: a wrapped negative total would
+// silently disable the very cap this feeds.
+func projectedInlinedBytes(fetches []mediaFetch, dataURIs []string) int64 {
+	var total int64
+	for i, fetch := range fetches {
+		size := int64(len(dataURIs[i]))
+		for range fetch.targets {
+			if size > math.MaxInt64-total {
+				return math.MaxInt64
+			}
+			total += size
+		}
+	}
+	return total
 }
 
 func groupMediaRefs(refs []mediaRef) ([]mediaFetch, error) {
@@ -244,6 +303,28 @@ func (r *Resolver) fetchAll(ctx context.Context, fetches []mediaFetch) ([]*fetch
 		wg.Add(1)
 		go func(i int, fetch mediaFetch) {
 			defer wg.Done()
+			// A panic on THIS goroutine kills the whole process: net/http only
+			// recovers panics raised on the handler goroutine, never on one
+			// spawned from it, and everything below runs the outbound HTTP/TLS
+			// client and the image-header parsers over attacker-chosen bytes.
+			// One malformed response must not take down every in-flight request
+			// from every consumer.
+			//
+			// Defers run LIFO: saferun.Recover (registered last, so it runs
+			// first) consumes the panic, logs it with a stack trace and fires
+			// the panic metric; the guard below then turns the aborted worker
+			// into a typed failure. The guard keys off "no result stored", which
+			// also backstops any future return path that forgets to fail(): a
+			// worker that leaves without storing a result MUST leave firstErr
+			// set, or Resolve would dereference a nil out[i]. fail() keeps the
+			// first error, so paths that already failed are unaffected.
+			defer func() {
+				if out[i] == nil {
+					fail(&Error{Status: http.StatusBadGateway, Code: "media_fetch_failed",
+						Public: "failed to fetch remote media", Internal: "panic during media fetch"})
+				}
+			}()
+			defer saferun.Recover(r.logger, "mediafetch.fetchOne")
 			// Per-request worker slot.
 			select {
 			case sem <- struct{}{}:

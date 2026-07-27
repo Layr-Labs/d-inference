@@ -1,16 +1,25 @@
 package mediafetch
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
 // --- helpers ---------------------------------------------------------------
@@ -324,6 +333,14 @@ func TestGroupMediaRefsCanonicalizesEquivalentTargets(t *testing.T) {
 
 func mustErr(t *testing.T, parsed map[string]any, r *Resolver, wantStatus int, wantCode string) {
 	t.Helper()
+	mustErrDetail(t, parsed, r, wantStatus, wantCode)
+}
+
+// mustErrDetail is mustErr, returning the typed error so a caller can pin WHICH
+// guard rejected the request: several mechanisms share one status/code pair and
+// only the Internal diagnostic distinguishes them.
+func mustErrDetail(t *testing.T, parsed map[string]any, r *Resolver, wantStatus int, wantCode string) *Error {
+	t.Helper()
 	_, err := r.Resolve(context.Background(), parsed)
 	if err == nil {
 		t.Fatalf("Resolve: expected error %s/%d", wantCode, wantStatus)
@@ -335,6 +352,7 @@ func mustErr(t *testing.T, parsed map[string]any, r *Resolver, wantStatus int, w
 	if me.Status != wantStatus || me.Code != wantCode {
 		t.Errorf("error = %d/%s, want %d/%s", me.Status, me.Code, wantStatus, wantCode)
 	}
+	return me
 }
 
 func TestResolveDisabledRejectsRemote(t *testing.T) {
@@ -597,7 +615,7 @@ func TestConfigSanitized(t *testing.T) {
 	}
 	c = Config{}.sanitized()
 	if c.MaxParts <= 0 || c.FetchTimeout <= 0 || c.TotalDeadline <= 0 || c.Concurrency <= 0 ||
-		c.GlobalConcurrency <= 0 || c.MaxFileBytes <= 0 || c.MaxTotalBytes <= 0 {
+		c.GlobalConcurrency <= 0 || c.MaxFileBytes <= 0 || c.MaxTotalBytes <= 0 || c.MaxInlinedBytes <= 0 {
 		t.Errorf("zero config must clamp to safe defaults: %+v", c)
 	}
 	if c.MaxImageMegapixels != 0 {
@@ -612,5 +630,507 @@ func TestConfigFromEnvNonStandardPortOverride(t *testing.T) {
 	t.Setenv(envAllowOtherPorts, "true")
 	if !ConfigFromEnv().AllowNonStandardPorts {
 		t.Error("explicit non-standard-port dev/test override was not read")
+	}
+}
+
+func TestConfigFromEnvMaxInlinedBytes(t *testing.T) {
+	t.Setenv(envMaxInlinedBytes, "1048576")
+	if got := ConfigFromEnv().MaxInlinedBytes; got != 1<<20 {
+		t.Errorf("MaxInlinedBytes = %d, want the env override 1048576", got)
+	}
+}
+
+// TestResolverEnabledReadsKillSwitchLive pins the operator kill switch to a LIVE
+// env read. A Resolver is constructed once at boot, so caching cfg.Enabled would
+// mean the only way to stop remote fetching fleet-wide is a redeploy.
+func TestResolverEnabledReadsKillSwitchLive(t *testing.T) {
+	cfg := devConfig()
+	cfg.Enabled = true
+	r := NewResolver(cfg, nil)
+
+	// Env unset: the struct value is the fallback, so programmatically built
+	// Resolvers (tests, embedders) keep working.
+	if !r.Enabled() {
+		t.Fatal("env unset: Enabled() must honor the Config value (true)")
+	}
+
+	// Same Resolver instance, no reconstruction: the switch flips underneath it.
+	t.Setenv(envEnabled, "false")
+	if r.Enabled() {
+		t.Error("EIGENINFERENCE_MEDIA_FETCH_ENABLED=false must disable an already-constructed Resolver")
+	}
+	t.Setenv(envEnabled, "true")
+	if !r.Enabled() {
+		t.Error("EIGENINFERENCE_MEDIA_FETCH_ENABLED=true must re-enable an already-constructed Resolver")
+	}
+
+	// The env var also overrides a Config built with the feature off.
+	off := devConfig()
+	off.Enabled = false
+	if !NewResolver(off, nil).Enabled() {
+		t.Error("env=true must override Config.Enabled=false")
+	}
+}
+
+// TestNewResolverWarnsOnSSRFOverride pins the boot warning for the two dev-only
+// escape hatches. Config.Check deliberately accepts them (single-host
+// deployments need them), so this WARN is the only signal an operator gets that
+// a process is running without the full SSRF policy.
+func TestNewResolverWarnsOnSSRFOverride(t *testing.T) {
+	cases := []struct {
+		name          string
+		privateIPs    bool
+		otherPorts    bool
+		wantWarn      bool
+		wantSubstring []string
+	}{
+		{"production defaults stay quiet", false, false, false, nil},
+		{"private IPs", true, false, true, []string{"allow_private_ips=true", "allow_nonstandard_ports=false"}},
+		{"nonstandard ports", false, true, true, []string{"allow_private_ips=false", "allow_nonstandard_ports=true"}},
+		{"both", true, true, true, []string{"allow_private_ips=true", "allow_nonstandard_ports=true"}},
+	}
+	for _, c := range cases {
+		buf := &bytes.Buffer{}
+		cfg := DefaultConfig()
+		cfg.AllowPrivateIPs = c.privateIPs
+		cfg.AllowNonStandardPorts = c.otherPorts
+		NewResolver(cfg, slog.New(slog.NewTextHandler(buf, nil)))
+
+		got := strings.Contains(buf.String(), "media fetch SSRF override enabled")
+		if got != c.wantWarn {
+			t.Errorf("%s: warned = %v, want %v (log: %s)", c.name, got, c.wantWarn, buf.String())
+			continue
+		}
+		for _, want := range c.wantSubstring {
+			if !strings.Contains(buf.String(), want) {
+				t.Errorf("%s: warning must carry %s; got %s", c.name, want, buf.String())
+			}
+		}
+	}
+}
+
+// gzipBytes returns data compressed with gzip.
+func gzipBytes(t *testing.T, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(data); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestResolveGzipEncodedBodyIsNotInflated is the behavioral half of the
+// no-transparent-decompression guarantee: a hostile origin declares
+// Content-Encoding: gzip over a payload that would inflate into a perfectly
+// valid PNG. The coordinator must hand the RAW gzip bytes to the magic-byte
+// sniffer — which rejects them — instead of inflating an attacker-controlled
+// stream whose expanded size is not bounded by the read caps. It also pins the
+// request-side half of the guard (Accept-Encoding: identity).
+func TestResolveGzipEncodedBodyIsNotInflated(t *testing.T) {
+	inner := validPNG(t)
+	var sawAcceptEncoding atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawAcceptEncoding.Store(r.Header.Get("Accept-Encoding"))
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(gzipBytes(t, inner))
+	}))
+	defer srv.Close()
+
+	r := NewResolver(devConfig(), nil)
+	mustErr(t, chatBody(imagePartObj(srv.URL+"/bomb.png")), r, http.StatusBadRequest, "media_invalid_type")
+
+	if ae, _ := sawAcceptEncoding.Load().(string); ae != "identity" {
+		t.Errorf("outbound Accept-Encoding = %q, want \"identity\" — the request must never advertise a compressed encoding", ae)
+	}
+}
+
+// TestHTTPClientDisableCompression pins Transport.DisableCompression itself.
+// fetchOne ALSO sends "Accept-Encoding: identity", and either guard alone stops
+// Go's transparent inflation — Transport only auto-inflates a response when IT
+// added the Accept-Encoding header — so an end-to-end fetch can never tell which
+// of the two is load-bearing. Driving the client directly with no request-level
+// Accept-Encoding isolates the transport setting: flipping DisableCompression to
+// false makes Go advertise gzip, inflate the response, and hand back the PNG the
+// bomb was hiding.
+func TestHTTPClientDisableCompression(t *testing.T) {
+	inner := validPNG(t)
+	compressed := gzipBytes(t, inner)
+	var advertised atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		advertised.Store(r.Header.Get("Accept-Encoding"))
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(compressed)
+	}))
+	defer srv.Close()
+
+	resp, err := newHTTPClient(devConfig()).Get(srv.URL + "/bomb.png")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+
+	if ae, _ := advertised.Load().(string); ae != "" {
+		t.Errorf("transport advertised Accept-Encoding %q; DisableCompression must stop it from requesting gzip", ae)
+	}
+	if resp.Uncompressed {
+		t.Error("response was transparently inflated; DisableCompression must keep the body raw")
+	}
+	if !bytes.Equal(body, compressed) {
+		t.Errorf("body was rewritten by the transport (%d bytes, want the %d raw gzip bytes)", len(body), len(compressed))
+	}
+	if bytes.Equal(body, inner) {
+		t.Error("transport inflated the gzip bomb back into a valid PNG — a decompressed stream would bypass the read caps")
+	}
+}
+
+// TestHTTPClientPerHostCapIsProcessWideNotPerRequest pins MaxConnsPerHost to
+// GlobalConcurrency. The client is built ONCE per Resolver, so MaxConnsPerHost
+// is a process-wide bound on concurrent sockets to a single origin — and with
+// DisableKeepAlives no connection is ever reused, so a cap of Concurrency (the
+// per-REQUEST worker-pool size, 4) forces all media traffic to one CDN into
+// serialized waves of four. That queue wait is charged against FetchTimeout, so
+// a healthy origin starts returning spurious media_fetch_timeout under load.
+//
+// The origin here blocks every request until `want` of them are simultaneously
+// in flight. Reverting MaxConnsPerHost to cfg.Concurrency caps the observed peak
+// at 4, the barrier never opens, and the test fails.
+func TestHTTPClientPerHostCapIsProcessWideNotPerRequest(t *testing.T) {
+	cfg := devConfig()
+	const want = 8 // > cfg.Concurrency (4), <= cfg.GlobalConcurrency (32)
+	if want <= cfg.Concurrency || want > cfg.GlobalConcurrency {
+		t.Fatalf("test premise broken: want=%d must sit between Concurrency=%d and GlobalConcurrency=%d",
+			want, cfg.Concurrency, cfg.GlobalConcurrency)
+	}
+
+	var inFlight, peak atomic.Int32
+	allArrived := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			old := peak.Load()
+			if n <= old || peak.CompareAndSwap(old, n) {
+				break
+			}
+		}
+		if n >= want {
+			once.Do(func() { close(allArrived) })
+		}
+		select {
+		case <-allArrived:
+		case <-time.After(3 * time.Second): // capped so a regression fails instead of hanging
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	client := newHTTPClient(cfg)
+	var wg sync.WaitGroup
+	for range want {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp, err := client.Get(srv.URL + "/media.png")
+			if err != nil {
+				t.Errorf("GET: %v", err)
+				return
+			}
+			io.Copy(io.Discard, resp.Body)
+			resp.Body.Close()
+		}()
+	}
+	wg.Wait()
+
+	if got := peak.Load(); got != want {
+		t.Errorf("peak concurrent sockets to one origin = %d, want %d; MaxConnsPerHost must be the process-wide GlobalConcurrency, not the per-request Concurrency", got, want)
+	}
+}
+
+// --- fetch-worker panic containment ----------------------------------------
+
+// panicRoundTripper stands in for a panic anywhere on the fetch path. Every
+// step below fetchAll's `go func` — the outbound HTTP/TLS client, the sniffer,
+// jpeg/png/gif.DecodeConfig, the hand-rolled WebP/BMP header parsers — runs
+// over attacker-chosen bytes on that spawned goroutine.
+type panicRoundTripper struct{}
+
+func (panicRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	panic("mediafetch test: synthetic panic on the fetch path")
+}
+
+// A panic on a goroutine SPAWNED inside an http.Handler is a runtime fatal:
+// net/http recovers panics only on the per-connection handler goroutine, so an
+// unrecovered panic here kills the process and every in-flight request from
+// every consumer. The worker must recover through saferun (stack trace + panic
+// metric) and turn the aborted fetch into a typed error, never leave out[i] nil
+// for Resolve to dereference.
+func TestResolveRecoversPanicInFetchWorker(t *testing.T) {
+	var (
+		mu       sync.Mutex
+		observed []string
+	)
+	saferun.SetPanicObserver(func(name string) {
+		mu.Lock()
+		observed = append(observed, name)
+		mu.Unlock()
+	})
+	t.Cleanup(func() { saferun.SetPanicObserver(nil) })
+
+	r := NewResolver(devConfig(), nil)
+	r.client.Transport = panicRoundTripper{}
+
+	const url0 = "http://media.test/a.png"
+	parsed := chatBody(imagePartObj(url0), imagePartObj("http://media.test/b.png"))
+
+	mustErr(t, parsed, r, http.StatusBadGateway, "media_fetch_failed")
+
+	if got := firstImageURL(t, parsed, 0); got != url0 {
+		t.Errorf("a panicking fetch mutated the request: part 0 = %.40q", got)
+	}
+	mu.Lock()
+	seen := append([]string(nil), observed...)
+	mu.Unlock()
+	if len(seen) == 0 {
+		t.Error("panic was not routed through saferun.Recover: no observer callback fired, " +
+			"so operators get neither the stack trace nor the panic metric")
+	}
+	for _, name := range seen {
+		if name != "mediafetch.fetchOne" {
+			t.Errorf("panic observer got goroutine %q, want mediafetch.fetchOne", name)
+		}
+	}
+	if stuck := fetchWorkersRunning(); stuck > 0 {
+		t.Errorf("%d fetch worker goroutine(s) still running after a recovered panic", stuck)
+	}
+	// The recovery must unwind through the semaphore releases too: a slot held
+	// by a dead worker would wedge every future fetch in the process.
+	if held := len(r.globalSem); held != 0 {
+		t.Errorf("global fetch semaphore still holds %d slot(s) after a recovered panic", held)
+	}
+}
+
+// fetchWorkersRunning counts the mediafetch fetch workers still on the stack,
+// polling briefly so a worker mid-unwind isn't reported as stuck. Unrelated
+// goroutines are ignored — notably net/http's own Client.Timeout watcher, which
+// the stdlib strands when a RoundTripper panics.
+func fetchWorkersRunning() int {
+	var running int
+	for range 50 {
+		if running = countGoroutineFrames("(*Resolver).fetchAll"); running == 0 {
+			return 0
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return running
+}
+
+// countGoroutineFrames reports how many frames in the all-goroutine stack dump
+// mention fn.
+func countGoroutineFrames(fn string) int {
+	buf := make([]byte, 1<<16)
+	for {
+		if n := runtime.Stack(buf, true); n < len(buf) {
+			return strings.Count(string(buf[:n]), fn)
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+}
+
+// --- post-inline projection -------------------------------------------------
+
+// A URL repeated across parts is fetched ONCE but written back to every
+// location, so N targets inline N copies of the same base64 blob. MaxFileBytes
+// and MaxTotalBytes bound only what is fetched and cannot see that
+// multiplication; MaxInlinedBytes must reject it before anything is mutated,
+// instead of letting the coordinator build a body the API layer can only throw
+// away afterwards.
+func TestResolveDuplicateTargetsRejectedByInlinedProjection(t *testing.T) {
+	img := validPNG(t)
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Write(img)
+	}))
+	defer srv.Close()
+
+	cfg := devConfig()
+	// One fetch, far inside every byte cap; eight targets inline 8x its data URI.
+	cfg.MaxInlinedBytes = 4 * int64(len(toDataURI(&fetchedMedia{mime: "image/png", data: img})))
+	r := NewResolver(cfg, nil)
+
+	urls := make([]string, DefaultMaxParts) // exactly at MaxParts: the part cap cannot catch this
+	parts := make([]map[string]any, len(urls))
+	for i := range urls {
+		urls[i] = fmt.Sprintf("%s/same.png#%d", srv.URL, i)
+		parts[i] = imagePartObj(urls[i])
+	}
+	parsed := chatBody(parts...)
+
+	me := mustErrDetail(t, parsed, r, http.StatusRequestEntityTooLarge, "media_too_large")
+	if !strings.Contains(me.Internal, "projected inlined") {
+		t.Errorf("rejected by %q; want the post-inline projection, not a raw byte cap", me.Internal)
+	}
+	for i := range urls {
+		if got := firstImageURL(t, parsed, i); got != urls[i] {
+			t.Errorf("part %d = %.40q; a rejected resolve must inline nothing", i, got)
+		}
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Errorf("origin hits = %d, want 1: the shared URL is fetched once and duplicated", n)
+	}
+}
+
+// --- budget / concurrency / deadline wiring ---------------------------------
+
+// The shared byte budget must cut CONCURRENT reads off mid-stream. fetchAll's
+// post-hoc aggregate check cannot do that job: it only runs once a fetch has
+// been fully buffered, so Concurrency x MaxFileBytes can be retained before it
+// notices. Here each body fits MaxFileBytes and only the overlap breaches
+// MaxTotalBytes, so at most ONE fetch can ever complete — the post-hoc check can
+// never fire, and only fetchOne's totalBudget.reader can reject this.
+func TestResolveSharedReadBudgetInterruptsConcurrentReads(t *testing.T) {
+	const (
+		parts     = 4
+		bodySize  = 256 << 10
+		chunkSize = 8 << 10
+	)
+	// MP4 (not PNG): a body that does complete must pass content validation, so
+	// the read-time budget stays the only possible source of the error.
+	body := mp4Bytes(bodySize)
+	var written int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, _ := w.(http.Flusher)
+		for sent := 0; sent < len(body); sent += chunkSize {
+			n, err := w.Write(body[sent:min(sent+chunkSize, len(body))])
+			atomic.AddInt64(&written, int64(n))
+			if err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			// Pace delivery so the four reads genuinely overlap rather than each
+			// response landing whole in a socket buffer.
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}))
+	defer srv.Close()
+
+	cfg := devConfig()
+	cfg.Concurrency = parts
+	cfg.MaxFileBytes = bodySize + (32 << 10)  // each body on its own is fine ...
+	cfg.MaxTotalBytes = bodySize + (64 << 10) // ... but no two of them fit together
+	r := NewResolver(cfg, nil)
+
+	items := make([]map[string]any, parts)
+	for i := range items {
+		items[i] = videoPartObj(fmt.Sprintf("%s/stream-%d.mp4", srv.URL, i))
+	}
+	me := mustErrDetail(t, chatBody(items...), r, http.StatusRequestEntityTooLarge, "media_too_large")
+	if !strings.Contains(me.Internal, "aggregate body exceeded cap") {
+		t.Errorf("rejected by %q; want the read-time shared budget (fetchOne's totalBudget.reader), "+
+			"not fetchAll's post-hoc backstop", me.Internal)
+	}
+	if got, full := atomic.LoadInt64(&written), int64(parts*bodySize); got >= full {
+		t.Errorf("origins delivered %d of %d bytes: the shared budget must stop the reads mid-stream, "+
+			"never buffer the whole aggregate", got, full)
+	}
+}
+
+// The process-wide semaphore bounds in-flight fetches across ALL requests: it
+// is the only thing stopping a burst of media-heavy requests from opening an
+// unbounded number of outbound sockets. Two ORIGINS are used deliberately —
+// Transport.MaxConnsPerHost is also derived from GlobalConcurrency but is keyed
+// per host, so only the semaphore can serialize fetches that target different
+// hosts from different requests.
+func TestResolveGlobalConcurrencyBoundsFetchesAcrossRequests(t *testing.T) {
+	img := validPNG(t)
+	var inFlight, peak atomic.Int64
+	origin := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cur := inFlight.Add(1)
+		for {
+			old := peak.Load()
+			if cur <= old || peak.CompareAndSwap(old, cur) {
+				break
+			}
+		}
+		time.Sleep(40 * time.Millisecond) // hold the slot long enough for overlap to be observable
+		w.Write(img)
+		inFlight.Add(-1)
+	})
+	hosts := []*httptest.Server{httptest.NewServer(origin), httptest.NewServer(origin)}
+	for _, srv := range hosts {
+		defer srv.Close()
+	}
+
+	cfg := devConfig()
+	cfg.GlobalConcurrency = 1
+	cfg.Concurrency = 4 // the per-request worker cap must not be what bounds this
+	r := NewResolver(cfg, nil)
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for req := range errs {
+		wg.Add(1)
+		go func(req int) {
+			defer wg.Done()
+			_, errs[req] = r.Resolve(context.Background(), chatBody(
+				imagePartObj(fmt.Sprintf("%s/r%d.png", hosts[0].URL, req)),
+				imagePartObj(fmt.Sprintf("%s/r%d.png", hosts[1].URL, req)),
+			))
+		}(req)
+	}
+	wg.Wait()
+
+	for req, err := range errs {
+		if err != nil {
+			t.Fatalf("Resolve %d: %v", req, err)
+		}
+	}
+	if got := peak.Load(); got > 1 {
+		t.Errorf("peak concurrent fetches = %d with GlobalConcurrency=1; the process-wide semaphore "+
+			"must bound in-flight fetches across requests and hosts", got)
+	}
+}
+
+// TotalDeadline bounds the WHOLE resolution step. FetchTimeout is deliberately
+// far longer here, so a fetch that outlives the step budget can only be stopped
+// by the total deadline: without it this request simply succeeds, slowly.
+func TestResolveTotalDeadlineBoundsWholeStep(t *testing.T) {
+	img := validPNG(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(400 * time.Millisecond):
+			w.Write(img)
+		case <-r.Context().Done(): // the client gave up; don't hold Close()
+		}
+	}))
+	defer srv.Close()
+
+	cfg := devConfig()
+	cfg.TotalDeadline = 60 * time.Millisecond
+	cfg.FetchTimeout = 30 * time.Second
+	r := NewResolver(cfg, nil)
+
+	start := time.Now()
+	mustErr(t, chatBody(imagePartObj(srv.URL+"/slow.png")), r, http.StatusRequestTimeout, "media_fetch_timeout")
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("resolve took %v: the whole-step TotalDeadline (%v) must bound it, not FetchTimeout (%v)",
+			elapsed, cfg.TotalDeadline, cfg.FetchTimeout)
 	}
 }

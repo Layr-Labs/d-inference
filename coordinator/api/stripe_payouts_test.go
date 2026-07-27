@@ -1518,6 +1518,147 @@ func TestStripeWithdrawServiceAgreementMismatchPreCheck(t *testing.T) {
 	}
 }
 
+// --- Express Dashboard link ---
+//
+// The self-serve path for changing the payout bank account on an already
+// onboarded account. The onboarding link can't do this (it only collects
+// outstanding requirements, and a ready account has none), so this endpoint is
+// the only thing standing between a provider and a support ticket.
+
+func TestStripeDashboardLinkRequiresAuth(t *testing.T) {
+	srv, _ := stripePayoutsTestServer(t, true, nil)
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+	w := httptest.NewRecorder()
+	srv.handleStripeDashboardLink(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("got %d, want 401", w.Code)
+	}
+}
+
+func TestStripeDashboardLinkRequiresLinkedAccount(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	user := seedUser(t, st, "acct-dash-none", "nobank@example.com")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeDashboardLink(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
+	}
+	if got := errorTypeOf(t, w.Body.Bytes()); got != "no_stripe_account" {
+		t.Errorf("error type = %q", got)
+	}
+}
+
+func TestStripeDashboardLinkReturnsLoginURL(t *testing.T) {
+	var mu sync.Mutex
+	var gotPath string
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath = r.URL.Path
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"object":"login_link","url":"https://connect.stripe.com/express/acct_x/tok"}`))
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-dash-ok", "dash@example.com", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeDashboardLink(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["url"] != "https://connect.stripe.com/express/acct_x/tok" {
+		t.Errorf("url = %v", resp["url"])
+	}
+	if resp["stripe_account_id"] != user.StripeAccountID {
+		t.Errorf("stripe_account_id = %v, want %q", resp["stripe_account_id"], user.StripeAccountID)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := "/v1/accounts/" + user.StripeAccountID + "/login_links"; gotPath != want {
+		t.Errorf("Stripe path = %q, want %q", gotPath, want)
+	}
+}
+
+// An account the user closed on Stripe's side must be unlinked here too,
+// otherwise the UI keeps offering a button that can only ever fail.
+func TestStripeDashboardLinkUnlinksGoneAccount(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"account_invalid","message":"No such account"}}`))
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-dash-gone", "gone@example.com", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeDashboardLink(w, req)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
+	}
+	if got := errorTypeOf(t, w.Body.Bytes()); got != "account_gone" {
+		t.Errorf("error type = %q", got)
+	}
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAccountID != "" {
+		t.Errorf("StripeAccountID = %q, want cleared", refreshed.StripeAccountID)
+	}
+}
+
+// A transient Stripe failure must not unlink the account — the user's payout
+// destination is still perfectly valid.
+func TestStripeDashboardLinkKeepsAccountOnTransientError(t *testing.T) {
+	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"type":"api_error","message":"Stripe is down"}}`))
+	}))
+	defer fakeStripe.Close()
+
+	srv, st := stripePayoutsTestServer(t, false, fakeStripe)
+	user := readyUser(t, st, "acct-dash-5xx", "flaky@example.com", false)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+	req = withPrivyUser(req, user)
+	w := httptest.NewRecorder()
+	srv.handleStripeDashboardLink(w, req)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("got %d, want 502: %s", w.Code, w.Body.String())
+	}
+	refreshed, _ := st.GetUserByAccountID(user.AccountID)
+	if refreshed.StripeAccountID != user.StripeAccountID {
+		t.Errorf("StripeAccountID = %q, want %q (untouched)", refreshed.StripeAccountID, user.StripeAccountID)
+	}
+	if refreshed.StripeAccountStatus != "ready" {
+		t.Errorf("status = %q, want ready (untouched)", refreshed.StripeAccountStatus)
+	}
+}
+
+// errorTypeOf pulls error.type out of a coordinator error envelope.
+func errorTypeOf(t *testing.T, body []byte) string {
+	t.Helper()
+	var resp map[string]any
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal error body %q: %v", body, err)
+	}
+	errObj, _ := resp["error"].(map[string]any)
+	s, _ := errObj["type"].(string)
+	return s
+}
+
 // --- Unlink ---
 
 func TestStripeUnlinkClearsAccount(t *testing.T) {

@@ -4,13 +4,19 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchStripeStatus,
   startStripeOnboarding,
+  createStripeDashboardLink,
   withdrawStripe,
   fetchStripeWithdrawals,
   unlinkStripeAccount,
   type StripeStatus,
   type StripeWithdrawal,
 } from "@/lib/api";
-import { classifyOnboardError, classifyWithdrawError, withdrawSuccessMessage } from "./payout-copy";
+import {
+  classifyDashboardError,
+  classifyOnboardError,
+  classifyWithdrawError,
+  withdrawSuccessMessage,
+} from "./payout-copy";
 
 type WithdrawMethod = "standard" | "instant";
 
@@ -35,6 +41,9 @@ export interface UseStripePayouts {
   withdraw: () => Promise<void>;
   /** Open the withdraw modal, seeding the amount + best available method. */
   openWithdraw: (defaultAmount?: string) => void;
+  /** Open the Stripe Express Dashboard to change the payout bank account. */
+  openDashboard: () => Promise<void>;
+  dashboardLoading: boolean;
   /** Detach the linked Stripe account so a fresh one can be onboarded. */
   unlink: () => Promise<void>;
   unlinkLoading: boolean;
@@ -150,6 +159,33 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     setWithdrawOpen(true);
   }, [status?.instant_eligible]);
 
+  // Changing the payout bank account happens in Stripe's Express Dashboard,
+  // reached through a single-use login link. The tab is opened synchronously
+  // inside the click gesture — opening it after the await would be swallowed
+  // by the popup blocker — and blanked out if the link never arrives.
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+  const openDashboard = useCallback(async () => {
+    setDashboardLoading(true);
+    const tab = typeof window !== "undefined" ? window.open("", "_blank") : null;
+    if (tab) tab.opener = null;
+    try {
+      const resp = await createStripeDashboardLink();
+      if (tab) {
+        tab.location.replace(resp.url);
+      } else {
+        // Popup blocked — fall back to the current tab rather than dropping
+        // the link, which is single-use and can't be retried.
+        window.location.href = resp.url;
+      }
+    } catch (e) {
+      tab?.close();
+      const p = classifyDashboardError(e);
+      addToast(p.message);
+      if (p.refreshStatus) await reload(false);
+    }
+    setDashboardLoading(false);
+  }, [addToast, reload]);
+
   const [unlinkLoading, setUnlinkLoading] = useState(false);
   const unlink = useCallback(async () => {
     setUnlinkLoading(true);
@@ -181,6 +217,8 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     onboard,
     withdraw,
     openWithdraw,
+    openDashboard,
+    dashboardLoading,
     unlink,
     unlinkLoading,
   };

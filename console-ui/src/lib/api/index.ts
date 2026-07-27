@@ -16,6 +16,7 @@ export {
   createStripeCheckout,
   fetchStripeStatus,
   startStripeOnboarding,
+  createStripeDashboardLink,
   withdrawStripe,
   fetchStripeWithdrawals,
   unlinkStripeAccount,

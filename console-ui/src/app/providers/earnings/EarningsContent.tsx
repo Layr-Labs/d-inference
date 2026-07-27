@@ -198,6 +198,8 @@ export default function EarningsContent() {
         onOnboard={payouts.onboard}
         onUnlink={payouts.unlink}
         unlinkLoading={payouts.unlinkLoading}
+        onOpenDashboard={payouts.openDashboard}
+        dashboardLoading={payouts.dashboardLoading}
         onOpenWithdraw={() =>
           payouts.openWithdraw(availableUsd >= minWithdrawUsd ? availableUsd.toFixed(2) : "10")
         }

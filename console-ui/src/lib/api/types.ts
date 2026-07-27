@@ -147,6 +147,13 @@ export interface StripeOnboardResponse {
   status: string;
 }
 
+// Single-use Express Dashboard login link. Treat the url as a credential:
+// redirect to it immediately, never persist or share it.
+export interface StripeDashboardLinkResponse {
+  url: string;
+  stripe_account_id: string;
+}
+
 export interface StripeWithdrawResponse {
   status: string;
   withdrawal_id: string;

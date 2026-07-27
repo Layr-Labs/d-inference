@@ -23,10 +23,14 @@ package api
 //     works for recipient accounts); instant withdrawals additionally call
 //     payouts.create against the user's debit card. On transfer failure we
 //     re-credit the ledger.
-//  4. Unlink. DELETE /v1/billing/stripe/account detaches the stored connected
+//  4. Dashboard. POST /v1/billing/stripe/dashboard mints a single-use Express
+//     Dashboard login link. This is how an onboarded user changes the bank
+//     account or debit card their payouts land in — we never collect or store
+//     bank details ourselves.
+//  5. Unlink. DELETE /v1/billing/stripe/account detaches the stored connected
 //     account so the user can onboard a fresh one (support/self-serve escape
 //     hatch for wedged accounts).
-//  5. Webhook. POST /v1/billing/stripe/connect/webhook drives the local state
+//  6. Webhook. POST /v1/billing/stripe/connect/webhook drives the local state
 //     machine via account.updated, payout.paid, payout.failed,
 //     transfer.reversed. Automatic sweep payouts (IDs we never created) are
 //     matched back to withdrawal rows by connected account. Only
@@ -325,6 +329,69 @@ func (s *Server) handleStripeWithdrawals(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"withdrawals": withdrawals})
+}
+
+// handleStripeDashboardLink handles POST /v1/billing/stripe/dashboard.
+//
+// Mints a single-use Stripe Express Dashboard login link for the caller's
+// connected account. That dashboard is where the user changes the bank account
+// or debit card their payouts land in, reviews their connected balance, and
+// sees Stripe's own payout history — none of which we rebuild ourselves.
+//
+// It is the only way an already-onboarded Express account can edit its payout
+// destination: handleStripeOnboard's `account_onboarding` link collects
+// outstanding requirements only (a ready account has none), and Stripe rejects
+// `account_update` links for accounts that have a Stripe-hosted dashboard,
+// which every Express account does.
+//
+// Wired behind requirePrivyAuth for the same reason as unlink, only more so:
+// the URL this returns is a bearer credential for a session that can redirect
+// the user's earnings to a different bank account. A leaked inference API key
+// must not be able to mint one.
+func (s *Server) handleStripeDashboardLink(w http.ResponseWriter, r *http.Request) {
+	user := s.requirePrivyUser(w, r)
+	if user == nil {
+		return
+	}
+	if s.billing == nil || s.billing.StripeConnect() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
+		return
+	}
+	if user.StripeAccountID == "" {
+		writeJSON(w, http.StatusConflict, errorResponse("no_stripe_account",
+			"no Stripe payout account on file — link a bank account first"))
+		return
+	}
+
+	link, err := s.billing.StripeConnect().CreateLoginLink(user.StripeAccountID)
+	if err != nil {
+		if billing.IsAccountGoneErr(err) {
+			// Closed on Stripe's side — unlink so the UI falls back to
+			// onboarding instead of offering a permanently broken button
+			// (same self-heal as the refresh=1 path in handleStripeStatus).
+			s.logger.Warn("stripe connect: stored account gone — unlinking",
+				"stripe_account_id", user.StripeAccountID, "error", err)
+			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); perr != nil {
+				s.logger.Error("stripe connect: unlink gone account failed", "error", perr)
+			}
+			writeJSON(w, http.StatusConflict, errorResponse("account_gone",
+				"your Stripe account no longer exists — set up payouts again"))
+			return
+		}
+		s.logger.Error("stripe connect: create login link failed",
+			"stripe_account_id", user.StripeAccountID, "error", err)
+		writeJSON(w, http.StatusBadGateway, errorResponse("stripe_error", err.Error()))
+		return
+	}
+
+	// Log the issuance, never the link — it is a live credential.
+	s.logger.Info("stripe connect: express dashboard link issued",
+		"account", user.AccountID[:min(8, len(user.AccountID))]+"...",
+		"stripe_account_id", user.StripeAccountID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":               link,
+		"stripe_account_id": user.StripeAccountID,
+	})
 }
 
 // handleStripeUnlink handles DELETE /v1/billing/stripe/account.

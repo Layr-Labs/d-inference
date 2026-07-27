@@ -3,6 +3,7 @@ import { ApiError } from "@/lib/api";
 import {
   classifyWithdrawError,
   classifyOnboardError,
+  classifyDashboardError,
   withdrawSuccessMessage,
   methodExplainer,
   standardEta,
@@ -131,6 +132,37 @@ describe("classifyOnboardError", () => {
   it("unknown errors keep the onboarding-failed prefix", () => {
     const p = classifyOnboardError(new Error(NETWORK_DOWN));
     expect(p.message).toBe("Stripe onboarding failed: network down");
+  });
+});
+
+describe("classifyDashboardError", () => {
+  it("account_gone: unlink message + status refresh", () => {
+    const p = classifyDashboardError(new ApiError("your Stripe account no longer exists", "account_gone", 409));
+    expect(p.message).toContain("Your Stripe account was closed, so we've unlinked it");
+    expect(p.refreshStatus).toBe(true);
+  });
+
+  it("no_stripe_account: points at linking a bank first, refreshes the card branch", () => {
+    const p = classifyDashboardError(new ApiError("no Stripe payout account on file", "no_stripe_account", 409));
+    expect(p.message).toBe("Link a bank account first, then you can manage it in Stripe.");
+    expect(p.refreshStatus).toBe(true);
+  });
+
+  it("stripe_error: friendly transient message, no unlink implied", () => {
+    const p = classifyDashboardError(new ApiError("stripe 500: down", STRIPE_ERROR, 502));
+    expect(p.message).toBe("Stripe couldn't open your dashboard right now. Try again in a few minutes.");
+    expect(p.refreshStatus).toBe(false);
+  });
+
+  it("billing_error: same transient message when payouts aren't configured", () => {
+    const p = classifyDashboardError(new ApiError("Stripe Payouts not configured", "billing_error", 503));
+    expect(p.message).toBe("Stripe couldn't open your dashboard right now. Try again in a few minutes.");
+  });
+
+  it("unknown errors keep the raw message", () => {
+    const p = classifyDashboardError(new Error(NETWORK_DOWN));
+    expect(p.message).toBe(NETWORK_DOWN);
+    expect(p.refreshStatus).toBe(false);
   });
 });
 

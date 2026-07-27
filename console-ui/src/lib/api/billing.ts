@@ -6,6 +6,7 @@ import type {
   StripeCheckoutResponse,
   StripeStatus,
   StripeOnboardResponse,
+  StripeDashboardLinkResponse,
   StripeWithdrawResponse,
   StripeWithdrawal,
 } from "./types";
@@ -58,6 +59,22 @@ export async function startStripeOnboarding(returnURL?: string, country?: string
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     throw apiErrorFromBody(data, res.status, `Stripe onboarding failed (${res.status})`);
+  }
+  return res.json();
+}
+
+// Mint a single-use Stripe Express Dashboard login link. This is the only way
+// an onboarded user can change the bank account or debit card their payouts
+// land in — the onboarding link only collects outstanding requirements, and
+// Stripe forbids account_update links for Express accounts.
+export async function createStripeDashboardLink(): Promise<StripeDashboardLinkResponse> {
+  const res = await fetch("/api/payments/stripe/dashboard", {
+    method: "POST",
+    headers: proxyHeaders(),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw apiErrorFromBody(data, res.status, `Couldn't open your Stripe dashboard (${res.status})`);
   }
   return res.json();
 }

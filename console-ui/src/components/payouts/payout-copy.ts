@@ -20,13 +20,17 @@ export interface PayoutErrorPresentation {
   closeModal: boolean;
 }
 
+// Every path that can hit a closed connected account (withdraw, onboard,
+// dashboard) reports it the same way: the backend has already auto-unlinked
+// the account, so a status refresh returns the card to "Set up payouts".
+const ACCOUNT_CLOSED_MESSAGE =
+  "Your Stripe account was closed, so we've unlinked it. You can set up payouts again below.";
+
 // Copy for withdraw-path error codes. Codes absent here fall through to the
 // raw backend message.
 const WITHDRAW_ERROR_COPY = new Map<string, Omit<PayoutErrorPresentation, "code">>([
   ["stripe_account_gone", {
-    // The backend already auto-unlinked the account; after the status
-    // refresh the card returns to its "Set up payouts" state.
-    message: "Your Stripe account was closed, so we've unlinked it. You can set up payouts again below.",
+    message: ACCOUNT_CLOSED_MESSAGE,
     refreshStatus: true,
     closeModal: true,
   }],
@@ -115,12 +119,7 @@ export function classifyOnboardError(err: unknown): PayoutErrorPresentation {
     };
   }
   if (code === "stripe_account_gone") {
-    return {
-      code,
-      message: "Your Stripe account was closed, so we've unlinked it. You can set up payouts again below.",
-      refreshStatus: true,
-      closeModal: false,
-    };
+    return { code, message: ACCOUNT_CLOSED_MESSAGE, refreshStatus: true, closeModal: false };
   }
   if (code === "stripe_error") {
     return {
@@ -133,6 +132,41 @@ export function classifyOnboardError(err: unknown): PayoutErrorPresentation {
   return {
     code,
     message: `Stripe onboarding failed: ${raw || "unknown error"}`,
+    refreshStatus: false,
+    closeModal: false,
+  };
+}
+
+// classifyDashboardError maps an Express Dashboard login-link failure to
+// friendly copy. The backend auto-unlinks accounts that were closed on
+// Stripe's side, so account_gone refreshes status to drop the card back to
+// its "Set up payouts" branch.
+export function classifyDashboardError(err: unknown): PayoutErrorPresentation {
+  const code = err instanceof ApiError ? err.code : "";
+  const raw = err instanceof Error ? err.message : String(err);
+
+  if (code === "account_gone") {
+    return { code, message: ACCOUNT_CLOSED_MESSAGE, refreshStatus: true, closeModal: false };
+  }
+  if (code === "no_stripe_account") {
+    return {
+      code,
+      message: "Link a bank account first, then you can manage it in Stripe.",
+      refreshStatus: true,
+      closeModal: false,
+    };
+  }
+  if (code === "stripe_error" || code === "billing_error") {
+    return {
+      code,
+      message: "Stripe couldn't open your dashboard right now. Try again in a few minutes.",
+      refreshStatus: false,
+      closeModal: false,
+    };
+  }
+  return {
+    code,
+    message: raw || "Couldn't open your Stripe dashboard.",
     refreshStatus: false,
     closeModal: false,
   };

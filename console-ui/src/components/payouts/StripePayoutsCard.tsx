@@ -1,6 +1,6 @@
 "use client";
 
-import { Building2, CreditCard, ArrowDownToLine, Loader2 } from "lucide-react";
+import { Building2, CreditCard, ArrowDownToLine, ExternalLink, Loader2 } from "lucide-react";
 import { type StripeStatus, type StripeWithdrawal } from "@/lib/api";
 import { STRIPE_CONNECT_COUNTRIES } from "@/lib/stripe-countries";
 import { microToUsd } from "@/lib/format";
@@ -21,6 +21,8 @@ export function StripePayoutsCard({
   onCountryChange,
   onOnboard,
   onOpenWithdraw,
+  onOpenDashboard,
+  dashboardLoading,
   onUnlink,
   unlinkLoading,
   title,
@@ -37,6 +39,9 @@ export function StripePayoutsCard({
   onCountryChange: (country: string) => void;
   onOnboard: () => void;
   onOpenWithdraw: () => void;
+  /** Open the Stripe Express Dashboard to change the payout destination. */
+  onOpenDashboard?: () => void;
+  dashboardLoading?: boolean;
   /** Detach the linked Stripe account (escape hatch for wedged accounts). */
   onUnlink?: () => void;
   unlinkLoading?: boolean;
@@ -107,7 +112,7 @@ export function StripePayoutsCard({
         </>
       ) : ready ? (
         <>
-          <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-4 flex items-center justify-between">
+          <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-4 flex items-center justify-between gap-3">
             <div className="flex items-center gap-2 text-sm text-text-secondary">
               {status.destination_type === "card" ? (
                 <CreditCard size={14} className="text-teal" />
@@ -123,6 +128,21 @@ export function StripePayoutsCard({
                 </span>
               )}
             </div>
+            {onOpenDashboard && (
+              <button
+                onClick={onOpenDashboard}
+                disabled={dashboardLoading}
+                title="Opens your Stripe Express Dashboard, where you can change the bank account or debit card your payouts land in."
+                className="flex items-center gap-1.5 shrink-0 text-xs text-text-tertiary underline underline-offset-2 hover:text-teal disabled:opacity-50 transition-colors"
+              >
+                {dashboardLoading ? (
+                  <Loader2 size={12} className="animate-spin" />
+                ) : (
+                  <ExternalLink size={12} />
+                )}
+                {dashboardLoading ? "Opening..." : "Change in Stripe"}
+              </button>
+            )}
           </div>
           <button
             onClick={onOpenWithdraw}

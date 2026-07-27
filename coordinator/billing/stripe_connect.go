@@ -32,6 +32,9 @@ import (
 //  5. Webhook events `payout.paid`, `payout.failed`, `transfer.failed` drive
 //     the local withdrawal state machine; on terminal failure we re-credit the
 //     user's ledger.
+//  6. To change their payout bank account afterwards, the user goes to their
+//     Express Dashboard via a single-use login link (`login_links.create` —
+//     `CreateLoginLink`). We never collect or store bank details ourselves.
 //
 // All amounts cross the Stripe boundary in **integer USD cents**. The internal
 // micro-USD ledger has six-decimal precision; we always lose precision below a
@@ -310,6 +313,52 @@ func (c *StripeConnect) CreateAccountLink(accountID, returnURL, refreshURL strin
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return "", fmt.Errorf("stripe connect: parse account link: %w", err)
+	}
+	return resp.URL, nil
+}
+
+// CreateLoginLink returns a single-use URL into the connected account's
+// Express Dashboard, where the account holder can change the bank account or
+// debit card their payouts land in, review their connected balance, and see
+// Stripe's own payout history.
+//
+// This is the only self-serve path for editing an already-onboarded Express
+// account's payout destination. `account_onboarding` links (CreateAccountLink)
+// collect outstanding requirements only, and an account with payouts enabled
+// has none; Stripe rejects `account_update` links outright for accounts that
+// have a Stripe-hosted dashboard, which every Express account does
+// (https://docs.stripe.com/api/account_links/create).
+//
+// The returned URL is a bearer credential for the account holder's dashboard
+// session. Redirect to it from an authenticated session only — never email,
+// message, or log it (https://docs.stripe.com/connect/integrate-express-dashboard).
+func (c *StripeConnect) CreateLoginLink(accountID string) (string, error) {
+	if c.secretKey == "" && !c.mockMode {
+		return "", errors.New("stripe connect: not configured")
+	}
+	if accountID == "" {
+		return "", errors.New("stripe connect: account_id required")
+	}
+
+	if c.mockMode {
+		return "https://connect.stripe.com/express/mock/" + accountID, nil
+	}
+
+	if err := validAccountID(accountID); err != nil {
+		return "", err
+	}
+	body, err := c.do("POST", "/v1/accounts/"+accountID+"/login_links", url.Values{}, "")
+	if err != nil {
+		return "", fmt.Errorf("stripe connect: create login link: %w", err)
+	}
+	var resp struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("stripe connect: parse login link: %w", err)
+	}
+	if resp.URL == "" {
+		return "", errors.New("stripe connect: login link response had no url")
 	}
 	return resp.URL, nil
 }

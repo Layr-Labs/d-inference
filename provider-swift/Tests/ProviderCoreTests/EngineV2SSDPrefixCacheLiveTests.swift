@@ -188,6 +188,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
             model: live.model,
             tokenizer: live.tokenizer.inner,
             kvBytesCapacity: 24 * Self.gib,
+            maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent),
             prefixCache: ssdCache)
         return EngineV2Bridge(
             engine: engine,

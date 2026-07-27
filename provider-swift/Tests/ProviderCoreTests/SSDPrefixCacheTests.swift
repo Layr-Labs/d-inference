@@ -3044,7 +3044,6 @@ private func makeSidecarCache(
     clock: ClockBox,
     geometry: SSDWindowSidecarGeometry? = sidecarGeometry(),
     adoptionBound: Int = 0,
-    windowRestoredBound: Int? = nil,
     maxStageBytes: Int = 1 << 30,
     maxWriteBytesPerDay: Int = 0
 ) -> SSDPrefixCache {
@@ -3062,7 +3061,6 @@ private func makeSidecarCache(
         maxStageBytes: maxStageBytes,
         maxStageMillis: 1_000_000,
         windowSidecar: geometry,
-        windowRestoredBoundTokens: windowRestoredBound,
         nowSeconds: { clock.now })
     return SSDPrefixCache(
         config: config, kekKey: kek, kvBudget: nil, diskBudget: SSDDiskBudget(),
@@ -3565,8 +3563,8 @@ struct SSDWindowSidecarTests {
 
     // MARK: Replay bound
 
-    @Test("an incomplete tiling is judged against the FULL replay bound")
-    func incompleteTilingKeepsTheReplayBound() async throws {
+    @Test("a restored window does not shorten the replay bound it advertises")
+    func aRestoredWindowDoesNotShortenTheBound() async throws {
         let kek = SymmetricKey(size: .bits256)
         let clock = ClockBox(10_000)
         let tokens = Array(0 ..< tokenCount)
@@ -3576,11 +3574,8 @@ struct SSDWindowSidecarTests {
         func savedTokens(donorBase: Int) async throws -> Int {
             let dir = tempDir("sidecar-bound-\(donorBase)")
             defer { try? FileManager.default.removeItem(at: dir) }
-            // Conservative replay bound 24, restored bound 0 — the shape the
-            // factory produces once a restore consumer lands.
             let cache = makeSidecarCache(
-                dir: dir, kek: kek, clock: clock,
-                adoptionBound: 24, windowRestoredBound: 0)
+                dir: dir, kek: kek, clock: clock, adoptionBound: 24)
             defer { cache.close() }
             cache.donate(
                 requestID: nil, tokens: tokens,
@@ -3596,17 +3591,19 @@ struct SSDWindowSidecarTests {
                 return -1
             }
             #expect(matched == tokenCount, "the block run adopts either way")
+            // The window IS restored for the complete tiling and not for the
+            // incomplete one — the read path still does its job.
             #expect((cache.stagedWindow(requestID: "req-bound-\(donorBase)") != nil)
                 == (donorBase == 48))
             return saved
         }
 
-        // Complete tiling: nothing left to replay, so every matched token is
-        // saved.
-        #expect(try await savedTokens(donorBase: 48) == tokenCount)
-        // Incomplete: the adopter performs the ORIGINAL replay, so the benefit
-        // must be charged the conservative bound — 64 − 24 — not the cache-wide
-        // restored zero. Reporting 64 here is the defect.
+        // BOTH are charged the conservative 24. WS-4.2 once let the complete
+        // tiling advertise a zero replay and report all 64 tokens saved; no row
+        // in this repo can install a restored window, so that number was a lie
+        // the adopter then paid for in full. A restored window is a persisted
+        // ARTEFACT, not yet a shorter replay, and this pins the difference.
+        #expect(try await savedTokens(donorBase: 48) == tokenCount - 24)
         #expect(try await savedTokens(donorBase: 45) == tokenCount - 24)
     }
 
@@ -3773,12 +3770,12 @@ struct SSDWindowSidecarTests {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         let row = CBv2WindowedSequenceKV(
             window: sidecarWindow, kvHeads: fixtureKVHeads, headDim: fixtureHeadDim)
-        #expect((row as any SSDWindowSnapshotting).windowSnapshot() == nil, "empty row")
+        #expect(row.windowSnapshot() == nil, "empty row")
         let shape = [1, fixtureKVHeads, 24, fixtureHeadDim]
         let chunk = MLXArray(0 ..< shape.reduce(1, *)).reshaped(shape).asType(.float16)
         eval(chunk)
         _ = row.update(keys: chunk, values: chunk)
-        let snapshot = try! #require((row as any SSDWindowSnapshotting).windowSnapshot())
+        let snapshot = try! #require(row.windowSnapshot())
         // 24 tokens written into a 16-slot ring ⇒ the window is [8, 24).
         #expect(snapshot.keys.dim(2) == sidecarWindow)
         #expect(snapshot.base == 24 - sidecarWindow)
@@ -3811,20 +3808,17 @@ struct SSDWindowSidecarTests {
         #expect(fullBlockBytes == 5_242_880)
         #expect(sidecarBytes / fullBlockBytes == 10)
 
-        // "read-terminal-four": one adoption reads four sidecars = 200 MiB,
-        // which the conservative 1.5 GB/s planner costs at 140 ms against the
-        // 1,000 ms stage budget, and which fits the 1 GiB per-adoption cap
-        // with room for 164 blocks (41,984 tokens) of prefix.
-        #expect(geometry.windowReadBytes(elementSize: 2) == 209_715_200)
-        #expect(
-            SSDPrefixCachePolicy.estimatedStageMillis(
-                bytes: geometry.windowReadBytes(elementSize: 2)) == 140)
-        #expect(SSDPrefixCachePolicy.estimatedStageMillis(
-            bytes: geometry.windowReadBytes(elementSize: 2))
+        // "read-terminal-four": one adoption reads `blocksPerWindow` sidecars
+        // = 200 MiB, which the conservative 1.5 GB/s planner costs at 140 ms
+        // against the 1,000 ms stage budget, and which fits the 1 GiB
+        // per-adoption cap with room for 164 blocks (41,984 tokens) of prefix.
+        let windowReadBytes = sidecarBytes * geometry.blocksPerWindow
+        #expect(windowReadBytes == 209_715_200)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillis(bytes: windowReadBytes) == 140)
+        #expect(SSDPrefixCachePolicy.estimatedStageMillis(bytes: windowReadBytes)
             < SSDPrefixCachePolicy.defaultMaxStageMillis)
         let blocksLeft =
-            (SSDPrefixCachePolicy.defaultMaxStageBytes
-                - geometry.windowReadBytes(elementSize: 2)) / fullBlockBytes
+            (SSDPrefixCachePolicy.defaultMaxStageBytes - windowReadBytes) / fullBlockBytes
         #expect(blocksLeft == 164)
     }
 

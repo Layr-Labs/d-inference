@@ -477,12 +477,14 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// opposite signals: the first is a choice, the second is a paged
     /// regression wearing a contiguous label.
     ///
-    /// `.auto` resolves CONTIGUOUS in v0.8.0 and paged is opt-in per slot,
-    /// so the live degrade today is `"kill_switch"`: a fleet configured
-    /// `engine_v2_kv_backend = "paged"` with `DARKBLOOM_CBV2_PAGED_KV=0`
-    /// serves contiguous on purpose, and nothing else on the wire says
-    /// so. The failure classes stay wired for the day a paged selection is
-    /// allowed to degrade on failure again.
+    /// `.auto` resolves PAGED as of v0.8.0, so EVERY class here is live on
+    /// the default fleet, not just `"kill_switch"`. A machine whose paged
+    /// kernel preflight, physical-capacity plan, or pool construction
+    /// fails degrades under `.auto` and reports `"kernel_preflight: …"`,
+    /// `"physical_capacity: …"`, `"ineligible: …"` or
+    /// `"pool_construction_capacity: …"`; a fleet with
+    /// `DARKBLOOM_CBV2_PAGED_KV=0` reports `"kill_switch"` and is serving
+    /// contiguous on purpose. Nothing else on the wire separates them.
     ///
     /// ABSENT MEANS NO DEGRADE — the inverse of `kvBackend`, whose absence
     /// means UNKNOWN. The two are read as a PAIR: a build old enough to

@@ -15,11 +15,12 @@
 //     families the engine is correct-by-construction for; GPT-OSS's
 //     `newCacheV2` also primes its sinks-activation probe at build time),
 //   * a KV backend sized from the unified-memory KV budget —
-//     `CBv2ContiguousKVBackend` for "auto" (grep `case .auto: resolvedKind`;
-//     a v0.8.0 flip to paged was reverted because paged ADOPTION is not
-//     exact against paged COLD), or `PagedKVBackend` for an explicit
-//     "paged", slabs capped by `PagedKVPhysicalCapacityPolicy` and
-//     committed lazily (`.atFirstAdmission`),
+//     `PagedKVBackend` for "auto" (v0.8.0 ships paged as the default;
+//     the argument is at `case .auto: resolvedKind` below) or for an
+//     explicit "paged", slabs capped by `PagedKVPhysicalCapacityPolicy`
+//     and committed lazily (`.atFirstAdmission`);
+//     `CBv2ContiguousKVBackend` for an explicit "contiguous", a slot
+//     veto, the kill switch, or an `.auto` paged failure,
 //   * `CBv2LayerCacheBank` over the model-built caches,
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).
@@ -175,12 +176,6 @@ extension EngineV2Factory {
         }
     }
 
-    /// Scheduler knobs for the production v2 engine. `maxConcurrentRequests`
-    /// follows the CBv2 product target (4, max 8) rather than the legacy
-    /// scheduler's 24-way ceiling — the v2 rollout is deliberately
-    /// conservative and the coordinator sees the true value in heartbeats.
-    public static let productionMaxConcurrentRequests = 4
-
     /// The model's prefix-cache adoption bound (`PrefixCachePolicy
     /// .adoptionBoundTokens` over the model's own `cbv2LayerKinds`), kept
     /// NEXT TO the authoritative family switch in `makeProductionEngine` so
@@ -304,8 +299,8 @@ extension EngineV2Factory {
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
+        maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -316,8 +311,8 @@ extension EngineV2Factory {
             model: model,
             tokenizer: tokenizer,
             kvBytesCapacity: kvBytesCapacity,
-            prefixCache: prefixCache,
             maxConcurrentRequests: maxConcurrentRequests,
+            prefixCache: prefixCache,
             mtpDrafter: mtpDrafter,
             mtpConfig: mtpConfig,
             kvBackend: kvBackend,
@@ -448,9 +443,9 @@ extension EngineV2Factory {
     ///
     /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
     /// order): the caller passes the operator selection with slot vetoes
-    /// (VLM) already applied; `.auto` resolves CONTIGUOUS (grep
-    /// `case .auto: resolvedKind` below for the reverted-flip rationale),
-    /// so paged arrives here only as an explicit operator selection.
+    /// (VLM) already applied; `.auto` resolves PAGED (grep
+    /// `case .auto: resolvedKind` below for the argument), so paged is the
+    /// common path here, not just an explicit operator selection.
     /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
     /// THIS deepest layer so no call path (benchmarks included) bypasses
     /// it, and it DEGRADES rather than refuses — an operator override is
@@ -463,8 +458,8 @@ extension EngineV2Factory {
         model: any LanguageModel,
         tokenizer: any MLXLMCommon.Tokenizer,
         kvBytesCapacity: Int,
+        maxConcurrentRequests: Int,
         prefixCache: (any CBv2PrefixCache)? = nil,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
         mtpDrafter: (any CBv2MTPDrafter)? = nil,
         mtpConfig: CBv2MTPConfig = CBv2MTPConfig(),
         kvBackend: EngineV2KVBackendSelection = .auto,
@@ -496,7 +491,7 @@ extension EngineV2Factory {
     static func prepareProductionBackend(
         model: any LanguageModel,
         kvBytesCapacity: Int,
-        maxConcurrentRequests: Int = EngineV2Factory.productionMaxConcurrentRequests,
+        maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -614,8 +609,8 @@ extension EngineV2Factory {
         // Deliberately NOT routed through `degradeOrRefuse`: that
         // predicate splits "we CANNOT do what you asked" from "do NOT do
         // what you asked", and a malformed value is neither — it is a
-        // request nobody can interpret, so it refuses for `.auto` too the
-        // day `.auto` starts resolving paged.
+        // request nobody can interpret, so it refuses for `.auto` too,
+        // which since v0.8.0 is every slot that reaches here.
         var pagedDType = DType.float16
         if resolvedKind == .paged {
             pagedDType = try Self.pagedPoolDType(environment: environment)
@@ -627,9 +622,9 @@ extension EngineV2Factory {
         // degrade-or-refuse rule itself lives in
         // `EngineV2KVBackendPolicy.degradesPagedFailure`, next to the
         // other four selection layers and unit-testable without building
-        // an engine; note the degrade branch is currently reachable only
-        // once `.auto` starts resolving paged, since today it short-
-        // circuits to contiguous before any of this runs.
+        // an engine. Since v0.8.0 resolves `.auto` to paged, the degrade
+        // branch is the COMMON path for a paged-ineligible machine, not a
+        // corner: every `.auto` slot reaches this code.
         //
         // The refusal is a catchable throw, never a trap: the slot factory
         // maps it to ERROR `engine_v2_refusal` (reason

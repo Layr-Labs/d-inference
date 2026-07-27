@@ -81,8 +81,9 @@ struct EngineV2KVBackendPolicyTests {
                 EngineV2KVBackendPolicy.killSwitchDisabled(environment: [key: negative]),
                 "\(negative) must kill")
         }
-        // Affirmatives and typos leave explicit paged eligibility enabled;
-        // auto still resolves contiguous independently.
+        // Affirmatives and typos leave paged eligibility enabled; this layer
+        // says nothing about what `.auto` resolves to, which is decided in
+        // `EngineV2Factory.prepareProductionBackend`.
         for benign in ["1", "true", "yes", "on", "junk", ""] {
             #expect(
                 !EngineV2KVBackendPolicy.killSwitchDisabled(environment: [key: benign]),
@@ -112,11 +113,12 @@ struct EngineV2KVBackendPolicyTests {
         #expect(autoVLM.veto == nil)
 
         // The LIFT. Once the cache affirms span masks the VLM slot is an
-        // ordinary slot: paged passes through, and auto keeps resolving
-        // contiguous on its own merits rather than because of a veto. This
-        // is what makes the veto self-lifting — no edit here was needed for
-        // paged to start serving vision, and none will be needed for the
-        // next backend that implements it.
+        // ordinary slot: paged passes through, and auto passes through
+        // UNVETOED to resolve on its own merits (paged, as of v0.8.0)
+        // rather than being forced. This is what makes the veto
+        // self-lifting — no edit here was needed for paged to start serving
+        // vision, and none will be needed for the next backend that
+        // implements it.
         let vouchedPaged = EngineV2KVBackendPolicy.applySlotVetoes(
             selection: .paged, isVLM: true, pagedHonorsSpanMasks: true)
         #expect(vouchedPaged.selection == .paged)

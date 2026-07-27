@@ -175,7 +175,9 @@ struct KVBackendPostureTests {
             daemonRunning: true, now: 1002, heartbeatIntervalSecs: heartbeat)
         #expect(check(honoured, "kv backend posture")?.status == .pass)
 
-        // auto resolving to contiguous is the DESIGNED outcome, not a fault.
+        // `auto` promises nothing, so ANY backend it lands on passes. Since
+        // v0.8.0 it resolves paged and reaches contiguous by degrading, and
+        // that degrade is still not a posture fault.
         let auto = KVPostureDiagnosis.checks(
             state: state(slots: [
                 .init(model: "gemma-4-26b", kvBackend: "contiguous", kvBackendRequested: "auto")

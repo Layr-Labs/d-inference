@@ -48,22 +48,13 @@ public enum ThroughputSweep {
     /// per-batch medians.
     ///
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory. `.auto` resolves CONTIGUOUS: the v0.8.0 flip to paged was
-    /// reverted because paged adoption is not transparent. On
-    /// gemma-4-e2b-it-4bit at a 28,609-token prompt — 28,416 matched, of
-    /// which `frozenFullReplay` re-executes 25,600 as cold arithmetic, so
-    /// only 2,816 tokens (9.8%) are GENUINELY adopted — paged ADOPTED
-    /// diverges from paged COLD at completion token 20 of 32, while
-    /// contiguous adoption is exact. The adopted span is quoted with its
-    /// denominator on purpose: 28,416 alone reads as a diffuse 28k-token
-    /// defect when the divergence in fact comes out of an under-3k window.
-    /// So the same prompt and config answer differently depending on cache
-    /// state the caller cannot see. Paged is opt-in per
-    /// slot; an explicit `.paged` REFUSES rather than degrading. Either way
-    /// the selection is not the outcome, so the report carries the backend
-    /// each cell ACTUALLY built with — per cell in
-    /// `decode[].resolvedKVBackend`, and de-duplicated in the `kvBackend`
-    /// block.
+    /// factory. `.auto` resolves PAGED as of v0.8.0 (see
+    /// `EngineV2Factory.prepareProductionBackend`) but still degrades to
+    /// contiguous on a box that cannot serve paged; an explicit `.paged`
+    /// REFUSES rather than degrading. Either way the selection is not the
+    /// outcome, so the report carries the backend each cell ACTUALLY built
+    /// with — per cell in `decode[].resolvedKVBackend`, and de-duplicated in
+    /// the `kvBackend` block.
     public static func run(
         modelID: String,
         modelDirectory: URL,

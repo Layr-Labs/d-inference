@@ -4,10 +4,10 @@ import Foundation
 ///
 /// Every `darkbloom benchmark` mode that constructs an engine records one of
 /// these, because every one of them can measure a backend nobody selected:
-/// `--kv-backend auto` resolves CONTIGUOUS (the v0.8.0 flip to paged was
-/// reverted — paged is opt-in), and an explicit `paged` can still be vetoed
-/// by the fleet kill switch. A phase that cannot name its backend produces
-/// numbers that belong to no arm.
+/// `--kv-backend auto` resolves PAGED as of v0.8.0 but degrades to
+/// contiguous on a box that cannot serve paged, and an explicit `paged` can
+/// still be vetoed by the fleet kill switch. A phase that cannot name its
+/// backend produces numbers that belong to no arm.
 ///
 /// One shape across the sweep, the scheduler-prefill run, and the arrival
 /// benchmark, so `scripts/gemma_contbatch` parses one vocabulary: the kind is

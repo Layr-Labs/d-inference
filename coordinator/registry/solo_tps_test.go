@@ -25,6 +25,7 @@ func enablePerModelQualityCap(t *testing.T, reg *Registry, seed, killSwitch, min
 		qualityCapPerModelTPS = true
 		qualityCapSoloMinSamples = defaultQualityCapSoloMinSamples
 		modelSoloTPSSeed = nil
+		modelSoloTPSSeedByClass = nil
 		modelSoloTPSSeedFleet = nil
 		qualityCapOvercommitByModel = nil
 	})

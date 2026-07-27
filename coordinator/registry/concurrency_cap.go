@@ -101,15 +101,26 @@ var qualityCapOvercommitByModel map[string]float64
 // lifecycle as qualityCapOvercommitByModel: written once by
 // SetQualityConcurrencyCap before serving, read-only on routing paths.
 //
-// modelSoloTPSSeed holds EVERY parsed seed entry, class-qualified
-// ("gemma-4-26b-qat-4bit@m4|max") and unqualified ("gemma-4-26b-qat-4bit")
-// alike. modelSoloTPSSeedFleet holds only the unqualified ones, each already
-// clamped by soloSeedFleetFallbacks, so the routing-path lookup is two map
-// reads and no iteration.
+// modelSoloTPSSeed holds EVERY parsed seed entry as the operator wrote it,
+// class-qualified ("gemma-4-26b-qat-4bit@m4|max") and unqualified
+// ("gemma-4-26b-qat-4bit") alike. It is the PARSE result, not a lookup table:
+// routing never reads it.
+//
+// modelSoloTPSSeedByClass is the routing-path table, nested model → class →
+// rate. Nested rather than flat-with-a-composite-key because the flat form
+// forced soloTPSSeedForClass to BUILD "model@class" on every probe — and that
+// probe runs once per candidate provider per request inside
+// snapshotProviderLocked, under both r.mu and p.mu, ~94 times on a full fleet.
+// Two map reads allocate nothing; one string concatenation allocates every
+// time.
+//
+// modelSoloTPSSeedFleet holds only the unqualified entries, each already
+// clamped by soloSeedFleetFallbacks.
 var (
 	qualityCapPerModelTPS    = true
 	qualityCapSoloMinSamples = defaultQualityCapSoloMinSamples
 	modelSoloTPSSeed         map[string]float64
+	modelSoloTPSSeedByClass  map[string]map[string]float64
 	modelSoloTPSSeedFleet    map[string]float64
 )
 
@@ -144,6 +155,7 @@ func (r *Registry) SetQualityConcurrencyCap(enabled bool, overcommit, floorTPS f
 		qualityCapSoloMinSamples = 1
 	}
 	modelSoloTPSSeed = parseModelFloatMap(os.Getenv(modelSoloTPSSeedEnv))
+	modelSoloTPSSeedByClass = soloSeedByClass(modelSoloTPSSeed)
 	modelSoloTPSSeedFleet = soloSeedFleetFallbacks(modelSoloTPSSeed)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -214,6 +226,38 @@ func parseModelFloatMap(raw string) map[string]float64 {
 // the entry separator, so the grammar stays inside parseModelFloatMap.
 const soloSeedClassSep = "@"
 
+// soloSeedByClass pivots the flat parsed seed table into model → class → rate,
+// so the routing-path lookup is two map reads instead of a concatenation.
+// Unqualified entries are NOT folded in: they resolve through
+// modelSoloTPSSeedFleet, which applies the slowest-class clamp below, and
+// putting them here under a synthetic class key would let a provider match the
+// unclamped value.
+//
+// Precomputed at startup, read-only thereafter, same lifecycle as everything
+// else SetQualityConcurrencyCap writes.
+func soloSeedByClass(seed map[string]float64) map[string]map[string]float64 {
+	if len(seed) == 0 {
+		return nil
+	}
+	out := make(map[string]map[string]float64)
+	for key, v := range seed {
+		model, class, qualified := strings.Cut(key, soloSeedClassSep)
+		if !qualified {
+			continue
+		}
+		byClass := out[model]
+		if byClass == nil {
+			byClass = make(map[string]float64, 1)
+			out[model] = byClass
+		}
+		byClass[class] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // soloSeedFleetFallbacks extracts the UNQUALIFIED seed entries and clamps each
 // to the slowest class-qualified seed declared for the same model.
 //
@@ -274,11 +318,19 @@ func soloSeedFleetFallbacks(seed map[string]float64) map[string]float64 {
 // ChipTier "Unknown" (HardwareDetector.parseChipIdentity), i.e. class
 // "Unknown|Unknown", so it matches no class-qualified entry and takes (2) or
 // (3). Both are floors, never the fast class's rate.
+// HOT PATH: once per candidate provider per request, inside
+// snapshotProviderLocked under both r.mu and p.mu. Every lookup here is a map
+// read against an already-lowered key; nothing is concatenated and nothing is
+// allocated when the strings are already lower-case ASCII (strings.ToLower
+// returns its argument unchanged in that case, which is the common one — the
+// class key is built from a fixed vocabulary and most build ids are slugs).
 func soloTPSSeedForClass(model, chipClass string) (float64, bool) {
 	m := strings.ToLower(model)
-	if chipClass != "" {
-		if v, ok := modelSoloTPSSeed[m+soloSeedClassSep+strings.ToLower(chipClass)]; ok {
-			return v, true
+	if chipClass != "" && modelSoloTPSSeedByClass != nil {
+		if byClass := modelSoloTPSSeedByClass[m]; byClass != nil {
+			if v, ok := byClass[strings.ToLower(chipClass)]; ok {
+				return v, true
+			}
 		}
 	}
 	v, ok := modelSoloTPSSeedFleet[m]

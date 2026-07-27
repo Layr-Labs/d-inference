@@ -166,14 +166,14 @@ extension EngineV2Bridge {
             // asked for. Without this the two populations the v0.8.0
             // rollout must separate — contiguous-by-choice and
             // paged-that-fell-back — are the same value on the wire. With
-            // `.auto` resolving contiguous and paged opt-in per slot, the
-            // live case is a paged-configured fleet under the
-            // `DARKBLOOM_CBV2_PAGED_KV` kill switch: it serves contiguous,
-            // deliberately, and nothing else on the wire says so.
+            // `.auto` resolving paged, the common case is a box that could
+            // not build paged and degraded (kernel preflight, physical
+            // capacity, ineligibility, pool construction); the deliberate
+            // case is the `DARKBLOOM_CBV2_PAGED_KV` kill switch. Nothing
+            // else on the wire separates them.
             // nil ⇒ no degrade (see `BackendSlotCapacity`); it is NOT the
             // unknown state, which is `kvBackend` itself being absent.
-            kvBackendFallbackReason: Self.heartbeatFallbackReason(
-                kvBackendFallbackReason),
+            kvBackendFallbackReason: clampedKVBackendFallbackReason,
             stepsExecuted: Int64(wedgeMonitor.lastStepsSample),
             admits: Int64(wedgeMonitor.admits),
             firstTokensEmitted: Int64(wedgeMonitor.firstTokens),
@@ -183,16 +183,26 @@ extension EngineV2Bridge {
         )
     }
 
-    /// Longest fallback reason the heartbeat will carry. The reasons are
-    /// built from interpolated errors (`"kernel_preflight: \(error)"`), so
-    /// their length is bounded by whatever MLX/Metal produced — and unlike
-    /// the once-per-load telemetry event, this rides EVERY heartbeat of
-    /// every slot. Truncation loses tail detail, never the leading class
-    /// token the coordinator groups on.
+    /// Longest fallback reason the heartbeat will carry, in Characters. The
+    /// reasons are built from interpolated errors
+    /// (`"kernel_preflight: \(error)"`), so their length is bounded by
+    /// whatever MLX/Metal produced — and unlike the once-per-load telemetry
+    /// event, this rides EVERY heartbeat of every slot. Truncation loses tail
+    /// detail, never the leading class token the coordinator groups on.
+    ///
+    /// The coordinator clamps again, at 1024 BYTES
+    /// (`registry.maxKVFallbackReasonBytes`), deliberately looser: 200
+    /// Characters is at most ~800 bytes, so a conforming provider never
+    /// reaches that clamp, and the coordinator's copy exists because it must
+    /// not trust this one. Raise this bound before raising that one.
     static let maxHeartbeatFallbackReasonLength = 200
 
     /// Clamp a fallback reason to the heartbeat budget. nil stays nil: the
     /// absence is the "did not degrade" signal and must never become "".
+    ///
+    /// `String.count` is O(n) grapheme-cluster counting and `prefix` walks the
+    /// string again, so this runs ONCE per slot construction
+    /// (`clampedKVBackendFallbackReason`) rather than per slot per heartbeat.
     static func heartbeatFallbackReason(_ reason: String?) -> String? {
         guard let reason else { return nil }
         guard reason.count > maxHeartbeatFallbackReasonLength else { return reason }

@@ -31,6 +31,33 @@ func kvHeartbeat(slots ...protocol.BackendSlotCapacity) *protocol.HeartbeatMessa
 
 func kvStr(s string) *string { return &s }
 
+// SlotKVBackend, SlotKVBackendFallback and SlotKVBackendTag were exported
+// accessors until it turned out nothing in production called them —
+// SlotKVBackendTags is the only one the API layer uses, deliberately, because
+// resolving the two dimensions separately can pair a pre-reload kind with a
+// post-reload reason. They survive here as TEST-ONLY methods: the assertions
+// they carry are still the ones that matter (the stored observation must stay
+// faithful to the wire, and the bounded tag must be DERIVED from it rather
+// than stored), and keeping them out of the package's exported surface stops
+// a future caller from reintroducing the split-read race.
+
+func (r *Registry) SlotKVBackend(providerID, model string) (kind string, observed bool) {
+	obs, observed := r.slotKVBackendObservation(providerID, model)
+	return obs.Kind, observed
+}
+
+// SlotKVBackendFallback is the verbatim (clamped) degrade reason — the raw
+// detail the bounded metric tag deliberately throws away.
+func (r *Registry) SlotKVBackendFallback(providerID, model string) (reason string, observed bool) {
+	obs, observed := r.slotKVBackendObservation(providerID, model)
+	return obs.FallbackReason, observed
+}
+
+func (r *Registry) SlotKVBackendTag(providerID, model string) string {
+	backend, _ := r.SlotKVBackendTags(providerID, model)
+	return backend
+}
+
 // kvSlotDegraded is a slot that resolved to `backend` because paged FELL BACK,
 // carrying the provider's reason.
 func kvSlotDegraded(model, backend, reason string) protocol.BackendSlotCapacity {
@@ -265,6 +292,49 @@ func TestSlotKVBackendUnknownProviderIsUnknown(t *testing.T) {
 	}
 	if got := r.SlotKVBackendTag("", ""); got != KVBackendUnknown {
 		t.Errorf("empty ids = %q, want %q", got, KVBackendUnknown)
+	}
+	// Nil receivers: the API layer resolves attribution off a provider it
+	// already holds, and a nil registry is the in-memory/test shape.
+	var nilProvider *Provider
+	if backend, fallback := nilProvider.SlotKVBackendTags("gemma"); backend != KVBackendUnknown ||
+		fallback != KVFallbackUnknown {
+		t.Errorf("nil provider = (%q, %q), want both unknown", backend, fallback)
+	}
+	var nilRegistry *Registry
+	if backend, fallback := nilRegistry.SlotKVBackendTags("p", "gemma"); backend != KVBackendUnknown ||
+		fallback != KVFallbackUnknown {
+		t.Errorf("nil registry = (%q, %q), want both unknown", backend, fallback)
+	}
+}
+
+// The API layer emits these values as metric tags WITHOUT re-normalizing, so
+// the guarantee has to hold here: neither producer can return "". An empty tag
+// renders as a bare `kv_backend:` on the dashboard and silently pools with
+// nothing. Exhaustive over the tri-state input space rather than a sample:
+// this is the property the deleted normalizeKVBackendTag/…FallbackTag pair was
+// defending against, and it is cheaper to prove than to re-check per request.
+func TestKVBackendTagsAreNeverEmpty(t *testing.T) {
+	kinds := []string{"", KVBackendPaged, KVBackendContiguous, "paged_quantized", "  ", "a:b"}
+	reasons := []string{
+		"", "kill_switch", "kernel_preflight: boom", "physical_capacity: 1 > 0",
+		"ineligible: vlm", "pool_construction_capacity: x", "unheard-of", ":", "  :  ",
+		strings.Repeat("x", maxKVFallbackReasonBytes*2),
+	}
+	for _, observed := range []bool{true, false} {
+		for _, kind := range kinds {
+			if got := KVBackendTag(kind, observed); got == "" {
+				t.Errorf("KVBackendTag(%q, %v) = \"\"", kind, observed)
+			}
+		}
+		for _, reason := range reasons {
+			if got := KVBackendFallbackTag(reason, observed); got == "" {
+				t.Errorf("KVBackendFallbackTag(%q, %v) = \"\"", reason, observed)
+			}
+		}
+	}
+	if backend, fallback := UnknownKVBackendTags(); backend != KVBackendUnknown ||
+		fallback != KVFallbackUnknown {
+		t.Errorf("UnknownKVBackendTags() = (%q, %q)", backend, fallback)
 	}
 }
 

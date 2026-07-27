@@ -212,7 +212,7 @@ def main() -> int:
     # The backend every phase was actually built with. Extracted before the
     # summary so a run that cannot name its backends never reaches a report,
     # let alone a comparison.
-    kv_backend = resolve_kv_backend(args, sweep, scheduler, arrival)
+    kv_backend = resolve_kv_backend(args.kv_backend, sweep, scheduler, arrival)
     summary = summarize(sweep, scheduler, arrival)
     model_snapshot = resolve_model_snapshot(raw_outputs)
     hardware = sweep["hardware"]

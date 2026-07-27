@@ -78,6 +78,32 @@ extension EngineV2Bridge {
         #endif
     }
 
+    /// This slot's posture: the resolved KV backend plus the three MTP facts,
+    /// under the model id the bridge itself holds.
+    ///
+    /// ONE producer for BOTH consumers, which is the point. The fleet-facing
+    /// `engine_v2_slot_posture` telemetry event and the box-facing
+    /// `DaemonState.slots` inventory that `darkbloom status` / `doctor` render
+    /// used to assemble this 4-tuple independently from the same two sources.
+    /// Their agreement was a coincidence maintained by hand — and the daemon
+    /// side keyed `model` off the caller's dictionary key while telemetry used
+    /// `bridge.modelId`, so the two could in principle name the same slot
+    /// differently. Both now read this.
+    ///
+    /// `nonisolated`: it reads only `let` state (`modelId`, `kvBackendKind`)
+    /// plus the snapshot the caller already awaited, so the capacity tick does
+    /// not pay a second actor hop per slot to assemble it.
+    nonisolated func slotPosture(
+        _ snapshot: ProviderMTPStatusSnapshot
+    ) -> DaemonSlotPostureBuilder.LiveSlot {
+        DaemonSlotPostureBuilder.LiveSlot(
+            model: modelId,
+            kvBackend: kvBackendKind.rawValue,
+            mtpEnabled: snapshot.configured,
+            mtpActive: snapshot.active,
+            mtpInactiveReason: snapshot.fallbackReason?.rawValue)
+    }
+
     /// The producer for the v0.8.0 MTP and paged-pool telemetry fields.
     ///
     /// WHY THIS EMISSION POINT. These fields exist so a paged rollout can be
@@ -106,25 +132,16 @@ extension EngineV2Bridge {
     /// only a concrete `EngineV2` produces, and standing up a real engine
     /// would make this a weights-and-Metal test instead of a field test.
     func emitSlotPostureTelemetry(_ snapshot: ProviderMTPStatusSnapshot) {
+        let posture = slotPosture(snapshot)
         var fields: [String: AnyCodableValue] = [
-            "component": .string("engine"),
-            "operation": .string("engine_v2_slot_posture"),
-            // Three axes, three keys — see the ruling in
-            // docs/reference/telemetry-schema.md. `backend` is the engine
-            // executing inference; `kv_backend` is the KV storage kind, the
-            // same key and vocabulary as BackendSlotCapacity.KVBackend, so a
-            // rollout dashboard groups telemetry and capacity identically.
-            "backend": .string("engine_v2"),
-            "kv_backend": .string(kvBackendKind.rawValue),
-            "model": .string(modelId),
-            "mtp_enabled": .bool(snapshot.configured),
-            "mtp_active": .bool(snapshot.active),
+            "mtp_enabled": .bool(posture.mtpEnabled),
+            "mtp_active": .bool(posture.mtpActive),
         ]
         // Present whenever MTP is not PRODUCTIVELY running, which includes
         // `inert_kv_unsupported` — enabled, drafter resident, zero rounds.
         // Absent only when MTP is genuinely producing rounds.
-        if let reason = snapshot.fallbackReason {
-            fields["mtp_inactive_reason"] = .string(reason.rawValue)
+        if let reason = posture.mtpInactiveReason {
+            fields["mtp_inactive_reason"] = .string(reason)
         }
         // OMITTED, never 0.0, when nothing was proposed. A zero would read as
         // "the target rejects every draft" rather than "no drafts existed",
@@ -166,13 +183,13 @@ extension EngineV2Bridge {
         // a key that survives the filter but is never written reads as a
         // legitimate zero to anyone building a panel on it. Add each key in
         // the same change as its mechanism, across all three mirrors.
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .info,
-            kind: .engineHealth,
-            message: "engine_v2: slot posture"
-        )
-        event.fields = TelemetryFieldFilter.filter(fields)
-        emit(event)
+        emit(
+            EngineHealthEvent.make(
+                severity: .info,
+                message: "engine_v2: slot posture",
+                operation: "engine_v2_slot_posture",
+                model: posture.model,
+                kvBackend: posture.kvBackend,
+                extra: fields))
     }
 }

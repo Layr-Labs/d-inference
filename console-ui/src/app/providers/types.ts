@@ -46,6 +46,25 @@ export interface MyBackendSlot {
   // read it as "contiguous", or the paged-rollout comparison silently counts
   // every legacy provider as a contiguous sample.
   kv_backend?: "paged" | "contiguous" | string;
+  // Why this slot ended up on `kv_backend` instead of the backend it was asked
+  // for, mirrored from Go BackendSlotCapacity.KVBackendFallbackReason
+  // (`*string`, omitempty). Verbatim provider text: "kill_switch",
+  // "kernel_preflight: …", "physical_capacity: …", "ineligible: …",
+  // "pool_construction_capacity: …".
+  //
+  // READ IT AS A PAIR WITH `kv_backend`, and note the ABSENCE RULE IS
+  // INVERTED. Undefined here means NO DEGRADE — the opposite of `kv_backend`,
+  // where undefined means UNKNOWN. Both keys ship together in v0.8.0, so a
+  // slot that named a `kv_backend` is running a build that also names this
+  // whenever there is one: `kv_backend` present + this undefined is an
+  // authoritative "did not degrade", and only `kv_backend` undefined is
+  // unknown.
+  //
+  // `kv_backend` alone cannot answer the question the rollout has to ask.
+  // Since `.auto` resolves paged, a slot reporting "contiguous" is either an
+  // operator who chose contiguous or a box that could not build paged, and
+  // those are opposite signals wearing the same label.
+  kv_backend_fallback_reason?: string;
 }
 
 export interface MyBackendCapacity {

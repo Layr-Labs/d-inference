@@ -26,8 +26,7 @@ enum KVBackendPosture {
     /// reported as suspect. Four missed writes, floored at 10 s so a fast
     /// heartbeat cannot make an ordinary CLI round-trip look stale.
     static func staleAfterSeconds(heartbeatIntervalSecs: UInt64) -> Double {
-        let refreshPeriod = Double(max(1, heartbeatIntervalSecs / 2))
-        return max(4 * refreshPeriod, 10)
+        max(4 * refreshPeriodSeconds(heartbeatIntervalSecs: heartbeatIntervalSecs), 10)
     }
 
     /// How long a snapshot may go unrefreshed before the daemon is called
@@ -281,8 +280,9 @@ enum KVPostureDiagnosis {
     /// The verdict: did every EXPLICIT backend request get honoured?
     ///
     /// `auto` is never a failure — it promises nothing, so whichever
-    /// backend it lands on is by definition honoured. (It resolves
-    /// contiguous, and would still degrade there on failure.) An
+    /// backend it lands on is by definition honoured. (It resolves paged as
+    /// of v0.8.0 and degrades to contiguous on failure, so an `auto` slot
+    /// reporting contiguous is expected output, not a finding.) An
     /// explicit request is a claim someone verifies against, so a refusal
     /// (no engine built, box serving nothing for that model) and a silent
     /// degrade (kill switch, VLM veto) both FAIL.

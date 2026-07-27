@@ -243,10 +243,13 @@ It carries the provider's degrade reason verbatim — `kill_switch`,
 `pool_construction_capacity: …` — when a slot resolved to a backend other than
 the one it was configured for. The resolved kind alone cannot separate an
 operator who chose contiguous from a paged slot that fell back, and those are
-opposite signals: a choice and a regression. `.auto` resolves **contiguous** in
-v0.8.0 with paged opt-in per slot, so the live case today is a
-`engine_v2_kv_backend = "paged"` fleet running under `DARKBLOOM_CBV2_PAGED_KV=0`
-— it serves contiguous by design, and nothing else on the wire says so.
+opposite signals: a choice and a regression. `.auto` resolves **paged** in
+v0.8.0, so every class above is live on the default fleet:
+`kernel_preflight`, `physical_capacity`, `ineligible` and
+`pool_construction_capacity` mean the box could not serve paged and degraded
+(the rollout's primary failure signal), while `kill_switch` means
+`DARKBLOOM_CBV2_PAGED_KV=0` and is a deliberate override. Nothing else on the
+wire separates them, and they should not be alerted on the same way.
 
 **Its omission rule is the INVERSE of `kv_backend`'s, and the two must be read
 as a pair.** Absent `kv_backend` is UNKNOWN; absent `kv_backend_fallback_reason`

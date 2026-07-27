@@ -90,11 +90,10 @@ struct Status: AsyncParsableCommand {
             print("Daemon: not running (stale state file)")
             return
         }
-        if state.isStale(now: now) {
-            print("Daemon: running (pid \(state.pid)) but last update \(Int(state.ageSeconds(now: now)))s ago — possibly wedged")
-        } else {
-            print("Daemon: running (pid \(state.pid), up \(formatUptime(state.uptimeSeconds(now: now))))")
-        }
+        print(daemonHealthLine(
+            state: state,
+            now: now,
+            heartbeatIntervalSecs: config.coordinator.heartbeatIntervalSecs))
 
         if let trust = state.trust {
             let advice = TrustReasonCatalog.advice(level: trust.trustLevel, status: trust.status, reason: trust.reason)
@@ -114,8 +113,9 @@ struct Status: AsyncParsableCommand {
 
         // Which KV backend is this box actually serving on, and is MTP
         // producing drafts or merely enabled? Both read the same state file
-        // as everything above, so the block carries its own age — see
-        // `KVBackendPosture` for why a bare value would be worse than none.
+        // as everything above, against the same `staleAfter` bar, so the block
+        // carries its own age — see `KVBackendPosture` for why a bare value
+        // would be worse than none.
         for line in KVBackendPosture.statusLines(
             state: state,
             now: now,
@@ -123,6 +123,53 @@ struct Status: AsyncParsableCommand {
         {
             print(line)
         }
+    }
+
+    /// Both bars come from `KVBackendPosture`, the same source the
+    /// slot-posture block reads. `DaemonState.isStale` defaults to a flat
+    /// 90 s while that block derives its bound from `heartbeat_interval_secs`,
+    /// so at the default 5 s heartbeat — 90 s against 10 s — a 30-second-old
+    /// snapshot printed "Daemon: running" immediately above "Slot posture:
+    /// STALE": two verdicts on one file, fourteen lines apart, and nothing
+    /// to say which to believe.
+    ///
+    /// THREE states, because one derived bar is still one bar too few.
+    /// "The snapshot is suspect" and "the daemon is stuck" are different
+    /// claims. `staleAfterSeconds` is four missed writes — 10 s at the
+    /// default heartbeat — which transient load crosses on a perfectly
+    /// healthy box, so it may only discount the live fields below it.
+    /// Only `wedgedAfterSeconds`, eight missed writes floored at 90 s, is
+    /// an accusation against the daemon, and it is the same bar `doctor`
+    /// withholds its backend verdict at.
+    ///
+    /// `WatchdogProbe`, `WatchdogRecoveryService` and `DoctorRunner` still
+    /// take the flat 90 s default; moving them is a behavior change to
+    /// restart and health-gating logic and needs its own review.
+    func daemonHealthLine(
+        state: DaemonState,
+        now: Double,
+        heartbeatIntervalSecs: UInt64
+    ) -> String {
+        let age = state.ageSeconds(now: now)
+        let ageText = "\(Int(age.rounded()))s"
+        let wedgedAfter = KVBackendPosture.wedgedAfterSeconds(
+            heartbeatIntervalSecs: heartbeatIntervalSecs)
+        if age > wedgedAfter {
+            return "Daemon: running (pid \(state.pid)) but last update \(ageText) ago "
+                + "(expected within \(Int(wedgedAfter))s) — possibly wedged"
+        }
+
+        let uptime = formatUptime(state.uptimeSeconds(now: now))
+        let staleAfter = KVBackendPosture.staleAfterSeconds(
+            heartbeatIntervalSecs: heartbeatIntervalSecs)
+        guard age > staleAfter else {
+            return "Daemon: running (pid \(state.pid), up \(uptime))"
+        }
+        let period = KVBackendPosture.refreshPeriodSeconds(
+            heartbeatIntervalSecs: heartbeatIntervalSecs)
+        return "Daemon: running (pid \(state.pid), up \(uptime)) but last update \(ageText) ago "
+            + "(expected every ~\(Int(period))s) — snapshot stale, the fields below may be "
+            + "out of date"
     }
 
     private func formatUptime(_ seconds: Double) -> String {

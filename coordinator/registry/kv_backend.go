@@ -2,6 +2,7 @@ package registry
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -105,9 +106,19 @@ var knownKVFallbackClasses = map[string]struct{}{
 
 // maxKVFallbackReasonBytes bounds the stored reason. It is untrusted provider
 // input held for the life of a provider session across up to
-// maxTrackedKVBackendSlots slots; the provider already caps it well under this,
-// so the clamp only ever fires on a misbehaving or future build.
-const maxKVFallbackReasonBytes = 256
+// maxTrackedKVBackendSlots slots.
+//
+// DELIBERATELY ABOVE THE PRODUCER'S BOUND, not equal to it. The Swift provider
+// clamps to 200 Characters in EngineV2Bridge.heartbeatFallbackReason, so a
+// conforming build never reaches this clamp — it only fires on a misbehaving
+// or future one. Keeping the coordinator's bound strictly looser means the two
+// cannot fight over a legitimate reason, and keeping it AT ALL is the point:
+// this side of the trust boundary must not depend on the other side having
+// behaved. Raise the provider's bound first if it ever needs to grow.
+//
+// A grapheme cluster can be up to ~4 bytes in UTF-8, so 200 Characters can be
+// ~800 bytes; the difference is why this is not "200 too".
+const maxKVFallbackReasonBytes = 1024
 
 // slotKVBackend is one slot's KV-backend observation. Kind and FallbackReason
 // live in ONE value because they are only meaningful together and must be
@@ -180,11 +191,22 @@ func (p *Provider) recordKVBackendsLocked(bc *protocol.BackendCapacity) {
 // clampKVFallbackReason bounds an untrusted reason to maxKVFallbackReasonBytes.
 // Truncation is from the tail, so the leading class token the metric groups on
 // always survives.
+//
+// RUNE-SAFE. A plain reason[:n] byte slice can cut a multi-byte rune in half,
+// and these reasons interpolate errors straight out of MLX/Metal — a
+// non-ASCII path or device name is entirely possible. The trailing fragment
+// would then be invalid UTF-8, which Postgres rejects on the route-outcome
+// write and Go renders as U+FFFD in logs. Backing up to the last rune boundary
+// costs at most three bytes of a 1 KiB tail.
 func clampKVFallbackReason(reason string) string {
 	if len(reason) <= maxKVFallbackReasonBytes {
 		return reason
 	}
-	return reason[:maxKVFallbackReasonBytes]
+	cut := maxKVFallbackReasonBytes
+	for cut > 0 && !utf8.RuneStart(reason[cut]) {
+		cut--
+	}
+	return reason[:cut]
 }
 
 // kvBackendForModelLocked reports the last observation for this provider's slot
@@ -199,6 +221,11 @@ func (p *Provider) kvBackendForModelLocked(model string) (obs slotKVBackend, obs
 
 // slotKVBackendObservation is the one lookup both dimensions come from.
 // Read-only; takes no registry write lock and never touches routing state.
+//
+// Unexported because nothing outside this package needs the RAW pair — the
+// verbatim reason ("pool_construction_capacity: needed N, available M") is
+// deliberately not what metrics carry. Package tests use it to assert what
+// clampKVFallbackReason stored; production goes through SlotKVBackendTags.
 func (r *Registry) slotKVBackendObservation(providerID, model string) (slotKVBackend, bool) {
 	if r == nil || providerID == "" || model == "" {
 		return slotKVBackend{}, false
@@ -212,40 +239,40 @@ func (r *Registry) slotKVBackendObservation(providerID, model string) (slotKVBac
 	return p.kvBackendForModelLocked(model)
 }
 
-// SlotKVBackend returns the last KV backend the (provider, model) SLOT reported,
-// and whether any heartbeat ever named one.
-func (r *Registry) SlotKVBackend(providerID, model string) (kind string, observed bool) {
-	obs, observed := r.slotKVBackendObservation(providerID, model)
-	return obs.Kind, observed
-}
-
-// SlotKVBackendFallback returns the last degrade reason the (provider, model)
-// SLOT reported, verbatim (clamped), and whether the slot was observed at all.
-//
-// Read it as a pair, exactly as the wire contract says: observed == false is
-// UNKNOWN and says nothing about degrading; observed == true with reason == ""
-// is the authoritative "this slot did not degrade". This is the queryable raw
-// detail — "pool_construction_capacity: needed N, available M" — that the
-// bounded metric tag deliberately throws away.
-func (r *Registry) SlotKVBackendFallback(providerID, model string) (reason string, observed bool) {
-	obs, observed := r.slotKVBackendObservation(providerID, model)
-	return obs.FallbackReason, observed
-}
-
-// SlotKVBackendTags resolves BOTH KV-backend metric dimensions from ONE
-// observation under a single lock. Callers must use this rather than two
-// lookups: a heartbeat landing between them could pair a pre-reload kind with
-// a post-reload reason, manufacturing exactly the mis-attribution the fallback
-// dimension was added to remove.
-func (r *Registry) SlotKVBackendTags(providerID, model string) (backend, fallback string) {
-	obs, observed := r.slotKVBackendObservation(providerID, model)
+// SlotKVBackendTags resolves both metric dimensions for a provider the caller
+// ALREADY holds, without a second registry lookup. Same single-observation
+// guarantee as the Registry method below.
+func (p *Provider) SlotKVBackendTags(model string) (backend, fallback string) {
+	if p == nil || model == "" {
+		return UnknownKVBackendTags()
+	}
+	p.mu.Lock()
+	obs, observed := p.kvBackendForModelLocked(model)
+	p.mu.Unlock()
 	return KVBackendTag(obs.Kind, observed), KVBackendFallbackTag(obs.FallbackReason, observed)
 }
 
-// SlotKVBackendTag is the resolved-kind dimension alone.
-func (r *Registry) SlotKVBackendTag(providerID, model string) string {
-	backend, _ := r.SlotKVBackendTags(providerID, model)
-	return backend
+// SlotKVBackendTags resolves BOTH KV-backend metric dimensions from ONE
+// observation under a single lock. This is the ONLY exported slot accessor,
+// deliberately: resolving the two dimensions separately lets a heartbeat land
+// between the lookups and pair a pre-reload kind with a post-reload reason,
+// manufacturing exactly the mis-attribution the fallback dimension was added
+// to remove. Single-dimension accessors existed and were deleted for that
+// reason; if you need one, take the pair and ignore a half.
+func (r *Registry) SlotKVBackendTags(providerID, model string) (backend, fallback string) {
+	if r == nil || providerID == "" {
+		return UnknownKVBackendTags()
+	}
+	return r.GetProvider(providerID).SlotKVBackendTags(model)
+}
+
+// UnknownKVBackendTags is the metric pair for "no serving slot was ever
+// resolved". Both dimensions are the explicit unknown value, never a real
+// backend and never `none`: coercing an absent observation to
+// contiguous/none would make the rollout dashboard show a clean baseline
+// composed entirely of call sites that measured nothing.
+func UnknownKVBackendTags() (backend, fallback string) {
+	return KVBackendUnknown, KVFallbackUnknown
 }
 
 // KVBackendTag maps a tri-state slot observation onto the bounded metric-tag
@@ -281,7 +308,12 @@ func KVBackendTag(kind string, observed bool) string {
 // A degrade class is the leading token of the reason, which every producer
 // writes as "<class>: <detail>" (or the bare "kill_switch"). The detail is
 // dropped here on purpose — it embeds byte counts and error strings, which
-// would blow out tag cardinality; SlotKVBackendFallback keeps it queryable.
+// would blow out tag cardinality; the raw pair stays available in-package
+// through slotKVBackendObservation.
+//
+// NEVER returns "": every branch names a vocabulary constant. The API layer
+// emits these values as metric tags without re-normalizing, and
+// TestKVBackendTagsAreNeverEmpty is what keeps that safe.
 func KVBackendFallbackTag(reason string, observed bool) string {
 	if !observed {
 		return KVFallbackUnknown
@@ -293,8 +325,9 @@ func KVBackendFallbackTag(reason string, observed bool) string {
 	if i := strings.IndexByte(class, ':'); i >= 0 {
 		class = class[:i]
 	}
-	if _, known := knownKVFallbackClasses[strings.TrimSpace(class)]; known {
-		return strings.TrimSpace(class)
+	class = strings.TrimSpace(class)
+	if _, known := knownKVFallbackClasses[class]; known {
+		return class
 	}
 	return KVFallbackOther
 }

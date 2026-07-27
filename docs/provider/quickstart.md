@@ -152,16 +152,16 @@ end = "08:00"
   it to 8 once, logs a warning saying so, and stamps `config_version`. If
   you want 4, set it again afterwards — from then on it is honoured.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` (default — resolves CONTIGUOUS; grep `case .auto: resolvedKind`
-  in
-  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`).
-  v0.8.0 briefly flipped `"auto"` to paged and reverted it before release:
-  paged ADOPTION is not transparent. On gemma-4 at a 28,672-token prompt a
-  paged slot serving an adopted prefix diverges from its own cold decode at
-  token 20 of 32, while paged cold is deterministic and contiguous is exact
-  in every arm — same prompt and config, different answer depending on cache
-  state the caller cannot see. Disqualifying for a default, acceptable for
-  an opt-in. Paged stays fully available per slot via `"paged"`.
+  `"auto"` (default — resolves **PAGED** as of v0.8.0; grep
+  `case .auto: resolvedKind` in
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
+  for the argument). On the two models the network serves, paged is the arm
+  whose prefix-cache adoption is exact; contiguous is the arm that diverges
+  from its own cold decode. **gemma-4 greedy outputs change under paged** —
+  measurably closer to an fp32 reference, but different text for the same
+  prompt. Set `"contiguous"` per slot, or
+  `DARKBLOOM_CBV2_PAGED_KV=0` fleet-wide, to go back. A box that cannot
+  build paged degrades to contiguous on its own and keeps serving.
   Vision (VLM) models are NOT forced to contiguous. The
   VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
   (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:162`)
@@ -170,9 +170,9 @@ end = "08:00"
   (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:982`),
   which is what the slot factory passes
   (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:190`),
-  so the veto is inert: a VLM slot that ASKS for paged gets paged, like any
-  other model. It is not asking by default, because `"auto"` is contiguous.
-  If you do opt into paged, the concurrency cap above matters: paged only
+  so the veto is inert: a VLM slot gets paged under `"auto"` like any
+  other model.
+  The concurrency cap above matters: paged only
   overtakes contiguous above ~5 concurrent rows, so pairing
   `engine_v2_kv_backend = "paged"` with a low `engine_v2_max_concurrent`
   (say 2) buys you paged at a small loss, not a win. Under `"auto"`, a

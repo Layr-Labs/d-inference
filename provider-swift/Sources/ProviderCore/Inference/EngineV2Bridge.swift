@@ -141,6 +141,13 @@ public actor EngineV2Bridge {
     /// clamping or re-slice policy may branch on it — those key off
     /// `kvBackendKind`, which is the backend that actually exists.
     public let kvBackendFallbackReason: String?
+    /// `kvBackendFallbackReason` already clamped to the heartbeat budget.
+    /// Stored rather than recomputed because the reason is fixed at
+    /// construction while the heartbeat rebuilds every slot's capacity every
+    /// few seconds, and the clamp costs two O(n) grapheme walks
+    /// (`String.count`, then `prefix`) that would otherwise run per slot per
+    /// tick for a value that cannot have changed.
+    let clampedKVBackendFallbackReason: String?
     let tokenizer: TokenizerHandle
     /// Resolved stop-token set (model EOS ∪ tokenizer EOS ∪ extra EOS
     /// tokens) — `buildStopTokenIds` semantics, computed ONCE at bridge
@@ -314,6 +321,8 @@ public actor EngineV2Bridge {
         self.tokenizer = tokenizer
         self.kvBackendKind = kvBackendKind
         self.kvBackendFallbackReason = kvBackendFallbackReason
+        self.clampedKVBackendFallbackReason =
+            Self.heartbeatFallbackReason(kvBackendFallbackReason)
         self.stopTokenIds = EngineV2Translation.stopTokenIds(
             eosTokenIds: eosTokenIds,
             tokenizerEOSTokenId: tokenizer.inner.eosTokenId,
@@ -900,26 +909,24 @@ public actor EngineV2Bridge {
         } else {
             reason = "exact"
         }
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: shortfall.isExact ? .info : .warn,
-            kind: .engineHealth,
-            message: shortfall.isExact
-                ? "engine_v2: paged pool matches the re-sliced grant"
-                : "engine_v2: paged pool cannot follow the re-sliced grant "
-                    + "(pool \(shortfall.poolBytes) B vs grant \(shortfall.requestedBytes) B)")
-        event.fields = TelemetryFieldFilter.filter([
-            "component": .string("engine"),
-            "operation": .string("paged_pool_resize_clamped"),
-            "backend": .string("engine_v2"),
-            "kv_backend": .string("paged"),
-            "model": .string(modelId),
-            "reason": .string(reason),
-            "pool_bytes": .int(shortfall.poolBytes),
-            "pool_deferred_growth_bytes": .int(shortfall.deferredGrowthBytes),
-            "pool_stranded_bytes": .int(shortfall.strandedBytes),
-        ])
-        emit(event)
+        emit(
+            EngineHealthEvent.make(
+                severity: shortfall.isExact ? .info : .warn,
+                message: shortfall.isExact
+                    ? "engine_v2: paged pool matches the re-sliced grant"
+                    : "engine_v2: paged pool cannot follow the re-sliced grant "
+                        + "(pool \(shortfall.poolBytes) B vs grant \(shortfall.requestedBytes) B)",
+                operation: "paged_pool_resize_clamped",
+                model: modelId,
+                // Literal "paged": this event only exists for a paged pool, so
+                // it is a fact about the code path, not a read of this slot.
+                kvBackend: EngineV2KVBackendKind.paged.rawValue,
+                extra: [
+                    "reason": .string(reason),
+                    "pool_bytes": .int(shortfall.poolBytes),
+                    "pool_deferred_growth_bytes": .int(shortfall.deferredGrowthBytes),
+                    "pool_stranded_bytes": .int(shortfall.strandedBytes),
+                ]))
     }
 
     /// Runtime fan-out helper: cancel iff this bridge owns the request-id.
@@ -1429,13 +1436,11 @@ public actor EngineV2Bridge {
     }
 
     /// Route telemetry through the injectable sink (tests) or the shared
-    /// client (production).
+    /// client (production). The rule itself lives in `emitEngineHealth` so the
+    /// static builders in `EngineV2Config` / `EngineV2SlotFactory`, which have
+    /// no bridge to call, cannot drift from it.
     func emit(_ event: TelemetryEvent) {
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        emitEngineHealth(event, sink: emitTelemetry)
     }
 
     // MARK: - Engine request-id minting

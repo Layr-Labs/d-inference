@@ -13,14 +13,10 @@ import "testing"
 // to a sqrt(memory_bandwidth) hardware proxy that is model-agnostic and far
 // below what gemma-4 really does, which pins the cap near 1.
 //
-// The decode rates below are MEASURED, not modelled: gemma-4-26B-A4B-it-qat-4bit
-// on an Apple M4 Max (40 GPU cores, 546 GB/s), release build, medians of five
-// repetitions. See docs/reports/2026-07-25-paged-gate-results.md.
+// The decode rates this file uses are MEASURED, not modelled — see
+// measured_rates_test.go, which is also where the difference between the
+// paged and contiguous arms is recorded.
 const (
-	// Solo (B=1) aggregate decode, measured.
-	measuredSoloTPSPaged      = 98.8
-	measuredSoloTPSContiguous = 107.2
-
 	// The bandwidth proxy the coordinator falls back to with no real
 	// measurement: sqrt(546) ~= 23.4 tok/s.
 	bandwidthProxyTPS = 23.4
@@ -88,18 +84,33 @@ func TestGateG0ABandwidthFallbackWouldPinTheCapForDedicatedModels(t *testing.T) 
 // instead of legacy Qwen2.5-7B data (MAPE 23.4% -> 2.9%), which made the cap
 // TIGHTER. This asserts the tightening did not overshoot past the measured
 // fleet.
+//
+// The threshold comes from soloTPSForCap, which bisects the SAME wantQualityCap
+// that mirrors production, rather than from a hand-inverted
+// `floor*(1 + N*k)`. That closed form inverts `qualityConcurrency` alone and
+// omits the step production actually applies on top of it:
+// `cap = ceil(strictQualityBatch * overcommit)`. At N=8 and overcommit 1.2 the
+// strict quality batch only has to reach 6 — ceil(6*1.2) = 8 — so the
+// hand-derived number demanded a solo rate for a batch of 8 that the
+// coordinator never requires, and would have failed this gate on a fleet the
+// coordinator would happily have dispatched 8 to.
 func TestGateG0ARefittedLoadFactorStillAdmitsTheMeasuredFleet(t *testing.T) {
 	if effectiveTPSLoadFactor <= 0 {
 		t.Fatalf("effectiveTPSLoadFactor = %v, must be positive", effectiveTPSLoadFactor)
 	}
-	// The slowest rate that still earns the full ceiling under the current k.
-	// b = floor((tps/floor - 1)/k) >= 8  =>  tps >= floor*(1 + 8k).
-	threshold := prodFloorTPS * (1 + float64(engineCeiling)*effectiveTPSLoadFactor)
+	threshold := soloTPSForCap(prodFloorTPS, engineCeiling, defaultQualityCapOvercommit)
 	if measuredSoloTPSPaged < threshold {
-		t.Fatalf("measured paged solo %.1f tok/s is below the %.1f tok/s needed for a "+
+		t.Fatalf("measured paged solo %.1f tok/s is below the %.2f tok/s needed for a "+
 			"cap of %d at k=%v: the re-fit overshot the fleet it was fitted to",
 			measuredSoloTPSPaged, threshold, engineCeiling, effectiveTPSLoadFactor)
 	}
-	t.Logf("k=%v requires %.1f tok/s for cap %d; measured paged %.1f, contiguous %.1f",
-		effectiveTPSLoadFactor, threshold, engineCeiling, measuredSoloTPSPaged, measuredSoloTPSContiguous)
+	// The floor must still BIND. A threshold at or below the bandwidth proxy
+	// would mean any box clears it, and this gate would prove nothing.
+	if threshold <= bandwidthProxyTPS {
+		t.Fatalf("threshold %.2f tok/s is at or below the %.1f tok/s bandwidth proxy: "+
+			"the quality floor has stopped discriminating", threshold, bandwidthProxyTPS)
+	}
+	t.Logf("k=%v, overcommit %.1f requires %.2f tok/s for cap %d; measured paged %.1f, contiguous %.1f",
+		effectiveTPSLoadFactor, defaultQualityCapOvercommit, threshold, engineCeiling,
+		measuredSoloTPSPaged, measuredSoloTPSContiguous)
 }

@@ -93,10 +93,11 @@ struct Watchdog: AsyncParsableCommand {
                     return ProcessLifecycle.terminate(identity)
                 },
                 isPastTickDeadline: { ContinuousClock.now > tickDeadline },
-                tripKVBackendGuard: { crashCount, tripNow in
+                tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
                     KVBackendCrashLoopGuard.trip(
                         crashCount: crashCount,
                         now: tripNow,
+                        guardedVersion: guardedVersion,
                         lastKnownModel: lastKnownModel)
                 },
                 log: { Self.log($0) }
@@ -112,6 +113,17 @@ struct Watchdog: AsyncParsableCommand {
         // loaded) outcome restarted nothing, so it must not walk the counter
         // toward the backend guard.
         var issuedCrashLoopCount: Int?
+        // Timestamp the final state write persists as `lastRestartAt`. The
+        // tick-entry `now` is only the default: the recovery path may legally
+        // spend minutes in the update download (bounded by the watchdog
+        // URLSession's 600s resource timeout) BEFORE the kickstart, and the
+        // crash-loop chain measures the daemon's uptime as
+        // `downSince − lastRestartAt` — a stamp 600s before the daemon
+        // actually launched inflates its apparent uptime by that much and can
+        // wrongly reset the chain to 1 (a crash-loop bound is only 900s).
+        // Re-read the clock when the outcome reports an issued restart: the
+        // kickstart happened milliseconds ago at that point.
+        var persistedNow = now
         switch decision {
         case .restart:
             let crashLoopCount = WatchdogPolicy.crashLoopCount(
@@ -127,6 +139,7 @@ struct Watchdog: AsyncParsableCommand {
             )
             if case .restartIssued = outcome {
                 issuedCrashLoopCount = crashLoopCount
+                persistedNow = Date().timeIntervalSince1970
             }
             persistenceDecision = Self.recordRecoveryOutcome(
                 outcome,
@@ -188,7 +201,7 @@ struct Watchdog: AsyncParsableCommand {
         if let newState = WatchdogPolicy.nextState(
             for: persistenceDecision,
             current: state,
-            now: now,
+            now: persistedNow,
             crashLoopCount: issuedCrashLoopCount
         ), !WatchdogStateStore.write(newState) {
             Self.log("warning: could not persist watchdog state (check ~/.darkbloom)")
@@ -234,7 +247,14 @@ struct Watchdog: AsyncParsableCommand {
         settings(configPath: configPath).autoRestart
     }
 
-    private static func recordRecoveryOutcome(
+    /// Map a recovery outcome to the decision the state write persists.
+    /// Internal (not private) so the decision-table tests can pin the one
+    /// property that matters: ONLY `.restartIssued` maps to `.restart` — the
+    /// sole decision that stamps `lastRestartAt`. `.noLongerLoaded` restarted
+    /// nothing (the job is unloaded — the `.notManaged` shape), and a stamp
+    /// with no restart behind it would let a later unrelated crash read as
+    /// continuing an old chain.
+    static func recordRecoveryOutcome(
         _ outcome: WatchdogRecoveryService.DownOutcome,
         grace: Int,
         now: Double
@@ -249,7 +269,7 @@ struct Watchdog: AsyncParsableCommand {
             return .restart
         case .noLongerLoaded:
             log("provider no longer loaded — skipping restart")
-            return .restart
+            return .notManaged
         case .retryBackoff(let until, let reason):
             log(
                 "restart deferred for rollback safety until \(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: until))): \(reason)")

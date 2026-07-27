@@ -112,6 +112,47 @@ struct WatchdogCrashLoopCountTests {
         #expect(count == 2)
     }
 
+    @Test("a delayed kickstart must be stamped at the KICKSTART, not tick entry")
+    func delayedKickstartStampTiming() {
+        // The recovery path may legally spend up to 600s in an update
+        // download BEFORE the kickstart (the watchdog URLSession's resource
+        // timeout). Model the worst case: tick enters at T, the daemon
+        // actually launches at T+600, crashes ~60s later, and the next tick
+        // sees the outage at T+700.
+        let tickEntry = 10_000.0
+        let kickstart = tickEntry + 600
+        let nextDownSince = tickEntry + 700
+
+        // Stamped at the kickstart (what runTick persists via its re-read of
+        // the clock): apparent uptime is 100s — unmistakably loop-shaped.
+        let stampedAtKickstart = WatchdogPolicy.nextState(
+            for: .restart,
+            current: WatchdogState(downSince: tickEntry - 400, consecutiveCrashLoopRestarts: 1),
+            now: kickstart,
+            crashLoopCount: 2)!
+        #expect(WatchdogPolicy.crashLoopCount(
+            current: stampedAtKickstart, effectiveDownSince: nextDownSince) == 3)
+
+        // Stamped at tick entry (the defect): the download window is
+        // credited to the daemon as uptime, 700s of the 900s bound —
+        // two more such crashes and the chain STILL reads 700 < 900, but a
+        // marginally slower box (crash at +210s) reads 910 ≥ 900 and wrongly
+        // resets the chain to 1 mid-loop.
+        let stampedAtTickEntry = WatchdogPolicy.nextState(
+            for: .restart,
+            current: WatchdogState(downSince: tickEntry - 400, consecutiveCrashLoopRestarts: 1),
+            now: tickEntry,
+            crashLoopCount: 2)!
+        #expect(WatchdogPolicy.crashLoopCount(
+            current: stampedAtTickEntry,
+            effectiveDownSince: tickEntry + 910) == 1,
+            "the tick-entry stamp inflates apparent uptime past the bound")
+        #expect(WatchdogPolicy.crashLoopCount(
+            current: stampedAtKickstart,
+            effectiveDownSince: kickstart + 310) == 3,
+            "the kickstart stamp keeps the same crash inside the bound")
+    }
+
     @Test("the shipped constants are the decided policy: 15 min bound, threshold 3")
     func shippedConstants() {
         #expect(WatchdogPolicy.crashLoopUptimeBoundSeconds == 900)
@@ -334,7 +375,7 @@ struct CrashLoopGuardTripTests {
         func record(_ event: TelemetryEvent) { lock.withLock { _events.append(event) } }
     }
 
-    @Test("trip persists the running version's record and emits ERROR engine_health")
+    @Test("trip persists the GUARDED version's record and emits ERROR engine_health")
     func tripWritesAndEmits() {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
@@ -345,6 +386,7 @@ struct CrashLoopGuardTripTests {
         let wrote = KVBackendCrashLoopGuard.trip(
             crashCount: 3,
             now: 5_000,
+            guardedVersion: "0.8.3",
             lastKnownModel: "gemma-4-26b-qat-4bit",
             environment: env,
             emitTelemetry: { capture.record($0) })
@@ -352,10 +394,11 @@ struct CrashLoopGuardTripTests {
 
         let record = KVBackendGuardStore.read(environment: env)
         #expect(record == KVBackendGuard(
-            trippedAt: 5_000, providerVersion: ProviderCore.version, crashCount: 3))
-        // The record it wrote is ACTIVE for this binary — the whole point.
+            trippedAt: 5_000, providerVersion: "0.8.3", crashCount: 3))
+        // The record it wrote is ACTIVE for the guarded (installed daemon)
+        // binary — the whole point.
         #expect(EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
-            record: record, runningVersion: ProviderCore.version))
+            record: record, runningVersion: "0.8.3"))
 
         #expect(capture.events.count == 1)
         let event = capture.events[0]
@@ -367,7 +410,9 @@ struct CrashLoopGuardTripTests {
         // Box-wide event: the crashing slot's backend was never observed,
         // so the key is OMITTED, not guessed (EngineHealthEvent contract).
         #expect(event.fields?["kv_backend"] == nil)
-        #expect(event.version == ProviderCore.version)
+        // The fleet dashboard groups trips by the version that was
+        // crash-looping — the guarded version, not the watchdog image's.
+        #expect(event.version == "0.8.3")
     }
 
     @Test("re-tripping the same version keeps the original trippedAt, raises crashCount")
@@ -378,10 +423,10 @@ struct CrashLoopGuardTripTests {
         let env = [KVBackendGuardStore.pathEnvKey: url.path]
 
         KVBackendCrashLoopGuard.trip(
-            crashCount: 3, now: 5_000, lastKnownModel: nil,
+            crashCount: 3, now: 5_000, guardedVersion: "0.8.3", lastKnownModel: nil,
             environment: env, emitTelemetry: { _ in })
         KVBackendCrashLoopGuard.trip(
-            crashCount: 4, now: 6_000, lastKnownModel: nil,
+            crashCount: 4, now: 6_000, guardedVersion: "0.8.3", lastKnownModel: nil,
             environment: env, emitTelemetry: { _ in })
 
         let record = KVBackendGuardStore.read(environment: env)
@@ -396,7 +441,7 @@ struct CrashLoopGuardTripTests {
         defer { try? FileManager.default.removeItem(at: url) }
         let capture = EventCapture()
         KVBackendCrashLoopGuard.trip(
-            crashCount: 3, now: 5_000, lastKnownModel: nil,
+            crashCount: 3, now: 5_000, guardedVersion: "0.8.3", lastKnownModel: nil,
             environment: [KVBackendGuardStore.pathEnvKey: url.path],
             emitTelemetry: { capture.record($0) })
         #expect(capture.events.first?.fields?["model"]?.description == "unknown")
@@ -433,8 +478,8 @@ struct CrashLoopGuardRecoveryWiringTests {
                 // `launchctl print` for the host's provider job.
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
-                tripKVBackendGuard: { crashCount, _ in
-                    log.append("trip(\(crashCount))")
+                tripKVBackendGuard: { crashCount, _, guardedVersion in
+                    log.append("trip(\(crashCount),v\(guardedVersion))")
                     return true
                 },
                 log: { _ in }))
@@ -459,7 +504,9 @@ struct CrashLoopGuardRecoveryWiringTests {
                 crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
                 now: 1_000)
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
-        #expect(log.actions == ["trip(3)", "kickstart"])
+        // No self-update has ever run in this fixture, so the installed
+        // version IS the process version (the fixture's oldVersion).
+        #expect(log.actions == ["trip(3,v\(fixture.oldVersion))", "kickstart"])
     }
 
     @Test("below the threshold, and for callers that do not track the chain, no trip")
@@ -522,6 +569,78 @@ struct CrashLoopGuardRecoveryWiringTests {
         let postRollback = await service.recoverDownProvider(
             autoUpdateEnabled: false, crashLoopRestartCount: 6, now: 500)
         #expect(postRollback == .restartIssued(updatedTo: nil, rolledBackTo: nil))
-        #expect(log.actions.contains("trip(6)"))
+        // The rollback restored the predecessor, so the durable installed
+        // record — and therefore the guarded version — is oldVersion again.
+        #expect(log.actions.contains("trip(6,v\(fixture.oldVersion))"))
+    }
+
+    @Test("post-self-update version skew: the guard stamps the INSTALLED daemon version")
+    func skewStampsInstalledDaemonVersion() async throws {
+        // The persistent watchdog keeps running its OLD executable image
+        // (fixture.oldVersion) after it installs and promotes a newer
+        // release. Simulate the post-promotion state: the update-recovery
+        // durable installed record says newVersion while the process image —
+        // the SelfUpdater's currentVersion — is still oldVersion. This is
+        // exactly the window where crash loops are most likely, and a guard
+        // stamped with the watchdog image's version would never activate.
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let updater = plainUpdater(fixture)  // process image at oldVersion
+
+        let session = try updater.beginUpdateSession(operation: "test-skew", timeout: 0)
+        var state = try session.readState()
+        state.current = InstalledReleaseRecord(
+            version: fixture.newVersion,
+            releaseBundleHash: nil,
+            installedBundleHash: "bundle-hash",
+            binaryHash: "binary-hash",
+            enclaveHash: "enclave-hash",
+            metallibHash: "metallib-hash",
+            installGeneration: 1,
+            installedAt: 50)
+        try session.writeState(state)
+        session.release()
+
+        // Trip through the REAL guard action into a hermetic record path.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let env = [KVBackendGuardStore.pathEnvKey: url.path]
+        let service = WatchdogRecoveryService(
+            updater: updater,
+            dependencies: .init(
+                kickstartIfLoaded: { true },
+                launchSnapshot: { nil },
+                processAlive: { _ in true },
+                tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
+                    KVBackendCrashLoopGuard.trip(
+                        crashCount: crashCount, now: tripNow,
+                        guardedVersion: guardedVersion, lastKnownModel: nil,
+                        environment: env, emitTelemetry: { _ in })
+                },
+                log: { _ in }))
+
+        let outcome = await service.recoverDownProvider(
+            autoUpdateEnabled: false,
+            crashLoopRestartCount: WatchdogPolicy.crashLoopTripThreshold,
+            now: 1_000)
+        #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+
+        let record = KVBackendGuardStore.read(environment: env)
+        #expect(record?.providerVersion == fixture.newVersion,
+            "the guard must bind the installed daemon (\(fixture.newVersion)), not the watchdog image (\(fixture.oldVersion))")
+        // The NEW daemon — the one launchd actually boots and the one that
+        // was crash-looping — honors the guard...
+        #expect(EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
+            record: record, runningVersion: fixture.newVersion))
+        // ...and its startup stale-clear keeps it (same version, not stale).
+        #expect(KVBackendGuardStore.clearIfStale(
+            runningVersion: fixture.newVersion, environment: env) == nil)
+        #expect(KVBackendGuardStore.read(environment: env) == record)
+        // The existing clears still work: the NEXT release after the guarded
+        // one reads it as stale and deletes it at startup.
+        #expect(KVBackendGuardStore.clearIfStale(
+            runningVersion: "3.0.0", environment: env) == record)
+        #expect(KVBackendGuardStore.read(environment: env) == nil)
     }
 }

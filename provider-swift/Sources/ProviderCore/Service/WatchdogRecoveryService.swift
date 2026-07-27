@@ -27,10 +27,14 @@ public struct WatchdogRecoveryService: Sendable {
         public var isPastTickDeadline: @Sendable () -> Bool
         /// Trip the crash-loop KV-backend guard: persist the on-disk record
         /// and emit the trip telemetry (`KVBackendCrashLoopGuard.trip`).
-        /// Returns whether the record reached disk. Injectable so the
-        /// decision-flow tests can observe trips (and their ordering
+        /// `guardedVersion` is the INSTALLED daemon version resolved by the
+        /// recovery flow (`SelfUpdater.effectiveInstalledVersion`) — the
+        /// watchdog process's own compiled-in version can be stale after a
+        /// self-update. Returns whether the record reached disk. Injectable
+        /// so the decision-flow tests can observe trips (and their ordering
         /// against the kickstart) without touching the real `~/.darkbloom`.
-        public var tripKVBackendGuard: @Sendable (_ crashCount: Int, _ now: Double) -> Bool
+        public var tripKVBackendGuard:
+            @Sendable (_ crashCount: Int, _ now: Double, _ guardedVersion: String) -> Bool
         public var log: @Sendable (String) -> Void
 
         public init(
@@ -43,9 +47,9 @@ public struct WatchdogRecoveryService: Sendable {
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
-            tripKVBackendGuard: @escaping @Sendable (Int, Double) -> Bool = {
+            tripKVBackendGuard: @escaping @Sendable (Int, Double, String) -> Bool = {
                 KVBackendCrashLoopGuard.trip(
-                    crashCount: $0, now: $1, lastKnownModel: nil)
+                    crashCount: $0, now: $1, guardedVersion: $2, lastKnownModel: nil)
             },
             log: @escaping @Sendable (String) -> Void
         ) {
@@ -205,6 +209,16 @@ public struct WatchdogRecoveryService: Sendable {
         // committed (candidate cleared) or was refused (blocked reason set)
         // is judged on its outcome, not its intent.
         var candidateOwnsRecovery = false
+        // The version the backend guard binds if tripped below: the
+        // INSTALLED daemon version, resolved exactly the way
+        // `SelfUpdater.checkForUpdate` resolves it (same seam, same
+        // arithmetic). This process's own compiled-in version is only the
+        // floor — the persistent watchdog keeps running its old executable
+        // image after it installs and promotes a newer release, and a guard
+        // stamped with the stale watchdog version would never bind the new
+        // daemon that is actually crash-looping (it would even be deleted at
+        // its startup as stale).
+        var guardedVersion = updater.currentVersion
         do {
             var state = try session.readState()
             let beforeReconcile = state
@@ -281,6 +295,13 @@ public struct WatchdogRecoveryService: Sendable {
             }
             candidateOwnsRecovery = state.candidate != nil
                 && state.candidate?.rollbackBlockedReason == nil
+            // Read AFTER the rollback attempt so a rollback that just
+            // committed reports the restored predecessor (moot — a committed
+            // rollback suppresses the trip anyway, but never stamp a version
+            // that is already leaving the box).
+            guardedVersion = SelfUpdater.effectiveInstalledVersion(
+                processVersion: updater.currentVersion,
+                recorded: state.current?.version)
         } catch {
             let reason = "could not attribute candidate failure: \(error)"
             deps.log(reason)
@@ -313,7 +334,7 @@ public struct WatchdogRecoveryService: Sendable {
             rolledBackTo == nil,
             !candidateOwnsRecovery
         {
-            if deps.tripKVBackendGuard(crashLoopRestartCount, now) {
+            if deps.tripKVBackendGuard(crashLoopRestartCount, now, guardedVersion) {
                 deps.log(
                     "crash-loop backend guard tripped after \(crashLoopRestartCount) short-uptime "
                         + "restarts — `.auto` resolves contiguous on this box until the next "

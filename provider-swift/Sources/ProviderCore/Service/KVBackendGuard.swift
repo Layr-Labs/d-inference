@@ -46,8 +46,12 @@ public struct KVBackendGuard: Codable, Equatable, Sendable {
     /// `darkbloom status` reports the age of the FIRST trip, not the most
     /// recent crash.
     public var trippedAt: Double
-    /// `ProviderCore.version` of the binary that tripped the guard. The
-    /// guard binds only this version — see CLEARING above.
+    /// The INSTALLED provider version the guard was tripped for — the
+    /// version launchd actually boots, NOT necessarily the tripping
+    /// process's own `ProviderCore.version` (the persistent watchdog keeps
+    /// running its old executable image after it installs and promotes a
+    /// newer release; see `KVBackendCrashLoopGuard.trip`). The guard binds
+    /// only this version — see CLEARING above.
     public var providerVersion: String
     /// The consecutive crash-loop-restart count at the most recent trip
     /// write (diagnostic; keeps climbing if the guarded binary still
@@ -165,18 +169,22 @@ public enum KVBackendGuardStore {
 /// persist the record, then emit the ERROR `engine_health` trip event.
 public enum KVBackendCrashLoopGuard {
 
-    /// Persist the guard for the RUNNING binary version and emit the trip
+    /// Persist the guard for the INSTALLED daemon version and emit the trip
     /// telemetry. Returns whether the record reached disk.
     ///
-    /// `providerVersion` is `ProviderCore.version` of the tripping process —
-    /// the watchdog runs the same binary it protects, so in the dominant
-    /// case (no self-update in flight) this is exactly the version that was
-    /// crash-looping. The one skew window — a long-lived watchdog process
-    /// older than a freshly self-updated on-disk binary — can only be
-    /// reached through a BLOCKED candidate rollback (a viable rollback
-    /// suppresses the trip entirely; see `WatchdogRecoveryService`), and a
-    /// version-mismatched record simply stays inert: fail open to today's
-    /// behavior, never a wrong flip.
+    /// `guardedVersion` is the version of the binary launchd is actually
+    /// crash-looping — NOT this process's `ProviderCore.version`. The two
+    /// differ in exactly the window where crash loops are most likely: the
+    /// persistent watchdog keeps running its OLD executable image after it
+    /// installs and promotes a newer release, so a trip stamped with the
+    /// watchdog's compiled-in version would read as stale to the new daemon
+    /// and never activate (the daemon even deletes it at startup via
+    /// `clearIfStale`). The caller resolves the honest version the same way
+    /// `SelfUpdater.checkForUpdate` does —
+    /// `SelfUpdater.effectiveInstalledVersion(processVersion:recorded:)`,
+    /// the SemVer-max of the process version and the update-recovery
+    /// state's durable installed record (see
+    /// `WatchdogRecoveryService.recoverDownProvider`).
     ///
     /// Re-trips of the same version (the guarded binary still crashing, for
     /// whatever reason) refresh `crashCount` but keep the ORIGINAL
@@ -194,23 +202,24 @@ public enum KVBackendCrashLoopGuard {
     public static func trip(
         crashCount: Int,
         now: Double,
+        guardedVersion: String,
         lastKnownModel: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
     ) -> Bool {
         let existing = KVBackendGuardStore.read(environment: environment)
         let record = KVBackendGuard(
-            trippedAt: existing?.providerVersion == ProviderCore.version
+            trippedAt: existing?.providerVersion == guardedVersion
                 ? existing?.trippedAt ?? now
                 : now,
-            providerVersion: ProviderCore.version,
+            providerVersion: guardedVersion,
             crashCount: max(crashCount, existing?.crashCount ?? 0))
         let wrote = KVBackendGuardStore.write(record, environment: environment)
 
         var event = EngineHealthEvent.make(
             severity: .error,
             message: "engine_v2: crash-loop backend guard tripped after \(crashCount) "
-                + "short-uptime restarts on v\(ProviderCore.version) — `.auto` resolves "
+                + "short-uptime restarts on v\(guardedVersion) — `.auto` resolves "
                 + "contiguous on this box until the next release or a manual clear"
                 + (wrote ? "" : " (WARNING: guard record could not be persisted)"),
             operation: "engine_v2_crash_loop_guard",
@@ -226,8 +235,9 @@ public enum KVBackendCrashLoopGuard {
             kvBackend: nil,
             extra: ["reason": .string("crash_loop_guard")])
         // Straight-to-disk events skip TelemetryClient's identity stamping;
-        // set the one field the fleet dashboard groups trips by.
-        event.version = ProviderCore.version
+        // set the one field the fleet dashboard groups trips by — the
+        // GUARDED version (what was crash-looping), not the watchdog's.
+        event.version = guardedVersion
         emitEngineHealth(event, sink: emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) })
         return wrote
     }

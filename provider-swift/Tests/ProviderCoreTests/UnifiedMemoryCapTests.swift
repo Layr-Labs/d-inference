@@ -114,11 +114,30 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func activationReserveDefaultsToFloorAndReadsEnv() {
+    let def = UnifiedMemoryCap.defaultActivationReserveBytes
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: [:])
         == 11 * gib / 2)
+    // The env override is raise-only: it can push the reserve ABOVE the
+    // floor but never below it.
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
-        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "2"]) == 2 * gib)
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "8"]) == 8 * gib)
+    // Explicit programmatic values (test fixtures modelling small boxes)
+    // stay honored as given, below the floor included.
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: 5 * gib, env: [:]) == 5 * gib)
+
+    // The clamp boundary. A legacy `3` — set by an operator when 3 GiB WAS
+    // the default — must NOT lower the reserve below the 5.5 GiB floor the
+    // coordinator predicts with: that silently recreates the B=8 activation
+    // OOM the floor exists to prevent.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "3"]) == def)
+    // Just under, exactly at, and just over the floor (5.5 GB of 2^30 bytes).
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "5.4"]) == def)
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "5.5"]) == def)
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "6"]) == 6 * gib)
 }
 
 /// `defaultActivationReserveBytes` is not a local tuning knob. The coordinator

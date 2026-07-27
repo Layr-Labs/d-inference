@@ -147,9 +147,20 @@ loaded totals. This makes a v1 slot attributable without exposing the model:
   `unsupported_layout`, `unsupported_backend`,
   `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`,
   `disk_unavailable`, or `cache_init_failed`
-  (`paged_hybrid_unsupported` arrives only from pre-0.8.0 providers — the
-  ≥ 0.8.0 engine deleted the case — and trends to zero as the fleet
-  upgrades; it stays decoded because v0.7.x providers still send it);
+  (`paged_hybrid_unsupported` arrives only from pre-0.8.0 providers and
+  trends to zero as the fleet upgrades; it stays decoded because v0.7.x
+  providers still send it. A ≥ 0.8.0 provider cannot produce it: the engine
+  deleted the `paged_hybrid_requires_dual_cursor` case from
+  `CBv2PrefixReuseUnsupportedReason` —
+  `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/PrefixReusePlan.swift:28-33`,
+  whose doc comment pins that every remaining case (`empty_layout`,
+  `invalid_layout`, `unknown_backend`, `accounting_overflow`) is one
+  `CBv2PrefixReuseCapability.derive` can actually produce — so the provider's
+  raw-string mapping site,
+  `capability.unsupportedReason?.rawValue == "paged_hybrid_requires_dual_cursor"`
+  in
+  `provider-swift/Sources/ProviderCore/Inference/PrefixCacheEligibilityStatus.swift:41`,
+  can no longer match and such plans report `unsupported_layout` instead);
 - backend: `contiguous`, `paged`, or `unknown`;
 - replay strategy: `direct`, `frozen_full`, `tail_replay`, `none`, or
   `unknown`.

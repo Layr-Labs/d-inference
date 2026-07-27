@@ -285,11 +285,16 @@ public enum UnifiedMemoryCap {
     /// Activation reserve from explicit bytes, env
     /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
     ///
-    /// A `<= 0` or non-finite env value is treated as UNSET (→ the floor): a
-    /// `0` reserve would remove the activation headroom the cap exists to
-    /// guarantee, so an operator can RAISE the reserve but not silently
-    /// disable it via env. An explicit programmatic value (tests) is honored
-    /// as given.
+    /// The env override is RAISE-ONLY, enforced, not just documented: the
+    /// resolved value is `max(env, default)`. A value below the floor —
+    /// most likely a legacy `3` set when 3 GiB WAS the default — would
+    /// silently recreate the B=8 activation OOM the 5.5 GiB floor exists to
+    /// prevent, while the coordinator keeps predicting capacity with the
+    /// floor (`servability.go`). A `<= 0` or non-finite env value is
+    /// likewise treated as UNSET (→ the floor): a `0` reserve would remove
+    /// the activation headroom the cap exists to guarantee. An explicit
+    /// programmatic value (tests) is honored as given, below the floor
+    /// included — test fixtures legitimately model small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
@@ -298,7 +303,8 @@ public enum UnifiedMemoryCap {
         if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
-            return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            return max(bytes, defaultActivationReserveBytes)
         }
         return defaultActivationReserveBytes
     }

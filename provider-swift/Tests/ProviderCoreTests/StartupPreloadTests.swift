@@ -465,7 +465,40 @@ struct StartupPreloadGateTests {
             recorder.recordLoad(id)
         })
 
-        let outcome = await loop.runStartupPreloadGateForTesting()
+        // FAIL-SAFE, independent of the code under test: the load stays
+        // parked until AFTER the outcome is asserted, so if the production
+        // 1s gate timeout regresses and never fires, the gate call would
+        // await forever and turn that regression into a suite-level hang
+        // (the CI step has no shorter timeout of its own). Race the gate
+        // against a 30s deadline — comfortably above the 1s production
+        // bound. When the deadline wins it releases the parked load (so the
+        // hung gate can unwind through the warm path and the task group can
+        // drain) and the test fails promptly with a clear message. The
+        // deadline arm signals ONLY on a genuine 30s elapse: on the normal
+        // path its sleep is cancelled and it exits without touching
+        // releaseLoad, keeping the loads-empty assertion below race-free.
+        let raced = await withTaskGroup(
+            of: ProviderLoop.StartupPreloadGateOutcome?.self
+        ) { group in
+            group.addTask { await loop.runStartupPreloadGateForTesting() }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    return nil  // gate resolved first; deadline cancelled
+                }
+                releaseLoad.signal()
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let outcome = raced else {
+            Issue.record(
+                "startup preload gate did not resolve within the 30s test fail-safe — the production 1s gate timeout never fired. Failing instead of hanging the suite; the parked load was force-released so the run can unwind.")
+            return
+        }
 
         // Availability beats perfection: the gate released while the load
         // (still parked on releaseLoad) provably had not finished.

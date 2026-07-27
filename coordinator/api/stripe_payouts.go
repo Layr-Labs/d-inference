@@ -357,9 +357,9 @@ func (s *Server) handleStripeDashboardLink(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("billing_error", "Stripe Payouts not configured"))
 		return
 	}
-	if user.StripeAccountID == "" {
-		writeJSON(w, http.StatusConflict, errorResponse("no_stripe_account",
-			"no Stripe payout account on file — link a bank account first"))
+	if user.StripeAccountID == "" || !stripeDashboardAvailable(user.StripeAccountStatus) {
+		writeJSON(w, http.StatusConflict, errorResponse("not_onboarded",
+			"finish your payout setup first, then you can manage the account in Stripe"))
 		return
 	}
 
@@ -372,9 +372,15 @@ func (s *Server) handleStripeDashboardLink(w http.ResponseWriter, r *http.Reques
 			s.logger.Warn("stripe connect: stored account gone — unlinking",
 				"stripe_account_id", user.StripeAccountID, "error", err)
 			if perr := s.billing.Store().SetUserStripeAccount(user.AccountID, "", "", "", "", "", false); perr != nil {
+				// Don't claim an unlink we failed to persist — the UI would
+				// tell the user to set payouts up again while still showing
+				// the old account.
 				s.logger.Error("stripe connect: unlink gone account failed", "error", perr)
+				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error",
+					"failed to unlink your closed Stripe account"))
+				return
 			}
-			writeJSON(w, http.StatusConflict, errorResponse("account_gone",
+			writeJSON(w, http.StatusConflict, errorResponse("stripe_account_gone",
 				"your Stripe account no longer exists — set up payouts again"))
 			return
 		}
@@ -460,6 +466,21 @@ func validateRedirectURL(candidate, defaultURL string) error {
 		return fmt.Errorf("host %q does not match allowed host %q", cu.Hostname(), du.Hostname())
 	}
 	return nil
+}
+
+// stripeDashboardAvailable reports whether an account in the given local
+// status has an Express Dashboard to log in to. Stripe only issues login
+// links once the account has submitted its details, so the pre-submission
+// states ("" and pending) have nothing to log in to. Restricted and rejected
+// accounts DO have one — that's where Stripe explains what went wrong and
+// lets them fix it.
+func stripeDashboardAvailable(status string) bool {
+	switch status {
+	case stripeStatusReady, stripeStatusRestricted, stripeStatusRejected:
+		return true
+	default:
+		return false
+	}
 }
 
 // stripeStatusForAccount maps a fresh Stripe account snapshot onto our local

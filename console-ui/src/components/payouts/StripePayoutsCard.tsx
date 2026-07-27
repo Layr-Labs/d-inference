@@ -1,10 +1,11 @@
 "use client";
 
-import { Building2, CreditCard, ArrowDownToLine, ExternalLink, Loader2 } from "lucide-react";
+import { Building2, ArrowDownToLine, Loader2 } from "lucide-react";
 import { type StripeStatus, type StripeWithdrawal } from "@/lib/api";
 import { STRIPE_CONNECT_COUNTRIES } from "@/lib/stripe-countries";
 import { microToUsd } from "@/lib/format";
 import { CountryPicker } from "./CountryPicker";
+import { PayoutDestinationRow } from "./PayoutDestinationRow";
 import { WithdrawalsList } from "./WithdrawalsList";
 
 // Shared "withdraw to bank" card (Stripe Connect Express). Renders the status
@@ -112,38 +113,11 @@ export function StripePayoutsCard({
         </>
       ) : ready ? (
         <>
-          <div className="rounded-lg bg-bg-primary border border-border-dim p-3 mb-4 flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm text-text-secondary">
-              {status.destination_type === "card" ? (
-                <CreditCard size={14} className="text-teal" />
-              ) : (
-                <Building2 size={14} className="text-teal" />
-              )}
-              <span className="font-mono">
-                {status.destination_type === "card" ? "Debit card" : "Bank"} ••{status.destination_last4}
-              </span>
-              {status.instant_eligible && (
-                <span className="text-[10px] font-mono uppercase text-gold bg-gold/10 border border-gold/30 rounded px-1.5 py-0.5">
-                  Instant
-                </span>
-              )}
-            </div>
-            {onOpenDashboard && (
-              <button
-                onClick={onOpenDashboard}
-                disabled={dashboardLoading}
-                title="Opens your Stripe Express Dashboard, where you can change the bank account or debit card your payouts land in."
-                className="flex items-center gap-1.5 shrink-0 text-xs text-text-tertiary underline underline-offset-2 hover:text-teal disabled:opacity-50 transition-colors"
-              >
-                {dashboardLoading ? (
-                  <Loader2 size={12} className="animate-spin" />
-                ) : (
-                  <ExternalLink size={12} />
-                )}
-                {dashboardLoading ? "Opening..." : "Change in Stripe"}
-              </button>
-            )}
-          </div>
+          <PayoutDestinationRow
+            status={status}
+            onOpenDashboard={onOpenDashboard}
+            dashboardLoading={dashboardLoading}
+          />
           <button
             onClick={onOpenWithdraw}
             disabled={!canWithdraw}

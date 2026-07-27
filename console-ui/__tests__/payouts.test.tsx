@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook, act, render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, act, render, screen, fireEvent } from "@testing-library/react";
 import { useStripePayouts } from "@/components/payouts/useStripePayouts";
 import { StripePayoutsCard } from "@/components/payouts/StripePayoutsCard";
 import type { StripeStatus } from "@/lib/api";
@@ -10,6 +10,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     fetchStripeStatus: vi.fn(),
     startStripeOnboarding: vi.fn(),
+    createStripeDashboardLink: vi.fn(),
     withdrawStripe: vi.fn(),
     fetchStripeWithdrawals: vi.fn(),
   };
@@ -18,6 +19,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
 import {
   ApiError,
   fetchStripeStatus,
+  createStripeDashboardLink,
   withdrawStripe,
   fetchStripeWithdrawals,
 } from "@/lib/api";
@@ -143,6 +145,118 @@ describe("useStripePayouts", () => {
   });
 });
 
+// The Express Dashboard login link is single-use: if we mint one and then
+// fail to navigate to it, the user is stranded and has to start over. These
+// pin the navigation paths rather than the (trivial) copy mapping.
+describe("useStripePayouts.openDashboard", () => {
+  const LINK = "https://connect.stripe.com/express/acct_1/tok";
+
+  // These spy on window.open / window.location, which clearAllMocks leaves
+  // installed — restore so later suites get the real objects back.
+  afterEach(() => vi.restoreAllMocks());
+
+  function stubWindowOpen(tab: Partial<Window> | null) {
+    const open = vi.fn().mockReturnValue(tab);
+    vi.spyOn(window, "open").mockImplementation(open as unknown as typeof window.open);
+    return open;
+  }
+
+  function fakeTab(closed = false) {
+    return { closed, opener: {} as unknown, location: { replace: vi.fn() }, close: vi.fn() };
+  }
+
+  it("navigates the pre-opened tab and disowns it before it points at Stripe", async () => {
+    (createStripeDashboardLink as ReturnType<typeof vi.fn>).mockResolvedValue({ url: LINK });
+    const tab = fakeTab();
+    const open = stubWindowOpen(tab as unknown as Window);
+
+    const { result } = renderHook(() => useStripePayouts({ addToast: vi.fn(), enabled: false }));
+    await act(async () => {
+      await result.current.openDashboard();
+    });
+
+    // Opened synchronously with a blank URL so the popup blocker sees a
+    // user gesture, then navigated once the link arrives.
+    expect(open).toHaveBeenCalledWith("", "_blank");
+    expect(tab.opener).toBeNull();
+    expect(tab.location.replace).toHaveBeenCalledWith(LINK);
+    expect(result.current.dashboardLoading).toBe(false);
+  });
+
+  it("falls back to the current tab when the popup is blocked", async () => {
+    (createStripeDashboardLink as ReturnType<typeof vi.fn>).mockResolvedValue({ url: LINK });
+    stubWindowOpen(null);
+    const replace = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({ replace } as unknown as Location);
+
+    const { result } = renderHook(() => useStripePayouts({ addToast: vi.fn(), enabled: false }));
+    await act(async () => {
+      await result.current.openDashboard();
+    });
+
+    // replace(), not href: the link is a credential and must not enter history.
+    expect(replace).toHaveBeenCalledWith(LINK);
+  });
+
+  it("falls back to the current tab when the user closed the pre-opened one", async () => {
+    (createStripeDashboardLink as ReturnType<typeof vi.fn>).mockResolvedValue({ url: LINK });
+    const tab = fakeTab(true);
+    stubWindowOpen(tab as unknown as Window);
+    const replace = vi.fn();
+    vi.spyOn(window, "location", "get").mockReturnValue({ replace } as unknown as Location);
+
+    const { result } = renderHook(() => useStripePayouts({ addToast: vi.fn(), enabled: false }));
+    await act(async () => {
+      await result.current.openDashboard();
+    });
+
+    expect(tab.location.replace).not.toHaveBeenCalled();
+    expect(replace).toHaveBeenCalledWith(LINK);
+  });
+
+  it("closes the orphan tab and toasts friendly copy when minting fails", async () => {
+    (createStripeDashboardLink as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ApiError("your Stripe account no longer exists", "stripe_account_gone", 409),
+    );
+    (fetchStripeStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ...readyStatus,
+      has_account: false,
+      status: "",
+    });
+    (fetchStripeWithdrawals as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const tab = fakeTab();
+    stubWindowOpen(tab as unknown as Window);
+
+    const addToast = vi.fn();
+    const { result } = renderHook(() => useStripePayouts({ addToast, enabled: false }));
+    await act(async () => {
+      await result.current.openDashboard();
+    });
+
+    expect(tab.close).toHaveBeenCalled();
+    expect(tab.location.replace).not.toHaveBeenCalled();
+    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("Your Stripe account was closed"));
+    expect(result.current.status?.has_account).toBe(false);
+    expect(result.current.dashboardLoading).toBe(false);
+  });
+
+  it("never navigates to an empty url when the response body is malformed", async () => {
+    (createStripeDashboardLink as ReturnType<typeof vi.fn>).mockResolvedValue({});
+    const tab = fakeTab();
+    stubWindowOpen(tab as unknown as Window);
+
+    const addToast = vi.fn();
+    const { result } = renderHook(() => useStripePayouts({ addToast, enabled: false }));
+    await act(async () => {
+      await result.current.openDashboard();
+    });
+
+    expect(tab.location.replace).not.toHaveBeenCalled();
+    expect(tab.close).toHaveBeenCalled();
+    expect(addToast).toHaveBeenCalledWith(expect.stringContaining("didn't return a dashboard link"));
+  });
+});
+
 describe("StripePayoutsCard", () => {
   const noop = () => {};
 
@@ -185,5 +299,48 @@ describe("StripePayoutsCard", () => {
     );
     expect(screen.getByText("Ready")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /withdraw/i })).not.toBeDisabled();
+  });
+
+  it("offers 'Change in Stripe' next to the destination once ready", () => {
+    const onOpenDashboard = vi.fn();
+    render(
+      <StripePayoutsCard
+        status={readyStatus}
+        withdrawals={[]}
+        balanceMicroUsd={5_000_000}
+        onboardLoading={false}
+        selectedCountry="US"
+        onCountryChange={noop}
+        onOnboard={noop}
+        onOpenWithdraw={noop}
+        onOpenDashboard={onOpenDashboard}
+        title="Withdraw to Bank"
+        icon={null}
+        noun="credits"
+        className="card"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /change in stripe/i }));
+    expect(onOpenDashboard).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits the change action when the page doesn't wire it up", () => {
+    render(
+      <StripePayoutsCard
+        status={readyStatus}
+        withdrawals={[]}
+        balanceMicroUsd={5_000_000}
+        onboardLoading={false}
+        selectedCountry="US"
+        onCountryChange={noop}
+        onOnboard={noop}
+        onOpenWithdraw={noop}
+        title="Withdraw to Bank"
+        icon={null}
+        noun="credits"
+        className="card"
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /change in stripe/i })).toBeNull();
   });
 });

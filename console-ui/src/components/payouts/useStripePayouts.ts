@@ -161,21 +161,23 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
 
   // Changing the payout bank account happens in Stripe's Express Dashboard,
   // reached through a single-use login link. The tab is opened synchronously
-  // inside the click gesture — opening it after the await would be swallowed
-  // by the popup blocker — and blanked out if the link never arrives.
+  // inside the click gesture, because opening it after the await would be
+  // swallowed by the popup blocker; `opener = null` disowns it before it ever
+  // points at Stripe. Every navigation uses replace() so the credential never
+  // lands in session history, and a blocked or closed tab falls back to this
+  // one rather than burning a link that can't be reissued.
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const openDashboard = useCallback(async () => {
     setDashboardLoading(true);
-    const tab = typeof window !== "undefined" ? window.open("", "_blank") : null;
+    const tab = window.open("", "_blank");
     if (tab) tab.opener = null;
     try {
-      const resp = await createStripeDashboardLink();
-      if (tab) {
-        tab.location.replace(resp.url);
+      const { url } = await createStripeDashboardLink();
+      if (!url) throw new Error("Stripe didn't return a dashboard link.");
+      if (tab && !tab.closed) {
+        tab.location.replace(url);
       } else {
-        // Popup blocked — fall back to the current tab rather than dropping
-        // the link, which is single-use and can't be retried.
-        window.location.href = resp.url;
+        window.location.replace(url);
       }
     } catch (e) {
       tab?.close();

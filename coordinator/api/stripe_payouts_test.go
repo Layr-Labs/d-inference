@@ -1547,8 +1547,79 @@ func TestStripeDashboardLinkRequiresLinkedAccount(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
 	}
-	if got := errorTypeOf(t, w.Body.Bytes()); got != "no_stripe_account" {
+	if got := errorTypeOf(t, w.Body.Bytes()); got != "not_onboarded" {
 		t.Errorf("error type = %q", got)
+	}
+}
+
+// Stripe has no Express Dashboard to log into until the account submits its
+// details, so a half-onboarded account must be told to finish setup rather
+// than handed a raw Stripe error suggesting a retry that can never work.
+// Restricted and rejected accounts DO have a dashboard and must get through.
+func TestStripeDashboardLinkStatusGate(t *testing.T) {
+	cases := []struct {
+		status   string
+		wantCode int
+	}{
+		{"", http.StatusConflict},
+		{stripeStatusPending, http.StatusConflict},
+		{stripeStatusReady, http.StatusOK},
+		{stripeStatusRestricted, http.StatusOK},
+		{stripeStatusRejected, http.StatusOK},
+	}
+	for _, tc := range cases {
+		name := tc.status
+		if name == "" {
+			name = "empty"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv, st := stripePayoutsTestServer(t, true, nil)
+			user := seedUser(t, st, "acct-dash-"+name, name+"@example.com")
+			if err := st.SetUserStripeAccount(user.AccountID, "acct_dash_"+name, tc.status, "US", "bank", "6789", false); err != nil {
+				t.Fatal(err)
+			}
+			user, _ = st.GetUserByAccountID(user.AccountID)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+			req = withPrivyUser(req, user)
+			w := httptest.NewRecorder()
+			srv.handleStripeDashboardLink(w, req)
+
+			if w.Code != tc.wantCode {
+				t.Fatalf("status %q: got %d, want %d: %s", tc.status, w.Code, tc.wantCode, w.Body.String())
+			}
+			if tc.wantCode == http.StatusConflict {
+				if got := errorTypeOf(t, w.Body.Bytes()); got != "not_onboarded" {
+					t.Errorf("error type = %q, want not_onboarded", got)
+				}
+			}
+		})
+	}
+}
+
+// The route-level middleware is the only thing keeping API keys out: requireAuth
+// also populates the user context for account-bound keys and provider device
+// tokens, so requirePrivyUser inside the handler is not a second line of
+// defense. Drive the real mux so a swap to requireAuth can't pass CI.
+func TestStripeDashboardLinkRouteRejectsAPIKey(t *testing.T) {
+	srv, st := stripePayoutsTestServer(t, true, nil)
+	user := readyUser(t, st, "acct-dash-key", "keyholder@example.com", false)
+
+	rawKey, _, err := st.CreateAPIKey(user.AccountID, store.APIKeyCreate{})
+	if err != nil {
+		t.Fatalf("create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/billing/stripe/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer "+rawKey)
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("got %d, want 403 (API keys must not mint payout dashboard sessions): %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "connect.stripe.com") {
+		t.Error("response leaked a login link to an API-key caller")
 	}
 }
 
@@ -1609,7 +1680,7 @@ func TestStripeDashboardLinkUnlinksGoneAccount(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("got %d, want 409: %s", w.Code, w.Body.String())
 	}
-	if got := errorTypeOf(t, w.Body.Bytes()); got != "account_gone" {
+	if got := errorTypeOf(t, w.Body.Bytes()); got != "stripe_account_gone" {
 		t.Errorf("error type = %q", got)
 	}
 	refreshed, _ := st.GetUserByAccountID(user.AccountID)

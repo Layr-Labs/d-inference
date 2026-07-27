@@ -138,25 +138,35 @@ export function classifyOnboardError(err: unknown): PayoutErrorPresentation {
 }
 
 // classifyDashboardError maps an Express Dashboard login-link failure to
-// friendly copy. The backend auto-unlinks accounts that were closed on
-// Stripe's side, so account_gone refreshes status to drop the card back to
-// its "Set up payouts" branch.
+// friendly copy. Codes match the withdraw path's vocabulary because the
+// backend raises the same conditions from the same helpers; only the
+// follow-up advice differs, since there is no modal on this path.
 export function classifyDashboardError(err: unknown): PayoutErrorPresentation {
   const code = err instanceof ApiError ? err.code : "";
   const raw = err instanceof Error ? err.message : String(err);
 
-  if (code === "account_gone") {
+  if (code === "stripe_account_gone") {
     return { code, message: ACCOUNT_CLOSED_MESSAGE, refreshStatus: true, closeModal: false };
   }
-  if (code === "no_stripe_account") {
+  if (code === "not_onboarded") {
     return {
       code,
-      message: "Link a bank account first, then you can manage it in Stripe.",
+      // Refresh: the card should land on the setup branch that can fix this.
+      message: "Finish your payout setup first, then you can manage the account in Stripe.",
       refreshStatus: true,
       closeModal: false,
     };
   }
-  if (code === "stripe_error" || code === "billing_error") {
+  if (code === "billing_error") {
+    // Payouts aren't configured on this coordinator at all — retrying is futile.
+    return {
+      code,
+      message: "Payouts are temporarily unavailable. Please contact support.",
+      refreshStatus: false,
+      closeModal: false,
+    };
+  }
+  if (code === "stripe_error" || code === "internal_error") {
     return {
       code,
       message: "Stripe couldn't open your dashboard right now. Try again in a few minutes.",

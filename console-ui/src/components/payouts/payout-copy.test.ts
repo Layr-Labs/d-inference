@@ -136,15 +136,17 @@ describe("classifyOnboardError", () => {
 });
 
 describe("classifyDashboardError", () => {
-  it("account_gone: unlink message + status refresh", () => {
-    const p = classifyDashboardError(new ApiError("your Stripe account no longer exists", "account_gone", 409));
+  // Codes must match the coordinator's existing payout vocabulary
+  // (stripe_payouts.go / stripe_withdraw.go), not a parallel spelling.
+  it("stripe_account_gone: unlink message + status refresh", () => {
+    const p = classifyDashboardError(new ApiError("your Stripe account no longer exists", "stripe_account_gone", 409));
     expect(p.message).toContain("Your Stripe account was closed, so we've unlinked it");
     expect(p.refreshStatus).toBe(true);
   });
 
-  it("no_stripe_account: points at linking a bank first, refreshes the card branch", () => {
-    const p = classifyDashboardError(new ApiError("no Stripe payout account on file", "no_stripe_account", 409));
-    expect(p.message).toBe("Link a bank account first, then you can manage it in Stripe.");
+  it("not_onboarded: points at finishing setup, refreshes the card branch", () => {
+    const p = classifyDashboardError(new ApiError("finish your payout setup first", "not_onboarded", 409));
+    expect(p.message).toBe("Finish your payout setup first, then you can manage the account in Stripe.");
     expect(p.refreshStatus).toBe(true);
   });
 
@@ -154,9 +156,10 @@ describe("classifyDashboardError", () => {
     expect(p.refreshStatus).toBe(false);
   });
 
-  it("billing_error: same transient message when payouts aren't configured", () => {
+  it("billing_error: does not promise a retry that can never work", () => {
     const p = classifyDashboardError(new ApiError("Stripe Payouts not configured", "billing_error", 503));
-    expect(p.message).toBe("Stripe couldn't open your dashboard right now. Try again in a few minutes.");
+    expect(p.message).toBe("Payouts are temporarily unavailable. Please contact support.");
+    expect(p.message).not.toContain("Try again");
   });
 
   it("unknown errors keep the raw message", () => {

@@ -30,13 +30,31 @@ struct GPUEnforcementTests {
         #expect(status.recommendedMaxWorkingSetSizeBytes > 0, "working set should be positive")
     }
 
-    @Test("requireMetal pins MLX default device to GPU")
-    func requireMetalPinsGPU() throws {
-        // Even if some other test has set CPU as default, requireMetal()
-        // must restore GPU.
-        Device.setDefault(device: .cpu)
-        _ = try GPUEnforcement.requireMetal()
-        #expect(Device.defaultDevice().deviceType == .gpu, "default device must be GPU after requireMetal()")
+    @Test("requireMetal restores a CPU-planted default back to GPU (child process)")
+    func requireMetalPinsGPU() async {
+        // MLX's default device is PROCESS-GLOBAL, and swift-testing runs
+        // suites in parallel inside ONE process. This test used to plant
+        // `Device.setDefault(device: .cpu)` inline to prove requireMetal()
+        // restores GPU — and in the window before the restore, any
+        // concurrently-running suite that dispatched a GPU-only Metal kernel
+        // died with `[metal_kernel] Only supports the GPU` → fatalError →
+        // SIGTRAP, killing the whole test process (observed live as a flake
+        // attributed to whichever suite happened to be mid-dispatch).
+        // `.serialized` cannot fix that: it serializes within a suite, never
+        // across suites sharing the process, and the CPU plant's blast
+        // radius is exactly cross-suite.
+        //
+        // The assertion is worth keeping in its strong form — "requireMetal
+        // RESTORES gpu from a planted cpu default", not merely "gpu stays
+        // gpu" — so the plant runs in a CHILD process via an exit test. The
+        // child owns its global device; the parent process never leaves GPU.
+        await #expect(processExitsWith: .success) {
+            Device.setDefault(device: .cpu)
+            _ = try GPUEnforcement.requireMetal()
+            #expect(
+                Device.defaultDevice().deviceType == .gpu,
+                "default device must be GPU after requireMetal()")
+        }
     }
 
     @Test("requireMetal is idempotent")

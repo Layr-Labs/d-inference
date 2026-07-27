@@ -37,3 +37,19 @@ if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$log";
     echo "::error::${filter} executed ZERO tests — the gate did not run"
     exit 1
 fi
+
+# The executed-count check above is satisfiable by a run that SKIPPED every
+# test it "executed": XCTest prints `Executed 3 tests, with 3 tests skipped`
+# and swift-testing prints a skip count too, both with exit code 0. A suite
+# whose every case self-skips (XCTSkip on a missing fixture, a gating env var
+# nobody set) asserts nothing — the same dark-gate failure mode, one layer up.
+# Fail on ANY nonzero skip count: these nested suites are hermetic by design
+# (tiny models, no weights, no env gates), so a skip here means a precondition
+# broke, not that skipping was intended.
+if grep -qE 'with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$log"; then
+    echo "::error::${filter} skipped one or more tests — a skipped gate gates" \
+         "nothing. If the skip is a broken precondition (missing metallib," \
+         "missing fixture), fix the precondition; do not let the lane stay" \
+         "green on a suite that did not run its assertions."
+    exit 1
+fi

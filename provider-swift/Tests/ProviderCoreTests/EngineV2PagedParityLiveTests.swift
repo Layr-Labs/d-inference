@@ -21,15 +21,32 @@
 //      finish — deeper-token drift between decode kernels is allowed and
 //      logged for eyeballing.
 //
-// Gemma-4 paged is deliberately NOT covered here: production gemma
-// checkpoints are VLM slots, which the gate vetoes to contiguous by
-// design (text-only gemma paged is covered by the tiny-model gate tests
-// and the engine repo's BenchCBv2RealModel --engines v2-paged runs).
+// Gemma-4 (VLM) paged IS covered here — see the two gemma arms at the end
+// of the suite. An earlier revision excluded it on the premise that
+// production gemma checkpoints "are VLM slots, which the gate vetoes to
+// contiguous by design". That premise is FALSE: the VLM veto in
+// `EngineV2KVBackendPolicy.applySlotVetoes` fires only when the paged cache
+// does NOT vouch for multimodal span masks, and
+// `PagedLayerCache.honorsSpanMaskContextsByConstruction == true` makes the
+// veto inert — so gemma-4 VLM slots build and serve PAGED in production
+// under `.auto` exactly like every other model, and a live suite that never
+// exercised that was gating a fiction. What the gemma arms deliberately do
+// NOT assert is cross-backend token equality: gemma-4's paged-vs-contiguous
+// greedy divergence is known and ACCEPTED (8.85% teacher-forced
+// disagreement, floor-gated separately in PagedTeacherForcedAgreementTests),
+// so the assertable properties for this model are batch-composition
+// invariance WITHIN the paged backend and serve-liveness through the real
+// ProviderLoop load gates.
 //
 // Gated like every multi-GB suite: DARKBLOOM_LIVE_MLX_TESTS=1 + the
 // checkpoint in the local HF cache; skips cleanly otherwise. The logical
 // grant is 8 GiB; the physical pool is independently capped by production
 // policy.
+//
+// MEMORY: the suite is `.serialized` and the gemma arms are declared AFTER
+// the gpt-oss arms on purpose — the two checkpoints (~12 GiB + ~15 GiB)
+// must never be resident concurrently within this suite; a live full-suite
+// run already peaks around 30.5 GiB with other suites in parallel.
 
 import Foundation
 import MLX
@@ -344,5 +361,184 @@ struct EngineV2PagedParityLiveTests {
         #expect(out.1 == nil, "paged slot must serve after passing the guards: \(out.1 ?? "")")
         #expect(!out.0.isEmpty)
         await loop.unloadModel(Self.gptossModelID)
+    }
+
+    // MARK: - Gemma-4 (VLM) arms — declared last; see the MEMORY note above.
+
+    static let gemmaModelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+
+    private func gemmaGreedyRequest(_ prompt: String, maxTokens: Int) -> ChatCompletionRequest {
+        ChatCompletionRequest(
+            model: Self.gemmaModelID,
+            messages: [ChatMessage(role: "user", content: prompt)],
+            temperature: 0,
+            max_tokens: maxTokens)
+    }
+
+    /// Batch-composition invariance on the model the header used to claim
+    /// could not serve paged. Cross-backend token equality is NOT asserted
+    /// (known, accepted divergence — see the header); what a VLM gemma slot
+    /// must still deliver on the paged backend is the ragged-NaN-class
+    /// oracle: each request's greedy output byte-identical whether it
+    /// decoded alone or with batchmates.
+    ///
+    /// Built through `LiveInferenceFixtures.loadBridge` (the production
+    /// `EngineV2SlotFactory.makeProductionBridge` construction, VLM text
+    /// extraction included) with an explicit "paged" selection — which
+    /// REFUSES rather than degrades, so reaching the assertions at all
+    /// proves construction; the `kvBackendKind` check pins it against a
+    /// future revival of the VLM veto silently seating contiguous.
+    @Test("explicit paged gemma-4 (VLM): solo == concurrent, token-exact")
+    func gemmaPagedBatchCompositionInvariance() async throws {
+        guard LiveInferenceFixtures.liveTestsEnabled else { return }
+        let loaded = try await LiveInferenceFixtures.loadBridge(
+            modelID: Self.gemmaModelID,
+            maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent),
+            memoryBudgetBytes: 48 * Self.gib,
+            kvBackendConfig: "paged")
+        let bridge = loaded.bridge
+
+        // Only non-throwing #expects from here on, so control always reaches
+        // the deterministic shutdown below and the next (serialized) test
+        // never overlaps this model's residency.
+        #expect(
+            await bridge.kvBackendKind == .paged,
+            "explicit paged must construct for a VLM gemma-4 slot — the span-mask veto is inert (PagedLayerCache.honorsSpanMaskContextsByConstruction)")
+
+        var solos: [(text: String, completion: Int)] = []
+        for (index, item) in Self.workload.enumerated() {
+            let out = await collect(
+                await bridge.submit(
+                    request: gemmaGreedyRequest(item.prompt, maxTokens: item.maxTokens),
+                    requestId: "gemma-paged-solo-\(index)"))
+            #expect(out.error == nil, "gemma solo \(index) errored: \(out.error ?? "")")
+            #expect(out.completion > 0, "gemma solo \(index) produced no tokens")
+            solos.append((out.text, out.completion))
+        }
+
+        let batched = await withTaskGroup(
+            of: (Int, (text: String, completion: Int, error: String?)).self
+        ) { group in
+            for (index, item) in Self.workload.enumerated() {
+                group.addTask {
+                    let out = await self.collect(
+                        await bridge.submit(
+                            request: self.gemmaGreedyRequest(
+                                item.prompt, maxTokens: item.maxTokens),
+                            requestId: "gemma-paged-batch-\(index)"))
+                    return (index, out)
+                }
+            }
+            var results = [(text: String, completion: Int, error: String?)?](
+                repeating: nil, count: Self.workload.count)
+            for await (index, out) in group { results[index] = out }
+            return results
+        }
+        for (index, maybe) in batched.enumerated() {
+            guard let out = maybe else {
+                Issue.record("gemma concurrent \(index) never finished")
+                continue
+            }
+            #expect(out.error == nil, "gemma concurrent \(index) errored: \(out.error ?? "")")
+            #expect(
+                out.text == solos[index].text,
+                "gemma batch-composition variance on request \(index): solo=\(solos[index].text.prefix(120)) batched=\(out.text.prefix(120))")
+        }
+
+        await bridge.shutdown()
+        MLX.Memory.clearCache()
+    }
+
+    /// Serve-liveness through the REAL `ProviderLoop.ensureModelLoaded`
+    /// gates for the gemma-4 VLM checkpoint — the same loop-path drill the
+    /// gpt-oss arm runs, on the model whose production posture (VLM slot,
+    /// paged under `.auto`) this suite previously never exercised.
+    @Test("loop path: paged gemma-4 (VLM) survives the load guards and serves")
+    func gemmaPagedSlotSurvivesLoadGuardsThroughProviderLoop() async throws {
+        guard LiveInferenceFixtures.liveTestsEnabled else { return }
+        guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
+            throw LiveFixtureSkip.missingMetallib
+        }
+        guard case .found = LiveInferenceFixtures.locate(Self.gemmaModelID) else {
+            throw LiveFixtureSkip.modelNotInCache(Self.gemmaModelID)
+        }
+        let gib: UInt64 = 1 << 30
+        let reserveGiB: UInt64 = 40
+
+        let config = ProviderLoopConfig(
+            coordinatorURL: "ws://127.0.0.1:0/ignored",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4,
+                chipTier: .max,
+                memoryGb: ProcessInfo.processInfo.physicalMemory / gib,
+                memoryAvailableGb: max(1, ProcessInfo.processInfo.physicalMemory / gib - 4),
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546
+            ),
+            models: [
+                ModelInfo(
+                    id: Self.gemmaModelID, modelType: "gemma4",
+                    sizeBytes: 15 * gib, estimatedMemoryGb: 16.0)
+            ],
+            config: ProviderConfig(
+                provider: ProviderSettings(
+                    name: "gemma-paged-loop-live", memoryReserveGB: reserveGiB),
+                backend: BackendSettings(
+                    idleTimeoutMins: 0,
+                    maxModelSlots: 1,
+                    engineV2KVBackend: "paged"),
+                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
+            )
+        )
+        let loop = try ProviderLoop(
+            config: config, purgeLegacyFiles: false, attestationSigner: nil)
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        defer {
+            Task {
+                await loop.unloadModel(Self.gemmaModelID)
+                MLX.Memory.clearCache()
+            }
+        }
+
+        do {
+            try await loop.ensureModelLoaded(modelId: Self.gemmaModelID)
+        } catch {
+            // Same triage as the gpt-oss arm: a busy box legitimately fails
+            // the PRE-load free-memory gate (box condition, skip loudly);
+            // the post-bridge headroom guard unloading a fresh paged slot is
+            // the regression this drill exists for and must FAIL.
+            let text = String(describing: error)
+            if text.contains("engine build left insufficient KV headroom") {
+                Issue.record("post-bridge guard unloaded the paged gemma slot: \(text)")
+                return
+            }
+            print("[gemma-paged-loop] skipping — load gate refused on this box: \(text)")
+            return
+        }
+
+        let bridge = try #require(await loop.slotBridgeForTesting(modelId: Self.gemmaModelID))
+        let servedKind = await bridge.kvBackendKind
+        #expect(
+            servedKind == .paged,
+            "loop path must serve VLM gemma-4 PAGED — the span-mask veto is inert by construction")
+        let out = await {
+            var text = ""
+            var error: String?
+            for await event in await bridge.submit(
+                request: ChatCompletionRequest(
+                    model: Self.gemmaModelID,
+                    messages: [ChatMessage(role: "user", content: "Say OK.")],
+                    temperature: 0, max_tokens: 8),
+                requestId: "gemma-paged-loop-1")
+            {
+                if case .chunk(let c) = event { text += c }
+                if case .error(let e) = event { error = e }
+            }
+            return (text, error)
+        }()
+        #expect(out.1 == nil, "paged gemma slot must serve after passing the guards: \(out.1 ?? "")")
+        #expect(!out.0.isEmpty)
+        await loop.unloadModel(Self.gemmaModelID)
     }
 }

@@ -1,0 +1,92 @@
+# E2E load benchmarks, split out of integration.yml (v0.8.0 gate audit).
+#
+# WHY A SEPARATE WORKFLOW: this job runs under the `benchmarks` environment,
+# whose required-reviewer rule (repo Settings -> Environments -> benchmarks)
+# makes every run wait for a manual approval — a deliberate cost control for
+# a 30-minute macOS runner job that posts PR comments. While it shared a
+# workflow with the E2E integration job, that pending approval held the
+# WHOLE "Integration Tests" workflow in `waiting` on every PR (26/26 runs
+# this release), hiding the integration job's actual conclusion behind a
+# benchmark nobody approved. In its own workflow, an unapproved benchmark
+# holds only this file's status open.
+#
+# The approval rule itself is repo configuration, not YAML: to run these on
+# a PR, approve the deployment in the run's UI; to stop gating them, remove
+# the required reviewer from the `benchmarks` environment.
+
+name: E2E Benchmarks
+
+on:
+  pull_request:
+
+jobs:
+  benchmark:
+    name: E2E Benchmarks
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 30
+    environment: benchmarks
+    env:
+      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
+      TESTBED_PROVIDER_CONFIG: debug
+      BENCHMARK_MD_PATH: /tmp/benchmark-results.md
+      RUNNER_DESC: macos-15 (M1 Virtual)
+      GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
+      GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install Postgres
+        run: brew install postgresql@16
+
+      - name: Build provider (Swift)
+        run: |
+          cd provider-swift
+          swift build -c debug
+
+      - name: Extract mlx.metallib
+        run: |
+          python3 -m venv /tmp/mlxvenv
+          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
+          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
+             provider-swift/.build/debug/mlx.metallib
+
+      - name: Install Hugging Face client
+        # Benchmarks serve the CBv2 default (gpt-oss-20b, ~12 GB) plus the
+        # secondary multi-model checkpoint (gemma-4-26B QAT, ~14.5 GB) for
+        # TestBenchmark_MultiModelMultiProvider. Warm HF cache ⇒ no-op.
+        run: /tmp/mlxvenv/bin/pip install huggingface_hub
+
+      - name: Download public models (pull request)
+        run: |
+          echo "Pull request: downloading public models without Hugging Face authentication"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
+          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit', revision=os.environ['GEMMA_REVISION'], token=False)"
+
+      - name: Run benchmarks
+        run: |
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
+          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
+            -run 'TestBenchmark'
+
+      - name: Post benchmark results
+        if: always()
+        run: |
+          if [ ! -f /tmp/benchmark-results.md ]; then
+            echo "No benchmark results file found"
+            exit 0
+          fi
+          BODY=$(cat /tmp/benchmark-results.md)
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "$BODY" \
+            --edit-last \
+            || gh pr comment ${{ github.event.pull_request.number }} \
+            --body "$BODY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

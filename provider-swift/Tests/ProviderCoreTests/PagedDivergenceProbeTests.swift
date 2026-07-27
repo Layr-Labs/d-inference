@@ -583,7 +583,9 @@ struct PagedDivergenceProbeTests {
 
 // MARK: - Teacher-forced agreement
 
-/// The measurement behind the proposed replacement gate.
+/// The replacement gate (measurement AND assertion — see the per-model
+/// floors in `agreementRates`; the dark path with the env vars unset stays
+/// an early return that asserts nothing).
 ///
 /// Free-running greedy comparison is a bad instrument: after ONE flip the two
 /// arms are reading different contexts, so every later step is comparing two
@@ -630,9 +632,27 @@ struct PagedTeacherForcedAgreementTests {
     func agreementRates() async throws {
         guard Self.enabled else { return }
         let probe = PagedDivergenceProbeTests()
-        for (modelID, isVLM, budget) in [
-            ("mlx-community/gemma-4-26B-A4B-it-qat-4bit", true, 72),
-            ("mlx-community/gpt-oss-20b-MXFP4-Q8", false, 48),
+        // `candidateFloor` is the per-model gate on the paged-fp16 candidate
+        // arm, in percent agreement. Calibration (2026-07, M4 Max 128 GB,
+        // this exact harness):
+        //   * gpt-oss measured 100.00% — clean, so it is pinned EXACT: any
+        //     flip on gpt-oss is new behavior and must fail.
+        //   * gemma-4 measured 91.15% — the accepted cross-backend drift
+        //     (equally-valid fp16 evaluations disagreeing at near-ties,
+        //     amplified by 30 layers of top-8-of-128 MoE routing; see the
+        //     margin statistics this test prints). The 88% floor sits below
+        //     the measured drift band and catches only GROSS regression
+        //     (wrong key set, broken gather, corrupted pages — failure modes
+        //     that measured orders of magnitude worse in the planted-bug
+        //     calibration of PagedDecodeAccuracyProbeTests).
+        // DO NOT "tighten" the gemma floor toward 91%: the calibration
+        // finding is that subtle real bugs present BELOW the drift band —
+        // they are not catchable by this statistic at any threshold — so a
+        // tighter floor buys no bug-detection, only a gate that flaps
+        // whenever legitimate drift wanders a point.
+        for (modelID, isVLM, budget, candidateFloor) in [
+            ("mlx-community/gemma-4-26B-A4B-it-qat-4bit", true, 72, 88.0),
+            ("mlx-community/gpt-oss-20b-MXFP4-Q8", false, 48, 100.0),
         ] {
             let live = try await probe.loadForAgreement(
                 modelID: modelID, isVLM: isVLM, budget: budget * 1024 * 1024 * 1024,
@@ -745,6 +765,29 @@ struct PagedTeacherForcedAgreementTests {
             print(
                 "[tf]   flip-position overlap fp16 vs fp32: \(a.intersection(b).count)"
                     + " of \(a.count)/\(b.count) — identical set: \(a == b)")
+
+            // ==== THE GATE (v0.8.0 audit): measure AND assert. ====
+            // This test used to print the three agreement rates and assert
+            // nothing — a 0%-agreement paged backend would have exited green.
+            func agreementPercent(_ label: String) -> Double {
+                guard let t = totals[label], t.total > 0 else { return -1 }
+                return 100.0 * Double(t.agree) / Double(t.total)
+            }
+            let controlRate = agreementPercent("contiguous-rerun")
+            let candidateRate = agreementPercent("paged-fp16(candidate)")
+
+            // Control arm first: the same backend re-scored against its own
+            // forced tokens. Anything under 100% means the HARNESS is
+            // nondeterministic and neither number below says anything about
+            // the paged backend — fail on the instrument, loudly, so a bad
+            // candidate reading is never trusted or "explained".
+            #expect(
+                controlRate == 100.0,
+                "\(modelID): contiguous-rerun control scored \(controlRate)% (want exactly 100%) — the harness is nondeterministic and every arm's rate is meaningless")
+
+            #expect(
+                candidateRate >= candidateFloor,
+                "\(modelID): paged-fp16 candidate teacher-forced agreement \(candidateRate)% fell below the \(candidateFloor)% floor (gpt-oss calibrated 100.00% exact; gemma-4 calibrated 91.15% with accepted drift) — gross paged regression")
             MLX.Memory.clearCache()
         }
     }

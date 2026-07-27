@@ -99,6 +99,10 @@ extension EngineV2Bridge {
         DaemonSlotPostureBuilder.LiveSlot(
             model: modelId,
             kvBackend: kvBackendKind.rawValue,
+            // The heartbeat-clamped copy, so the box-side `status` line and
+            // the fleet-side `kv_backend_fallback_reason` carry the SAME
+            // string — a truncated tail on both rather than two variants.
+            kvBackendFallbackReason: clampedKVBackendFallbackReason,
             mtpEnabled: snapshot.configured,
             mtpActive: snapshot.active,
             mtpInactiveReason: snapshot.fallbackReason?.rawValue)

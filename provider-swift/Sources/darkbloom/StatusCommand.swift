@@ -54,6 +54,18 @@ struct Status: AsyncParsableCommand {
         // Live daemon state (from the state file the running daemon writes).
         print("")
         printDaemonStatus(config: config)
+
+        // Crash-loop KV-backend guard — printed whether or not the daemon is
+        // up, because the guard's whole story happens while the daemon is
+        // crashing: an operator asking "why is this box on contiguous?" (or
+        // "why was it down for 20 minutes?") gets the answer here.
+        for line in KVBackendGuardDiagnostics.statusLines(
+            record: KVBackendGuardStore.read(),
+            now: Date().timeIntervalSince1970,
+            runningVersion: ProviderCore.version)
+        {
+            print(line)
+        }
     }
 
     /// One-line summary of crash-recovery state: the config opt-out plus whether

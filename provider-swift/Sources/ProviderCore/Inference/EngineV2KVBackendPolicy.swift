@@ -27,6 +27,13 @@
 //      no call path can bypass it. Forwarded through the launchd plist
 //      (`LaunchAgent.passthroughEnvKeys`) so an operator kill survives
 //      install/restart — the same rationale as the SSD tier's switch.
+//   3b. Crash-loop backend guard: the AUTOMATED sibling of the kill
+//      switch, tripped by the watchdog after
+//      `WatchdogPolicy.crashLoopTripThreshold` consecutive short-uptime
+//      restarts (`KVBackendGuard`). Same enforcement point, one deliberate
+//      difference in scope: it degrades ONLY `.auto`. An explicit "paged"
+//      is operator intent, and automation must not override a human — the
+//      kill switch may, because it IS a human.
 //   4. "auto" resolves PAGED as of v0.8.0 — the release's headline
 //      decision. The evidence (prefix-cache adoption exactness on the
 //      served catalog, throughput, the known greedy-token-id change) is
@@ -101,6 +108,29 @@ public enum EngineV2KVBackendPolicy {
         case "0", "false", "no", "off": return true
         default: return false
         }
+    }
+
+    /// Layer 3b: true when the crash-loop backend guard forces `.auto` to
+    /// contiguous — the record exists AND was tripped by exactly the
+    /// running binary version.
+    ///
+    /// The version equality is the guard's whole self-clearing mechanism: a
+    /// fleet whose only fix-delivery vector is a release must re-try paged
+    /// on the release and ONLY on the release. A mismatched record is inert
+    /// here (fail open to paged) and deleted at daemon startup
+    /// (`KVBackendGuardStore.clearIfStale`); there is deliberately no
+    /// time-based retry, because "try paged again every N hours" re-enters
+    /// the ~5-minute crash loop daily.
+    ///
+    /// Pure over its inputs — the caller reads the record through
+    /// `KVBackendGuardStore.read(environment:)` so the file lookup rides
+    /// the same injectable `environment` seam as the kill switch above.
+    public static func crashLoopGuardForcesContiguous(
+        record: KVBackendGuard?,
+        runningVersion: String
+    ) -> Bool {
+        guard let record else { return false }
+        return record.providerVersion == runningVersion
     }
 
     /// Slot-veto layer: force contiguous for slots the paged cache cannot

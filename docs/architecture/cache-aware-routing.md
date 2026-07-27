@@ -146,7 +146,10 @@ loaded totals. This makes a v1 slot attributable without exposing the model:
   `runtime_identity_unavailable`,
   `unsupported_layout`, `unsupported_backend`,
   `paged_hybrid_unsupported`, `scan_pending`, `scan_failed`,
-  `disk_unavailable`, or `cache_init_failed`;
+  `disk_unavailable`, or `cache_init_failed`
+  (`paged_hybrid_unsupported` arrives only from pre-0.8.0 providers — the
+  ≥ 0.8.0 engine deleted the case — and trends to zero as the fleet
+  upgrades; it stays decoded because v0.7.x providers still send it);
 - backend: `contiguous`, `paged`, or `unknown`;
 - replay strategy: `direct`, `frozen_full`, `tail_replay`, `none`, or
   `unknown`.

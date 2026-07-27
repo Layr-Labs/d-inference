@@ -8,17 +8,46 @@ import Foundation
 public struct WatchdogState: Codable, Equatable, Sendable {
     /// When the watchdog first saw the current outage, or nil when up.
     public var downSince: Double?
-    /// When the watchdog last restarted the provider (diagnostic).
+    /// When the watchdog last restarted the provider. Policy-bearing since
+    /// the crash-loop guard: it is the base the NEXT restart's uptime is
+    /// measured from (`WatchdogPolicy.crashLoopCount`), no longer merely
+    /// diagnostic.
     public var lastRestartAt: Double?
+    /// Consecutive crash-loop-SHAPED restarts (each issued after the
+    /// provider stayed up less than
+    /// `WatchdogPolicy.crashLoopUptimeBoundSeconds` since the previous
+    /// restart). Reset to 0 once a healthy provider outlives that bound,
+    /// and restarted at 1 when a restart follows long uptime. At
+    /// `WatchdogPolicy.crashLoopTripThreshold` the recovery path persists
+    /// the KV-backend guard (`KVBackendGuard`).
+    public var consecutiveCrashLoopRestarts: Int
 
-    public init(downSince: Double? = nil, lastRestartAt: Double? = nil) {
+    public init(
+        downSince: Double? = nil,
+        lastRestartAt: Double? = nil,
+        consecutiveCrashLoopRestarts: Int = 0
+    ) {
         self.downSince = downSince
         self.lastRestartAt = lastRestartAt
+        self.consecutiveCrashLoopRestarts = consecutiveCrashLoopRestarts
     }
 
     enum CodingKeys: String, CodingKey {
         case downSince = "down_since"
         case lastRestartAt = "last_restart_at"
+        case consecutiveCrashLoopRestarts = "consecutive_crash_loop_restarts"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        downSince = try container.decodeIfPresent(Double.self, forKey: .downSince)
+        lastRestartAt = try container.decodeIfPresent(Double.self, forKey: .lastRestartAt)
+        // Absent in every pre-guard state file. Defaulted rather than left
+        // to fail the decode: `WatchdogStateStore.read` maps a failed decode
+        // to a FRESH state, which would silently discard a live `downSince`
+        // window on the first post-upgrade tick.
+        consecutiveCrashLoopRestarts =
+            try container.decodeIfPresent(Int.self, forKey: .consecutiveCrashLoopRestarts) ?? 0
     }
 }
 

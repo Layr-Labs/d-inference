@@ -562,12 +562,20 @@ extension ProviderLoop {
             // whose full load-time footprint leaves no serveable KV unloads
             // and 503s instead of advertising a model whose every request
             // the shared KV gate rejects — the v0.7.2 black-hole shape.
-            // BACKEND-AWARE: a PAGED slot commits its independently-capped
-            // physical pool at construction. The guard requires BOTH a
-            // serveable pool and residual whole-machine headroom; this
-            // catches unaccounted build/JIT residency while the conservative
-            // physical-capacity policy prevents the pool from consuming the
-            // full logical grant.
+            // BACKEND-AWARE: a PAGED slot's slabs are committed lazily at
+            // the pool's FIRST ADMISSION (`.atFirstAdmission`, the D1 fix),
+            // NOT at construction — so the measured headroom taken here
+            // does not yet include the pool's future residency, and cannot:
+            // that deferral is exactly what lets a second model's post-load
+            // probe pass beside an idle paged slot. The guard therefore
+            // asks two separate questions for paged: is the PLANNED pool
+            // itself serveable (`kvBackendPoolBytes()` — construction-fixed
+            // page arithmetic, valid whether or not the slabs are resident
+            // yet), and does the machine retain the minimum residual
+            // headroom on top of what is actually resident now. The
+            // conservative physical-capacity policy (pool ≤ ¼ of live
+            // headroom at plan time) is what keeps the deferred commitment
+            // from later eating the headroom this measurement approved.
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,

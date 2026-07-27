@@ -239,17 +239,24 @@ recorded here because this page is where the `kv_backend` semantics live and a
 reader must not infer the wrong omission rule.
 
 It carries the provider's degrade reason verbatim — `kill_switch`,
-`kernel_preflight: …`, `physical_capacity: …`, `ineligible: …`,
-`pool_construction_capacity: …` — when a slot resolved to a backend other than
-the one it was configured for. The resolved kind alone cannot separate an
-operator who chose contiguous from a paged slot that fell back, and those are
-opposite signals: a choice and a regression. `.auto` resolves **paged** in
-v0.8.0, so every class above is live on the default fleet:
-`kernel_preflight`, `physical_capacity`, `ineligible` and
-`pool_construction_capacity` mean the box could not serve paged and degraded
-(the rollout's primary failure signal), while `kill_switch` means
-`DARKBLOOM_CBV2_PAGED_KV=0` and is a deliberate override. Nothing else on the
-wire separates them, and they should not be alerted on the same way.
+`crash_loop_guard`, `kernel_preflight: …`, `physical_capacity: …`,
+`ineligible: …`, `pool_construction_capacity: …`, `invalid_dtype: …` — when a
+slot resolved to a backend other than the one it was configured for. The
+resolved kind alone cannot separate an operator who chose contiguous from a
+paged slot that fell back, and those are opposite signals: a choice and a
+regression. `.auto` resolves **paged** in v0.8.0, so every class above is
+live on the default fleet: `kernel_preflight`, `physical_capacity`,
+`ineligible` and `pool_construction_capacity` mean the box could not serve
+paged and degraded (the rollout's primary failure signal);
+`crash_loop_guard` means the box's watchdog counted 3 consecutive
+crash-loop-shaped restarts and flipped `.auto` to contiguous itself (an
+INCIDENT marker — the box was crash-looping minutes earlier; it also emits
+an ERROR `engine_health` event, `operation=engine_v2_crash_loop_guard`, at
+the trip); `invalid_dtype` means a typo'd `DARKBLOOM_CBV2_PAGED_KV_DTYPE`
+(operator-fixable config error, the typo verbatim in the tail); and
+`kill_switch` means `DARKBLOOM_CBV2_PAGED_KV=0` and is a deliberate
+override. Nothing else on the wire separates them, and they should not be
+alerted on the same way.
 
 **Its omission rule is the INVERSE of `kv_backend`'s, and the two must be read
 as a pair.** Absent `kv_backend` is UNKNOWN; absent `kv_backend_fallback_reason`
@@ -257,7 +264,7 @@ on a slot that DID name a `kv_backend` is an authoritative "this slot did not
 degrade". Both keys ship in v0.8.0, so there is no build that reports one and
 not the other. The reason is untrusted free text and never reaches a metric tag
 verbatim: `registry.KVBackendFallbackTag` folds it onto the bounded class
-vocabulary (`none`, the five producer classes, `other`, `unknown`), which is
+vocabulary (`none`, the seven producer classes, `other`, `unknown`), which is
 what the `kv_backend_fallback:` tag on `inference.ttft_ms`,
 `inference.decode_tps` and `inference.request_outcome` carries.
 

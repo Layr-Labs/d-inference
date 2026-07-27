@@ -73,6 +73,10 @@ struct Watchdog: AsyncParsableCommand {
             coordinatorBaseURL: settings.coordinatorURL,
             urlSession: SelfUpdater.watchdogURLSession()
         )
+        // Model attribution for a guard-trip telemetry event: the daemon died
+        // before anyone could ask it what it was loading, so the last state
+        // snapshot's current model is the best available witness.
+        let lastKnownModel = daemonState?.currentModel
         let recovery = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
@@ -89,6 +93,12 @@ struct Watchdog: AsyncParsableCommand {
                     return ProcessLifecycle.terminate(identity)
                 },
                 isPastTickDeadline: { ContinuousClock.now > tickDeadline },
+                tripKVBackendGuard: { crashCount, tripNow in
+                    KVBackendCrashLoopGuard.trip(
+                        crashCount: crashCount,
+                        now: tripNow,
+                        lastKnownModel: lastKnownModel)
+                },
                 log: { Self.log($0) }
             ),
             candidateStartupTimeoutSeconds: settings.candidateStartupTimeoutSeconds
@@ -96,14 +106,28 @@ struct Watchdog: AsyncParsableCommand {
 
         let grace = Int(WatchdogPolicy.defaultGraceSeconds)
         var persistenceDecision = decision
+        // Counter value the final state write persists for `.restart`; nil
+        // keeps the current one. Only an ISSUED restart advances the chain —
+        // a deferred (lock-busy / rollback-backoff) or moot (no longer
+        // loaded) outcome restarted nothing, so it must not walk the counter
+        // toward the backend guard.
+        var issuedCrashLoopCount: Int?
         switch decision {
         case .restart:
+            let crashLoopCount = WatchdogPolicy.crashLoopCount(
+                current: state,
+                effectiveDownSince: downSince
+            )
             let outcome = await recovery.recoverDownProvider(
                 autoUpdateEnabled: settings.autoUpdate,
                 inactiveProviderIdentity: providerIdentity,
                 providerProcessAlive: liveness.running,
+                crashLoopRestartCount: crashLoopCount,
                 now: now
             )
+            if case .restartIssued = outcome {
+                issuedCrashLoopCount = crashLoopCount
+            }
             persistenceDecision = Self.recordRecoveryOutcome(
                 outcome,
                 grace: grace,
@@ -161,8 +185,12 @@ struct Watchdog: AsyncParsableCommand {
             break
         }
 
-        if let newState = WatchdogPolicy.nextState(for: persistenceDecision, current: state, now: now),
-           !WatchdogStateStore.write(newState) {
+        if let newState = WatchdogPolicy.nextState(
+            for: persistenceDecision,
+            current: state,
+            now: now,
+            crashLoopCount: issuedCrashLoopCount
+        ), !WatchdogStateStore.write(newState) {
             Self.log("warning: could not persist watchdog state (check ~/.darkbloom)")
         }
     }

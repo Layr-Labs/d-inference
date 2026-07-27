@@ -30,7 +30,9 @@ private func decodeConfig<T: Decodable>(_ json: [String: Any]) throws -> T {
 
 /// 2-layer GPT-OSS: alternating sliding/full derivation, sinks on every
 /// layer, headDim 64 / GQA 2 — the paged kernel's validated shape family.
-private func tinyGPTOSS(headDim: Int = 64) throws -> GPTOSSModel {
+/// `kvHeads` widens the KV geometry for the pool-throw test, which needs a
+/// page big enough that a floor-sized plan holds only one.
+private func tinyGPTOSS(headDim: Int = 64, kvHeads: Int = 2) throws -> GPTOSSModel {
     let config: GPTOSSConfiguration = try decodeConfig([
         "model_type": "gpt_oss",
         "num_hidden_layers": 2,
@@ -41,8 +43,8 @@ private func tinyGPTOSS(headDim: Int = 64) throws -> GPTOSSModel {
         "hidden_size": 64,
         "intermediate_size": 64,
         "head_dim": headDim,
-        "num_attention_heads": 4,
-        "num_key_value_heads": 2,
+        "num_attention_heads": max(4, kvHeads),
+        "num_key_value_heads": kvHeads,
         "sliding_window": 32,
     ])
     return GPTOSSModel(config)
@@ -104,6 +106,18 @@ private final class GateTelemetrySink: @unchecked Sendable {
 
 private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
 
+/// Hermetic default for every construction in this suite: point the
+/// crash-loop guard store at a file that can never decode. Without it a
+/// developer box whose REAL provider tripped the guard on the checked-out
+/// version would fail every `.auto`-resolves-paged assertion here — the
+/// same reason tests inject `environment:` instead of inheriting the
+/// shell's kill switch. A caller's explicit value wins.
+private let hermeticGuardEnvironment = [KVBackendGuardStore.pathEnvKey: "/dev/null"]
+
+private func gateEnvironment(_ overrides: [String: String] = [:]) -> [String: String] {
+    hermeticGuardEnvironment.merging(overrides) { _, explicit in explicit }
+}
+
 private func makeBuild(
     model: any LanguageModel,
     kvBackend: EngineV2KVBackendSelection,
@@ -121,7 +135,7 @@ private func makeBuild(
         prefixCache: nil,
         kvBackend: kvBackend,
         maxContextLength: 2048,
-        environment: environment,
+        environment: gateEnvironment(environment),
         pagedPreflightOverride: pagedPreflightOverride)
 }
 
@@ -278,15 +292,205 @@ struct EngineV2KVBackendGateTests {
 
     @Test("`.auto` still degrades when paged cannot be served")
     func autoDegradesOnPagedFailure() async throws {
-        // Layer 5's degrade half. `.auto` short-circuits to contiguous
-        // before any paged attempt today, so the real construction path
-        // cannot reach the branch; the policy predicate is the seam that
-        // decides it, and it must keep answering "degrade" for every
-        // non-explicit selection or an auto fleet starts 503-ing the day
-        // auto begins resolving paged.
+        // Layer 5's degrade half, as a predicate. Since v0.8.0 `.auto`
+        // RESOLVES PAGED, so the real construction path reaches this branch
+        // on every paged-ineligible box in the fleet — it is the COMMON
+        // path, not a hypothetical. The predicate stays pinned here; the
+        // three construction tests below drive the same answer through the
+        // real factory, one per failure stage (preflight, capacity
+        // planning, pool construction).
         #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: .auto))
         #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: .contiguous))
         #expect(!EngineV2KVBackendPolicy.degradesPagedFailure(selection: .paged))
+    }
+
+    // MARK: `.auto` degrade — real construction, one test per failure stage.
+    // Mirrors of the three explicit-paged REFUSAL tests above: the same
+    // failure, split by WHO asked. Each build must SUCCEED on contiguous
+    // and say why, because on the fleet `.auto` is every slot — a degrade
+    // that turned into a throw here would be a fleet-wide 503.
+
+    @Test("`.auto` + failing kernel preflight degrades: the build SUCCEEDS on contiguous")
+    func autoDegradesOnFailedPreflight() async throws {
+        struct PreflightFailure: Error {}
+        let build = try makeBuild(
+            model: try tinyGPTOSS(),
+            kvBackend: .auto,
+            pagedPreflightOverride: { _ in throw PreflightFailure() })
+        #expect(build.kvBackendKind == .contiguous)
+        #expect(build.kvBackendFallbackReason?.hasPrefix("kernel_preflight:") == true)
+        // The underlying cause survives into the reason, same as the
+        // refusal carries it — an operator reading the heartbeat sees WHY.
+        #expect(build.kvBackendFallbackReason?.contains("PreflightFailure") == true)
+        #expect(build.pagedPoolDType == nil)
+        await build.engine.shutdown()
+    }
+
+    @Test("`.auto` + sub-floor capacity degrades: the build SUCCEEDS on contiguous")
+    func autoDegradesOnCapacityShortfall() async throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        // The same 1_024-byte grant capacityShortfallRefusesExplicitPaged
+        // uses — under the serviceability floor, so the physical-capacity
+        // policy answers contiguous before any pool exists.
+        let build = try EngineV2Factory.makeProductionBuild(
+            model: try tinyGemma4Text(),
+            tokenizer: StubBridgeTokenizer(),
+            kvBytesCapacity: 1_024,
+            maxConcurrentRequests: 2,
+            kvBackend: .auto,
+            maxContextLength: 2048,
+            environment: gateEnvironment(),
+            pagedPreflightOverride: { _ in })
+        #expect(build.kvBackendKind == .contiguous)
+        #expect(build.kvBackendFallbackReason?.hasPrefix("physical_capacity:") == true)
+        #expect(build.pagedPoolDType == nil)
+        await build.engine.shutdown()
+    }
+
+    @Test("`.auto` + a pool that throws at construction degrades: the build SUCCEEDS on contiguous")
+    func autoDegradesOnThrowingPool() async throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        // A REAL `PagedKVPool.init` throw through the production path —
+        // the third failure stage, past both preflight and the capacity
+        // plan. The capacity policy is dtype-BLIND (it plans at the fp16
+        // rate), so a grant that plans a 1 MiB pool (the sub-GiB test
+        // floor) is handed to an fp32 pool whose pages are twice the size:
+        // at head_dim 512 / 16 KV heads one fp32 page is
+        // 2·16·16·512·4 = 1 MiB (`PagedKVGroup.pageBytes`), the single
+        // slab group holds exactly one page, and a group needs two (one
+        // poison, one tenant) — `CBv2KVError.capacityExhausted`, from the
+        // pool itself, after `decide` said paged.
+        let build = try EngineV2Factory.makeProductionBuild(
+            model: try tinyGPTOSS(headDim: 512, kvHeads: 16),
+            tokenizer: StubBridgeTokenizer(),
+            kvBytesCapacity: 1_572_864,  // plans min(grant, …) → 1 MiB
+            maxConcurrentRequests: 2,
+            kvBackend: .auto,
+            maxContextLength: 2048,
+            environment: gateEnvironment(
+                [EngineV2Factory.pagedPoolDTypeEnvKey: "float32"]),
+            pagedPreflightOverride: { _ in })
+        #expect(build.kvBackendKind == .contiguous)
+        #expect(
+            build.kvBackendFallbackReason?.hasPrefix("pool_construction_capacity:") == true)
+        // No pages were built, so no page dtype is reported — the fp32
+        // request that degraded must not masquerade as an fp32 pool.
+        #expect(build.pagedPoolDType == nil)
+        await build.engine.shutdown()
+    }
+
+    // MARK: crash-loop guard resolution (the guard's factory half; the
+    // watchdog half lives in WatchdogCrashLoopGuardTests).
+
+    private func withGuardFile(
+        _ record: KVBackendGuard?,
+        _ body: ([String: String]) async throws -> Void
+    ) async throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let env = [KVBackendGuardStore.pathEnvKey: url.path]
+        if let record {
+            #expect(KVBackendGuardStore.write(record, environment: env))
+        }
+        try await body(env)
+    }
+
+    @Test("`.auto` + active crash-loop guard resolves CONTIGUOUS with the guard reason")
+    func autoHonorsCrashLoopGuard() async throws {
+        try await withGuardFile(
+            KVBackendGuard(
+                trippedAt: 1, providerVersion: ProviderCore.version, crashCount: 3)
+        ) { env in
+            let build = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .auto, environment: env)
+            #expect(build.kvBackendKind == .contiguous)
+            #expect(build.kvBackendFallbackReason == "crash_loop_guard")
+            #expect(build.pagedPoolDType == nil)
+            await build.engine.shutdown()
+        }
+    }
+
+    @Test("explicit paged IGNORES the crash-loop guard — operator intent beats automation")
+    func explicitPagedIgnoresCrashLoopGuard() async throws {
+        try await withGuardFile(
+            KVBackendGuard(
+                trippedAt: 1, providerVersion: ProviderCore.version, crashCount: 3)
+        ) { env in
+            let build = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .paged, environment: env)
+            #expect(build.kvBackendKind == .paged)
+            #expect(build.kvBackendFallbackReason == nil)
+            await build.engine.shutdown()
+        }
+    }
+
+    @Test("a version-mismatched guard record fails OPEN to paged")
+    func staleGuardFailsOpen() async throws {
+        try await withGuardFile(
+            KVBackendGuard(trippedAt: 1, providerVersion: "0.0.1-tripped-by-someone-else", crashCount: 3)
+        ) { env in
+            let build = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .auto, environment: env)
+            #expect(build.kvBackendKind == .paged)
+            #expect(build.kvBackendFallbackReason == nil)
+            await build.engine.shutdown()
+        }
+    }
+
+    @Test("a corrupt guard file fails OPEN to paged, not a crash")
+    func corruptGuardFailsOpen() async throws {
+        try await withGuardFile(nil) { env in
+            let url = URL(fileURLWithPath: env[KVBackendGuardStore.pathEnvKey]!)
+            try Data("{definitely not json".utf8).write(to: url)
+            let build = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .auto, environment: env)
+            #expect(build.kvBackendKind == .paged)
+            #expect(build.kvBackendFallbackReason == nil)
+            await build.engine.shutdown()
+        }
+    }
+
+    @Test("the kill switch outranks the guard for the reported reason")
+    func killSwitchReasonOutranksGuard() async throws {
+        // Both force contiguous; the label must be the OPERATOR's, because
+        // "kill_switch" is deliberate rollback (good news) while
+        // "crash_loop_guard" is an incident marker, and dashboards separate
+        // the two populations on exactly this string.
+        try await withGuardFile(
+            KVBackendGuard(
+                trippedAt: 1, providerVersion: ProviderCore.version, crashCount: 3)
+        ) { env in
+            var environment = env
+            environment[EngineV2KVBackendPolicy.killSwitchEnvKey] = "0"
+            let build = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .auto, environment: environment)
+            #expect(build.kvBackendKind == .contiguous)
+            #expect(build.kvBackendFallbackReason == "kill_switch")
+            await build.engine.shutdown()
+        }
+    }
+
+    @Test("manual clear restores paged on the very next construction")
+    func manualClearRestoresPaged() async throws {
+        try await withGuardFile(
+            KVBackendGuard(
+                trippedAt: 1, providerVersion: ProviderCore.version, crashCount: 3)
+        ) { env in
+            let guarded = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .auto, environment: env)
+            #expect(guarded.kvBackendKind == .contiguous)
+            await guarded.engine.shutdown()
+
+            // What `darkbloom doctor --clear-backend-guard` executes.
+            #expect(KVBackendGuardStore.clear(environment: env))
+
+            let cleared = try makeBuild(
+                model: try tinyGPTOSS(), kvBackend: .auto, environment: env)
+            #expect(cleared.kvBackendKind == .paged)
+            #expect(cleared.kvBackendFallbackReason == nil)
+            await cleared.engine.shutdown()
+        }
     }
 
     @Test("kill-switch degrade constructs frozen-full cache for resolved contiguous backend")

@@ -10,12 +10,14 @@ import "testing"
 //
 //	postLoadGB = servabilityCapFraction*total - size*coldLoadCatalogGBToMemGiB
 //	postLoadB  = postLoadGB * bytesPerGB
-//	floorB     = servabilityActivationFloorGB * bytesPerGB   // 3*2^30
+//	floorB     = servabilityActivationFloorGB * bytesPerGB   // 5.5*2^30
 //	tokens     = (postLoadB - floorB) / kvBytesPerToken
 //
-// with servabilityCapFraction=0.90, servabilityActivationFloorGB=3.0,
+// with servabilityCapFraction=0.90, servabilityActivationFloorGB=5.5,
 // coldLoadCatalogGBToMemGiB≈1.1175870895385742, bytesPerGB=1<<30, and
-// kvBytesPerToken<=0 → 400000.
+// kvBytesPerToken<=0 → 400000. (The floor moved 3.0 → 5.5 with the provider's
+// v0.8.0 B=8 reserve raise; every golden below shifted down by exactly
+// 2.5*2^30/400000 = 6710.9 tokens, and by nothing else — flat stays flat.)
 //
 // A per-token score-tensor surcharge (65536 B/token above a 49152-token
 // crossover) briefly made this piecewise. It was removed because the provider
@@ -28,11 +30,11 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	//   padded    = 12 * 1.1175870895385742      = 13.41104507446289
 	//   postLoadGB= 0.90*64 - 13.41104507446289  = 44.18895492553711 GB
 	//   postLoadB = 44.18895492553711 * 2^30     = 47447529062.4 B
-	//   tokens    = (47447529062.4 - 3221225472) / 400000 = 110565.75
-	// The retired piecewise formula answered 101920 here — 8% TIGHTER than the
-	// provider it claimed to mirror, on a model that materialises no score
-	// tensor at all. That gap is the defect.
-	const wantRoomy = int64(110565)
+	//   tokens    = (47447529062.4 - 5905580032) / 400000 = 103854.87
+	// The retired piecewise formula answered 101920 here (at the old 3 GiB
+	// floor) — TIGHTER than the provider it claimed to mirror, on a model
+	// that materialises no score tensor at all. That gap is the defect.
+	const wantRoomy = int64(103854)
 	if got := coldTokenBudgetEstimate(64, 12, 400000); got != wantRoomy {
 		t.Fatalf("roomy estimate = %d, want %d", got, wantRoomy)
 	}
@@ -51,8 +53,8 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	// subtracted separately from the weights: a 20 GB node loading 14 GB of
 	// weights clears the cap with 0.90*20 - 14*1.1175870895385742 = 2.3538 GB
 	// to spare, so it survives the postLoadGB<=0 early return — but 2.35 GB
-	// cannot cover the 3 GiB activation floor, so the floor branch computes
-	// (2.3538*2^30 - 3221225472)/400000 = -1734.68 and the tokens<=0 guard
+	// cannot cover the 5.5 GiB activation floor, so the floor branch computes
+	// (2.3538*2^30 - 5905580032)/400000 = -8445.6 and the tokens<=0 guard
 	// clamps it. Drop that guard and this returns a NEGATIVE budget, which
 	// PredictServable would publish as FleetMaxBudget. Distinct from (b): there
 	// the weights alone bust the cap and the reserve never enters it.
@@ -66,9 +68,9 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 	// flat floor, nothing more — because that is all the provider holds back.
 	//   padded    = 28 * 1.1175870895385742      = 31.292438507080078
 	//   postLoadGB= 0.90*48 - 31.292438507080078 = 11.907561492919925 GB
-	//   tokens    = (11.907561492919925*2^30 - 3221225472) / 400000 = 23911.05
-	if got := coldTokenBudgetEstimate(48, 28, 400000); got != int64(23911) {
-		t.Fatalf("gemma-4-shaped estimate = %d, want 23911", got)
+	//   tokens    = (11.907561492919925*2^30 - 5905580032) / 400000 = 17200.17
+	if got := coldTokenBudgetEstimate(48, 28, 400000); got != int64(17200) {
+		t.Fatalf("gemma-4-shaped estimate = %d, want 17200", got)
 	}
 
 	// (b3) FLAT means LINEAR: equal steps in node memory must buy equal
@@ -132,7 +134,7 @@ func TestColdTokenBudgetEstimate(t *testing.T) {
 //
 // coldTokenBudgetEstimate exists to reproduce ONE thing: the post-load KV budget
 // UnifiedMemoryCap will actually leave a freshly-loaded slot. That budget is
-// cap − paddedWeights − a FLAT 3 GiB reserve, and once the slot is resident the
+// cap − paddedWeights − a FLAT 5.5 GiB reserve, and once the slot is resident the
 // provider reports precisely it back as active_token_budget_max
 // (EngineV2Bridge+Capacity: kvBytesCapacity / kvBytesPerToken), which
 // snapshotStructuralBudget then prefers. The cold estimate must therefore
@@ -201,15 +203,17 @@ func TestColdTokenBudgetMirrorsProviderReserveArithmetic(t *testing.T) {
 // budget from the provider's own constants, in bytes throughout — deliberately
 // not sharing coldTokenBudgetEstimate's GB-then-bytes ordering:
 //
-//	UnifiedMemoryCap.kvBudgetBytes = 0.90*physical − paddedWeights − 3 GiB
+//	UnifiedMemoryCap.kvBudgetBytes = 0.90*physical − paddedWeights − 5.5 GiB
 //	active_token_budget_max        = kvBudgetBytes / kvBytesPerToken
 //
-// The 3 GiB is spelled out rather than read from servabilityActivationFloorGB on
-// purpose: if one side's reserve is retuned and the other is not, this literal
-// is what fails. (bytesPerGB and coldLoadCatalogGBToMemGiB are shared because
-// they are unit conversions, not policy.)
+// The 5.5 GiB is spelled out rather than read from servabilityActivationFloorGB
+// on purpose: if one side's reserve is retuned and the other is not, this
+// literal is what fails — as it did (by design) when the provider moved
+// 3 → 5.5 for v0.8.0's B=8 activation peak, forcing this file to move with it.
+// (bytesPerGB and coldLoadCatalogGBToMemGiB are shared because they are unit
+// conversions, not policy.)
 func providerPostLoadTokenBudget(totalMemoryGB, modelSizeGB float64, kvBytesPerToken int64) int64 {
-	const providerActivationReserveBytes = 3 * float64(bytesPerGB) // UnifiedMemoryCap.defaultActivationReserveBytes
+	const providerActivationReserveBytes = 5.5 * float64(bytesPerGB) // UnifiedMemoryCap.defaultActivationReserveBytes
 	capBytes := 0.90 * totalMemoryGB * float64(bytesPerGB)
 	weightBytes := modelSizeGB * coldLoadCatalogGBToMemGiB * float64(bytesPerGB)
 	free := capBytes - weightBytes - providerActivationReserveBytes

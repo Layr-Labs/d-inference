@@ -5,7 +5,9 @@ import ProviderCore
 struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Run local provider diagnostics.",
-        discussion: "Diagnostics are read-only except for subprocesses used by public ProviderCore checks."
+        discussion: "Diagnostics are read-only except for subprocesses used by public "
+            + "ProviderCore checks, and except --clear-backend-guard, which removes "
+            + "the crash-loop KV-backend guard record."
     )
 
     @OptionGroup var configOptions: ConfigOptions
@@ -19,7 +21,14 @@ struct Doctor: AsyncParsableCommand {
     @Flag(help: "Print local provider identifiers used for support/debugging.")
     var support = false
 
+    @Flag(help: "Clear the crash-loop KV-backend guard so `.auto` resolves paged again on the next model load, then exit.")
+    var clearBackendGuard = false
+
     mutating func run() async throws {
+        if clearBackendGuard {
+            try Self.runClearBackendGuard()
+            return
+        }
         await runUpdateBannerIfEnabled()
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
@@ -58,6 +67,15 @@ struct Doctor: AsyncParsableCommand {
                 global: snapshot.config.backend.engineV2KVBackend,
                 byModel: snapshot.config.backend.engineV2KVBackendByModel)))
 
+        // Crash-loop KV-backend guard, whether or not the daemon is running
+        // — the guard matters MOST on a box the daemon just crash-looped on.
+        if let guardRecord = KVBackendGuardStore.read() {
+            checks.append(KVBackendGuardDiagnostics.doctorCheck(
+                record: guardRecord,
+                now: Date().timeIntervalSince1970,
+                runningVersion: ProviderCore.version))
+        }
+
         // The high-signal diagnosis first (sectioned, with fixes).
         let rendered = DiagnosticReportRenderer.render(diagnosis)
         if !rendered.isEmpty { print(rendered) }
@@ -92,6 +110,33 @@ struct Doctor: AsyncParsableCommand {
         if hasFailure || (strict && hasWarning) {
             throw ExitCode.failure
         }
+    }
+
+    /// `doctor --clear-backend-guard`: the manual exit from the crash-loop
+    /// KV-backend guard. The automatic exit is the next release (the record
+    /// binds one binary version); this verb exists for the operator who has
+    /// diagnosed the box — or set the kill switch / an explicit backend —
+    /// and wants `.auto` back on paged without waiting for one.
+    static func runClearBackendGuard() throws {
+        guard let record = KVBackendGuardStore.read() else {
+            print("No crash-loop KV-backend guard is present; nothing to clear.")
+            return
+        }
+        let now = Date().timeIntervalSince1970
+        print(
+            "Crash-loop KV-backend guard: tripped "
+                + "\(KVBackendGuardDiagnostics.ageText(record: record, now: now)) ago on "
+                + "v\(record.providerVersion) after \(record.crashCount) crash-loop restarts.")
+        guard KVBackendGuardStore.clear() else {
+            printError(
+                "Could not remove \(KVBackendGuardStore.path().path) — check permissions.")
+            throw ExitCode.failure
+        }
+        print(
+            "Cleared. `.auto` resolves paged again on the next model load "
+                + "(`darkbloom restart` to reload now). If the box re-enters a crash "
+                + "loop, the guard re-trips after "
+                + "\(WatchdogPolicy.crashLoopTripThreshold) crash-loop restarts.")
     }
 }
 

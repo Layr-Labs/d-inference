@@ -133,6 +133,16 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// than re-parsed by the CLI so a `provider.toml` edited after the
         /// daemon started cannot manufacture a phantom mismatch.
         public var kvBackendRequested: String
+        /// WHY the engine degraded away from the backend it was asked for —
+        /// `EngineV2Bridge.kvBackendFallbackReason` verbatim ("kill_switch",
+        /// "crash_loop_guard", "kernel_preflight: …", "physical_capacity: …",
+        /// "ineligible: …", "pool_construction_capacity: …",
+        /// "invalid_dtype: …"). nil ⇒ no degrade. The same pair the
+        /// heartbeat reports fleet-side (`kv_backend` +
+        /// `kv_backend_fallback_reason`), mirrored here so the box-side
+        /// `status`/`doctor` can answer "why contiguous?" without the
+        /// coordinator. Optional and absent in pre-guard state files.
+        public var kvBackendFallbackReason: String?
         /// MTP was configured for this slot (a drafter was requested).
         public var mtpEnabled: Bool
         /// MTP is actually producing drafts. `mtpEnabled && !mtpActive`, or
@@ -152,6 +162,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             model: String,
             kvBackend: String? = nil,
             kvBackendRequested: String = "auto",
+            kvBackendFallbackReason: String? = nil,
             mtpEnabled: Bool = false,
             mtpActive: Bool = false,
             mtpInactiveReason: String? = nil,
@@ -160,6 +171,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.model = model
             self.kvBackend = kvBackend
             self.kvBackendRequested = kvBackendRequested
+            self.kvBackendFallbackReason = kvBackendFallbackReason
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
@@ -246,6 +258,10 @@ public enum DaemonSlotPostureBuilder {
         public let model: String
         /// `EngineV2Bridge.kvBackendKind.rawValue` — the RESOLVED kind.
         public let kvBackend: String
+        /// `EngineV2Bridge.kvBackendFallbackReason` — WHY the resolved kind
+        /// differs from the request, nil when it does not (see
+        /// `SlotPosture.kvBackendFallbackReason`).
+        public let kvBackendFallbackReason: String?
         public let mtpEnabled: Bool
         public let mtpActive: Bool
         public let mtpInactiveReason: String?
@@ -253,12 +269,14 @@ public enum DaemonSlotPostureBuilder {
         public init(
             model: String,
             kvBackend: String,
+            kvBackendFallbackReason: String? = nil,
             mtpEnabled: Bool,
             mtpActive: Bool,
             mtpInactiveReason: String?
         ) {
             self.model = model
             self.kvBackend = kvBackend
+            self.kvBackendFallbackReason = kvBackendFallbackReason
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
@@ -284,6 +302,7 @@ public enum DaemonSlotPostureBuilder {
                 model: $0.model,
                 kvBackend: $0.kvBackend,
                 kvBackendRequested: requested($0.model),
+                kvBackendFallbackReason: $0.kvBackendFallbackReason,
                 mtpEnabled: $0.mtpEnabled,
                 mtpActive: $0.mtpActive,
                 mtpInactiveReason: $0.mtpInactiveReason)

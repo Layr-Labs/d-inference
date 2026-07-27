@@ -25,6 +25,12 @@ public struct WatchdogRecoveryService: Sendable {
         /// exceeded budget can defer work but can never corrupt an in-flight
         /// journaled transaction.
         public var isPastTickDeadline: @Sendable () -> Bool
+        /// Trip the crash-loop KV-backend guard: persist the on-disk record
+        /// and emit the trip telemetry (`KVBackendCrashLoopGuard.trip`).
+        /// Returns whether the record reached disk. Injectable so the
+        /// decision-flow tests can observe trips (and their ordering
+        /// against the kickstart) without touching the real `~/.darkbloom`.
+        public var tripKVBackendGuard: @Sendable (_ crashCount: Int, _ now: Double) -> Bool
         public var log: @Sendable (String) -> Void
 
         public init(
@@ -37,6 +43,10 @@ public struct WatchdogRecoveryService: Sendable {
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
+            tripKVBackendGuard: @escaping @Sendable (Int, Double) -> Bool = {
+                KVBackendCrashLoopGuard.trip(
+                    crashCount: $0, now: $1, lastKnownModel: nil)
+            },
             log: @escaping @Sendable (String) -> Void
         ) {
             self.kickstartIfLoaded = kickstartIfLoaded
@@ -45,6 +55,7 @@ public struct WatchdogRecoveryService: Sendable {
             self.processAlive = processAlive
             self.terminateStaleLockOwner = terminateStaleLockOwner
             self.isPastTickDeadline = isPastTickDeadline
+            self.tripKVBackendGuard = tripKVBackendGuard
             self.log = log
         }
     }
@@ -107,10 +118,21 @@ public struct WatchdogRecoveryService: Sendable {
     /// Called only after the watchdog's outage grace expires. A pending
     /// candidate attempt is charged once, rollback is attempted at the third
     /// failure, then an allowed newer release is installed before kickstart.
+    ///
+    /// `crashLoopRestartCount` is the consecutive crash-loop counter value
+    /// THIS restart carries if issued (`WatchdogPolicy.crashLoopCount`,
+    /// computed by the caller from the persisted watchdog state). At
+    /// `WatchdogPolicy.crashLoopTripThreshold` the KV-backend guard is
+    /// persisted BEFORE the kickstart below — see the trip site for the
+    /// precedence rules. The default 0 (below any threshold) keeps callers
+    /// that do not track the chain, e.g. the healthy-path candidate
+    /// re-entries, from ever tripping it: those handle a RUNNING-but-inert
+    /// process, not the launchd death loop the guard exists for.
     public func recoverDownProvider(
         autoUpdateEnabled: Bool,
         inactiveProviderIdentity: ProcessIdentity? = nil,
         providerProcessAlive: Bool = false,
+        crashLoopRestartCount: Int = 0,
         now: Double
     ) async -> DownOutcome {
         // Monotonic anchor for re-deriving the epoch time later in this call.
@@ -177,6 +199,12 @@ public struct WatchdogRecoveryService: Sendable {
         }
 
         var rolledBackTo: String?
+        // True while a pending update candidate still has a VIABLE rollback
+        // path — the state that must suppress the crash-loop backend guard
+        // below. Read after the rollback attempt so a rollback that just
+        // committed (candidate cleared) or was refused (blocked reason set)
+        // is judged on its outcome, not its intent.
+        var candidateOwnsRecovery = false
         do {
             var state = try session.readState()
             let beforeReconcile = state
@@ -251,10 +279,50 @@ public struct WatchdogRecoveryService: Sendable {
                     return .retryBackoff(until: until, reason: reason)
                 }
             }
+            candidateOwnsRecovery = state.candidate != nil
+                && state.candidate?.rollbackBlockedReason == nil
         } catch {
             let reason = "could not attribute candidate failure: \(error)"
             deps.log(reason)
             return .failed(reason)
+        }
+
+        // Crash-loop KV-backend guard (v0.8.0). The caller counted this
+        // restart as the Nth consecutive crash-loop-shaped one; at the
+        // threshold the guard record is persisted HERE — before the update
+        // check and the kickstart — so the daemon this very tick relaunches
+        // already resolves `.auto` to contiguous on its first model load.
+        // Tripping after the kickstart would race the relaunched daemon's
+        // model preload and lose: that boot would just be crash N+1.
+        //
+        // PRECEDENCE — the update-recovery candidate rollback WINS, for two
+        // reasons. First, it fixes more: rolling the BINARY back to the
+        // verified predecessor also fixes paged, because the pre-0.8.0
+        // predecessor resolves `.auto` to contiguous. Second, flipping both
+        // levers at once would strand a guard record for a version about to
+        // leave the box, and the two automations must not fight over one
+        // incident. So: a rollback that just committed (`rolledBackTo`)
+        // suppresses the trip, and a pending candidate with a viable
+        // rollback path (`candidateOwnsRecovery`) suppresses it while the
+        // candidate's own failure counter — same threshold of 3, charged on
+        // the same restarts — walks toward that rollback. A candidate whose
+        // rollback was REFUSED (blocked reason set) has already lost its fix
+        // path, so the backend guard is the one automated mitigation left
+        // and may trip.
+        if crashLoopRestartCount >= WatchdogPolicy.crashLoopTripThreshold,
+            rolledBackTo == nil,
+            !candidateOwnsRecovery
+        {
+            if deps.tripKVBackendGuard(crashLoopRestartCount, now) {
+                deps.log(
+                    "crash-loop backend guard tripped after \(crashLoopRestartCount) short-uptime "
+                        + "restarts — `.auto` resolves contiguous on this box until the next "
+                        + "release or `darkbloom doctor --clear-backend-guard`")
+            } else {
+                deps.log(
+                    "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
+                        + "`.auto` will keep resolving paged and the crash loop may continue")
+            }
         }
 
         var updatedTo: String?

@@ -73,6 +73,14 @@ const (
 	// The kill switch (DARKBLOOM_CBV2_PAGED_KV=0) — a deliberate operator
 	// rollback, and the one degrade class that is GOOD news.
 	KVFallbackKillSwitch = "kill_switch"
+	// The crash-loop backend guard: the box's own watchdog counted 3
+	// consecutive short-uptime restarts and flipped `.auto` to contiguous
+	// for the tripping binary version (provider KVBackendGuard). The
+	// kill switch's AUTOMATED sibling — but where kill_switch is good news,
+	// this class is an incident marker: the box was crash-looping minutes
+	// ago, and it stays contiguous until the next release or a manual
+	// `darkbloom doctor --clear-backend-guard`.
+	KVFallbackCrashLoopGuard = "crash_loop_guard"
 	// Paged kernels failed their preflight on this box.
 	KVFallbackKernelPreflight = "kernel_preflight"
 	// Physical-capacity planning refused the pool before construction.
@@ -81,6 +89,13 @@ const (
 	KVFallbackIneligible = "ineligible"
 	// The pool was planned but could not be built at that size.
 	KVFallbackPoolConstruction = "pool_construction_capacity"
+	// DARKBLOOM_CBV2_PAGED_KV_DTYPE carried a value that parses as neither
+	// float16 nor float32. Under `.auto` (the fleet default) the provider
+	// degrades to contiguous with the typo in the detail tail; an explicit
+	// paged selection still refuses. An operator-fixable config error, not
+	// paged infrastructure failing — keep it separable from the classes
+	// above on dashboards.
+	KVFallbackInvalidDType = "invalid_dtype"
 	// KVFallbackNone: the slot WAS observed and named no reason. The
 	// authoritative "this slot did not degrade" — the whole point of the
 	// field. Never conflate it with KVFallbackUnknown.
@@ -98,10 +113,12 @@ const (
 // as KVFallbackOther rather than reaching a metric verbatim.
 var knownKVFallbackClasses = map[string]struct{}{
 	KVFallbackKillSwitch:       {},
+	KVFallbackCrashLoopGuard:   {},
 	KVFallbackKernelPreflight:  {},
 	KVFallbackPhysicalCapacity: {},
 	KVFallbackIneligible:       {},
 	KVFallbackPoolConstruction: {},
+	KVFallbackInvalidDType:     {},
 }
 
 // maxKVFallbackReasonBytes bounds the stored reason. It is untrusted provider

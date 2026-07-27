@@ -1051,9 +1051,15 @@ struct EngineV2ReslicingWiringTests {
 
     @Test("serviceability floor: a slice below 1 GiB per slot REFUSES the load (reslice_floor)")
     func resliceFloorRefusesLoad() async throws {
-        // A 8 GiB "machine": budget after 4 GiB of weights ≈ 8×0.9−4−3 ≈
-        // ~0 — any two-way slice lands below the 1 GiB floor.
-        let tinyPhysical: UInt64 = 8 * wiringGiB
+        // A 16 GiB "machine": cap = min(0.9×16, 16−2) = 14 GiB. After slot
+        // A's 6 GiB of weights the budget is 14 − 6 − 5.5 (activation
+        // reserve) = 2.5 GiB — A loads. Adding B's 6 GiB zeroes it
+        // (14 − 12 − 5.5 < 0), so any two-way slice lands below the 1 GiB
+        // floor. (An 8 GiB machine no longer works as this fixture: its
+        // 6 GiB cap minus the 5.5 GiB reserve cannot clear the floor for
+        // even ONE slot — the deliberate consequence of the v0.8.0 reserve
+        // raise for the smallest boxes.)
+        let tinyPhysical: UInt64 = 16 * wiringGiB
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let telemetry = WiringTelemetrySink()
@@ -1068,7 +1074,7 @@ struct EngineV2ReslicingWiringTests {
                 }))
 
         // Slot A exists with a small grant already.
-        let sizingA = makeSizing(weightsGiB: 2, kvRate: 20_480)
+        let sizingA = makeSizing(weightsGiB: 6, kvRate: 20_480)
         let bridgeA = try await loop.resliceAndBuildEngineV2SlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
@@ -1094,7 +1100,7 @@ struct EngineV2ReslicingWiringTests {
                 modelType: "gpt_oss",
                 container: makeStubContainer(),
                 tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                sizing: makeSizing(weightsGiB: 2, kvRate: 24_576)
+                sizing: makeSizing(weightsGiB: 6, kvRate: 24_576)
             )
         }
         #expect(await bridgeA.engineKVBytesCapacity() == grantA0)

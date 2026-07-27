@@ -123,7 +123,7 @@ this table does **not** mean a key is rejected — the Go map is the authority, 
 
 **Important:** No prompt or response content is ever placed in telemetry. The allowlist contains only non-sensitive operational metadata.
 
-Canonical server allowlist: [`telemetry_handlers.go:48-171`](../../coordinator/api/telemetry_handlers.go). Swift client-side filter: [`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift) (`TelemetryEvent.swift:238-294`). TS client-side set: [`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts) (`telemetry-types.ts:58-160`).
+Canonical server allowlist: [`telemetry_handlers.go:48-194`](../../coordinator/api/telemetry_handlers.go). Swift client-side filter: [`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift) (`TelemetryEvent.swift:238-307`). TS client-side set: [`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts) (`telemetry-types.ts:58-172`).
 
 ## Discrepancies
 

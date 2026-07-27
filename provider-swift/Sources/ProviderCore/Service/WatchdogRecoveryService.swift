@@ -26,23 +26,25 @@ public struct WatchdogRecoveryService: Sendable {
         /// journaled transaction.
         public var isPastTickDeadline: @Sendable () -> Bool
         /// Trip the crash-loop KV-backend guard: persist the on-disk record
-        /// and emit the trip telemetry (`KVBackendCrashLoopGuard.tripWithRollback`).
+        /// NOW and stage the rest (`KVBackendCrashLoopGuard.stageTrip`).
         /// `guardedVersion` is the version launchd will actually kickstart,
         /// resolved by the recovery flow: the pending candidate's release
         /// version while a candidate owns the live layout, otherwise
         /// `SelfUpdater.effectiveInstalledVersion` — the watchdog process's
-        /// own compiled-in version can be stale after a self-update. Returns
-        /// nil when the record could not reach disk; otherwise an undo
-        /// closure that restores the pre-trip disk state, invoked ONLY when
-        /// this recovery attempt ends without an issued kickstart (the
-        /// counted restart never happened, so the guard must not strand);
-        /// once the kickstart is issued the undo is disarmed and the guard
-        /// survives any later bookkeeping failure. Injectable so the
+        /// own compiled-in version can be stale after a self-update.
+        /// The returned `StagedTrip` splits the side effects around the
+        /// kickstart: `undo` (nil when the record never reached disk)
+        /// restores the pre-trip disk state and is invoked ONLY when this
+        /// recovery attempt ends without an issued kickstart (the counted
+        /// restart never happened, so the guard must not strand); `emit`
+        /// queues the ERROR trip event and is invoked exactly once, at
+        /// kickstart success — the same point the undo is disarmed — so an
+        /// undone trip leaves no telemetry trace. Injectable so the
         /// decision-flow tests can observe trips (and their ordering against
         /// the kickstart) without touching the real `~/.darkbloom`.
         public var tripKVBackendGuard:
             @Sendable (_ crashCount: Int, _ now: Double, _ guardedVersion: String)
-                -> (@Sendable () -> Void)?
+                -> KVBackendCrashLoopGuard.StagedTrip
         /// Reports the version-scoped crash-loop chain this recovery attempt
         /// resolved: the effective counter value
         /// (`WatchdogPolicy.versionScopedCrashLoopCount` over the caller's
@@ -65,8 +67,8 @@ public struct WatchdogRecoveryService: Sendable {
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
             tripKVBackendGuard: @escaping @Sendable (Int, Double, String)
-                -> (@Sendable () -> Void)? = {
-                KVBackendCrashLoopGuard.tripWithRollback(
+                -> KVBackendCrashLoopGuard.StagedTrip = {
+                KVBackendCrashLoopGuard.stageTrip(
                     crashCount: $0, now: $1, guardedVersion: $2, lastKnownModel: nil)
             },
             noteCrashLoopChain: @escaping @Sendable (Int, String) -> Void = { _, _ in },
@@ -400,14 +402,25 @@ public struct WatchdogRecoveryService: Sendable {
         // a stranded guard would force contiguous on the next manual start
         // for a trip that never completed. The undo restores the pre-trip
         // disk state, so it can never delete a pre-existing guard from an
-        // earlier completed trip.
+        // earlier completed trip. The trip EVENT is likewise deferred to the
+        // kickstart (`pendingTripEmission`, fired where the undo is
+        // disarmed): the undo can restore the disk but cannot retract a
+        // queued event, and an undone trip that had already queued one would
+        // ship a false incident signal on the next healthy boot.
         var undoTrip: (@Sendable () -> Void)?
+        var pendingTripEmission: (@Sendable () -> Void)?
         if scopedCrashLoopCount >= WatchdogPolicy.crashLoopTripThreshold,
             rolledBackTo == nil,
             !candidateOwnsRecovery
         {
-            if let undo = deps.tripKVBackendGuard(scopedCrashLoopCount, now, guardedVersion) {
-                undoTrip = undo
+            let staged = deps.tripKVBackendGuard(scopedCrashLoopCount, now, guardedVersion)
+            // Emitted even when the record write failed (the event carries
+            // the could-not-persist warning — the fleet's only signal that a
+            // box is looping unguarded), but still only for an issued
+            // kickstart.
+            pendingTripEmission = staged.emit
+            if staged.persisted {
+                undoTrip = staged.undo
                 deps.log(
                     "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
                         + "restarts — `.auto` resolves contiguous on this box until the next "
@@ -533,8 +546,13 @@ public struct WatchdogRecoveryService: Sendable {
                 // attempt still returns `.failed`, but undoing the guard
                 // would boot the relaunched daemon paged and guardless while
                 // the chain counter (persisted only for `.restartIssued`)
-                // did not advance either.
+                // did not advance either. The trip event fires HERE, for the
+                // same reason in the other direction: only a trip whose
+                // counted restart actually happened may reach the fleet's
+                // alerting.
                 undoTrip = nil
+                pendingTripEmission?()
+                pendingTripEmission = nil
                 let before = state
                 _ = state.markLaunchIssued(now: launchNow)
                 try writeIfChanged(state, before: before)

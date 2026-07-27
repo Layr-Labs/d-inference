@@ -191,57 +191,97 @@ public enum KVBackendGuardStore {
 }
 
 /// The trip action the watchdog's recovery path invokes at the threshold:
-/// persist the record, then emit the ERROR `engine_health` trip event.
+/// persist the record immediately (the relaunching daemon must read it),
+/// stage the ERROR `engine_health` trip event for emission once the
+/// kickstart is actually issued.
+///
+/// `guardedVersion` is the version of the binary launchd is actually
+/// crash-looping — NOT this process's `ProviderCore.version`. The two
+/// differ in exactly the window where crash loops are most likely: the
+/// persistent watchdog keeps running its OLD executable image after it
+/// installs and promotes a newer release, so a trip stamped with the
+/// watchdog's compiled-in version would read as stale to the new daemon
+/// and never activate (the daemon even deletes it at startup via
+/// `clearIfStale`). The caller resolves the honest version as the one
+/// launchd will actually kickstart: a pending update candidate's release
+/// version while the candidate owns the live layout (`state.current`
+/// keeps naming the predecessor until promotion), otherwise the same way
+/// `SelfUpdater.checkForUpdate` does —
+/// `SelfUpdater.effectiveInstalledVersion(processVersion:recorded:)`,
+/// the SemVer-max of the process version and the update-recovery
+/// state's durable installed record (see
+/// `WatchdogRecoveryService.recoverDownProvider`).
+///
+/// Re-trips of the same version (the guarded binary still crashing, for
+/// whatever reason) refresh `crashCount` but keep the ORIGINAL
+/// `trippedAt`, so the guard's reported age stays the age of the trip.
+///
+/// TELEMETRY TRANSPORT: the event is built by `EngineHealthEvent.make`
+/// (the one engine-health builder) but pushed straight to the
+/// `TelemetryOverflowQueue` disk queue rather than through
+/// `TelemetryClient.shared` — the watchdog process never configures the
+/// client (an unconfigured client silently DROPS), and the daemon is
+/// down at trip time anyway. This is the panic hook's transport
+/// (`PanicHook.swift`): the guarded daemon this trip guarantees will
+/// boot drains the queue to the coordinator once it reconnects.
 public enum KVBackendCrashLoopGuard {
 
-    /// Persist the guard for the INSTALLED daemon version and emit the trip
-    /// telemetry. Returns whether the record reached disk.
+    /// A trip whose RECORD write already happened but whose remaining side
+    /// effects are staged for the caller to sequence around the kickstart:
     ///
-    /// `guardedVersion` is the version of the binary launchd is actually
-    /// crash-looping — NOT this process's `ProviderCore.version`. The two
-    /// differ in exactly the window where crash loops are most likely: the
-    /// persistent watchdog keeps running its OLD executable image after it
-    /// installs and promotes a newer release, so a trip stamped with the
-    /// watchdog's compiled-in version would read as stale to the new daemon
-    /// and never activate (the daemon even deletes it at startup via
-    /// `clearIfStale`). The caller resolves the honest version as the one
-    /// launchd will actually kickstart: a pending update candidate's release
-    /// version while the candidate owns the live layout (`state.current`
-    /// keeps naming the predecessor until promotion), otherwise the same way
-    /// `SelfUpdater.checkForUpdate` does —
-    /// `SelfUpdater.effectiveInstalledVersion(processVersion:recorded:)`,
-    /// the SemVer-max of the process version and the update-recovery
-    /// state's durable installed record (see
-    /// `WatchdogRecoveryService.recoverDownProvider`).
-    ///
-    /// Re-trips of the same version (the guarded binary still crashing, for
-    /// whatever reason) refresh `crashCount` but keep the ORIGINAL
-    /// `trippedAt`, so the guard's reported age stays the age of the trip.
-    ///
-    /// TELEMETRY TRANSPORT: the event is built by `EngineHealthEvent.make`
-    /// (the one engine-health builder) but pushed straight to the
-    /// `TelemetryOverflowQueue` disk queue rather than through
-    /// `TelemetryClient.shared` — the watchdog process never configures the
-    /// client (an unconfigured client silently DROPS), and the daemon is
-    /// down at trip time anyway. This is the panic hook's transport
-    /// (`PanicHook.swift`): the guarded daemon this trip guarantees will
-    /// boot drains the queue to the coordinator once it reconnects.
-    @discardableResult
-    public static func trip(
+    ///   * `undo` restores the EXACT pre-trip disk state — the previous
+    ///     record if one existed (an earlier legitimate trip whose crash
+    ///     count this write refreshed), or absence — so it can never delete
+    ///     a pre-existing guard from an earlier completed trip. nil when the
+    ///     record never reached disk (nothing to undo). The recovery flow
+    ///     invokes it on every exit that ends WITHOUT an issued kickstart:
+    ///     the counted restart never happened, so the guard must not strand.
+    ///   * `emit` queues the ERROR `engine_v2_crash_loop_guard` event.
+    ///     Deferred rather than fired at write time because the RECORD must
+    ///     be written before the kickstart (the relaunching daemon reads it
+    ///     on its first model load) while the trip only becomes REAL once
+    ///     the kickstart is issued — the undo can restore the disk but
+    ///     cannot retract a queued event, and an undone trip that had
+    ///     already queued one would ship a false incident signal on the next
+    ///     healthy boot, on exactly the metric operators alert on. The
+    ///     recovery flow invokes it exactly once, at kickstart success (the
+    ///     same point the undo is disarmed).
+    public struct StagedTrip: Sendable {
+        /// Whether the record reached disk.
+        public let persisted: Bool
+        public let undo: (@Sendable () -> Void)?
+        public let emit: @Sendable () -> Void
+
+        public init(
+            persisted: Bool,
+            undo: (@Sendable () -> Void)?,
+            emit: @escaping @Sendable () -> Void
+        ) {
+            self.persisted = persisted
+            self.undo = undo
+            self.emit = emit
+        }
+    }
+
+    /// Write the guard record NOW and stage the rest of the trip (see
+    /// `StagedTrip`). The event is BUILT here — it captures the trip-time
+    /// crash count, guarded version, model attribution, and whether the
+    /// record persisted — but queued only when the caller runs `emit`.
+    public static func stageTrip(
         crashCount: Int,
         now: Double,
         guardedVersion: String,
         lastKnownModel: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
-    ) -> Bool {
-        let existing = KVBackendGuardStore.read(environment: environment)
+    ) -> StagedTrip {
+        let previous = KVBackendGuardStore.read(environment: environment)
         let record = KVBackendGuard(
-            trippedAt: existing?.providerVersion == guardedVersion
-                ? existing?.trippedAt ?? now
+            trippedAt: previous?.providerVersion == guardedVersion
+                ? previous?.trippedAt ?? now
                 : now,
             providerVersion: guardedVersion,
-            crashCount: max(crashCount, existing?.crashCount ?? 0))
+            crashCount: max(crashCount, previous?.crashCount ?? 0))
         let wrote = KVBackendGuardStore.write(record, environment: environment)
 
         var event = EngineHealthEvent.make(
@@ -266,48 +306,43 @@ public enum KVBackendCrashLoopGuard {
         // set the one field the fleet dashboard groups trips by — the
         // GUARDED version (what was crash-looping), not the watchdog's.
         event.version = guardedVersion
-        emitEngineHealth(event, sink: emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) })
-        return wrote
+        let stagedEvent = event
+        let sink = emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) }
+
+        let undo: (@Sendable () -> Void)? = wrote
+            ? { @Sendable in
+                if let previous {
+                    _ = KVBackendGuardStore.write(previous, environment: environment)
+                } else {
+                    _ = KVBackendGuardStore.clear(environment: environment)
+                }
+            }
+            : nil
+        return StagedTrip(
+            persisted: wrote,
+            undo: undo,
+            emit: { emitEngineHealth(stagedEvent, sink: sink) })
     }
 
-    /// `trip`, plus an undo closure that restores the EXACT pre-trip disk
-    /// state — the previous record if one existed (an earlier legitimate
-    /// trip whose crash count this write refreshed), or absence.
-    ///
-    /// The trip is written BEFORE the kickstart so the relaunching daemon
-    /// reads it on its first model load — but that ordering means a recovery
-    /// attempt that then ends WITHOUT issuing the restart (operator stopped
-    /// the provider mid-recovery, kickstart refused/failed) has written a
-    /// guard for a third restart that never happened, while the persisted
-    /// chain counter correctly did not advance. The caller invokes the undo
-    /// on every such exit (`WatchdogRecoveryService.recoverDownProvider`);
-    /// keying the undo to the pre-trip snapshot means it can never delete a
-    /// pre-existing guard from an earlier trip. Returns nil when the record
-    /// could not be persisted (nothing to undo — the trip telemetry was
-    /// still emitted, matching `trip`'s wrote-false behavior).
-    public static func tripWithRollback(
+    /// `stageTrip` with the event queued immediately — for callers with no
+    /// kickstart to sequence against. Returns whether the record persisted.
+    @discardableResult
+    public static func trip(
         crashCount: Int,
         now: Double,
         guardedVersion: String,
         lastKnownModel: String?,
         environment: [String: String] = ProcessInfo.processInfo.environment,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil
-    ) -> (@Sendable () -> Void)? {
-        let previous = KVBackendGuardStore.read(environment: environment)
-        guard trip(
+    ) -> Bool {
+        let staged = stageTrip(
             crashCount: crashCount,
             now: now,
             guardedVersion: guardedVersion,
             lastKnownModel: lastKnownModel,
             environment: environment,
             emitTelemetry: emitTelemetry)
-        else { return nil }
-        return {
-            if let previous {
-                KVBackendGuardStore.write(previous, environment: environment)
-            } else {
-                KVBackendGuardStore.clear(environment: environment)
-            }
-        }
+        staged.emit()
+        return staged.persisted
     }
 }

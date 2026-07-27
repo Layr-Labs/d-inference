@@ -99,7 +99,7 @@ struct Watchdog: AsyncParsableCommand {
                 },
                 isPastTickDeadline: { ContinuousClock.now > tickDeadline },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.tripWithRollback(
+                    KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount,
                         now: tripNow,
                         guardedVersion: guardedVersion,

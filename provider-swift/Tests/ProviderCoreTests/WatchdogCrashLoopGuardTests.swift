@@ -587,6 +587,35 @@ struct CrashLoopGuardTripTests {
         #expect(event.version == "0.8.3")
     }
 
+    @Test("stageTrip writes the record NOW but queues no event until emit() runs")
+    func stageTripDefersEvent() {
+        // The record must land before the kickstart (the relaunching daemon
+        // reads it), but the ERROR event must not be queued until the
+        // kickstart is issued — a rolled-back trip cannot retract a queued
+        // event, and a false `engine_v2_crash_loop_guard` is exactly the
+        // signal operators alert on during the rollout.
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let env = [KVBackendGuardStore.pathEnvKey: url.path]
+        let capture = EventCapture()
+
+        let staged = KVBackendCrashLoopGuard.stageTrip(
+            crashCount: 3, now: 5_000, guardedVersion: "0.8.3",
+            lastKnownModel: nil,
+            environment: env, emitTelemetry: { capture.record($0) })
+        #expect(staged.persisted)
+        #expect(KVBackendGuardStore.read(environment: env) != nil,
+            "the record is on disk immediately")
+        #expect(capture.events.isEmpty, "no event before emit()")
+        #expect(staged.undo != nil)
+
+        staged.emit()
+        #expect(capture.events.count == 1)
+        #expect(capture.events.first?.fields?["operation"]?.description
+            == "engine_v2_crash_loop_guard")
+    }
+
     @Test("re-tripping the same version keeps the original trippedAt, raises crashCount")
     func retripPreservesTrippedAt() {
         let url = FileManager.default.temporaryDirectory
@@ -653,7 +682,10 @@ struct CrashLoopGuardRecoveryWiringTests {
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, _, guardedVersion in
                     log.append("trip(\(crashCount),v\(guardedVersion))")
-                    return { log.append("untrip") }
+                    return KVBackendCrashLoopGuard.StagedTrip(
+                        persisted: true,
+                        undo: { log.append("untrip") },
+                        emit: { log.append("emit") })
                 },
                 noteCrashLoopChain: { count, version in
                     log.append("chain(\(count),v\(version))")
@@ -685,10 +717,13 @@ struct CrashLoopGuardRecoveryWiringTests {
         // version IS the process version (the fixture's oldVersion), the
         // recorded chain version matches it (continuity), and the guard is
         // written before the kickstart — never rolled back on this path.
+        // The trip EVENT fires only after the kickstart: the trip becomes
+        // real (alertable) exactly when the counted restart is issued.
         #expect(log.actions == [
             "chain(3,v\(fixture.oldVersion))",
             "trip(3,v\(fixture.oldVersion))",
             "kickstart",
+            "emit",
         ])
     }
 
@@ -788,6 +823,8 @@ struct CrashLoopGuardRecoveryWiringTests {
                 lastRestartVersion: fixture.oldVersion,
                 now: 1_000)
         #expect(outcome == .noLongerLoaded)
+        // No "emit" entry: an undone trip leaves no telemetry trace — the
+        // exact-equality assertion pins zero emissions on this path.
         #expect(log.actions == [
             "chain(3,v\(fixture.oldVersion))",
             "trip(3,v\(fixture.oldVersion))",
@@ -898,6 +935,7 @@ struct CrashLoopGuardRecoveryWiringTests {
             .appendingPathComponent("kv-backend-guard-\(UUID().uuidString).json")
         defer { try? FileManager.default.removeItem(at: url) }
         let env = [KVBackendGuardStore.pathEnvKey: url.path]
+        let events = ActionLog()
         let service = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
@@ -905,10 +943,10 @@ struct CrashLoopGuardRecoveryWiringTests {
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.tripWithRollback(
+                    KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
                         guardedVersion: guardedVersion, lastKnownModel: nil,
-                        environment: env, emitTelemetry: { _ in })
+                        environment: env, emitTelemetry: { _ in events.append("event") })
                 },
                 log: { _ in }))
 
@@ -920,6 +958,8 @@ struct CrashLoopGuardRecoveryWiringTests {
             lastRestartVersion: fixture.newVersion,
             now: 1_000)
         #expect(outcome == .restartIssued(updatedTo: nil, rolledBackTo: nil))
+        #expect(events.actions == ["event"],
+            "an issued kickstart emits the trip event exactly once")
 
         let record = KVBackendGuardStore.read(environment: env)
         #expect(record?.providerVersion == fixture.newVersion,
@@ -1010,7 +1050,7 @@ struct CrashLoopGuardRecoveryWiringTests {
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.tripWithRollback(
+                    KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
                         guardedVersion: guardedVersion, lastKnownModel: nil,
                         environment: env, emitTelemetry: { _ in })
@@ -1067,6 +1107,7 @@ struct CrashLoopGuardRecoveryWiringTests {
         let env = [KVBackendGuardStore.pathEnvKey: url.path]
         let statePath = fixture.installRoot
             .appendingPathComponent("recovery/state.json")
+        let events = ActionLog()
         let service = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
@@ -1082,10 +1123,10 @@ struct CrashLoopGuardRecoveryWiringTests {
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.tripWithRollback(
+                    KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
                         guardedVersion: guardedVersion, lastKnownModel: nil,
-                        environment: env, emitTelemetry: { _ in })
+                        environment: env, emitTelemetry: { _ in events.append("event") })
                 },
                 log: { _ in }))
 
@@ -1099,12 +1140,14 @@ struct CrashLoopGuardRecoveryWiringTests {
             return
         }
         // The kickstart WAS issued, so the guard survives the bookkeeping
-        // failure and the relaunched daemon boots contiguous.
+        // failure and the relaunched daemon boots contiguous — and the trip
+        // event was emitted exactly once (the counted restart did happen).
         let record = KVBackendGuardStore.read(environment: env)
         #expect(record?.providerVersion == fixture.newVersion,
             "the guard must survive a bookkeeping failure after an issued kickstart")
         #expect(EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
             record: record, runningVersion: fixture.newVersion))
+        #expect(events.actions == ["event"])
     }
 
     @Test("a rolled-back re-trip restores the PRE-EXISTING guard, never deletes it")
@@ -1124,6 +1167,7 @@ struct CrashLoopGuardRecoveryWiringTests {
             trippedAt: 100, providerVersion: fixture.oldVersion, crashCount: 3)
         KVBackendGuardStore.write(earlier, environment: env)
 
+        let events = ActionLog()
         let service = WatchdogRecoveryService(
             updater: plainUpdater(fixture),
             dependencies: .init(
@@ -1131,10 +1175,10 @@ struct CrashLoopGuardRecoveryWiringTests {
                 launchSnapshot: { nil },
                 processAlive: { _ in true },
                 tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
-                    KVBackendCrashLoopGuard.tripWithRollback(
+                    KVBackendCrashLoopGuard.stageTrip(
                         crashCount: crashCount, now: tripNow,
                         guardedVersion: guardedVersion, lastKnownModel: nil,
-                        environment: env, emitTelemetry: { _ in })
+                        environment: env, emitTelemetry: { _ in events.append("event") })
                 },
                 log: { _ in }))
         let outcome = await service.recoverDownProvider(
@@ -1145,5 +1189,7 @@ struct CrashLoopGuardRecoveryWiringTests {
         #expect(outcome == .noLongerLoaded)
         #expect(KVBackendGuardStore.read(environment: env) == earlier,
             "the earlier trip's record must survive the rolled-back re-trip untouched")
+        #expect(events.actions.isEmpty,
+            "an undone trip must leave no telemetry trace — no restart was issued")
     }
 }

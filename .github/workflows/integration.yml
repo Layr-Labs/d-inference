@@ -9,7 +9,16 @@ jobs:
   integration-tests:
     name: E2E Integration Tests
     runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 90
+    # Job budget = the sum of every step's worst case, not the warm-path wall
+    # time (a green run takes ~26m with warm caches). Test allowances:
+    # 25m (blocking paged lane) + 15m (expected-red exact-cache lane)
+    # + 10m (default-posture smoke) + 15m (mixed-version, released provider)
+    # + 30m (reverse lane: TWO sequential `go test -timeout 15m` runs)
+    # = 95m. Setup/build/download overhead: ~3m warm, but a cold runner pays
+    # the full Swift provider build, the cargo sidecar build, and the
+    # gpt-oss-20b (~12 GB) + gemma-4 snapshot downloads — budget 25m.
+    # 95m + 25m = 120m.
+    timeout-minutes: 120
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
@@ -88,11 +97,11 @@ jobs:
           print(f"Pinned exact-cache snapshot: {selected.name}")
           PY
 
-      # THE PAGED GATE. Pinned to an EXPLICIT paged posture, not left on the
-      # provider's default, because `.auto` is ALLOWED to degrade: a paged
-      # preflight, capacity-planning or pool-construction failure silently
-      # lands an `.auto` slot on contiguous and the suite still passes. That
-      # made this job green whether or not paged ever ran.
+      # THE PAGED GATE — BLOCKING. Pinned to an EXPLICIT paged posture, not
+      # left on the provider's default, because `.auto` is ALLOWED to degrade:
+      # a paged preflight, capacity-planning or pool-construction failure
+      # silently lands an `.auto` slot on contiguous and the suite still
+      # passes. That made this job green whether or not paged ever ran.
       #
       # `EngineV2KVBackendPolicy.degradesPagedFailure` returns false for an
       # explicit `.paged` selection: it REFUSES the load with
@@ -106,26 +115,27 @@ jobs:
       # `engine_v2_max_concurrent` as 4. Paged at B=4 measures 0.98x of
       # contiguous against 1.17x at B=8, so setting the backend alone would
       # have bought the B=1 regression and none of the throughput.
-      # NON-BLOCKING because of the FIXTURE, not because of the default.
-      # `.auto` resolves PAGED as of v0.8.0, so paged is what the fleet
-      # serves. This lane runs gemma-4-e2b-it-4bit, and e2b is the one
-      # checkpoint where paged ADOPTION is the inexact arm: an adopted
-      # paged slot answers differently from its own cold run. e2b appears
-      # zero times in the production catalog -- on the two models we do
-      # serve, paged adoption is the EXACT arm and contiguous is the one
-      # that diverges -- so this red describes the fixture, not the fleet.
       #
-      # EXPECTED RED until the e2b paged adoption path is fixed or this
-      # fixture moves to a served model. Kept, pinned, and visible rather
-      # than removed: the red IS the finding, and unpinning it would
-      # recreate the "gate that cannot fail" pattern this release fixed
-      # four separate times. Promote back to blocking when the fixture
-      # stops being the exception -- NOT on any further `.auto` change.
-      - name: Run integration + profile tests (paged @ 8 — informational)
-        continue-on-error: true
+      # DARKBLOOM_TESTBED_EXPECT_KV_BACKEND closes the last construction-side
+      # hole: after the providers register, the testbed pre-warms each
+      # advertised slot and asserts the ENGINE-REPORTED `kv_backend` on the
+      # heartbeat equals the lane's declared backend, failing the suite when
+      # it does not. Explicit-paged refusal covers the load path; the
+      # expectation covers everything else (a future degrade path, a testbed
+      # regression that stops writing the TOML, the wrong binary under test).
+      #
+      # BLOCKING as of the v0.8.0 gate audit. This step used to be
+      # `continue-on-error: true` because ONE fixture-specific test
+      # (TestIntegrationExactCacheRouting) is expected-red on paged — which
+      # meant the whole 16-test paged lane could fail without failing the
+      # job, and on the PR head it was in fact swallowing a live FAIL. The
+      # expected-red test now runs in its own informational step below;
+      # everything here must pass.
+      - name: Run integration + profile tests (paged @ 8 — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_KV_BACKEND: paged
           DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
+          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: paged
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
@@ -141,12 +151,53 @@ jobs:
           echo "KV posture requested: engine_v2_kv_backend=$DARKBLOOM_TESTBED_KV_BACKEND" \
                "engine_v2_max_concurrent=$DARKBLOOM_TESTBED_MAX_CONCURRENT" \
                "DARKBLOOM_CBV2_PAGED_KV=<unset>"
-          echo "Explicit paged refuses rather than degrades, so a green run here" \
-               "served paged. Grep the log for 'provider KV posture' to confirm."
+          echo "Backend assertion armed: the testbed fails any suite whose" \
+               "providers do not report kv_backend=$DARKBLOOM_TESTBED_EXPECT_KV_BACKEND."
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestIntegration|TestProfile'
+            -run 'TestIntegration|TestProfile' \
+            -skip '^TestIntegrationExactCacheRouting$'
 
-      # Default-posture lane. The step above is the only one that pins a
+      # EXPECTED RED — because of the FIXTURE, not because of the default.
+      # `.auto` resolves PAGED as of v0.8.0, so paged is what the fleet
+      # serves. This test runs gemma-4-e2b-it-4bit, and e2b is the one
+      # checkpoint where paged ADOPTION is the inexact arm: an adopted
+      # paged slot answers differently from its own cold run. e2b appears
+      # zero times in the production catalog -- on the two models we do
+      # serve, paged adoption is the EXACT arm and contiguous is the one
+      # that diverges -- so this red describes the fixture, not the fleet.
+      #
+      # EXPECTED RED until the e2b paged adoption path is fixed or this
+      # fixture moves to a served model. Kept, pinned, and visible rather
+      # than removed: the red IS the finding, and unpinning it would
+      # recreate the "gate that cannot fail" pattern this release fixed
+      # four separate times. Promote back to blocking when the fixture
+      # stops being the exception -- NOT on any further `.auto` change.
+      #
+      # ISOLATED in its own step (v0.8.0 gate audit) so `continue-on-error`
+      # covers exactly the one expected-red test instead of the entire paged
+      # lane it used to blanket. No DARKBLOOM_TESTBED_EXPECT_KV_BACKEND here:
+      # the expectation pre-warms every slot at suite start, and this test's
+      # cold-vs-adopted routing semantics are exactly what a pre-warm would
+      # perturb — its posture is already pinned by the explicit paged TOML.
+      - name: Run exact-cache routing (paged @ 8 — expected red, informational)
+        continue-on-error: true
+        env:
+          DARKBLOOM_TESTBED_KV_BACKEND: paged
+          DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
+        run: |
+          set -euo pipefail
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
+          if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
+            echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
+                 "the kill switch degrades paged silently and voids this lane"
+            exit 1
+          fi
+          echo "Expected-red fixture lane: e2b paged adoption is the known inexact arm."
+          go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
+            -run '^TestIntegrationExactCacheRouting$'
+
+      # Default-posture lane. The steps above are the only ones that pin a
       # backend, so without this NOTHING would still exercise what a stock
       # install actually does: launch with no `--config` at all, on `.auto`,
       # at the provider's own memberwise cap. That is a different code path
@@ -158,18 +209,40 @@ jobs:
       # naming `auto` would write a TOML and thereby change the launch path
       # and drop the cap to the decoder's 4, testing neither default.
       #
+      # `.auto` resolves PAGED as of v0.8.0 — that is the release posture and
+      # what a stock install serves. (This step's name previously claimed
+      # `.auto = contiguous`, a leftover from before the flip: the BLOCKING
+      # smoke was labeled as covering the fleet's non-default backend while
+      # actually covering its default.) `.auto` is also the posture that is
+      # ALLOWED to degrade silently, so this lane sets
+      # DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged: a stock install that
+      # quietly falls back to contiguous now FAILS this gate with the
+      # engine-reported fallback reason instead of green-lighting a fleet
+      # that no longer serves what the release shipped.
+      #
       # COST, honestly: this is a second provider boot plus a second
       # gpt-oss-20b load (warm HF cache, but the weights still page in) for
-      # two inference round-trips. Same shape as the reverse-compat lane
-      # below, which the repo already budgets 15m for the same two tests.
-      # Step budget for the job goes 25+15+15=55m to 25+10+15+15=65m against
-      # a 90m job timeout.
-      - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
+      # two inference round-trips. Same shape as each half of the
+      # reverse-compat lane below, which budgets 15m per `go test` for the
+      # same two tests. The full job arithmetic (95m of test allowances —
+      # the reverse lane counts TWICE, two sequential 15m runs — plus cold
+      # setup overhead) lives on `timeout-minutes` at the top of the job.
+      - name: Run default-posture smoke (.auto = paged — BLOCKING gate)
+        env:
+          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: paged
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
-          echo "KV posture requested: provider default (no testbed override)"
+          if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
+            echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
+                 "the kill switch degrades paged silently and voids this gate"
+            exit 1
+          fi
+          echo "KV posture requested: provider default (no testbed override;" \
+               ".auto resolves paged as of v0.8.0)"
+          echo "Backend assertion armed: a silent .auto degrade to contiguous" \
+               "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged."
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
             -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
 
@@ -263,74 +336,11 @@ jobs:
             done
           )
 
-  benchmark:
-    name: E2E Benchmarks
-    runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 30
-    if: github.event_name == 'pull_request'
-    environment: benchmarks
-    env:
-      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
-      TESTBED_PROVIDER_CONFIG: debug
-      BENCHMARK_MD_PATH: /tmp/benchmark-results.md
-      RUNNER_DESC: macos-15 (M1 Virtual)
-      GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
-      GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-        with:
-          go-version-file: go.mod
-
-      - name: Install Postgres
-        run: brew install postgresql@16
-
-      - name: Build provider (Swift)
-        run: |
-          cd provider-swift
-          swift build -c debug
-
-      - name: Extract mlx.metallib
-        run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
-
-      - name: Install Hugging Face client
-        # Benchmarks serve the CBv2 default (gpt-oss-20b, ~12 GB) plus the
-        # secondary multi-model checkpoint (gemma-4-26B QAT, ~14.5 GB) for
-        # TestBenchmark_MultiModelMultiProvider. Warm HF cache ⇒ no-op.
-        run: /tmp/mlxvenv/bin/pip install huggingface_hub
-
-      - name: Download public models (pull request)
-        run: |
-          echo "Pull request: downloading public models without Hugging Face authentication"
-          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
-          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit', revision=os.environ['GEMMA_REVISION'], token=False)"
-
-      - name: Run benchmarks
-        run: |
-          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          export PATH
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestBenchmark'
-
-      - name: Post benchmark results
-        if: always()
-        run: |
-          if [ ! -f /tmp/benchmark-results.md ]; then
-            echo "No benchmark results file found"
-            exit 0
-          fi
-          BODY=$(cat /tmp/benchmark-results.md)
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY" \
-            --edit-last \
-            || gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # The E2E Benchmarks job used to live here as a second job. It is gated on
+  # the approval-required `benchmarks` environment, which is created on every
+  # PR and — measured over this release's 26 PR runs — never approved, so the
+  # workflow-level status of "Integration Tests" was permanently `waiting`
+  # even when the integration job above had long since completed. The
+  # benchmark job now lives in `.github/workflows/benchmarks.yml` so its
+  # (deliberate, cost-controlling) approval gate holds only its own workflow
+  # open, and this one concludes with the integration job's real result.

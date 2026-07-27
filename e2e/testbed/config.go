@@ -276,6 +276,14 @@ type SuiteConfig struct {
 	// DARKBLOOM_CBV2_PAGED_KV gotcha.
 	KVBackend     string
 	MaxConcurrent int
+	// ExpectKVBackend asserts the KV backend every engine slot was actually
+	// BUILT with ("paged" or "contiguous"); the suite pre-warms each slot and
+	// fails Start when the heartbeat-reported kv_backend differs or never
+	// arrives. "" falls back to DARKBLOOM_TESTBED_EXPECT_KV_BACKEND, and an
+	// unset env leaves the assertion off. Orthogonal to KVBackend: that knob
+	// REQUESTS a backend, this one asserts the CONSTRUCTED one — a lane
+	// exercising the `.auto` default sets only the expectation.
+	ExpectKVBackend string
 }
 
 func DefaultSuiteConfig() SuiteConfig {

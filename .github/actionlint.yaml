@@ -1,0 +1,7 @@
+# actionlint runner-label vocabulary. The repo runs on Blacksmith-hosted
+# runners, whose labels actionlint cannot know about; without this file every
+# job flags [runner-label] and the lint is unusable as a gate.
+self-hosted-runner:
+  labels:
+    - blacksmith-4vcpu-ubuntu-2404
+    - blacksmith-12vcpu-macos-latest

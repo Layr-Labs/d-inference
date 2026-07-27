@@ -194,7 +194,14 @@ func (s *Suite) Start(ctx context.Context) (err error) {
 	if err = s.startProviders(); err != nil {
 		return err
 	}
-	err = s.waitForProviderRegistration(3 * time.Minute)
+	if err = s.waitForProviderRegistration(3 * time.Minute); err != nil {
+		return err
+	}
+	// Built-backend assertion: when the lane declares an expected KV backend
+	// (DARKBLOOM_TESTBED_EXPECT_KV_BACKEND or SuiteConfig.ExpectKVBackend),
+	// refuse to come up until every provider slot proves the engine it
+	// actually constructed matches. See kv_expectation.go.
+	err = s.verifyKVBackendExpectation()
 	return err
 }
 

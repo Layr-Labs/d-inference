@@ -22,6 +22,11 @@
 // |K| <= 1.66, |V| <= 16.9), so the reference is the exact answer both are
 // approximating and "closer to the reference" is a meaningful ranking.
 //
+// The enabled path ASSERTS (v0.8.0 audit): per shape/history, paged's
+// reference relErr must stay within 3x of contiguous's — DRIFT passes, a
+// materially-less-accurate kernel (the BUG reading) fails. The dark path
+// (env unset) stays an early return with no assertions.
+//
 // No model weights. Run with:
 //   DARKBLOOM_PAGED_DIVERGENCE_PROBE=1 \
 //     swift test --filter PagedDecodeAccuracyProbeTests
@@ -156,13 +161,23 @@ struct PagedDecodeAccuracyProbeTests {
                 let pagedOut = try run(paged: true)
                 let contigOut = try run(paged: false)
 
-                // fp32 reference over the SAME values. The decode query sees
-                // the whole history here (history + 1 <= window for every case
-                // above), so no mask is needed.
+                // fp32 reference over the SAME values, restricted to the key
+                // set the real arms actually attend. A sliding row retains
+                // only the trailing `window` positions, self inclusive
+                // (`retainedCount = min(written, window)` — identical on
+                // both backends), so whenever history + 1 > window a
+                // maskless full-history reference is WRONG BY CONSTRUCTION:
+                // it scores keys both arms already evicted. That invalid row
+                // used to report a fictitious ~0.841 relErr on BOTH arms for
+                // `gptoss sliding` at history 200 vs window 128. Slicing to
+                // the attended range (instead of masking) gives the exact
+                // softmax support set; for history + 1 <= window it is the
+                // whole history, unchanged.
+                let attendedStart = shape.window.map { max(0, history + 1 - $0) } ?? 0
                 let reference = PagedAttentionReference.composedAttention(
                     queries: qAll[0..., 0..., step, 0...].asType(.float32),
-                    keys: kAll.asType(.float32),
-                    values: vAll.asType(.float32),
+                    keys: kAll[0..., 0..., attendedStart..., 0...].asType(.float32),
+                    values: vAll[0..., 0..., attendedStart..., 0...].asType(.float32),
                     scale: shape.scale, boolMask: nil, sinks: nil, softcap: nil)
                 eval(reference)
 
@@ -170,14 +185,14 @@ struct PagedDecodeAccuracyProbeTests {
                 // bug look like in these same units? A window off-by-one, an
                 // evicted page, or a mis-resolved page table all present as
                 // "the query attended the wrong key set". The mildest such
-                // failure is losing exactly ONE key at the oldest end, so
-                // that is the planted bug. A gate whose threshold does not
-                // sit between the honest disagreement and this number is not
-                // a gate.
+                // failure is losing exactly ONE key at the oldest end OF THE
+                // ATTENDED WINDOW, so that is the planted bug. A gate whose
+                // threshold does not sit between the honest disagreement and
+                // this number is not a gate.
                 let planted = PagedAttentionReference.composedAttention(
                     queries: qAll[0..., 0..., step, 0...].asType(.float32),
-                    keys: kAll[0..., 0..., 1..., 0...].asType(.float32),
-                    values: vAll[0..., 0..., 1..., 0...].asType(.float32),
+                    keys: kAll[0..., 0..., (attendedStart + 1)..., 0...].asType(.float32),
+                    values: vAll[0..., 0..., (attendedStart + 1)..., 0...].asType(.float32),
                     scale: shape.scale, boolMask: nil, sinks: nil, softcap: nil)
                 eval(planted)
 
@@ -191,6 +206,31 @@ struct PagedDecodeAccuracyProbeTests {
                             "[acc] %@  %4d   %12.3e   %12.3e   %12.3e   %7.2fx   %12.3e",
                         shape.name, history, p.rel, c.rel, pc.rel,
                         c.rel > 0 ? p.rel / c.rel : Float.nan, bug.rel))
+
+                // ==== THE GATE (v0.8.0 audit): the minimal honest assertion
+                // this probe supports. Paged may not sit more than 3x farther
+                // from the fp32 reference than contiguous does, per shape and
+                // history. Why 3x and not tighter: both arms are equally
+                // valid fp16 evaluations whose individual error is dominated
+                // by reduction-order rounding, so their RATIO is a noisy
+                // statistic — measured ratios run 0.04x..1.22x across shapes
+                // (contiguous is the LESS accurate arm on gemma4-full!), so
+                // sub-3x movement is indistinguishable from kernel scheduling
+                // and cannot be interpreted as a defect. What 3x separates on
+                // MOST shapes is rounding noise from a wrong key set: the
+                // planted one-lost-key calibration measures 1e-1..1e0 there,
+                // 50-500x above honest disagreement. On gemma4-full at long
+                // histories the planted bug measures BELOW the noise
+                // (4.8e-05 at h=33) — the calibration finding, restated: a
+                // subtle wrong-key-set bug is sub-drift on some shapes and
+                // NOT catchable at this seam by any threshold, so a tighter
+                // bound would only flap on noise while catching nothing this
+                // loose one misses. The absolute floor keeps a degenerate
+                // near-zero contiguous error from turning the ratio into a
+                // coin toss.
+                #expect(
+                    p.rel <= max(3.0 * c.rel, 1e-6),
+                    "\(shape.name) history \(history): paged relErr \(p.rel) exceeds 3x contiguous relErr \(c.rel) against the fp32 reference — the paged kernel is materially less accurate, not merely different (one-lost-key calibration for this shape: \(bug.rel))")
                 MLX.Memory.clearCache()
             }
         }

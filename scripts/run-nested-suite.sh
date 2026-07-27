@@ -39,14 +39,25 @@ if ! grep -qE 'Test run with [1-9][0-9]* test|Executed [1-9][0-9]* test' "$log";
 fi
 
 # The executed-count check above is satisfiable by a run that SKIPPED every
-# test it "executed": XCTest prints `Executed 3 tests, with 3 tests skipped`
-# and swift-testing prints a skip count too, both with exit code 0. A suite
-# whose every case self-skips (XCTSkip on a missing fixture, a gating env var
-# nobody set) asserts nothing — the same dark-gate failure mode, one layer up.
-# Fail on ANY nonzero skip count: these nested suites are hermetic by design
-# (tiny models, no weights, no env gates), so a skip here means a precondition
-# broke, not that skipping was intended.
-if grep -qE 'with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$log"; then
+# test it "executed", and the two frameworks report skips in DIFFERENT shapes
+# (both reproduced on the pinned Swift 6.1 toolchain):
+#
+#   XCTest aggregate (CBv2KVSharingParityTests, CBv2PrefixCacheHasherTests):
+#     Executed 2 tests, with 1 test skipped and 0 failures (0 unexpected) ...
+#
+#   swift-testing per-test line (the four CBv2Paged* suites):
+#     ✘ Test skip() skipped: "missing fixture"
+#     ✘ Test conditionSkip() skipped.
+#   ...while its AGGREGATE counts skipped cases as passed —
+#     ✔ Test run with 4 tests passed after 0.001 seconds.
+#   — so there is no skip count to grep for; only the per-test line exists.
+#
+# A suite whose every case self-skips (XCTSkip on a missing fixture, a
+# .disabled/.enabled(if:) trait nobody meant to trip) asserts nothing — the
+# same dark-gate failure mode, one layer up. Fail on ANY skip: these nested
+# suites are hermetic by design (tiny models, no weights, no env gates), so a
+# skip here means a precondition broke, not that skipping was intended.
+if grep -qE '✘ (Test|Suite) .+ skipped[.:]|with [1-9][0-9]* tests? skipped|skipped [1-9][0-9]* test' "$log"; then
     echo "::error::${filter} skipped one or more tests — a skipped gate gates" \
          "nothing. If the skip is a broken precondition (missing metallib," \
          "missing fixture), fix the precondition; do not let the lane stay" \

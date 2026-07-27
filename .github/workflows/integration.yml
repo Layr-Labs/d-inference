@@ -9,7 +9,16 @@ jobs:
   integration-tests:
     name: E2E Integration Tests
     runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 90
+    # Job budget = the sum of every step's worst case, not the warm-path wall
+    # time (a green run takes ~26m with warm caches). Test allowances:
+    # 25m (blocking paged lane) + 15m (expected-red exact-cache lane)
+    # + 10m (default-posture smoke) + 15m (mixed-version, released provider)
+    # + 30m (reverse lane: TWO sequential `go test -timeout 15m` runs)
+    # = 95m. Setup/build/download overhead: ~3m warm, but a cold runner pays
+    # the full Swift provider build, the cargo sidecar build, and the
+    # gpt-oss-20b (~12 GB) + gemma-4 snapshot downloads — budget 25m.
+    # 95m + 25m = 120m.
+    timeout-minutes: 120
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
@@ -213,10 +222,11 @@ jobs:
       #
       # COST, honestly: this is a second provider boot plus a second
       # gpt-oss-20b load (warm HF cache, but the weights still page in) for
-      # two inference round-trips. Same shape as the reverse-compat lane
-      # below, which the repo already budgets 15m for the same two tests.
-      # Step budget for the job is 25+15+10+15+15=80m against a 90m job
-      # timeout (budgets are per-step upper bounds, not expected wall time).
+      # two inference round-trips. Same shape as each half of the
+      # reverse-compat lane below, which budgets 15m per `go test` for the
+      # same two tests. The full job arithmetic (95m of test allowances —
+      # the reverse lane counts TWICE, two sequential 15m runs — plus cold
+      # setup overhead) lives on `timeout-minutes` at the top of the job.
       - name: Run default-posture smoke (.auto = paged — BLOCKING gate)
         env:
           DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: paged

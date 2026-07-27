@@ -151,6 +151,28 @@ struct EngineV2PagedParityLiveTests {
             max_tokens: maxTokens)
     }
 
+    /// Triage for a loop-gate arm's `ensureModelLoaded` failure. Exactly ONE
+    /// failure shape is an environmental skip: the PRE-load free-memory gate
+    /// (`evictUntilAvailable`) refusing because this box is busy — an
+    /// `InferenceError.modelLoadFailed` carrying the gate's
+    /// "Insufficient memory (X GB free, need Y GB) …" message. Everything
+    /// else reaching this catch IS a load-path regression the loop gates
+    /// exist to expose — explicit-paged refusal (the policy REFUSES instead
+    /// of degrading for an explicit `.paged` selection), VLM extraction or
+    /// engine-construction breakage, an invalid model directory, the
+    /// post-bridge headroom guard unloading a fresh paged slot — and must
+    /// fail the test, not return green.
+    private func triageLoopGateLoadFailure(_ error: Error, arm: String) {
+        if case InferenceError.modelLoadFailed(let message) = error,
+            message.hasPrefix("Insufficient memory (")
+        {
+            print("[\(arm)] skipping — pre-load free-memory gate refused on this busy box: \(message)")
+            return
+        }
+        Issue.record(
+            "\(arm): ensureModelLoaded failed with a non-memory-pressure error — a load-path regression, not a busy box: \(String(describing: error))")
+    }
+
     /// Mixed-length greedy workload: different prompts and budgets so
     /// concurrent rows join/leave at different steps (the batch-composition
     /// churn the oracle must survive).
@@ -327,16 +349,10 @@ struct EngineV2PagedParityLiveTests {
         do {
             try await loop.ensureModelLoaded(modelId: Self.gptossModelID)
         } catch {
-            // A busy box legitimately fails the PRE-load free-memory gate;
-            // that is a box condition, not a regression — skip loudly.
-            // The post-bridge guard failure this test exists for reads
-            // "engine build left insufficient KV headroom" and must FAIL.
-            let text = String(describing: error)
-            if text.contains("engine build left insufficient KV headroom") {
-                Issue.record("post-bridge guard unloaded the paged slot: \(text)")
-                return
-            }
-            print("[paged-loop] skipping — load gate refused on this box: \(text)")
+            // Only the pre-load free-memory refusal skips; every other load
+            // failure (including the post-bridge headroom guard) records an
+            // Issue and fails. See triageLoopGateLoadFailure.
+            triageLoopGateLoadFailure(error, arm: "paged-loop")
             return
         }
 
@@ -504,16 +520,12 @@ struct EngineV2PagedParityLiveTests {
         do {
             try await loop.ensureModelLoaded(modelId: Self.gemmaModelID)
         } catch {
-            // Same triage as the gpt-oss arm: a busy box legitimately fails
-            // the PRE-load free-memory gate (box condition, skip loudly);
-            // the post-bridge headroom guard unloading a fresh paged slot is
-            // the regression this drill exists for and must FAIL.
-            let text = String(describing: error)
-            if text.contains("engine build left insufficient KV headroom") {
-                Issue.record("post-bridge guard unloaded the paged gemma slot: \(text)")
-                return
-            }
-            print("[gemma-paged-loop] skipping — load gate refused on this box: \(text)")
+            // Same triage as the gpt-oss arm: only the pre-load free-memory
+            // refusal skips; explicit-paged refusal, VLM extraction failure,
+            // engine-construction breakage, an invalid model dir, and the
+            // post-bridge headroom guard all FAIL. See
+            // triageLoopGateLoadFailure.
+            triageLoopGateLoadFailure(error, arm: "gemma-paged-loop")
             return
         }
 

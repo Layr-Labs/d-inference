@@ -673,35 +673,33 @@ func TestConfigFromEnvNonStandardPortOverride(t *testing.T) {
 	}
 }
 
-// TestResolverEnabledReadsKillSwitchLive pins the operator kill switch to a LIVE
-// env read. A Resolver is constructed once at boot, so caching cfg.Enabled would
-// mean the only way to stop remote fetching fleet-wide is a redeploy.
-func TestResolverEnabledReadsKillSwitchLive(t *testing.T) {
+// TestResolverEnabledIsConstructionTime pins that the kill switch is the value
+// captured when the Resolver was built, and that ConfigFromEnv is what reads the
+// env. An earlier revision called env.EnvBool on every Enabled() call and
+// advertised the switch as redeploy-free — a false promise, because os.Getenv
+// returns the process environment captured at exec, so editing the env file or
+// reloading the unit cannot change a running coordinator. Re-adding a per-call
+// env read would restore the overhead and the wrong operational expectation.
+func TestResolverEnabledIsConstructionTime(t *testing.T) {
 	cfg := devConfig()
 	cfg.Enabled = true
 	r := NewResolver(cfg, nil)
-
-	// Env unset: the struct value is the fallback, so programmatically built
-	// Resolvers (tests, embedders) keep working.
 	if !r.Enabled() {
-		t.Fatal("env unset: Enabled() must honor the Config value (true)")
+		t.Fatal("Enabled() must report the Config value it was built with")
 	}
 
-	// Same Resolver instance, no reconstruction: the switch flips underneath it.
+	// Changing the environment underneath a live Resolver must NOT change it:
+	// the process env of a running coordinator cannot be edited from outside
+	// either, so pretending otherwise is the bug this guards.
 	t.Setenv(envEnabled, "false")
-	if r.Enabled() {
-		t.Error("EIGENINFERENCE_MEDIA_FETCH_ENABLED=false must disable an already-constructed Resolver")
-	}
-	t.Setenv(envEnabled, "true")
 	if !r.Enabled() {
-		t.Error("EIGENINFERENCE_MEDIA_FETCH_ENABLED=true must re-enable an already-constructed Resolver")
+		t.Error("Enabled() re-read the environment; it must reflect construction time only")
 	}
 
-	// The env var also overrides a Config built with the feature off.
-	off := devConfig()
-	off.Enabled = false
-	if !NewResolver(off, nil).Enabled() {
-		t.Error("env=true must override Config.Enabled=false")
+	// The switch takes effect through ConfigFromEnv at construction, which is
+	// what a process restart actually re-runs.
+	if NewResolver(ConfigFromEnv(), nil).Enabled() {
+		t.Error("a Resolver built after ENABLED=false must be disabled")
 	}
 }
 
@@ -1165,5 +1163,52 @@ func TestResolveTotalDeadlineBoundsWholeStep(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("resolve took %v: the whole-step TotalDeadline (%v) must bound it, not FetchTimeout (%v)",
 			elapsed, cfg.TotalDeadline, cfg.FetchTimeout)
+	}
+}
+
+// TestResolveRejectsHTTPSToHTTPDowngrade pins that an https caller keeps
+// transport confidentiality across the whole redirect chain. Validating each hop
+// independently against the scheme allowlist accepts the downgrade — both
+// schemes are individually legal — but it puts a redirect's signed query on the
+// wire in plaintext and lets an on-path party swap the bytes before they are
+// inlined into the (encrypted) provider request.
+func TestResolveRejectsHTTPSToHTTPDowngrade(t *testing.T) {
+	var plainHits int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&plainHits, 1)
+		w.Write(validPNG(t))
+	}))
+	defer plain.Close()
+
+	tls := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/downgraded.png", http.StatusFound)
+	}))
+	defer tls.Close()
+
+	cfg := devConfig()
+	r := NewResolver(cfg, nil)
+	// Trust the httptest CA so the first (https) hop succeeds and the downgrade
+	// is the only thing under test.
+	r.client.Transport.(*http.Transport).TLSClientConfig = tls.Client().Transport.(*http.Transport).TLSClientConfig
+
+	mustErr(t, chatBody(imagePartObj(tls.URL+"/redir")), r, http.StatusBadRequest, "media_invalid_scheme")
+	if n := atomic.LoadInt32(&plainHits); n != 0 {
+		t.Errorf("downgraded hop was dialed %d time(s); the guard must refuse before the request", n)
+	}
+}
+
+// TestMediaTransportCapsResponseHeaders pins the header budget. Headers are read
+// before any body cap applies and Go's default is 10 MiB per connection, so an
+// attacker-controlled origin could force GlobalConcurrency x 10 MiB of buffering
+// while every body stayed within budget.
+func TestMediaTransportCapsResponseHeaders(t *testing.T) {
+	c := newHTTPClient(DefaultConfig())
+	tr, ok := c.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("media client transport is not *http.Transport")
+	}
+	if tr.MaxResponseHeaderBytes <= 0 || tr.MaxResponseHeaderBytes > 1<<20 {
+		t.Errorf("MaxResponseHeaderBytes = %d, want a small explicit cap (0 means Go's 10 MiB default)",
+			tr.MaxResponseHeaderBytes)
 	}
 }

@@ -2529,14 +2529,29 @@ threats:
           process running without the full SSRF policy is visible in the logs.
         status: implemented
       - description: >
+          Redirect chains cannot silently downgrade transport: a hop to http is
+          refused when any earlier hop used https (redirectGuard), so a caller who
+          supplied an https URL keeps confidentiality and integrity for the whole
+          chain — a redirect's signed query never crosses the network in plaintext
+          and an on-path party cannot substitute the bytes before they are inlined
+          into the encrypted provider request. Response headers are capped at
+          64 KiB (MaxResponseHeaderBytes): headers are read before any body budget
+          applies and Go's 10 MiB default would let an attacker-owned origin force
+          GlobalConcurrency x 10 MiB of buffering while every body stayed in budget.
+        status: implemented
+      - description: >
           Residual (accepted): the blocked/allowed distinction plus timing still
           leaks coarse reachability of public HTTP/HTTPS origins on ports 80/443
           from the coordinator's egress IP; origins learn the coordinator fetches
           on behalf of requests.
           Operators can disable the feature per deployment via
-          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false, which is read LIVE on every
-          request (no redeploy needed for an incident) and authoritatively restores
-          the pre-dispatch 400.
+          EIGENINFERENCE_MEDIA_FETCH_ENABLED=false, which authoritatively restores
+          the pre-dispatch 400. The switch is read at process start like every
+          other coordinator env var, so an incident rollback requires recreating
+          the container — editing the env file alone does not affect a running
+          process. An earlier revision of this entry claimed a live per-request
+          re-read; that was wrong (os.Getenv returns the environment captured at
+          exec) and the code no longer pretends otherwise.
         status: implemented
       - description: >
           Residual (accepted): on the public route a funded caller whose model IS
@@ -2554,6 +2569,18 @@ threats:
           the wrong body or have to be kept in sync with the real gate, and it
           would still race.
         status: accepted
+      - description: >
+          Residual (accepted): on the exclusive self-route path the pre-fetch
+          serve-ability check uses the traits derived from the PRE-inline body, so
+          a size-derived trait that only inlining raises (MinPrefixCacheProtocol,
+          computed from body size) cannot be known before the fetch. An owner
+          whose only machine is a protocol-0 build can therefore drive one capped
+          fetch and then be rejected by runInferenceAdmission. Assuming the
+          higher protocol floor pre-emptively was rejected: most inlined media
+          stays far below the threshold, so it would falsely reject self-route
+          requests that would have succeeded. The exposure is one fetch, bounded
+          by the per-request byte caps, on a caller's own hardware.
+        status: accepted
     open_findings: []
     severity: high
     detection_hint: >
@@ -2561,10 +2588,12 @@ threats:
       outside coordinator/mediafetch, weakens ipAllowed (new allowlisted range,
       Is4In6 unmapping, IPv6 zone stripping, or transition-space denies removed),
       diverges host canonicalization from net/http's idna.Lookup profile, permits
-      non-standard ports by default, lifts DisableCompression, removes the shared
+      non-standard ports by default, allows an https to http redirect downgrade,
+      unsets MaxResponseHeaderBytes, lifts DisableCompression, removes the shared
       read-time byte budget or the projected-inlined-size check, drops
-      saferun.Recover from the fetch workers, trusts the response Content-Type
-      header, skips image-header dimension parsing, moves resolveRemoteMedia before
-      the balance reservation, skips the post-inline reservation top-up, forwards a
+      saferun.Recover from the fetch workers, lets the deduplication key rewrite
+      the URL that is actually fetched, trusts the response Content-Type header,
+      skips image-header dimension parsing, moves resolveRemoteMedia before the
+      balance reservation, skips the post-inline reservation top-up, forwards a
       body to a provider that was captured before inlining, or fetches for sealed
       requests must be treated as high severity.

@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/saferun"
 )
 
@@ -89,11 +88,16 @@ func NewResolver(cfg Config, logger *slog.Logger) *Resolver {
 	}
 }
 
-// Enabled reports whether remote-media fetching is turned on. The env var is
-// read LIVE on every call so an operator can kill the feature fleet-wide without
-// a redeploy; the Config value is the fallback, which keeps programmatically
-// built Resolvers (tests, embedders) working when the var is unset.
-func (r *Resolver) Enabled() bool { return env.EnvBool(envEnabled, r.cfg.Enabled) }
+// Enabled reports whether remote-media fetching is turned on.
+//
+// This is the value read at construction, NOT a live re-read. An earlier
+// revision called env.EnvBool here on every request and advertised the kill
+// switch as redeploy-free, which was wrong: os.Getenv returns the process
+// environment captured at exec, so editing /etc/d-inference/env or reloading
+// the unit changes nothing for a running coordinator. Flipping the switch
+// requires recreating the process — see the rollback section of
+// docs/operations/coordinator-deploy.md.
+func (r *Resolver) Enabled() bool { return r.cfg.Enabled }
 
 // mediaRef points at one resolvable URL inside the parsed request: the map that
 // holds it, the key to overwrite with the data: URI, and the declared kind the

@@ -46,10 +46,16 @@ func newHTTPClient(cfg Config) *http.Client {
 		// healthy origins start returning spurious media_fetch_timeout. The
 		// process-wide socket bound belongs to GlobalConcurrency, which is
 		// exactly what globalSem already admits.
-		MaxConnsPerHost:       cfg.GlobalConcurrency,
-		TLSHandshakeTimeout:   cfg.FetchTimeout,
-		ResponseHeaderTimeout: cfg.FetchTimeout,
-		ExpectContinueTimeout: time.Second,
+		MaxConnsPerHost: cfg.GlobalConcurrency,
+		// Headers are read before any body budget applies, and Go's default cap is
+		// 10 MiB per connection — with GlobalConcurrency slots an attacker-owned
+		// origin could force GlobalConcurrency x 10 MiB of header buffering while
+		// every body stayed tightly capped. No legitimate media origin needs more
+		// than a few KiB of headers.
+		MaxResponseHeaderBytes: 64 << 10,
+		TLSHandshakeTimeout:    cfg.FetchTimeout,
+		ResponseHeaderTimeout:  cfg.FetchTimeout,
+		ExpectContinueTimeout:  time.Second,
 	}
 	return &http.Client{
 		Transport:     transport,
@@ -58,9 +64,10 @@ func newHTTPClient(cfg Config) *http.Client {
 	}
 }
 
-// redirectGuard validates each redirect hop: scheme allowlist, no embedded
-// credentials, and the optional domain blocklist. The IP of every hop is still
-// validated independently by the dialer Control hook. Depth is capped.
+// redirectGuard validates each redirect hop: scheme allowlist, no transport
+// downgrade, no embedded credentials, and the optional domain blocklist. The IP
+// of every hop is still validated independently by the dialer Control hook.
+// Depth is capped.
 func redirectGuard(cfg Config) func(req *http.Request, via []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
 		// Strip the Referer Go's client auto-populates from the previous hop.
@@ -71,6 +78,21 @@ func redirectGuard(cfg Config) func(req *http.Request, via []*http.Request) erro
 		req.Header.Del("Referer")
 		if len(via) >= maxRedirects {
 			return fmt.Errorf("%w: too many redirects (>%d)", errBlockedHost, maxRedirects)
+		}
+		// Refuse an https -> http downgrade. Validating each hop independently
+		// against the scheme allowlist would accept it: both schemes are allowed
+		// in isolation. But a caller who supplied an https URL is owed transport
+		// confidentiality and integrity for the whole chain — otherwise a
+		// redirect's signed query crosses the network in plaintext, and an
+		// on-path party can swap the image before it is inlined into the
+		// (encrypted) provider request. A plain http URL supplied deliberately
+		// still works; only the downgrade is refused.
+		if strings.EqualFold(req.URL.Scheme, "http") {
+			for _, prev := range via {
+				if strings.EqualFold(prev.URL.Scheme, "https") {
+					return fmt.Errorf("%w: https to http redirect downgrade", errBlockedScheme)
+				}
+			}
 		}
 		return validateURL(req.URL, cfg)
 	}

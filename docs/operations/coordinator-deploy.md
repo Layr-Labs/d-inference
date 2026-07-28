@@ -108,6 +108,18 @@ Interpret provider eligibility in this order:
    `runtime_identity_unavailable`, `unsupported_layout`,
    `unsupported_backend`, and `paged_hybrid_unsupported` are deterministic
    exclusions. A binary-version upgrade alone does not make them ready.
+   Note on `paged_hybrid_unsupported`: providers ≥ 0.8.0 can no longer
+   produce it — the engine deleted the `paged_hybrid_requires_dual_cursor`
+   case from `CBv2PrefixReuseUnsupportedReason`
+   (`libs/mlx-swift-lm/.../ContinuousBatchingV2/PrefixReusePlan.swift:28-33`;
+   every remaining `derive` reason maps elsewhere), so the provider's
+   raw-string comparison in
+   `provider-swift/Sources/ProviderCore/Inference/PrefixCacheEligibilityStatus.swift:41`
+   can never match again — but **v0.7.x providers
+   still send it** — it stays in the coordinator's accepted vocabulary and
+   its count trends to zero as the fleet upgrades. Do not read a shrinking
+   count as a fix, and do not remove the value while any pre-0.8.0 provider
+   remains.
 3. `scan_failed`, `disk_unavailable`, and `cache_init_failed` require provider
    disk/key/cache initialization investigation.
 4. Donation outcomes explain durable-ready absence: policy/shape outcomes

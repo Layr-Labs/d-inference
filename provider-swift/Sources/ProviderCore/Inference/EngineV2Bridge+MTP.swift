@@ -99,6 +99,10 @@ extension EngineV2Bridge {
         DaemonSlotPostureBuilder.LiveSlot(
             model: modelId,
             kvBackend: kvBackendKind.rawValue,
+            // The heartbeat-clamped copy, so the box-side `status` line and
+            // the fleet-side `kv_backend_fallback_reason` carry the SAME
+            // string — a truncated tail on both rather than two variants.
+            kvBackendFallbackReason: clampedKVBackendFallbackReason,
             mtpEnabled: snapshot.configured,
             mtpActive: snapshot.active,
             mtpInactiveReason: snapshot.fallbackReason?.rawValue)
@@ -145,12 +149,24 @@ extension EngineV2Bridge {
         }
         // OMITTED, never 0.0, when nothing was proposed. A zero would read as
         // "the target rejects every draft" rather than "no drafts existed",
-        // and would drag any unweighted fleet average toward zero. This is a
-        // per-event ratio in the first place: a roll-up must weight each
-        // sample by its proposed-token count.
+        // and would drag any unweighted fleet average toward zero.
+        //
+        // The CUMULATIVE counters ride along as the ratio's own weights: a
+        // roll-up must weight each sample by its proposed-token count, and a
+        // ratio without its denominator cannot be weighted — a 1/1 slot and
+        // a 10,000/10,000 slot were indistinguishable, and averaging the
+        // recurring per-slot events both biased fleet acceptance toward
+        // low-volume slots and re-counted old cumulative history every tick.
+        // Cumulative rather than per-interval deltas, deliberately: the
+        // sampler has no ack from the sink (events can be dropped on full),
+        // so a delta that failed to land would be lost forever, while
+        // cumulative counters let the reader difference any two samples that
+        // DID land — the standard counter contract.
         if snapshot.proposedTokens > 0 {
             fields["mtp_acceptance_rate"] = .double(
                 Double(snapshot.acceptedDraftTokens) / Double(snapshot.proposedTokens))
+            fields["mtp_proposed_tokens"] = .int(snapshot.proposedTokens)
+            fields["mtp_accepted_tokens"] = .int(snapshot.acceptedDraftTokens)
         }
         // Paged pool occupancy, in BYTES over bytes — not pages over pages.
         // `PagedKVPool` exposes only bytesInUse/bytesReserved/bytesCapacity;

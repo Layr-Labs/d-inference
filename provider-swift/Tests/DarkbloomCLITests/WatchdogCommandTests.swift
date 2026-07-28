@@ -149,3 +149,60 @@ struct WatchdogCommandTests {
         #expect(update.overrideQuarantine)
     }
 }
+
+/// The outcome→persistence mapping: `.restart` is the ONLY decision whose
+/// state write stamps `lastRestartAt` (WatchdogPolicy.nextState), and the
+/// crash-loop chain measures daemon uptime as `downSince − lastRestartAt` —
+/// so ONLY an outcome that actually kickstarted something may map to it. A
+/// `.noLongerLoaded` that mapped to `.restart` would stamp a restart that
+/// never happened, and a later unrelated crash would read as continuing an
+/// old chain.
+@Suite("Watchdog recovery-outcome persistence mapping")
+struct WatchdogRecordRecoveryOutcomeTests {
+
+    @Test("only .restartIssued maps to .restart (the lastRestartAt-stamping decision)")
+    func onlyIssuedRestartStamps() {
+        #expect(Watchdog.recordRecoveryOutcome(
+            .restartIssued(updatedTo: nil, rolledBackTo: nil), grace: 300, now: 1_000)
+            == .restart)
+        #expect(Watchdog.recordRecoveryOutcome(
+            .restartIssued(updatedTo: "2.0.0", rolledBackTo: nil), grace: 300, now: 1_000)
+            == .restart)
+    }
+
+    @Test(".noLongerLoaded restarted nothing — it must not stamp lastRestartAt")
+    func noLongerLoadedDoesNotStamp() {
+        let decision = Watchdog.recordRecoveryOutcome(
+            .noLongerLoaded, grace: 300, now: 1_000)
+        // The unloaded-job shape: clears the outage window, stamps nothing.
+        #expect(decision == .notManaged)
+
+        // And the policy agrees end to end: persisting that decision leaves
+        // lastRestartAt and the chain counter untouched.
+        let before = WatchdogState(
+            downSince: 700, lastRestartAt: 500, consecutiveCrashLoopRestarts: 2)
+        let after = WatchdogPolicy.nextState(for: decision, current: before, now: 1_000)
+        #expect(after == WatchdogState(
+            downSince: nil, lastRestartAt: 500, consecutiveCrashLoopRestarts: 2))
+    }
+
+    @Test("deferred outcomes persist no restart stamp either")
+    func deferredOutcomesDoNotStamp() {
+        for outcome in [
+            WatchdogRecoveryService.DownOutcome.retryBackoff(until: 2_000, reason: "backoff"),
+            .lockBusy("busy"),
+            .failed("boom"),
+        ] {
+            let decision = Watchdog.recordRecoveryOutcome(outcome, grace: 300, now: 1_000)
+            guard case .waiting = decision else {
+                Issue.record("outcome \(outcome) mapped to \(decision), want .waiting")
+                continue
+            }
+            // .waiting persists nothing at all.
+            #expect(WatchdogPolicy.nextState(
+                for: decision,
+                current: WatchdogState(downSince: 700, lastRestartAt: 500),
+                now: 1_000) == nil)
+        }
+    }
+}

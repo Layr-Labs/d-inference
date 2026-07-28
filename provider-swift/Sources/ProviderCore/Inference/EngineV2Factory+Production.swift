@@ -62,9 +62,14 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// planning, or pool construction) verbatim.
     case pagedUnavailable(String)
     /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE` was set to something that is neither
-    /// `float16` nor `float32`. REFUSED rather than defaulted — see
-    /// `EngineV2Factory.pagedPoolDType(environment:)` for why this knob
-    /// alone among the paged knobs cannot fall back.
+    /// `float16` nor `float32`. Thrown by the parse
+    /// (`EngineV2Factory.pagedPoolDType(environment:)`) and surfaced as a
+    /// REFUSAL only for an EXPLICIT `.paged` selection — the measurement
+    /// posture the knob exists for, where silently serving fp16 under an
+    /// fp32 label would fake a control arm. Under `.auto` (the fleet
+    /// default since v0.8.0) the factory catches it and DEGRADES to
+    /// contiguous with `fallbackReason = "invalid_dtype: …"` instead: one
+    /// typo'd env var must not 503 every slot on the fleet.
     case invalidPagedPoolDType(String)
 
     var description: String {
@@ -124,6 +129,13 @@ extension EngineV2Factory {
     /// gets float16 has run a different experiment than they believe, and
     /// a control arm that is secretly a second copy of the baseline looks
     /// exactly like agreement.
+    ///
+    /// The throw is the PARSE's verdict, not the load's: what happens to it
+    /// depends on who selected paged. `prepareProductionBackend` rethrows
+    /// it for an explicit `.paged` (the measurement posture above) and
+    /// catches it under `.auto`, degrading to contiguous with
+    /// `fallbackReason = "invalid_dtype: …"` — see the catch site for the
+    /// full argument.
     ///
     /// CAPACITY AT fp32 — the arithmetic, because it is a real wall:
     /// a page costs `2 * kvHeads * pageSize * headDim * dtype.size` bytes
@@ -601,19 +613,69 @@ extension EngineV2Factory {
             fallbackReason = "kill_switch"
         }
 
+        // Crash-loop backend guard — the AUTOMATED sibling of the kill
+        // switch above, tripped by the watchdog after
+        // `WatchdogPolicy.crashLoopTripThreshold` consecutive short-uptime
+        // restarts (see KVBackendGuard.swift for the full lifecycle) and
+        // enforced at this same deepest layer so no call path bypasses it.
+        // Checked AFTER the kill switch so a box with both reports the
+        // operator's reason, not the automation's.
+        //
+        // Scoped to `.auto` ONLY, by design: an explicit
+        // `engine_v2_kv_backend = "paged"` (global or by-model) is operator
+        // intent, and automation silently downgrading an explicit selection
+        // would be the same silent-degrade defect the refusal path exists
+        // to prevent — the kill switch may override an explicit selection
+        // because it IS an operator; the guard is a robot. Version-scoped:
+        // the record binds only the binary version that tripped it, so the
+        // next release (the fleet's only fix-delivery vector) auto-clears
+        // and a stale guard cannot outlive its defect. The record is read
+        // through the injected `environment` (path override
+        // `DARKBLOOM_KV_BACKEND_GUARD`), keeping this seam as hermetically
+        // testable as the kill switch's.
+        if resolvedKind == .paged, kvBackend == .auto,
+            EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
+                record: KVBackendGuardStore.read(environment: environment),
+                runningVersion: ProviderCore.version)
+        {
+            resolvedKind = .contiguous
+            fallbackReason = "crash_loop_guard"
+        }
+
         // Page dtype, read HERE: inside the paged branch, so a contiguous
         // slot ignores a knob that means nothing to it and the kill switch
         // (which has already forced contiguous above) leaves it inert; and
-        // BEFORE preflight, so a typo refuses even on a machine where
-        // paged would have failed for an unrelated reason and buried it.
-        // Deliberately NOT routed through `degradeOrRefuse`: that
-        // predicate splits "we CANNOT do what you asked" from "do NOT do
-        // what you asked", and a malformed value is neither — it is a
-        // request nobody can interpret, so it refuses for `.auto` too,
-        // which since v0.8.0 is every slot that reaches here.
+        // BEFORE preflight, so the reason names the typo rather than
+        // whatever unrelated failure preflight would have hit first.
+        //
+        // Under `.auto` a malformed value now DEGRADES to contiguous
+        // (`fallbackReason = "invalid_dtype: …"`). This REVERSES the
+        // pre-flip rule, and the old argument deserves an honest burial: it
+        // held that a malformed value is neither "we CANNOT" nor "do NOT"
+        // but a request nobody can interpret, so it should refuse "for
+        // `.auto` too, which since v0.8.0 is every slot that reaches here".
+        // That last clause is exactly what flipped the trade-off: `.auto`
+        // is now every slot on a ~94-box fleet, so one typo'd env var
+        // refusing every load turns a measurement knob into a fleet-wide
+        // 503 — while the fp32 value the knob exists to select only ever
+        // matters to the parity harness, which runs explicit `.paged`. So
+        // the split is again by WHO asked (`degradesPagedFailure`): an
+        // explicit `.paged` still REFUSES loudly with the original
+        // `invalidPagedPoolDType` (classified `paged_kv_dtype_invalid`, not
+        // `pagedUnavailable` — a typo must stay separable from paged
+        // infrastructure failing), so a control arm can never silently
+        // measure fp16 wearing an fp32 label; `.auto` serves, and says why.
         var pagedDType = DType.float16
         if resolvedKind == .paged {
-            pagedDType = try Self.pagedPoolDType(environment: environment)
+            do {
+                pagedDType = try Self.pagedPoolDType(environment: environment)
+            } catch let error as EngineV2ProductionError {
+                guard case .invalidPagedPoolDType(let raw) = error,
+                    EngineV2KVBackendPolicy.degradesPagedFailure(selection: kvBackend)
+                else { throw error }
+                resolvedKind = .contiguous
+                fallbackReason = "invalid_dtype: \(raw)"
+            }
         }
 
         // Paged FAILED: we CANNOT do what was asked (kernel preflight,

@@ -98,9 +98,15 @@ const (
 )
 
 type routingSnapshot struct {
-	provider         *Provider
-	model            string
-	chipFamily       string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
+	provider   *Provider
+	model      string
+	chipFamily string // hardware chip family (e.g. "M3"); keys the TTFT calibrator
+	// binaryVersion is the provider's reported binary version (p.Version, read
+	// under p.mu at snapshot time; empty = unreported/legacy). Feeds the
+	// version-gated activation-reserve selection in the cold servability
+	// estimate (servabilityActivationFloorForVersion) so a mixed-version fleet
+	// is charged the reserve each binary actually holds.
+	binaryVersion    string
 	slotState        string
 	hasHeadroom      bool
 	totalPending     int
@@ -1217,6 +1223,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 		provider:      p,
 		model:         model,
 		chipFamily:    p.Hardware.ChipFamily,
+		binaryVersion: p.Version,
 		slotState:     "unknown",
 		totalPending:  p.pendingCount(),
 		systemMetrics: p.SystemMetrics,
@@ -2238,6 +2245,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 			provider:           p,
 			model:              model,
 			chipFamily:         p.Hardware.ChipFamily,
+			binaryVersion:      p.Version,
 			slotState:          "unknown",
 			totalPending:       p.pendingCount(),
 			systemMetrics:      p.SystemMetrics,

@@ -299,8 +299,11 @@ public enum TelemetryFieldFilter {
         // carries MTPFallbackReason.rawValue plus "inert_kv_unsupported" —
         // enabled, drafter resident, zero rounds, rows skipped kv_unsupported.
         // Bounded enums and counters only; never draft tokens or prompt text.
+        // mtp_proposed_tokens / mtp_accepted_tokens are the cumulative
+        // counters behind mtp_acceptance_rate — the weights a roll-up needs.
+        // Token COUNTS, never token contents.
         "mtp_enabled", "mtp_active", "mtp_inactive_reason",
-        "mtp_acceptance_rate",
+        "mtp_acceptance_rate", "mtp_proposed_tokens", "mtp_accepted_tokens",
     ]
 
     /// Filter a dictionary to only the keys the coordinator accepts.

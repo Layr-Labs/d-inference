@@ -391,9 +391,13 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         // 4 in a pre-v0.8.0 file, which is indistinguishable from the
         // generated one by construction — it is raised once, announced by
         // `RetiredKnobWarnings`, and sticks the moment it is re-set.
+        //
+        // The predicate is shared with the on-disk rewrite
+        // (`LegacyConcurrencyMigration`) so this in-memory raise and the
+        // durable text surgery cannot disagree about what counts as legacy.
         let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
-        if onDiskVersion == nil,
-            backend.engineV2MaxConcurrent == BackendSettings.legacyGeneratedMaxConcurrent {
+        if LegacyConcurrencyMigration.shouldRaise(
+            onDiskVersion: onDiskVersion, cap: backend.engineV2MaxConcurrent) {
             backend.engineV2MaxConcurrent = BackendSettings.defaultEngineV2MaxConcurrent
             self.appliedMigrations = [Self.legacyMaxConcurrentMigrationID]
         }

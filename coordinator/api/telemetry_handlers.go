@@ -177,10 +177,16 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	// MTPFallbackReason values plus "inert_kv_unsupported" — enabled, drafter
 	// resident, zero rounds executed, every row skipped as kv_unsupported.
 	// Bounded enums and counters only; never draft tokens or prompt content.
+	// mtp_proposed_tokens / mtp_accepted_tokens are the CUMULATIVE counters
+	// behind mtp_acceptance_rate — the weights a roll-up needs (weight each
+	// sample by proposed count; the bare ratio cannot distinguish a 1/1 slot
+	// from a 10,000/10,000 slot). Token COUNTS, never token contents.
 	"mtp_enabled":         {},
 	"mtp_active":          {},
 	"mtp_inactive_reason": {},
 	"mtp_acceptance_rate": {},
+	"mtp_proposed_tokens": {},
+	"mtp_accepted_tokens": {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

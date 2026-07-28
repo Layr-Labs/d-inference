@@ -114,14 +114,34 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func activationReserveDefaultsToFloorAndReadsEnv() {
-    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: [:]) == 3 * gib)
+    let def = UnifiedMemoryCap.defaultActivationReserveBytes
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: nil, env: [:])
+        == 11 * gib / 2)
+    // The env override is raise-only: it can push the reserve ABOVE the
+    // floor but never below it.
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
-        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "2"]) == 2 * gib)
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "8"]) == 8 * gib)
+    // Explicit programmatic values (test fixtures modelling small boxes)
+    // stay honored as given, below the floor included.
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: 5 * gib, env: [:]) == 5 * gib)
+
+    // The clamp boundary. A legacy `3` — set by an operator when 3 GiB WAS
+    // the default — must NOT lower the reserve below the 5.5 GiB floor the
+    // coordinator predicts with: that silently recreates the B=8 activation
+    // OOM the floor exists to prevent.
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "3"]) == def)
+    // Just under, exactly at, and just over the floor (5.5 GB of 2^30 bytes).
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "5.4"]) == def)
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "5.5"]) == def)
+    #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "6"]) == 6 * gib)
 }
 
 /// `defaultActivationReserveBytes` is not a local tuning knob. The coordinator
-/// hard-codes the same figure (`servabilityActivationFloorGB = 3.0`, in
+/// hard-codes the same figure (`servabilityActivationFloorGB = 5.5`, in
 /// `coordinator/registry/servability.go`) and subtracts it in
 /// `coldTokenBudgetEstimate` to predict what THIS gate will leave a freshly
 /// loaded slot. A cold slot sends no heartbeat, so the coordinator has no way
@@ -137,7 +157,13 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 /// mirrors and 429ing prompts the fleet could serve. Anything that makes this
 /// figure depend on the model has to land on both sides in one change.
 @Test func activationReserveIsFlatAndIsTheFigureTheCoordinatorMirrors() {
-    #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 3 * gib)
+    // 5.5 GiB as of v0.8.0: the release ships decode batch 8, and gemma-4's
+    // MEASURED B=8 peak-over-weights is 5.05 GiB — above the old 3 GiB floor
+    // that was sized against the B=4 sweep. See the constant's doc comment.
+    #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 11 * gib / 2)
+    #expect(UnifiedMemoryCap.defaultActivationReserveBytes == 5_905_580_032)
+    #expect(UnifiedMemoryCap.defaultActivationReserveBytes
+        > UInt64(5.05 * Double(gib)), "the floor must cover the measured B=8 peak")
 
     // The coordinator's cold estimate subtracts ONE reserve and assumes both
     // provider gates hold back that same figure. They must: the load gate

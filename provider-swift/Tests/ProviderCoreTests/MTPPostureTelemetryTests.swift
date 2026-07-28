@@ -130,8 +130,11 @@ struct MTPPostureTelemetryTests {
         // caused it.
         #expect(field(event, "kv_backend") == "paged")
         // Nothing was proposed, so the ratio is absent rather than 0.0 — a
-        // zero would read as "the target rejects every draft".
+        // zero would read as "the target rejects every draft". The counters
+        // share the omission rule: they exist as the ratio's weights.
         #expect(event?.fields?["mtp_acceptance_rate"] == nil)
+        #expect(event?.fields?["mtp_proposed_tokens"] == nil)
+        #expect(event?.fields?["mtp_accepted_tokens"] == nil)
 
         await bridge.shutdown()
     }
@@ -210,6 +213,10 @@ struct MTPPostureTelemetryTests {
         // Productively running, so there is no inactive reason to carry.
         #expect(event?.fields?["mtp_inactive_reason"] == nil)
         #expect(field(event, "mtp_acceptance_rate") == "0.75")
+        // The cumulative counters ride along as the ratio's weights: without
+        // them a roll-up cannot tell a 1/1 slot from a 10,000/10,000 slot.
+        #expect(field(event, "mtp_proposed_tokens") == "200")
+        #expect(field(event, "mtp_accepted_tokens") == "150")
 
         await bridge.shutdown()
     }
@@ -450,7 +457,8 @@ struct MTPPostureTelemetryTests {
         let fields = telemetry.posture?.fields ?? [:]
         for key in [
             "component", "operation", "backend", "kv_backend", "model",
-            "mtp_enabled", "mtp_active", "mtp_acceptance_rate", "pool_utilization",
+            "mtp_enabled", "mtp_active", "mtp_acceptance_rate",
+            "mtp_proposed_tokens", "mtp_accepted_tokens", "pool_utilization",
         ] {
             #expect(fields[key] != nil, "\(key) was dropped by the allowlist filter")
         }

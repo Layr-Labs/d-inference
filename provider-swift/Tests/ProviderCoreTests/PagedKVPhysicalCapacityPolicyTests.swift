@@ -251,12 +251,24 @@ struct PagedKVPhysicalCapacityPolicyTests {
 
     @Test("D1: an idle paged pool must not pre-empt the next model on a 36 GiB box")
     func idlePoolDoesNotPreemptSecondModelOn36GiB() {
+        // HISTORICAL REPRODUCTION, at the reserve the incident was measured
+        // under. The D1 report's 0.15-vs-2.40 GiB figures were taken on a
+        // real 36 GiB box when the activation reserve was the flat 3 GiB;
+        // v0.8.0 raised the default to 5.5 GiB (B=8 activation peak), and
+        // under the RAISED reserve this exact weight pair no longer clears
+        // the logical re-slice floor at all — which is a different, correct
+        // refusal, pinned separately in
+        // `raisedReserveRefusesThe36GiBPairOutright` below. The commitment
+        // physics under test here (an idle pool's wired bytes pre-empting a
+        // co-resident load) is reserve-independent, so the reproduction
+        // keeps its measured constants.
+        let historicalD1Reserve: UInt64 = 3 << 30
         func loadPair(_ commitment: PagedKVSlabCommitment)
             -> (first: LoadOutcome, second: LoadOutcome)
         {
             var box = Box(
                 physicalBytes: UInt64(36) << 30,
-                activationReserve: activationReserve,
+                activationReserve: historicalD1Reserve,
                 capFraction: capFraction)
             let first = load(
                 Self.gptOss, onto: &box, alreadyResident: [], commitment: commitment)
@@ -317,6 +329,34 @@ struct PagedKVPhysicalCapacityPolicyTests {
         // And the production posture really is the lazy one — without this the
         // rest of the suite would pass with the bug still shipped.
         #expect(PagedKVPhysicalCapacityPolicy.slabCommitment == .atFirstAdmission)
+    }
+
+    @Test("v0.8.0 reserve: the 36 GiB D1 pair no longer co-resides, by the LOGICAL gate")
+    func raisedReserveRefusesThe36GiBPairOutright() {
+        // The deliberate cost of the 3 → 5.5 GiB activation-reserve raise,
+        // pinned so it reads as a decision rather than a regression: on a
+        // 36 GiB box, 27 GiB of weights + the 5.5 GiB reserve exceed the
+        // 32.4 GiB cap, so the fleet KV budget is zero and the second
+        // model's re-slice is refused under EITHER commitment posture —
+        // the box serves one model, before any pool exists to argue about.
+        // The refusal is a clean 503 at load, which is the point of the
+        // raise: the alternative was both models loading and the daemon
+        // dying mid-request when B=8 activations overshot the old floor.
+        for commitment in PagedKVSlabCommitment.allCases {
+            var box = Box(
+                physicalBytes: UInt64(36) << 30,
+                activationReserve: activationReserve,
+                capFraction: capFraction)
+            let first = load(
+                Self.gptOss, onto: &box, alreadyResident: [], commitment: commitment)
+            let second = load(
+                Self.gemma4, onto: &box, alreadyResident: [Self.gptOss],
+                commitment: commitment)
+            #expect(first.serveable, "\(commitment): the first model still serves")
+            #expect(!first.resliceRefused)
+            #expect(second.resliceRefused, "\(commitment): the second is refused at re-slice")
+            #expect(!second.serveable)
+        }
     }
 
     /// One fleet, three boxes. Weights and rates are held fixed so that the
@@ -392,7 +432,7 @@ struct PagedKVPhysicalCapacityPolicyTests {
                 outcomes[2].resliceRefused,
                 Comment(rawValue:
                     "\(commitment): the third slot must still be refused — 42 GiB of "
-                        + "weights plus the 3 GiB activation reserve exceeds the 43.2 GiB "
+                        + "weights plus the 5.5 GiB activation reserve exceeds the 43.2 GiB "
                         + "cap, so the fleet KV budget is zero and every grant is below "
                         + "the 1 GiB serviceability floor"))
             #expect(!outcomes[2].serveable, "\(commitment): and it must not serve")

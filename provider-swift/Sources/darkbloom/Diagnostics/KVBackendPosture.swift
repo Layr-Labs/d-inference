@@ -103,7 +103,10 @@ enum KVBackendPosture {
 
     /// Resolved backend, always paired with the request it was resolved
     /// from — during a staged rollout "paged" alone does not answer whether
-    /// this box did what it was told.
+    /// this box did what it was told — and with the degrade reason when one
+    /// exists, because "contiguous (requested auto)" is expected output for
+    /// a veto, the kill switch, the crash-loop guard, AND a real paged
+    /// failure alike; only the reason separates them.
     static func backendPhrase(_ slot: DaemonState.SlotPosture) -> String {
         let requested = "requested \(slot.kvBackendRequested)"
         if let error = slot.loadError {
@@ -112,7 +115,10 @@ enum KVBackendPosture {
         guard let resolved = slot.kvBackend else {
             return "kv=unknown (\(requested))"
         }
-        return "kv=\(resolved) (\(requested))"
+        guard let reason = slot.kvBackendFallbackReason else {
+            return "kv=\(resolved) (\(requested))"
+        }
+        return "kv=\(resolved) (\(requested) — fallback: \(reason))"
     }
 
     /// "Enabled" and "producing drafts" are different states, and an inert

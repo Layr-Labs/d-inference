@@ -165,4 +165,8 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "mtp_active",
   "mtp_inactive_reason",
   "mtp_acceptance_rate",
+  // Cumulative counters behind the ratio — the weights a roll-up needs.
+  // Token counts, never token contents.
+  "mtp_proposed_tokens",
+  "mtp_accepted_tokens",
 ]);

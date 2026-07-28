@@ -157,7 +157,20 @@ func usableMetricSample(v float64) bool {
 // the half of Gate G5 that catches a paged regression — would all land in
 // kv_backend:unknown.
 func (d *dispatchState) noteServingSlot() {
-	pr := d.pr
+	d.noteServingSlotFor(d.pr)
+}
+
+// noteServingSlotFor re-latches the attribution to an explicit pending request.
+// The speculative race paths need this: the backup is dispatched by
+// dispatchOneProvider (not the noteServingSlot choke point), so once the
+// PRIMARY has failed and the backup becomes the racer of record — or wins the
+// race outright — the latch must follow it. Otherwise a backup failure that
+// turns terminal after the race helpers clear d.pr would book under the
+// PRIMARY's kv_backend tag, misattributing exactly the 5xx/timeout population
+// Gate G5 segments per backend in a mixed-backend fleet. The invariant the
+// re-latch sites maintain: the latch always names the slot whose failure would
+// be the terminal one — the last slot still racing.
+func (d *dispatchState) noteServingSlotFor(pr *registry.PendingRequest) {
 	if pr == nil || pr.ProviderID == "" {
 		return
 	}

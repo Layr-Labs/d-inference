@@ -112,6 +112,8 @@ The coordinator silently drops any `fields` key not in this set. Keys must be ke
 | `mtp_active` | Go, Swift, TS |
 | `mtp_inactive_reason` | Go, Swift, TS |
 | `mtp_acceptance_rate` | Go, Swift, TS |
+| `mtp_proposed_tokens` | Go, Swift, TS |
+| `mtp_accepted_tokens` | Go, Swift, TS |
 
 This table is not exhaustive: the OOM / memory-pressure, engine-health (first-token
 wedge), eval-in-flight, KV-budget audit, media, and exact-prefix-replay cohorts are
@@ -121,7 +123,7 @@ this table does **not** mean a key is rejected — the Go map is the authority, 
 
 **Important:** No prompt or response content is ever placed in telemetry. The allowlist contains only non-sensitive operational metadata.
 
-Canonical server allowlist: [`telemetry_handlers.go:48-171`](../../coordinator/api/telemetry_handlers.go). Swift client-side filter: [`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift) (`TelemetryEvent.swift:238-294`). TS client-side set: [`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts) (`telemetry-types.ts:58-160`).
+Canonical server allowlist: [`telemetry_handlers.go:48-194`](../../coordinator/api/telemetry_handlers.go). Swift client-side filter: [`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift) (`TelemetryEvent.swift:238-307`). TS client-side set: [`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts) (`telemetry-types.ts:58-172`).
 
 ## Discrepancies
 
@@ -239,17 +241,24 @@ recorded here because this page is where the `kv_backend` semantics live and a
 reader must not infer the wrong omission rule.
 
 It carries the provider's degrade reason verbatim — `kill_switch`,
-`kernel_preflight: …`, `physical_capacity: …`, `ineligible: …`,
-`pool_construction_capacity: …` — when a slot resolved to a backend other than
-the one it was configured for. The resolved kind alone cannot separate an
-operator who chose contiguous from a paged slot that fell back, and those are
-opposite signals: a choice and a regression. `.auto` resolves **paged** in
-v0.8.0, so every class above is live on the default fleet:
-`kernel_preflight`, `physical_capacity`, `ineligible` and
-`pool_construction_capacity` mean the box could not serve paged and degraded
-(the rollout's primary failure signal), while `kill_switch` means
-`DARKBLOOM_CBV2_PAGED_KV=0` and is a deliberate override. Nothing else on the
-wire separates them, and they should not be alerted on the same way.
+`crash_loop_guard`, `kernel_preflight: …`, `physical_capacity: …`,
+`ineligible: …`, `pool_construction_capacity: …`, `invalid_dtype: …` — when a
+slot resolved to a backend other than the one it was configured for. The
+resolved kind alone cannot separate an operator who chose contiguous from a
+paged slot that fell back, and those are opposite signals: a choice and a
+regression. `.auto` resolves **paged** in v0.8.0, so every class above is
+live on the default fleet: `kernel_preflight`, `physical_capacity`,
+`ineligible` and `pool_construction_capacity` mean the box could not serve
+paged and degraded (the rollout's primary failure signal);
+`crash_loop_guard` means the box's watchdog counted 3 consecutive
+crash-loop-shaped restarts and flipped `.auto` to contiguous itself (an
+INCIDENT marker — the box was crash-looping minutes earlier; it also emits
+an ERROR `engine_health` event, `operation=engine_v2_crash_loop_guard`, at
+the trip); `invalid_dtype` means a typo'd `DARKBLOOM_CBV2_PAGED_KV_DTYPE`
+(operator-fixable config error, the typo verbatim in the tail); and
+`kill_switch` means `DARKBLOOM_CBV2_PAGED_KV=0` and is a deliberate
+override. Nothing else on the wire separates them, and they should not be
+alerted on the same way.
 
 **Its omission rule is the INVERSE of `kv_backend`'s, and the two must be read
 as a pair.** Absent `kv_backend` is UNKNOWN; absent `kv_backend_fallback_reason`
@@ -257,7 +266,7 @@ on a slot that DID name a `kv_backend` is an authoritative "this slot did not
 degrade". Both keys ship in v0.8.0, so there is no build that reports one and
 not the other. The reason is untrusted free text and never reaches a metric tag
 verbatim: `registry.KVBackendFallbackTag` folds it onto the bounded class
-vocabulary (`none`, the five producer classes, `other`, `unknown`), which is
+vocabulary (`none`, the seven producer classes, `other`, `unknown`), which is
 what the `kv_backend_fallback:` tag on `inference.ttft_ms`,
 `inference.decode_tps` and `inference.request_outcome` carries.
 
@@ -376,9 +385,20 @@ coordinator routing on a metric the coordinator believes is homogeneous.
 | `mtp_enabled` | bool | `ProviderMTPStatusSnapshot.configured` — MTP is configured and the kill switch is off. |
 | `mtp_active` | bool | `ProviderMTPStatusSnapshot.active` — the drafter is loaded, the engine reports itself active, **and the slot is not inert** (see `inert_kv_unsupported`). A slot executing zero rounds is not active. |
 | `mtp_inactive_reason` | string | Bounded enum, present whenever MTP is not *productively* running. |
-| `mtp_acceptance_rate` | float | `acceptedDraftTokens / proposedTokens` for the reporting window, `[0,1]`; omitted when `proposedTokens == 0`. |
+| `mtp_acceptance_rate` | float | `acceptedDraftTokens / proposedTokens`, cumulative over the slot's lifetime, `[0,1]`; omitted when `proposedTokens == 0`. |
+| `mtp_proposed_tokens` | int | Cumulative `proposedTokens` — the acceptance ratio's denominator, and the **weight** a fleet roll-up must apply per sample. Token count, never token contents. Omitted with the ratio when zero. |
+| `mtp_accepted_tokens` | int | Cumulative `acceptedDraftTokens` — the ratio's numerator. Same omission rule. |
 
-All four are produced by `engine_v2_slot_posture`, an INFO `engine_health` event
+A roll-up must never average the bare per-slot ratios: the events recur per slot
+per minute with cumulative history, so an unweighted mean both over-counts old
+history and weighs a 1/1 slot equally with a 10,000/10,000 slot. Sum
+`mtp_accepted_tokens` / sum `mtp_proposed_tokens` (latest sample per slot, or
+differenced between two samples of the same slot) instead. The counters are
+cumulative rather than per-interval deltas because the telemetry sink drops on
+full — a lost delta is gone forever, while cumulative counters stay differenceable
+across any two samples that did land.
+
+All of these are produced by `engine_v2_slot_posture`, an INFO `engine_health` event
 emitted by a per-bridge sampler on the same 60 s cadence as the MTP metrics log
 (`EngineV2Bridge+MTP.swift`). The sampler runs for **every** slot, MTP or not:
 `mtp_enabled: false` is itself the observation that resolves a partially-MTP fleet,
@@ -422,6 +442,13 @@ express:
   so the inert slot's residency is reported, not reclaimed.
 
 `mtp_acceptance_rate` is a per-event ratio and therefore **not** re-aggregatable by a
-plain average — a fleet roll-up must weight each sample by its proposed-token count.
-If weighted aggregation is needed server-side, add `mtp_proposed_tokens` and
-`mtp_accepted_tokens` rather than post-processing the ratio.
+plain average. The counters that make weighted aggregation possible ship alongside
+it: weight each sample by `mtp_proposed_tokens`, i.e. compute
+`sum(mtp_accepted_tokens) / sum(mtp_proposed_tokens)` across slots (latest sample
+per slot for a point-in-time fleet rate). For a windowed rate, difference the
+cumulative counters between two samples of the same slot —
+`Δaccepted / Δproposed` — before summing across slots; treat a counter that went
+*down* as a slot rebuild (engine reconstruction resets the lifetime counters) and
+start the window at the new sample. Never post-process the bare ratios: an
+unweighted mean over-counts old history and weighs a 1/1 slot equally with a
+10,000/10,000 slot.

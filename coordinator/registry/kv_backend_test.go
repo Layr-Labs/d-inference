@@ -316,8 +316,10 @@ func TestSlotKVBackendUnknownProviderIsUnknown(t *testing.T) {
 func TestKVBackendTagsAreNeverEmpty(t *testing.T) {
 	kinds := []string{"", KVBackendPaged, KVBackendContiguous, "paged_quantized", "  ", "a:b"}
 	reasons := []string{
-		"", "kill_switch", "kernel_preflight: boom", "physical_capacity: 1 > 0",
-		"ineligible: vlm", "pool_construction_capacity: x", "unheard-of", ":", "  :  ",
+		"", "kill_switch", "crash_loop_guard", "kernel_preflight: boom",
+		"physical_capacity: 1 > 0", "ineligible: vlm",
+		"pool_construction_capacity: x", "invalid_dtype: fp32",
+		"unheard-of", ":", "  :  ",
 		strings.Repeat("x", maxKVFallbackReasonBytes*2),
 	}
 	for _, observed := range []bool{true, false} {
@@ -434,12 +436,18 @@ func TestKVBackendFallbackTagVocabulary(t *testing.T) {
 		observed bool
 		want     string
 	}{
-		// The five shipped producer classes, with and without detail.
+		// The seven shipped producer classes, with and without detail.
 		{"kill_switch", true, KVFallbackKillSwitch},
+		// The watchdog's crash-loop guard (bare, like kill_switch — the
+		// detail lives in the guard record and the trip event, not here).
+		{"crash_loop_guard", true, KVFallbackCrashLoopGuard},
 		{"kernel_preflight: MTLLibrary compile failed", true, KVFallbackKernelPreflight},
 		{"physical_capacity: unknown KV byte rate", true, KVFallbackPhysicalCapacity},
 		{"ineligible: sliding-window layout", true, KVFallbackIneligible},
 		{"pool_construction_capacity: needed 3, available 1", true, KVFallbackPoolConstruction},
+		// The `.auto` dtype degrade carries the typo verbatim in the tail;
+		// only the class token reaches the tag.
+		{"invalid_dtype: fp32", true, KVFallbackInvalidDType},
 		// Observed with no reason is the authoritative "did not degrade".
 		{"", true, KVFallbackNone},
 		// Unobserved says nothing at all — never `none`.

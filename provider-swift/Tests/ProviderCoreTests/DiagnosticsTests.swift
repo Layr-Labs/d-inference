@@ -70,15 +70,16 @@ import Testing
 // MARK: - ModelFitDiagnostic
 
 @Test func modelFitFailsWhenTooLarge() {
-    // Cap-aware gate: required = weights + loadHeadroom (activation reserve 3 GB
-    // + min serveable KV 1 GB = 4 GB). 25 GB weights needs 29 GB > 21 usable → fail.
+    // Cap-aware gate: required = weights + loadHeadroom (activation reserve
+    // 5.5 GB + min serveable KV 1 GB = 6.5 GB). 25 GB weights needs 31.5 GB
+    // > 21 usable → fail.
     let d = ModelFitDiagnostic.diagnose(modelID: "big", weightGb: 25.0, usableGb: 21.0)
     #expect(d.level == .fail)
-    #expect(d.message.contains("29"))
+    #expect(d.message.contains("31.5"))
 }
 
 @Test func modelFitPassesWhenItFits() {
-    // 5 GB weights needs 5 + 4 = 9 GB ≤ 21 usable → pass.
+    // 5 GB weights needs 5 + 6.5 = 11.5 GB ≤ 21 usable → pass.
     let d = ModelFitDiagnostic.diagnose(modelID: "small", weightGb: 5.0, usableGb: 21.0)
     #expect(d.level == .pass)
 }
@@ -111,17 +112,21 @@ import Testing
 }
 
 @Test func modelFitMatchesRuntimeGateNotRawAvailable() {
-    // Parity with the runtime gate, cap-aware: gpt-oss (~13.5 GB weights) now
-    // needs 13.5 + 4 (activation 3 + min-KV 1) = 17.5 GB. On a 24 GB box with the
-    // OS reporting ~22 GB free it FITS — usable 22 − 4 = 18 ≥ 17.5 — matching
-    // ProviderLoop, which would load it with serveable KV headroom.
-    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 22)
+    // Parity with the runtime gate, cap-aware: gpt-oss (~13.5 GB weights)
+    // needs 13.5 + 6.5 (activation 5.5 + min-KV 1) = 20 GB. On a 32 GB box
+    // with the OS reporting ~30 GB free it FITS — usable 30 − 4 = 26 ≥ 20 —
+    // matching ProviderLoop, which would load it with serveable KV headroom.
+    // (A 24 GB box no longer clears this bar at all under the v0.8.0
+    // reserve: 22 − 4 = 18 < 20. That refusal is the point of the raise —
+    // the daemon was spending the memory at B=8 whether or not the ledger
+    // admitted it.)
+    let usable = ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, systemAvailableGb: 30)
     let ok = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: usable)
     #expect(ok.level == .pass, "doctor must agree with the runtime gate that gpt-oss fits with serveable KV")
-    // But a tighter box (OS only 18 GB free → usable 14) must FAIL: 14 < 17.5.
-    // Pre-cap-aware this wrongly "passed" at 15.5, then the runtime KV gate would
+    // But a tighter box (OS only 22 GB free → usable 18) must FAIL: 18 < 20.
+    // Pre-cap-aware this wrongly "passed", then the runtime KV gate would
     // have rejected every request — the bug this stricter headroom fixes.
-    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 24, reserveGb: 4, systemAvailableGb: 18)
+    let tight = ModelFitDiagnostic.usableInferenceGb(totalGb: 32, reserveGb: 4, systemAvailableGb: 22)
     let bad = ModelFitDiagnostic.diagnose(modelID: "gpt-oss", weightGb: 13.5, usableGb: tight)
     #expect(bad.level == .fail)
 }
@@ -131,7 +136,7 @@ import Testing
         ModelFitDiagnostic.ModelOption(id: "small", weightGb: 5.0),
         ModelFitDiagnostic.ModelOption(id: "huge", weightGb: 40.0),
     ]
-    // huge needs 42 > 21 → fail; small needs 7 ≤ 21 → suggested.
+    // huge needs 46.5 > 21 → fail; small needs 11.5 ≤ 21 → suggested.
     let d = ModelFitDiagnostic.diagnose(modelID: "huge", weightGb: 40.0, usableGb: 21.0, alternatives: alts)
     #expect(d.level == .fail)
     #expect(d.fix?.contains("small") == true)
@@ -286,13 +291,81 @@ func slotPostureBuilderSynthesizesRefusedLoad() {
             model: "gemma-4-26b",
             message: "engine_v2: paged KV backend explicitly requested but unavailable — "
                 + "kernel preflight failed",
-            at: 10))
+            at: 10),
+        now: 20)
 
     #expect(built.count == 1)
     #expect(built[0].model == "gemma-4-26b")
     #expect(built[0].kvBackend == nil, "no engine was built; a fabricated kind would be a lie")
     #expect(built[0].kvBackendRequested == "paged")
     #expect(built[0].loadError?.contains("explicitly requested but unavailable") == true)
+}
+
+@Test("a failure for a model removed from the enabled set is suppressed")
+func slotPostureBuilderSuppressesUnconfiguredFailure() {
+    let failure = DaemonState.ModelLoadError(model: "gemma-4-26b", message: "refused", at: 10)
+
+    // While the model is still desired, the failed row shows.
+    let stillDesired = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: failure,
+        desiredModels: ["gemma-4-26b", "gpt-oss-20b"], now: 20)
+    #expect(stillDesired.count == 1)
+    #expect(stillDesired[0].loadError == "refused")
+
+    // The operator removed the model from `enabled_models`: they resolved
+    // the failure the OTHER way, and the row must go with it rather than
+    // report NOT SERVING forever for a model nobody wants served.
+    let removed = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: failure,
+        desiredModels: ["gpt-oss-20b"], now: 20)
+    #expect(removed.isEmpty)
+
+    // nil ⇒ unconstrained (`enabled_models` empty serves anything), so
+    // membership proves nothing and the row stays.
+    let unconstrained = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: failure,
+        desiredModels: nil, now: 20)
+    #expect(unconstrained.count == 1)
+}
+
+@Test("a failure expires after the idle-unload horizon; a fresh one never does")
+func slotPostureBuilderExpiresStaleFailure() {
+    let trippedAt = 100_000.0
+    let failure = DaemonState.ModelLoadError(
+        model: "gemma-4-26b", message: "refused", at: trippedAt)
+    let build = { (now: Double) in
+        DaemonSlotPostureBuilder.build(
+            live: [], requestedGlobal: "paged", requestedByModel: [:],
+            lastModelLoadError: failure,
+            desiredModels: ["gemma-4-26b"], now: now)
+    }
+
+    // Fresh — and anywhere inside the horizon — the row shows. The bound is
+    // wedge-scale, not stale-scale: a genuinely failed slot must not flap
+    // out of `doctor` between two commands of one debugging session.
+    #expect(build(trippedAt).count == 1)
+    #expect(build(trippedAt + DaemonSlotPostureBuilder.failureMaxAgeSeconds).count == 1)
+
+    // Past the horizon every real slot from the failure's era has been
+    // idle-unloaded and rebuilt anyway; the failure is history, not posture.
+    #expect(build(trippedAt + DaemonSlotPostureBuilder.failureMaxAgeSeconds + 1).isEmpty)
+
+    // A retry refreshes `at` (recordModelLoadError), so a PERSISTENT failure
+    // keeps its row regardless of when the first failure happened.
+    let refreshed = DaemonState.ModelLoadError(
+        model: "gemma-4-26b", message: "refused again", at: trippedAt + 90_000)
+    let rebuilt = DaemonSlotPostureBuilder.build(
+        live: [], requestedGlobal: "paged", requestedByModel: [:],
+        lastModelLoadError: refreshed,
+        desiredModels: ["gemma-4-26b"], now: trippedAt + 90_010)
+    #expect(rebuilt.count == 1)
+    #expect(rebuilt[0].loadError == "refused again")
+
+    // The horizon IS the idle-unload default — see the constant's rationale.
+    #expect(DaemonSlotPostureBuilder.failureMaxAgeSeconds == 3_600)
 }
 
 @Test("a model that failed once and then loaded reports as serving, not failed")
@@ -305,7 +378,8 @@ func slotPostureBuilderDropsSupersededLoadError() {
         ],
         requestedGlobal: "paged",
         requestedByModel: [:],
-        lastModelLoadError: .init(model: "gemma-4-26b", message: "transient", at: 10))
+        lastModelLoadError: .init(model: "gemma-4-26b", message: "transient", at: 10),
+        now: 20)
 
     #expect(built.count == 1)
     #expect(built[0].kvBackend == "paged")
@@ -327,6 +401,99 @@ func slotPostureBuilderNormalizesUnrecognizedSelection() {
         requestedByModel: [:],
         lastModelLoadError: nil)
     #expect(built[0].kvBackendRequested == "auto")
+}
+
+// MARK: - Desired set for posture suppression (CLI-selected models)
+
+/// `desiredModelsForPosture` must reflect what the daemon actually SERVES,
+/// not just the config file: `--model X` / `--all` select models outside
+/// `enabled_models` (the launch path seeds them into `loopConfig.models` →
+/// `advertisedModels` while the config object is unchanged), and a failed
+/// load of such a model is a refusal the operator asked to see — suppressing
+/// its synthetic row as "undesired" lets `doctor` pass misleadingly.
+@Suite("Posture desired set (config + CLI selection)")
+struct DesiredModelsForPostureTests {
+
+    private func makeLoop(
+        advertised: [String],
+        enabledModels: [String],
+        pinned: String? = nil,
+        preload: [String] = []
+    ) throws -> ProviderLoop {
+        let config = ProviderLoopConfig(
+            coordinatorURL: "ws://127.0.0.1:0/ignored",
+            hardware: HardwareInfo(
+                machineModel: "Mac16,5", chipName: "Apple M4 Max", chipFamily: .m4, chipTier: .max,
+                memoryGb: 128, memoryAvailableGb: 124,
+                cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+                gpuCores: 40, memoryBandwidthGbs: 546
+            ),
+            models: advertised.map {
+                ModelInfo(id: $0, modelType: "gpt_oss", sizeBytes: 1, estimatedMemoryGb: 1)
+            },
+            config: ProviderConfig(
+                provider: ProviderSettings(name: "posture-desired-test", memoryReserveGB: 1),
+                backend: BackendSettings(
+                    model: pinned,
+                    enabledModels: enabledModels,
+                    idleTimeoutMins: 0,
+                    preloadModels: preload
+                ),
+                coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
+            )
+        )
+        return try ProviderLoop(config: config, purgeLegacyFiles: false, attestationSigner: nil)
+    }
+
+    @Test("a `--model X` selection outside enabled_models stays desired — its failure shows")
+    func cliModelOverrideIsDesired() async throws {
+        // Launch shape: config allowlists gemma, operator ran `--model org/x`.
+        let loop = try makeLoop(
+            advertised: ["org/x"], enabledModels: ["gemma-4-26b"])
+        let desired = await loop.desiredModelsForPosture()
+        #expect(desired?.contains("org/x") == true,
+            "the CLI-selected model must never be suppressed as undesired")
+        #expect(desired?.contains("gemma-4-26b") == true,
+            "the config allowlist still counts — a config-desired failure shows too")
+
+        // And the suppression it feeds agrees: the failed row survives.
+        let built = DaemonSlotPostureBuilder.build(
+            live: [], requestedGlobal: "auto", requestedByModel: [:],
+            lastModelLoadError: .init(model: "org/x", message: "refused", at: 10),
+            desiredModels: desired, now: 20)
+        #expect(built.count == 1)
+        #expect(built[0].loadError == "refused")
+    }
+
+    @Test("a `--all` selection makes every advertised model desired")
+    func cliAllSelectionIsDesired() async throws {
+        // Launch shape: `--all` advertises every scanned model; config
+        // allowlist names only one of them.
+        let loop = try makeLoop(
+            advertised: ["gemma-4-26b", "gpt-oss-20b", "org/other"],
+            enabledModels: ["gemma-4-26b"])
+        let desired = await loop.desiredModelsForPosture()
+        #expect(desired == ["gemma-4-26b", "gpt-oss-20b", "org/other"])
+    }
+
+    @Test("the config-only path is unchanged: allowlist ∪ pinned ∪ preload ∪ advertised")
+    func configOnlyPathUnchanged() async throws {
+        // Config-driven launch: the advertised set IS the config-filtered
+        // set, so the union adds nothing new.
+        let loop = try makeLoop(
+            advertised: ["gemma-4-26b"],
+            enabledModels: ["gemma-4-26b"],
+            pinned: "org/pinned",
+            preload: ["org/preload"])
+        let desired = await loop.desiredModelsForPosture()
+        #expect(desired == ["gemma-4-26b", "org/pinned", "org/preload"])
+
+        // Empty allowlist still means unconstrained (nil): membership proves
+        // nothing when the daemon serves anything pushed to it.
+        let unconstrained = try makeLoop(
+            advertised: ["org/x"], enabledModels: [])
+        #expect(await unconstrained.desiredModelsForPosture() == nil)
+    }
 }
 
 // MARK: - WarmModelsFormat

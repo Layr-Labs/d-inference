@@ -25,6 +25,35 @@ public struct WatchdogRecoveryService: Sendable {
         /// exceeded budget can defer work but can never corrupt an in-flight
         /// journaled transaction.
         public var isPastTickDeadline: @Sendable () -> Bool
+        /// Trip the crash-loop KV-backend guard: persist the on-disk record
+        /// NOW and stage the rest (`KVBackendCrashLoopGuard.stageTrip`).
+        /// `guardedVersion` is the version launchd will actually kickstart,
+        /// resolved by the recovery flow: the pending candidate's release
+        /// version while a candidate owns the live layout, otherwise
+        /// `SelfUpdater.effectiveInstalledVersion` — the watchdog process's
+        /// own compiled-in version can be stale after a self-update.
+        /// The returned `StagedTrip` splits the side effects around the
+        /// kickstart: `undo` (nil when the record never reached disk)
+        /// restores the pre-trip disk state and is invoked ONLY when this
+        /// recovery attempt ends without an issued kickstart (the counted
+        /// restart never happened, so the guard must not strand); `emit`
+        /// queues the ERROR trip event and is invoked exactly once, at
+        /// kickstart success — the same point the undo is disarmed — so an
+        /// undone trip leaves no telemetry trace. Injectable so the
+        /// decision-flow tests can observe trips (and their ordering against
+        /// the kickstart) without touching the real `~/.darkbloom`.
+        public var tripKVBackendGuard:
+            @Sendable (_ crashCount: Int, _ now: Double, _ guardedVersion: String)
+                -> KVBackendCrashLoopGuard.StagedTrip
+        /// Reports the version-scoped crash-loop chain this recovery attempt
+        /// resolved: the effective counter value
+        /// (`WatchdogPolicy.versionScopedCrashLoopCount` over the caller's
+        /// raw count) and the installed version it is scoped to. The caller
+        /// persists BOTH — but only when the outcome shows the restart was
+        /// actually issued. A dependency rather than a return value because
+        /// `DownOutcome` is pattern-matched by equality across the decision
+        /// tests and the chain is orthogonal to the outcome shape.
+        public var noteCrashLoopChain: @Sendable (_ count: Int, _ installedVersion: String) -> Void
         public var log: @Sendable (String) -> Void
 
         public init(
@@ -37,6 +66,12 @@ public struct WatchdogRecoveryService: Sendable {
             terminateStaleLockOwner:
                 @escaping @Sendable (UpdateProcessLock.Owner) -> Bool = { _ in false },
             isPastTickDeadline: @escaping @Sendable () -> Bool = { false },
+            tripKVBackendGuard: @escaping @Sendable (Int, Double, String)
+                -> KVBackendCrashLoopGuard.StagedTrip = {
+                KVBackendCrashLoopGuard.stageTrip(
+                    crashCount: $0, now: $1, guardedVersion: $2, lastKnownModel: nil)
+            },
+            noteCrashLoopChain: @escaping @Sendable (Int, String) -> Void = { _, _ in },
             log: @escaping @Sendable (String) -> Void
         ) {
             self.kickstartIfLoaded = kickstartIfLoaded
@@ -45,6 +80,8 @@ public struct WatchdogRecoveryService: Sendable {
             self.processAlive = processAlive
             self.terminateStaleLockOwner = terminateStaleLockOwner
             self.isPastTickDeadline = isPastTickDeadline
+            self.tripKVBackendGuard = tripKVBackendGuard
+            self.noteCrashLoopChain = noteCrashLoopChain
             self.log = log
         }
     }
@@ -107,10 +144,27 @@ public struct WatchdogRecoveryService: Sendable {
     /// Called only after the watchdog's outage grace expires. A pending
     /// candidate attempt is charged once, rollback is attempted at the third
     /// failure, then an allowed newer release is installed before kickstart.
+    ///
+    /// `crashLoopRestartCount` is the consecutive crash-loop counter value
+    /// THIS restart carries if issued (`WatchdogPolicy.crashLoopCount`,
+    /// computed by the caller from the persisted watchdog state), BEFORE
+    /// version scoping: this flow resolves the installed daemon version and
+    /// rescopes the count through
+    /// `WatchdogPolicy.versionScopedCrashLoopCount(_:recordedVersion:installedVersion:)`
+    /// — `lastRestartVersion` is the persisted state's recorded version the
+    /// scoping compares against. At `WatchdogPolicy.crashLoopTripThreshold`
+    /// (of the SCOPED count) the KV-backend guard is persisted BEFORE the
+    /// kickstart below — see the trip site for the precedence rules. The
+    /// default 0 (below any threshold) keeps callers that do not track the
+    /// chain, e.g. the healthy-path candidate re-entries, from ever tripping
+    /// it: those handle a RUNNING-but-inert process, not the launchd death
+    /// loop the guard exists for.
     public func recoverDownProvider(
         autoUpdateEnabled: Bool,
         inactiveProviderIdentity: ProcessIdentity? = nil,
         providerProcessAlive: Bool = false,
+        crashLoopRestartCount: Int = 0,
+        lastRestartVersion: String? = nil,
         now: Double
     ) async -> DownOutcome {
         // Monotonic anchor for re-deriving the epoch time later in this call.
@@ -177,6 +231,23 @@ public struct WatchdogRecoveryService: Sendable {
         }
 
         var rolledBackTo: String?
+        // True while a pending update candidate still has a VIABLE rollback
+        // path — the state that must suppress the crash-loop backend guard
+        // below. Read after the rollback attempt so a rollback that just
+        // committed (candidate cleared) or was refused (blocked reason set)
+        // is judged on its outcome, not its intent.
+        var candidateOwnsRecovery = false
+        // The version the backend guard binds if tripped below: the version
+        // launchd will actually kickstart — a pending candidate's release
+        // version when one owns the live layout, otherwise the INSTALLED
+        // version resolved exactly the way `SelfUpdater.checkForUpdate`
+        // resolves it (same seam, same arithmetic). This process's own
+        // compiled-in version is only the floor — the persistent watchdog
+        // keeps running its old executable image after it installs and
+        // promotes a newer release, and a guard stamped with the stale
+        // watchdog version would never bind the new daemon that is actually
+        // crash-looping (it would even be deleted at its startup as stale).
+        var guardedVersion = updater.currentVersion
         do {
             var state = try session.readState()
             let beforeReconcile = state
@@ -251,10 +322,129 @@ public struct WatchdogRecoveryService: Sendable {
                     return .retryBackoff(until: until, reason: reason)
                 }
             }
+            candidateOwnsRecovery = state.candidate != nil
+                && state.candidate?.rollbackBlockedReason == nil
+            // The version launchd will actually kickstart. While a pending
+            // candidate exists, the LIVE layout is the candidate's:
+            // `installCandidate` exchanges the layout at install time and
+            // `state.current` keeps naming the predecessor until promotion —
+            // so neither `current` nor this watchdog's own process version
+            // (commonly that same predecessor) can identify it. This matters
+            // exactly when the candidate's rollback was REFUSED: that is the
+            // only candidate state that can reach the trip below, the guard
+            // is then the one automated mitigation left, and a guard stamped
+            // with the predecessor would read as stale to the relaunched
+            // candidate daemon and never bind (it would even be deleted at
+            // startup via `clearIfStale`). Resolved AFTER the rollback
+            // attempt so a rollback that just committed (candidate cleared,
+            // `current` restored) resolves the restored predecessor — never
+            // a version that is already leaving the box.
+            if let candidate = state.candidate {
+                guardedVersion = candidate.release.version
+            } else {
+                guardedVersion = SelfUpdater.effectiveInstalledVersion(
+                    processVersion: updater.currentVersion,
+                    recorded: state.current?.version)
+            }
         } catch {
             let reason = "could not attribute candidate failure: \(error)"
             deps.log(reason)
             return .failed(reason)
+        }
+
+        // Version-scope the chain: a chain recorded against a DIFFERENT
+        // installed version (a promotion or rollback landed since the last
+        // restart) resets — the new binary's first short-lived crash must
+        // not inherit the old binary's count and instantly guard the release
+        // that was shipped to fix it. Report the scoped chain (count +
+        // version) so the caller persists exactly what this flow acted on,
+        // but only if the restart is actually issued below.
+        let scopedCrashLoopCount = WatchdogPolicy.versionScopedCrashLoopCount(
+            crashLoopRestartCount,
+            recordedVersion: lastRestartVersion,
+            installedVersion: guardedVersion)
+        if scopedCrashLoopCount != crashLoopRestartCount {
+            deps.log(
+                "crash-loop chain reset \(crashLoopRestartCount) → \(scopedCrashLoopCount): "
+                    + "the installed version changed to v\(guardedVersion) "
+                    + "(chain was recorded against "
+                    + (lastRestartVersion.map { "v\($0)" } ?? "no version — legacy state")
+                    + ")")
+        }
+        deps.noteCrashLoopChain(scopedCrashLoopCount, guardedVersion)
+
+        // Crash-loop KV-backend guard (v0.8.0). The caller counted this
+        // restart as the Nth consecutive crash-loop-shaped one; at the
+        // threshold the guard record is persisted HERE — before the update
+        // check and the kickstart — so the daemon this very tick relaunches
+        // already resolves `.auto` to contiguous on its first model load.
+        // Tripping after the kickstart would race the relaunched daemon's
+        // model preload and lose: that boot would just be crash N+1.
+        //
+        // PRECEDENCE — the update-recovery candidate rollback WINS, for two
+        // reasons. First, it fixes more: rolling the BINARY back to the
+        // verified predecessor also fixes paged, because the pre-0.8.0
+        // predecessor resolves `.auto` to contiguous. Second, flipping both
+        // levers at once would strand a guard record for a version about to
+        // leave the box, and the two automations must not fight over one
+        // incident. So: a rollback that just committed (`rolledBackTo`)
+        // suppresses the trip, and a pending candidate with a viable
+        // rollback path (`candidateOwnsRecovery`) suppresses it while the
+        // candidate's own failure counter — same threshold of 3, charged on
+        // the same restarts — walks toward that rollback. A candidate whose
+        // rollback was REFUSED (blocked reason set) has already lost its fix
+        // path, so the backend guard is the one automated mitigation left
+        // and may trip.
+        // The write is BOUND to the kickstart: any exit below that does not
+        // issue the restart rolls it back (`rollBackTripUnlessKickstarted`)
+        // — the chain counter is only persisted for issued restarts, so a
+        // no-restart exit means the counted third restart never happened and
+        // a stranded guard would force contiguous on the next manual start
+        // for a trip that never completed. The undo restores the pre-trip
+        // disk state, so it can never delete a pre-existing guard from an
+        // earlier completed trip. The trip EVENT is likewise deferred to the
+        // kickstart (`pendingTripEmission`, fired where the undo is
+        // disarmed): the undo can restore the disk but cannot retract a
+        // queued event, and an undone trip that had already queued one would
+        // ship a false incident signal on the next healthy boot.
+        var undoTrip: (@Sendable () -> Void)?
+        var pendingTripEmission: (@Sendable () -> Void)?
+        if scopedCrashLoopCount >= WatchdogPolicy.crashLoopTripThreshold,
+            rolledBackTo == nil,
+            !candidateOwnsRecovery
+        {
+            let staged = deps.tripKVBackendGuard(scopedCrashLoopCount, now, guardedVersion)
+            // Emitted even when the record write failed (the event carries
+            // the could-not-persist warning — the fleet's only signal that a
+            // box is looping unguarded), but still only for an issued
+            // kickstart.
+            pendingTripEmission = staged.emit
+            if staged.persisted {
+                undoTrip = staged.undo
+                deps.log(
+                    "crash-loop backend guard tripped after \(scopedCrashLoopCount) short-uptime "
+                        + "restarts — `.auto` resolves contiguous on this box until the next "
+                        + "release or `darkbloom doctor --clear-backend-guard`")
+            } else {
+                deps.log(
+                    "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
+                        + "`.auto` will keep resolving paged and the crash loop may continue")
+            }
+        }
+        // Every failure exit below runs through this. It only acts while the
+        // kickstart has NOT been issued: the moment `kickstartIfLoaded()`
+        // returns true the undo is disarmed (`undoTrip = nil` at the call
+        // site), because launchd has already counted the restart — a
+        // bookkeeping failure after that point must not strip the guard from
+        // the daemon that is about to boot.
+        func rollBackTripUnlessKickstarted(_ outcome: DownOutcome) -> DownOutcome {
+            if let undoTrip {
+                undoTrip()
+                deps.log(
+                    "crash-loop backend guard rolled back — recovery ended without an "
+                        + "issued restart, so the counted restart never happened")
+            }
+            return outcome
         }
 
         var updatedTo: String?
@@ -287,7 +477,7 @@ public struct WatchdogRecoveryService: Sendable {
                 deps.log("update skipped because lock became busy: \(reason)")
             case .cancelled(let reason):
                 deps.log("watchdog update cancelled: \(reason)")
-                return .noLongerLoaded
+                return rollBackTripUnlessKickstarted(.noLongerLoaded)
             case .downloadFailed(let reason):
                 deps.log("update check/download failed; restarting current install: \(reason)")
             case .hashMismatch(let expected, let got):
@@ -307,7 +497,7 @@ public struct WatchdogRecoveryService: Sendable {
                     let recoveryReason =
                         "post-refusal update recovery failed: \(error)"
                     deps.log(recoveryReason)
-                    return .failed(recoveryReason)
+                    return rollBackTripUnlessKickstarted(.failed(recoveryReason))
                 }
             }
         }
@@ -348,8 +538,21 @@ public struct WatchdogRecoveryService: Sendable {
                     let before = state
                     state.cancelPendingAttempt()
                     try writeIfChanged(state, before: before)
-                    return .noLongerLoaded
+                    return rollBackTripUnlessKickstarted(.noLongerLoaded)
                 }
+                // The counted restart is now REAL: launchd has been told to
+                // relaunch. Disarm the trip undo — if the launch bookkeeping
+                // below throws (full disk, unwritable recovery dir) this
+                // attempt still returns `.failed`, but undoing the guard
+                // would boot the relaunched daemon paged and guardless while
+                // the chain counter (persisted only for `.restartIssued`)
+                // did not advance either. The trip event fires HERE, for the
+                // same reason in the other direction: only a trip whose
+                // counted restart actually happened may reach the fleet's
+                // alerting.
+                undoTrip = nil
+                pendingTripEmission?()
+                pendingTripEmission = nil
                 let before = state
                 _ = state.markLaunchIssued(now: launchNow)
                 try writeIfChanged(state, before: before)
@@ -363,7 +566,13 @@ public struct WatchdogRecoveryService: Sendable {
         } catch {
             let reason = "provider kickstart failed: \(error)"
             deps.log(reason)
-            return .failed(reason)
+            // Pre-kickstart throws: the chain counter is not advanced for a
+            // failed kickstart, so the next tick recomputes the same count
+            // and re-trips — rolling back keeps disk state and counter
+            // consistent in between. Post-kickstart bookkeeping throws reach
+            // here too, but the undo was disarmed at the kickstart, so the
+            // guard survives them.
+            return rollBackTripUnlessKickstarted(.failed(reason))
         }
     }
 

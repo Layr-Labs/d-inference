@@ -11,10 +11,14 @@
 //      `PagedKVPoolConfig` literal the test handed in. A knob that is
 //      merely accepted is a capability flag; a knob whose slabs changed
 //      size is evidence.
-//   2. A typo REFUSES. The seam exists so a parity harness can run an fp32
-//      control arm; a mistyped value that silently served fp16 would give
-//      it a second copy of the baseline, which looks exactly like
-//      agreement. This is the one paged env knob that cannot fall back.
+//   2. A typo REFUSES an EXPLICIT paged selection and DEGRADES `.auto` to
+//      contiguous (fallback reason "invalid_dtype: …"). The refusal half:
+//      the seam exists so a parity harness — which runs explicit `.paged` —
+//      can trust its fp32 control arm; a mistyped value that silently
+//      served fp16 would give it a second copy of the baseline, which
+//      looks exactly like agreement. The degrade half: since v0.8.0
+//      `.auto` is every slot on the fleet, and one typo'd env var must
+//      cost the box paged, not cost it SERVICE.
 //   3. fp32 pages cost 2x, and the physical plan is computed at the fp16
 //      rate — so the same grant buys HALF the pages, half the seats, and a
 //      grant that fits at fp16 can refuse outright at fp32. That refusal
@@ -184,6 +188,60 @@ struct EngineV2PagedPoolDTypeEnvTests {
             pagedPreflightOverride: { _ in })
         #expect(unset.pagedPoolDType == "float16")
         await unset.engine.shutdown()
+    }
+
+    @Test("`.auto` + a malformed value DEGRADES to contiguous and names the typo")
+    func autoDegradesOnMalformedValue() async throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        // The fleet case: `.auto` on every slot, one box exports a mangled
+        // DARKBLOOM_CBV2_PAGED_KV_DTYPE. Pre-guard this refused — a typo in
+        // a measurement knob 503'd every load on the box. Now it serves
+        // contiguous and the heartbeat names the typo verbatim, so the fix
+        // is one `grep invalid_dtype` away.
+        let build = try EngineV2Factory.makeProductionBuild(
+            model: try dtypeFixtureModel(),
+            tokenizer: StubBridgeTokenizer(),
+            kvBytesCapacity: dtypeTestCapacity,
+            maxConcurrentRequests: dtypeTestConcurrency,
+            kvBackend: .auto,
+            maxContextLength: dtypeTestContext,
+            environment: [
+                EngineV2Factory.pagedPoolDTypeEnvKey: "fp32",
+                // Hermetic: a dev box's real crash-loop guard must not
+                // preempt the dtype resolution under test.
+                KVBackendGuardStore.pathEnvKey: "/dev/null",
+            ],
+            pagedPreflightOverride: { _ in })
+        #expect(build.kvBackendKind == .contiguous)
+        #expect(build.kvBackendFallbackReason == "invalid_dtype: fp32")
+        // Contiguous has no pages: the fp32 the typo was aiming at must
+        // not be reported as if a pool were built with it.
+        #expect(build.pagedPoolDType == nil)
+        await build.engine.shutdown()
+    }
+
+    @Test("`.auto` + a VALID value still serves paged with that dtype")
+    func autoServesValidDType() async throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        // Guards the degrade from over-reach: only the MALFORMED value may
+        // move `.auto` off paged. A well-formed float32 under `.auto`
+        // builds the fp32 pool exactly as an explicit selection would.
+        let build = try EngineV2Factory.makeProductionBuild(
+            model: try dtypeFixtureModel(),
+            tokenizer: StubBridgeTokenizer(),
+            kvBytesCapacity: dtypeTestCapacity,
+            maxConcurrentRequests: dtypeTestConcurrency,
+            kvBackend: .auto,
+            maxContextLength: dtypeTestContext,
+            environment: [
+                EngineV2Factory.pagedPoolDTypeEnvKey: "float32",
+                KVBackendGuardStore.pathEnvKey: "/dev/null",
+            ],
+            pagedPreflightOverride: { _ in })
+        #expect(build.kvBackendKind == .paged)
+        #expect(build.kvBackendFallbackReason == nil)
+        #expect(build.pagedPoolDType == "float32")
+        await build.engine.shutdown()
     }
 
     @Test("an unrecognized value REFUSES instead of silently serving float16")

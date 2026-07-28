@@ -133,6 +133,16 @@ public struct DaemonState: Codable, Sendable, Equatable {
         /// than re-parsed by the CLI so a `provider.toml` edited after the
         /// daemon started cannot manufacture a phantom mismatch.
         public var kvBackendRequested: String
+        /// WHY the engine degraded away from the backend it was asked for —
+        /// `EngineV2Bridge.kvBackendFallbackReason` verbatim ("kill_switch",
+        /// "crash_loop_guard", "kernel_preflight: …", "physical_capacity: …",
+        /// "ineligible: …", "pool_construction_capacity: …",
+        /// "invalid_dtype: …"). nil ⇒ no degrade. The same pair the
+        /// heartbeat reports fleet-side (`kv_backend` +
+        /// `kv_backend_fallback_reason`), mirrored here so the box-side
+        /// `status`/`doctor` can answer "why contiguous?" without the
+        /// coordinator. Optional and absent in pre-guard state files.
+        public var kvBackendFallbackReason: String?
         /// MTP was configured for this slot (a drafter was requested).
         public var mtpEnabled: Bool
         /// MTP is actually producing drafts. `mtpEnabled && !mtpActive`, or
@@ -152,6 +162,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             model: String,
             kvBackend: String? = nil,
             kvBackendRequested: String = "auto",
+            kvBackendFallbackReason: String? = nil,
             mtpEnabled: Bool = false,
             mtpActive: Bool = false,
             mtpInactiveReason: String? = nil,
@@ -160,6 +171,7 @@ public struct DaemonState: Codable, Sendable, Equatable {
             self.model = model
             self.kvBackend = kvBackend
             self.kvBackendRequested = kvBackendRequested
+            self.kvBackendFallbackReason = kvBackendFallbackReason
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
@@ -246,6 +258,10 @@ public enum DaemonSlotPostureBuilder {
         public let model: String
         /// `EngineV2Bridge.kvBackendKind.rawValue` — the RESOLVED kind.
         public let kvBackend: String
+        /// `EngineV2Bridge.kvBackendFallbackReason` — WHY the resolved kind
+        /// differs from the request, nil when it does not (see
+        /// `SlotPosture.kvBackendFallbackReason`).
+        public let kvBackendFallbackReason: String?
         public let mtpEnabled: Bool
         public let mtpActive: Bool
         public let mtpInactiveReason: String?
@@ -253,26 +269,54 @@ public enum DaemonSlotPostureBuilder {
         public init(
             model: String,
             kvBackend: String,
+            kvBackendFallbackReason: String? = nil,
             mtpEnabled: Bool,
             mtpActive: Bool,
             mtpInactiveReason: String?
         ) {
             self.model = model
             self.kvBackend = kvBackend
+            self.kvBackendFallbackReason = kvBackendFallbackReason
             self.mtpEnabled = mtpEnabled
             self.mtpActive = mtpActive
             self.mtpInactiveReason = mtpInactiveReason
         }
     }
 
+    /// How long the synthetic failed-slot entry outlives its failure without
+    /// a fresh one. One hour — the daemon's own idle-unload horizon
+    /// (`idle_timeout_mins` default): past it, every REAL slot from the
+    /// failure's era has been unloaded and rebuilt on demand anyway, so a
+    /// failure older than that horizon describes a previous era of the box,
+    /// not its current posture — history for the logs, not a live-looking
+    /// `NOT SERVING` row in `status`/`doctor`. Deliberately wedge-scale, not
+    /// stale-scale (`KVBackendPosture.staleAfterSeconds` is ~10 s): a
+    /// genuinely failed slot must not flap out of `doctor` between two
+    /// commands of the same debugging session, and any retry of the load
+    /// refreshes `at` (`recordModelLoadError`), keeping a PERSISTENT failure
+    /// visible for as long as it actually recurs.
+    public static let failureMaxAgeSeconds: Double = 3_600
+
     /// `live` slots first (sorted by model id), then at most one synthetic
-    /// entry for `lastModelLoadError` — and only when that model has no live
-    /// slot, because a model that failed once and then loaded is serving.
+    /// entry for `lastModelLoadError` — and only while that failure is
+    /// CURRENT, all three of:
+    ///
+    ///   * the model has no live slot (a model that failed once and then
+    ///     loaded is serving);
+    ///   * the model is still in the daemon's desired set (`desiredModels`;
+    ///     nil ⇒ unconstrained — an empty `enabled_models` serves anything,
+    ///     so membership proves nothing there). An operator who removed the
+    ///     model resolved the failure the other way, and a row that outlives
+    ///     the config that produced it reports `NOT SERVING` forever for a
+    ///     model nobody wants served;
+    ///   * the failure is younger than ``failureMaxAgeSeconds``.
     public static func build(
         live: [LiveSlot],
         requestedGlobal: String,
         requestedByModel: [String: String],
-        lastModelLoadError: DaemonState.ModelLoadError?
+        lastModelLoadError: DaemonState.ModelLoadError?,
+        desiredModels: Set<String>? = nil,
+        now: Double = Date().timeIntervalSince1970
     ) -> [DaemonState.SlotPosture] {
         func requested(_ modelID: String) -> String {
             EngineV2KVBackendPolicy.parseSelection(
@@ -284,12 +328,15 @@ public enum DaemonSlotPostureBuilder {
                 model: $0.model,
                 kvBackend: $0.kvBackend,
                 kvBackendRequested: requested($0.model),
+                kvBackendFallbackReason: $0.kvBackendFallbackReason,
                 mtpEnabled: $0.mtpEnabled,
                 mtpActive: $0.mtpActive,
                 mtpInactiveReason: $0.mtpInactiveReason)
         }
         if let failure = lastModelLoadError,
-            !live.contains(where: { $0.model == failure.model })
+            !live.contains(where: { $0.model == failure.model }),
+            desiredModels.map({ $0.contains(failure.model) }) ?? true,
+            now - failure.at <= failureMaxAgeSeconds
         {
             out.append(
                 DaemonState.SlotPosture(

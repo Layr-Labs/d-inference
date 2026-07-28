@@ -39,6 +39,17 @@ public enum UnifiedMemoryCap {
     /// this type scales it; only an explicit operator or programmatic override
     /// moves it (`DARKBLOOM_ACTIVATION_RESERVE_GB`, which may only RAISE it).
     ///
+    /// 5.5 GiB as of v0.8.0, sized against the table below: this release
+    /// raises the decode batch to 8, and the measured gemma-4 peak at B=8 is
+    /// **5.05 GiB** — ABOVE the previous flat 3 GiB, which was sized when the
+    /// fleet ran B=4 (3.40 GiB peak). An activation overshoot is not a
+    /// recoverable error: there is no MLX allocation-failure handler, so a
+    /// mid-request OOM kills the daemon. 5.5 GiB = measured 5.05 + ~0.45
+    /// slack for prompt shapes the sweep did not cover. The cost is real and
+    /// deliberate — 2.5 GiB less KV budget per box, fewer co-resident models
+    /// on small boxes — and protective: the alternative is a fleet-wide
+    /// daemon-kill lottery at exactly the batch depth this release ships.
+    ///
     /// Measured on M4 Max / 128 GiB, peak-over-resident-weights across a batch
     /// sweep at ~1.5k-token prompts (`libs/mlx-swift-lm/benchmarks/reports/`,
     /// `*-paged-gate-2026-07-09.md`, run 2026-07-10):
@@ -82,7 +93,10 @@ public enum UnifiedMemoryCap {
     /// still on and the score tensor gets SMALLER, so it costs exactness
     /// (summation order), not memory. Either way the answer here is the env
     /// override, not a per-model formula.
-    static let defaultActivationReserveBytes: UInt64 = 3 * 1024 * 1024 * 1024  // 3 GiB
+    // 5.5 GiB (11 × 2^30 / 2 = 5_905_580_032). Mirrored by
+    // coordinator/registry/servability.go (servabilityActivationFloorGB);
+    // the two MUST move in the same commit — see the doc comment above.
+    static let defaultActivationReserveBytes: UInt64 = 11 * 1024 * 1024 * 1024 / 2
 
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
     /// to be worth loading — a model that loads but can serve no KV is useless.
@@ -271,11 +285,16 @@ public enum UnifiedMemoryCap {
     /// Activation reserve from explicit bytes, env
     /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
     ///
-    /// A `<= 0` or non-finite env value is treated as UNSET (→ the floor): a
-    /// `0` reserve would remove the activation headroom the cap exists to
-    /// guarantee, so an operator can RAISE the reserve but not silently
-    /// disable it via env. An explicit programmatic value (tests) is honored
-    /// as given.
+    /// The env override is RAISE-ONLY, enforced, not just documented: the
+    /// resolved value is `max(env, default)`. A value below the floor —
+    /// most likely a legacy `3` set when 3 GiB WAS the default — would
+    /// silently recreate the B=8 activation OOM the 5.5 GiB floor exists to
+    /// prevent, while the coordinator keeps predicting capacity with the
+    /// floor (`servability.go`). A `<= 0` or non-finite env value is
+    /// likewise treated as UNSET (→ the floor): a `0` reserve would remove
+    /// the activation headroom the cap exists to guarantee. An explicit
+    /// programmatic value (tests) is honored as given, below the floor
+    /// included — test fixtures legitimately model small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
@@ -284,7 +303,8 @@ public enum UnifiedMemoryCap {
         if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
-            return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            return max(bytes, defaultActivationReserveBytes)
         }
         return defaultActivationReserveBytes
     }

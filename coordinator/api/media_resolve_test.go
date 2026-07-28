@@ -335,7 +335,7 @@ func TestGateNonVisionNoOp(t *testing.T) {
 	}
 }
 
-func TestFirstUnfetchableRemoteRef(t *testing.T) {
+func TestScanRemoteMediaRefs(t *testing.T) {
 	openaiRemote := map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://x/a.png"}}
 	anthropicRemote := map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": "https://x/b.png"}}
 	inline := map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}}
@@ -349,35 +349,70 @@ func TestFirstUnfetchableRemoteRef(t *testing.T) {
 		return map[string]any{"messages": []any{map[string]any{"role": "user", "content": anyParts}}}
 	}
 
-	// All refs fetchable → ok.
-	body := mk(openaiRemote, inline)
-	if ref, ok := firstUnfetchableRemoteRef(body); !ok {
-		t.Errorf("fetchable-only body flagged %q", ref)
+	for _, tc := range []struct {
+		name                    string
+		body                    map[string]any
+		wantRemote, wantUnfetch string
+	}{
+		{"text only", map[string]any{"messages": []any{map[string]any{"role": "user", "content": "hi"}}}, "", ""},
+		{"inline only", mk(inline), "", ""},
+		// Fetchable: remote, but nothing for the unfetchable-shape gate.
+		{"fetchable openai part", mk(openaiRemote, inline), "https://x/a.png", ""},
+		{"anthropic beside fetchable", mk(openaiRemote, anthropicRemote), "https://x/a.png", "https://x/b.png"},
+		// URL equality must not make an unsupported shape fetchable: each part is
+		// judged by its own shape and location.
+		{"same url, both shapes", mk(
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://x/s.png"}},
+			map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": "https://x/s.png"}},
+		), "https://x/s.png", "https://x/s.png"},
+		{"file scheme", mk(fileScheme), "file:///etc/passwd", "file:///etc/passwd"},
+		{"responses input surface", map[string]any{"input": []any{
+			map[string]any{"content": []any{anthropicRemote}},
+		}}, "https://x/b.png", "https://x/b.png"},
+		// Responses input[] never has a fetchable shape, even for an OpenAI part.
+		{"openai part under input", map[string]any{"input": []any{
+			map[string]any{"content": []any{openaiRemote}},
+		}}, "https://x/a.png", "https://x/a.png"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := scanRemoteMediaRefs(tc.body)
+			if got.firstRemote != tc.wantRemote {
+				t.Errorf("firstRemote = %q, want %q", got.firstRemote, tc.wantRemote)
+			}
+			if got.firstUnfetchable != tc.wantUnfetch {
+				t.Errorf("firstUnfetchable = %q, want %q", got.firstUnfetchable, tc.wantUnfetch)
+			}
+		})
 	}
-	// Anthropic remote next to a fetchable OpenAI part → flagged.
-	body = mk(openaiRemote, anthropicRemote)
-	if ref, ok := firstUnfetchableRemoteRef(body); ok || ref != "https://x/b.png" {
-		t.Errorf("anthropic remote must be flagged; got (%q,%v)", ref, ok)
-	}
-	// URL equality must not make an unsupported shape fetchable: each part is
-	// judged by its own shape/location.
-	sharedURL := "https://x/shared.png"
-	body = mk(
-		map[string]any{"type": "image_url", "image_url": map[string]any{"url": sharedURL}},
-		map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": sharedURL}},
-	)
-	if ref, ok := firstUnfetchableRemoteRef(body); ok || ref != sharedURL {
-		t.Errorf("same-URL unsupported block must be flagged; got (%q,%v)", ref, ok)
-	}
-	// file:// scheme in an OpenAI part: not collected by the resolver → flagged.
-	body = mk(fileScheme)
-	if ref, ok := firstUnfetchableRemoteRef(body); ok || ref != "file:///etc/passwd" {
-		t.Errorf("file:// must be flagged; got (%q,%v)", ref, ok)
-	}
-	// Responses input[] surface is walked too.
-	body = map[string]any{"input": []any{map[string]any{"content": []any{anthropicRemote}}}}
-	if _, ok := firstUnfetchableRemoteRef(body); ok {
-		t.Error("input[] remote refs must be flagged")
+}
+
+// TestGateSealedRejectsEveryRemoteShape pins that a sealed request is refused
+// for ANY remote reference, not just the ones the resolver would fetch. Keying
+// the sealed branch off the fetchable subset sent an Anthropic source-URL
+// sender the unfetchable-shape message, which advises sending an OpenAI http(s)
+// link — advice for something a sealed request will never do either.
+func TestGateSealedRejectsEveryRemoteShape(t *testing.T) {
+	s := minimalMediaServer(mediafetch.DefaultConfig())
+	for _, tc := range []struct {
+		name string
+		part map[string]any
+	}{
+		{"openai image_url", map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://x/a.png"}}},
+		{"anthropic source url", map[string]any{"type": "image", "source": map[string]any{"type": "url", "url": "https://x/b.png"}}},
+		{"responses input_image", map[string]any{"type": "input_image", "image_url": "https://x/c.png"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"messages": []any{
+				map[string]any{"role": "user", "content": []any{tc.part}},
+			}}
+			w := httptest.NewRecorder()
+			if !s.gateRemoteMediaPreDispatch(w, sealedReq(), body, "test", "test", true, false) {
+				t.Fatal("a sealed request carrying a remote media reference must be rejected")
+			}
+			if got := w.Body.String(); !strings.Contains(got, "sealed requests must send media as an inline") {
+				t.Errorf("sealed request got the wrong guidance: %s", got)
+			}
+		})
 	}
 }
 

@@ -7,10 +7,11 @@ import (
 )
 
 // TestConfigCheck pins the boot-time validation contract: every numeric bound
-// must be positive and the per-file cap must fit inside the aggregate cap.
-// sanitized() silently clamps the same fields, so Check is what turns an
-// operator typo into a loud startup failure instead of a quiet revert to a
-// default they did not ask for.
+// must be positive — except MaxImageMegapixels, where 0 is the documented
+// "coordinator-side check off" value and only negatives are rejected — and the
+// per-file cap must fit inside the aggregate cap. sanitized() silently clamps
+// the same fields, so Check is what turns an operator typo into a loud startup
+// failure instead of a quiet revert to a default they did not ask for.
 func TestConfigCheck(t *testing.T) {
 	// mutate returns the production defaults with one field broken.
 	mutate := func(f func(*Config)) Config {
@@ -42,6 +43,12 @@ func TestConfigCheck(t *testing.T) {
 		{"zero TotalDeadline", mutate(func(c *Config) { c.TotalDeadline = 0 }), "TotalDeadline must be > 0"},
 		{"zero Concurrency", mutate(func(c *Config) { c.Concurrency = 0 }), "Concurrency must be > 0"},
 		{"zero GlobalConcurrency", mutate(func(c *Config) { c.GlobalConcurrency = 0 }), "GlobalConcurrency must be > 0"},
+		// A negative megapixel cap parses fine and sanitized() would silently
+		// restore the default, so Check must reject it — but 0 is the documented
+		// "coordinator-side pixel check off" value and must stay valid.
+		{"negative MaxImageMegapixels", mutate(func(c *Config) { c.MaxImageMegapixels = -1 }), "MaxImageMegapixels must be >= 0"},
+		{"negative MaxImageMegapixels names its env var", mutate(func(c *Config) { c.MaxImageMegapixels = -1 }), envMaxMegapixels},
+		{"zero MaxImageMegapixels is the off switch, not an error", mutate(func(c *Config) { c.MaxImageMegapixels = 0 }), ""},
 	}
 	for _, c := range cases {
 		err := c.cfg.Check()
@@ -110,7 +117,7 @@ func TestConfigFromEnvRejectsMalformedValues(t *testing.T) {
 		{"enabled typo", envEnabled, "flase"},
 		{"allow private ips typo", envAllowPrivateIP, "yes-please"},
 		{"nonstandard ports typo", envAllowOtherPorts, "1.0"},
-		{"max parts not a number", envMaxParts, "eight"},
+		{"global concurrency not a number", envGlobalConc, "eight"},
 		{"timeout not a number", envTimeoutMS, "fast"},
 		{"max file bytes not a number", envMaxFileBytes, "8MiB"},
 	} {

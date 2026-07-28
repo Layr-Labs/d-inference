@@ -56,11 +56,8 @@ const (
 	envEnabled         = env.EnvPrefix + "_MEDIA_FETCH_ENABLED"
 	envMaxFileBytes    = env.EnvPrefix + "_MEDIA_FETCH_MAX_FILE_BYTES"
 	envMaxTotalBytes   = env.EnvPrefix + "_MEDIA_FETCH_MAX_TOTAL_BYTES"
-	envMaxInlinedBytes = env.EnvPrefix + "_MEDIA_FETCH_MAX_INLINED_BYTES"
-	envMaxParts        = env.EnvPrefix + "_MEDIA_FETCH_MAX_PARTS"
 	envTimeoutMS       = env.EnvPrefix + "_MEDIA_FETCH_TIMEOUT_MS"
 	envTotalDeadline   = env.EnvPrefix + "_MEDIA_FETCH_TOTAL_DEADLINE_MS"
-	envConcurrency     = env.EnvPrefix + "_MEDIA_FETCH_CONCURRENCY"
 	envGlobalConc      = env.EnvPrefix + "_MEDIA_FETCH_GLOBAL_CONCURRENCY"
 	envMaxMegapixels   = env.EnvPrefix + "_MEDIA_FETCH_MAX_IMAGE_MEGAPIXELS"
 	envBlocklist       = env.EnvPrefix + "_MEDIA_FETCH_BLOCKLIST_DOMAINS"
@@ -68,25 +65,18 @@ const (
 	envAllowOtherPorts = env.EnvPrefix + "_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS"
 )
 
-// Defaults. The byte caps are reconciled against the COORDINATOR's own 16 MiB
-// forwarded-body cap (api.maxInferenceBodyBytes — the body the coordinator
-// re-marshals and seals), which is the binding constraint, not just the
-// provider's 32 MiB WebSocket frame. Raw media of M bytes inflates to ~1.37*M as
-// a base64 data: URI, so the aggregate raw cap must leave headroom under 16 MiB
-// for the inlined media PLUS the rest of the request (prompt text, JSON
-// structure, the coordinator-injected max_tokens). A 10 MiB aggregate raw cap
-// inlines to ~13.3 MiB, leaving ~2.7 MiB for everything else — so a valid
-// request is never fetched only to be rejected by the final 16 MiB body check.
+// Defaults. The byte caps are reconciled against the coordinator's own 16 MiB
+// forwarded-body cap (api.maxInferenceBodyBytes), which binds before the
+// provider's 32 MiB frame. Raw media inflates ~1.37x as base64, so a 10 MiB
+// aggregate raw cap inlines to ~13.3 MiB and leaves ~2.7 MiB for the rest of the
+// request — a valid request is never fetched only to be rejected afterwards.
 //
-// DefaultMaxInlinedBytes mirrors that same 16 MiB forwarded-body cap, but bounds
-// what the request COSTS once inlined rather than what is fetched: duplicate
-// parts pointing at one URL are fetched once and written back to EVERY location,
-// so N targets turn one in-budget fetch into N inlined copies. The raw caps
-// cannot see that multiplication; MaxInlinedBytes does.
+// MaxInlinedBytes bounds the same 16 MiB from the other side: duplicate parts
+// sharing one URL are fetched once but written back to EVERY location, and the
+// raw caps cannot see that multiplication.
 //
-// DefaultMaxImageMegapixels mirrors the provider's DARKBLOOM_MAX_IMAGE_MEGAPIXELS
-// default (100 MP, header-read before rasterization) so the coordinator rejects
-// pixel bombs before dispatch instead of shipping them across the fleet.
+// MaxImageMegapixels mirrors the provider's DARKBLOOM_MAX_IMAGE_MEGAPIXELS
+// (100 MP, header-read) so pixel bombs die here, not across the fleet.
 const (
 	DefaultMaxFileBytes       int64 = 8 << 20  // 8 MiB per fetched file
 	DefaultMaxTotalBytes      int64 = 10 << 20 // 10 MiB aggregate raw media/request (~13.3 MiB inlined)
@@ -113,8 +103,17 @@ type Config struct {
 	// data: URI has been written to every request location that references it
 	// (locations × data-URI size). Unlike MaxTotalBytes this counts duplicate
 	// targets, which multiply one fetch into many copies of the same base64 blob.
+	//
+	// Compile-time constant, deliberately not an env knob: it is protocol-derived,
+	// mirroring api.maxInferenceBodyBytes (the coordinator's own forwarded-body
+	// cap). Tuning it independently would only move where an oversized request
+	// fails, not whether it fails.
 	MaxInlinedBytes int64
 	// MaxParts caps the number of remote media URLs fetched per request.
+	//
+	// Compile-time constant, deliberately not an env knob: 8 is matched to the
+	// provider's videos-per-request cap, so changing one side just desyncs the
+	// coordinator from the provider that has to accept the result.
 	MaxParts int
 	// FetchTimeout bounds a single fetch (connect + read), independent of the
 	// request's TTFT deadline so a slow origin fails at the coordinator rather
@@ -123,6 +122,10 @@ type Config struct {
 	// TotalDeadline bounds the whole resolution step across all parts.
 	TotalDeadline time.Duration
 	// Concurrency is the per-request fetch worker-pool size.
+	//
+	// Compile-time constant, deliberately not an env knob: per-request fan-out is
+	// not a useful capacity lever (a request has at most MaxParts parts). The
+	// process-wide bound on outbound sockets is GlobalConcurrency, which is.
 	Concurrency int
 	// GlobalConcurrency caps in-flight fetches across ALL requests (one shared
 	// semaphore per Resolver) so a burst of media-heavy requests can't open an
@@ -209,7 +212,7 @@ func DefaultConfig() Config {
 // The result is deliberately NOT sanitized: it is the raw operator intent, so
 // AppConfig.Check can fail the boot on a bad value instead of silently serving a
 // default nobody asked for. Both failure shapes are covered — an out-of-range
-// value (MAX_PARTS=0) trips Check's bounds, and a value that is set but
+// value (MAX_TOTAL_BYTES=0) trips Check's bounds, and a value that is set but
 // unparseable (ENABLED=flase, TIMEOUT_MS=fast) is recorded in malformedEnv and
 // trips Check too, because a silently-ignored kill switch is exactly the failure
 // an operator cannot afford mid-incident. NewResolver clamps whatever reaches
@@ -219,11 +222,8 @@ func ConfigFromEnv() Config {
 	c.Enabled = c.envBool(envEnabled, c.Enabled)
 	c.MaxFileBytes = int64(c.envInt(envMaxFileBytes, int(c.MaxFileBytes)))
 	c.MaxTotalBytes = int64(c.envInt(envMaxTotalBytes, int(c.MaxTotalBytes)))
-	c.MaxInlinedBytes = int64(c.envInt(envMaxInlinedBytes, int(c.MaxInlinedBytes)))
-	c.MaxParts = c.envInt(envMaxParts, c.MaxParts)
 	c.FetchTimeout = time.Duration(c.envInt(envTimeoutMS, int(c.FetchTimeout/time.Millisecond))) * time.Millisecond
 	c.TotalDeadline = time.Duration(c.envInt(envTotalDeadline, int(c.TotalDeadline/time.Millisecond))) * time.Millisecond
-	c.Concurrency = c.envInt(envConcurrency, c.Concurrency)
 	c.GlobalConcurrency = c.envInt(envGlobalConc, c.GlobalConcurrency)
 	c.MaxImageMegapixels = c.envInt(envMaxMegapixels, c.MaxImageMegapixels)
 	c.BlocklistDomains = parseBlocklist(env.EnvOr(envBlocklist, ""))
@@ -308,33 +308,43 @@ func (c Config) Check() error {
 	if len(c.malformedEnv) > 0 {
 		return fmt.Errorf("mediafetch: unparseable value(s) for %s", strings.Join(c.malformedEnv, ", "))
 	}
-	if c.MaxFileBytes <= 0 {
-		return fmt.Errorf("mediafetch: MaxFileBytes must be > 0 (%s), got %d", envMaxFileBytes, c.MaxFileBytes)
+	// One row per numeric bound, so a new field is a new line rather than a new
+	// branch. env is empty for the fields that are compile-time constants with no
+	// operator-facing variable; those print without a dangling parenthetical.
+	for _, rule := range []struct {
+		field string
+		env   string
+		bound string
+		ok    bool
+		got   any
+	}{
+		{"MaxFileBytes", envMaxFileBytes, "> 0", c.MaxFileBytes > 0, c.MaxFileBytes},
+		{"MaxTotalBytes", envMaxTotalBytes, "> 0", c.MaxTotalBytes > 0, c.MaxTotalBytes},
+		{"MaxInlinedBytes", "", "> 0", c.MaxInlinedBytes > 0, c.MaxInlinedBytes},
+		{"MaxParts", "", "> 0", c.MaxParts > 0, c.MaxParts},
+		{"FetchTimeout", envTimeoutMS, "> 0", c.FetchTimeout > 0, c.FetchTimeout},
+		{"TotalDeadline", envTotalDeadline, "> 0", c.TotalDeadline > 0, c.TotalDeadline},
+		{"Concurrency", "", "> 0", c.Concurrency > 0, c.Concurrency},
+		{"GlobalConcurrency", envGlobalConc, "> 0", c.GlobalConcurrency > 0, c.GlobalConcurrency},
+		// >= 0, not > 0: 0 is the documented "coordinator-side pixel check off"
+		// value (the provider's own pre-raster cap still applies). A negative,
+		// though, parses fine and would be silently reverted to the default by
+		// sanitized() — exactly the quiet substitution Check exists to catch.
+		{"MaxImageMegapixels", envMaxMegapixels, ">= 0", c.MaxImageMegapixels >= 0, c.MaxImageMegapixels},
+	} {
+		if rule.ok {
+			continue
+		}
+		if rule.env == "" {
+			return fmt.Errorf("mediafetch: %s must be %s, got %v", rule.field, rule.bound, rule.got)
+		}
+		return fmt.Errorf("mediafetch: %s must be %s (%s), got %v", rule.field, rule.bound, rule.env, rule.got)
 	}
-	if c.MaxTotalBytes <= 0 {
-		return fmt.Errorf("mediafetch: MaxTotalBytes must be > 0 (%s), got %d", envMaxTotalBytes, c.MaxTotalBytes)
-	}
+	// Not a per-field bound: the two caps are individually fine and only their
+	// ordering is wrong.
 	if c.MaxFileBytes > c.MaxTotalBytes {
 		return fmt.Errorf("mediafetch: MaxFileBytes (%d) must be <= MaxTotalBytes (%d); the aggregate per-request budget is authoritative",
 			c.MaxFileBytes, c.MaxTotalBytes)
-	}
-	if c.MaxInlinedBytes <= 0 {
-		return fmt.Errorf("mediafetch: MaxInlinedBytes must be > 0 (%s), got %d", envMaxInlinedBytes, c.MaxInlinedBytes)
-	}
-	if c.MaxParts <= 0 {
-		return fmt.Errorf("mediafetch: MaxParts must be > 0 (%s), got %d", envMaxParts, c.MaxParts)
-	}
-	if c.FetchTimeout <= 0 {
-		return fmt.Errorf("mediafetch: FetchTimeout must be > 0 (%s), got %s", envTimeoutMS, c.FetchTimeout)
-	}
-	if c.TotalDeadline <= 0 {
-		return fmt.Errorf("mediafetch: TotalDeadline must be > 0 (%s), got %s", envTotalDeadline, c.TotalDeadline)
-	}
-	if c.Concurrency <= 0 {
-		return fmt.Errorf("mediafetch: Concurrency must be > 0 (%s), got %d", envConcurrency, c.Concurrency)
-	}
-	if c.GlobalConcurrency <= 0 {
-		return fmt.Errorf("mediafetch: GlobalConcurrency must be > 0 (%s), got %d", envGlobalConc, c.GlobalConcurrency)
 	}
 	return nil
 }

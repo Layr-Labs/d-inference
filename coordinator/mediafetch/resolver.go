@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -204,14 +203,13 @@ func projectedInlinedBytes(fetches []mediaFetch, dataURIs []string) int64 {
 
 func groupMediaRefs(refs []mediaRef) ([]mediaFetch, error) {
 	fetches := make([]mediaFetch, 0, len(refs))
-	byURL := make(map[string]int, len(refs))
+	byKey := make(map[string]int, len(refs))
 	for _, ref := range refs {
-		canonical, err := canonicalMediaURL(ref.url)
+		key, err := mediaFetchKey(ref.url)
 		if err != nil {
 			return nil, err
 		}
-		ref.url = canonical
-		if i, exists := byURL[ref.url]; exists {
+		if i, exists := byKey[key]; exists {
 			if fetches[i].request.kind != ref.kind {
 				return nil, &Error{Status: http.StatusBadRequest, Code: "media_kind_mismatch",
 					Public:   "the same remote media URL cannot be used as both image_url and video_url",
@@ -220,42 +218,30 @@ func groupMediaRefs(refs []mediaRef) ([]mediaFetch, error) {
 			fetches[i].targets = append(fetches[i].targets, ref)
 			continue
 		}
-		byURL[ref.url] = len(fetches)
+		byKey[key] = len(fetches)
 		fetches = append(fetches, mediaFetch{request: ref, targets: []mediaRef{ref}})
 	}
 	return fetches, nil
 }
 
-// canonicalMediaURL normalizes components that do not change the on-the-wire
-// request target, so each target is fetched and kind-checked once: fragments are
-// never sent by HTTP, scheme/host are case-insensitive, and explicit default
-// ports are equivalent to omission. Path escaping and query order are preserved
-// because origins can assign them application-specific semantics.
-func canonicalMediaURL(raw string) (string, error) {
+// mediaFetchKey returns the deduplication key for a media URL: two request
+// locations share one fetch only when their keys match. It is ONLY a key — the
+// URL requested is always the string the consumer sent, byte for byte.
+//
+// Normalized: the fragment (never put on the wire) and scheme/host case (both
+// case-insensitive per RFC 3986, IPv6 hex included). Nothing else — in
+// particular an explicit :80/:443 stays, because a presigned signature can cover
+// the exact host:port and rewriting it turns a valid link into an upstream auth
+// error. Cost: `https://h/a` and `https://h:443/a` are fetched twice; both still
+// count against every byte cap, so nothing is bypassed.
+func mediaFetchKey(raw string) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil {
 		return "", &Error{Status: http.StatusBadRequest, Code: "invalid_media_url",
 			Public: "a media URL could not be parsed", Internal: "URL parse failed"}
 	}
 	u.Scheme = strings.ToLower(u.Scheme)
-	hostname := u.Hostname()
-	if !strings.Contains(hostname, ":") {
-		hostname = strings.ToLower(hostname)
-	}
-	port := u.Port()
-	if (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
-		port = ""
-	}
-	switch {
-	case hostname == "":
-		u.Host = ""
-	case port != "":
-		u.Host = net.JoinHostPort(hostname, port)
-	case strings.Contains(hostname, ":"):
-		u.Host = "[" + hostname + "]"
-	default:
-		u.Host = hostname
-	}
+	u.Host = strings.ToLower(u.Host) // host, port digits and bracketed IPv6 hex
 	u.Fragment = ""
 	return u.String(), nil
 }

@@ -308,17 +308,57 @@ func TestResolveSameURLWithConflictingKindsRejectsBeforeFetch(t *testing.T) {
 	}
 }
 
-func TestGroupMediaRefsCanonicalizesEquivalentTargets(t *testing.T) {
-	refs := []mediaRef{
-		{url: "HTTPS://Example.COM:443/a.png#one", kind: kindImage},
+// TestGroupMediaRefsDedupKey pins what the dedup key does and — more importantly
+// — what it must NOT do. The key normalizes only what can never change the
+// on-the-wire target (scheme/host case, fragment). It must never rewrite the URL
+// that is actually fetched: an explicitly written :80/:443 stays, because a
+// presigned S3/R2/GCS signature can cover the exact host:port and stripping it
+// turns a valid link into an upstream auth error.
+func TestGroupMediaRefsDedupKey(t *testing.T) {
+	// Case and fragment differ only off the wire → one fetch, two targets, and
+	// the URL requested is the first ORIGINAL string, not a normalized rewrite.
+	original := "HTTPS://Example.COM/a.png#one"
+	fetches, err := groupMediaRefs([]mediaRef{
+		{url: original, kind: kindImage},
 		{url: "https://example.com/a.png#two", kind: kindImage},
-	}
-	fetches, err := groupMediaRefs(refs)
+	})
 	if err != nil {
 		t.Fatalf("groupMediaRefs: %v", err)
 	}
-	if len(fetches) != 1 || fetches[0].request.url != "https://example.com/a.png" || len(fetches[0].targets) != 2 {
-		t.Fatalf("canonical groups = %+v, want one https://example.com/a.png group with two targets", fetches)
+	if len(fetches) != 1 || len(fetches[0].targets) != 2 {
+		t.Fatalf("case/fragment variants = %+v, want one group with two targets", fetches)
+	}
+	if fetches[0].request.url != original {
+		t.Errorf("fetched URL = %q, want the consumer's original %q — the key must not rewrite it",
+			fetches[0].request.url, original)
+	}
+
+	// An explicit default port is NOT folded away: two fetches, each requesting
+	// exactly what the consumer wrote.
+	fetches, err = groupMediaRefs([]mediaRef{
+		{url: "https://example.com:443/a.png", kind: kindImage},
+		{url: "https://example.com/a.png", kind: kindImage},
+	})
+	if err != nil {
+		t.Fatalf("groupMediaRefs: %v", err)
+	}
+	if len(fetches) != 2 {
+		t.Fatalf("explicit :443 grouped with the portless form (%+v); a signed host:port must be preserved", fetches)
+	}
+	if fetches[0].request.url != "https://example.com:443/a.png" {
+		t.Errorf("fetched URL = %q, want the explicit port preserved", fetches[0].request.url)
+	}
+
+	// IPv6 hex digits are case-insensitive, so they share one fetch.
+	fetches, err = groupMediaRefs([]mediaRef{
+		{url: "https://[2001:DB8::1]/a.png", kind: kindImage},
+		{url: "https://[2001:db8::1]/a.png", kind: kindImage},
+	})
+	if err != nil {
+		t.Fatalf("groupMediaRefs: %v", err)
+	}
+	if len(fetches) != 1 || len(fetches[0].targets) != 2 {
+		t.Fatalf("IPv6 case variants = %+v, want one group with two targets", fetches)
 	}
 
 	// Query strings are application-semantic and must remain distinct.
@@ -630,13 +670,6 @@ func TestConfigFromEnvNonStandardPortOverride(t *testing.T) {
 	t.Setenv(envAllowOtherPorts, "true")
 	if !ConfigFromEnv().AllowNonStandardPorts {
 		t.Error("explicit non-standard-port dev/test override was not read")
-	}
-}
-
-func TestConfigFromEnvMaxInlinedBytes(t *testing.T) {
-	t.Setenv(envMaxInlinedBytes, "1048576")
-	if got := ConfigFromEnv().MaxInlinedBytes; got != 1<<20 {
-		t.Errorf("MaxInlinedBytes = %d, want the env override 1048576", got)
 	}
 }
 

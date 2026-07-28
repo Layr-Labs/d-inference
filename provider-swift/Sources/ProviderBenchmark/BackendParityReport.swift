@@ -839,7 +839,35 @@ public enum BackendParityCriteria {
             candidate.label: tokenSummary(candidate.rows),
         ]
 
-        if let mismatch = rowMismatch(baseline: baseline.rows, candidate: candidate.rows) {
+        // Per-row evidence. The zero-evidence guard above only catches ALL
+        // rows empty; a row that generated zero tokens on BOTH arms is still
+        // a non-observation — two matching `submit_error` shapes agree about
+        // nothing — so it is excluded from the agreement computation and
+        // disclosed. Below the floor the criterion refuses outright.
+        var scoredBaseline = baseline.rows
+        var scoredCandidate = candidate.rows
+        var exclusionNote: String?
+        if let evidence = pairedRowEvidence(
+            baseline: baseline.rows, candidate: candidate.rows),
+            !evidence.nonObservations.isEmpty
+        {
+            measurements["excludedRows"] = evidence.exclusionNote
+            if let floor = evidence.floorBlocker {
+                return .init(
+                    id: id, title: title, verdict: .unavailable,
+                    detail: "MOST OF THIS RUN FAILED — this is NOT agreement between "
+                        + "the backends. \(floor). Rows that fail identically on both "
+                        + "arms are non-observations, not matches, and a verdict scored "
+                        + "on the surviving minority would owe more to which prompts "
+                        + "survived than to the backends",
+                    measurements: measurements)
+            }
+            scoredBaseline = evidence.baselineEvidence
+            scoredCandidate = evidence.candidateEvidence
+            exclusionNote = evidence.exclusionNote
+        }
+
+        if let mismatch = rowMismatch(baseline: scoredBaseline, candidate: scoredCandidate) {
             measurements["firstFlip"] = mismatch
             if let control {
                 measurements["control"] = control.tokenExact.map {
@@ -859,7 +887,7 @@ public enum BackendParityCriteria {
                 + "first flip the two arms decode different contexts so later positions "
                 + "compare unrelated conversations"
             if let first = firstDivergingRow(
-                baseline: baseline.rows, candidate: candidate.rows),
+                baseline: scoredBaseline, candidate: scoredCandidate),
                 let probe = argmaxResolvable(row: first.row, index: first.index)
             {
                 measurements["argmaxMargin"] = String(format: "%.3e", probe.margin)
@@ -871,12 +899,13 @@ public enum BackendParityCriteria {
                     + (probe.resolvable ? "resolvable" : "NOT resolvable")
                     + " at that precision"
             }
+            if let exclusionNote { detail += ". \(exclusionNote)" }
             return .init(
                 id: id, title: title, verdict: .unavailable, detail: detail,
                 measurements: measurements)
         }
 
-        let total = baseline.rows.reduce(0) { $0 + $1.tokens.count }
+        let total = scoredBaseline.reduce(0) { $0 + $1.tokens.count }
         // The SHORTEST row, not only the total. A run whose prompts each emit
         // one token before `stop` clears the zero-evidence guard above and
         // reports agreement over three tokens — true, and far thinner than
@@ -885,12 +914,13 @@ public enum BackendParityCriteria {
         // which would refuse genuine passes on short-answer prompts. Measured
         // on gemma-4-e2b-it-4bit, where raw un-templated parity prompts do
         // exactly this.
-        let shortest = baseline.rows.map(\.tokens.count).min() ?? 0
+        let shortest = scoredBaseline.map(\.tokens.count).min() ?? 0
         return .init(
             id: id, title: title, verdict: .pass,
-            detail: "\(baseline.rows.count) prompts, \(total) generated token ids identical "
+            detail: "\(scoredBaseline.count) prompts, \(total) generated token ids identical "
                 + "between \(baseline.label) and \(candidate.label), finish reasons equal "
-                + "(shortest row \(shortest) token\(shortest == 1 ? "" : "s"))",
+                + "(shortest row \(shortest) token\(shortest == 1 ? "" : "s"))"
+                + (exclusionNote.map { ". \($0)" } ?? ""),
             measurements: measurements)
     }
 
@@ -1518,6 +1548,80 @@ public enum BackendParityCriteria {
             + (reasons.isEmpty
                 ? "no finish reason recorded"
                 : "finish=\(reasons.joined(separator: "/"))")
+    }
+
+    /// The per-row evidence behind a paired comparison.
+    ///
+    /// `zeroEvidenceBlocker` refuses the all-rows-empty case, but a run in
+    /// which ONE prompt decoded while the rest failed identically on both
+    /// arms sails past it — and `rowMismatch` then reads each matching
+    /// `submit_error`/`unterminated` pair as a row that AGREED. A row with
+    /// zero tokens on both arms is not a match; it is a non-observation, and
+    /// counting it toward parity lets a partially-failed release-gate run
+    /// report agreement it never measured.
+    struct PairedRowEvidence {
+        /// Row pairs where at least one arm generated a token — the actual
+        /// observations. (One-sided emptiness stays IN: an arm that decoded
+        /// nothing while the other decoded something is a real asymmetry,
+        /// and `rowMismatch` reports it as the divergence it is.)
+        let baselineEvidence: [BackendParityObservation.Row]
+        let candidateEvidence: [BackendParityObservation.Row]
+        /// One rendered line per row where NEITHER arm generated a token,
+        /// naming the failure shape(s) the rows carried.
+        let nonObservations: [String]
+        let totalRows: Int
+
+        /// Non-nil when fewer than half the rows are observations: whatever
+        /// the surviving rows say, most of the run failed, and a criterion
+        /// scored on the remainder would owe its verdict to which prompts
+        /// happened to survive.
+        var floorBlocker: String? {
+            let observed = baselineEvidence.count
+            guard observed * 2 < totalRows else { return nil }
+            return "only \(observed) of \(totalRows) row(s) produced tokens on either "
+                + "arm — the criterion is below its minimum-evidence floor (half the "
+                + "rows) and is not scored. Failed rows: "
+                + nonObservations.joined(separator: "; ")
+        }
+
+        /// Non-nil disclosure when scoring proceeds but rows were excluded.
+        var exclusionNote: String? {
+            guard !nonObservations.isEmpty else { return nil }
+            return "\(nonObservations.count) of \(totalRows) row(s) EXCLUDED as "
+                + "non-observations (zero tokens on both arms): "
+                + nonObservations.joined(separator: "; ")
+        }
+    }
+
+    /// Partition paired rows into observations and non-observations, or nil
+    /// when the rows cannot be paired at all (count or prompt-order
+    /// mismatch) — `rowMismatch` owns reporting those.
+    static func pairedRowEvidence(
+        baseline: [BackendParityObservation.Row],
+        candidate: [BackendParityObservation.Row]
+    ) -> PairedRowEvidence? {
+        guard baseline.count == candidate.count else { return nil }
+        var baseEvidence: [BackendParityObservation.Row] = []
+        var candEvidence: [BackendParityObservation.Row] = []
+        var nonObservations: [String] = []
+        for (base, cand) in zip(baseline, candidate) {
+            guard base.prompt == cand.prompt else { return nil }
+            if base.tokens.isEmpty, cand.tokens.isEmpty {
+                let shapes =
+                    base.finishReason == cand.finishReason
+                    ? (base.finishReason.isEmpty ? "no finish reason" : base.finishReason)
+                    : "\(base.finishReason) vs \(cand.finishReason)"
+                nonObservations.append("prompt '\(base.prompt)': \(shapes)")
+            } else {
+                baseEvidence.append(base)
+                candEvidence.append(cand)
+            }
+        }
+        return PairedRowEvidence(
+            baselineEvidence: baseEvidence,
+            candidateEvidence: candEvidence,
+            nonObservations: nonObservations,
+            totalRows: baseline.count)
     }
 
     /// The blocking reason when a PAIR of token streams cannot be compared at

@@ -778,6 +778,105 @@ struct BackendParityReportTests {
         #expect(!asked.contains("NOT SUPPLIED"))
     }
 
+    // MARK: - Per-row evidence floor
+
+    @Test("one productive row out of three is below the evidence floor, not a PASS")
+    func partiallyFailedRunIsBelowTheEvidenceFloor() {
+        // The exact shape the review names: one prompt decoded, the other two
+        // failed IDENTICALLY on both arms. The matching submit_error rows
+        // used to count as row matches, so the criterion passed on almost
+        // zero evidence.
+        let failure = "submit_error: capacity refused the request"
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [], finish: failure),
+                    row("c", [], finish: failure),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .pass)
+        // The refusal names the count and the per-row failure shapes.
+        #expect(result.detail.contains("only 1 of 3"))
+        #expect(result.detail.contains(failure))
+        #expect(result.detail.contains("prompt 'b'"))
+        #expect(result.detail.contains("prompt 'c'"))
+        #expect(result.detail.contains("NOT agreement"))
+    }
+
+    @Test("a minority failed row is excluded and disclosed, not counted as a match")
+    func minorityFailureIsDisclosedButScored() {
+        let failure = "unterminated: stream ended without a finish reason"
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: failure),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        // Majority-productive: still evaluable...
+        #expect(result.verdict == .pass)
+        // ...but scored over the OBSERVED rows only, with the exclusion named.
+        #expect(result.detail.contains("2 prompts, 5 generated token ids identical"))
+        #expect(result.detail.contains("1 of 3 row(s) EXCLUDED as non-observations"))
+        #expect(result.detail.contains(failure))
+        #expect(result.measurements["excludedRows"]?.contains("prompt 'c'") == true)
+    }
+
+    @Test("a both-empty row with MISMATCHED failure shapes is excluded, not a first flip")
+    func mismatchedFailureShapesAreNonObservationsNotDivergence() {
+        // Both arms generated nothing on prompt 'c' but failed differently.
+        // That row carries no token evidence in either direction — it must
+        // be excluded with both shapes named, never booked as a divergence.
+        func arm(_ selection: String, cFinish: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: cFinish),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous", cFinish: "submit_error: refused"),
+            candidate: arm("paged", cFinish: "unterminated"))
+        #expect(result.verdict == .pass)
+        #expect(result.detail.contains("submit_error: refused vs unterminated"))
+        #expect(result.measurements["firstFlip"] == nil)
+    }
+
+    @Test("a divergence among the observed rows still reports, with the exclusion noted")
+    func divergenceAmongObservedRowsCarriesTheExclusionNote() {
+        let failure = "submit_error: capacity refused the request"
+        func arm(_ selection: String, bTokens: [Int]) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", bTokens),
+                    row("c", [], finish: failure),
+                    row("d", [], finish: failure),
+                ])
+        }
+        // 2 of 4 rows observed: exactly half, so the floor does not fire —
+        // and one of the observed rows diverges.
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous", bTokens: [4, 5]),
+            candidate: arm("paged", bTokens: [4, 99]))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("prompt 'b' token 1"))
+        #expect(result.detail.contains("2 of 4 row(s) EXCLUDED"))
+        #expect(result.measurements["firstFlip"]?.contains("prompt 'b'") == true)
+    }
+
     @Test("token exactness NEVER fails: a divergence is UNAVAILABLE with the first flip")
     func tokenExactnessIsPassOnly() {
         // The incumbent fails free-running token exactness too — contiguous

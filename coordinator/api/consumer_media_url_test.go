@@ -1,6 +1,12 @@
 package api
 
-import "testing"
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 // C4: media parts carrying a remote/non-data: URL must be detected so the
 // coordinator can reject them pre-dispatch (the provider VLM path is data:-only).
@@ -64,20 +70,61 @@ func TestValidateMediaParts_RejectsRemote(t *testing.T) {
 	}
 }
 
-func TestVisionRejectRemoteEnabled_KillSwitch(t *testing.T) {
-	if !visionRejectRemoteEnabled() {
-		t.Error("default (unset) must be ON")
+// TestRejectRemoteMediaURLsIsUnconditional pins the gate as unconditional on
+// every surface. The generic (completions + Anthropic) surface never fetches,
+// so forwarding a remote URL there can only end in a provider-side 400 — the
+// retired DARKBLOOM_VISION_REJECT_REMOTE_URLS switch must never re-enable it.
+func TestRejectRemoteMediaURLsIsUnconditional(t *testing.T) {
+	s := &Server{logger: quietLogger()}
+	remotePart := map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/x.png"}}
+	remote := map[string]any{"messages": []any{msg([]any{remotePart})}}
+
+	// The retired flag is read nowhere: no value of it may disable the gate.
+	for _, flag := range []string{"", "false", "0", "true"} {
+		t.Setenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS", flag)
+		w := httptest.NewRecorder()
+		if !s.rejectRemoteMediaURLs(w, plainReq(), remote, "test", "test", true, false) {
+			t.Fatalf("flag=%q: a remote media URL must always be rejected pre-dispatch", flag)
+		}
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("flag=%q: status = %d, want 400", flag, w.Code)
+		}
 	}
-	t.Setenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS", "false")
-	if visionRejectRemoteEnabled() {
-		t.Error("=false must disable")
+
+	// Unconditional on the flag, still conditional on the request: non-vision
+	// bodies and inline data: URIs pass untouched.
+	if s.rejectRemoteMediaURLs(httptest.NewRecorder(), plainReq(), remote, "test", "test", false, false) {
+		t.Error("non-vision requests must never be gated")
 	}
-	t.Setenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS", "0")
-	if visionRejectRemoteEnabled() {
-		t.Error("=0 must disable")
+	inline := map[string]any{"messages": []any{msg([]any{
+		map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,AAAA"}},
+	})}}
+	if s.rejectRemoteMediaURLs(httptest.NewRecorder(), plainReq(), inline, "test", "test", true, false) {
+		t.Error("inline data: URI must pass")
 	}
-	t.Setenv("DARKBLOOM_VISION_REJECT_REMOTE_URLS", "true")
-	if !visionRejectRemoteEnabled() {
-		t.Error("=true must enable")
+}
+
+func TestTruncateMediaRef(t *testing.T) {
+	// "é" is 2 bytes; placed at offset 199 it straddles the 200-byte cut, so a
+	// naive ref[:200] ends on a partial rune that encoding/json renders U+FFFD.
+	straddling := strings.Repeat("a", 199) + "é" + strings.Repeat("b", 50)
+	cases := []struct {
+		name string
+		ref  string
+		want string
+	}{
+		{"short ref verbatim", "https://example.com/a.png", "https://example.com/a.png"},
+		{"exactly at the cap verbatim", strings.Repeat("a", 200), strings.Repeat("a", 200)},
+		{"ascii over the cap", strings.Repeat("a", 201), strings.Repeat("a", 200) + "…"},
+		{"multibyte rune straddling the cut is dropped", straddling, strings.Repeat("a", 199) + "…"},
+	}
+	for _, c := range cases {
+		got := truncateMediaRef(c.ref)
+		if got != c.want {
+			t.Errorf("%s: truncateMediaRef() = %q, want %q", c.name, got, c.want)
+		}
+		if !utf8.ValidString(got) {
+			t.Errorf("%s: truncateMediaRef() emitted invalid UTF-8: %q", c.name, got)
+		}
 	}
 }

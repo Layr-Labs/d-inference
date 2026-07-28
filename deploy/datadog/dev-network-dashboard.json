@@ -695,6 +695,66 @@
                 }
               ]
             }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Remote Media Refusals & Fetches",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "rejected",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.media_fetch.rejected{$env} by {code}.as_count()"
+                    },
+                    {
+                      "name": "pre_fetch_rejected",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.media_remote_url_rejected{$env}.as_count()"
+                    },
+                    {
+                      "name": "ok",
+                      "data_source": "metrics",
+                      "query": "sum:d_inference.inference.media_fetch.ok{$env}.as_count()"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "rejected", "alias": "rejected by code" },
+                    { "formula": "pre_fetch_rejected", "alias": "refused before fetch (sealed / unfetchable shape / disabled)" },
+                    { "formula": "ok", "alias": "fetched ok" }
+                  ],
+                  "display_type": "bars",
+                  "style": { "palette": "warm" }
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Remote Media Fetch Duration (p95) [ms]",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "response_format": "timeseries",
+                  "queries": [
+                    {
+                      "name": "p95",
+                      "data_source": "metrics",
+                      "query": "avg:d_inference.inference.media_fetch.duration_ms.95percentile{$env,model:$model} by {model}"
+                    }
+                  ],
+                  "formulas": [
+                    { "formula": "p95" }
+                  ]
+                }
+              ]
+            }
           }
         ]
       }

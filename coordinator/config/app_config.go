@@ -18,6 +18,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/env"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 	"github.com/eigeninference/d-inference/coordinator/ratelimit"
 	"github.com/eigeninference/d-inference/coordinator/registry"
@@ -42,6 +43,7 @@ type AppConfig struct {
 	RegistryCfg     registry.Config
 	MDMConfig       mdm.Config
 	DatadogConfig   datadog.Config
+	MediaFetchCfg   mediafetch.Config
 	PromptSidecar   promptcontract.SupervisorConfig
 	AdminKey        string
 	AdminEmails     []string
@@ -74,6 +76,9 @@ func (c AppConfig) Check() error {
 	if err := c.DatadogConfig.Check(); err != nil {
 		return fmt.Errorf("datadog: %w", err)
 	}
+	if err := c.MediaFetchCfg.Check(); err != nil {
+		return fmt.Errorf("media_fetch: %w", err)
+	}
 	if err := c.PromptSidecar.Check(); err != nil {
 		return fmt.Errorf("prompt_sidecar: %w", err)
 	}
@@ -97,6 +102,7 @@ func ReadAppConfig() AppConfig {
 		RegistryCfg:     registry.ReadConfig(),
 		MDMConfig:       mdm.ReadConfig(),
 		DatadogConfig:   datadog.ConfigFromEnv(),
+		MediaFetchCfg:   mediafetch.ConfigFromEnv(),
 		PromptSidecar:   promptcontract.ReadSupervisorConfig(),
 		AdminKey:        env.EnvOr(EnvPrefix+"_ADMIN_KEY", ""),
 		AdminEmails:     api.ParseCommaList(env.EnvOr(EnvPrefix+"_ADMIN_EMAILS", "")),

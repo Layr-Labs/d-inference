@@ -207,7 +207,7 @@ All already in `inference_routes`. These are the **inputs** the cost used.
 ### 4.6 Gaps to ADD to `inference_routes` (Phase 1)
 | **New field** | Why it matters |
 |-----------|----------------|
-| **`parse_ms`, `reserve_ms`, `route_ms`, `encrypt_ms`, `queue_wait_ms`, `dispatch_ms`** | The `X-Timing` decomposition is computed per request and returned in a header but **thrown away**. This is our coordinator-side overhead budget — needed to separate "our latency" from "provider latency". Cheap: already on `pr.Timing`. |
+| **`parse_ms`, `reserve_ms`, `media_fetch_ms`, `route_ms`, `encrypt_ms`, `queue_wait_ms`, `dispatch_ms`** | The `X-Timing` decomposition is computed per request and returned in a header but **thrown away**. `media_fetch_us` is emitted only when the request actually carried remote media that was fetched and inlined; `route_us` is anchored at the end of that fetch (not at reservation), so a multi-second origin download is never mis-attributed to routing latency. This is our coordinator-side overhead budget — needed to separate "our latency" from "provider latency". Cheap: already on `pr.Timing`. |
 | **`actual_queue_wait_ms`** | We store the queue *penalty estimate* (`queue_ms`) but not the *measured* wait (`EnqueuedAt → dispatch`). Without it we cannot validate the queue penalty. |
 | **`actual_decode_tps`** | Measured decode TPS for the completed request (`completion_tokens / decode_time`). The single most important calibration signal vs `effective_tps`. |
 | **`used_backup`, `backup_won`** | Speculative/backup-race dispatch happens (`raceBackupErrWaitPrimary`) but its win/loss is invisible. Tells us if speculation helps. |

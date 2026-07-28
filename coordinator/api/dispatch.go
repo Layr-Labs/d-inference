@@ -483,7 +483,15 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 	}
 	out.ParseMs = timingMsBetween(t.ReceivedAt, t.ParsedAt)
 	out.ReserveMs = timingMsBetween(t.ParsedAt, t.ReservedAt)
-	out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
+	// Remote-media fetch (when it happened) sits between ReservedAt and
+	// RoutedAt; anchor the route segment past it so a multi-second download
+	// doesn't masquerade as routing latency. The fetch duration itself is
+	// reported via the X-Timing header and DD histogram (no outcome column).
+	routeAnchor := t.ReservedAt
+	if !t.MediaFetchedAt.IsZero() {
+		routeAnchor = t.MediaFetchedAt
+	}
+	out.RouteMs = timingMsBetween(routeAnchor, t.RoutedAt)
 	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
 	out.QueueWaitMs = timingMsBetween(t.QueuedAt, t.DispatchedAt)
 	out.DispatchMs = timingMsBetween(t.DispatchedAt, firstChunk)
@@ -2920,13 +2928,17 @@ func (d *dispatchState) writeCommittedResponse() {
 	// Latency decomposition header for observability.
 	if timing := pr.Timing; timing != nil {
 		type timingJSON struct {
-			ParseUs    int64 `json:"parse_us"`
-			ReserveUs  int64 `json:"reserve_us"`
-			RouteUs    int64 `json:"route_us"`
-			QueueUs    int64 `json:"queue_us"`
-			EncryptUs  int64 `json:"encrypt_us"`
-			DispatchUs int64 `json:"dispatch_us"`
-			ProviderUs int64 `json:"provider_us"`
+			ParseUs   int64 `json:"parse_us"`
+			ReserveUs int64 `json:"reserve_us"`
+			// MediaFetchUs covers the post-reservation remote media download +
+			// inline step (media_resolve.go); omitted for the (typical) request
+			// that fetched nothing.
+			MediaFetchUs int64 `json:"media_fetch_us,omitempty"`
+			RouteUs      int64 `json:"route_us"`
+			QueueUs      int64 `json:"queue_us"`
+			EncryptUs    int64 `json:"encrypt_us"`
+			DispatchUs   int64 `json:"dispatch_us"`
+			ProviderUs   int64 `json:"provider_us"`
 		}
 		tj := timingJSON{}
 		if !timing.ParsedAt.IsZero() {
@@ -2935,8 +2947,15 @@ func (d *dispatchState) writeCommittedResponse() {
 		if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
 			tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()
 		}
-		if !timing.RoutedAt.IsZero() && !timing.ReservedAt.IsZero() {
-			tj.RouteUs = timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+		// Media fetch (when present) sits between reserve and route; anchor the
+		// route segment past it so a download never inflates route_us.
+		routeAnchor := timing.ReservedAt
+		if !timing.MediaFetchedAt.IsZero() && !timing.ReservedAt.IsZero() {
+			tj.MediaFetchUs = timing.MediaFetchedAt.Sub(timing.ReservedAt).Microseconds()
+			routeAnchor = timing.MediaFetchedAt
+		}
+		if !timing.RoutedAt.IsZero() && !routeAnchor.IsZero() {
+			tj.RouteUs = timing.RoutedAt.Sub(routeAnchor).Microseconds()
 		}
 		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {
 			tj.QueueUs = timing.DispatchedAt.Sub(timing.QueuedAt).Microseconds()

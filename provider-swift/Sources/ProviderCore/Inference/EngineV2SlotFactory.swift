@@ -421,15 +421,12 @@ enum EngineV2SlotFactory {
 
         let processKVBytesPerToken: Int
         if let preparedBackend {
-            let capability = CBv2PrefixReuseCapability.derive(
+            processKVBytesPerToken = slotKVBytesPerToken(
+                resolvedKind: preparedBackend.kind,
+                pagedPoolDType: preparedBackend.pagedPoolDType,
                 layerKinds: preparedBackend.layerKinds,
-                backend: .contiguousUnquantized)
-            processKVBytesPerToken = EngineV2Factory.nativeKVBytesPerToken(
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
-                fp16FullKVBytesPerToken: capability.fullKVBytesPerToken,
-                fullRowsUseFP32:
-                    preparedBackend.kind == .contiguous
-                    && servingModel is GPTOSSModel)
+                servingModelIsGPTOSS: servingModel is GPTOSSModel)
         } else {
             processKVBytesPerToken = sizing.fp16KVBytesPerToken
         }
@@ -476,6 +473,47 @@ enum EngineV2SlotFactory {
             assistantBytes: mtpStatus.assistantBytes,
             mtpArtifact: prepared.mtpArtifact,
             mtpStatus: mtpStatus)
+    }
+
+    /// Per-token KV rate the bridge reserves at and the heartbeat divides
+    /// by (`kv_bytes_per_token` / `activeTokenBudgetMax` in
+    /// `EngineV2Bridge+Capacity`), derived from the backend the slot was
+    /// ACTUALLY built with:
+    ///
+    ///   * contiguous + GPT-OSS ⇒ the native-width rate (fp32 owning
+    ///     full-attention rows on top of the fp16 sizing snapshot),
+    ///   * paged with fp32 pages (`DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32`)
+    ///     ⇒ a flat 2x — every page doubles, windowed layers included —
+    ///     so the advertised token budget HALVES to match the pool's real
+    ///     page count. Without this the byte figure is right and the
+    ///     divisor is half the truth, and `BackendCapacity.Slots` being
+    ///     scheduler-authoritative means the coordinator over-admits ~2x
+    ///     against a pool that holds half the tokens,
+    ///   * everything else ⇒ the nominal fp16 rate unchanged.
+    ///
+    /// `pagedPoolDType` must come off `ProductionBackendPreparation` (the
+    /// CONSTRUCTED pool reporting itself), never the requested env value:
+    /// an fp32 request that degraded to contiguous carries nil here and
+    /// must not double a backend that has no pages. Pure and static so the
+    /// dtype→rate→budget wiring is unit-testable without loading a model.
+    static func slotKVBytesPerToken(
+        resolvedKind: EngineV2KVBackendKind,
+        pagedPoolDType: String?,
+        layerKinds: [CBv2LayerKind],
+        nominalFP16BytesPerToken: Int,
+        servingModelIsGPTOSS: Bool
+    ) -> Int {
+        let capability = CBv2PrefixReuseCapability.derive(
+            layerKinds: layerKinds,
+            backend: .contiguousUnquantized)
+        return EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: nominalFP16BytesPerToken,
+            fp16FullKVBytesPerToken: capability.fullKVBytesPerToken,
+            fullRowsUseFP32:
+                resolvedKind == .contiguous && servingModelIsGPTOSS,
+            // Only a resolved PAGED backend has pages whose dtype can
+            // widen the rate; a contiguous build ignores the knob.
+            pagedPoolDType: resolvedKind == .paged ? pagedPoolDType : nil)
     }
 
     private static func emitPrefixCacheConstructionFailure(

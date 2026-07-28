@@ -788,10 +788,19 @@ public enum BackendParityHarness {
         // Gated on an actual `.hit`: on a miss there is no adoption to judge
         // and a difference would be nondeterminism, a different finding with
         // a different owner. nil is NOT MEASURED, never "exact".
+        //
+        // Exactness compares the whole TERMINAL OUTCOME, not just the token
+        // IDs — `judgeAdoptionExactness` holds the rule and the reasons.
         let adopted = secondUsage.prefixCacheOutcome == .hit
-        let adoptionTokenExact: Bool? = adopted
-            ? first.row.tokens == second.row.tokens
+        let exactness: (exact: Bool, mismatchReason: String?)? = adopted
+            ? Self.judgeAdoptionExactness(
+                coldTokens: first.row.tokens,
+                adoptedTokens: second.row.tokens,
+                coldFinish: first.row.finishReason,
+                adoptedFinish: second.row.finishReason)
             : nil
+        let adoptionTokenExact: Bool? = exactness?.exact
+        let adoptionMismatchReason: String? = exactness?.mismatchReason
         // The window the comparison ACTUALLY covered. A verdict of "exact"
         // over 8 tokens and one over 48 are different claims and must not
         // print the same; the shorter stream bounds what could be observed.
@@ -833,6 +842,7 @@ public enum BackendParityHarness {
             cacheMisses: stats.misses,
             cacheTokensSaved: stats.tokensSaved,
             adoptionTokenExact: adoptionTokenExact,
+            adoptionMismatchReason: adoptionMismatchReason,
             adoptionComparedTokens: adoptionComparedTokens,
             probeResolvedBackend: box.kind.rawValue,
             probeFallbackReason: box.fallbackReason)
@@ -946,14 +956,10 @@ public enum BackendParityHarness {
         // submit error or a non-clean terminal, and would make the arm
         // measure admission instead of numerics.
         //
-        // An ALLOWLIST of clean terminals, not a blocklist of known-bad
-        // prefixes. `describe(CBv2FinishReason)` can grow a case, and
-        // `generate` already adds two reasons of its own (`submit_error:`,
-        // `unterminated`) that no `CBv2FinishReason` spells — a blocklist
-        // waves through every reason nobody thought to enumerate, which is
-        // the shape of gate this whole probe exists to refuse.
-        let cleanTerminals: Set<String> = ["stop", "length"]
-        let unclean = rows.filter { !cleanTerminals.contains($0.finishReason) }
+        // The clean-terminal ALLOWLIST is shared with the prefix-reuse
+        // probe's adoption-exactness judge (`Self.cleanTerminals`) so the
+        // two probes can never disagree about what "ended cleanly" means.
+        let unclean = rows.filter { !Self.cleanTerminals.contains($0.finishReason) }
         guard unclean.isEmpty else {
             return .init(
                 perturbation: perturbation, tokenExact: nil,
@@ -1147,6 +1153,70 @@ public enum BackendParityHarness {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count > 40 else { return trimmed }
         return String(trimmed.prefix(37)) + "..."
+    }
+
+    /// Terminals a request may end with and still count as a valid
+    /// comparand: the model stopped (`stop`) or the budget ran out
+    /// (`length`). An ALLOWLIST, not a blocklist of known-bad prefixes:
+    /// `describe(CBv2FinishReason)` can grow a case, and `generateWithUsage`
+    /// adds two reasons of its own (`submit_error:`, `unterminated`) that no
+    /// `CBv2FinishReason` spells — a blocklist waves through every reason
+    /// nobody thought to enumerate, which is the shape of gate this harness
+    /// exists to refuse. Shared by the fp32 numerics control and the
+    /// prefix-reuse adoption-exactness judge.
+    static let cleanTerminals: Set<String> = ["stop", "length"]
+
+    /// Whether the ADOPTING request reproduced the cold request's outcome —
+    /// the WHOLE outcome, not just the token IDs. The same tokens under
+    /// different finish reasons (`stop` on the cold arm, `length` or
+    /// `error(…)` on the adopted one) mean adoption changed how the request
+    /// ENDED, and a non-clean terminal on either stream means at least one
+    /// comparand was cut short by machinery (an engine error, a forced
+    /// terminal, a submit failure) rather than by the model — its token
+    /// stream is a truncation artifact, and "the truncated prefixes agree"
+    /// is not the claim `adoptionTokenExact = true` makes.
+    ///
+    /// Returns `exact` plus a mismatch reason naming the SHAPE of the
+    /// failure, because the shapes are different findings: diverging tokens
+    /// can be precision drift on a sensitive checkpoint (see the symmetric
+    /// arm of the criterion), while a terminal mismatch never is. Pure and
+    /// static so the rule is unit-testable without an engine.
+    static func judgeAdoptionExactness(
+        coldTokens: [Int],
+        adoptedTokens: [Int],
+        coldFinish: String,
+        adoptedFinish: String
+    ) -> (exact: Bool, mismatchReason: String?) {
+        var reasons: [String] = []
+        if coldTokens != adoptedTokens {
+            reasons.append("token streams diverged")
+        }
+        if coldFinish != adoptedFinish {
+            reasons.append(
+                "terminal mismatch: cold finished '\(coldFinish)', "
+                    + "adopted finished '\(adoptedFinish)'")
+        } else if !cleanTerminals.contains(coldFinish) {
+            // Identical but unclean: both arms were cut short the same way,
+            // so neither stream is the model's answer and the comparison
+            // proves nothing about adoption.
+            reasons.append("non-clean terminal on both arms: '\(coldFinish)'")
+        }
+        // The mismatched-terminal case can also hide an UNCLEAN side; name
+        // it too, so `error(…)` is never summarized as a mere mismatch.
+        if coldFinish != adoptedFinish {
+            let unclean = [("cold", coldFinish), ("adopted", adoptedFinish)]
+                .filter { !cleanTerminals.contains($0.1) }
+            if !unclean.isEmpty {
+                reasons.append(
+                    "non-clean terminal on "
+                        + unclean.map { "\($0.0) ('\($0.1)')" }
+                            .joined(separator: " and "))
+            }
+        }
+        guard reasons.isEmpty else {
+            return (false, reasons.joined(separator: "; "))
+        }
+        return (true, nil)
     }
 
     static func describe(_ reason: CBv2FinishReason) -> String {

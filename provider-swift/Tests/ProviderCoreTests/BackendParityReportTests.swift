@@ -94,6 +94,7 @@ struct BackendParityReportTests {
         misses: Int = 1,
         tokensSaved: Int = 0,
         exact: Bool? = nil,
+        mismatchReason: String? = nil,
         comparedTokens: Int = 0,
         probeResolved: String? = nil
     ) -> BackendParityObservation {
@@ -115,6 +116,7 @@ struct BackendParityReportTests {
                 cacheMisses: misses,
                 cacheTokensSaved: tokensSaved,
                 adoptionTokenExact: exact,
+                adoptionMismatchReason: mismatchReason,
                 adoptionComparedTokens: comparedTokens,
                 probeResolvedBackend: probeResolved))
     }
@@ -189,7 +191,10 @@ struct BackendParityReportTests {
         // appear later, as the exact arm that proves the divergence is
         // asymmetric — exonerating, not accused — so assert on the clause
         // rather than on the bare substring.
-        #expect(inexactCandidate.detail.hasPrefix("adoption CHANGED THE ANSWER on paged:"))
+        #expect(inexactCandidate.detail.hasPrefix("adoption CHANGED THE ANSWER on paged"))
+        // No recorded reason falls back to the token-divergence phrasing —
+        // the only shape the oracle could see before terminals were judged.
+        #expect(inexactCandidate.detail.contains("paged (token streams diverged)"))
         #expect(!inexactCandidate.detail.contains("ANSWER on contiguous"))
 
         // The incumbent is not exempt: an inexact BASELINE is equally a FAIL,
@@ -197,7 +202,7 @@ struct BackendParityReportTests {
         let inexactBaseline = BackendParityCriteria.prefixReuse(
             baseline: arm("contiguous", exact: false), candidate: arm("paged", exact: true))
         #expect(inexactBaseline.verdict == .fail)
-        #expect(inexactBaseline.detail.hasPrefix("adoption CHANGED THE ANSWER on contiguous:"))
+        #expect(inexactBaseline.detail.hasPrefix("adoption CHANGED THE ANSWER on contiguous"))
 
         // Both exact: the criterion falls through to the savings comparison.
         let bothExact = BackendParityCriteria.prefixReuse(
@@ -211,6 +216,83 @@ struct BackendParityReportTests {
             baseline: arm("contiguous", exact: nil), candidate: arm("paged", exact: nil))
         #expect(unmeasured.verdict == .pass)
         #expect(!unmeasured.detail.contains("adoption CHANGED THE ANSWER"))
+    }
+
+    /// Exactness is a claim about the whole REQUEST OUTCOME. Before terminals
+    /// were judged, the same token IDs under `stop` vs `length` — or under an
+    /// `error(…)` that cut one stream short — recorded exact and let the
+    /// criterion PASS while adoption changed how the request ended.
+    @Test("same tokens with a different terminal are NOT exact, and the reason is named")
+    func terminalMismatchDefeatsExactness() {
+        typealias Harness = BackendParityHarness
+
+        // The clean case: identical tokens, identical clean terminal.
+        let clean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "stop")
+        #expect(clean.exact)
+        #expect(clean.mismatchReason == nil)
+
+        // Same tokens, different clean terminals: the request ENDED
+        // differently, so the comparison is not exact and says why.
+        let stopVsLength = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "length")
+        #expect(!stopVsLength.exact)
+        #expect(stopVsLength.mismatchReason
+            == "terminal mismatch: cold finished 'stop', adopted finished 'length'")
+
+        // Same tokens, one arm cut short by machinery: the mismatch AND the
+        // unclean side are both named — an `error(…)` must never be
+        // summarized as a mere stop/length disagreement.
+        let errorArm = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "error(pool exhausted)")
+        #expect(!errorArm.exact)
+        #expect(errorArm.mismatchReason?.contains("terminal mismatch") == true)
+        #expect(errorArm.mismatchReason?.contains(
+            "non-clean terminal on adopted ('error(pool exhausted)')") == true)
+
+        // Identical but UNCLEAN terminals: both streams are truncation
+        // artifacts, so their agreement proves nothing about adoption.
+        let bothUnclean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "error(watchdog)", adoptedFinish: "error(watchdog)")
+        #expect(!bothUnclean.exact)
+        #expect(bothUnclean.mismatchReason
+            == "non-clean terminal on both arms: 'error(watchdog)'")
+
+        // Diverging tokens keep their original phrasing; a simultaneous
+        // terminal mismatch is appended, not substituted.
+        let diverged = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 9],
+            coldFinish: "stop", adoptedFinish: "length")
+        #expect(!diverged.exact)
+        #expect(diverged.mismatchReason?.hasPrefix("token streams diverged") == true)
+        #expect(diverged.mismatchReason?.contains("terminal mismatch") == true)
+
+        // `length` on BOTH arms is clean: hitting the same budget the same
+        // way is a valid comparison, not a truncation artifact.
+        let bothLength = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "length", adoptedFinish: "length")
+        #expect(bothLength.exact)
+    }
+
+    @Test("the criterion detail discloses the recorded mismatch shape per arm")
+    func criterionDetailNamesTheMismatchShape() {
+        let verdict = BackendParityCriteria.prefixReuse(
+            baseline: prefixArm("contiguous", bound: 1536, saved: 26880, exact: true),
+            candidate: prefixArm(
+                "paged", bound: 1536, saved: 26880, exact: false,
+                mismatchReason: "terminal mismatch: cold finished 'stop', "
+                    + "adopted finished 'length'"))
+        #expect(verdict.verdict == .fail)
+        #expect(verdict.detail.contains(
+            "paged (terminal mismatch: cold finished 'stop', adopted finished 'length')"))
+        // A terminal-shaped mismatch is never excusable as precision drift;
+        // the wording that offers that excuse is scoped to token divergence.
+        #expect(verdict.detail.contains("token stream or terminal"))
     }
 
     /// A cold prefill and an adopted replay accumulate differently even when

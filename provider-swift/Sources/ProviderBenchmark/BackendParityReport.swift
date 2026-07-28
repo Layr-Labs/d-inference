@@ -499,7 +499,22 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// would mean nondeterminism, which is a different finding. `nil`
         /// therefore means NOT MEASURED and must never be read as exact —
         /// the criterion says so out loud rather than passing quietly.
+        ///
+        /// "Exact" is a claim about the whole REQUEST OUTCOME, not just the
+        /// token IDs: the same tokens with different finish reasons (`stop`
+        /// on one arm, `length` or `error(…)` on the other) means adoption
+        /// changed how the request ENDED, and a non-clean terminal on either
+        /// stream means at least one comparand was cut short by machinery
+        /// rather than by the model — both record `false`, with the shape of
+        /// the mismatch named in `adoptionMismatchReason`.
         public let adoptionTokenExact: Bool?
+        /// WHY `adoptionTokenExact` is `false`, in one operator-readable
+        /// phrase ("token streams diverged", "terminal mismatch: cold
+        /// finished 'stop', adopted finished 'length'", "non-clean terminal
+        /// …"). nil whenever exactness is `true` or not measured. Carried on
+        /// the observation — not recomputed by the report — because the
+        /// harness is the only party that saw both raw streams.
+        public let adoptionMismatchReason: String?
         /// Completion tokens the exactness comparison actually covered. This
         /// is the oracle's WINDOW and bounds what it could possibly have seen:
         /// the measured paged adoption divergence appears at completion token
@@ -539,6 +554,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             cacheMisses: Int = 0,
             cacheTokensSaved: Int = 0,
             adoptionTokenExact: Bool? = nil,
+            adoptionMismatchReason: String? = nil,
             adoptionComparedTokens: Int = 0,
             probeResolvedBackend: String? = nil,
             probeFallbackReason: String? = nil,
@@ -560,6 +576,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             self.cacheMisses = cacheMisses
             self.cacheTokensSaved = cacheTokensSaved
             self.adoptionTokenExact = adoptionTokenExact
+            self.adoptionMismatchReason = adoptionMismatchReason
             self.adoptionComparedTokens = adoptionComparedTokens
             self.probeResolvedBackend = probeResolvedBackend
             self.probeFallbackReason = probeFallbackReason
@@ -1301,11 +1318,20 @@ public enum BackendParityCriteria {
         if !inexact.isEmpty {
             let exactArms = [(baseline.label, base), (candidate.label, cand)]
                 .filter { $0.1.adoptionTokenExact == true }
+            // Name the SHAPE of each arm's mismatch, because they are
+            // different findings: diverging token streams are the reuse
+            // path rewriting the output, while identical tokens under a
+            // terminal mismatch (`stop` vs `length`, an `error(…)` arm)
+            // are adoption changing how the request ENDED — and the
+            // precision-drift explanation below can only ever excuse the
+            // first kind.
             var detail = "adoption CHANGED THE ANSWER on "
-                + inexact.map(\.0).joined(separator: " and ")
-                + ": the adopting request returned different tokens than the cold "
-                + "request for the SAME prompt at temperature 0, so the reported "
-                + "savings are not savings — prefill was skipped that was needed. "
+                + inexact.map {
+                    "\($0.0) (\($0.1.adoptionMismatchReason ?? "token streams diverged"))"
+                }.joined(separator: " and ")
+                + ": the adopting request's outcome — token stream or terminal — "
+                + "differed from the cold request's for the SAME prompt at "
+                + "temperature 0, so the reported savings are not savings. "
                 + "Token counts are only meaningful conditional on exactness, which "
                 + "is why this outranks the comparison below"
             if let exact = exactArms.first {
@@ -1313,11 +1339,13 @@ public enum BackendParityCriteria {
                     + "the same prefix on the same prompt in the same process and stayed "
                     + "exact, so precision sensitivity cannot explain this one"
             } else {
-                detail += ". SYMMETRIC — every measured arm is inexact, so this is a "
-                    + "property of the MODEL (a cold prefill and an adopted replay "
-                    + "accumulate differently, and this checkpoint's argmax is sensitive "
-                    + "enough to show it), NOT evidence against either backend. Do not "
-                    + "cite it as one; see the precision caveat on token_exactness"
+                detail += ". SYMMETRIC — every measured arm is inexact. When the "
+                    + "mismatches are token divergence, that is a property of the MODEL "
+                    + "(a cold prefill and an adopted replay accumulate differently, and "
+                    + "this checkpoint's argmax is sensitive enough to show it), NOT "
+                    + "evidence against either backend — do not cite it as one; see the "
+                    + "precision caveat on token_exactness. A TERMINAL mismatch named "
+                    + "above is not excused by precision drift and stays a real finding"
             }
             return .init(
                 id: id, title: title, verdict: .fail, detail: detail,
@@ -1440,7 +1468,8 @@ public enum BackendParityCriteria {
         }
         if let weakest = exercised.min() {
             let window = [base, cand].map(\.adoptionComparedTokens).min() ?? 0
-            detail += ". Adoption was token-exact against each arm's OWN cold request over "
+            detail += ". Adoption was token- and terminal-exact against each arm's OWN "
+                + "cold request over "
                 + "\(window) completion tokens — the WINDOW bounds what could be seen, and a "
                 + "known paged adoption divergence appears at token 20, so read a short "
                 + "window as no evidence rather than weak evidence. The thinner arm also "

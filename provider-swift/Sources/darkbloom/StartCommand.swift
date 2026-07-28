@@ -85,7 +85,12 @@ struct Start: AsyncParsableCommand {
         }
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-        let effectiveCoordinator = coordinatorURL ?? snapshot.config.coordinator.url
+        // Precedence: explicit --url flag > DARKBLOOM_DEV_COORDINATOR_URL (dev
+        // daemon override) > config file. The env override lets the launchd
+        // daemon target a dev-insecure coordinator without a --url flag.
+        let effectiveCoordinator = coordinatorURL
+            ?? DevInsecure.coordinatorURLOverride
+            ?? snapshot.config.coordinator.url
         var effectiveConfig = snapshot.config
         if let idleTimeout {
             effectiveConfig.backend.idleTimeoutMins = idleTimeout

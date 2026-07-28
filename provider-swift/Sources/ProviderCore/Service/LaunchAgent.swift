@@ -274,6 +274,10 @@ public enum LaunchAgent: Sendable {
         "DARKBLOOM_PREFIX_CACHE",
         "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
         "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
+        // Dev-insecure daemon: carry the "all security disabled" switch and the
+        // dev coordinator URL through install/restart so a launchd-managed dev
+        // provider keeps targeting the dev-insecure coordinator.
+        "DARKBLOOM_DEV_INSECURE", "DARKBLOOM_DEV_COORDINATOR_URL",
     ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

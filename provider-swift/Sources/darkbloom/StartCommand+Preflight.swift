@@ -12,12 +12,19 @@ extension Start {
     /// Runs critical doctor checks inline before the model picker so users
     /// don't discover problems *after* downloading GBs of weights.
     internal func runPreflightChecks(snapshot: RuntimeSnapshot) throws {
-        warnBootSecurity(coordinatorEnforced: true)
+        let devInsecure = DevInsecure.isEnabled
+        // A dev-insecure coordinator does not enforce boot security, so report it
+        // as non-enforced (informational) rather than a rejection warning.
+        warnBootSecurity(coordinatorEnforced: !devInsecure)
 
         let debuggerAttached = checkDebuggerAttached()
         if debuggerAttached {
-            printError("A debugger is attached. The coordinator will reject this provider.")
-            throw ExitCode.failure
+            if devInsecure {
+                printError("⚠️ A debugger is attached — ignored (DARKBLOOM_DEV_INSECURE).")
+            } else {
+                printError("A debugger is attached. The coordinator will reject this provider.")
+                throw ExitCode.failure
+            }
         }
 
         guard let hardware = snapshot.hardware else { return }

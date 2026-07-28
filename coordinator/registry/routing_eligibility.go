@@ -50,13 +50,19 @@ func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, 
 	if trustRank(p.TrustLevel) < trustRank(minTrust) {
 		return false
 	}
-	if !p.RuntimeVerified {
+	// Dev-insecure skips the runtime-manifest and attestation-challenge liveness
+	// gates (no signed runtime manifest is configured and challenge freshness is
+	// irrelevant when attestation is disabled). The private-text (E2E) gate below
+	// still runs — it is what keeps prompts encrypted — and the status/trust-floor
+	// gates above are unchanged.
+	if !r.DevInsecure && !p.RuntimeVerified {
 		return false
 	}
 	if !r.providerSupportsPrivateTextLocked(p) {
 		return false
 	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
+	if !r.DevInsecure &&
+		(p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge) {
 		return false
 	}
 	return true

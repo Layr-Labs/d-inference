@@ -655,6 +655,14 @@ func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
 	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
 		return false
 	}
+	// Dev-insecure coordinator: keep the E2E-crypto requirements above (prompts
+	// stay encrypted end-to-end) but skip every attestation/hardening gate below
+	// (runtime manifest, coordinator-verified SIP, code-identity, privacy caps).
+	// Gated by an explicit dev-only flag that main.go refuses to enable against a
+	// durable store, so production routing is never affected.
+	if r.DevInsecure {
+		return true
+	}
 	if !p.RuntimeManifestChecked {
 		return false
 	}
@@ -1290,6 +1298,16 @@ type Registry struct {
 	queue *RequestQueue
 
 	MinTrustLevel TrustLevel
+
+	// DevInsecure fail-opens every attestation/hardening routing gate for a
+	// dev-only "all security disabled" coordinator (EIGENINFERENCE_DEV_INSECURE).
+	// It relaxes ONLY the attestation/hardening conditions — the end-to-end
+	// crypto requirements (X25519 public key, mlx-swift backend, encrypted
+	// response chunks) are still enforced, so prompts stay encrypted on the wire.
+	// Set once at startup from cfg.RegistryCfg.DevInsecure; read on the routing
+	// paths under r.mu. main.go refuses to enable it against a durable store, so
+	// it can never weaken production. Default false (zero behavior change).
+	DevInsecure bool
 
 	// dedicatedModels holds lowercased substring patterns identifying model
 	// families that may ONLY route to providers dedicated to that family (a
@@ -2329,7 +2347,9 @@ func (r *Registry) ModelType(model string) string {
 func (r *Registry) IsModelInCatalog(model string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.modelCatalog == nil {
+	// Dev-insecure: the throwaway dev coordinator has no model registry, so treat
+	// any provider-advertised model as in-catalog (route whatever the provider has).
+	if r.DevInsecure || r.modelCatalog == nil {
 		return true
 	}
 	_, ok := r.modelCatalog[model]
@@ -2414,7 +2434,9 @@ func (r *Registry) IsAliasLineageBuild(buildID string) bool {
 // allowed by the current catalog. Caller must hold r.mu (read or write). A nil
 // catalog disables filtering; an empty non-nil catalog denies all models.
 func (r *Registry) modelAllowedByCatalogLocked(model protocol.ModelInfo) bool {
-	if r.modelCatalog == nil {
+	// Dev-insecure: no model registry on the dev coordinator — allow any
+	// provider-advertised build (no catalog weight-hash pinning to enforce).
+	if r.DevInsecure || r.modelCatalog == nil {
 		return true
 	}
 	entry, ok := r.modelCatalog[model.ID]

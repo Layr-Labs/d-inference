@@ -375,6 +375,11 @@ extension ProviderLoop {
     // MARK: - Security Hardening
 
     private func applySecurityHardening() async throws {
+        if DevInsecure.isEnabled {
+            logger.warning("⚠️ DARKBLOOM_DEV_INSECURE — security hardening posture verification skipped (SE self-sign still attempted; E2E encryption unaffected)")
+            self.binaryHash = selfBinaryHash()
+            return
+        }
         #if !DEBUG
         let posture = collectSecurityPosture()
         guard let binaryHash = posture.binaryHash, !binaryHash.isEmpty else {

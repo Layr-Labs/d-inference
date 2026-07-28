@@ -148,17 +148,29 @@ public struct BackendParityReport: Codable, Sendable {
         public let detail: String
         /// First flip against the unperturbed arm, when not exact.
         public let firstFlip: String?
+        /// RESOLVED pool dtype of the unperturbed candidate arm this control
+        /// compared against, read off the constructed pool — never the env
+        /// knob. Nil on artifacts that predate the field.
+        public let candidatePoolDType: String?
+        /// RESOLVED pool dtype of the control's own perturbed arm. A control
+        /// whose two arms carry the SAME dtype perturbed nothing, and
+        /// `BackendParityCriteria.controlValidityBlocker` refuses it.
+        public let controlPoolDType: String?
 
         public init(
             perturbation: String,
             tokenExact: Bool?,
             detail: String,
-            firstFlip: String? = nil
+            firstFlip: String? = nil,
+            candidatePoolDType: String? = nil,
+            controlPoolDType: String? = nil
         ) {
             self.perturbation = perturbation
             self.tokenExact = tokenExact
             self.detail = detail
             self.firstFlip = firstFlip
+            self.candidatePoolDType = candidatePoolDType
+            self.controlPoolDType = controlPoolDType
         }
 
         /// Leading clause for `token_exactness`, so the reader meets "the
@@ -590,6 +602,12 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
     /// depends on this arm then reports UNAVAILABLE.
     public let resolvedBackend: String?
     public let fallbackReason: String?
+    /// Dtype of the pages the PAGED pool was ACTUALLY built with, read off
+    /// the constructed pool (`ProductionBuild.pagedPoolDType`), never the
+    /// env knob. Nil on contiguous arms and on artifacts that predate the
+    /// field. The numerics control compares this against its own resolved
+    /// dtype so two identical-dtype arms can never masquerade as a control.
+    public let pagedPoolDType: String?
     public let constructionFailure: String?
     public let rows: [Row]
     public let mtp: MTP?
@@ -601,6 +619,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         selection: String,
         resolvedBackend: String? = nil,
         fallbackReason: String? = nil,
+        pagedPoolDType: String? = nil,
         constructionFailure: String? = nil,
         rows: [Row] = [],
         mtp: MTP? = nil,
@@ -611,6 +630,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         self.selection = selection
         self.resolvedBackend = resolvedBackend
         self.fallbackReason = fallbackReason
+        self.pagedPoolDType = pagedPoolDType
         self.constructionFailure = constructionFailure
         self.rows = rows
         self.mtp = mtp
@@ -687,6 +707,32 @@ public enum BackendParityCriteria {
                 + " — no cross-backend comparison was performed"
         }
         return nil
+    }
+
+    /// Why a numerics control must be DISREGARDED, or nil when it is sound.
+    ///
+    /// The control's whole claim is "the same backend under a benign dtype
+    /// perturbation". If both arms RESOLVED the same pool dtype — e.g. an
+    /// ambient `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` leaked into the
+    /// candidate before the harness pinned it — then nothing was perturbed
+    /// and its agreement is a tautology, not evidence. Checked at EVALUATION
+    /// rather than only at measurement so a stored artifact from a harness
+    /// that predates the pinning is rejected too. Artifacts too old to carry
+    /// the dtype fields pass through: absence of the record is not proof of
+    /// a tautology, and their controls stay exactly as trustworthy as they
+    /// were when written.
+    static func controlValidityBlocker(
+        _ control: BackendParityReport.NumericsControl
+    ) -> String? {
+        guard let candidateDType = control.candidatePoolDType,
+            let controlDType = control.controlPoolDType
+        else { return nil }
+        guard candidateDType == controlDType else { return nil }
+        return "both control arms resolved \(candidateDType) pages "
+            + "(candidate \(candidateDType), control \(controlDType)) — the "
+            + "perturbation never happened, so its "
+            + (control.tokenExact == true ? "agreement" : "verdict")
+            + " is a tautology about one configuration, not a control"
     }
 
     /// Relative precision of the fp16 KV the paged pool stores (11-bit
@@ -869,15 +915,30 @@ public enum BackendParityCriteria {
 
         if let mismatch = rowMismatch(baseline: scoredBaseline, candidate: scoredCandidate) {
             measurements["firstFlip"] = mismatch
+            // A same-dtype control is DISREGARDED, never quoted: quoting
+            // "CONTROL HELD" off two identical engines would launder a
+            // tautology into the one sentence readers act on.
+            let controlBlocker = control.flatMap(controlValidityBlocker)
             if let control {
-                measurements["control"] = control.tokenExact.map {
-                    $0 ? "TOKEN-EXACT" : "NOT token-exact"
-                } ?? "NOT RUN"
+                if let controlBlocker {
+                    measurements["control"] = "INVALID — \(controlBlocker)"
+                } else {
+                    measurements["control"] = control.tokenExact.map {
+                        $0 ? "TOKEN-EXACT" : "NOT token-exact"
+                    } ?? "NOT RUN"
+                }
             }
             // The control LEADS. A reader must meet "the incumbent also flips
             // here" before the divergence it explains, for the same reason
             // EXPECTED_SHORTFALL rides the summary line.
-            var detail = control.map { "\($0.headline) " } ?? ""
+            var detail: String
+            if let controlBlocker {
+                detail = "CONTROL INVALID (\(controlBlocker)), so nothing here "
+                    + "distinguishes a backend difference from ordinary numerical "
+                    + "drift. "
+            } else {
+                detail = control.map { "\($0.headline) " } ?? ""
+            }
             detail += "\(candidate.label) diverged from \(baseline.label) at the first "
                 + "flip: \(mismatch). NOT scored as a regression: free-running greedy "
                 + "decode is a PASS-ONLY signal here, because the incumbent fails it too "

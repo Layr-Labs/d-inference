@@ -355,6 +355,7 @@ public enum BackendParityHarness {
             selection: selection.rawValue,
             resolvedBackend: box.kind.rawValue,
             fallbackReason: box.fallbackReason,
+            pagedPoolDType: box.pagedPoolDType,
             rows: rows,
             mtp: mtp,
             packedPrefill: packed,
@@ -363,6 +364,30 @@ public enum BackendParityHarness {
     }
 
     // MARK: - Engine construction
+
+    /// The pool dtype every harness engine is PINNED to unless a probe
+    /// overrides it (only the fp32 numerics control does). Ambient
+    /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` in the invoking shell would
+    /// otherwise leak into the candidate arm, and the "float16 → float32"
+    /// control would compare two identical fp32 engines — a tautology that
+    /// corrupts the run's numerical-stability evidence while labelling
+    /// itself a control. Literal rather than
+    /// `EngineV2Factory.pagedPoolDTypeEnvKey`: that constant is internal to
+    /// ProviderCore.
+    static let pinnedPoolDTypeEnvironment = ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float16"]
+
+    /// The environment an engine build actually sees: ambient, with the pool
+    /// dtype pinned to fp16, with the probe's own overrides winning last.
+    /// Pure and separated from `buildEngine` so the precedence is testable
+    /// without constructing an engine.
+    static func engineEnvironment(
+        ambient: [String: String],
+        overrides: [String: String]
+    ) -> [String: String] {
+        ambient
+            .merging(pinnedPoolDTypeEnvironment) { _, pinned in pinned }
+            .merging(overrides) { _, override in override }
+    }
 
     private static func buildEngine(
         container: ModelContainer,
@@ -379,9 +404,9 @@ public enum BackendParityHarness {
         // allocation and the paged kernel preflight want serialized GPU
         // access. The serving model itself is NOT re-resolved here — see the
         // comment in `run`.
-        let environment = environmentOverrides.isEmpty
-            ? ProcessInfo.processInfo.environment
-            : ProcessInfo.processInfo.environment.merging(environmentOverrides) { _, new in new }
+        let environment = engineEnvironment(
+            ambient: ProcessInfo.processInfo.environment,
+            overrides: environmentOverrides)
         return try await container.perform { _ -> EngineBox in
             let build = try EngineV2Factory.makeProductionBuild(
                 model: serving.model,
@@ -890,6 +915,7 @@ public enum BackendParityHarness {
         configuration: Configuration
     ) async -> BackendParityReport.NumericsControl {
         let perturbation = "paged pool dtype float16 -> float32"
+        let candidateDType = candidate.pagedPoolDType
 
         guard candidate.resolvedBackend == EngineV2KVBackendKind.paged.rawValue,
             !candidate.rows.isEmpty
@@ -898,7 +924,8 @@ public enum BackendParityHarness {
                 perturbation: perturbation, tokenExact: nil,
                 detail: "the candidate arm did not serve paged rows "
                     + "(resolved \(candidate.resolvedBackend ?? "nothing"), "
-                    + "\(candidate.rows.count) rows), so there is nothing to perturb")
+                    + "\(candidate.rows.count) rows), so there is nothing to perturb",
+                candidatePoolDType: candidateDType)
         }
 
         let box: EngineBox
@@ -914,7 +941,8 @@ public enum BackendParityHarness {
         } catch {
             return .init(
                 perturbation: perturbation, tokenExact: nil,
-                detail: "the fp32 control engine would not build: \(error)")
+                detail: "the fp32 control engine would not build: \(error)",
+                candidatePoolDType: candidateDType)
         }
 
         // Trust the arm ONLY on the RESOLVED dtype. A silently ignored knob
@@ -927,7 +955,28 @@ public enum BackendParityHarness {
                 perturbation: perturbation, tokenExact: nil,
                 detail: "requested fp32 pages but the pool resolved "
                     + "\(box.pagedPoolDType ?? "nil") — the perturbation never happened, "
-                    + "so this arm is NOT a control")
+                    + "so this arm is NOT a control",
+                candidatePoolDType: candidateDType,
+                controlPoolDType: box.pagedPoolDType)
+        }
+
+        // The mirror-image check on the CANDIDATE arm. `buildEngine` pins
+        // every non-control engine to fp16 pages precisely so this cannot
+        // fire, but the pin lives in a different function than the claim —
+        // verify the recorded resolution rather than trusting the plumbing,
+        // exactly as the fp32 guard above refuses to trust the env knob. Two
+        // arms on the same dtype would agree tautologically and masquerade
+        // as a held control.
+        guard candidateDType != box.pagedPoolDType else {
+            await box.engine.shutdown()
+            return .init(
+                perturbation: perturbation, tokenExact: nil,
+                detail: "the candidate arm's pool ALSO resolved "
+                    + "\(candidateDType ?? "nil") pages, so both arms carry the same "
+                    + "dtype — the perturbation never happened and any agreement would "
+                    + "be a tautology, so this arm is NOT a control",
+                candidatePoolDType: candidateDType,
+                controlPoolDType: box.pagedPoolDType)
         }
 
         var rows: [BackendParityObservation.Row] = []
@@ -966,7 +1015,9 @@ public enum BackendParityHarness {
                 detail: "the fp32 control arm hit \(unclean.count) non-clean terminal(s) "
                     + "(\(unclean.map(\.finishReason).joined(separator: "; "))) — fp32 halves "
                     + "the pool's seats and its byte accounting under-counts, so this arm "
-                    + "measured admission rather than numerics and is NOT a control")
+                    + "measured admission rather than numerics and is NOT a control",
+                candidatePoolDType: candidateDType,
+                controlPoolDType: box.pagedPoolDType)
         }
 
         // Rows that EXIST but carry no tokens compare equal, and `rowMismatch`
@@ -981,7 +1032,9 @@ public enum BackendParityHarness {
         {
             return .init(
                 perturbation: perturbation, tokenExact: nil,
-                detail: "the control could not be scored — \(blocker)")
+                detail: "the control could not be scored — \(blocker)",
+                candidatePoolDType: candidateDType,
+                controlPoolDType: box.pagedPoolDType)
         }
 
         if let mismatch = BackendParityCriteria.rowMismatch(
@@ -992,7 +1045,9 @@ public enum BackendParityHarness {
                 perturbation: perturbation, tokenExact: false,
                 detail: "paged with fp32 pages diverged from paged with fp16 pages on the "
                     + "SAME backend: \(mismatch)",
-                firstFlip: mismatch)
+                firstFlip: mismatch,
+                candidatePoolDType: candidateDType,
+                controlPoolDType: box.pagedPoolDType)
         }
 
         // Carry the SAMPLE SIZE into the verdict. "Token-exact" over three
@@ -1010,7 +1065,9 @@ public enum BackendParityHarness {
             detail: "paged with fp32 pages produced token ids IDENTICAL to paged with fp16 "
                 + "pages across \(rows.count) prompts and \(total) tokens (shortest row "
                 + "\(shortest)), so this model's argmax survives a benign storage-precision "
-                + "change over that many decode steps")
+                + "change over that many decode steps",
+            candidatePoolDType: candidateDType,
+            controlPoolDType: box.pagedPoolDType)
     }
 
     // MARK: - Probe: MTP

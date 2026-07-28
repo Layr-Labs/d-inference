@@ -722,7 +722,8 @@ struct BackendParityReportTests {
     func controlRoundTrips() throws {
         let control = BackendParityReport.NumericsControl(
             perturbation: "paged pool dtype float16 -> float32",
-            tokenExact: false, detail: "diverged", firstFlip: "prompt 'a' token 1")
+            tokenExact: false, detail: "diverged", firstFlip: "prompt 'a' token 1",
+            candidatePoolDType: "float16", controlPoolDType: "float32")
         let report = BackendParityReport(
             modelID: "m", modelPath: "/tmp/m",
             arms: [baseline.arm, candidate.arm],
@@ -776,6 +777,115 @@ struct BackendParityReportTests {
         #expect(asked.contains("control (paged pool dtype float16 -> float32): NOT RUN"))
         #expect(asked.contains("the candidate arm did not serve paged rows"))
         #expect(!asked.contains("NOT SUPPLIED"))
+    }
+
+    // MARK: - Control dtype pinning and validity
+
+    @Test("the harness pins every engine to fp16 pages against ambient env dtype")
+    func harnessPinsCandidateDTypeAgainstAmbientEnvironment() {
+        // An operator (or a prior benchmark step) exporting
+        // DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32 must NOT leak into the
+        // candidate arm: the fp32 control would then compare two identical
+        // fp32 engines and hold tautologically.
+        let ambient = [
+            "DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32",
+            "HOME": "/Users/operator",
+        ]
+        let candidateEnv = BackendParityHarness.engineEnvironment(
+            ambient: ambient, overrides: [:])
+        #expect(candidateEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float16")
+        // The rest of the ambient environment passes through untouched.
+        #expect(candidateEnv["HOME"] == "/Users/operator")
+
+        // The fp32 control's explicit override still wins over the pin —
+        // the pin protects arms that did NOT ask, never one that did.
+        let controlEnv = BackendParityHarness.engineEnvironment(
+            ambient: ambient,
+            overrides: ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32"])
+        #expect(controlEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float32")
+
+        // And with NO ambient dtype at all the pin still applies, so the
+        // candidate arm is fp16 by construction rather than by default.
+        let bare = BackendParityHarness.engineEnvironment(
+            ambient: ["HOME": "/Users/operator"], overrides: [:])
+        #expect(bare["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float16")
+    }
+
+    @Test("a control whose two arms resolved the SAME dtype is rejected at evaluation")
+    func sameDTypeControlIsRejectedAtEvaluation() {
+        // The artifact-level backstop: even a stored report from a harness
+        // that let ambient fp32 leak into the candidate must not have its
+        // "CONTROL HELD" quoted. Both dtypes are named in the refusal.
+        let tautology = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true,
+            detail: "identical across 3 prompts",
+            candidatePoolDType: "float32", controlPoolDType: "float32")
+        let blocker = BackendParityCriteria.controlValidityBlocker(tautology)
+        #expect(blocker != nil)
+        #expect(blocker?.contains("candidate float32") == true)
+        #expect(blocker?.contains("control float32") == true)
+        #expect(blocker?.contains("tautology") == true)
+
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: tautology)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.hasPrefix("CONTROL INVALID"))
+        #expect(!result.detail.contains("CONTROL HELD"))
+        #expect(result.measurements["control"]?.hasPrefix("INVALID") == true)
+        #expect(result.measurements["control"]?.contains("float32") == true)
+
+        // Discrimination: the ONLY change below is that the two arms carry
+        // DIFFERENT resolved dtypes — the same held control is then quoted.
+        let genuine = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true,
+            detail: "identical across 3 prompts",
+            candidatePoolDType: "float16", controlPoolDType: "float32")
+        #expect(BackendParityCriteria.controlValidityBlocker(genuine) == nil)
+        let honored = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: genuine)
+        #expect(honored.detail.hasPrefix("CONTROL HELD"))
+        #expect(honored.measurements["control"] == "TOKEN-EXACT")
+    }
+
+    @Test("artifacts that predate the dtype fields keep their controls")
+    func legacyControlWithoutDTypeFieldsIsNotRejected() {
+        // Absence of the record is not proof of a tautology: a report written
+        // before the fields existed stays exactly as trustworthy as it was.
+        let legacy = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true, detail: "identical across 3 prompts")
+        #expect(BackendParityCriteria.controlValidityBlocker(legacy) == nil)
+        // One side recorded is still not a tautology finding.
+        let half = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true, detail: "identical across 3 prompts",
+            controlPoolDType: "float32")
+        #expect(BackendParityCriteria.controlValidityBlocker(half) == nil)
+    }
+
+    @Test("the observation records the arm's RESOLVED pool dtype through JSON")
+    func observationCarriesResolvedPoolDType() throws {
+        let arm = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            pagedPoolDType: "float16",
+            rows: [row("a", [1, 2])])
+        let decoded = try JSONDecoder().decode(
+            BackendParityObservation.self, from: try JSONEncoder().encode(arm))
+        #expect(decoded.pagedPoolDType == "float16")
+
+        // Old artifacts without the field decode with nil, not a throw. The
+        // legacy shape is a REAL encoding minus the key, so this cannot
+        // drift from whatever else the coder requires.
+        var json = try #require(
+            JSONSerialization.jsonObject(with: try JSONEncoder().encode(arm))
+                as? [String: Any])
+        json.removeValue(forKey: "pagedPoolDType")
+        let legacy = try JSONDecoder().decode(
+            BackendParityObservation.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        #expect(legacy.pagedPoolDType == nil)
     }
 
     // MARK: - Per-row evidence floor

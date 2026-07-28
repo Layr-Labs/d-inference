@@ -170,12 +170,44 @@ func (d *dispatchState) noteServingSlot() {
 // Gate G5 segments per backend in a mixed-backend fleet. The invariant the
 // re-latch sites maintain: the latch always names the slot whose failure would
 // be the terminal one — the last slot still racing.
+//
+// EXCEPTION — a latched deterministic verdict freezes the latch. Once
+// shouldStopFailover/latchDeterministicLoser has latched d.unservable or
+// d.terminalClientError, the terminal response IS that verdict (the 4xx/422/
+// 429 of the slot that produced it), regardless of what a still-racing backup
+// does next. Re-latching to the backup would book the PRIMARY's controlling
+// 4xx under the backup's backend. latchTerminalAttribution pins the latch to
+// the verdict slot at the moment the verdict latches; this guard keeps it
+// there. A backup that goes on to WIN is unaffected: commit-path reads go
+// through the live d.pr (see kvBackendAttribution), not this latch.
 func (d *dispatchState) noteServingSlotFor(pr *registry.PendingRequest) {
 	if pr == nil || pr.ProviderID == "" {
 		return
 	}
+	if d.attributionLatchFrozen() {
+		return
+	}
 	d.servedKVBackend = d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
 	d.servedKVProviderID, d.servedKVModel = pr.ProviderID, pr.Model
+}
+
+// attributionLatchFrozen reports whether a deterministic terminal verdict has
+// latched — from that point the outcome attribution belongs to the slot whose
+// verdict controls the terminal response, and must not follow later racers.
+func (d *dispatchState) attributionLatchFrozen() bool {
+	return d.unservable || d.terminalClientError
+}
+
+// latchTerminalAttribution pins the outcome attribution to the provider whose
+// deterministic verdict just latched (latchDeterministicLoser). It is the
+// pinning act itself, so it bypasses the freeze guard — and must run at the
+// SAME site that latches the verdict, before any backup re-latch can race it.
+func (d *dispatchState) latchTerminalAttribution(provider *registry.Provider) {
+	if provider == nil || provider.ID == "" {
+		return
+	}
+	d.servedKVBackend = d.s.providerKVBackendAttribution(provider, d.model)
+	d.servedKVProviderID, d.servedKVModel = provider.ID, d.model
 }
 
 // kvBackendAttribution is the KV-backend metric pair for this dispatch. It
@@ -189,13 +221,25 @@ func (d *dispatchState) noteServingSlotFor(pr *registry.PendingRequest) {
 // and the success path reads it again at commit, so re-resolving would take a
 // second registry read lock per request for a value that provably has not
 // moved. A speculative backup shows up as a KEY MISMATCH, not as a stale
-// latch, and still re-resolves.
+// latch, and still re-resolves — and SAVES the resolution: a mismatch means a
+// promotion the latch has not caught up with (backup promoted via AcceptedCh
+// or preamble outside the noteServingSlot choke point). The promoted slot can
+// error or time out pre-content AFTER the wait path clears d.pr, and the
+// exhaustion fallback must then name the promoted slot, not the cancelled
+// primary's stale latch. noteServingSlotFor owns the freeze rule (a latched
+// deterministic verdict pins the latch to the verdict slot), so a frozen
+// latch survives this save while the live return value stays truthful.
 func (d *dispatchState) kvBackendAttribution() kvBackendAttribution {
 	if pr := d.pr; pr != nil && pr.ProviderID != "" {
 		if pr.ProviderID == d.servedKVProviderID && pr.Model == d.servedKVModel {
 			return d.servedKVBackend
 		}
-		return d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
+		att := d.s.kvBackendAttribution(pr.ProviderID, pr.Model)
+		if !d.attributionLatchFrozen() {
+			d.servedKVBackend = att
+			d.servedKVProviderID, d.servedKVModel = pr.ProviderID, pr.Model
+		}
+		return att
 	}
 	if d.servedKVProviderID == "" {
 		// Never latched: no attempt ever reached a slot.

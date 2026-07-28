@@ -368,6 +368,38 @@ func slotPostureBuilderExpiresStaleFailure() {
     #expect(DaemonSlotPostureBuilder.failureMaxAgeSeconds == 3_600)
 }
 
+@Test("the expiry horizon follows the CONFIGURED idle timeout, not the fixed default")
+func slotPostureBuilderFailureMaxAgeFollowsIdleTimeout() {
+    // 0 = idle unload disabled: no era boundary exists, so there is no age
+    // past which "every real slot from the failure's era is gone" — the row
+    // only clears via a live slot, config removal, or a fresh outcome.
+    #expect(DaemonSlotPostureBuilder.failureMaxAge(idleTimeoutMins: 0) == nil)
+    // Above the default: a box that keeps slots for 4 h keeps evidence 4 h.
+    #expect(DaemonSlotPostureBuilder.failureMaxAge(idleTimeoutMins: 240) == 14_400.0)
+    // At/below the default: the wedge-scale floor holds — a 5-minute idle
+    // timeout must not flap a genuine failure out of `doctor` mid-session.
+    #expect(
+        DaemonSlotPostureBuilder.failureMaxAge(idleTimeoutMins: 5)
+            == DaemonSlotPostureBuilder.failureMaxAgeSeconds)
+    #expect(
+        DaemonSlotPostureBuilder.failureMaxAge(idleTimeoutMins: 60)
+            == DaemonSlotPostureBuilder.failureMaxAgeSeconds)
+
+    let trippedAt = 100_000.0
+    let failure = DaemonState.ModelLoadError(model: "m", message: "refused", at: trippedAt)
+    let build = { (maxAge: Double?, now: Double) in
+        DaemonSlotPostureBuilder.build(
+            live: [], requestedGlobal: "auto", requestedByModel: [:],
+            lastModelLoadError: failure, desiredModels: ["m"],
+            failureMaxAge: maxAge, now: now)
+    }
+    // nil horizon: a day-old failure still shows.
+    #expect(build(nil, trippedAt + 86_400).count == 1)
+    // A 4 h horizon: visible at 4 h, gone past it.
+    #expect(build(14_400, trippedAt + 14_400).count == 1)
+    #expect(build(14_400, trippedAt + 14_401).isEmpty)
+}
+
 @Test("a model that failed once and then loaded reports as serving, not failed")
 func slotPostureBuilderDropsSupersededLoadError() {
     let built = DaemonSlotPostureBuilder.build(

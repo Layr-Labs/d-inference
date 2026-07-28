@@ -284,18 +284,42 @@ public enum DaemonSlotPostureBuilder {
     }
 
     /// How long the synthetic failed-slot entry outlives its failure without
-    /// a fresh one. One hour — the daemon's own idle-unload horizon
-    /// (`idle_timeout_mins` default): past it, every REAL slot from the
-    /// failure's era has been unloaded and rebuilt on demand anyway, so a
-    /// failure older than that horizon describes a previous era of the box,
-    /// not its current posture — history for the logs, not a live-looking
+    /// a fresh one. One hour — the daemon's DEFAULT idle-unload horizon
+    /// (`idle_timeout_mins`): past it, every REAL slot from the failure's
+    /// era has been unloaded and rebuilt on demand anyway, so a failure
+    /// older than that horizon describes a previous era of the box, not its
+    /// current posture — history for the logs, not a live-looking
     /// `NOT SERVING` row in `status`/`doctor`. Deliberately wedge-scale, not
     /// stale-scale (`KVBackendPosture.staleAfterSeconds` is ~10 s): a
     /// genuinely failed slot must not flap out of `doctor` between two
     /// commands of the same debugging session, and any retry of the load
     /// refreshes `at` (`recordModelLoadError`), keeping a PERSISTENT failure
     /// visible for as long as it actually recurs.
+    ///
+    /// This constant is the FLOOR; the effective horizon follows the
+    /// CONFIGURED idle timeout — see ``failureMaxAge(idleTimeoutMins:)``.
     public static let failureMaxAgeSeconds: Double = 3_600
+
+    /// The effective failed-slot expiry horizon for a box's configured
+    /// idle-unload timeout. The whole rationale for expiring by age is "the
+    /// idle-unload horizon has passed, so no real slot from the failure's
+    /// era survives" — a fixed 3600 s only implements that for the DEFAULT
+    /// configuration:
+    ///
+    ///   * `idle_timeout_mins = 0` (idle unload disabled): nil — there is no
+    ///     era boundary, slots live until an operator acts, so the failure
+    ///     row only clears via a live slot, config removal, or a fresh
+    ///     outcome. Expiring it by age would hide a real failure on exactly
+    ///     the box configured to never forget its slots.
+    ///   * above 60 min: use it — a box that keeps slots for 4 h keeps its
+    ///     failure evidence for 4 h.
+    ///   * at or below 60 min: keep the one-hour floor. The wedge-scale
+    ///     rationale above still holds — a 5-minute idle timeout must not
+    ///     make a genuine failure flap out of `doctor` mid-debugging-session.
+    public static func failureMaxAge(idleTimeoutMins: UInt64) -> Double? {
+        guard idleTimeoutMins > 0 else { return nil }
+        return max(Double(idleTimeoutMins) * 60, failureMaxAgeSeconds)
+    }
 
     /// `live` slots first (sorted by model id), then at most one synthetic
     /// entry for `lastModelLoadError` — and only while that failure is
@@ -309,13 +333,16 @@ public enum DaemonSlotPostureBuilder {
     ///     model resolved the failure the other way, and a row that outlives
     ///     the config that produced it reports `NOT SERVING` forever for a
     ///     model nobody wants served;
-    ///   * the failure is younger than ``failureMaxAgeSeconds``.
+    ///   * the failure is younger than `failureMaxAge` (the caller passes
+    ///     ``failureMaxAge(idleTimeoutMins:)`` for its configured idle
+    ///     timeout; nil ⇒ no expiry by age — idle unload disabled).
     public static func build(
         live: [LiveSlot],
         requestedGlobal: String,
         requestedByModel: [String: String],
         lastModelLoadError: DaemonState.ModelLoadError?,
         desiredModels: Set<String>? = nil,
+        failureMaxAge: Double? = failureMaxAgeSeconds,
         now: Double = Date().timeIntervalSince1970
     ) -> [DaemonState.SlotPosture] {
         func requested(_ modelID: String) -> String {
@@ -336,7 +363,7 @@ public enum DaemonSlotPostureBuilder {
         if let failure = lastModelLoadError,
             !live.contains(where: { $0.model == failure.model }),
             desiredModels.map({ $0.contains(failure.model) }) ?? true,
-            now - failure.at <= failureMaxAgeSeconds
+            failureMaxAge.map({ now - failure.at <= $0 }) ?? true
         {
             out.append(
                 DaemonState.SlotPosture(

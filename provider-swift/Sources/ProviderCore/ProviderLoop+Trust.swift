@@ -64,7 +64,12 @@ extension ProviderLoop {
                 requestedGlobal: loopConfig.config.backend.engineV2KVBackend,
                 requestedByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 lastModelLoadError: lastModelLoadError,
-                desiredModels: desiredModelsForPosture())
+                desiredModels: desiredModelsForPosture(),
+                // Expiry follows THIS box's idle-unload horizon, not the
+                // default: 0 (unload disabled) never expires by age, a
+                // longer-than-default timeout keeps evidence just as long.
+                failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
+                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins))
         )
     }
 

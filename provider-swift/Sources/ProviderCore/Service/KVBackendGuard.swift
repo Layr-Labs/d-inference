@@ -91,10 +91,19 @@ public enum KVBackendGuardStore {
     /// Path override, resolved from the CALLER's environment (see above).
     public static let pathEnvKey = "DARKBLOOM_KV_BACKEND_GUARD"
 
+    /// Only an ABSOLUTE override is honored. A relative path would resolve
+    /// against each process's own working directory — the launchd-spawned
+    /// watchdog (CWD `/`) and the daemon would silently read and WRITE
+    /// different guard files, which defeats the override's one purpose: a
+    /// single file both processes agree on. There is no shared CWD to
+    /// absolutize a relative path against, so it is rejected (the default
+    /// path is used) rather than guessed at.
     public static func path(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> URL {
-        if let override = environment[pathEnvKey], !override.isEmpty {
+        if let override = environment[pathEnvKey], !override.isEmpty,
+            override.hasPrefix("/")
+        {
             return URL(fileURLWithPath: override)
         }
         return FileManager.default.homeDirectoryForCurrentUser

@@ -421,6 +421,26 @@ struct KVBackendGuardStoreTests {
         #expect(KVBackendGuardStore.read(environment: env) == nil)
     }
 
+    @Test("a RELATIVE path override is rejected — the default path is used")
+    func relativeOverrideRejected() {
+        // A relative override resolves against each process's own CWD: the
+        // launchd-spawned watchdog (CWD `/`) and the daemon would silently
+        // agree on the ENV VALUE while reading and writing different files —
+        // the guard written by the watchdog would never reach the daemon.
+        let defaultPath = KVBackendGuardStore.path(environment: [:])
+        for relative in ["guard.json", "./guard.json", "../guard.json", "~/guard.json"] {
+            let resolved = KVBackendGuardStore.path(
+                environment: [KVBackendGuardStore.pathEnvKey: relative])
+            #expect(
+                resolved == defaultPath,
+                "relative override \(relative.debugDescription) must fall back to the default path")
+        }
+        // An absolute override is honored unchanged.
+        let absolute = KVBackendGuardStore.path(
+            environment: [KVBackendGuardStore.pathEnvKey: "/tmp/guard.json"])
+        #expect(absolute.path == "/tmp/guard.json")
+    }
+
     @Test("a corrupt/garbage file fails OPEN to no guard, not a crash")
     func corruptFailsOpen() throws {
         for garbage in ["", "not json at all", "{\"tripped_at\": \"words\"}", "[1,2,3]"] {

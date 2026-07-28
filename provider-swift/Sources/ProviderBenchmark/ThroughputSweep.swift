@@ -215,9 +215,34 @@ public enum ThroughputSweep {
 
     // MARK: - Decode
 
-    private struct RowMeasure: Sendable {
+    struct RowMeasure: Sendable {
         let produced: Int
         let elapsed: Duration
+        /// Non-nil when `engine.submit` threw for this row: the row decoded
+        /// NOTHING and its zeros are an absence, not a measurement.
+        var submitFailure: String? = nil
+    }
+
+    /// Aggregate a batch's row measurements into one cell. Any row whose
+    /// submission failed poisons the WHOLE cell: the curve point would be
+    /// computed over fewer live sequences than the batch size it is labelled
+    /// with, so the caller must record it as unmeasured rather than let a
+    /// zero-token row deflate a "measured" sample. Internal (not private)
+    /// so the poisoning rule is pinned by unit tests without a GPU.
+    static func aggregateRows(_ rows: [RowMeasure]) -> (
+        totalTokens: Int, maxElapsed: Duration, submitFailure: String?
+    ) {
+        var total = 0
+        var maxElapsed: Duration = .zero
+        var submitFailure: String?
+        for row in rows {
+            total += row.produced
+            if row.elapsed > maxElapsed { maxElapsed = row.elapsed }
+            if submitFailure == nil, let failure = row.submitFailure {
+                submitFailure = failure
+            }
+        }
+        return (total, maxElapsed, submitFailure)
     }
 
     /// Decode samples plus the KV backend the engine ACTUALLY built for those
@@ -323,7 +348,7 @@ public enum ThroughputSweep {
 
         for iteration in 1 ... repetitions {
             for batchSize in sizes {
-                let (totalTokens, maxElapsed, resolved, failure) = await runDecodeBatch(
+                let (totalTokens, maxElapsed, resolved, failure, submitFailure) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
                     weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory,
@@ -336,6 +361,20 @@ public enum ThroughputSweep {
                     if outcome.recordUnmeasured(batchSize: batchSize, reason: failure) {
                         log("  B=\(batchSize): NO measurement — \(failure)")
                     }
+                }
+                if let submitFailure {
+                    // The engine BUILT (resolved backend recorded above) but
+                    // a row's submission threw — e.g. an admission or
+                    // runtime-capacity failure at a larger batch. The cell
+                    // decoded fewer live rows than its label claims, so it is
+                    // UNMEASURED (which fails an explicit-backend sweep via
+                    // decodeCoverage), never a zero-deflated sample.
+                    if outcome.recordUnmeasured(
+                        batchSize: batchSize, reason: "submit failed: \(submitFailure)")
+                    {
+                        log("  B=\(batchSize): NO measurement — submit failed: \(submitFailure)")
+                    }
+                    continue
                 }
                 let secs = seconds(maxElapsed)
                 let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
@@ -357,10 +396,13 @@ public enum ThroughputSweep {
     /// Build the production CBv2 engine (`EngineV2Factory.makeProductionBuild`
     /// — the same construction every serving slot uses), run `batchSize`
     /// greedy rows to completion, shut the engine down, and return
-    /// `(totalDecodedTokens, maxRowElapsed, resolvedBackend)` where the clock
-    /// starts after each row's first token (prefill excluded) and
-    /// `resolvedBackend` names the KV backend the factory actually chose
-    /// (nil when construction failed).
+    /// `(totalDecodedTokens, maxRowElapsed, resolvedBackend,
+    /// constructionFailure, submitFailure)` where the clock starts after
+    /// each row's first token (prefill excluded), `resolvedBackend` names
+    /// the KV backend the factory actually chose (nil when construction
+    /// failed), and `submitFailure` is non-nil when the engine built but any
+    /// row's `engine.submit` threw — the cell is then unmeasured, never a
+    /// zero-token sample (see `aggregateRows`).
     @discardableResult
     private static func runDecodeBatch(
         container: ModelContainer,
@@ -375,7 +417,7 @@ public enum ThroughputSweep {
         kvBackend: EngineV2KVBackendSelection
     ) async -> (
         totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
-        constructionFailure: String?
+        constructionFailure: String?, submitFailure: String?
     ) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
@@ -420,12 +462,13 @@ public enum ThroughputSweep {
             // Return the reason so the report and the process exit status can
             // both name it instead of showing a bare curve of zeros.
             log("  engine construction failed: \(error)")
-            return (0, .zero, nil, "\(error)")
+            return (0, .zero, nil, "\(error)", nil)
         }
         let engine = parts.engine
         let eosTokenIds = parts.eosTokenIds
 
-        let result = await withTaskGroup(of: RowMeasure.self) { group -> (Int, Duration) in
+        let result = await withTaskGroup(of: RowMeasure.self) {
+            group -> (Int, Duration, String?) in
             for i in 0 ..< batchSize {
                 // Distinct rotated prompt per row so each sequence routes to a
                 // different mix of experts (otherwise identical prompts would
@@ -443,7 +486,8 @@ public enum ThroughputSweep {
                         ))
                     } catch {
                         Self.log("  submit failed: \(error)")
-                        return RowMeasure(produced: 0, elapsed: .zero)
+                        return RowMeasure(
+                            produced: 0, elapsed: .zero, submitFailure: "\(error)")
                     }
                     var sawFirst = false
                     var start = ContinuousClock.now
@@ -464,19 +508,17 @@ public enum ThroughputSweep {
                     return RowMeasure(produced: produced, elapsed: ContinuousClock.now - start)
                 }
             }
-            var total = 0
-            var maxElapsed: Duration = .zero
-            for await row in group {
-                total += row.produced
-                if row.elapsed > maxElapsed { maxElapsed = row.elapsed }
-            }
-            return (total, maxElapsed)
+            var rows: [RowMeasure] = []
+            for await row in group { rows.append(row) }
+            let cell = Self.aggregateRows(rows)
+            return (cell.totalTokens, cell.maxElapsed, cell.submitFailure)
         }
 
         await engine.shutdown()
         return (
             totalTokens: result.0, maxElapsed: result.1,
-            resolvedBackend: parts.resolvedBackend, constructionFailure: nil)
+            resolvedBackend: parts.resolvedBackend, constructionFailure: nil,
+            submitFailure: result.2)
     }
 
     // MARK: - Helpers

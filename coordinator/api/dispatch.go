@@ -1486,12 +1486,17 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.s.ddIncr("routing.dispatch_client_error_stop", []string{"model:" + d.model, "code:" + strconv.Itoa(msg.StatusCode), "src:race_loser"})
 		d.terminalClientError = true
 		d.terminalClientErrorCode = msg.StatusCode
+		// The verdict slot owns the terminal outcome's kv_backend attribution
+		// from this point (see latchTerminalAttribution): the response the
+		// client gets IS this loser's 4xx, whatever the surviving racer does.
+		d.latchTerminalAttribution(provider)
 		return
 	}
 	// Mirror the jinja_* reason stop (E4) at the race-loser site for the same
 	// masking reason: a deterministic template-render failure from the loser
 	// must not be storm-resumed through the survivor's transient error.
 	if d.latchJinjaTerminalReject(msg.ErrorReason, "race_loser") {
+		d.latchTerminalAttribution(provider)
 		return
 	}
 	budget := providerReportedBudget(provider, d.model)
@@ -1499,6 +1504,7 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true
 		d.unservableReason = rejectionReasonOversized
+		d.latchTerminalAttribution(provider)
 	}
 }
 
@@ -2175,7 +2181,11 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// The primary already failed and d.pr is cleared: the BACKUP is the only
 	// racer left, so every failure or timeout below is the backup's. Re-latch
 	// now so the terminal outcome names the backup's backend rather than
-	// falling back to the dead primary's latch.
+	// falling back to the dead primary's latch. When the primary's failure
+	// latched a DETERMINISTIC verdict (latchDeterministicLoser just ran), the
+	// re-latch is a no-op by design: the terminal response will be the
+	// primary's 4xx/422/429, so the primary keeps the attribution even
+	// though the backup keeps racing (noteServingSlotFor's freeze rule).
 	d.noteServingSlotFor(backupPR)
 	backupDeadline := time.NewTimer(d.deadline - d.speculativeAt)
 	for {

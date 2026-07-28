@@ -100,6 +100,48 @@ struct DecodeBandwidthModelTests {
     }
 }
 
+@Suite("throughput sweep: row aggregation")
+struct ThroughputSweepRowAggregationTests {
+
+    @Test("clean rows aggregate tokens and the slowest row's elapsed")
+    func cleanRowsAggregate() {
+        let cell = ThroughputSweep.aggregateRows([
+            .init(produced: 10, elapsed: .seconds(1)),
+            .init(produced: 12, elapsed: .seconds(3)),
+            .init(produced: 11, elapsed: .seconds(2)),
+        ])
+        #expect(cell.totalTokens == 33)
+        #expect(cell.maxElapsed == .seconds(3))
+        #expect(cell.submitFailure == nil)
+    }
+
+    @Test("ANY row whose submit threw poisons the cell: it is unmeasured, not a zero sample")
+    func submitFailurePoisonsCell() {
+        // The regression this pins: a B=8 cell where one row's
+        // `engine.submit` threw (admission/runtime capacity) used to come
+        // back as a MEASURED cell with a deflated token count, and an
+        // explicit-backend sweep exited 0 over a corrupted curve. The
+        // failure must surface so the caller records the cell in
+        // `decodeCoverage.unmeasured` and the release gate rejects the run.
+        let cell = ThroughputSweep.aggregateRows([
+            .init(produced: 10, elapsed: .seconds(1)),
+            .init(produced: 0, elapsed: .zero, submitFailure: "capacityExhausted"),
+            .init(produced: 12, elapsed: .seconds(2)),
+        ])
+        #expect(cell.submitFailure == "capacityExhausted")
+    }
+
+    @Test("the first failure is kept when several rows throw")
+    func firstFailureKept() {
+        let cell = ThroughputSweep.aggregateRows([
+            .init(produced: 0, elapsed: .zero, submitFailure: "first"),
+            .init(produced: 0, elapsed: .zero, submitFailure: "second"),
+        ])
+        #expect(cell.submitFailure == "first")
+        #expect(cell.totalTokens == 0)
+    }
+}
+
 @Suite("throughput sweep: report assembly + JSON")
 struct ThroughputSweepReportTests {
 

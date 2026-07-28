@@ -134,6 +134,131 @@ func TestSpeculativeBackupFailureAttributesBackupKVBackend(t *testing.T) {
 	}
 }
 
+// heartbeatSlotKV reports a serving slot with an explicit KV backend for the
+// provider, so kvBackendAttribution resolves a real tag instead of unknown.
+func heartbeatSlotKV(d *dispatchState, p *registry.Provider, backend string) {
+	d.s.registry.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "serving",
+		BackendCapacity: &protocol.BackendCapacity{
+			TotalMemoryGB: 64,
+			Slots: []protocol.BackendSlotCapacity{
+				{Model: d.model, State: "running", KVBackend: &backend},
+			},
+		},
+	})
+}
+
+// TestDeterministicPrimaryVerdictKeepsPrimaryAttribution pins the freeze rule
+// (the deterministic-loser interaction with the backup re-latch): when the
+// PRIMARY's failure latches a deterministic terminal verdict — a client 4xx
+// identical on every provider — the terminal response IS that verdict no
+// matter what the backup does next, so the outcome attribution must keep
+// naming the primary's backend. The re-latch on entry to
+// racePrimaryFailedWaitBackup is a deliberate no-op in that state; without
+// the freeze, the primary's controlling 400 booked under the backup's
+// kv_backend tag.
+func TestDeterministicPrimaryVerdictKeepsPrimaryAttribution(t *testing.T) {
+	d, _, primary, primaryPR, backup, backupPR := speculativeFailureTestState(t, time.Second, 500*time.Millisecond)
+	heartbeatSlotKV(d, primary, registry.KVBackendPaged)
+	heartbeatSlotKV(d, backup, registry.KVBackendContiguous)
+
+	// Dispatch latched the primary's slot...
+	d.pr = primaryPR
+	d.noteServingSlot()
+
+	// ...then the primary failed with a deterministic client 4xx: runRace's
+	// ErrorCh arm records the failure, latches the verdict, and clears
+	// d.provider/d.pr before entering the backup wait.
+	verdict := protocol.InferenceErrorMessage{
+		Error:       "prompt malformed",
+		ErrorReason: "bad_request",
+		StatusCode:  http.StatusBadRequest,
+	}
+	d.updateSpeculativeFailure(primaryPR, verdict)
+	d.latchDeterministicLoser(primary, verdict)
+	if !d.terminalClientError {
+		t.Fatal("the primary's 400 must latch a terminal client verdict")
+	}
+	d.pr, d.provider, d.requestID = nil, nil, ""
+
+	// The backup fails too — its 502 must NOT steal the attribution.
+	backupPR.ErrorCh <- protocol.InferenceErrorMessage{
+		Error:       "backup failed",
+		ErrorReason: "backup_failure",
+		StatusCode:  http.StatusBadGateway,
+	}
+	if got := d.racePrimaryFailedWaitBackup(backup, backupPR, nil); got != outcomeRetry {
+		t.Fatalf("outcome = %v, want retry", got)
+	}
+
+	attr := d.kvBackendAttribution()
+	if attr.Backend != registry.KVBackendPaged {
+		t.Errorf("terminal attribution = %q, want %q (the primary's deterministic 4xx controls the outcome)",
+			attr.Backend, registry.KVBackendPaged)
+	}
+}
+
+// TestPromotedBackupSavedOnLiveMismatch pins the promotion-save: a live
+// attribution read through a MISMATCHED d.pr means a backup was promoted
+// outside every noteServingSlot site (AcceptedCh / preamble promotion). The
+// read must save the resolution, so a promoted backup that then errors or
+// times out pre-content — after the wait path clears d.pr — books under its
+// own backend, not the cancelled primary's stale latch.
+func TestPromotedBackupSavedOnLiveMismatch(t *testing.T) {
+	d, _, primary, primaryPR, backup, backupPR := speculativeFailureTestState(t, time.Second, 500*time.Millisecond)
+	heartbeatSlotKV(d, primary, registry.KVBackendPaged)
+	heartbeatSlotKV(d, backup, registry.KVBackendContiguous)
+
+	d.pr = primaryPR
+	d.noteServingSlot()
+
+	// Promotion outside the choke point: d.pr moves to the backup with no
+	// explicit re-latch.
+	d.pr = backupPR
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendContiguous {
+		t.Fatalf("live mismatch read = %q, want the backup's %q", got, registry.KVBackendContiguous)
+	}
+
+	// The promoted backup fails pre-content; the wait path clears d.pr. The
+	// exhaustion fallback must name the promoted slot.
+	d.pr = nil
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendContiguous {
+		t.Errorf("terminal fallback = %q, want %q (the live mismatch read must save the promotion)",
+			got, registry.KVBackendContiguous)
+	}
+}
+
+// TestFrozenLatchSurvivesLiveMismatchRead pins the interaction of the two
+// rules above: once the primary's deterministic verdict latches, a live read
+// through a promoted backup stays truthful (returns the backup) but must NOT
+// move the persistent latch — the terminal fallback still belongs to the
+// verdict slot.
+func TestFrozenLatchSurvivesLiveMismatchRead(t *testing.T) {
+	d, _, primary, primaryPR, backup, backupPR := speculativeFailureTestState(t, time.Second, 500*time.Millisecond)
+	heartbeatSlotKV(d, primary, registry.KVBackendPaged)
+	heartbeatSlotKV(d, backup, registry.KVBackendContiguous)
+
+	d.pr = primaryPR
+	d.noteServingSlot()
+	verdict := protocol.InferenceErrorMessage{
+		Error:       "prompt malformed",
+		ErrorReason: "bad_request",
+		StatusCode:  http.StatusBadRequest,
+	}
+	d.latchDeterministicLoser(primary, verdict)
+
+	d.pr = backupPR
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendContiguous {
+		t.Fatalf("live read = %q, want the backup's %q (live reads stay truthful)", got, registry.KVBackendContiguous)
+	}
+	d.pr = nil
+	if got := d.kvBackendAttribution().Backend; got != registry.KVBackendPaged {
+		t.Errorf("terminal fallback = %q, want %q (the frozen verdict latch must survive live reads)",
+			got, registry.KVBackendPaged)
+	}
+}
+
 func TestCapturedRoutingAttemptStillHandlesOrdinaryRetry(t *testing.T) {
 	d, _, primary, primaryPR, _, _ := speculativeFailureTestState(t, time.Second, 500*time.Millisecond)
 	captured := routingAttempt(primary, primaryPR, primaryPR.RequestID, primaryPR.Attempt)

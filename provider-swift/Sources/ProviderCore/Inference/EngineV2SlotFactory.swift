@@ -240,11 +240,23 @@ enum EngineV2SlotFactory {
 
         // SSD offload never carves the live KV grant.
         let engineKVBytesCapacity = kvBytesCapacity
-        let promptContractID =
-            assemblyOverrides.promptContractID
-            ?? modelDirectory.flatMap {
-                try? PromptContractIdentity.compute(modelDirectory: $0)
+        // Discriminated no-contract cause for eligibility telemetry; only
+        // reported on the promptContractID-nil branch below.
+        var promptContractFailure = SSDPrefixCacheConstructionFailure.promptContractUnavailable
+        let promptContractID: String?
+        if let overridden = assemblyOverrides.promptContractID {
+            promptContractID = overridden
+        } else if let modelDirectory {
+            do {
+                promptContractID = try PromptContractIdentity.compute(
+                    modelDirectory: modelDirectory)
+            } catch {
+                promptContractID = nil
+                promptContractFailure = Self.promptContractConstructionFailure(error)
             }
+        } else {
+            promptContractID = nil
+        }
         let preparedBackend: EngineV2Factory.ProductionBackendPreparation?
         if makeEngineOverride == nil {
             do {
@@ -308,7 +320,8 @@ enum EngineV2SlotFactory {
                             ssdLayerKinds, prefixReuseCapability)
                         cacheConstructionStatus = ssdPrefixCache == nil
                             ? PrefixCacheConstructionStatus(
-                                state: .error, reason: .cacheInitFailed)
+                                state: .error, reason: .cacheInitFailed,
+                                detail: .unknown)
                             : .scanPending
                     } else {
                         ssdPrefixCache = await SSDPrefixCacheFactory.make(
@@ -331,20 +344,23 @@ enum EngineV2SlotFactory {
                         cacheConstructionStatus = ssdPrefixCache == nil
                             ? (cacheConstructionStatusBox.snapshot
                                 ?? PrefixCacheConstructionStatus(
-                                    state: .error, reason: .cacheInitFailed))
+                                    state: .error, reason: .cacheInitFailed,
+                                    detail: .unknown))
                             : .scanPending
                     }
                 } else {
-                    cacheConstructionStatus = PrefixCacheConstructionStatus(
-                        state: .error, reason: .cacheInitFailed)
+                    cacheConstructionStatus = PrefixCacheConstructionStatusBox.status(
+                        failure: promptContractFailure,
+                        capability: prefixReuseCapability)
                     Self.emitPrefixCacheConstructionFailure(
                         modelId: modelId,
                         capability: prefixReuseCapability,
-                        failure: .promptContractUnavailable,
+                        failure: promptContractFailure,
                         emitTelemetry: emitTelemetry)
                     logWarning(
                         "engine_v2: SSD prefix cache skipped for \(modelId) — "
-                            + "prompt contract could not be computed from local artifacts")
+                            + "prompt contract unavailable "
+                            + "(\(promptContractFailure.rawValue))")
                 }
             } else {
                 let unavailableCapability = PrefixCachePolicy.prefixReuseCapability(
@@ -375,7 +391,8 @@ enum EngineV2SlotFactory {
             backend: cacheBackend,
             replayStrategy: PrefixCacheReplayStrategy(cacheCapability),
             state: cacheConstructionStatus.state,
-            reason: cacheConstructionStatus.reason)
+            reason: cacheConstructionStatus.reason,
+            initFailure: cacheConstructionStatus.detail)
         let enginePrefixCache: (any CBv2PrefixCache)? = ssdPrefixCache
 
         let makeEngine: () throws -> EngineV2Factory.ProductionBuild
@@ -467,6 +484,24 @@ enum EngineV2SlotFactory {
             assistantBytes: mtpStatus.assistantBytes,
             mtpArtifact: prepared.mtpArtifact,
             mtpStatus: mtpStatus)
+    }
+
+    /// Map a discriminated PromptContractIdentity failure to its
+    /// construction-failure case; anything unexpected stays in the residual
+    /// prompt_contract_unavailable bucket.
+    static func promptContractConstructionFailure(
+        _ error: Swift.Error
+    ) -> SSDPrefixCacheConstructionFailure {
+        switch error as? PromptContractIdentity.Error {
+        case .templateArtifactMissing:
+            return .templateArtifactMissing
+        case .templateDynamicDate:
+            return .templateDynamicDate
+        case .templateRenderFailed:
+            return .templateRenderFailed
+        case .invalidArtifact, nil:
+            return .promptContractUnavailable
+        }
     }
 
     private static func emitPrefixCacheConstructionFailure(

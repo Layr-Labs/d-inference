@@ -222,6 +222,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     private var scanReady = false
     private var scanFailed = false
     private var cacheStatusFailure: PrefixCacheStatusReason?
+    /// Granular companion to `cacheStatusFailure`; set together with it and
+    /// reported as `init_failure` only when the reason is `.cacheInitFailed`.
+    private var cacheStatusFailureDetail: PrefixCacheInitFailureDetail?
     private var destructiveChangeInProgress = false
     /// tag16 of the run's TERMINAL block → staged entry.
     private var stagedEntries: [Data: StagedEntry] = [:]
@@ -369,26 +372,31 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
     private func prefixCacheModelStatusLocked(
         base: PrefixCacheModelStatus
     ) -> PrefixCacheModelStatus {
-        let status: (PrefixCacheStatusState, PrefixCacheStatusReason)
+        let status:
+            (PrefixCacheStatusState, PrefixCacheStatusReason, PrefixCacheInitFailureDetail?)
         if closed {
-            status = (.error, .cacheInitFailed)
+            status = (.error, .cacheInitFailed, .cacheClosed)
         } else if scanFailed {
-            status = (.error, .scanFailed)
+            status = (.error, .scanFailed, nil)
         } else if let cacheStatusFailure {
-            status = (.error, cacheStatusFailure)
+            status = (
+                .error, cacheStatusFailure,
+                cacheStatusFailure == .cacheInitFailed ? cacheStatusFailureDetail : nil
+            )
         } else if !scanReady || destructiveChangeInProgress {
-            status = (.pending, .scanPending)
+            status = (.pending, .scanPending, nil)
         } else if config.epochStore != nil && config.epochStore?.current == nil {
-            status = (.error, .cacheInitFailed)
+            status = (.error, .cacheInitFailed, .epochLost)
         } else {
-            status = (.ready, .ready)
+            status = (.ready, .ready, nil)
         }
         return PrefixCacheModelStatus(
             modelId: base.modelId,
             backend: base.backend,
             replayStrategy: base.replayStrategy,
             state: status.0,
-            reason: status.1)
+            reason: status.1,
+            initFailure: status.2)
     }
 
     func takeNextPrefixCacheV2Sequence(expectedEpoch: String) -> UInt64? {
@@ -408,6 +416,7 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             scanReady = false
             scanFailed = false
             cacheStatusFailure = nil
+            cacheStatusFailureDetail = nil
             // Release the PER-ENTRY reservations (each resident entry holds
             // exactly one, keyed by its creator). Attaching requests already
             // released their redundant provisional reservation at attach
@@ -1608,7 +1617,9 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             }
         }
         #if canImport(os)
-        Self.logger.info(
+        // .notice: once-per-load lifecycle summary that must persist for
+        // `darkbloom report` (info stays in the memory ring buffer).
+        Self.logger.notice(
             "ssd prefix cache (\(self.config.modelId, privacy: .public)): startup scan indexed \(indexed) blocks (\(self.index.totalBytes) B), dropped \(dropped) stale, \(expired) expired")
         #endif
     }
@@ -1653,6 +1664,8 @@ public final class SSDPrefixCache: CBv2PrefixCache, SSDEvictableStore, @unchecke
             lock.withLock {
                 scanReady = false
                 cacheStatusFailure = .cacheInitFailed
+                // A failed epoch persist orphans the durable generation.
+                cacheStatusFailureDetail = .epochLost
             }
             return nil
         }

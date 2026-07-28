@@ -35,25 +35,52 @@ public enum PrefixCacheStatusReason: String, Codable, Sendable, Equatable, CaseI
     case cacheInitFailed = "cache_init_failed"
 }
 
+/// Granular sub-cause carried ONLY alongside `reason == .cacheInitFailed`.
+/// A separate optional detail — never a new `PrefixCacheStatusReason` value —
+/// because already-deployed coordinators drop status entries with unknown
+/// reasons entry-wise; a new reason enum would make failing providers
+/// invisible to them, while an unknown extra key is simply ignored.
+public enum PrefixCacheInitFailureDetail: String, Codable, Sendable, Equatable, CaseIterable {
+    case keyUnavailable = "key_unavailable"
+    case ephemeralKeyUnavailable = "ephemeral_key_unavailable"
+    case blockContractMismatch = "block_contract_mismatch"
+    case epochUnavailable = "epoch_unavailable"
+    case promptContractUnavailable = "prompt_contract_unavailable"
+    // Discriminated prompt-contract sub-causes (0.7.14+): manifest gap vs
+    // deliberate determinism exclusion vs render self-check failure.
+    case templateArtifactMissing = "template_artifact_missing"
+    case templateDynamicDate = "template_dynamic_date"
+    case templateRenderFailed = "template_render_failed"
+    case epochLost = "epoch_lost"
+    case cacheClosed = "cache_closed"
+    case unknown
+}
+
 public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
     public let modelId: String
     public let backend: PrefixCacheStatusBackend
     public let replayStrategy: PrefixCacheReplayStrategy
     public let state: PrefixCacheStatusState
     public let reason: PrefixCacheStatusReason
+    /// Optional granular detail; populated only when `reason == .cacheInitFailed`.
+    /// Synthesized Codable uses encodeIfPresent/decodeIfPresent for optionals,
+    /// so nil omits the `init_failure` key entirely (old-coordinator safe).
+    public let initFailure: PrefixCacheInitFailureDetail?
 
     public init(
         modelId: String,
         backend: PrefixCacheStatusBackend,
         replayStrategy: PrefixCacheReplayStrategy,
         state: PrefixCacheStatusState,
-        reason: PrefixCacheStatusReason
+        reason: PrefixCacheStatusReason,
+        initFailure: PrefixCacheInitFailureDetail? = nil
     ) {
         self.modelId = modelId
         self.backend = backend
         self.replayStrategy = replayStrategy
         self.state = state
         self.reason = reason
+        self.initFailure = initFailure
     }
 
     enum CodingKeys: String, CodingKey {
@@ -62,6 +89,23 @@ public struct PrefixCacheModelStatus: Codable, Sendable, Equatable {
         case replayStrategy = "replay_strategy"
         case state
         case reason
+        case initFailure = "init_failure"
+    }
+
+    /// Custom decode ONLY to make the optional detail forward-tolerant: an
+    /// unknown future `init_failure` string decodes to nil instead of
+    /// rejecting the whole message (the detail is diagnostic garnish; the
+    /// (state, reason) tuple is the signal). Encoding stays synthesized.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelId = try container.decode(String.self, forKey: .modelId)
+        backend = try container.decode(PrefixCacheStatusBackend.self, forKey: .backend)
+        replayStrategy = try container.decode(
+            PrefixCacheReplayStrategy.self, forKey: .replayStrategy)
+        state = try container.decode(PrefixCacheStatusState.self, forKey: .state)
+        reason = try container.decode(PrefixCacheStatusReason.self, forKey: .reason)
+        initFailure = (try container.decodeIfPresent(String.self, forKey: .initFailure))
+            .flatMap(PrefixCacheInitFailureDetail.init(rawValue:))
     }
 }
 

@@ -262,11 +262,12 @@ let package = Package(
         // target's pure helpers. The CLI's command types live in the
         // executable target (which uses `@main`, so it is importable via
         // `@testable import darkbloom`). Currently covers the `log` argv
-        // builders in LogsCommand.
+        // builders in LogsCommand and the report/logs subsystem coverage
+        // drift test (ProviderCore's ProviderLogSubsystems).
         // ----------------------------------------------------------------
         .testTarget(
             name: "DarkbloomCLITests",
-            dependencies: ["darkbloom"],
+            dependencies: ["darkbloom", "ProviderCore"],
             path: "Tests/DarkbloomCLITests"
         ),
 

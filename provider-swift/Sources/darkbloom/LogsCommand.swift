@@ -6,8 +6,8 @@ struct Logs: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Show provider logs from macOS unified logging.",
         discussion: """
-        Streams live logs from macOS unified logging \
-        (subsystem: \(subsystem)) by default.
+        Streams live logs from macOS unified logging (all Darkbloom \
+        provider log subsystems) by default.
 
         Use --last to show a historical window (e.g. 1h, 30m, 24h). Combine \
         --last with --follow to print that history first and then keep \
@@ -33,8 +33,7 @@ struct Logs: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Number of lines to show (only applies with --file).")
     var lines: Int = 50
 
-    private static let subsystem = "dev.darkbloom.provider"
-    private static let predicate = #"subsystem == "\#(subsystem)""#
+    private static let predicate = ProviderLogSubsystems.unifiedLogPredicate()
 
     mutating func run() async throws {
         await runUpdateBannerIfEnabled()

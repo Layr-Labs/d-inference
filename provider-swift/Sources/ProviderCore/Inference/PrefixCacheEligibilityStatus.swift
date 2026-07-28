@@ -4,6 +4,18 @@ import MLXLMCommon
 struct PrefixCacheConstructionStatus: Sendable {
     let state: PrefixCacheStatusState
     let reason: PrefixCacheStatusReason
+    /// Granular sub-cause; non-nil only when `reason == .cacheInitFailed`.
+    let detail: PrefixCacheInitFailureDetail?
+
+    init(
+        state: PrefixCacheStatusState,
+        reason: PrefixCacheStatusReason,
+        detail: PrefixCacheInitFailureDetail? = nil
+    ) {
+        self.state = state
+        self.reason = reason
+        self.detail = detail
+    }
 
     static let configDisabled = PrefixCacheConstructionStatus(
         state: .disabled, reason: .configDisabled)
@@ -28,7 +40,9 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
         lock.withLock { value }
     }
 
-    private static func status(
+    /// Single source of the failure → (state, reason, detail) mapping —
+    /// also used directly by the slot factory's no-prompt-contract path.
+    static func status(
         failure: SSDPrefixCacheConstructionFailure,
         capability: CBv2PrefixReuseCapability
     ) -> PrefixCacheConstructionStatus {
@@ -50,10 +64,30 @@ final class PrefixCacheConstructionStatusBox: @unchecked Sendable {
         case .unsafePath:
             return PrefixCacheConstructionStatus(
                 state: .error, reason: .diskUnavailable)
-        case .keyUnavailable, .ephemeralKeyUnavailable, .blockContractMismatch,
-            .epochUnavailable, .promptContractUnavailable:
+        case .keyUnavailable:
             return PrefixCacheConstructionStatus(
-                state: .error, reason: .cacheInitFailed)
+                state: .error, reason: .cacheInitFailed, detail: .keyUnavailable)
+        case .ephemeralKeyUnavailable:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .ephemeralKeyUnavailable)
+        case .blockContractMismatch:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .blockContractMismatch)
+        case .epochUnavailable:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .epochUnavailable)
+        case .templateArtifactMissing:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .templateArtifactMissing)
+        case .templateDynamicDate:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .templateDynamicDate)
+        case .templateRenderFailed:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .templateRenderFailed)
+        case .promptContractUnavailable:
+            return PrefixCacheConstructionStatus(
+                state: .error, reason: .cacheInitFailed, detail: .promptContractUnavailable)
         }
     }
 }

@@ -189,6 +189,12 @@ func (s *Server) registerExactCacheGauges() {
 			return float64(s.Providers.ByReason[reason])
 		}), MetricLabel{"reason", reason})
 	}
+	for _, failure := range registry.PrefixCacheInitFailureDetails() {
+		failure := failure
+		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_init_failure", gauge(func(s ExactCacheStatus) float64 {
+			return float64(s.Providers.ByInitFailure[failure])
+		}), MetricLabel{"failure", failure})
+	}
 	for _, backend := range registry.PrefixCacheStatusBackends() {
 		backend := backend
 		s.metrics.RegisterGaugeLabels("exact_cache_eligibility_backend", gauge(func(s ExactCacheStatus) float64 {
@@ -311,6 +317,10 @@ func (s *Server) emitExactCacheDDGauges() {
 	for _, reason := range registry.PrefixCacheStatusReasons() {
 		s.ddGauge("exact_cache.eligibility_reason", float64(status.Providers.ByReason[reason]),
 			[]string{"reason:" + reason})
+	}
+	for _, failure := range registry.PrefixCacheInitFailureDetails() {
+		s.ddGauge("exact_cache.eligibility_init_failure", float64(status.Providers.ByInitFailure[failure]),
+			[]string{"failure:" + failure})
 	}
 	for _, backend := range registry.PrefixCacheStatusBackends() {
 		s.ddGauge("exact_cache.eligibility_backend", float64(status.Providers.ByBackend[backend]),

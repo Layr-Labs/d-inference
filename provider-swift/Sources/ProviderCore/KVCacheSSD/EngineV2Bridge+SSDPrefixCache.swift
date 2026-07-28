@@ -39,15 +39,18 @@ extension EngineV2Bridge {
         }
     }
 
-    /// One info line per interval — the `tier=ssd` sibling of the
-    /// `engine=v2` RAM-cache line in `darkbloom logs`.
+    /// One line per interval — the `tier=ssd` sibling of the `engine=v2`
+    /// RAM-cache line in `darkbloom logs`. Logged at .notice so it persists
+    /// to disk for `darkbloom report` (info is memory-ring-buffer only);
+    /// the default cadence is one line per 120s per slot, so persistence
+    /// cost stays negligible.
     static func logSSDPrefixCacheStats(cache: SSDPrefixCache, modelId: String) {
         let s = cache.stats()
         let lookups = s.hits + s.misses
         let rate = lookups > 0 ? (Double(s.hits) * 100.0 / Double(lookups)) : 0.0
         #if canImport(os)
         let rateStr = String(format: "%.1f", rate)
-        Self.ssdStatsLogger.info(
+        Self.ssdStatsLogger.notice(
             "prefix cache stats (engine=v2, tier=ssd, model=\(modelId, privacy: .public)): lookups=\(lookups) hits=\(s.hits) misses=\(s.misses) hitRate=\(rateStr, privacy: .public)% tokensSaved=\(s.tokensSaved) stages=\(s.stages) stagedBytes=\(s.stagedBytesInUse) blocksWritten=\(s.blocksWritten) bytesWritten=\(s.bytesWritten) donationsDropped=\(s.donationsDropped) rateLimited=\(s.writeRateLimited) corruptDropped=\(s.corruptDropped) evictions=\(s.evictions) ttlExpired=\(s.ttlExpired) entries=\(s.entries) bytesOnDisk=\(s.bytesOnDisk)"
         )
         #endif

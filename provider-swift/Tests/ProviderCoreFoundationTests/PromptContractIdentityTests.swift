@@ -48,7 +48,9 @@ struct PromptContractIdentityTests {
         for (name, data) in contents {
             try data.write(to: root.appendingPathComponent(name))
         }
-        #expect(throws: PromptContractIdentity.Error.invalidArtifact) {
+        // Embedded-template-only snapshots (Qwen 2.5 family, mlx-community
+        // gemma-4) reject with the discriminated manifest-gap cause.
+        #expect(throws: PromptContractIdentity.Error.templateArtifactMissing) {
             try PromptContractIdentity.compute(modelDirectory: root)
         }
     }
@@ -66,7 +68,13 @@ struct PromptContractIdentityTests {
         try Data("{{ messages }}".utf8).write(
             to: root.appendingPathComponent("chat_template.jinja"))
 
-        #expect(try PromptContractIdentity.compute(modelDirectory: root).count == 64)
+        // Byte-identity pin: the contract ID for this fixed fixture must never
+        // move (the Rust prompt sidecar mirrors this computation). Guard-path
+        // refactors may only change WHICH error is thrown, never the accepted
+        // inputs or the resulting hash.
+        #expect(
+            try PromptContractIdentity.compute(modelDirectory: root)
+                == "f55113f73235e26eab178d5f1f4d2b439ab206928e0ecad3e546b788be23f55d")
     }
 
     @Test("unsupported renderer semantics do not produce a contract identity")
@@ -82,7 +90,7 @@ struct PromptContractIdentityTests {
         try Data(#"{% include "unsupported.jinja" %}"#.utf8).write(
             to: root.appendingPathComponent("chat_template.jinja"))
 
-        #expect(throws: PromptContractIdentity.Error.invalidArtifact) {
+        #expect(throws: PromptContractIdentity.Error.templateRenderFailed) {
             try PromptContractIdentity.compute(modelDirectory: root)
         }
     }
@@ -100,7 +108,9 @@ struct PromptContractIdentityTests {
         try Data(#"{{ strftime_now("%Y-%m-%d") }}"#.utf8).write(
             to: root.appendingPathComponent("chat_template.jinja"))
 
-        #expect(throws: PromptContractIdentity.Error.invalidArtifact) {
+        // GPT-OSS-style wall-clock templates reject with the discriminated
+        // determinism-exclusion cause.
+        #expect(throws: PromptContractIdentity.Error.templateDynamicDate) {
             try PromptContractIdentity.compute(modelDirectory: root)
         }
     }

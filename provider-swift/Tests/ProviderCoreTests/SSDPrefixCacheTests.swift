@@ -1125,6 +1125,82 @@ struct SSDPrefixCacheLifecycleTests {
         #expect(current.cacheEpoch != original.cacheEpoch)
     }
 
+    @Test("runtime cache_init_failed statuses carry granular init-failure details")
+    func runtimeInitFailureStatusesCarryDetail() throws {
+        let base = PrefixCacheModelStatus(
+            modelId: "test-model",
+            backend: .contiguous,
+            replayStrategy: .direct,
+            state: .pending,
+            reason: .scanPending)
+        let binding = SSDCacheEpochStore.Binding(
+            modelId: "test-model",
+            modelAggregateHash: "test-weight-hash",
+            promptContractId: "test-prompt-contract",
+            blockHashVersion: CBv2BlockHasher.version,
+            blockSize: fixtureBlockSize,
+            layoutEpoch: SSDBlockStore.layoutEpoch(
+                blockSize: fixtureBlockSize, layerKinds: fixtureLayerKinds),
+            keyFingerprint: String(repeating: "e", count: 64))
+
+        // Closed cache: the terminal runtime state reports .cacheClosed.
+        let closedDir = tempDir("status-detail-closed")
+        defer { try? FileManager.default.removeItem(at: closedDir) }
+        let closedCache = makeCache(
+            dir: closedDir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000))
+        closedCache.close()
+        let closedStatus = closedCache.prefixCacheModelStatus(base: base)
+        #expect(closedStatus.state == .error)
+        #expect(closedStatus.reason == .cacheInitFailed)
+        #expect(closedStatus.initFailure == .cacheClosed)
+
+        // Ledger-lost epoch: another owner (different binding) takes over the
+        // root, the original store's epoch becomes unverifiable → .epochLost.
+        let lostDir = tempDir("status-detail-epoch-lost")
+        defer { try? FileManager.default.removeItem(at: lostDir) }
+        let lostStore = try SSDCacheEpochStore(root: lostDir, binding: binding)
+        let lostCache = makeCache(
+            dir: lostDir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
+            epochStore: lostStore)
+        defer { lostCache.close() }
+        lostCache.scanOnDisk()
+        let readyStatus = lostCache.prefixCacheModelStatus(base: base)
+        #expect(readyStatus.state == .ready)
+        #expect(readyStatus.reason == .ready)
+        #expect(readyStatus.initFailure == nil)
+        let rebound = SSDCacheEpochStore.Binding(
+            modelId: binding.modelId,
+            modelAggregateHash: "different-weight-hash",
+            promptContractId: binding.promptContractId,
+            blockHashVersion: binding.blockHashVersion,
+            blockSize: binding.blockSize,
+            layoutEpoch: binding.layoutEpoch,
+            keyFingerprint: binding.keyFingerprint)
+        _ = try SSDCacheEpochStore(root: lostDir, binding: rebound)
+        let lostStatus = lostCache.prefixCacheModelStatus(base: base)
+        #expect(lostStatus.state == .error)
+        #expect(lostStatus.reason == .cacheInitFailed)
+        #expect(lostStatus.initFailure == .epochLost)
+
+        // Destructive-change persist failure: the epoch record vanished under
+        // an active mutation → cacheStatusFailure with the .epochLost detail.
+        let persistDir = tempDir("status-detail-persist-failure")
+        defer { try? FileManager.default.removeItem(at: persistDir) }
+        let persistStore = try SSDCacheEpochStore(root: persistDir, binding: binding)
+        let persistCache = makeCache(
+            dir: persistDir, kek: SymmetricKey(size: .bits256), clock: ClockBox(10_000),
+            epochStore: persistStore)
+        defer { persistCache.close() }
+        persistCache.scanOnDisk()
+        try FileManager.default.removeItem(
+            at: persistDir.appendingPathComponent("cache-epoch.json"))
+        #expect(!persistCache.holdDestructiveEpochForTesting {})
+        let persistStatus = persistCache.prefixCacheModelStatus(base: base)
+        #expect(persistStatus.state == .error)
+        #expect(persistStatus.reason == .cacheInitFailed)
+        #expect(persistStatus.initFailure == .epochLost)
+    }
+
     @Test("reconciliation drops a symlink-replaced indexed file without following it")
     func reconciliationDropsSymlinkReplacement() throws {
         let dir = tempDir("reconcile-symlink")

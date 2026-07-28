@@ -28,10 +28,16 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	v1Statuses := []protocol.PrefixCacheModelStatus{{
 		ModelID: "private-model-v1", Backend: "paged", ReplayStrategy: "none",
 		State: "disabled", Reason: "paged_hybrid_unsupported",
+	}, {
+		ModelID: "private-model-v1-dynamic", Backend: "contiguous",
+		ReplayStrategy: "frozen_full", State: "error",
+		Reason: "cache_init_failed", InitFailure: "template_dynamic_date",
 	}}
 	reg.Register("private-provider-v1", nil, &protocol.RegisterMessage{
 		PrefixCacheProtocol: 1,
-		Models:              []protocol.ModelInfo{{ID: "private-model-v1"}},
+		Models: []protocol.ModelInfo{
+			{ID: "private-model-v1"}, {ID: "private-model-v1-dynamic"},
+		},
 		PrefixCacheStatuses: &v1Statuses,
 	})
 	v2Statuses := []protocol.PrefixCacheModelStatus{{
@@ -71,12 +77,24 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		status.Providers.V2 != 1 || status.Providers.V2ReadyModels != 1 {
 		t.Fatalf("provider protocol status=%+v", status.Providers)
 	}
-	if status.Providers.LoadedModels != 2 ||
-		status.Providers.ReportedLoadedModels != 2 ||
-		status.Providers.ExcludedModels != 1 ||
+	if status.Providers.LoadedModels != 3 ||
+		status.Providers.ReportedLoadedModels != 3 ||
+		status.Providers.ExcludedModels != 2 ||
 		status.Providers.ByReason["paged_hybrid_unsupported"] != 1 ||
-		status.Providers.ByReplayStrategy["frozen_full"] != 1 {
+		status.Providers.ByReason["cache_init_failed"] != 1 ||
+		status.Providers.ByReplayStrategy["frozen_full"] != 2 {
 		t.Fatalf("provider eligibility status=%+v", status.Providers)
+	}
+	// The granular init-failure breakdown must ride the public JSON with the
+	// full zero-bucketed vocabulary, and the reported detail must count.
+	if status.Providers.ByInitFailure["template_dynamic_date"] != 1 {
+		t.Fatalf("init failure breakdown=%+v", status.Providers.ByInitFailure)
+	}
+	for _, detail := range registry.PrefixCacheInitFailureDetails() {
+		if _, ok := status.Providers.ByInitFailure[detail]; !ok {
+			t.Fatalf("init failure bucket %q missing: %+v",
+				detail, status.Providers.ByInitFailure)
+		}
 	}
 	if status.RoutingMode != registry.CacheRoutingOff {
 		t.Fatalf("routing mode=%q, want off", status.RoutingMode)
@@ -142,6 +160,8 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 		"exact_cache_eligibility_state{state=disabled}",
 		"exact_cache_eligibility_reason{reason=paged_hybrid_unsupported}",
 		"exact_cache_eligibility_reason{reason=scan_failed}",
+		"exact_cache_eligibility_init_failure{failure=template_dynamic_date}",
+		"exact_cache_eligibility_init_failure{failure=key_unavailable}",
 		"exact_cache_eligibility_backend{backend=contiguous}",
 		"exact_cache_eligibility_backend{backend=paged}",
 		"exact_cache_eligibility_strategy{strategy=frozen_full}",
@@ -173,6 +193,7 @@ func TestExactCacheStatusIsAggregateAndPrivacySafe(t *testing.T) {
 	for _, metric := range []string{
 		"exact_cache.eligibility_state",
 		"exact_cache.eligibility_reason",
+		"exact_cache.eligibility_init_failure",
 		"exact_cache.eligibility_backend",
 		"exact_cache.eligibility_strategy",
 		"exact_cache.holder_removed",

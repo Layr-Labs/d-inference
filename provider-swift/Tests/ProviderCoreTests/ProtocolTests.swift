@@ -89,6 +89,69 @@ import Testing
     ])
 }
 
+@Test func prefixCacheInitFailureDetailIsOptionalOnTheWire() throws {
+    // The granular detail must be a pure ADDITIVE key: omitted entirely when
+    // nil (v0.7.13 coordinators drop unknown-REASON entries, but ignore
+    // unknown KEYS — so the detail rides `init_failure`, never a new reason).
+    let plain = PrefixCacheModelStatus(
+        modelId: "model-plain",
+        backend: .contiguous,
+        replayStrategy: .frozenFull,
+        state: .disabled,
+        reason: .weightHashUnavailable)
+    let detailed = PrefixCacheModelStatus(
+        modelId: "model-detailed",
+        backend: .paged,
+        replayStrategy: .tailReplay,
+        state: .error,
+        reason: .cacheInitFailed,
+        initFailure: .keyUnavailable)
+    let message = ProviderMessage.heartbeat(ProviderMessage.Heartbeat(
+        status: .idle,
+        stats: ProviderStats(),
+        systemMetrics: SystemMetrics(
+            memoryPressure: 0, cpuUsage: 0, thermalState: .nominal),
+        prefixCacheStatuses: [plain, detailed]))
+    let data = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(data)
+    let statusObjects = try #require(
+        object["prefix_cache_statuses"] as? [[String: Any]])
+    let plainObject = try #require(statusObjects.first)
+    #expect(plainObject["init_failure"] == nil)
+    let detailedObject = try #require(statusObjects.last)
+    #expect(detailedObject["init_failure"] as? String == "key_unavailable")
+
+    guard case .heartbeat(let decoded) =
+        try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    else {
+        throw TestFailure.unexpectedMessage
+    }
+    #expect(decoded.prefixCacheStatuses == [plain, detailed])
+}
+
+@Test func prefixCacheInitFailureDetailDecodeToleratesUnknownValues() throws {
+    // Forward compatibility mirror of the Go side: an unknown future detail
+    // string must decode to nil (field dropped), never reject the message.
+    let json = """
+        {"model_id":"m","backend":"contiguous","replay_strategy":"frozen_full",\
+        "state":"error","reason":"cache_init_failed",\
+        "init_failure":"some_future_detail_value"}
+        """
+    let decoded = try JSONDecoder().decode(
+        PrefixCacheModelStatus.self, from: Data(json.utf8))
+    #expect(decoded.initFailure == nil)
+    #expect(decoded.reason == .cacheInitFailed)
+
+    let known = """
+        {"model_id":"m","backend":"contiguous","replay_strategy":"frozen_full",\
+        "state":"error","reason":"cache_init_failed",\
+        "init_failure":"template_dynamic_date"}
+        """
+    let decodedKnown = try JSONDecoder().decode(
+        PrefixCacheModelStatus.self, from: Data(known.utf8))
+    #expect(decodedKnown.initFailure == .templateDynamicDate)
+}
+
 @Test func prefixCacheTelemetryEnumCasingIsPinned() {
     #expect(Set(PrefixCacheStatusState.allCases.map(\.rawValue)) == [
         "ready", "pending", "disabled", "error",
@@ -105,6 +168,12 @@ import Testing
     ])
     #expect(Set(PrefixCacheReplayStrategy.allCases.map(\.rawValue)) == [
         "direct", "frozen_full", "tail_replay", "none", "unknown",
+    ])
+    #expect(Set(PrefixCacheInitFailureDetail.allCases.map(\.rawValue)) == [
+        "key_unavailable", "ephemeral_key_unavailable", "block_contract_mismatch",
+        "epoch_unavailable", "prompt_contract_unavailable",
+        "template_artifact_missing", "template_dynamic_date", "template_render_failed",
+        "epoch_lost", "cache_closed", "unknown",
     ])
     #expect(Set(PrefixCacheDonationOutcome.allCases.map(\.rawValue)) == [
         "donated", "below_effective_token_floor", "no_complete_block",

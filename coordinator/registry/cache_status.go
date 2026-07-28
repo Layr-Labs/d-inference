@@ -2,7 +2,10 @@ package registry
 
 // PrefixCacheProtocolStatus is an aggregate, identity-free view of connected
 // provider cache capability. V2ReadyModels counts advertised ready
-// provider/model pairs, not unique models.
+// provider/model pairs, not unique models. ByInitFailure breaks the
+// ByReason["cache_init_failed"] total down by the optional granular detail;
+// entries from providers that do not report a detail count toward the reason
+// total only, so the detail buckets sum to AT MOST the reason total.
 type PrefixCacheProtocolStatus struct {
 	V0                     int            `json:"v0"`
 	V1                     int            `json:"v1"`
@@ -16,6 +19,7 @@ type PrefixCacheProtocolStatus struct {
 	ByReason               map[string]int `json:"by_reason"`
 	ByBackend              map[string]int `json:"by_backend"`
 	ByReplayStrategy       map[string]int `json:"by_replay_strategy"`
+	ByInitFailure          map[string]int `json:"by_init_failure"`
 }
 
 func (r *Registry) PrefixCacheProtocolStatus() PrefixCacheProtocolStatus {
@@ -24,6 +28,7 @@ func (r *Registry) PrefixCacheProtocolStatus() PrefixCacheProtocolStatus {
 		ByReason:         zeroIntBuckets(prefixCacheStatusReasons),
 		ByBackend:        zeroIntBuckets(prefixCacheStatusBackends),
 		ByReplayStrategy: zeroIntBuckets(prefixCacheReplayStrategies),
+		ByInitFailure:    zeroIntBuckets(prefixCacheInitFailureDetails),
 	}
 	if r == nil {
 		return status
@@ -52,6 +57,10 @@ func (r *Registry) PrefixCacheProtocolStatus() PrefixCacheProtocolStatus {
 			status.ByReason[modelStatus.Reason]++
 			status.ByBackend[modelStatus.Backend]++
 			status.ByReplayStrategy[modelStatus.ReplayStrategy]++
+			if modelStatus.Reason == "cache_init_failed" &&
+				modelStatus.InitFailure != "" {
+				status.ByInitFailure[modelStatus.InitFailure]++
+			}
 			if modelStatus.State != "ready" {
 				status.ExcludedModels++
 			}

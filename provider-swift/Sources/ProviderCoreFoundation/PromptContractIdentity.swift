@@ -8,8 +8,23 @@ public enum PromptContractIdentity {
     public static let blockHashVersion = "darkbloom-block-chain-v1"
     public static let blockSize: UInt32 = 256
 
+    /// Discriminated failure causes for fleet attribution. IMPORTANT: this
+    /// computation is mirrored by the Rust prompt sidecar — error cases may
+    /// tell the sub-causes apart, but the accept/reject behavior, guard
+    /// ordering, and hash encoding must stay byte-identical across changes.
     public enum Error: Swift.Error, Equatable {
+        /// Everything structural: path violations, missing core artifacts,
+        /// encode limits.
         case invalidArtifact
+        /// No readable standalone `chat_template.jinja` in the snapshot
+        /// (template embedded in tokenizer_config.json only — e.g. Qwen 2.5,
+        /// gemma-4 mlx-community snapshots).
+        case templateArtifactMissing
+        /// Template renders wall-clock time (`strftime_now`, all GPT-OSS
+        /// variants) — deliberate determinism exclusion.
+        case templateDynamicDate
+        /// `TemplateRenderCheck` canonical-fixture render self-check failed.
+        case templateRenderFailed
     }
 
     public static func compute(files: [ManifestFile]) throws -> String {
@@ -57,11 +72,18 @@ public enum PromptContractIdentity {
         let root = modelDirectory.standardizedFileURL
         let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
         let standaloneTemplate = root.appendingPathComponent("chat_template.jinja")
-        guard let template = try? String(contentsOf: standaloneTemplate, encoding: .utf8),
-              !template.contains("strftime_now"),
-              TemplateRenderCheck.renderOK(at: root) == true
+        // Same accept/reject conditions and short-circuit order as the
+        // original combined guard (read → strftime_now → render check);
+        // split only so each rejection throws its discriminated cause.
+        guard let template = try? String(contentsOf: standaloneTemplate, encoding: .utf8)
         else {
-            throw Error.invalidArtifact
+            throw Error.templateArtifactMissing
+        }
+        guard !template.contains("strftime_now") else {
+            throw Error.templateDynamicDate
+        }
+        guard TemplateRenderCheck.renderOK(at: root) == true else {
+            throw Error.templateRenderFailed
         }
         guard let enumerator = FileManager.default.enumerator(
             at: root,

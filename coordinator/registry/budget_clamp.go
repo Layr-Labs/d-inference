@@ -53,6 +53,18 @@ import (
 // ~one bounced request per release cycle, and the capacity-rate penalty
 // (capacity_rate.go) keeps it deprioritized in between.
 //
+// ONE BOUNCED REQUEST PER CYCLE IS NOT ALWAYS CHEAP. Release condition (a) is
+// phrased in terms of the pair's ADVERTISED budget, so when that budget is
+// structurally inflated — as a paged slot's is, because its wire budget
+// linearises an affine pool charge (v0.8.0; see budget_ceiling.go) — the very
+// next heartbeat satisfies it and the cycle repeats every heartbeat forever.
+// The clamp is therefore paired with a LEARNED EFFECTIVE CEILING
+// (budget_ceiling.go) that outlives it: the clamp stops the bleeding for one
+// heartbeat cycle, the ceiling remembers the commitment level that failed so
+// the pair is deselected before dispatch instead of bounced again. The two are
+// armed from the same entry point and keyed identically; the clamp is the
+// tightest state of the same machine (headroom zero, release unproven).
+//
 // SCOPE: the clamp only gates slots that REPORT a token budget
 // (active_token_budget_max > 0) — it exists to override a stale budget, and
 // its release condition is budget-defined. Legacy providers without budget
@@ -167,29 +179,35 @@ func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported
 	r.budgetClamps[key] = &budgetClampEntry{clampedAt: now, budgetReported: budgetReported}
 }
 
-// providerReportsTokenBudgetLocked reports whether the provider's CURRENT
-// backend snapshot carries a token budget for the model (the arming-time input
-// to budgetClampEntry.budgetReported). A missing provider (the reject often
-// races the disconnect that caused it) or a missing/budgetless slot reads
-// false — the sticky-or in recordBudgetClampLocked keeps an identity's
-// demonstrated reporting from being downgraded by such a race. Caller holds
-// r.mu (either mode); takes p.mu internally (r.mu → p.mu lock order).
-func (r *Registry) providerReportsTokenBudgetLocked(providerID, modelID string) bool {
+// providerBudgetCommitmentLocked reads the pair's CURRENT advertised token
+// budget (active_token_budget_max) and the tokens already committed against it
+// (used + queued) from the live capacity snapshot. Both gray-box trackers read
+// it: advertised > 0 is the clamp's arming-time budgetReported input, and
+// committed is the base of the failing commitment the learned ceiling measures
+// (budget_ceiling.go).
+//
+// A missing provider (the reject often races the disconnect that caused it) or
+// a missing/budgetless slot reads zero — the sticky-or in
+// recordBudgetClampLocked keeps an identity's demonstrated reporting from being
+// downgraded by such a race, and a zero advertised budget makes the ceiling
+// unlearnable rather than wrong. Caller holds r.mu (either mode); takes p.mu
+// internally (r.mu → p.mu lock order).
+func (r *Registry) providerBudgetCommitmentLocked(providerID, modelID string) (advertised, committed int64) {
 	p := r.providers[providerID]
 	if p == nil {
-		return false
+		return 0, 0
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.BackendCapacity == nil {
-		return false
+		return 0, 0
 	}
 	for _, slot := range p.BackendCapacity.Slots {
 		if slot.Model == modelID {
-			return slot.ActiveTokenBudgetMax > 0
+			return slot.ActiveTokenBudgetMax, slot.ActiveTokenBudgetUsed + slot.QueuedTokenBudget
 		}
 	}
-	return false
+	return 0, 0
 }
 
 // noteBudgetClampAcceptLocked records release condition (b): the pair accepted
@@ -266,30 +284,21 @@ func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeat
 	return !released
 }
 
-// providerBudgetSnapshotLocked reads the pair's live budget snapshot — the
-// heartbeat freshness anchor, the raw headroom (max - used - queued,
-// unclamped), and whether the current capacity report carries a budget for the
-// model at all. A missing provider or a missing/budgetless slot reads
-// zero/false. Caller holds r.mu (either mode); takes p.mu internally
-// (r.mu → p.mu lock order).
-func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (heartbeatAt time.Time, rawRemaining int64, budgetReported bool) {
-	p := r.providers[providerID]
-	if p == nil {
-		return time.Time{}, 0, false
+// providerBudgetSnapshotLocked reads the pair's live budget snapshot: the
+// heartbeat freshness anchor plus the same (advertised, committed) pair
+// providerBudgetCommitmentLocked returns. The clamp's two derived inputs fall
+// out of it — raw headroom is advertised − committed, and "the report carries
+// a budget at all" is advertised > 0. A missing provider or a
+// missing/budgetless slot reads zero. Caller holds r.mu (either mode); takes
+// p.mu internally (r.mu → p.mu lock order).
+func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (heartbeatAt time.Time, advertised, committed int64) {
+	if p := r.providers[providerID]; p != nil {
+		p.mu.Lock()
+		heartbeatAt = p.LastHeartbeat
+		p.mu.Unlock()
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	heartbeatAt = p.LastHeartbeat
-	if p.BackendCapacity != nil {
-		for _, slot := range p.BackendCapacity.Slots {
-			if slot.Model == modelID {
-				rawRemaining = slot.ActiveTokenBudgetMax - slot.ActiveTokenBudgetUsed - slot.QueuedTokenBudget
-				budgetReported = slot.ActiveTokenBudgetMax > 0
-				break
-			}
-		}
-	}
-	return heartbeatAt, rawRemaining, budgetReported
+	advertised, committed = r.providerBudgetCommitmentLocked(providerID, modelID)
+	return heartbeatAt, advertised, committed
 }
 
 // dropInactiveBudgetClampLocked deletes the pair's clamp entry when it can no
@@ -310,8 +319,8 @@ func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (hea
 // accept path (RecordCapacityAcceptOutcome); the heartbeat release sweep uses
 // the snapshot variant below. Caller holds the r.mu WRITE lock.
 func (r *Registry) dropInactiveBudgetClampLocked(providerID, modelID string, now time.Time) {
-	heartbeatAt, rawRemaining, budgetReported := r.providerBudgetSnapshotLocked(providerID, modelID)
-	r.dropInactiveBudgetClampSnapshotLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, now)
+	heartbeatAt, advertised, committed := r.providerBudgetSnapshotLocked(providerID, modelID)
+	r.dropInactiveBudgetClampSnapshotLocked(providerID, modelID, heartbeatAt, advertised-committed, advertised > 0, now)
 }
 
 // dropInactiveBudgetClampSnapshotLocked is dropInactiveBudgetClampLocked with
@@ -390,6 +399,6 @@ func (r *Registry) BudgetClampActive(providerID, modelID string) bool {
 	if r.providers[providerID] == nil {
 		return false
 	}
-	heartbeatAt, rawRemaining, budgetReported := r.providerBudgetSnapshotLocked(providerID, modelID)
-	return r.budgetClampActiveLocked(providerID, modelID, heartbeatAt, rawRemaining, budgetReported, time.Now())
+	heartbeatAt, advertised, committed := r.providerBudgetSnapshotLocked(providerID, modelID)
+	return r.budgetClampActiveLocked(providerID, modelID, heartbeatAt, advertised-committed, advertised > 0, time.Now())
 }

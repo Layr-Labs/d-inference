@@ -308,6 +308,23 @@ func (r *Registry) migrateFaultStateLocked(oldKey, newKey string) {
 		}
 	}
 
+	// Learned effective token-budget ceilings: the TIGHTER ceiling wins, not
+	// the fresher one. A ceiling is a measured "this box could not hold S",
+	// and an identity rebind is not evidence against it — taking the later
+	// entry would let a rebind widen a ceiling that only accepts are allowed
+	// to widen. The winner keeps its own latchedAt (and so its own TTL), which
+	// is what eventually retires it.
+	for k, entry := range r.budgetCeilings {
+		if k.ProviderID == oldKey {
+			nk := k
+			nk.ProviderID = newKey
+			if cur, ok := r.budgetCeilings[nk]; !ok || entry.tokens < cur.tokens {
+				r.budgetCeilings[nk] = entry
+			}
+			delete(r.budgetCeilings, k)
+		}
+	}
+
 	// Capacity-503 rate windows: union the outcome slices chronologically. The
 	// large-map sweep uses the tail as the newest timestamp, so appending an older
 	// source history after a fresh destination would otherwise delete live state.

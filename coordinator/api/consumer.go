@@ -404,7 +404,12 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 		case s.isRequestShapeBatchBudgetReject(providerID, pr.Model, errStr, errReason):
 			tripped = s.registry.RecordCapacityRejectRequestShape(providerID, pr.Model)
 		default:
-			tripped = s.registry.RecordCapacityReject(providerID, pr.Model)
+			// Sized: the request's token demand plus the pair's reported
+			// used+queued is the exact commitment the provider refused, which
+			// is what the learned budget ceiling latches (registry/
+			// budget_ceiling.go) so the pair stops being re-selected at that
+			// level once the one-shot clamp releases.
+			tripped = s.registry.RecordCapacityRejectSized(providerID, pr.Model, pr.RequestTokens())
 		}
 		if tripped {
 			s.ddIncr(metricCapacityCooldownTripped, []string{"provider_id:" + providerID, "model:" + pr.Model})

@@ -165,6 +165,14 @@ type dispatchState struct {
 	// uptime-neutral 429 with unservableReason instead of retrying/5xx'ing.
 	unservable       bool
 	unservableReason string
+	// lastDecision is the most recent scheduler decision that carried signal
+	// (a selection, or a scan that saw candidates / capacity rejections). The
+	// exhausted ladder reports its counters in the rejection ledger, so a
+	// "could_have_served" verdict is computed from what the scheduler actually
+	// saw instead of being hard-written to zero. Attempts whose scan found
+	// nothing at all do not overwrite it: an empty tail decision would erase
+	// the evidence of the providers earlier attempts really did try.
+	lastDecision registry.RoutingDecision
 	// terminalClientError is set when a dispatched provider returned a DETERMINISTIC
 	// client-shape 4xx (400/413/422/415 — invalid tool payload / role / response_format
 	// / unsupported media). That rejection is identical on every provider (the bad
@@ -781,6 +789,18 @@ func (d *dispatchState) rejectionInfo(stage, reason string, status, retryAfterMs
 	return info
 }
 
+// noteDecision latches a scheduler decision for the exhausted ladder's
+// rejection telemetry. Only decisions that carry signal are kept — a later
+// attempt whose scan found nothing (every provider already excluded, say) must
+// not erase what earlier attempts saw.
+func (d *dispatchState) noteDecision(decision registry.RoutingDecision) {
+	if decision.ProviderID != "" || decision.CandidateCount > 0 ||
+		decision.CapacityRejections > 0 || decision.ModelTooLargeRejections > 0 ||
+		decision.VisionRejections > 0 {
+		d.lastDecision = decision
+	}
+}
+
 func (d *dispatchState) rejectionInfoWithDecision(stage, reason string, status, retryAfterMs int, decision registry.RoutingDecision) rejectionInfo {
 	info := d.rejectionInfo(stage, reason, status, retryAfterMs)
 	info.servabilityComputed = true
@@ -789,6 +809,45 @@ func (d *dispatchState) rejectionInfoWithDecision(stage, reason string, status, 
 	info.modelTooLargeRejections = decision.ModelTooLargeRejections
 	info.visionRejections = decision.VisionRejections
 	info.bestTTFTMs = decision.BestTTFTMs
+	return info
+}
+
+// exhaustedRejectionInfo builds the rejection-ledger record for the exhausted
+// dispatch ladder's 429/503 exit. The counterfactual it carries is what
+// recordRejection turns into could_have_served, so the three exits must not
+// share one shape:
+//
+//   - CAPACITY RETRIES EXHAUSTED: the fleet could have served this request and
+//     was merely full. Report the scheduler's real counters, floored by the
+//     number of providers that actually capacity-rejected a dispatched attempt
+//     (each was by definition a candidate), so a decision that happened to
+//     carry no counters still cannot under-report below what the loop itself
+//     observed. This path previously hard-wrote candidateCount = 0, which
+//     booked every busy-fleet rejection as "could not have served" — the
+//     misreporting that sent the 2026-07 incident diagnosis down the wrong
+//     path for an hour.
+//   - DETERMINISTICALLY UNSERVABLE: candidates existed and every one of them
+//     would reject the same request identically, so zero is the honest answer
+//     and it is stated authoritatively (mirroring the preflight gate).
+//   - EVERYTHING ELSE: leave servabilityComputed false and let recordRejection
+//     compute the counterfactual itself off the request path.
+func (d *dispatchState) exhaustedRejectionInfo(reason string, statusCode, retryAfterMs int) rejectionInfo {
+	if !d.unservable {
+		return d.rejectionInfo("dispatch", reason, statusCode, retryAfterMs)
+	}
+	if reason != rejectionReasonCapacityRetriesExhausted {
+		info := d.rejectionInfo("dispatch", reason, statusCode, retryAfterMs)
+		info.servabilityComputed = true
+		info.candidateCount = 0
+		return info
+	}
+	info := d.rejectionInfoWithDecision("dispatch", reason, statusCode, retryAfterMs, d.lastDecision)
+	if info.candidateCount < d.capacityRetries {
+		info.candidateCount = d.capacityRetries
+	}
+	if info.capacityRejections < d.capacityRetries {
+		info.capacityRejections = d.capacityRetries
+	}
 	return info
 }
 
@@ -925,6 +984,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 	)
 	d.dispatchErr = dispatchErr
 	d.dispatchErrCode = dispatchErrCode
+	d.noteDecision(decision)
 	if !routeRecorded {
 		d.recordRoutingDecision(decision, dispatchErr, "")
 	}
@@ -1340,12 +1400,31 @@ func (d *dispatchState) noteProviderError(provider *registry.Provider, pr *regis
 	return d.s.noteDispatchProviderError(provider, pr, statusCode, errStr, errReason, terminalCause, held)
 }
 
-// rejectionReasonOversized is the rejection-ledger reason_code for a request the
-// dispatch loop stopped because no provider can serve it (deterministic context
-// overflow, or a transient-capacity shortage that exhausted
-// maxCapacityClassRetries). Distinct from the preflight "context_exceeded" /
-// "prompt_too_long" and the legacy dispatch-exhausted "unservable_token_budget".
+// rejectionReasonOversized is the rejection-ledger reason_code for a request
+// the dispatch loop stopped because it is DETERMINISTICALLY unservable — a
+// context overflow that every provider in the fleet would reject identically.
+// Distinct from the preflight "context_exceeded" / "prompt_too_long" and the
+// legacy dispatch-exhausted "unservable_token_budget".
+//
+// Reserved for genuinely-unservable SHAPES. It used to double as the code for
+// a transient-capacity shortage that exhausted maxCapacityClassRetries, which
+// is a statement about the fleet being busy, not about the request — see
+// rejectionReasonCapacityRetriesExhausted.
 const rejectionReasonOversized = "oversized_request"
+
+// rejectionReasonCapacityRetriesExhausted is the rejection-ledger reason_code
+// for a request the dispatch loop stopped because it burned
+// maxCapacityClassRetries (3) TRANSIENT-capacity failovers. The three
+// providers it tried were candidates that were merely full; a fourth might
+// have served it, and the same request an hour later on an idle fleet
+// certainly would.
+//
+// Split out of rejectionReasonOversized deliberately. Conflating the two makes
+// a busy fleet indistinguishable from an unservable request in the rejection
+// ledger, which is precisely how the 2026-07 paged-rollout incident was
+// misdiagnosed: ~10% of traffic booked as "oversized_request" when the prompts
+// were ordinary and the boxes were simply out of KV pool.
+const rejectionReasonCapacityRetriesExhausted = "capacity_retries_exhausted"
 
 // rejectionReasonTemplateRenderFailed is the rejection-ledger reason_code for
 // a request the dispatch loop stopped because the model's chat template
@@ -1428,8 +1507,14 @@ func (d *dispatchState) shouldStopFailover() bool {
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:transient"})
 		d.capacityRetries++
 		if d.capacityRetries >= maxCapacityClassRetries {
+			// Out of retries, NOT out of servability: every one of these
+			// rejections came from a provider that was a real candidate and
+			// simply had no KV room right now. The ladder still stops (a
+			// fleet-wide transient must not storm 64 providers) and still
+			// emits the uptime-neutral 429, but under its own reason code so
+			// the ledger can tell a busy fleet from an unservable request.
 			d.unservable = true
-			d.unservableReason = rejectionReasonOversized
+			d.unservableReason = rejectionReasonCapacityRetriesExhausted
 			return true
 		}
 		return false
@@ -2656,16 +2741,26 @@ exhausted:
 			}
 			s.ddIncr("routing.client_error_passthrough", []string{"model:" + d.model, "code:" + strconv.Itoa(statusCode)})
 		} else if d.unservable {
-			// The loop stopped early because no provider can serve this request
-			// (deterministic context overflow, or a capacity transient that
-			// exhausted maxCapacityClassRetries). We already know the verdict, so
-			// skip the quick-capacity probe and the 5xx→429 reclassification below:
-			// emit a single uptime-neutral 429. This is the proactive complement to
-			// the always-on backstop — it converts the request BEFORE storming the
-			// fleet, not after 64 attempts.
+			// The loop stopped early: either no provider can serve this request
+			// (deterministic context overflow) or a capacity transient exhausted
+			// maxCapacityClassRetries. We already know the verdict, so skip the
+			// quick-capacity probe and the 5xx→429 reclassification below: emit a
+			// single uptime-neutral 429. This is the proactive complement to the
+			// always-on backstop — it converts the request BEFORE storming the
+			// fleet, not after 64 attempts. The two verdicts carry DIFFERENT
+			// reason codes and different metrics (an unservable shape is a
+			// property of the request; exhausted capacity retries are a property
+			// of the fleet), so the ledger and the dashboards can tell them apart.
 			statusCode = http.StatusTooManyRequests
-			reason = rejectionReasonOversized
-			s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			reason = d.unservableReason
+			if reason == "" {
+				reason = rejectionReasonOversized
+			}
+			if reason == rejectionReasonCapacityRetriesExhausted {
+				s.ddIncr("routing.capacity_retries_exhausted", []string{"model:" + d.model, "stage:dispatch"})
+			} else {
+				s.ddIncr("routing.oversized_request_rejected", []string{"model:" + d.model, "stage:dispatch"})
+			}
 		} else if statusCode == 0 {
 			// Distinguish capacity exhaustion (429) from genuine unavailability (503).
 			// A quick capacity check tells us if providers exist but are full.
@@ -2716,16 +2811,7 @@ exhausted:
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			info := d.rejectionInfo("dispatch", reason, statusCode, retryAfter*1000)
-			if d.unservable {
-				// No provider could serve this request (it exceeds the model
-				// context, identical fleet-wide). Mark it not-servable so the
-				// rejection ledger's could_have_served reflects reality — candidates
-				// existed but every one would reject — mirroring the preflight gate.
-				info.servabilityComputed = true
-				info.candidateCount = 0
-			}
-			s.recordRejection(info)
+			s.recordRejection(d.exhaustedRejectionInfo(reason, statusCode, retryAfter*1000))
 		} else {
 			s.recordRejection(d.rejectionInfo("dispatch", reason, statusCode, 0))
 		}

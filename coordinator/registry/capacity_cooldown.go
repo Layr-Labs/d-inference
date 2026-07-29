@@ -170,7 +170,20 @@ type capacityRejectKey struct {
 // fleet-wide) must go to RecordCapacityRejectRequestShape so it arms NO
 // gray-box state at all.
 func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, true, true)
+	return r.recordCapacityReject(providerID, modelID, 0, true, true)
+}
+
+// RecordCapacityRejectSized is RecordCapacityReject with the rejected
+// request's token demand (prompt + max_tokens) attached — the production entry
+// point. The size is what turns the reject into a MEASUREMENT: together with
+// the pair's reported used+queued it fixes the exact commitment the provider
+// could not hold, which is what the learned effective ceiling latches
+// (budget_ceiling.go). Everything else is identical to RecordCapacityReject,
+// which stays as the size-less form for callers (and tests) that only have the
+// pair: without a size the failing commitment is unknown, so those record a
+// strike and a clamp but teach the ceiling nothing.
+func (r *Registry) RecordCapacityRejectSized(providerID, modelID string, requestTokens int) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, requestTokens, true, true)
 }
 
 // RecordCapacityRejectLifecycle records a BENIGN lifecycle capacity miss — a
@@ -193,7 +206,7 @@ func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped boo
 // "no model loaded" rejections here; genuine capacity/token-budget 503s go to
 // RecordCapacityReject and feed everything.
 func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, false, false)
+	return r.recordCapacityReject(providerID, modelID, 0, false, false)
 }
 
 // RecordCapacityRejectRequestShape records a capacity-vocabulary rejection the
@@ -214,7 +227,7 @@ func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tr
 // that safe for healthy pairs (threshold 5 in 60s with NO accept; any accept
 // resets the streak), a safety the clamp and rate window by design lack.
 func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, false, false)
+	return r.recordCapacityReject(providerID, modelID, 0, false, false)
 }
 
 // RecordCapacityRejectBusy records a typed admission-timeout capacity signal
@@ -231,15 +244,18 @@ func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) 
 // capacity-503 rate window (transient load would accumulate a false reject
 // rate against a healthy pair).
 func (r *Registry) RecordCapacityRejectBusy(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, false, false)
+	return r.recordCapacityReject(providerID, modelID, 0, false, false)
 }
 
 // recordCapacityReject is the shared implementation. deratePair gates the
 // gray-box capacity-503 rate window (true only for genuine capacity rejects);
-// armClamp gates the budget clamp (false only for request-deterministic
-// rejects, which indict the request rather than the provider). The cooldown
-// strike is fed on all paths.
-func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, armClamp bool) (tripped bool) {
+// armClamp gates BOTH budget trackers — the one-shot clamp (budget_clamp.go)
+// and the learned effective ceiling (budget_ceiling.go) — and is false only
+// for rejects that indict the request rather than the provider.
+// requestTokens is the rejected request's token demand (prompt + max_tokens),
+// or 0 when the caller does not know it; the ceiling can only learn from a
+// sized reject. The cooldown strike is fed on all paths.
+func (r *Registry) recordCapacityReject(providerID, modelID string, requestTokens int, deratePair, armClamp bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
@@ -260,7 +276,16 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, deratePair, 
 	// prompt says nothing about the pair's budget honesty).
 	clampKey := capacityRejectKey{ProviderID: r.faultKeyLocked(providerID), ModelID: modelID}
 	if armClamp {
-		r.recordBudgetClampLocked(clampKey, r.providerReportsTokenBudgetLocked(providerID, modelID), now)
+		advertised, committed := r.providerBudgetCommitmentLocked(providerID, modelID)
+		r.recordBudgetClampLocked(clampKey, advertised > 0, now)
+		// Learned effective ceiling (budget_ceiling.go): the pair could not
+		// hold used+queued+requestTokens, whatever its heartbeat advertises.
+		// Sized rejects only — without the request size the failing
+		// commitment is unknown and a ceiling learned from used+queued alone
+		// would be tighter than the evidence supports.
+		if requestTokens > 0 {
+			r.recordBudgetCeilingLocked(clampKey, committed+int64(requestTokens), advertised, now)
+		}
 	}
 	if deratePair {
 		r.recordCapacityRateRejectLocked(clampKey, now)
@@ -411,10 +436,11 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 		_, hasCooldown := r.capacityCooldowns[key]
 		_, hasTrips := r.capacityCooldownTrips[key]
 		_, hasClamp := r.budgetClamps[key]
+		_, hasCeiling := r.budgetCeilings[key]
 		_, hasNodeStreak := r.healthEjectionCapacityStreaks[key.ProviderID]
 		capacityTripped := r.healthEjectionLastTripCapacity[key.ProviderID]
 		r.mu.RUnlock()
-		if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasNodeStreak && !capacityTripped {
+		if !hasStrikes && !hasCooldown && !hasTrips && !hasClamp && !hasCeiling && !hasNodeStreak && !capacityTripped {
 			return false
 		}
 	}
@@ -436,6 +462,13 @@ func (r *Registry) RecordCapacityAcceptOutcome(providerID, modelID string, count
 	if _, hasClamp := r.budgetClamps[key]; hasClamp {
 		r.noteBudgetClampAcceptLocked(key)
 		r.dropInactiveBudgetClampLocked(providerID, modelID, now)
+	}
+	// A learned effective ceiling (budget_ceiling.go) widens on SUSTAINED
+	// accepts — the only provider-side proof that more fits than the last
+	// reject taught us — and is deleted once it catches up with the pair's
+	// advertised budget.
+	if _, hasCeiling := r.budgetCeilings[key]; hasCeiling {
+		r.noteBudgetCeilingAcceptLocked(providerID, modelID, key, now)
 	}
 	if countRateOutcome {
 		rateOutcomeRecorded = r.recordCapacityRateAcceptLocked(key, now)

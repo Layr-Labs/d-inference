@@ -190,24 +190,16 @@ func (r *Registry) recordBudgetClampLocked(key capacityRejectKey, budgetReported
 // a missing/budgetless slot reads zero — the sticky-or in
 // recordBudgetClampLocked keeps an identity's demonstrated reporting from being
 // downgraded by such a race, and a zero advertised budget makes the ceiling
-// unlearnable rather than wrong. Caller holds r.mu (either mode); takes p.mu
-// internally (r.mu → p.mu lock order).
+// unlearnable rather than wrong.
+//
+// Thin wrapper over providerBudgetSnapshotLocked so the slot scan and the
+// heartbeat stamp stay in ONE p.mu critical section: Heartbeat writes
+// BackendCapacity and LastHeartbeat together, and a reader that took the lock
+// twice could pair one heartbeat's stamp with another's budget. Caller holds
+// r.mu (either mode); p.mu is taken inside (r.mu → p.mu lock order).
 func (r *Registry) providerBudgetCommitmentLocked(providerID, modelID string) (advertised, committed int64) {
-	p := r.providers[providerID]
-	if p == nil {
-		return 0, 0
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.BackendCapacity == nil {
-		return 0, 0
-	}
-	for _, slot := range p.BackendCapacity.Slots {
-		if slot.Model == modelID {
-			return slot.ActiveTokenBudgetMax, slot.ActiveTokenBudgetUsed + slot.QueuedTokenBudget
-		}
-	}
-	return 0, 0
+	_, advertised, committed = r.providerBudgetSnapshotLocked(providerID, modelID)
+	return advertised, committed
 }
 
 // providerPendingTokensLocked sums the COORDINATOR's own view of the pair's
@@ -319,13 +311,26 @@ func (r *Registry) budgetClampActiveLocked(providerID, modelID string, heartbeat
 // missing/budgetless slot reads zero. Caller holds r.mu (either mode); takes
 // p.mu internally (r.mu → p.mu lock order).
 func (r *Registry) providerBudgetSnapshotLocked(providerID, modelID string) (heartbeatAt time.Time, advertised, committed int64) {
-	if p := r.providers[providerID]; p != nil {
-		p.mu.Lock()
-		heartbeatAt = p.LastHeartbeat
-		p.mu.Unlock()
+	p := r.providers[providerID]
+	if p == nil {
+		return time.Time{}, 0, 0
 	}
-	advertised, committed = r.providerBudgetCommitmentLocked(providerID, modelID)
-	return heartbeatAt, advertised, committed
+	// One critical section for all three: Heartbeat stamps LastHeartbeat and
+	// swaps BackendCapacity together, so splitting the read could attribute one
+	// heartbeat's freshness to another's budget — and the clamp's release proof
+	// is precisely "a heartbeat strictly newer than the clamp showed headroom".
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	heartbeatAt = p.LastHeartbeat
+	if p.BackendCapacity == nil {
+		return heartbeatAt, 0, 0
+	}
+	for _, slot := range p.BackendCapacity.Slots {
+		if slot.Model == modelID {
+			return heartbeatAt, slot.ActiveTokenBudgetMax, slot.ActiveTokenBudgetUsed + slot.QueuedTokenBudget
+		}
+	}
+	return heartbeatAt, 0, 0
 }
 
 // dropInactiveBudgetClampLocked deletes the pair's clamp entry when it can no

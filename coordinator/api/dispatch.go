@@ -846,7 +846,11 @@ func (d *dispatchState) exhaustedRejectionInfo(reason string, statusCode, retryA
 	if !d.unservable {
 		return d.rejectionInfo("dispatch", reason, statusCode, retryAfterMs)
 	}
-	if reason != rejectionReasonCapacityRetriesExhausted {
+	// Branch on the LATCHED state, not on the reason parameter. They agree at
+	// the sole call site, but a future edit that passes a reason independently
+	// of d.unservableReason would silently fall back to candidateCount = 0 —
+	// the exact misreporting this split exists to remove.
+	if d.unservableReason != rejectionReasonCapacityRetriesExhausted {
 		info := d.rejectionInfo("dispatch", reason, statusCode, retryAfterMs)
 		info.servabilityComputed = true
 		info.candidateCount = 0

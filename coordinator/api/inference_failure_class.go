@@ -257,6 +257,43 @@ func isCapacityRejectStrike(errStr string) bool {
 	return true
 }
 
+// isTokenBudgetCapacityReject reports whether a capacity-class rejection is
+// specifically about the pair's TOKEN BUDGET or KV headroom — the only
+// vocabulary from which the failing commitment (used + queued + pending +
+// request) is a meaningful measurement.
+//
+// This is deliberately NARROWER than the armClamp gate the one-shot budget
+// clamp rides. The clamp is a boolean that a single fresher heartbeat releases;
+// the learned ceiling (registry/budget_ceiling.go) is a TTL-bounded derate of
+// the pair's live headroom that survives reconnects. Identical evidence, very
+// different blast radius, so the ceiling requires evidence that is actually
+// about the quantity it derates. A provider "draining" for a hot-swap update,
+// or refusing a model load for want of memory, is a real capacity statement and
+// still arms the clamp and the strike — but its commitment number would teach
+// the ceiling nothing, and a drain reject latching a ceiling would derate a box
+// that comes back healthy from an update (fault identity is stable across the
+// reconnect, so the ceiling would follow it).
+//
+// Callers gate on this AFTER isCapacityRejectStrike and after the cold-miss and
+// request-shape branches, so context-overflow and "not loaded" shapes never
+// reach here.
+func isTokenBudgetCapacityReject(errStr string) bool {
+	s := strings.ToLower(strings.TrimSpace(errStr))
+	s = strings.ReplaceAll(s, "’", "'")
+	for _, marker := range []string{
+		"token_budget_exhausted",
+		"token budget",
+		"kv cache headroom",
+		"kv headroom",
+		"insufficient kv",
+	} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // isColdModelMissRejection reports whether a capacity-class rejection is the
 // BENIGN cold "model not loaded" lifecycle miss (a lazy load on first touch),
 // as opposed to a genuine capacity/token-budget shed. Matching mirrors the

@@ -3,6 +3,8 @@ package registry
 import (
 	"testing"
 	"time"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 // Tests for the learned effective token-budget ceiling (budget_ceiling.go).
@@ -245,9 +247,12 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 		r.recordBudgetCeilingLocked(key, 50_000, 0, 1_000_000, now)
 		tight, _ := r.BudgetCeiling("box", model)
 		// A later reject at a HIGHER commitment (the box was busier) must not
-		// undo what the tighter one taught. Only accepts widen.
+		// undo what the tighter one taught. Only accepts widen. The pair's
+		// observed commitment stays BELOW the learned ceiling here, so nothing
+		// falsifies it — see the falsification subtest below for the case where
+		// something does.
 		later := now.Add(time.Minute)
-		r.recordBudgetCeilingLocked(key, 900_000, 800_000, 1_000_000, later)
+		r.recordBudgetCeilingLocked(key, 60_000, 40_000, 1_000_000, later)
 		got, _ := r.BudgetCeiling("box", model)
 		if got != tight {
 			t.Fatalf("ceiling = %d after a looser reject, want the ratcheted %d", got, tight)
@@ -260,6 +265,25 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 		r.mu.RUnlock()
 		if !anchor.Equal(now) {
 			t.Fatalf("TTL anchor = %v, want the original latch %v — a non-tightening reject must not refresh it", anchor, now)
+		}
+	})
+
+	t.Run("a ceiling the live commitment falsifies is not ratcheted", func(t *testing.T) {
+		r := New(testLogger())
+		now := time.Now()
+		// A tiny reject latches at the floor.
+		r.recordBudgetCeilingLocked(key, 1_200, 0, 1_000_000, now)
+		if got, _ := r.BudgetCeiling("box", model); got != budgetCeilingFloorTokens {
+			t.Fatalf("setup: ceiling = %d, want the floor %d", got, budgetCeilingFloorTokens)
+		}
+		// A later reject observes the pair HOLDING 80k. A 1024 ceiling is
+		// contradicted by that — direct observation, not an accept — and
+		// keeping it would strand the pair at a level nothing can widen
+		// because no request fits under it.
+		r.recordBudgetCeilingLocked(key, 80_100, 80_000, 1_000_000, now.Add(time.Minute))
+		got, latched := r.BudgetCeiling("box", model)
+		if !latched || got != 80_000 {
+			t.Fatalf("ceiling = (%d, %v), want (80000, true) — the observed live commitment is the ratchet floor", got, latched)
 		}
 	})
 
@@ -330,6 +354,39 @@ func TestBudgetCeilingNotArmedByNonProviderRejects(t *testing.T) {
 				t.Fatalf("%s reject must not latch a budget ceiling", name)
 			}
 		})
+	}
+}
+
+// Widening needs something to widen TOWARD. With no budget report for the pair
+// (disconnected, slot gone, reconnect before the first heartbeat) the entry
+// cannot gate anything either way, and growing its token value against no
+// reference would leave a meaningless number to be compared with the next real
+// heartbeat. Hold the value; the TTL still bounds the entry.
+func TestBudgetCeilingDoesNotWidenWithoutABudgetReport(t *testing.T) {
+	const model = "m"
+	r := New(testLogger())
+	p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, 100_000, 100)
+	r.RecordCapacityRejectSized(p.ID, model, 50_000)
+	latchedTokens, latched := r.BudgetCeiling(p.ID, model)
+	if !latched {
+		t.Fatal("setup: ceiling must latch")
+	}
+
+	// The pair stops reporting a budget for the model entirely.
+	r.Heartbeat(p.ID, &protocol.HeartbeatMessage{
+		Type:            protocol.TypeHeartbeat,
+		Status:          "idle",
+		SystemMetrics:   protocol.SystemMetrics{MemoryPressure: 0.1, CPUUsage: 0.1, ThermalState: "nominal"},
+		BackendCapacity: &protocol.BackendCapacity{TotalMemoryGB: 64},
+	})
+
+	for i := 0; i < 4*budgetCeilingWidenAccepts; i++ {
+		r.RecordCapacityAccept(p.ID, model)
+	}
+	got, stillLatched := r.BudgetCeiling(p.ID, model)
+	if !stillLatched || got != latchedTokens {
+		t.Fatalf("ceiling = (%d, %v) after %d budgetless accepts, want the held (%d, true)",
+			got, stillLatched, 4*budgetCeilingWidenAccepts, latchedTokens)
 	}
 }
 

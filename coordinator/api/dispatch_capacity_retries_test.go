@@ -195,6 +195,44 @@ func TestRejectionLedgerCouldHaveServedSplit(t *testing.T) {
 	}
 }
 
+// The learned budget ceiling learns only from the TOKEN-BUDGET vocabulary. It
+// is a TTL-bounded derate of live headroom that survives reconnects, so unlike
+// the one-shot clamp (which every other provider-indicting capacity shed still
+// arms) it requires evidence about the quantity it derates. A drain for a
+// hot-swap update is the sharpest case: the box comes back healthy, but fault
+// identity is stable across the reconnect, so a ceiling latched off the drain
+// would follow it.
+func TestOnlyTokenBudgetRejectsTeachTheCeiling(t *testing.T) {
+	for name, tc := range map[string]struct {
+		errStr    string
+		wantLearn bool
+	}{
+		"token budget exhausted":   {"token_budget_exhausted: batch token budget full", true},
+		"kv headroom":              {"insufficient kv cache headroom for request", true},
+		"draining for update":      {"provider draining for update", false},
+		"out of memory":            {"out of memory loading model weights", false},
+		"insufficient memory":      {"insufficient memory: need 40 GB, have 12 GB", false},
+		"generic overload shed":    {"request rejected: queue full", false},
+		"context overflow (shape)": {"prompt exceeds context length", false},
+		"cold model miss":          {"model not loaded", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The narrow predicate must agree with the branch that uses it, and
+			// must never fire for a shape an earlier branch already claims.
+			got := isTokenBudgetCapacityReject(tc.errStr)
+			if isColdModelMissRejection(tc.errStr) || !isCapacityRejectStrike(tc.errStr) {
+				if got {
+					t.Fatalf("%q is claimed by an earlier branch; it must not also read as a token-budget reject", tc.errStr)
+				}
+				return
+			}
+			if got != tc.wantLearn {
+				t.Fatalf("isTokenBudgetCapacityReject(%q) = %v, want %v", tc.errStr, got, tc.wantLearn)
+			}
+		})
+	}
+}
+
 // noteDecision must not let a signal-free tail attempt erase what earlier
 // attempts saw — that erasure would reintroduce the zero-candidate report the
 // floor is only a backstop for.

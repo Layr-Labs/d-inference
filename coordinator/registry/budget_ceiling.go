@@ -234,17 +234,29 @@ func (r *Registry) recordBudgetCeilingLocked(key capacityRejectKey, observedComm
 		}
 	}
 	// Ratchet: a live entry that already knows a ceiling at least this tight
-	// keeps it, TTL ANCHOR INCLUDED. A reject cannot widen — only accepts can,
-	// and only through the widen path below — so without the token half a
-	// reject arriving at high commitment (a busy box) would undo what a reject
-	// at low commitment (the same box, gray) taught. And without the latchedAt
-	// half, a non-tightening reject would refresh the TTL off evidence that
-	// did not produce the ceiling, extending the derating window for free. The
-	// reject does reset progress toward widening: it is direct evidence
-	// against the accepts that had accumulated.
+	// keeps it, TTL ANCHOR INCLUDED — but only while the live commitment has
+	// not falsified it. Three clauses, each load-bearing:
+	//
+	//   - live: an expired entry teaches nothing.
+	//   - prev.tokens <= learned: a reject cannot widen. Only accepts can, and
+	//     only through the widen path below. Without this, a reject arriving at
+	//     high commitment (a busy box) would undo what a reject at low
+	//     commitment (the same box, gray) taught.
+	//   - prev.tokens >= alreadyCommitted: a ceiling BELOW what this very
+	//     reject observed the pair holding is contradicted by direct
+	//     observation, not by an accept. Keeping it would strand the pair at a
+	//     level its own accounting disproves, with no accept able to widen it
+	//     because nothing fits. Re-latching at `learned` (which the floor above
+	//     already put at or above the observed commitment) is not "widening on
+	//     a reject" — it is refusing to hold a number that has been falsified.
+	//
+	// When the ratchet holds, the anchor is untouched: a non-tightening reject
+	// refreshing the TTL would extend a derating window on evidence that did
+	// not produce it. The reject does reset progress toward widening, being
+	// direct evidence against the accepts that had accumulated.
 	if prev, ok := r.budgetCeilings[key]; ok &&
 		now.Before(prev.latchedAt.Add(r.budgetCeilingCfg.TTL)) &&
-		prev.tokens <= learned {
+		prev.tokens <= learned && prev.tokens >= alreadyCommitted {
 		prev.acceptsSince = 0
 		return
 	}
@@ -283,6 +295,20 @@ func (r *Registry) noteBudgetCeilingAcceptLocked(providerID, modelID string, key
 	if e.acceptsSince < budgetCeilingWidenAccepts {
 		return
 	}
+	// Healed? Compare against what the pair advertises RIGHT NOW, not against
+	// the value at latch time — the advertised budget moves with residency and
+	// co-tenancy, and the entry only exists to hold the pair below it.
+	advertised, _ := r.providerBudgetCommitmentLocked(providerID, modelID)
+	if advertised <= 0 {
+		// No budget report for the pair (disconnected, slot gone, reconnect
+		// before the first heartbeat). There is nothing to widen TOWARD: the
+		// entry cannot gate a budgetless snapshot either way, and growing
+		// tokens against no reference would leave a meaningless number to be
+		// compared with the next real heartbeat. Hold the value and the
+		// accumulated progress; the TTL still bounds the entry.
+		e.acceptsSince = budgetCeilingWidenAccepts
+		return
+	}
 	e.acceptsSince = 0
 	step := e.tokens / budgetCeilingWidenDivisor
 	if step < budgetCeilingMarginTokens {
@@ -292,11 +318,7 @@ func (r *Registry) noteBudgetCeilingAcceptLocked(providerID, modelID string, key
 		step = budgetCeilingMarginTokens
 	}
 	e.tokens += step
-	// Healed? Compare against what the pair advertises RIGHT NOW, not against
-	// the value at latch time — the advertised budget moves with residency and
-	// co-tenancy, and the entry only exists to hold the pair below it.
-	advertised, _ := r.providerBudgetCommitmentLocked(providerID, modelID)
-	if advertised > 0 && e.tokens >= advertised {
+	if e.tokens >= advertised {
 		delete(r.budgetCeilings, key)
 		if r.logger != nil {
 			r.logger.Info("budget ceiling healed",

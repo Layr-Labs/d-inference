@@ -411,7 +411,8 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 			// level once the one-shot clamp releases. Only the token-budget /
 			// KV vocabulary qualifies — a drain or an OOM is a real capacity
 			// shed whose commitment number would teach the ceiling nothing.
-			tripped = s.registry.RecordCapacityRejectSized(providerID, pr.Model, pr.RequestTokens())
+			tripped = s.registry.RecordCapacityRejectSized(
+				providerID, pr.Model, pr.RequestID, pr.RequestTokens())
 		default:
 			// Every other provider-indicting capacity shed: unchanged
 			// behaviour — clamp plus strike plus rate window, no ceiling.

@@ -93,7 +93,7 @@ func TestBudgetCeilingBreaksTheClampTreadmill(t *testing.T) {
 	}
 
 	// The provider rejects it: the pool is affine and physically full.
-	r.RecordCapacityRejectSized(p.ID, model, int(pagedRequestTokens))
+	r.RecordCapacityRejectSized(p.ID, model, "seventh", int(pagedRequestTokens))
 
 	wantCeiling := pagedCommittedTokens + pagedRequestTokens - budgetCeilingMarginTokens
 	gotCeiling, latched := r.BudgetCeiling(p.ID, model)
@@ -141,7 +141,7 @@ func TestBudgetCeilingKillSwitchRestoresTreadmill(t *testing.T) {
 	p := makeTokenBudgetProvider(t, r, "paged-box", model, 100, pagedCommittedTokens, pagedAdvertisedTokens, 100)
 	sendBudgetHeartbeat(r, p.ID, model, pagedCommittedTokens, pagedAdvertisedTokens)
 
-	r.RecordCapacityRejectSized(p.ID, model, int(pagedRequestTokens))
+	r.RecordCapacityRejectSized(p.ID, model, "seventh", int(pagedRequestTokens))
 	if _, latched := r.BudgetCeiling(p.ID, model); latched {
 		t.Fatal("kill switch off must learn nothing")
 	}
@@ -301,7 +301,7 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 	t.Run("TTL fails open", func(t *testing.T) {
 		r := New(testLogger())
 		p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, 1_000_000, 100)
-		r.RecordCapacityRejectSized(p.ID, model, 50_000)
+		r.RecordCapacityRejectSized(p.ID, model, "req", 50_000)
 		if _, latched := r.BudgetCeiling(p.ID, model); !latched {
 			t.Fatal("setup: ceiling must latch")
 		}
@@ -366,7 +366,7 @@ func TestBudgetCeilingDoesNotWidenWithoutABudgetReport(t *testing.T) {
 	const model = "m"
 	r := New(testLogger())
 	p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, 100_000, 100)
-	r.RecordCapacityRejectSized(p.ID, model, 50_000)
+	r.RecordCapacityRejectSized(p.ID, model, "req", 50_000)
 	latchedTokens, latched := r.BudgetCeiling(p.ID, model)
 	if !latched {
 		t.Fatal("setup: ceiling must latch")
@@ -400,7 +400,7 @@ func TestBudgetCeilingDeletedOnceHealed(t *testing.T) {
 	p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, 8_000, 100)
 	sendBudgetHeartbeat(r, p.ID, model, 0, 8_000)
 
-	r.RecordCapacityRejectSized(p.ID, model, 5_000)
+	r.RecordCapacityRejectSized(p.ID, model, "req", 5_000)
 	if _, latched := r.BudgetCeiling(p.ID, model); !latched {
 		t.Fatal("setup: ceiling must latch below the 8000 advertised budget")
 	}
@@ -449,6 +449,15 @@ func TestBudgetCeilingMigratesTighterOnIdentityRebind(t *testing.T) {
 			source:     &budgetCeilingEntry{tokens: 20_000, latchedAt: time.Now().Add(-time.Hour)},
 			wantTokens: 0,
 		},
+		"both expired: nothing worth migrating": {
+			source: &budgetCeilingEntry{tokens: 20_000, latchedAt: time.Now().Add(-time.Hour)},
+			dest:   &budgetCeilingEntry{tokens: 90_000, latchedAt: time.Now().Add(-time.Hour)},
+			// The expired DESTINATION is left in place rather than deleted —
+			// the migration only owns the source key. It gates nothing (every
+			// reader checks expiry) and the opportunistic sweep collects it, so
+			// the assertion below is on the effective ceiling, not on presence.
+			wantTokens: 0,
+		},
 		"live source moves onto an empty key": {
 			source: &budgetCeilingEntry{tokens: 20_000}, wantTokens: 20_000,
 		},
@@ -480,8 +489,11 @@ func TestBudgetCeilingMigratesTighterOnIdentityRebind(t *testing.T) {
 			}
 			got, ok := r.budgetCeilings[newKey]
 			if tc.wantTokens == 0 {
-				if ok {
-					t.Fatalf("ceiling %d survived, want nothing to migrate", got.tokens)
+				// Nothing with standing survived: either no entry at all, or
+				// an expired one the migration does not own and every reader
+				// ignores. Assert on the effect, not on map presence.
+				if ok && now.Before(got.latchedAt.Add(r.budgetCeilingCfg.TTL)) {
+					t.Fatalf("live ceiling %d survived, want nothing that can gate", got.tokens)
 				}
 				return
 			}
@@ -510,7 +522,7 @@ func TestBudgetCeilingStarvationRecoversOnlyOnTTL(t *testing.T) {
 	p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, pagedAdvertisedTokens, 100)
 	sendBudgetHeartbeat(r, p.ID, model, 0, pagedAdvertisedTokens)
 
-	r.RecordCapacityRejectSized(p.ID, model, int(pagedRequestTokens))
+	r.RecordCapacityRejectSized(p.ID, model, "seventh", int(pagedRequestTokens))
 	learned, latched := r.BudgetCeiling(p.ID, model)
 	if !latched || learned >= pagedRequestTokens {
 		t.Fatalf("setup: ceiling = (%d, %v), want a latch below the %d request size",
@@ -563,7 +575,7 @@ func TestBudgetCeilingLearnsFromInGapPendingNotJustTheHeartbeat(t *testing.T) {
 
 	// Six ~20k requests dispatched inside the heartbeat gap. The coordinator
 	// knows about all of them; the provider's last report does not.
-	var burst int64
+	var others int64
 	for i := 0; i < 6; i++ {
 		p.AddPending(&PendingRequest{
 			RequestID:             "burst-" + string(rune('a'+i)),
@@ -571,21 +583,52 @@ func TestBudgetCeilingLearnsFromInGapPendingNotJustTheHeartbeat(t *testing.T) {
 			EstimatedPromptTokens: pagedRequestPrompt,
 			RequestedMaxTokens:    pagedRequestMaxTokens,
 		})
-		burst += pagedRequestTokens
+		others += pagedRequestTokens
 	}
 
-	// The sixth one comes back token_budget_exhausted: the affine pool is full.
-	r.RecordCapacityRejectSized(p.ID, model, int(pagedRequestTokens))
+	// A seventh comes back token_budget_exhausted: the affine pool is full. It
+	// is NOT in the pending set — handleInferenceError removes the request
+	// before the error reaches this classifier — so the pending sum is exactly
+	// the six others and the seventh's demand is charged on top. Passing its id
+	// keeps that true either way.
+	r.RecordCapacityRejectSized(p.ID, model, "seventh", int(pagedRequestTokens))
 
 	got, latched := r.BudgetCeiling(p.ID, model)
 	if !latched {
 		t.Fatal("a sized capacity reject must latch a ceiling")
 	}
 	// Heartbeat-only would have learned requestTokens − margin ≈ 19k. The
-	// honest commitment is the whole burst the coordinator had placed.
-	if want := burst - budgetCeilingMarginTokens; got != want {
+	// honest commitment is the whole burst the coordinator had placed plus the
+	// request that failed on top of it.
+	if want := others + pagedRequestTokens - budgetCeilingMarginTokens; got != want {
 		t.Fatalf("ceiling = %d, want %d (the full in-gap commitment, not the %d a stale heartbeat implies)",
 			got, want, pagedRequestTokens-budgetCeilingMarginTokens)
+	}
+
+	// And the exclusion must be by identity, not by size: if the terminal path
+	// had NOT yet removed the request, its own demand must still be charged
+	// exactly once rather than twice.
+	r2 := New(testLogger())
+	p2 := makeTokenBudgetProvider(t, r2, "box", model, 100, 0, pagedAdvertisedTokens, 100)
+	sendBudgetHeartbeat(r2, p2.ID, model, 0, pagedAdvertisedTokens)
+	for i := 0; i < 6; i++ {
+		p2.AddPending(&PendingRequest{
+			RequestID:             "burst-" + string(rune('a'+i)),
+			Model:                 model,
+			EstimatedPromptTokens: pagedRequestPrompt,
+			RequestedMaxTokens:    pagedRequestMaxTokens,
+		})
+	}
+	p2.AddPending(&PendingRequest{
+		RequestID:             "seventh",
+		Model:                 model,
+		EstimatedPromptTokens: pagedRequestPrompt,
+		RequestedMaxTokens:    pagedRequestMaxTokens,
+	})
+	r2.RecordCapacityRejectSized(p2.ID, model, "seventh", int(pagedRequestTokens))
+	if resident, _ := r2.BudgetCeiling(p2.ID, model); resident != got {
+		t.Fatalf("ceiling = %d with the rejected request still pending, want the same %d — the exclusion must be by id, not by arithmetic",
+			resident, got)
 	}
 }
 

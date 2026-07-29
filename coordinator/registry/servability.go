@@ -264,8 +264,13 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 // rebuild) or "crashed" (wedge suspected), reporting a live kvBytesPerToken
 // while its KV byte capacity has collapsed to zero, which is one of the same
 // wedge triggers (EngineV2Bridge+Capacity: budgetMax = reportedKVBytesCapacity
-// / kvBytesPerToken). That is a real state, but a rare one, so this clamp is
-// consistency hardening for the paged fleet — NOT a material share of the
+// / kvBytesPerToken). That is a real state, but a rare one.
+//
+// Narrower still: on that exact shape knownZeroTokenBudget already refuses the
+// box in LIVE admission (freeMemoryAdmits), so the only reader this clamp can
+// change is snapshotStructuralBudget → PredictServable. Its whole effect is to
+// move the fleet's terminal-429-versus-queue boundary onto the truth. So this
+// is consistency hardening for the paged fleet — NOT a material share of the
 // warm-path oversized_request rejections the learned ceiling addresses.
 func pagedColdTokenBudgetCeiling(totalMemoryGB float64, kvBytesPerToken int64) int64 {
 	if totalMemoryGB <= 0 || kvBytesPerToken <= 0 {

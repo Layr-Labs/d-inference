@@ -211,9 +211,17 @@ func (r *Registry) providerBudgetCommitmentLocked(providerID, modelID string) (a
 // by default), so during a burst it can read near-zero while the box is
 // physically full. This is the term that closes that gap, and it is why the
 // learned budget ceiling measures max(heartbeat, coordinator) rather than
-// trusting the heartbeat alone. Caller holds the r.mu lock in either mode;
-// p.mu is acquired here.
-func (r *Registry) providerPendingTokensLocked(providerID, modelID string) int64 {
+// trusting the heartbeat alone.
+//
+// excludeRequestID drops one request from the sum, so a caller that charges a
+// request's demand separately cannot double-count it. Passing the rejected
+// request's id makes the total mean "everything else this pair is holding"
+// regardless of whether the terminal path has already removed it — today
+// handleInferenceError removes it before the error reaches the reject
+// classifier, but pinning the arithmetic to that ordering would put a
+// cross-file invariant between the coordinator and a correct measurement.
+// Caller holds the r.mu lock in either mode; p.mu is acquired here.
+func (r *Registry) providerPendingTokensLocked(providerID, modelID, excludeRequestID string) int64 {
 	p := r.providers[providerID]
 	if p == nil {
 		return 0
@@ -222,7 +230,7 @@ func (r *Registry) providerPendingTokensLocked(providerID, modelID string) int64
 	defer p.mu.Unlock()
 	var pending int64
 	for _, pr := range p.pendingReqs {
-		if pr.Model == modelID {
+		if pr.Model == modelID && pr.RequestID != excludeRequestID {
 			pending += int64(pendingTokenBudget(pr))
 		}
 	}

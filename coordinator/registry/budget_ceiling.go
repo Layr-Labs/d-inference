@@ -38,13 +38,15 @@ import (
 // and per batch shape, so this does not model it. It MEASURES it. On a
 // capacity reject the coordinator knows the commitment that failed:
 //
-//	S = max(used + queued, pendingForModel − requestTokens) + requestTokens
+//	S = max(used + queued, otherPendingForModel) + requestTokens
 //
-// in the same units the admission gate charges. The max matters: the heartbeat
-// half (used+queued) lags a burst by up to one heartbeat interval, and the
-// coordinator's own pending half is exactly the coordinatorExtra term
-// freeMemoryAdmits adds for that reason. Learning off the heartbeat alone would
-// read used≈0 mid-burst and latch an order of magnitude too tight. Latching
+// in the same units the admission gate charges — its LHS reduces to exactly
+// this. The max matters: the heartbeat half (used+queued) lags a burst by up to
+// one heartbeat interval, and the coordinator's own pending half is precisely
+// the coordinatorExtra term freeMemoryAdmits adds for that reason. Learning off
+// the heartbeat alone would read used≈0 mid-burst and latch an order of
+// magnitude too tight. Both halves exclude the rejected request, whose demand
+// is then charged once on top. Latching
 //
 //	effectiveMax = min(advertised, S − budgetCeilingMarginTokens)
 //
@@ -347,6 +349,27 @@ func (r *Registry) budgetCeilingLocked(providerID, modelID string, advertised in
 		return e.tokens
 	}
 	return advertised
+}
+
+// BudgetCeilingsLatched counts the pairs currently held below their advertised
+// token budget by a live learned ceiling. This is the fleet-level derate state
+// that the per-latch log line cannot answer: "how many pairs are deselected
+// right now", which is what an operator needs mid-incident to tell a working
+// mitigation from a starved fleet. Polled onto a gauge by the api metrics loop.
+func (r *Registry) BudgetCeilingsLatched() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if !r.budgetCeilingCfg.Enabled {
+		return 0
+	}
+	now := time.Now()
+	n := 0
+	for _, e := range r.budgetCeilings {
+		if now.Before(e.latchedAt.Add(r.budgetCeilingCfg.TTL)) {
+			n++
+		}
+	}
+	return n
 }
 
 // BudgetCeiling reports the pair's learned effective token-budget ceiling and

@@ -1981,6 +1981,13 @@ func (s *Server) StartDDGaugeLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.ddGauge("providers.online", float64(s.registry.OnlineCount()), nil)
+			// Learned token-budget ceilings currently holding a (provider,
+			// model) pair below its advertised budget (registry/
+			// budget_ceiling.go). A working mitigation shows a handful that
+			// decay; a starved fleet shows this climbing and staying. The
+			// per-latch log line cannot answer the "right now" question.
+			s.ddGauge("routing.budget_ceilings_latched",
+				float64(s.registry.BudgetCeilingsLatched()), nil)
 			// APNs code-identity coverage — watch this climb during the grace
 			// window before letting APNS_ENFORCE_AFTER pass.
 			codeAttested, _ := s.registry.CodeAttestationCoverage()

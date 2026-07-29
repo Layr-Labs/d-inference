@@ -170,20 +170,23 @@ type capacityRejectKey struct {
 // fleet-wide) must go to RecordCapacityRejectRequestShape so it arms NO
 // gray-box state at all.
 func (r *Registry) RecordCapacityReject(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, 0, true, true)
+	return r.recordCapacityReject(providerID, modelID, "", 0, true, true)
 }
 
 // RecordCapacityRejectSized is RecordCapacityReject with the rejected
-// request's token demand (prompt + max_tokens) attached — the production entry
-// point. The size is what turns the reject into a MEASUREMENT: together with
-// the pair's reported used+queued it fixes the exact commitment the provider
-// could not hold, which is what the learned effective ceiling latches
-// (budget_ceiling.go). Everything else is identical to RecordCapacityReject,
+// request's identity and token demand (prompt + max_tokens) attached — the
+// production entry point. The size is what turns the reject into a
+// MEASUREMENT: together with everything else the pair is holding it fixes the
+// commitment the provider could not hold, which is what the learned effective
+// ceiling latches (budget_ceiling.go). requestID lets that "everything else"
+// exclude this request by identity rather than by arithmetic, so the
+// measurement does not depend on whether the caller has already removed it
+// from the pending set. Everything else is identical to RecordCapacityReject,
 // which stays as the size-less form for callers (and tests) that only have the
 // pair: without a size the failing commitment is unknown, so those record a
 // strike and a clamp but teach the ceiling nothing.
-func (r *Registry) RecordCapacityRejectSized(providerID, modelID string, requestTokens int) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, requestTokens, true, true)
+func (r *Registry) RecordCapacityRejectSized(providerID, modelID, requestID string, requestTokens int) (tripped bool) {
+	return r.recordCapacityReject(providerID, modelID, requestID, requestTokens, true, true)
 }
 
 // RecordCapacityRejectLifecycle records a BENIGN lifecycle capacity miss — a
@@ -206,7 +209,7 @@ func (r *Registry) RecordCapacityRejectSized(providerID, modelID string, request
 // "no model loaded" rejections here; genuine capacity/token-budget 503s go to
 // RecordCapacityReject and feed everything.
 func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, 0, false, false)
+	return r.recordCapacityReject(providerID, modelID, "", 0, false, false)
 }
 
 // RecordCapacityRejectRequestShape records a capacity-vocabulary rejection the
@@ -227,7 +230,7 @@ func (r *Registry) RecordCapacityRejectLifecycle(providerID, modelID string) (tr
 // that safe for healthy pairs (threshold 5 in 60s with NO accept; any accept
 // resets the streak), a safety the clamp and rate window by design lack.
 func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, 0, false, false)
+	return r.recordCapacityReject(providerID, modelID, "", 0, false, false)
 }
 
 // RecordCapacityRejectBusy records a typed admission-timeout capacity signal
@@ -244,7 +247,7 @@ func (r *Registry) RecordCapacityRejectRequestShape(providerID, modelID string) 
 // capacity-503 rate window (transient load would accumulate a false reject
 // rate against a healthy pair).
 func (r *Registry) RecordCapacityRejectBusy(providerID, modelID string) (tripped bool) {
-	return r.recordCapacityReject(providerID, modelID, 0, false, false)
+	return r.recordCapacityReject(providerID, modelID, "", 0, false, false)
 }
 
 // recordCapacityReject is the shared implementation. deratePair gates the
@@ -255,7 +258,7 @@ func (r *Registry) RecordCapacityRejectBusy(providerID, modelID string) (tripped
 // requestTokens is the rejected request's token demand (prompt + max_tokens),
 // or 0 when the caller does not know it; the ceiling can only learn from a
 // sized reject. The cooldown strike is fed on all paths.
-func (r *Registry) recordCapacityReject(providerID, modelID string, requestTokens int, deratePair, armClamp bool) (tripped bool) {
+func (r *Registry) recordCapacityReject(providerID, modelID, requestID string, requestTokens int, deratePair, armClamp bool) (tripped bool) {
 	if providerID == "" || modelID == "" {
 		return false
 	}
@@ -285,18 +288,19 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, requestToken
 		// used+queued alone would be tighter than the evidence supports.
 		//
 		// The commitment must be measured in the SAME units freeMemoryAdmits
-		// charges, which is not the heartbeat alone: its LHS is
-		// used+queued+coordinatorExtra+request, where coordinatorExtra is the
-		// in-gap pending the heartbeat has not caught up to yet. Reconstruct
-		// that base as max(heartbeat committed, pending − this request) — the
-		// rejected request may or may not still be in the pending set at this
-		// point, so charging it once explicitly is the only way to avoid
-		// either double-counting it or missing it. Without the pending term a
-		// burst inside one 5s heartbeat window reads used≈0 and latches a
-		// ceiling an order of magnitude tighter than the evidence supports.
+		// charges, which is not the heartbeat alone: its LHS reduces to
+		// max(heartbeat committed, coordinator pending) + request, where the
+		// pending term is the in-gap demand the heartbeat has not caught up to
+		// yet. Both halves here mean "everything this pair holds EXCLUDING the
+		// rejected request", which is charged once on top — the pending sum
+		// skips it by id rather than subtracting its size, so the arithmetic
+		// is exact whether or not the terminal path has already removed it.
+		// Without the pending term a burst inside one 5s heartbeat window
+		// reads used≈0 and latches a ceiling an order of magnitude tighter
+		// than the evidence supports.
 		if requestTokens > 0 {
 			base := committed
-			if others := r.providerPendingTokensLocked(providerID, modelID) - int64(requestTokens); others > base {
+			if others := r.providerPendingTokensLocked(providerID, modelID, requestID); others > base {
 				base = others
 			}
 			r.recordBudgetCeilingLocked(clampKey, base+int64(requestTokens), base, advertised, now)

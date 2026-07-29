@@ -1,0 +1,29 @@
+[Unit]
+Description=Darkbloom Cloud SQL Auth Proxy
+Documentation=https://cloud.google.com/sql/docs/postgres/sql-proxy
+After=network-online.target
+Wants=network-online.target
+Before=darkbloom-coordinator.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+EnvironmentFile=/etc/d-inference/cloud-sql-proxy.env
+ExecStart=/usr/local/bin/cloud-sql-proxy --private-ip --address=127.0.0.1 --port=5432 --run-connection-test ${INSTANCE_CONNECTION_NAME}
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+

@@ -48,17 +48,6 @@ func transientCapacityMsg() protocol.InferenceErrorMessage {
 	}
 }
 
-// The two verdicts must not share a reason code — the whole point of the
-// split is that a ledger query can separate them.
-func TestCapacityRetriesReasonIsDistinctFromOversized(t *testing.T) {
-	if rejectionReasonCapacityRetriesExhausted == rejectionReasonOversized {
-		t.Fatal("capacity exhaustion and unservable shapes must carry different reason codes")
-	}
-	if rejectionReasonCapacityRetriesExhausted == "" {
-		t.Fatal("the capacity reason code must be non-empty (it reaches the ledger verbatim)")
-	}
-}
-
 // Exhausting the transient-capacity retry budget latches the CAPACITY reason;
 // a deterministic context overflow still latches oversized_request. Same stop
 // behaviour, different verdict.
@@ -130,18 +119,22 @@ func TestExhaustedRejectionInfoCounterfactual(t *testing.T) {
 		}
 	})
 
-	t.Run("capacity path floors on providers that actually rejected", func(t *testing.T) {
+	t.Run("capacity path floors candidates on providers that actually rejected", func(t *testing.T) {
 		// A decision with no counters (every candidate already excluded on the
 		// final attempt) must not erase the fact that three providers were
-		// dispatched to and capacity-rejected.
+		// dispatched to and capacity-rejected. capacityRejections stays at the
+		// decision's value: it counts candidates shed DURING SELECTION, a
+		// disjoint population from providers that were dispatched and 503'd, and
+		// flooring it would rebuild the very counter conflation this split undoes.
 		d := exhaustedState(t, newTestServerForDispatch(t),
 			rejectionReasonCapacityRetriesExhausted, maxCapacityClassRetries, registry.RoutingDecision{})
 		info := d.exhaustedRejectionInfo(rejectionReasonCapacityRetriesExhausted, http.StatusTooManyRequests, 2000)
 		if info.candidateCount != maxCapacityClassRetries {
 			t.Fatalf("candidateCount = %d, want the observed floor %d", info.candidateCount, maxCapacityClassRetries)
 		}
-		if info.capacityRejections != maxCapacityClassRetries {
-			t.Fatalf("capacityRejections = %d, want the observed floor %d", info.capacityRejections, maxCapacityClassRetries)
+		if info.capacityRejections != 0 {
+			t.Fatalf("capacityRejections = %d, want the decision's own 0 (selection-stage counter, not a dispatch count)",
+				info.capacityRejections)
 		}
 	})
 

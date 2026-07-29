@@ -1296,7 +1296,7 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 	snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 	snap.availableOnDisk = !snap.modelLoaded
 	snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-	snap.pagedKVBackend, _ = p.runsPagedKVLocked()
+	snap.pagedKVBackend = p.runsPagedKVLocked()
 
 	// Gray-box budget clamp (budget_clamp.go): when a capacity-503 has proven
 	// the pair's live gate is rejecting, admission must not believe the
@@ -2329,7 +2329,7 @@ func (r *Registry) quickCapacityCheck(model string, estimatedPromptTokens, reque
 		snap.modelLoaded = slotStateModelLoaded(snap.slotState)
 		snap.availableOnDisk = !snap.modelLoaded
 		snap.fleetMedianTPS = r.tpsRegistry.Median(model, p.Hardware.ChipFamily)
-		snap.pagedKVBackend, _ = p.runsPagedKVLocked()
+		snap.pagedKVBackend = p.runsPagedKVLocked()
 
 		// Gray-box budget clamp — same evaluation as snapshotProviderLockedEx
 		// (including the budgetless-snapshot hold for reconnecting sessions)

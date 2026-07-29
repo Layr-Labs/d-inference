@@ -190,12 +190,28 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 	t.Run("floored at the provider minimum serving budget", func(t *testing.T) {
 		r := New(testLogger())
 		now := time.Now()
-		// A reject at a tiny commitment would imply a negative ceiling; a
-		// zero/negative ceiling is a permanent clamp wearing a different name.
-		r.recordBudgetCeilingLocked(key, 10, 0, 100_000, now)
+		// A reject at a small commitment would imply a ceiling below the
+		// provider's own minimum serving budget; a zero/negative ceiling is a
+		// permanent clamp wearing a different name. The floor still binds
+		// here, because the failing commitment is above it.
+		r.recordBudgetCeilingLocked(key, budgetCeilingFloorTokens+500, 0, 100_000, now)
 		got, latched := r.BudgetCeiling("box", model)
 		if !latched || got != budgetCeilingFloorTokens {
 			t.Fatalf("ceiling = (%d, %v), want (%d, true)", got, latched, budgetCeilingFloorTokens)
+		}
+	})
+
+	t.Run("no entry when the floor would gate nothing", func(t *testing.T) {
+		r := New(testLogger())
+		now := time.Now()
+		// The whole failing commitment fits under one provider-minimum budget,
+		// so the floored ceiling lands at or above it: the identical request at
+		// the identical commitment would be re-admitted. Such an entry gates
+		// nothing while still burning a TTL and the accept bookkeeping, so it
+		// must not be created at all.
+		r.recordBudgetCeilingLocked(key, budgetCeilingFloorTokens-1, 0, 100_000, now)
+		if _, latched := r.BudgetCeiling("box", model); latched {
+			t.Fatal("a ceiling that cannot gate the request that produced it must not be latched")
 		}
 	})
 
@@ -223,17 +239,27 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects ratchet down, never up", func(t *testing.T) {
+	t.Run("rejects ratchet down, never up, and do not refresh the TTL", func(t *testing.T) {
 		r := New(testLogger())
 		now := time.Now()
 		r.recordBudgetCeilingLocked(key, 50_000, 0, 1_000_000, now)
 		tight, _ := r.BudgetCeiling("box", model)
 		// A later reject at a HIGHER commitment (the box was busier) must not
 		// undo what the tighter one taught. Only accepts widen.
-		r.recordBudgetCeilingLocked(key, 900_000, 800_000, 1_000_000, now)
+		later := now.Add(time.Minute)
+		r.recordBudgetCeilingLocked(key, 900_000, 800_000, 1_000_000, later)
 		got, _ := r.BudgetCeiling("box", model)
 		if got != tight {
 			t.Fatalf("ceiling = %d after a looser reject, want the ratcheted %d", got, tight)
+		}
+		// …and it must not have moved the TTL anchor either. A derating window
+		// extended by evidence that did not produce the ceiling is how a
+		// bounded fail-open becomes an unbounded one.
+		r.mu.RLock()
+		anchor := r.budgetCeilings[key].latchedAt
+		r.mu.RUnlock()
+		if !anchor.Equal(now) {
+			t.Fatalf("TTL anchor = %v, want the original latch %v — a non-tightening reject must not refresh it", anchor, now)
 		}
 	})
 
@@ -335,26 +361,174 @@ func TestBudgetCeilingDeletedOnceHealed(t *testing.T) {
 // An identity rebind (session id → SE key → serial) must carry the TIGHTER
 // ceiling, not the fresher one. A rebind is not evidence about capacity, and
 // taking the later entry would let it widen a ceiling only accepts may widen.
+// Expiry decides FIRST though: an expired entry has no evidentiary standing on
+// either side, and comparing tokens blind would let an expired-but-tighter
+// source silently destroy a live destination (the survivor would carry the
+// source's stale anchor, so it would read as expired and gate nothing).
 func TestBudgetCeilingMigratesTighterOnIdentityRebind(t *testing.T) {
 	const model = "m"
-	r := New(testLogger())
-	now := time.Now()
+	oldKey := capacityRejectKey{ProviderID: "old", ModelID: model}
+	newKey := capacityRejectKey{ProviderID: "new", ModelID: model}
 
-	r.mu.Lock()
-	r.budgetCeilings[capacityRejectKey{ProviderID: "old", ModelID: model}] =
-		&budgetCeilingEntry{tokens: 20_000, latchedAt: now.Add(-time.Minute)}
-	r.budgetCeilings[capacityRejectKey{ProviderID: "new", ModelID: model}] =
-		&budgetCeilingEntry{tokens: 90_000, latchedAt: now}
-	r.migrateFaultStateLocked("old", "new")
-	got, ok := r.budgetCeilings[capacityRejectKey{ProviderID: "new", ModelID: model}]
-	_, oldStillThere := r.budgetCeilings[capacityRejectKey{ProviderID: "old", ModelID: model}]
-	r.mu.Unlock()
+	for name, tc := range map[string]struct {
+		source, dest *budgetCeilingEntry // nil = absent
+		wantTokens   int64               // 0 = nothing survives
+	}{
+		"tighter live source wins": {
+			source: &budgetCeilingEntry{tokens: 20_000}, dest: &budgetCeilingEntry{tokens: 90_000},
+			wantTokens: 20_000,
+		},
+		"tighter live destination is kept": {
+			source: &budgetCeilingEntry{tokens: 90_000}, dest: &budgetCeilingEntry{tokens: 20_000},
+			wantTokens: 20_000,
+		},
+		"expired source must not displace a live destination": {
+			source: &budgetCeilingEntry{tokens: 20_000, latchedAt: time.Now().Add(-time.Hour)},
+			dest:   &budgetCeilingEntry{tokens: 90_000},
+			// The tighter number is expired evidence: the live 90k stands.
+			wantTokens: 90_000,
+		},
+		"expired source alone is dropped": {
+			source:     &budgetCeilingEntry{tokens: 20_000, latchedAt: time.Now().Add(-time.Hour)},
+			wantTokens: 0,
+		},
+		"live source moves onto an empty key": {
+			source: &budgetCeilingEntry{tokens: 20_000}, wantTokens: 20_000,
+		},
+		"live source replaces an expired destination": {
+			source: &budgetCeilingEntry{tokens: 90_000},
+			dest:   &budgetCeilingEntry{tokens: 20_000, latchedAt: time.Now().Add(-time.Hour)},
+			// Looser, but it is the only entry with standing.
+			wantTokens: 90_000,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := New(testLogger())
+			now := time.Now()
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for key, e := range map[capacityRejectKey]*budgetCeilingEntry{oldKey: tc.source, newKey: tc.dest} {
+				if e == nil {
+					continue
+				}
+				if e.latchedAt.IsZero() {
+					e.latchedAt = now
+				}
+				r.budgetCeilings[key] = e
+			}
+			r.migrateFaultStateLocked("old", "new")
 
-	if !ok || got.tokens != 20_000 {
-		t.Fatalf("migrated ceiling = %v, want the tighter 20000", got)
+			if _, ok := r.budgetCeilings[oldKey]; ok {
+				t.Fatal("old-key entry must always be removed by the migration")
+			}
+			got, ok := r.budgetCeilings[newKey]
+			if tc.wantTokens == 0 {
+				if ok {
+					t.Fatalf("ceiling %d survived, want nothing to migrate", got.tokens)
+				}
+				return
+			}
+			if !ok || got.tokens != tc.wantTokens {
+				t.Fatalf("migrated ceiling = %v, want %d", got, tc.wantTokens)
+			}
+			// Whatever survived must still be able to gate: an entry whose
+			// anchor is already expired is indistinguishable from no entry.
+			if !now.Before(got.latchedAt.Add(r.budgetCeilingCfg.TTL)) {
+				t.Fatal("the surviving entry carries an expired anchor — it gates nothing")
+			}
+		})
 	}
-	if oldStillThere {
-		t.Fatal("old-key entry must be removed by the migration")
+}
+
+// THE STARVATION PATH, pinned. A ceiling low enough to deselect the pair for
+// EVERY request size the model receives produces no accepts, so widening is
+// unreachable and the TTL is the only recovery. That is the design's most
+// consequential failure mode: this test states it explicitly so nobody
+// discovers it in production, and pins the TTL as the bound on it.
+func TestBudgetCeilingStarvationRecoversOnlyOnTTL(t *testing.T) {
+	const model = "m"
+	r := New(testLogger())
+	// A model whose traffic is uniformly long: every request is ~20k tokens,
+	// so nothing fits under a ceiling learned near that size.
+	p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, pagedAdvertisedTokens, 100)
+	sendBudgetHeartbeat(r, p.ID, model, 0, pagedAdvertisedTokens)
+
+	r.RecordCapacityRejectSized(p.ID, model, int(pagedRequestTokens))
+	learned, latched := r.BudgetCeiling(p.ID, model)
+	if !latched || learned >= pagedRequestTokens {
+		t.Fatalf("setup: ceiling = (%d, %v), want a latch below the %d request size",
+			learned, latched, pagedRequestTokens)
+	}
+	// Release the one-shot clamp so the CEILING is unambiguously what gates
+	// from here. The release accept is the straggler that was already in
+	// flight when the latch landed — one accept, three short of a widen step,
+	// and a dark pair cannot earn the other three.
+	r.RecordCapacityAccept(p.ID, model)
+	time.Sleep(2 * time.Millisecond)
+	sendBudgetHeartbeat(r, p.ID, model, 0, pagedAdvertisedTokens)
+	if r.BudgetClampActive(p.ID, model) {
+		t.Fatal("setup: the one-shot clamp must release, or it is the clamp under test and not the ceiling")
+	}
+
+	// Dark: the box is idle, nothing is committed, and it is STILL deselected —
+	// draining cannot help, because the ceiling is below one request.
+	if sel := reserveSized(r, model, "starved"); sel != nil {
+		t.Fatal("setup: a ceiling below one request size must deselect an idle pair")
+	}
+	// No dispatch ⇒ no accept ⇒ no widen. Even the accepts the widen path
+	// wants cannot be manufactured, which is the point.
+	if _, stillLatched := r.BudgetCeiling(p.ID, model); !stillLatched {
+		t.Fatal("nothing but the TTL may retire a starved ceiling")
+	}
+
+	ageBudgetCeiling(r, p.ID, model, r.budgetCeilingCfg.TTL+time.Second)
+	if _, stillLatched := r.BudgetCeiling(p.ID, model); stillLatched {
+		t.Fatal("the TTL is the fail-open bound on starvation; it must expire the ceiling")
+	}
+	if sel := reserveSized(r, model, "recovered"); sel == nil {
+		t.Fatal("pair must be selectable again once the ceiling expires")
+	}
+}
+
+// THE BURST. The heartbeat's committed figure lags by up to one heartbeat
+// interval, so a burst that the coordinator itself dispatched is invisible in
+// it. Learning off the heartbeat alone would read used≈0 mid-burst and latch a
+// ceiling an order of magnitude tighter than the evidence supports; the
+// commitment must therefore be max(heartbeat, coordinator pending), which is
+// the same quantity freeMemoryAdmits charges as coordinatorExtra.
+func TestBudgetCeilingLearnsFromInGapPendingNotJustTheHeartbeat(t *testing.T) {
+	const model = "m"
+	r := New(testLogger())
+	// Heartbeat says the box is EMPTY: used+queued = 0 at a huge advertised
+	// budget. This is the honest report from before the burst landed.
+	p := makeTokenBudgetProvider(t, r, "box", model, 100, 0, pagedAdvertisedTokens, 100)
+	sendBudgetHeartbeat(r, p.ID, model, 0, pagedAdvertisedTokens)
+
+	// Six ~20k requests dispatched inside the heartbeat gap. The coordinator
+	// knows about all of them; the provider's last report does not.
+	var burst int64
+	for i := 0; i < 6; i++ {
+		p.AddPending(&PendingRequest{
+			RequestID:             "burst-" + string(rune('a'+i)),
+			Model:                 model,
+			EstimatedPromptTokens: pagedRequestPrompt,
+			RequestedMaxTokens:    pagedRequestMaxTokens,
+		})
+		burst += pagedRequestTokens
+	}
+
+	// The sixth one comes back token_budget_exhausted: the affine pool is full.
+	r.RecordCapacityRejectSized(p.ID, model, int(pagedRequestTokens))
+
+	got, latched := r.BudgetCeiling(p.ID, model)
+	if !latched {
+		t.Fatal("a sized capacity reject must latch a ceiling")
+	}
+	// Heartbeat-only would have learned requestTokens − margin ≈ 19k. The
+	// honest commitment is the whole burst the coordinator had placed.
+	if want := burst - budgetCeilingMarginTokens; got != want {
+		t.Fatalf("ceiling = %d, want %d (the full in-gap commitment, not the %d a stale heartbeat implies)",
+			got, want, pagedRequestTokens-budgetCeilingMarginTokens)
 	}
 }
 

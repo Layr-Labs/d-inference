@@ -279,12 +279,27 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, requestToken
 		advertised, committed := r.providerBudgetCommitmentLocked(providerID, modelID)
 		r.recordBudgetClampLocked(clampKey, advertised > 0, now)
 		// Learned effective ceiling (budget_ceiling.go): the pair could not
-		// hold used+queued+requestTokens, whatever its heartbeat advertises.
-		// Sized rejects only — without the request size the failing
-		// commitment is unknown and a ceiling learned from used+queued alone
-		// would be tighter than the evidence supports.
+		// hold the commitment this request brought it to, whatever its
+		// heartbeat advertises. Sized rejects only — without the request size
+		// the failing commitment is unknown and a ceiling learned from
+		// used+queued alone would be tighter than the evidence supports.
+		//
+		// The commitment must be measured in the SAME units freeMemoryAdmits
+		// charges, which is not the heartbeat alone: its LHS is
+		// used+queued+coordinatorExtra+request, where coordinatorExtra is the
+		// in-gap pending the heartbeat has not caught up to yet. Reconstruct
+		// that base as max(heartbeat committed, pending − this request) — the
+		// rejected request may or may not still be in the pending set at this
+		// point, so charging it once explicitly is the only way to avoid
+		// either double-counting it or missing it. Without the pending term a
+		// burst inside one 5s heartbeat window reads used≈0 and latches a
+		// ceiling an order of magnitude tighter than the evidence supports.
 		if requestTokens > 0 {
-			r.recordBudgetCeilingLocked(clampKey, committed+int64(requestTokens), committed, advertised, now)
+			base := committed
+			if others := r.providerPendingTokensLocked(providerID, modelID) - int64(requestTokens); others > base {
+				base = others
+			}
+			r.recordBudgetCeilingLocked(clampKey, base+int64(requestTokens), base, advertised, now)
 		}
 	}
 	if deratePair {

@@ -29,14 +29,18 @@ const (
 	pagedProviderVersion     = "0.8.0"
 )
 
-// coldPagedSnapshot is a provider that has the model ON DISK with a
-// non-resident slot still in its capacity report — the state a box lands in
-// after the 1h idle unload, and the one where it reports a real per-token KV
-// rate for a model it is not currently serving.
+// coldPagedSnapshot is a provider whose slot for the model is present in the
+// capacity report but NOT resident to snapshotStructuralBudget — the
+// wedge-recovery window, where EngineV2Bridge reports state "reloading" with a
+// live kvBytesPerToken and a KV byte capacity that has collapsed to zero (so
+// activeTokenBudgetMax is 0). This is the one reachable shape that carries a
+// real per-token rate without a resident budget; the ordinary 1h idle unload
+// leaves slots:[] and therefore no rate at all. See the "Reach" note on
+// pagedColdTokenBudgetCeiling.
 func coldPagedSnapshot(paged bool) routingSnapshot {
 	return routingSnapshot{
 		binaryVersion:   pagedProviderVersion,
-		slotState:       "idle_shutdown",
+		slotState:       "reloading",
 		modelLoaded:     false,
 		availableOnDisk: true,
 		totalMemoryGB:   pagedBoxMemoryGB,
@@ -207,33 +211,32 @@ func TestPagedColdTokenBudgetCeilingBoundaries(t *testing.T) {
 
 // runsPagedKVLocked is the one routing reader of the KV-backend record. It
 // answers a MACHINE-level question, so any paged slot makes the box paged, and
-// "never observed" must stay distinct from "contiguous".
+// both "contiguous" and "never observed" must read false — the reader's
+// no-clamp branch is correct for either.
 func TestProviderRunsPagedKV(t *testing.T) {
 	paged, contiguous := KVBackendPaged, KVBackendContiguous
 	for name, tc := range map[string]struct {
-		slots        []protocol.BackendSlotCapacity
-		wantPaged    bool
-		wantObserved bool
+		slots     []protocol.BackendSlotCapacity
+		wantPaged bool
 	}{
-		"no slots":              {nil, false, false},
-		"slot names no backend": {[]protocol.BackendSlotCapacity{{Model: "a"}}, false, false},
+		"no slots":              {nil, false},
+		"slot names no backend": {[]protocol.BackendSlotCapacity{{Model: "a"}}, false},
 		"contiguous only": {[]protocol.BackendSlotCapacity{
-			{Model: "a", KVBackend: &contiguous}}, false, true},
+			{Model: "a", KVBackend: &contiguous}}, false},
 		"paged only": {[]protocol.BackendSlotCapacity{
-			{Model: "a", KVBackend: &paged}}, true, true},
+			{Model: "a", KVBackend: &paged}}, true},
 		"mixed box reads paged": {[]protocol.BackendSlotCapacity{
 			{Model: "a", KVBackend: &contiguous},
-			{Model: "b", KVBackend: &paged}}, true, true},
+			{Model: "b", KVBackend: &paged}}, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := &Provider{}
 			p.mu.Lock()
 			p.recordKVBackendsLocked(&protocol.BackendCapacity{Slots: tc.slots})
-			gotPaged, gotObserved := p.runsPagedKVLocked()
+			gotPaged := p.runsPagedKVLocked()
 			p.mu.Unlock()
-			if gotPaged != tc.wantPaged || gotObserved != tc.wantObserved {
-				t.Fatalf("(paged=%v, observed=%v), want (%v, %v)",
-					gotPaged, gotObserved, tc.wantPaged, tc.wantObserved)
+			if gotPaged != tc.wantPaged {
+				t.Fatalf("paged = %v, want %v", gotPaged, tc.wantPaged)
 			}
 		})
 	}
@@ -283,9 +286,13 @@ func TestMixedBackendFleetColdEstimates(t *testing.T) {
 	}
 }
 
-// sendColdBackendHeartbeat delivers a capacity report in which the model is
-// present but NOT resident (idle_shutdown — the state after the 1h idle
-// unload), naming the slot's KV backend and its real per-token KV cost.
+// sendColdBackendHeartbeat delivers a capacity report in which the model's slot
+// is present but NOT resident to the structural-budget reader: state
+// "reloading" (the wedge-recovery window EngineV2Bridge reports) with a real
+// per-token KV cost and a collapsed byte capacity, so activeTokenBudgetMax is
+// absent. This is the only shape a live provider emits that reaches the cold
+// branch with a usable KV rate — see the "Reach" note on
+// pagedColdTokenBudgetCeiling.
 func sendColdBackendHeartbeat(r *Registry, providerID, model, backend string) {
 	kind := backend
 	r.Heartbeat(providerID, &protocol.HeartbeatMessage{
@@ -298,7 +305,7 @@ func sendColdBackendHeartbeat(r *Registry, providerID, model, backend string) {
 			TotalMemoryGB: pagedBoxMemoryGB,
 			Slots: []protocol.BackendSlotCapacity{{
 				Model:           model,
-				State:           "idle_shutdown",
+				State:           "reloading",
 				KVBytesPerToken: pagedKVRateBytesPerToken,
 				KVBackend:       &kind,
 			}},

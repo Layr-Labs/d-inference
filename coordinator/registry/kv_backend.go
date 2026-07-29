@@ -280,18 +280,20 @@ func (p *Provider) kvBackendForModelLocked(model string) (obs slotKVBackend, obs
 // this purpose the paged answer is the conservative one: it produces the
 // SMALLER cold estimate.
 //
-// observed == false means no slot ever named a backend (a pre-0.8.0 provider,
-// or a box that has not loaded anything yet). Callers must leave their
-// estimate untouched in that case — an unobserved box is not a contiguous box.
+// A false answer covers both "observed contiguous" and "never observed" (a
+// pre-0.8.0 provider, or a box that has not loaded anything yet), and that
+// collapse is deliberate rather than a lost distinction: the sole reader clamps
+// on true and leaves its estimate untouched on false, which is the required
+// behaviour for an unobserved box as much as for a contiguous one. Returning a
+// tri-state would oblige every caller to re-derive that identity.
 // Caller must hold p.mu.
-func (p *Provider) runsPagedKVLocked() (paged, observed bool) {
+func (p *Provider) runsPagedKVLocked() bool {
 	for _, obs := range p.kvBackends {
-		observed = true
 		if obs.Kind == KVBackendPaged {
-			return true, true
+			return true
 		}
 	}
-	return false, observed
+	return false
 }
 
 // slotKVBackendObservation is the one lookup both dimensions come from.

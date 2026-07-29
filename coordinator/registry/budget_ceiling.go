@@ -36,11 +36,15 @@ import (
 //
 // The intercept is unknown to the coordinator and differs per box, per model
 // and per batch shape, so this does not model it. It MEASURES it. On a
-// capacity reject the coordinator knows the exact commitment that failed:
+// capacity reject the coordinator knows the commitment that failed:
 //
-//	S = active_token_budget_used + queued_token_budget + requestTokens
+//	S = max(used + queued, pendingForModel − requestTokens) + requestTokens
 //
-// all three in the same units the admission gate itself uses. Latching
+// in the same units the admission gate charges. The max matters: the heartbeat
+// half (used+queued) lags a burst by up to one heartbeat interval, and the
+// coordinator's own pending half is exactly the coordinatorExtra term
+// freeMemoryAdmits adds for that reason. Learning off the heartbeat alone would
+// read used≈0 mid-burst and latch an order of magnitude too tight. Latching
 //
 //	effectiveMax = min(advertised, S − budgetCeilingMarginTokens)
 //
@@ -71,11 +75,17 @@ import (
 //     ceiling by 1/budgetCeilingWidenDivisor of its current value; once it
 //     reaches the advertised budget the entry is deleted and the pair is back
 //     on pure heartbeat semantics. Accepts are the only provider-side proof
-//     that more fits than we learned.
+//     that more fits than we learned. This route is only open when SOME request
+//     size still fits under the ceiling: it is fast for a pair whose traffic
+//     straddles the ceiling (~40 short requests to climb 1k→90k) and closed
+//     for a pair whose traffic is uniformly larger than it.
 //   - TTL: an entry never outlives latchedAt+TTL. This is the fail-open bound
-//     for the one case widening cannot reach — a ceiling low enough to
-//     deselect the pair for every request size, which produces no accepts and
-//     so cannot widen.
+//     for exactly the case widening cannot reach — a ceiling low enough to
+//     deselect the pair for every request size the model actually receives, so
+//     no accept can land. Such a pair is dark for the remainder of the TTL and
+//     nothing but the TTL recovers it, which is why non-tightening rejects must
+//     not refresh the anchor (see recordBudgetCeilingLocked) and why the
+//     latch/heal transitions are logged.
 //
 // # Scope
 //
@@ -189,21 +199,28 @@ func (r *Registry) recordBudgetCeilingLocked(key capacityRejectKey, observedComm
 		return
 	}
 	learned := observedCommitment - budgetCeilingMarginTokens
-	// Never learn a ceiling BELOW what the pair reports it is already holding.
-	// The margin exists to push the next identical request off the boundary,
-	// but for a request smaller than the margin it would otherwise push the
-	// ceiling under the live commitment — a number the provider's own report
-	// contradicts, and one low enough to deselect the pair for every request
-	// size (which produces no accepts, so only the TTL could recover it). The
-	// gate still rejects the request that failed: any positive demand on top
-	// of a ceiling equal to the commitment does not fit.
+	// Never learn a ceiling BELOW what the pair was already holding without
+	// this request. The margin exists to push the next identical request off
+	// the boundary, but for a request smaller than the margin it would
+	// otherwise push the ceiling under the live commitment — a number the
+	// pair's own accounting contradicts, and one low enough to deselect the
+	// pair for every request size (which produces no accepts, so only the TTL
+	// could recover it). The gate still rejects the request that failed: any
+	// positive demand on top of a ceiling equal to the base does not fit.
 	if learned < alreadyCommitted {
 		learned = alreadyCommitted
 	}
 	if learned < budgetCeilingFloorTokens {
 		learned = budgetCeilingFloorTokens
 	}
-	if learned >= advertised {
+	// A ceiling at or above the commitment that just failed changes no
+	// decision — the identical request at the identical commitment is
+	// re-admitted — and a ceiling at or above the advertised budget is
+	// dominated by the heartbeat. Either way the entry would gate nothing
+	// while still burning a TTL and the accept bookkeeping, so do not create
+	// one. (The first case is reachable only when the floor binds, i.e. the
+	// whole failing commitment was under one provider-minimum budget.)
+	if learned >= observedCommitment || learned >= advertised {
 		return
 	}
 	// Opportunistic sweep (mirrors the sibling clamp/cooldown maps):
@@ -216,16 +233,33 @@ func (r *Registry) recordBudgetCeilingLocked(key capacityRejectKey, observedComm
 			}
 		}
 	}
-	// Ratchet: a live entry that already knows a TIGHTER ceiling keeps it. A
-	// reject cannot widen — only accepts can, and only through the widen path
-	// below. Without this a reject arriving at high commitment (a busy box)
-	// would undo what a reject at low commitment (the same box, gray) taught.
+	// Ratchet: a live entry that already knows a ceiling at least this tight
+	// keeps it, TTL ANCHOR INCLUDED. A reject cannot widen — only accepts can,
+	// and only through the widen path below — so without the token half a
+	// reject arriving at high commitment (a busy box) would undo what a reject
+	// at low commitment (the same box, gray) taught. And without the latchedAt
+	// half, a non-tightening reject would refresh the TTL off evidence that
+	// did not produce the ceiling, extending the derating window for free. The
+	// reject does reset progress toward widening: it is direct evidence
+	// against the accepts that had accumulated.
 	if prev, ok := r.budgetCeilings[key]; ok &&
 		now.Before(prev.latchedAt.Add(r.budgetCeilingCfg.TTL)) &&
-		prev.tokens < learned {
-		learned = prev.tokens
+		prev.tokens <= learned {
+		prev.acceptsSince = 0
+		return
 	}
 	r.budgetCeilings[key] = &budgetCeilingEntry{tokens: learned, latchedAt: now}
+	if r.logger != nil {
+		// The only window into this mechanism during an incident: which pair,
+		// how far below its own advertised budget, and off what commitment.
+		r.logger.Warn("budget ceiling latched",
+			"provider_id", key.ProviderID,
+			"model", key.ModelID,
+			"learned_tokens", learned,
+			"advertised_tokens", advertised,
+			"failing_commitment_tokens", observedCommitment,
+			"latched_pairs", len(r.budgetCeilings))
+	}
 }
 
 // noteBudgetCeilingAcceptLocked records one accept for the pair and widens the
@@ -264,6 +298,13 @@ func (r *Registry) noteBudgetCeilingAcceptLocked(providerID, modelID string, key
 	advertised, _ := r.providerBudgetCommitmentLocked(providerID, modelID)
 	if advertised > 0 && e.tokens >= advertised {
 		delete(r.budgetCeilings, key)
+		if r.logger != nil {
+			r.logger.Info("budget ceiling healed",
+				"provider_id", key.ProviderID,
+				"model", key.ModelID,
+				"advertised_tokens", advertised,
+				"latched_pairs", len(r.budgetCeilings))
+		}
 	}
 }
 
@@ -300,24 +341,4 @@ func (r *Registry) BudgetCeiling(providerID, modelID string) (tokens int64, latc
 		return 0, false
 	}
 	return e.tokens, true
-}
-
-// effectiveTokenBudgetMax is the token-budget ceiling every LIVE admission
-// reader must use in place of the raw heartbeat value: the learned ceiling
-// when one is latched and tighter, the advertised budget otherwise.
-//
-// Zero-value safe on purpose. A snapshot built outside snapshotProviderLocked
-// (tests, and any future construction site) carries learnedTokenBudgetMax == 0,
-// which reads as "nothing learned" rather than as a zero budget.
-//
-// STRUCTURAL readers must NOT use this. snapshotStructuralBudget feeds the
-// fleet-level servability shed (PredictServable), whose "no" is a terminal
-// 429; a learned ceiling is transient, per-box evidence about live capacity
-// and would turn a merely-derated fleet into prompt_too_long. Same split the
-// clamp already draws (see liveRemainingBudget).
-func effectiveTokenBudgetMax(snap routingSnapshot) int64 {
-	if snap.learnedTokenBudgetMax > 0 && snap.learnedTokenBudgetMax < snap.activeTokenBudgetMax {
-		return snap.learnedTokenBudgetMax
-	}
-	return snap.activeTokenBudgetMax
 }

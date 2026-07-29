@@ -250,10 +250,23 @@ func coldTokenBudgetEstimate(totalMemoryGB, modelSizeGB float64, kvBytesPerToken
 // paged BYTE bound by it would manufacture a token ceiling an order of
 // magnitude below the truth and shed traffic every provider could serve. The
 // caller therefore passes snap.kvBytesPerToken — the provider's own reported
-// rate for this model's slot, which a box that idle-unloaded the model still
-// reports — and this returns 0 (do not clamp) when it is absent. Same
-// tri-state discipline as kv_backend.go: an ambiguous input must never tighten
-// a gate whose "no" can be a terminal 429.
+// rate for this model's slot — and this returns 0 (do not clamp) when it is
+// absent. Same tri-state discipline as kv_backend.go: an ambiguous input must
+// never tighten a gate whose "no" can be a terminal 429.
+//
+// # Reach, stated honestly
+//
+// Requiring a real rate makes the clamp NARROW, because a provider only
+// reports a slot for a model it is holding: the 1h idle unload leaves
+// slots:[] (KVBackendPosture), so the ordinary cold box arrives here with no
+// rate and is not clamped. What remains is the slot that is present but
+// non-resident to snapshotStructuralBudget — state "reloading" (wedge-recovery
+// rebuild) or "crashed" (wedge suspected), reporting a live kvBytesPerToken
+// while its KV byte capacity has collapsed to zero, which is one of the same
+// wedge triggers (EngineV2Bridge+Capacity: budgetMax = reportedKVBytesCapacity
+// / kvBytesPerToken). That is a real state, but a rare one, so this clamp is
+// consistency hardening for the paged fleet — NOT a material share of the
+// warm-path oversized_request rejections the learned ceiling addresses.
 func pagedColdTokenBudgetCeiling(totalMemoryGB float64, kvBytesPerToken int64) int64 {
 	if totalMemoryGB <= 0 || kvBytesPerToken <= 0 {
 		return 0
@@ -267,6 +280,27 @@ func pagedColdTokenBudgetCeiling(totalMemoryGB float64, kvBytesPerToken int64) i
 		return 0
 	}
 	return tokens
+}
+
+// effectiveTokenBudgetMax is the token-budget ceiling every LIVE admission
+// reader must use in place of the raw heartbeat value: the learned ceiling
+// (budget_ceiling.go) when one is latched and tighter, the advertised budget
+// otherwise.
+//
+// Zero-value safe on purpose. A snapshot built outside snapshotProviderLocked
+// (tests, and any future construction site) carries learnedTokenBudgetMax == 0,
+// which reads as "nothing learned" rather than as a zero budget.
+//
+// STRUCTURAL readers must NOT use this. snapshotStructuralBudget feeds the
+// fleet-level servability shed (PredictServable), whose "no" is a terminal
+// 429; a learned ceiling is transient, per-box evidence about live capacity
+// and would turn a merely-derated fleet into prompt_too_long. Same split the
+// clamp already draws (see liveRemainingBudget).
+func effectiveTokenBudgetMax(snap routingSnapshot) int64 {
+	if snap.learnedTokenBudgetMax > 0 && snap.learnedTokenBudgetMax < snap.activeTokenBudgetMax {
+		return snap.learnedTokenBudgetMax
+	}
+	return snap.activeTokenBudgetMax
 }
 
 // snapshotStructuralBudget returns this provider's structural token-budget

@@ -818,17 +818,28 @@ func (d *dispatchState) rejectionInfoWithDecision(stage, reason string, status, 
 // share one shape:
 //
 //   - CAPACITY RETRIES EXHAUSTED: the fleet could have served this request and
-//     was merely full. Report the scheduler's real counters, floored by the
-//     number of providers that actually capacity-rejected a dispatched attempt
-//     (each was by definition a candidate), so a decision that happened to
-//     carry no counters still cannot under-report below what the loop itself
-//     observed. This path previously hard-wrote candidateCount = 0, which
-//     booked every busy-fleet rejection as "could not have served" — the
-//     misreporting that sent the 2026-07 incident diagnosis down the wrong
-//     path for an hour.
+//     was merely full. Report the scheduler's real counters, with candidateCount
+//     floored by the number of providers that actually capacity-rejected a
+//     dispatched attempt — each of those was by definition a candidate when it
+//     was selected, so the floor cannot over-report, and it keeps a decision
+//     that happens to carry no counters from under-reporting below what the
+//     loop itself observed. This path previously hard-wrote candidateCount = 0,
+//     which booked every busy-fleet rejection as "could not have served" — the
+//     misreporting that sent the 2026-07 incident diagnosis down the wrong path
+//     for an hour.
+//
+//     capacityRejections is deliberately NOT floored the same way. It counts
+//     candidates the admission gate shed DURING SELECTION, never dispatched;
+//     d.capacityRetries counts providers that WERE dispatched and returned a
+//     capacity 503. Those are disjoint halves of the funnel, and maxing them
+//     into one field would reintroduce exactly the counter conflation this
+//     change exists to remove. The dispatched count is recoverable from
+//     candidateCount, which the floor makes honest.
+//
 //   - DETERMINISTICALLY UNSERVABLE: candidates existed and every one of them
 //     would reject the same request identically, so zero is the honest answer
 //     and it is stated authoritatively (mirroring the preflight gate).
+//
 //   - EVERYTHING ELSE: leave servabilityComputed false and let recordRejection
 //     compute the counterfactual itself off the request path.
 func (d *dispatchState) exhaustedRejectionInfo(reason string, statusCode, retryAfterMs int) rejectionInfo {
@@ -844,9 +855,6 @@ func (d *dispatchState) exhaustedRejectionInfo(reason string, statusCode, retryA
 	info := d.rejectionInfoWithDecision("dispatch", reason, statusCode, retryAfterMs, d.lastDecision)
 	if info.candidateCount < d.capacityRetries {
 		info.candidateCount = d.capacityRetries
-	}
-	if info.capacityRejections < d.capacityRetries {
-		info.capacityRejections = d.capacityRetries
 	}
 	return info
 }

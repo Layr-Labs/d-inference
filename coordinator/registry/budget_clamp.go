@@ -210,6 +210,33 @@ func (r *Registry) providerBudgetCommitmentLocked(providerID, modelID string) (a
 	return 0, 0
 }
 
+// providerPendingTokensLocked sums the COORDINATOR's own view of the pair's
+// in-flight token demand: pendingTokenBudget over every pending request for the
+// model, the same aggregate snapshotProviderLocked stores as
+// pendingMaxTokens and the admission gate charges as coordinatorExtra.
+//
+// The heartbeat-only commitment above lags by up to one heartbeat interval (5s
+// by default), so during a burst it can read near-zero while the box is
+// physically full. This is the term that closes that gap, and it is why the
+// learned budget ceiling measures max(heartbeat, coordinator) rather than
+// trusting the heartbeat alone. Caller holds the r.mu lock in either mode;
+// p.mu is acquired here.
+func (r *Registry) providerPendingTokensLocked(providerID, modelID string) int64 {
+	p := r.providers[providerID]
+	if p == nil {
+		return 0
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var pending int64
+	for _, pr := range p.pendingReqs {
+		if pr.Model == modelID {
+			pending += int64(pendingTokenBudget(pr))
+		}
+	}
+	return pending
+}
+
 // noteBudgetClampAcceptLocked records release condition (b): the pair accepted
 // work after the clamp. The entry is kept (not deleted) — release also needs a
 // strictly-fresher heartbeat with meaningful headroom, which the routing-path

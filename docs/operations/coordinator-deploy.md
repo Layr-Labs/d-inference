@@ -35,6 +35,12 @@ How to build, deploy, and update the Darkbloom coordinator and the Swift provide
 | Env file | `/etc/d-inference/env` on the VM (root-only). It must live on the boot disk, not tmpfs. [`deploy/gcp/prod/refresh-env.sh`](../../deploy/gcp/prod/refresh-env.sh) preserves custom values, exact-migrates only explicitly retired defaults, fails if the observed live tuning set is incomplete, and adds absent release defaults. |
 | Fallback | The previous container is kept stopped for forensics. Restart it only when its immutable image digest is on the reviewed marker-safe allowlist; pre-`backfill_withdrawable_balance_v1` images are never rollback targets. |
 
+The production Cloud SQL replacement is prepared separately under
+[`deploy/gcp/prod/cloudsql/`](../../deploy/gcp/prod/cloudsql/README.md). That
+package is not the current production state and is not invoked by Cloud Build.
+Continue to treat AWS RDS as authoritative until the approved migration,
+validation, soak, and documentation update are complete.
+
 The live host still has stale Caddy `/acme/*` routing and lacks
 `stream_close_delay 5m`. Those are separate Caddy-maintenance changes. Do not
 reload Caddy during a coordinator swap because that reconnects the

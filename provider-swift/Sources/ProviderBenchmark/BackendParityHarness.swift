@@ -817,15 +817,28 @@ public enum BackendParityHarness {
         // Exactness compares the whole TERMINAL OUTCOME, not just the token
         // IDs — `judgeAdoptionExactness` holds the rule and the reasons.
         let adopted = secondUsage.prefixCacheOutcome == .hit
-        let exactness: (exact: Bool, mismatchReason: String?)? = adopted
+        let exactness: AdoptionExactness? = adopted
             ? Self.judgeAdoptionExactness(
                 coldTokens: first.row.tokens,
                 adoptedTokens: second.row.tokens,
                 coldFinish: first.row.finishReason,
                 adoptedFinish: second.row.finishReason)
             : nil
-        let adoptionTokenExact: Bool? = exactness?.exact
-        let adoptionMismatchReason: String? = exactness?.mismatchReason
+        var adoptionTokenExact: Bool?
+        var adoptionMismatchReason: String?
+        var adoptionInconclusiveReason: String?
+        switch exactness {
+        case .exact: adoptionTokenExact = true
+        case .inexact(let reason):
+            adoptionTokenExact = false
+            adoptionMismatchReason = reason
+        case .inconclusive(let reason):
+            // Deliberately leaves `adoptionTokenExact` nil: the comparison
+            // ran but proved nothing, and only the reason field separates
+            // that from "never ran".
+            adoptionInconclusiveReason = reason
+        case nil: break
+        }
         // The window the comparison ACTUALLY covered. A verdict of "exact"
         // over 8 tokens and one over 48 are different claims and must not
         // print the same; the shorter stream bounds what could be observed.
@@ -843,7 +856,7 @@ public enum BackendParityHarness {
             + "\(describe(secondUsage.prefixCacheOutcome)), "
             + "resolved=\(box.kind.rawValue), "
             + "finish=\(first.row.finishReason)/\(second.row.finishReason), "
-            + "adoptionExact=\(adoptionTokenExact.map(String.init) ?? "not_measured") "
+            + "adoptionExact=\(adoptionTokenExact.map(String.init) ?? (adoptionInconclusiveReason != nil ? "inconclusive" : "not_measured")) "
             + "over \(adoptionComparedTokens) tokens, "
             + "matched=\(secondUsage.prefixCacheMatchedTokens), "
             + "saved=\(secondUsage.prefixCachePrefillTokensSaved), "
@@ -868,6 +881,7 @@ public enum BackendParityHarness {
             cacheTokensSaved: stats.tokensSaved,
             adoptionTokenExact: adoptionTokenExact,
             adoptionMismatchReason: adoptionMismatchReason,
+            adoptionInconclusiveReason: adoptionInconclusiveReason,
             adoptionComparedTokens: adoptionComparedTokens,
             probeResolvedBackend: box.kind.rawValue,
             probeFallbackReason: box.fallbackReason)
@@ -1212,16 +1226,27 @@ public enum BackendParityHarness {
         return String(trimmed.prefix(37)) + "..."
     }
 
-    /// Terminals a request may end with and still count as a valid
-    /// comparand: the model stopped (`stop`) or the budget ran out
-    /// (`length`). An ALLOWLIST, not a blocklist of known-bad prefixes:
-    /// `describe(CBv2FinishReason)` can grow a case, and `generateWithUsage`
-    /// adds two reasons of its own (`submit_error:`, `unterminated`) that no
-    /// `CBv2FinishReason` spells — a blocklist waves through every reason
-    /// nobody thought to enumerate, which is the shape of gate this harness
-    /// exists to refuse. Shared by the fp32 numerics control and the
-    /// prefix-reuse adoption-exactness judge.
-    static let cleanTerminals: Set<String> = ["stop", "length"]
+    /// Canonical clean-terminal allowlist — one definition, owned by the
+    /// verdict layer so the report's per-row evidence partition and this
+    /// harness can never disagree about what "ended cleanly" means.
+    static let cleanTerminals = BackendParityCriteria.cleanTerminals
+
+    /// What the ADOPTION comparison established.
+    ///
+    /// Three states, because the two failure directions are different
+    /// findings with different owners: `.inexact` is adoption CHANGING the
+    /// observed outcome (the criterion FAILs — a cache the caller cannot see
+    /// must not change the answer), while `.inconclusive` is the comparison
+    /// itself being destroyed by machinery — both arms cut short by the
+    /// SAME non-clean terminal, so the two identical truncated streams
+    /// prove nothing in either direction (the criterion is UNAVAILABLE;
+    /// failing it would let a transient watchdog kill read as "adoption
+    /// changed the answer", and passing it would certify nothing).
+    enum AdoptionExactness: Equatable, Sendable {
+        case exact
+        case inexact(reason: String)
+        case inconclusive(reason: String)
+    }
 
     /// Whether the ADOPTING request reproduced the cold request's outcome —
     /// the WHOLE outcome, not just the token IDs. The same tokens under
@@ -1233,17 +1258,17 @@ public enum BackendParityHarness {
     /// stream is a truncation artifact, and "the truncated prefixes agree"
     /// is not the claim `adoptionTokenExact = true` makes.
     ///
-    /// Returns `exact` plus a mismatch reason naming the SHAPE of the
-    /// failure, because the shapes are different findings: diverging tokens
-    /// can be precision drift on a sensitive checkpoint (see the symmetric
-    /// arm of the criterion), while a terminal mismatch never is. Pure and
-    /// static so the rule is unit-testable without an engine.
+    /// Reasons name the SHAPE of the failure, because the shapes are
+    /// different findings: diverging tokens can be precision drift on a
+    /// sensitive checkpoint (see the symmetric arm of the criterion), while
+    /// a terminal mismatch never is. Pure and static so the rule is
+    /// unit-testable without an engine.
     static func judgeAdoptionExactness(
         coldTokens: [Int],
         adoptedTokens: [Int],
         coldFinish: String,
         adoptedFinish: String
-    ) -> (exact: Bool, mismatchReason: String?) {
+    ) -> AdoptionExactness {
         var reasons: [String] = []
         if coldTokens != adoptedTokens {
             reasons.append("token streams diverged")
@@ -1252,15 +1277,9 @@ public enum BackendParityHarness {
             reasons.append(
                 "terminal mismatch: cold finished '\(coldFinish)', "
                     + "adopted finished '\(adoptedFinish)'")
-        } else if !cleanTerminals.contains(coldFinish) {
-            // Identical but unclean: both arms were cut short the same way,
-            // so neither stream is the model's answer and the comparison
-            // proves nothing about adoption.
-            reasons.append("non-clean terminal on both arms: '\(coldFinish)'")
-        }
-        // The mismatched-terminal case can also hide an UNCLEAN side; name
-        // it too, so `error(…)` is never summarized as a mere mismatch.
-        if coldFinish != adoptedFinish {
+            // The mismatched-terminal case can also hide an UNCLEAN side;
+            // name it too, so `error(…)` is never summarized as a mere
+            // stop/length disagreement.
             let unclean = [("cold", coldFinish), ("adopted", adoptedFinish)]
                 .filter { !cleanTerminals.contains($0.1) }
             if !unclean.isEmpty {
@@ -1269,11 +1288,25 @@ public enum BackendParityHarness {
                         + unclean.map { "\($0.0) ('\($0.1)')" }
                             .joined(separator: " and "))
             }
+        } else if !cleanTerminals.contains(coldFinish) {
+            // Identical unclean terminals: both arms were cut short the
+            // same way, so neither stream is the model's answer. With the
+            // tokens ALSO identical this is not a mismatch — nothing
+            // observed differed — but it is not exactness either; it is a
+            // comparison with no power. Genuinely diverging tokens under
+            // the shared failure still count as a mismatch below.
+            if reasons.isEmpty {
+                return .inconclusive(
+                    reason: "both arms were cut short identically ('\(coldFinish)'), "
+                        + "so the identical truncated streams prove nothing about "
+                        + "adoption")
+            }
+            reasons.append("non-clean terminal on both arms: '\(coldFinish)'")
         }
         guard reasons.isEmpty else {
-            return (false, reasons.joined(separator: "; "))
+            return .inexact(reason: reasons.joined(separator: "; "))
         }
-        return (true, nil)
+        return .exact
     }
 
     static func describe(_ reason: CBv2FinishReason) -> String {

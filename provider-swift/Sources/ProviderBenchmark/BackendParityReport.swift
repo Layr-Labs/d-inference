@@ -30,7 +30,20 @@ public struct BackendParityReport: Codable, Sendable {
 
     /// Bumped when the JSON shape changes so downstream parsers can gate.
     /// 2 adds the `EXPECTED_SHORTFALL` verdict.
-    public static let currentSchemaVersion = 2
+    /// 3 adds the dtype-provenance and adoption-evidence fields:
+    ///  - `BackendParityObservation.pagedPoolDType` — the RESOLVED pool dtype
+    ///    per arm, read off the constructed pool;
+    ///  - `NumericsControl.candidatePoolDType` / `.controlPoolDType` — both
+    ///    control arms' resolved dtypes, and with them the validity rule
+    ///    (`controlValidityBlocker`) that a same-dtype control is DISREGARDED
+    ///    at evaluation rather than quoted;
+    ///  - `PrefixReuse.adoptionMismatchReason` — why adoption was NOT exact
+    ///    (terminal outcomes are judged, not just token ids);
+    ///  - `PrefixReuse.adoptionInconclusiveReason` — the adoption comparison
+    ///    ran but was unjudgeable (both arms cut short identically);
+    ///    `adoptionTokenExact` stays nil and the prefix-reuse criterion is
+    ///    UNAVAILABLE, never PASS or FAIL.
+    public static let currentSchemaVersion = 3
 
     public enum Verdict: String, Codable, Sendable, CaseIterable {
         case pass = "PASS"
@@ -515,10 +528,12 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// "Exact" is a claim about the whole REQUEST OUTCOME, not just the
         /// token IDs: the same tokens with different finish reasons (`stop`
         /// on one arm, `length` or `error(…)` on the other) means adoption
-        /// changed how the request ENDED, and a non-clean terminal on either
-        /// stream means at least one comparand was cut short by machinery
-        /// rather than by the model — both record `false`, with the shape of
-        /// the mismatch named in `adoptionMismatchReason`.
+        /// changed how the request ENDED — that records `false`, with the
+        /// shape of the mismatch named in `adoptionMismatchReason`. But two
+        /// streams cut short IDENTICALLY by machinery (the same `error(…)`
+        /// on both arms) prove nothing in either direction: that records
+        /// nil with `adoptionInconclusiveReason` set, and the criterion is
+        /// UNAVAILABLE — a transient failure must not pass OR fail the gate.
         public let adoptionTokenExact: Bool?
         /// WHY `adoptionTokenExact` is `false`, in one operator-readable
         /// phrase ("token streams diverged", "terminal mismatch: cold
@@ -527,6 +542,15 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// the observation — not recomputed by the report — because the
         /// harness is the only party that saw both raw streams.
         public let adoptionMismatchReason: String?
+        /// WHY the adoption comparison RAN but could not be judged: both
+        /// requests were cut short by the SAME non-clean terminal, so the
+        /// two identical truncated streams are machinery artifacts, not
+        /// answers. Distinct from `adoptionTokenExact == nil` with this
+        /// field ALSO nil, which means the comparison never ran (no cache
+        /// hit). Renders the prefix-reuse criterion UNAVAILABLE with this
+        /// reason — never PASS (nothing was proven exact) and never FAIL
+        /// (identical outcomes are not "adoption changed the answer").
+        public let adoptionInconclusiveReason: String?
         /// Completion tokens the exactness comparison actually covered. This
         /// is the oracle's WINDOW and bounds what it could possibly have seen:
         /// the measured paged adoption divergence appears at completion token
@@ -567,6 +591,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             cacheTokensSaved: Int = 0,
             adoptionTokenExact: Bool? = nil,
             adoptionMismatchReason: String? = nil,
+            adoptionInconclusiveReason: String? = nil,
             adoptionComparedTokens: Int = 0,
             probeResolvedBackend: String? = nil,
             probeFallbackReason: String? = nil,
@@ -589,6 +614,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
             self.cacheTokensSaved = cacheTokensSaved
             self.adoptionTokenExact = adoptionTokenExact
             self.adoptionMismatchReason = adoptionMismatchReason
+            self.adoptionInconclusiveReason = adoptionInconclusiveReason
             self.adoptionComparedTokens = adoptionComparedTokens
             self.probeResolvedBackend = probeResolvedBackend
             self.probeFallbackReason = probeFallbackReason
@@ -677,6 +703,19 @@ public enum BackendParityCriteria {
             prefixReuse(baseline: baseline, candidate: candidate),
         ]
     }
+
+    /// Terminals a request may end with and still count as a valid
+    /// comparand: the model stopped (`stop`) or the budget ran out
+    /// (`length`). An ALLOWLIST, not a blocklist of known-bad prefixes:
+    /// `describe(CBv2FinishReason)` can grow a case, and `generateWithUsage`
+    /// adds two reasons of its own (`submit_error:`, `unterminated`) that no
+    /// `CBv2FinishReason` spells — a blocklist waves through every reason
+    /// nobody thought to enumerate, which is the shape of gate this harness
+    /// exists to refuse. One definition, shared by the per-row evidence
+    /// partition below, the harness's fp32 numerics control, and its
+    /// prefix-reuse adoption-exactness judge, so no two consumers can ever
+    /// disagree about what "ended cleanly" means.
+    static let cleanTerminals: Set<String> = ["stop", "length"]
 
     /// The precondition every cross-backend criterion shares: two arms that
     /// both built, and that built DIFFERENT backends. Returns the blocking
@@ -886,10 +925,13 @@ public enum BackendParityCriteria {
         ]
 
         // Per-row evidence. The zero-evidence guard above only catches ALL
-        // rows empty; a row that generated zero tokens on BOTH arms is still
-        // a non-observation — two matching `submit_error` shapes agree about
-        // nothing — so it is excluded from the agreement computation and
-        // disclosed. Below the floor the criterion refuses outright.
+        // rows empty; a row with zero tokens and a FAILED terminal on both
+        // arms is still a non-observation — two matching `submit_error`
+        // shapes agree about nothing — so it is excluded from the agreement
+        // computation and disclosed. Clean zero-token rows stay in (an
+        // immediate EOS is an observation, and clean-vs-failed is a real
+        // asymmetry `rowMismatch` must report). Below the floor the
+        // criterion refuses outright.
         var scoredBaseline = baseline.rows
         var scoredCandidate = candidate.rows
         var exclusionNote: String?
@@ -1425,10 +1467,16 @@ public enum BackendParityCriteria {
                 + "temperature 0, so the reported savings are not savings. "
                 + "Token counts are only meaningful conditional on exactness, which "
                 + "is why this outranks the comparison below"
+            let unjudged = [(baseline.label, base), (candidate.label, cand)]
+                .filter { $0.1.adoptionInconclusiveReason != nil }
             if let exact = exactArms.first {
                 detail += ". ASYMMETRIC, which isolates the backend: \(exact.0) adopted "
                     + "the same prefix on the same prompt in the same process and stayed "
                     + "exact, so precision sensitivity cannot explain this one"
+            } else if let other = unjudged.first {
+                detail += ". The other arm's comparison was INCONCLUSIVE — \(other.0): "
+                    + "\(other.1.adoptionInconclusiveReason ?? "") — so neither asymmetry "
+                    + "nor model-wide sensitivity is established by this run"
             } else {
                 detail += ". SYMMETRIC — every measured arm is inexact. When the "
                     + "mismatches are token divergence, that is a property of the MODEL "
@@ -1440,6 +1488,31 @@ public enum BackendParityCriteria {
             }
             return .init(
                 id: id, title: title, verdict: .fail, detail: detail,
+                measurements: measurements)
+        }
+
+        // An arm whose comparison RAN but was unjudgeable — cold and adopted
+        // both cut short by the SAME non-clean terminal — blocks the
+        // criterion. Exactness is the precondition for every count below
+        // ("exactness BEFORE arithmetic"), and this arm neither established
+        // it nor refuted it: identical truncated streams prove nothing, so
+        // certifying savings over them would launder a machinery failure
+        // into a parity verdict. Distinct from `adoptionTokenExact == nil`
+        // with no reason (the comparison never ran — no hit), which keeps
+        // its explicit NOT-MEASURED caveat on the pass path instead.
+        let inconclusive = [(baseline.label, base), (candidate.label, cand)]
+            .filter { $0.1.adoptionInconclusiveReason != nil }
+        if !inconclusive.isEmpty {
+            return .init(
+                id: id, title: title, verdict: .unavailable,
+                detail: "adoption exactness could not be judged on "
+                    + inconclusive.map {
+                        "\($0.0) (\($0.1.adoptionInconclusiveReason ?? ""))"
+                    }.joined(separator: " and ")
+                    + " — the cold and adopted requests were cut short identically, and "
+                    + "identical truncated streams prove nothing about adoption, so this "
+                    + "is neither a PASS (nothing was shown exact) nor a FAIL (nothing "
+                    + "changed the answer); re-run once the underlying failure clears",
                 measurements: measurements)
         }
 
@@ -1617,18 +1690,29 @@ public enum BackendParityCriteria {
     /// which ONE prompt decoded while the rest failed identically on both
     /// arms sails past it — and `rowMismatch` then reads each matching
     /// `submit_error`/`unterminated` pair as a row that AGREED. A row with
-    /// zero tokens on both arms is not a match; it is a non-observation, and
-    /// counting it toward parity lets a partially-failed release-gate run
-    /// report agreement it never measured.
+    /// zero tokens and a FAILED terminal on both arms is not a match; it is
+    /// a non-observation, and counting it toward parity lets a
+    /// partially-failed release-gate run report agreement it never measured.
+    ///
+    /// The failed-terminal half of that predicate is load-bearing. A row
+    /// where both arms cleanly finished `stop` with zero tokens (the model
+    /// hit EOS immediately, both sides) is a real — if thin — matching
+    /// observation and stays IN as agreement. And a row where one arm
+    /// cleanly stopped while the other returned `submit_error` is a real
+    /// observed ASYMMETRY that must be reported as the divergence it is,
+    /// never quietly removed: excluding it would let a run with enough other
+    /// productive rows PASS while claiming "finish reasons equal".
     struct PairedRowEvidence {
-        /// Row pairs where at least one arm generated a token — the actual
-        /// observations. (One-sided emptiness stays IN: an arm that decoded
-        /// nothing while the other decoded something is a real asymmetry,
-        /// and `rowMismatch` reports it as the divergence it is.)
+        /// Row pairs carrying an observable outcome: at least one arm
+        /// generated a token, or at least one arm ended on a CLEAN terminal.
+        /// (One-sided emptiness and clean-vs-failed rows stay IN: an arm
+        /// that decoded nothing — or failed — while the other did not is a
+        /// real asymmetry, and `rowMismatch` reports it.)
         let baselineEvidence: [BackendParityObservation.Row]
         let candidateEvidence: [BackendParityObservation.Row]
-        /// One rendered line per row where NEITHER arm generated a token,
-        /// naming the failure shape(s) the rows carried.
+        /// One rendered line per row where NEITHER arm generated a token
+        /// and BOTH terminals were failed measurements, naming the failure
+        /// shape(s) the rows carried.
         let nonObservations: [String]
         let totalRows: Int
 
@@ -1639,9 +1723,9 @@ public enum BackendParityCriteria {
         var floorBlocker: String? {
             let observed = baselineEvidence.count
             guard observed * 2 < totalRows else { return nil }
-            return "only \(observed) of \(totalRows) row(s) produced tokens on either "
-                + "arm — the criterion is below its minimum-evidence floor (half the "
-                + "rows) and is not scored. Failed rows: "
+            return "only \(observed) of \(totalRows) row(s) carried an observable "
+                + "outcome — the criterion is below its minimum-evidence floor (half "
+                + "the rows) and is not scored. Failed rows: "
                 + nonObservations.joined(separator: "; ")
         }
 
@@ -1649,7 +1733,7 @@ public enum BackendParityCriteria {
         var exclusionNote: String? {
             guard !nonObservations.isEmpty else { return nil }
             return "\(nonObservations.count) of \(totalRows) row(s) EXCLUDED as "
-                + "non-observations (zero tokens on both arms): "
+                + "non-observations (zero tokens and failed terminals on both arms): "
                 + nonObservations.joined(separator: "; ")
         }
     }
@@ -1667,7 +1751,10 @@ public enum BackendParityCriteria {
         var nonObservations: [String] = []
         for (base, cand) in zip(baseline, candidate) {
             guard base.prompt == cand.prompt else { return nil }
-            if base.tokens.isEmpty, cand.tokens.isEmpty {
+            if base.tokens.isEmpty, cand.tokens.isEmpty,
+                !cleanTerminals.contains(base.finishReason),
+                !cleanTerminals.contains(cand.finishReason)
+            {
                 let shapes =
                     base.finishReason == cand.finishReason
                     ? (base.finishReason.isEmpty ? "no finish reason" : base.finishReason)
@@ -1869,7 +1956,10 @@ public enum BackendParityCriteria {
             summary += "/\(reuse.adoptionComparedTokens)tok"
         case .some(false): summary += ", adoptionExact=FALSE"
             summary += "/\(reuse.adoptionComparedTokens)tok"
-        case nil: summary += ", adoptionExact=not_measured"
+        case nil:
+            summary +=
+                reuse.adoptionInconclusiveReason != nil
+                ? ", adoptionExact=INCONCLUSIVE" : ", adoptionExact=not_measured"
         }
         if reuse.promptTokens > 0, reuse.adoptionTokenExact != nil {
             let pct = Double(reuse.secondPrefillTokensSaved) / Double(reuse.promptTokens) * 100

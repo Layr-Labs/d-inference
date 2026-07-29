@@ -95,6 +95,7 @@ struct BackendParityReportTests {
         tokensSaved: Int = 0,
         exact: Bool? = nil,
         mismatchReason: String? = nil,
+        inconclusiveReason: String? = nil,
         comparedTokens: Int = 0,
         probeResolved: String? = nil
     ) -> BackendParityObservation {
@@ -117,6 +118,7 @@ struct BackendParityReportTests {
                 cacheTokensSaved: tokensSaved,
                 adoptionTokenExact: exact,
                 adoptionMismatchReason: mismatchReason,
+                adoptionInconclusiveReason: inconclusiveReason,
                 adoptionComparedTokens: comparedTokens,
                 probeResolvedBackend: probeResolved))
     }
@@ -230,17 +232,16 @@ struct BackendParityReportTests {
         let clean = Harness.judgeAdoptionExactness(
             coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
             coldFinish: "stop", adoptedFinish: "stop")
-        #expect(clean.exact)
-        #expect(clean.mismatchReason == nil)
+        #expect(clean == .exact)
 
         // Same tokens, different clean terminals: the request ENDED
         // differently, so the comparison is not exact and says why.
         let stopVsLength = Harness.judgeAdoptionExactness(
             coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
             coldFinish: "stop", adoptedFinish: "length")
-        #expect(!stopVsLength.exact)
-        #expect(stopVsLength.mismatchReason
-            == "terminal mismatch: cold finished 'stop', adopted finished 'length'")
+        #expect(stopVsLength
+            == .inexact(
+                reason: "terminal mismatch: cold finished 'stop', adopted finished 'length'"))
 
         // Same tokens, one arm cut short by machinery: the mismatch AND the
         // unclean side are both named — an `error(…)` must never be
@@ -248,35 +249,104 @@ struct BackendParityReportTests {
         let errorArm = Harness.judgeAdoptionExactness(
             coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
             coldFinish: "stop", adoptedFinish: "error(pool exhausted)")
-        #expect(!errorArm.exact)
-        #expect(errorArm.mismatchReason?.contains("terminal mismatch") == true)
-        #expect(errorArm.mismatchReason?.contains(
-            "non-clean terminal on adopted ('error(pool exhausted)')") == true)
-
-        // Identical but UNCLEAN terminals: both streams are truncation
-        // artifacts, so their agreement proves nothing about adoption.
-        let bothUnclean = Harness.judgeAdoptionExactness(
-            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
-            coldFinish: "error(watchdog)", adoptedFinish: "error(watchdog)")
-        #expect(!bothUnclean.exact)
-        #expect(bothUnclean.mismatchReason
-            == "non-clean terminal on both arms: 'error(watchdog)'")
+        guard case .inexact(let errorReason) = errorArm else {
+            Issue.record("expected .inexact, got \(errorArm)")
+            return
+        }
+        #expect(errorReason.contains("terminal mismatch"))
+        #expect(errorReason.contains(
+            "non-clean terminal on adopted ('error(pool exhausted)')"))
 
         // Diverging tokens keep their original phrasing; a simultaneous
         // terminal mismatch is appended, not substituted.
         let diverged = Harness.judgeAdoptionExactness(
             coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 9],
             coldFinish: "stop", adoptedFinish: "length")
-        #expect(!diverged.exact)
-        #expect(diverged.mismatchReason?.hasPrefix("token streams diverged") == true)
-        #expect(diverged.mismatchReason?.contains("terminal mismatch") == true)
+        guard case .inexact(let divergedReason) = diverged else {
+            Issue.record("expected .inexact, got \(diverged)")
+            return
+        }
+        #expect(divergedReason.hasPrefix("token streams diverged"))
+        #expect(divergedReason.contains("terminal mismatch"))
 
         // `length` on BOTH arms is clean: hitting the same budget the same
         // way is a valid comparison, not a truncation artifact.
         let bothLength = Harness.judgeAdoptionExactness(
             coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
             coldFinish: "length", adoptedFinish: "length")
-        #expect(bothLength.exact)
+        #expect(bothLength == .exact)
+    }
+
+    /// Two streams cut short IDENTICALLY by machinery prove nothing about
+    /// adoption in either direction: recording them as `exact = false` made
+    /// `prefixReuse` FAIL with "adoption CHANGED THE ANSWER" over a transient
+    /// watchdog kill that changed nothing observable. Identical failures are
+    /// a third state — not exact, not a mismatch, just no measurement.
+    @Test("identical failed runs are INCONCLUSIVE, not a mismatch — but real divergence still fails")
+    func identicalFailedAdoptionIsInconclusiveNotAMismatch() {
+        typealias Harness = BackendParityHarness
+
+        // Identical tokens, identical UNCLEAN terminal: inconclusive, with
+        // the shared failure named.
+        let bothUnclean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "error(watchdog)", adoptedFinish: "error(watchdog)")
+        #expect(bothUnclean
+            == .inconclusive(
+                reason: "both arms were cut short identically ('error(watchdog)'), so "
+                    + "the identical truncated streams prove nothing about adoption"))
+
+        // Identical tokens, DIFFERENT terminals (one unclean): still a real
+        // mismatch — adoption changed how the request ended. Unchanged.
+        let differentTerminals = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "error(watchdog)")
+        guard case .inexact = differentTerminals else {
+            Issue.record("expected .inexact, got \(differentTerminals)")
+            return
+        }
+
+        // DIVERGING tokens under the same shared failure: the streams
+        // observably differ before the cut, so that stays a mismatch — the
+        // shared unclean terminal is disclosed, not excusing.
+        let divergedUnclean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 9],
+            coldFinish: "error(watchdog)", adoptedFinish: "error(watchdog)")
+        guard case .inexact(let reason) = divergedUnclean else {
+            Issue.record("expected .inexact, got \(divergedUnclean)")
+            return
+        }
+        #expect(reason.hasPrefix("token streams diverged"))
+        #expect(reason.contains("non-clean terminal on both arms: 'error(watchdog)'"))
+    }
+
+    /// The criterion half of the tri-state: an inconclusive arm blocks the
+    /// verdict entirely — savings cannot be certified over a comparison that
+    /// proved nothing — and the report names the shared failure, distinct
+    /// from both PASS and FAIL.
+    @Test("an inconclusive adoption comparison makes prefix_reuse UNAVAILABLE, never FAIL")
+    func inconclusiveAdoptionIsUnavailableNotFail() {
+        let shared = "both arms were cut short identically ('error(watchdog)'), so "
+            + "the identical truncated streams prove nothing about adoption"
+        let verdict = BackendParityCriteria.prefixReuse(
+            baseline: prefixArm("contiguous", saved: 26880, exact: true),
+            candidate: prefixArm(
+                "paged", saved: 26880, inconclusiveReason: shared))
+        #expect(verdict.verdict == .unavailable)
+        #expect(verdict.detail.contains("paged (\(shared))"))
+        #expect(verdict.detail.contains("identical truncated streams prove nothing"))
+
+        // A genuine mismatch on the OTHER arm still outranks it: per-arm
+        // judgment against that arm's own cold request FAILs, and the detail
+        // reports the inconclusive arm instead of claiming symmetry.
+        let mixed = BackendParityCriteria.prefixReuse(
+            baseline: prefixArm("contiguous", saved: 26880, inconclusiveReason: shared),
+            candidate: prefixArm(
+                "paged", saved: 26880, exact: false,
+                mismatchReason: "token streams diverged"))
+        #expect(mixed.verdict == .fail)
+        #expect(mixed.detail.contains("INCONCLUSIVE"))
+        #expect(!mixed.detail.contains("SYMMETRIC"))
     }
 
     @Test("the criterion detail discloses the recorded mismatch shape per arm")
@@ -961,6 +1031,57 @@ struct BackendParityReportTests {
         #expect(result.verdict == .pass)
         #expect(result.detail.contains("submit_error: refused vs unterminated"))
         #expect(result.measurements["firstFlip"] == nil)
+    }
+
+    /// The exclusion predicate is "zero tokens AND failed terminals on BOTH
+    /// arms" — the failed half is load-bearing. One arm cleanly hitting EOS
+    /// with zero tokens while the other returned `submit_error` is a real
+    /// observed asymmetry: excluding it would let the run PASS while
+    /// claiming "finish reasons equal" about a row where they were not.
+    @Test("a clean zero-token arm against a failed arm is a divergence, not a non-observation")
+    func cleanVersusFailedEmptyRowIsCountedAsDivergence() {
+        func arm(_ selection: String, cFinish: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: cFinish),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous", cFinish: "stop"),
+            candidate: arm("paged", cFinish: "submit_error: pool exhausted"))
+        // Counted, and the finish-reason path reports it as the mismatch.
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains(
+            "prompt 'c' finish reason: stop vs submit_error: pool exhausted"))
+        // NOT excluded: the row is an observation.
+        #expect(!result.detail.contains("EXCLUDED"))
+        #expect(result.measurements["excludedRows"] == nil)
+    }
+
+    /// Both arms cleanly finishing `stop` with zero tokens (the model hit
+    /// EOS immediately, both sides) is a thin but valid matching
+    /// observation — agreement, not a non-observation.
+    @Test("a both-clean both-empty row is a matching observation, not an exclusion")
+    func bothCleanEmptyRowIsAMatchingObservation() {
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: "stop"),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        #expect(result.verdict == .pass)
+        // All three rows scored — the clean-empty row counts as evidence.
+        #expect(result.detail.contains("3 prompts, 5 generated token ids identical"))
+        #expect(!result.detail.contains("EXCLUDED"))
+        #expect(result.measurements["excludedRows"] == nil)
     }
 
     @Test("a divergence among the observed rows still reports, with the exclusion noted")
@@ -1778,6 +1899,17 @@ struct BackendParityReportTests {
         ])
         #expect(criteria.allSatisfy { $0.verdict == .pass })
         #expect(BackendParityOutcome(criteria: criteria).exitStatus == 0)
+    }
+
+    /// Schema 3 is the wave that added the dtype-provenance fields
+    /// (`pagedPoolDType`, `candidatePoolDType`/`controlPoolDType` with the
+    /// same-dtype validity rule), `adoptionMismatchReason`, and the
+    /// tri-state adoption evidence (`adoptionInconclusiveReason`). Pinned so
+    /// the next field addition forces a deliberate bump instead of shipping
+    /// a new shape under an old label — version-keyed consumers gate on it.
+    @Test("the serialized shape changes of this wave carry schema version 3")
+    func schemaVersionCoversTheNewFields() {
+        #expect(BackendParityReport.currentSchemaVersion == 3)
     }
 
     @Test("the report round-trips through JSON with its verdicts intact")

@@ -161,7 +161,7 @@ func TestBudgetCeilingNeverExceedsAdvertised(t *testing.T) {
 	// A ceiling learned against a large advertised budget must not survive as
 	// an over-statement once the pair advertises much less (co-tenancy, a
 	// smaller re-slice).
-	r.recordBudgetCeilingLocked(key, 200_000, 1_000_000, now)
+	r.recordBudgetCeilingLocked(key, 200_000, 0, 1_000_000, now)
 	if got := r.budgetCeilingLocked("box", model, 50_000, now); got != 50_000 {
 		t.Fatalf("effective max = %d, want the smaller advertised 50000 — the ceiling is a cap, not a substitute", got)
 	}
@@ -181,7 +181,7 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 		// The box rejected AT its advertised budget: the advertised number was
 		// already binding, so there is nothing to learn (ordinary fullness,
 		// owned by the queue path).
-		r.recordBudgetCeilingLocked(key, 100_000+budgetCeilingMarginTokens, 100_000, now)
+		r.recordBudgetCeilingLocked(key, 100_000+budgetCeilingMarginTokens, 100_000, 100_000, now)
 		if _, latched := r.BudgetCeiling("box", model); latched {
 			t.Fatal("a reject at or above the advertised budget must teach nothing")
 		}
@@ -192,21 +192,45 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 		now := time.Now()
 		// A reject at a tiny commitment would imply a negative ceiling; a
 		// zero/negative ceiling is a permanent clamp wearing a different name.
-		r.recordBudgetCeilingLocked(key, 10, 100_000, now)
+		r.recordBudgetCeilingLocked(key, 10, 0, 100_000, now)
 		got, latched := r.BudgetCeiling("box", model)
 		if !latched || got != budgetCeilingFloorTokens {
 			t.Fatalf("ceiling = (%d, %v), want (%d, true)", got, latched, budgetCeilingFloorTokens)
 		}
 	})
 
+	t.Run("never below what the pair reports it already holds", func(t *testing.T) {
+		r := New(testLogger())
+		now := time.Now()
+		// A sub-margin request rejected at 80k committed: the margin alone
+		// would push the ceiling under the live commitment, which the
+		// provider's own report contradicts and which would deselect the pair
+		// for every request size.
+		r.recordBudgetCeilingLocked(key, 80_000+100, 80_000, 1_000_000, now)
+		got, latched := r.BudgetCeiling("box", model)
+		if !latched || got != 80_000 {
+			t.Fatalf("ceiling = (%d, %v), want (80000, true)", got, latched)
+		}
+		// It still refuses the request that failed: any positive demand on
+		// top of a ceiling equal to the commitment does not fit.
+		snap := routingSnapshot{
+			activeTokenBudgetMax:  1_000_000,
+			activeTokenBudgetUsed: 80_000,
+			learnedTokenBudgetMax: got,
+		}
+		if freeMemoryAdmits(snap, 100, 0) {
+			t.Fatal("a ceiling equal to the commitment must still refuse the request that failed")
+		}
+	})
+
 	t.Run("rejects ratchet down, never up", func(t *testing.T) {
 		r := New(testLogger())
 		now := time.Now()
-		r.recordBudgetCeilingLocked(key, 50_000, 1_000_000, now)
+		r.recordBudgetCeilingLocked(key, 50_000, 0, 1_000_000, now)
 		tight, _ := r.BudgetCeiling("box", model)
 		// A later reject at a HIGHER commitment (the box was busier) must not
 		// undo what the tighter one taught. Only accepts widen.
-		r.recordBudgetCeilingLocked(key, 900_000, 1_000_000, now)
+		r.recordBudgetCeilingLocked(key, 900_000, 800_000, 1_000_000, now)
 		got, _ := r.BudgetCeiling("box", model)
 		if got != tight {
 			t.Fatalf("ceiling = %d after a looser reject, want the ratcheted %d", got, tight)
@@ -216,9 +240,9 @@ func TestBudgetCeilingLatchBoundaries(t *testing.T) {
 	t.Run("unlearnable inputs are no-ops", func(t *testing.T) {
 		r := New(testLogger())
 		now := time.Now()
-		r.recordBudgetCeilingLocked(key, 0, 1_000_000, now)  // no request size
-		r.recordBudgetCeilingLocked(key, 50_000, 0, now)     // budgetless pair
-		r.recordBudgetCeilingLocked(key, -1, 1_000_000, now) // nonsense commitment
+		r.recordBudgetCeilingLocked(key, 0, 0, 1_000_000, now)  // no request size
+		r.recordBudgetCeilingLocked(key, 50_000, 0, 0, now)     // budgetless pair
+		r.recordBudgetCeilingLocked(key, -1, 0, 1_000_000, now) // nonsense commitment
 		if _, latched := r.BudgetCeiling("box", model); latched {
 			t.Fatal("a ceiling cannot be learned without both a commitment and an advertised budget")
 		}

@@ -284,7 +284,7 @@ func (r *Registry) recordCapacityReject(providerID, modelID string, requestToken
 		// commitment is unknown and a ceiling learned from used+queued alone
 		// would be tighter than the evidence supports.
 		if requestTokens > 0 {
-			r.recordBudgetCeilingLocked(clampKey, committed+int64(requestTokens), advertised, now)
+			r.recordBudgetCeilingLocked(clampKey, committed+int64(requestTokens), committed, advertised, now)
 		}
 	}
 	if deratePair {

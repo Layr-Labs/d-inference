@@ -184,11 +184,22 @@ type budgetCeilingEntry struct {
 // already the binding term, which is the ordinary "the box is genuinely full"
 // case the queue path owns — and refreshing the TTL off it would extend a
 // derating window on evidence that did not produce it.
-func (r *Registry) recordBudgetCeilingLocked(key capacityRejectKey, observedCommitment, advertised int64, now time.Time) {
+func (r *Registry) recordBudgetCeilingLocked(key capacityRejectKey, observedCommitment, alreadyCommitted, advertised int64, now time.Time) {
 	if !r.budgetCeilingCfg.Enabled || observedCommitment <= 0 || advertised <= 0 {
 		return
 	}
 	learned := observedCommitment - budgetCeilingMarginTokens
+	// Never learn a ceiling BELOW what the pair reports it is already holding.
+	// The margin exists to push the next identical request off the boundary,
+	// but for a request smaller than the margin it would otherwise push the
+	// ceiling under the live commitment — a number the provider's own report
+	// contradicts, and one low enough to deselect the pair for every request
+	// size (which produces no accepts, so only the TTL could recover it). The
+	// gate still rejects the request that failed: any positive demand on top
+	// of a ceiling equal to the commitment does not fit.
+	if learned < alreadyCommitted {
+		learned = alreadyCommitted
+	}
 	if learned < budgetCeilingFloorTokens {
 		learned = budgetCeilingFloorTokens
 	}

@@ -263,6 +263,15 @@ could have resulted in an output"). The funnel, grounded in code:
 | `rate_limit` | 429 | `rpm_exceeded`, `itpm_exceeded`, `otpm_exceeded`, `global_rate_limit` | `server.go:525,568,2174` |
 | `preflight_capacity` | 429/503 | `machine_busy` (all full), `no_provider` (none serve model), `model_too_large` | `consumer.go:1658-1714,4168-4204` |
 | `routing_ttft` | 429 | `ttft_429`, `queue_timeout` (also in `inference_routes`) | `dispatch.go:358-473` |
+| `dispatch` | 429/503 | `oversized_request` (deterministically unservable shape), `capacity_retries_exhausted` (busy fleet: the transient-capacity retry budget ran out), `unservable_token_budget`, `template_render_failed`, `client_error`, `dispatch_exhausted` | `dispatch.go` exhausted ladder |
+
+`oversized_request` and `capacity_retries_exhausted` used to be the same code, which
+made a busy fleet indistinguishable from an unservable request. They are the two
+verdicts of `shouldStopFailover` and they mean opposite things: the first is a
+property of the REQUEST (every provider rejects it identically), the second is a
+property of the FLEET at that moment. Only the first legitimately reports zero
+candidates; the second reports the real counters, so its `could_have_served` is
+normally **true**.
 
 **Request shape & params (non-private — no content):**
 `request_id`, `endpoint`, `ts`, `key_id`/`consumer_key_hash`, `client_class`

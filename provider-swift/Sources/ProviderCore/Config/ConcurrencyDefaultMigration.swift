@@ -1,4 +1,5 @@
 import Foundation
+import TOMLKit
 
 /// One `provider.toml` schema upgrade: a `config_version` bump plus, for
 /// exactly ONE cap value, a rewrite of `engine_v2_max_concurrent`.
@@ -75,10 +76,11 @@ public enum ConcurrencyDefaultMigration {
     /// `engine_v2_max_concurrent = 8` is byte-identical whether v0.8.0
     /// GENERATED that 8 or an operator read the v0.8.0 notes and typed it
     /// deliberately — v0.8.0's own migration wrote a durable 8. This step
-    /// therefore WILL silently reset a deliberate 8. Three things bound it: the
-    /// exact-value match means no other cap is touched, `RetiredKnobWarnings`
-    /// announces the change on the startup surface every serve mode uses, and
-    /// the version-2 stamp spends the evidence once — from it on, 8 means 8.
+    /// therefore resets a deliberate 8 unless the box also explicitly selects
+    /// paged, the one distinguishable posture where B=8 remains the measured
+    /// optimum. The exact-value match protects every other cap, the startup
+    /// warning announces a migrated 8, and the version-2 stamp spends the
+    /// evidence once — from it on, 8 means 8.
     public static let v081ConcurrencyRevert = ConcurrencyMigrationStep(
         fromVersion: 1,
         toVersion: 2,
@@ -105,23 +107,26 @@ public enum ConcurrencyDefaultMigration {
 
     // MARK: - Decode-time half
 
-    /// The cap a decoded config should serve, given the stamp and cap actually
-    /// on disk, plus the steps that were applied to get there.
+    /// The cap a decoded config should serve, given the stamp, cap, and
+    /// box-wide KV backend actually on disk, plus the steps that were applied
+    /// to get there.
     ///
     /// Chains: each step whose `fromVersion` matches the running version
     /// advances it, and rewrites the cap only when the cap also matches
     /// exactly. A step whose version matches but whose cap does not still
     /// advances the version — the file IS that schema generation, it just holds
-    /// an operator value that generation must not touch.
+    /// an operator value that generation must not touch. Explicit paged keeps
+    /// B=8 because that backend's measured batch curve still justifies it.
     public static func resolvedCap(
-        onDiskVersion: Int?, cap: UInt64
+        onDiskVersion: Int?, cap: UInt64, kvBackend: String
     ) -> (cap: UInt64, applied: [ConcurrencyMigrationStep]) {
         var running = onDiskVersion
         var value = cap
         var applied: [ConcurrencyMigrationStep] = []
+        let preservesPagedCap = isExplicitPaged(kvBackend)
         for step in steps where step.fromVersion == running {
             running = step.toVersion
-            guard value == step.fromCap else { continue }
+            guard !preservesPagedCap, value == step.fromCap else { continue }
             value = step.toCap
             applied.append(step)
         }
@@ -136,6 +141,32 @@ public enum ConcurrencyDefaultMigration {
         public let text: String
         /// The cap-bearing steps applied. Empty when only the stamp moved.
         public let applied: [ConcurrencyMigrationStep]
+    }
+
+    private struct MigrationDocument: Decodable {
+        struct Backend: Decodable {
+            let kvBackend: String?
+
+            enum CodingKeys: String, CodingKey {
+                case kvBackend = "engine_v2_kv_backend"
+            }
+        }
+
+        let backend: Backend?
+    }
+
+    private static func preservesExplicitPagedCap(in content: String) -> Bool {
+        guard
+            let document = try? TOMLDecoder().decode(
+                MigrationDocument.self, from: content)
+        else { return false }
+        return isExplicitPaged(document.backend?.kvBackend)
+    }
+
+    private static func isExplicitPaged(_ value: String?) -> Bool {
+        value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() == "paged"
     }
 
     /// Detects a `config_version` ASSIGNMENT — line-anchored, so a `#` comment
@@ -156,21 +187,15 @@ public enum ConcurrencyDefaultMigration {
         #"(?m)^([ \t]*config_version[ \t]*=[ \t]*)(\d+)((?:[ \t]*[#;].*)?)[ \t]*$"#
 
     /// Matches ONLY a whole `engine_v2_max_concurrent` assignment line holding
-    /// `cap` — anchored to the full line so it cannot touch
-    /// `[backend.engine_v2_max_concurrent_by_model]` or a matching number
-    /// inside it. Captures the leading indentation and an optional trailing
-    /// inline comment with its leading whitespace (`#` per TOML; `;` accepted
-    /// too, since a file carrying one never parses anyway and rewriting it
-    /// loses nothing), so the rewrite preserves both.
-    ///
-    /// Parameterized by the from-value rather than pinned to one constant: each
-    /// step names the cap it migrates, and a future step will name a different
-    /// one.
-    static func assignmentPattern(cap: UInt64) -> String {
-        #"(?m)^([ \t]*)engine_v2_max_concurrent[ \t]*=[ \t]*"#
-            + "\(cap)"
-            + #"((?:[ \t]*[#;].*)?)[ \t]*$"#
-    }
+    /// a TOML integer — anchored to the full line so it cannot touch
+    /// `[backend.engine_v2_max_concurrent_by_model]` or a number inside it.
+    /// Group 1 is indentation, group 2 is the integer token, and group 3 is an
+    /// optional trailing inline comment. The token accepts every TOML integer
+    /// spelling that can encode the generated cap (`+8`, `0x8`, `0o10`,
+    /// `0b1000`, and underscore-separated digits), so the text rewrite cannot
+    /// disagree with the decoder's semantic UInt64 value.
+    static let assignmentPattern =
+        #"(?m)^([ \t]*)engine_v2_max_concurrent[ \t]*=[ \t]*([+-]?(?:0[xX][0-9A-Fa-f](?:_?[0-9A-Fa-f])*|0[oO][0-7](?:_?[0-7])*|0[bB][01](?:_?[01])*|[0-9](?:_?[0-9])*))((?:[ \t]*[#;].*)?)[ \t]*$"#
 
     /// Bring `content` up to ``ProviderConfig/currentConfigVersion``.
     ///
@@ -200,9 +225,12 @@ public enum ConcurrencyDefaultMigration {
         var text = content
         var running = onDiskVersion
         var applied: [ConcurrencyMigrationStep] = []
+        let preservesPagedCap = preservesExplicitPagedCap(in: content)
         for step in steps where step.fromVersion == running {
             running = step.toVersion
-            guard let rewritten = rewriteAssignment(in: text, from: step.fromCap, to: step.toCap)
+            guard !preservesPagedCap,
+                let rewritten = rewriteAssignment(
+                    in: text, from: step.fromCap, to: step.toCap)
             else { continue }
             text = rewritten
             applied.append(step)
@@ -250,7 +278,7 @@ public enum ConcurrencyDefaultMigration {
     /// assignment is present (different value, already rewritten, or the key is
     /// absent) — the caller's signal that only the stamp needs to move.
     static func rewriteAssignment(in content: String, from: UInt64, to: UInt64) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: assignmentPattern(cap: from)) else {
+        guard let regex = try? NSRegularExpression(pattern: assignmentPattern) else {
             return nil
         }
         let full = NSRange(content.startIndex..<content.endIndex, in: content)
@@ -258,10 +286,38 @@ public enum ConcurrencyDefaultMigration {
             let lineRange = Range(match.range(at: 0), in: content)
         else { return nil }
         let group = captureReader(match: match, in: content)
+        guard parseTOMLUnsignedInteger(group(2)) == from else { return nil }
         var rewritten = content
         rewritten.replaceSubrange(
-            lineRange, with: group(1) + "engine_v2_max_concurrent = \(to)" + group(2))
+            lineRange, with: group(1) + "engine_v2_max_concurrent = \(to)" + group(3))
         return rewritten
+    }
+
+    private static func parseTOMLUnsignedInteger(_ token: Substring) -> UInt64? {
+        var literal = String(token).replacingOccurrences(of: "_", with: "")
+        guard !literal.hasPrefix("-") else { return nil }
+        if literal.hasPrefix("+") {
+            literal.removeFirst()
+        }
+
+        let lower = literal.lowercased()
+        let radix: Int
+        let digits: Substring
+        if lower.hasPrefix("0x") {
+            radix = 16
+            digits = literal.dropFirst(2)
+        } else if lower.hasPrefix("0o") {
+            radix = 8
+            digits = literal.dropFirst(2)
+        } else if lower.hasPrefix("0b") {
+            radix = 2
+            digits = literal.dropFirst(2)
+        } else {
+            radix = 10
+            digits = literal[...]
+            guard digits.count == 1 || digits.first != "0" else { return nil }
+        }
+        return UInt64(digits, radix: radix)
     }
 
     /// Capture-group text, empty for groups that did not participate.

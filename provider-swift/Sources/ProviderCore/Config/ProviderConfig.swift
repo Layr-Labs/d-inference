@@ -393,20 +393,24 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         // One-time concurrency-default migrations, selected by the stamp the
         // file carries.
         //
-        // Deliberately narrow: a step fires only on the EXACT cap the matching
-        // release generated, so an operator who picked any other value in
-        // range is never rewritten. The unavoidable casualty is a deliberate
+        // Deliberately narrow: a step fires only on the exact cap the release
+        // generated, so an operator who picked any other value in range is
+        // never rewritten. The unavoidable casualty is a deliberate
         // cap that happens to equal the one being migrated away from — see
         // `ConcurrencyDefaultMigration.v081ConcurrencyRevert`, which is honest
         // about the fact that v0.8.1's 8 -> 4 step cannot tell a generated 8
-        // from a chosen one. It runs once, is announced by
-        // `RetiredKnobWarnings`, and sticks the moment it is re-set.
+        // from a chosen one. Explicit paged is the exception: its backend
+        // selection is distinguishable and its measured optimum remains B=8,
+        // so the migration preserves it. Any migrated cap runs once, is
+        // announced by `RetiredKnobWarnings`, and sticks when re-set.
         //
         // The predicate is shared with the on-disk rewrite so this in-memory
         // change and the durable text surgery cannot disagree.
         let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
         let migrated = ConcurrencyDefaultMigration.resolvedCap(
-            onDiskVersion: onDiskVersion, cap: backend.engineV2MaxConcurrent)
+            onDiskVersion: onDiskVersion,
+            cap: backend.engineV2MaxConcurrent,
+            kvBackend: backend.engineV2KVBackend)
         backend.engineV2MaxConcurrent = migrated.cap
         self.appliedMigrations = migrated.applied.map(\.id)
         self.backend = backend

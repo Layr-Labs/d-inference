@@ -68,6 +68,30 @@ struct ConfigVersionStampTests {
         }
     }
 
+    @Test("explicit paged keeps B=8 while the file is re-dated")
+    func preservesExplicitPagedEight() throws {
+        try withTempConfig(
+            """
+            config_version = 1
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            engine_v2_max_concurrent = 8
+            engine_v2_kv_backend = "paged"
+            """
+        ) { path in
+            #expect(migrateConfigSchema(in: path).isEmpty)
+            let text = try read(path)
+            #expect(text.hasPrefix("config_version = 2\n"))
+            #expect(text.contains("engine_v2_max_concurrent = 8"))
+
+            let config = try ConfigManager.load(from: path)
+            #expect(config.backend.engineV2MaxConcurrent == 8)
+            #expect(config.appliedMigrations.isEmpty)
+        }
+    }
+
     /// The re-stamp is unconditional on an out-of-date file. If it only landed
     /// when the concurrency line changed, a config holding `= 6` would stay at
     /// version 1, and an operator later editing it to 8 would be migrated —
@@ -272,7 +296,7 @@ struct ConfigVersionStampTests {
     /// landed, and boot 2+ honored the literal. The comment must also SURVIVE
     /// the rewrite: text surgery exists precisely to preserve operator prose.
     @Test(
-        "a generated 8 with a trailing inline comment is rewritten, comment preserved",
+        "a generated 8 in any TOML integer spelling is rewritten, comment preserved",
         arguments: [
             ("engine_v2_max_concurrent = 8 # raised by the v0.8.0 upgrade",
              "engine_v2_max_concurrent = 4 # raised by the v0.8.0 upgrade"),
@@ -284,6 +308,15 @@ struct ConfigVersionStampTests {
             // Indentation is preserved too.
             ("  engine_v2_max_concurrent = 8",
              "  engine_v2_max_concurrent = 4"),
+            // Alternate valid TOML integer spellings decode to the same UInt64.
+            ("engine_v2_max_concurrent = +8",
+             "engine_v2_max_concurrent = 4"),
+            ("engine_v2_max_concurrent = 0x8",
+             "engine_v2_max_concurrent = 4"),
+            ("engine_v2_max_concurrent = 0o10",
+             "engine_v2_max_concurrent = 4"),
+            ("engine_v2_max_concurrent = 0b1000",
+             "engine_v2_max_concurrent = 4"),
             // No comment at all — the original shape keeps working.
             ("engine_v2_max_concurrent = 8",
              "engine_v2_max_concurrent = 4"),

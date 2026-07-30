@@ -25,7 +25,7 @@ import (
 // quickly never commits early and retains the full deferred-commit / invisible-
 // failover behavior — only genuine long prefills (the ones that were timing out)
 // commit early. It is enabled by EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL
-// (0 = off, the default).
+// (5s by default; 0 disables it).
 //
 // Tradeoff once a keepalive has committed HTTP 200: the status code is frozen at
 // 200, so a subsequent failure can no longer be returned as a clean 4xx/5xx — it

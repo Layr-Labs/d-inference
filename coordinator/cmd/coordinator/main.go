@@ -58,10 +58,11 @@ import (
 )
 
 // defaultPrefillKeepaliveInterval is the on-by-default cadence for SSE prefill
-// keepalives. Chosen to sit below typical fetch timeouts while keeping the
-// early-commit blast radius to genuinely long prefills; tune via
+// keepalives. OpenRouter cancels silent upstream requests at approximately 10s,
+// so 5s leaves a full interval of margin while keeping the early-commit blast
+// radius to genuinely long prefills; tune via
 // EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (0 disables).
-const defaultPrefillKeepaliveInterval = 10 * time.Second
+const defaultPrefillKeepaliveInterval = 5 * time.Second
 
 func main() {
 	// Structured JSON logging. When Datadog is active, we wrap the handler
@@ -593,14 +594,13 @@ func main() {
 		}
 	}
 
-	// SSE keepalives during long prefill. ON by default at a 10s cadence so a long
-	// prefill never leaves the consumer connection idle long enough for OpenRouter's
-	// fetch timeout to fire and fail us over mid-prefill. The first keepalive fires
-	// one interval in, so a STREAMING request that produces its first token quickly
-	// keeps clean deferred-commit / invisible-failover — only genuinely long
-	// prefills commit HTTP 200 early and emit ": keepalive" comments. Override the
-	// cadence (or set 0 to disable) via EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a
-	// Go duration); tune it below OpenRouter's fetch timeout.
+	// SSE keepalives during long prefill. ON by default at a 5s cadence, safely
+	// below OpenRouter's observed ~10s silent-upstream timeout. The first keepalive
+	// fires one interval in, so a STREAMING request that produces its first token
+	// quickly keeps clean deferred-commit / invisible-failover — only genuinely
+	// long prefills commit HTTP 200 early and emit ": keepalive" comments. Override
+	// the cadence (or set 0 to disable) via
+	// EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL (a Go duration).
 	prefillKeepalive := defaultPrefillKeepaliveInterval
 	if v := os.Getenv("EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {

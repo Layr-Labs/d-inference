@@ -553,12 +553,14 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				withCode("rate_limit_exceeded")))
 			return model, true
 		} else {
-			// None of these clear by a slot freeing up, so queueing for up to
-			// 120s only adds misleading latency before the same error. Fail
-			// fast with a retryable 503 + Retry-After (OpenRouter treats 503
-			// as unavailable, not a uptime-penalised error here because the
-			// body is explicit). This mirrors the trait fast-fails above for
-			// the transient-cooldown case they cannot see.
+			// The catalog still sells this model, but no provider is eligible
+			// right now: the fleet may be reconnecting after a coordinator
+			// restart, temporarily untrusted, or in a shape-specific cooldown.
+			// This is transient capacity exhaustion. Fail fast with 429 +
+			// Retry-After so upstream routers can try another endpoint without
+			// counting the event as a provider outage. A 503 here caused the
+			// post-deploy OpenRouter uptime collapse while the in-memory
+			// provider registry repopulated.
 			retryAfter := s.estimateRetryAfter(model)
 			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			refundReservation()
@@ -567,7 +569,7 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				r:                       r,
 				stage:                   "preflight_capacity",
 				reasonCode:              "no_provider",
-				httpStatus:              http.StatusServiceUnavailable,
+				httpStatus:              http.StatusTooManyRequests,
 				keyID:                   keyIDFromContext(r.Context()),
 				consumerKeyHash:         store.HashKey(consumerKeyFromContext(r.Context())),
 				requestedModel:          publicModel,
@@ -585,9 +587,9 @@ func (s *Server) runInferenceAdmission(w http.ResponseWriter, r *http.Request, p
 				modelTooLargeRejections: modelTooLarge,
 				bestTTFTMs:              ttftMsForRejection(bestTTFT, hasTTFT),
 			})
-			writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
+			writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
 				fmt.Sprintf("no provider for model %q is available right now — retry after %ds", publicModel, retryAfter),
-				withCode("model_unavailable")))
+				withCode("rate_limit_exceeded")))
 			return model, true
 		}
 	}

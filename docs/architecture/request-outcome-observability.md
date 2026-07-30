@@ -224,6 +224,7 @@ Smart admission also adds reason codes to the rejection ledger (surfaced via
 |---|---|---|
 | `context_exceeded` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Request context length exceeds what any candidate provider can serve; rejected with a 429 before dispatch. |
 | `prompt_too_long` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Prompt alone exceeds the servable token budget; rejected with a 429 before dispatch. |
+| `no_provider` | preflight capacity | The model remains listed but no provider is currently eligible (including the fleet-reconnect window after coordinator startup); rejected with 429 + `Retry-After`, not uptime-penalized 503 ([`coordinator/api/inference_admission.go:493-591`](../../coordinator/api/inference_admission.go#L493-L591)). |
 | `unservable_token_budget` | dispatch backstop (always on) | Dispatch reclassified a provider token-budget/KV/context 5xx into a 429; pairs with `routing.unservable_reclassified`. |
 
 These preflight/backstop 429s also introduce the `routing.decisions` outcome tag
@@ -234,7 +235,7 @@ Two env flags tune the behavior:
 | Env flag | Type | Default | Effect |
 |---|---|---|---|
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
-| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `10s` (on) | SSE prefill keepalives during long prefill. ON by default; the first keepalive fires one interval in, so only long prefills commit HTTP 200 early. Set `0` to disable; tune below OpenRouter's fetch timeout. |
+| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `5s` (on) | SSE prefill keepalives during long prefill. The first keepalive fires one interval in, safely before OpenRouter's observed ~10s silent-upstream timeout, so only long prefills commit HTTP 200 early. Set `0` to disable ([`coordinator/cmd/coordinator/main.go:60-65`](../../coordinator/cmd/coordinator/main.go#L60-L65), [`coordinator/api/prefill_keepalive.go:12-37`](../../coordinator/api/prefill_keepalive.go#L12-L37)). |
 
 Both counters keep the metadata-only, low-cardinality invariant: `request_outcome`
 carries only `model`, `class` and `kv_backend`, and `unservable_reclassified` only

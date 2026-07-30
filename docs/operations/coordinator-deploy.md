@@ -378,6 +378,9 @@ sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
 # authoritative; do not proceed if the refresh changed an approved value.
 sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
+# 10s races OpenRouter's silent-upstream cancel and reproduces error-0.
+sudo grep -Fx 'EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL=5s' \
+  /etc/d-inference/env
 # Snapshot every cache-routing value after refresh and immediately before the
 # swap. This provider release permits no cache-control edit, so require equality
 # with the pre-refresh digest. Only digests are emitted; the key is never printed.
@@ -415,6 +418,20 @@ Rules learned the hard way:
 - **Preserve the 10-minute application drain.** Docker's default 10-second stop
   timeout would SIGKILL active requests; every stop and new container uses 630
   seconds.
+- **No deploy phase may answer 5xx.** OpenRouter scores uptime as
+  `success / (success + error-0 + 5xx)` and excludes 429/422/400 — the
+  2026-07-29 hour reads 7940/(7940+1234+149) = 85.17%, matching its dashboard
+  exactly. A draining coordinator already answers 429, and host Caddy converts a
+  missing `:8080` upstream into the same shape, but the *new* process used to
+  answer 503 `no_provider` until its in-memory registry refilled (77 in one
+  minute on 2026-07-29). That path is now a retryable 429
+  ([`coordinator/api/inference_admission.go:493-591`](../../coordinator/api/inference_admission.go#L493-L591)).
+- **`error-0` is a client-side cancel, not a status we emit.** OpenRouter drops
+  the connection at ~10s when no response bytes have arrived, which Caddy logs
+  as status 0; every production sample terminated at 9.99–10.4s. The SSE prefill
+  keepalive only starts ticking after dispatch, so a 10s interval could never
+  fire before that deadline. 5s is required, not merely preferred
+  ([`coordinator/api/prefill_keepalive.go:12-37`](../../coordinator/api/prefill_keepalive.go#L12-L37)).
 - **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`
   boots a **blank MicroMDM** — every device lookup returns "device not found", the fleet
   falls to `self_signed` trust, and with `MIN_TRUST=hardware` the network is effectively

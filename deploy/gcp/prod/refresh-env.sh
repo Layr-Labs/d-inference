@@ -130,6 +130,14 @@ migrate_exact_value \
     100 \
     1000
 
+# OpenRouter cancels a silent upstream at approximately 10s. The old 10s
+# keepalive raced that boundary and produced status-0 requests; migrate only the
+# shipped value so explicit operator tuning remains authoritative.
+migrate_exact_value \
+    EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL \
+    10s \
+    5s
+
 added=0
 while IFS= read -r line; do
     case "$line" in ""|\#*) continue ;; esac

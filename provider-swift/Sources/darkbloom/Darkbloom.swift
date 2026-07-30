@@ -171,20 +171,6 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
     ("wss://api.dev.darkbloom.xyz", "api.dev.darkbloom.xyz"),
 ]
 
-/// Top-level `provider.toml` key carrying the schema version. Its ABSENCE is
-/// what dates a file to before v0.8.0 — see `ProviderConfig.configVersion`.
-private let configVersionKey = "config_version"
-
-/// Matches an ASSIGNMENT of that key: line-anchored, so a `#` comment about
-/// `config_version`, a commented-OUT stamp, or the name inside another key's
-/// value is not mistaken for one. Substring-matching the key instead read
-/// such a file as already dated and skipped both halves of the migration —
-/// the durable `4 -> 8` rewrite and the stamp — while
-/// `ProviderConfig.init(from:)` kept raising the value in memory on every
-/// decode. The provider then ran at 8 with a file that said 4, and no later
-/// pass ever corrected it.
-private let configVersionAssignment = #"(?m)^[ \t]*config_version[ \t]*="#
-
 /// Migrate stale config values in-place. Runs on every startup; idempotent.
 ///
 /// 1. **Legacy path**: if the resolved config lives at a non-canonical path
@@ -192,9 +178,8 @@ private let configVersionAssignment = #"(?m)^[ \t]*config_version[ \t]*="#
 ///    file there (keeping the old one for backward compat).
 /// 2. **Coordinator URL**: if the TOML text contains a known stale
 ///    coordinator URL (localhost, dev), rewrite it to production in-place.
-/// 3. **Schema stamp**: if the TOML text carries no `config_version`, it was
-///    written before v0.8.0, so stamp it — raising a generated
-///    `engine_v2_max_concurrent = 4` to the v0.8.0 default on the way.
+/// 3. **Schema migration**: bring `config_version` up to date, applying any
+///    `ConcurrencyDefaultMigration` step the old stamp calls for.
 func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderConfig {
     let fm = FileManager.default
     guard fm.fileExists(atPath: configPath.path) else { return config }
@@ -239,22 +224,25 @@ func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderC
         }
     }
 
-    // --- 3. v0.8.0 config_version stamp (+ generated concurrency default) ---
-    // Runs on any unstamped file, even one whose concurrency line needs no
+    // --- 3. config_version migration (+ concurrency default) ---
+    // Runs on any out-of-date file, even one whose concurrency line needs no
     // change. The stamp is the whole point: it is what lets a LATER hand-edit
-    // back to 4 stick, instead of being migrated again on the next boot.
-    // The in-memory value was already raised at decode
+    // back to the old cap stick, instead of being migrated again on the next
+    // boot. The in-memory value already changed at decode
     // (`ProviderConfig.init(from:)`); this only makes it durable and visible.
-    var raisedConcurrency = stampConfigVersion(in: configPath)
+    var appliedSteps = migrateConfigSchema(in: configPath)
     if copiedToCanonical {
-        raisedConcurrency = stampConfigVersion(in: canonicalPath) || raisedConcurrency
+        // Both paths hold the same content, so the same step applies to both.
+        // Report each step once, not once per file.
+        let alsoCanonical = migrateConfigSchema(in: canonicalPath)
+        appliedSteps += alsoCanonical.filter { !appliedSteps.contains($0) }
     }
-    if raisedConcurrency {
+    for step in appliedSteps {
         printError(
             "  Migrated [backend] engine_v2_max_concurrent "
-                + "\(BackendSettings.legacyGeneratedMaxConcurrent) -> "
-                + "\(BackendSettings.defaultEngineV2MaxConcurrent) "
-                + "(pre-v0.8.0 generated default; re-set it to keep the old value)")
+                + "\(step.fromCap) -> \(step.toCap) "
+                + "(the default config_version \(step.fromVersion) generated; "
+                + "re-set it to keep the old value)")
     }
 
     if didMigrateURL {
@@ -294,45 +282,39 @@ private func rewriteStaleURLs(in path: URL) -> String? {
     }
 }
 
-/// Stamp `config_version` into a `provider.toml` written before v0.8.0,
-/// raising the generated `engine_v2_max_concurrent = 4` to the current
-/// default on the way through. Returns whether that concurrency line was
-/// rewritten. An already-stamped or unreadable file is left untouched, so
-/// this runs at most once per config.
+/// Bring a `provider.toml`'s `config_version` up to date on disk, applying any
+/// concurrency-default step the old stamp calls for. Returns the cap-bearing
+/// steps applied — empty when only the stamp moved, or when nothing was
+/// needed. An already-current or unreadable file is left untouched, so each
+/// step runs at most once per config.
 ///
 /// Text surgery rather than `ConfigManager.save`, for the same reason
 /// `rewriteStaleURLs` is: a `TOMLEncoder` round-trip would drop the
 /// operator's comments AND their retired `[backend]` keys, and startup still
 /// needs those keys present in order to warn about them.
 ///
+/// The matching and rewriting live in ProviderCore
+/// (`ConcurrencyDefaultMigration`), shared with the decode-time change in
+/// `ProviderConfig.init(from:)`: the two halves once disagreed on
+/// `= 4 # comment` (changed in memory, never rewritten on disk), which stamped
+/// the file and silently reverted the box from boot 2 on. This function owns
+/// only the file I/O.
+///
 /// Internal rather than `private` (unlike `rewriteStaleURLs`) so
 /// `DarkbloomCLITests` can drive it over a temp file: it edits an operator's
 /// config in place, and `migrateConfigIfNeeded` cannot be exercised directly
 /// without its legacy-path branch writing into the real `~/.config`.
-func stampConfigVersion(in path: URL) -> Bool {
-    guard var content = try? String(contentsOf: path, encoding: .utf8),
-        content.range(of: configVersionAssignment, options: .regularExpression) == nil
-    else { return false }
-
-    // The legacy-assignment match and rewrite live in ProviderCore
-    // (`LegacyConcurrencyMigration`), shared with the decode-time raise in
-    // `ProviderConfig.init(from:)`: the two halves once disagreed on
-    // `= 4 # comment` (raised in memory, never rewritten on disk), which
-    // stamped the file and silently reverted the box to B=4 from boot 2 on.
-    let rewritten = LegacyConcurrencyMigration.rewriteAssignment(in: content)
-    if let rewritten {
-        content = rewritten
-    }
-    // A top-level key is legal only ahead of the first table header, and
-    // position 0 always satisfies that.
-    content = "\(configVersionKey) = \(ProviderConfig.currentConfigVersion)\n" + content
+func migrateConfigSchema(in path: URL) -> [ConcurrencyMigrationStep] {
+    guard let content = try? String(contentsOf: path, encoding: .utf8),
+        let outcome = ConcurrencyDefaultMigration.migrate(content: content)
+    else { return [] }
 
     do {
-        try content.write(to: path, atomically: true, encoding: .utf8)
+        try outcome.text.write(to: path, atomically: true, encoding: .utf8)
     } catch {
-        return false
+        return []
     }
-    return rewritten != nil
+    return outcome.applied
 }
 
 func describeConfigPath(_ snapshot: RuntimeSnapshot) -> String {

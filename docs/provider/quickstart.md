@@ -143,14 +143,20 @@ end = "08:00"
   tell a value the previous release GENERATED from one you chose. Leave it
   alone; deleting it re-runs the one-time upgrade migrations below.
 - `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
-  engine slot (default 8 as of v0.8.0, clamped to `[1, 8]`). Raised from 4
-  in v0.8.0 because B=8 is the better operating point on either KV backend
-  (contiguous gains ~1.07x from B=4 to B=8). A `provider.toml` written
-  before v0.8.0 carries an
-  explicit `= 4` that the old release generated; because that is
-  indistinguishable from a deliberate 4, first start after upgrading raises
-  it to 8 once, logs a warning saying so, and stamps `config_version`. If
-  you want 4, set it again afterwards — from then on it is honoured.
+  engine slot (default **4** as of v0.8.1, clamped to `[1, 8]`). v0.8.0 raised
+  it to 8 because PagedAttention made the batch curve keep climbing (paged
+  gains 1.27x from B=4 to B=8, contiguous only 1.069x); v0.8.1 reverts the
+  paged default, so the raise goes back with it. 4 is the knee of the measured
+  contiguous curve — aggregate throughput is flat from B=4 to B=8 and collapses
+  below it, while per-request decode is aggregate/B and so improves as the
+  batch shrinks, which is what a time-to-first-token deadline is scored on.
+  A `provider.toml` written by v0.8.0 carries an explicit `= 8` that release
+  generated; because that is **indistinguishable from a deliberate 8**, first
+  start after upgrading changes it to 4 once, logs a warning saying so, and
+  bumps `config_version` to 2. If you want 8, set it again afterwards — from
+  then on it is honoured. The `[1, 8]` upper bound is unchanged, so 8 stays
+  available both box-wide and per-model, which is what a box running
+  `engine_v2_kv_backend = "paged"` wants.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
   `"auto"` (default — resolves **CONTIGUOUS** as of v0.8.1, reverting the
   v0.8.0 paged default; grep `case .auto: resolvedKind` in

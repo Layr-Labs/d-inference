@@ -109,12 +109,12 @@ jobs:
       # paged regression that trips that path now fails this step rather than
       # quietly swapping the system under test.
       #
-      # The cap is pinned WITH the backend and not inherited. Selecting a
-      # backend makes the testbed hand the provider a TOML, which moves it onto
-      # its config-decoder defaults, and that path still reads
-      # `engine_v2_max_concurrent` as 4. Paged at B=4 measures 0.98x of
+      # The cap is pinned WITH the backend and not inherited. An unnamed cap
+      # seats the provider on its own default, which v0.8.1 reverted to 4 along
+      # with the contiguous KV default. Paged at B=4 measures 0.98x of
       # contiguous against 1.17x at B=8, so setting the backend alone would
-      # have bought the B=1 regression and none of the throughput.
+      # have bought the B=1 regression and none of the throughput. This lane
+      # pins 8 explicitly, so the concurrency revert does not move it.
       #
       # DARKBLOOM_TESTBED_EXPECT_KV_BACKEND closes the last construction-side
       # hole: after the providers register, the testbed pre-warms each

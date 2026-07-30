@@ -82,17 +82,19 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     public var maxModelSlots: UInt64
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
-    /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4
-    /// alongside the `.auto` paged flip, though the raise never depended
-    /// on it: B=8 is the better operating point on either backend, with
-    /// contiguous gaining ~1.07x from B=4 to B=8 and paged ~1.27x. It is
-    /// therefore UNCHANGED by the v0.8.1 revert to a contiguous default —
-    /// the two knobs were shipped together and are not coupled.
-    /// Clamped to
-    /// [1, 8] at use: the engine's KV byte-ledger admission binds long
-    /// before count does, and caps past 8 recreate the batch-collapse
-    /// regime the one-engine release exists to kill. The coordinator sees
-    /// the effective value in heartbeat `max_concurrency`.
+    /// ``defaultEngineV2MaxConcurrent`` — 4 as of v0.8.1, reverting v0.8.0's
+    /// raise to 8. The two knobs ARE coupled, contrary to what v0.8.0
+    /// believed: the raise was justified by paged's batch curve, and v0.8.1
+    /// reverts the paged default, so it goes back with it. See
+    /// ``ConcurrencyDefaultMigration/v081ConcurrencyRevert`` for the measured
+    /// curve and why the knee is at 4.
+    ///
+    /// Still clamped to [1, 8] at use, and the UPPER bound deliberately stays
+    /// 8: the engine's KV byte-ledger admission binds long before count does,
+    /// caps past 8 recreate the batch-collapse regime the one-engine release
+    /// exists to kill, and 8 remains the right operating point for a box that
+    /// asks for paged by name — where B=8 still pays 1.27x over B=4. The
+    /// coordinator sees the effective value in heartbeat `max_concurrency`.
     public var engineV2MaxConcurrent: UInt64
     /// Optional per-model override map
     /// (`engine_v2_max_concurrent_by_model` under `[backend]`, TOML table
@@ -178,26 +180,21 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// knob no longer exists. Not encoded back out.
     public internal(set) var retiredKeysPresent: [String] = []
 
-    /// The v0.8.0 box-wide concurrency cap, and the single source for BOTH
+    /// The v0.8.1 box-wide concurrency cap, and the single source for BOTH
     /// the memberwise default and the ``init(from:)`` fallback.
     ///
     /// They are one constant because they drifted apart exactly once and it
     /// was expensive: the memberwise default moved 4 -> 8 while the decode
     /// fallback stayed at 4, so every provider that loaded a `provider.toml`
     /// — which is every provider in the fleet — silently kept B=4 while
-    /// the release believed it had moved to 8. The drift is the bug here,
-    /// independent of which KV backend `.auto` happens to select.
-    public static let defaultEngineV2MaxConcurrent: UInt64 = 8
-
-    /// The cap pre-v0.8.0 releases GENERATED into `provider.toml`.
+    /// the release believed it had moved to 8.
     ///
-    /// `TOMLEncoder` emits every non-optional `CodingKeys` member, so any
-    /// config ever written by `ConfigManager.save` carries an explicit
-    /// `engine_v2_max_concurrent = 4` — byte-identical to an operator who
-    /// typed it. Disambiguated once, by absence of
-    /// ``ProviderConfig/configVersion``; see
-    /// ``ProviderConfig/legacyMaxConcurrentMigrationID``.
-    public static let legacyGeneratedMaxConcurrent: UInt64 = 4
+    /// Moving this constant reaches FRESH INSTALLS ONLY. `TOMLEncoder` emits
+    /// every non-optional key, so existing configs carry a literal that does
+    /// not track the binary; the fleet moves via
+    /// ``ConcurrencyDefaultMigration``, and a test pins that the newest step
+    /// lands here so the two cannot separate.
+    public static let defaultEngineV2MaxConcurrent: UInt64 = 4
 
     public init(
         port: UInt16 = 8100,
@@ -339,14 +336,13 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// (`config_version`, top level, written by the startup stamp in
     /// `migrateConfigIfNeeded`).
     ///
-    /// Its whole job is to date the file. A pre-v0.8.0 config and a
-    /// hand-written one are byte-identical wherever it matters, so
-    /// "absent" is the only evidence that an `engine_v2_max_concurrent = 4`
-    /// was GENERATED rather than chosen. That evidence is spent once, at
-    /// the migration below; from the stamp on, 4 means 4 forever.
+    /// Its whole job is to date the file, so that a cap the release wrote can
+    /// be told apart from one an operator typed — for exactly one boot per
+    /// schema generation. That evidence is spent at the migration below; once
+    /// the file carries the new stamp, its cap means what it says forever.
     ///
     /// Decoding always reports ``currentConfigVersion`` — the field
-    /// describes the schema this process speaks, and the pre-stamp state
+    /// describes the schema this process speaks, and the pre-migration state
     /// is reported through ``appliedMigrations`` instead.
     public var configVersion: Int
     /// Ids of the one-time migrations this decode applied, for the startup
@@ -354,12 +350,16 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     /// contract as ``BackendSettings/retiredKeysPresent``.
     public internal(set) var appliedMigrations: [String] = []
 
-    /// Current `provider.toml` schema version. 1 = v0.8.0, the release that
-    /// raised the concurrency default 4 -> 8.
-    public static let currentConfigVersion = 1
-
-    /// Stable id of the one-time pre-v0.8.0 concurrency migration.
-    public static let legacyMaxConcurrentMigrationID = "engine_v2_max_concurrent:4->8"
+    /// Current `provider.toml` schema version.
+    ///
+    ///   * absent = pre-v0.8.0
+    ///   * 1 = v0.8.0, which raised the concurrency default 4 -> 8
+    ///   * 2 = v0.8.1, which reverts it to 4 alongside the contiguous KV
+    ///     default
+    ///
+    /// Bump this in the same commit as the ``ConcurrencyDefaultMigration``
+    /// step that consumes the previous value, never on its own.
+    public static let currentConfigVersion = 2
 
     public init(
         provider: ProviderSettings,
@@ -390,25 +390,25 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
 
-        // One-time pre-v0.8.0 concurrency migration.
+        // One-time concurrency-default migrations, selected by the stamp the
+        // file carries.
         //
-        // Deliberately narrow: it fires only on an UNSTAMPED file holding
-        // the EXACT value old releases generated. An operator who picked 1,
-        // 2, 3, 5, 6 or 7 is never rewritten, because no release ever
-        // generated those. The single unavoidable casualty is a deliberate
-        // 4 in a pre-v0.8.0 file, which is indistinguishable from the
-        // generated one by construction — it is raised once, announced by
+        // Deliberately narrow: a step fires only on the EXACT cap the matching
+        // release generated, so an operator who picked any other value in
+        // range is never rewritten. The unavoidable casualty is a deliberate
+        // cap that happens to equal the one being migrated away from — see
+        // `ConcurrencyDefaultMigration.v081ConcurrencyRevert`, which is honest
+        // about the fact that v0.8.1's 8 -> 4 step cannot tell a generated 8
+        // from a chosen one. It runs once, is announced by
         // `RetiredKnobWarnings`, and sticks the moment it is re-set.
         //
-        // The predicate is shared with the on-disk rewrite
-        // (`LegacyConcurrencyMigration`) so this in-memory raise and the
-        // durable text surgery cannot disagree about what counts as legacy.
+        // The predicate is shared with the on-disk rewrite so this in-memory
+        // change and the durable text surgery cannot disagree.
         let onDiskVersion = try container.decodeIfPresent(Int.self, forKey: .configVersion)
-        if LegacyConcurrencyMigration.shouldRaise(
-            onDiskVersion: onDiskVersion, cap: backend.engineV2MaxConcurrent) {
-            backend.engineV2MaxConcurrent = BackendSettings.defaultEngineV2MaxConcurrent
-            self.appliedMigrations = [Self.legacyMaxConcurrentMigrationID]
-        }
+        let migrated = ConcurrencyDefaultMigration.resolvedCap(
+            onDiskVersion: onDiskVersion, cap: backend.engineV2MaxConcurrent)
+        backend.engineV2MaxConcurrent = migrated.cap
+        self.appliedMigrations = migrated.applied.map(\.id)
         self.backend = backend
         self.configVersion = Self.currentConfigVersion
     }

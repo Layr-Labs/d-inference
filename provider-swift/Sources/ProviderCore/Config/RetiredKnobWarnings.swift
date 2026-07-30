@@ -41,16 +41,19 @@ public enum RetiredKnobWarnings {
         // disk still reads the OLD value until the startup stamp rewrites
         // it, so a silent migration would leave the file and the running
         // behaviour disagreeing with nothing to explain the gap.
-        if config.appliedMigrations.contains(ProviderConfig.legacyMaxConcurrentMigrationID) {
-            let old = BackendSettings.legacyGeneratedMaxConcurrent
-            let new = BackendSettings.defaultEngineV2MaxConcurrent
+        for id in config.appliedMigrations {
+            guard let step = ConcurrencyDefaultMigration.step(id: id) else { continue }
             out.append(
-                "provider.toml predates v0.8.0 (no config_version) and leaves [backend] "
-                    + "engine_v2_max_concurrent at \(old), the default the OLD release generated — "
-                    + "raising it to \(new), the v0.8.0 default. B=\(new) is the better "
-                    + "operating point on either KV backend (contiguous gains ~1.07x from "
-                    + "B=\(old) to B=\(new)). If you chose \(old) deliberately, set it again: this "
-                    + "migration runs once and an explicit \(old) is honoured from then on.")
+                "provider.toml is at config_version \(step.fromVersion) and sets [backend] "
+                    + "engine_v2_max_concurrent = \(step.fromCap), the default that release "
+                    + "generated — changing it to \(step.toCap). B=\(step.toCap) is the knee of "
+                    + "the measured contiguous batch curve: aggregate throughput is flat from "
+                    + "B=\(step.toCap) to B=\(step.fromCap) while per-request decode is "
+                    + "aggregate/B, so the smaller batch is worth ~87% more tok/s per request "
+                    + "at essentially the same aggregate. THIS CANNOT TELL a generated "
+                    + "\(step.fromCap) from one you chose deliberately — if you meant it, set "
+                    + "it again: this migration runs once and an explicit \(step.fromCap) is "
+                    + "honoured from then on.")
         }
         return out
     }

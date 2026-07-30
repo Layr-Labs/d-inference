@@ -13,18 +13,19 @@ import (
 // stamped config on the host and the `.auto` default-posture smoke that runs
 // after it loads paged/B=8 instead of exercising the defaults it exists for.
 
-// stampConfigVersion, mirrored from provider-swift/Sources/darkbloom/Darkbloom.swift.
-// The real one runs at provider startup, over the canonical copy, on any file
-// carrying no `config_version`: it raises a generated
-// `engine_v2_max_concurrent = 4` and prepends the stamp.
+// migrateConfigSchema, mirrored from provider-swift/Sources/darkbloom/Darkbloom.swift.
+// The real one runs at provider startup, over the canonical copy. On a file
+// carrying no `config_version` it now ONLY dates the file: v0.8.1 retired the
+// value migration for unstamped files because its default (4) is exactly what
+// the pre-v0.8.0 releases generated, so there is nothing left to change. The
+// 8 -> 4 step keys on `config_version = 1` instead, which the testbed never
+// writes.
 func stampLikeProvider(t *testing.T, toml string) string {
 	t.Helper()
 	if strings.Contains(toml, "config_version") {
 		t.Fatalf("generated config is already stamped, nothing for the migration to do:\n%s", toml)
 	}
-	toml = strings.Replace(toml,
-		"engine_v2_max_concurrent = 4", "engine_v2_max_concurrent = 8", 1)
-	return "config_version = 1\n" + toml
+	return "config_version = 2\n" + toml
 }
 
 // canonicalConfigForTest points canonicalProviderConfigPath at a temp HOME and

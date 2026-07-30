@@ -35,12 +35,11 @@ func TestGatePostureRendersBothBackendAndCap(t *testing.T) {
 	}
 }
 
-// Naming a backend and NOT a cap is the trap the CI lane exists to avoid: the
-// generated TOML moves the provider onto its config-decoder defaults, and that
-// path reads engine_v2_max_concurrent as 4 rather than the 8 the v0.8.0 flip
-// put in the memberwise init. Paged at B=4 is 0.98x of contiguous where B=8 is
-// 1.17x, so this combination has all of paged's cost and none of its benefit.
-// Pinned so that anyone changing it has to decide deliberately.
+// Naming a backend and NOT a cap is the trap the CI lane exists to avoid: an
+// unnamed cap seats the provider on its own default, which v0.8.1 reverted to
+// 4. Paged at B=4 is 0.98x of contiguous where B=8 is 1.17x, so this
+// combination has all of paged's cost and none of its benefit. Pinned so that
+// anyone changing it has to decide deliberately.
 func TestBackendWithoutCapEmitsNoCapAndInheritsTheDecoderDefault(t *testing.T) {
 	t.Setenv("DARKBLOOM_TESTBED_KV_BACKEND", KVBackendPaged)
 	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "")
@@ -58,8 +57,8 @@ func TestBackendWithoutCapEmitsNoCapAndInheritsTheDecoderDefault(t *testing.T) {
 }
 
 // A typo in the cap used to be swallowed, which seated the suite at the
-// decoder's 4 and still passed. The knob stopped being optional when it became
-// the difference between measuring paged and measuring nothing.
+// provider default and still passed. The knob stopped being optional when it
+// became the difference between measuring paged and measuring nothing.
 func TestMalformedCapFailsInsteadOfSeatingTheDefault(t *testing.T) {
 	t.Setenv("DARKBLOOM_TESTBED_MAX_CONCURRENT", "8x")
 

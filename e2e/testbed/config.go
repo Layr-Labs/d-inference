@@ -92,23 +92,23 @@ func ResolveKVBackend(explicit string) string {
 // value when non-zero, else DARKBLOOM_TESTBED_MAX_CONCURRENT, else 0 (leave
 // the provider to pick).
 //
-// 0 IS NOT "8". The provider has TWO defaults and which one you get depends on
-// whether it was handed a config file at all:
+// 0 IS NOT "8". It is the provider's default, which is 4 as of v0.8.1 — the
+// release that reverted v0.8.0's raise to 8 along with the paged KV default
+// that justified it. Both the memberwise init and the config-decoder fallback
+// read one constant (`BackendSettings.defaultEngineV2MaxConcurrent`, pinned
+// together by maxConcurrentMemberwiseAndDecodeDefaultsCannotDrift), so unlike
+// the pre-v0.8.0 split it no longer matters whether a TOML was written.
 //
-//   - No `--config`: `BackendSettings`' memberwise init, `engineV2MaxConcurrent
-//     = 8` since the v0.8.0 flip.
-//   - With `--config`: the Decodable path, `decodeIfPresent(...) ?? 4`.
-//
-// The testbed writes a TOML the moment EITHER knob is set, so selecting a KV
-// backend and leaving this at 0 does not inherit 8 — it lands on 4. Paged at
-// B=4 measures 0.98x of contiguous against 1.17x at B=8, so that combination is
-// the one configuration with all of paged's cost and none of its benefit. A
-// lane that wants paged MUST name the cap too.
+// Paged at B=4 measures 0.98x of contiguous against 1.17x at B=8, so selecting
+// a KV backend and leaving this at 0 is the one configuration with all of
+// paged's cost and none of its benefit. A lane that wants paged MUST name the
+// cap too.
 //
 // A malformed env value is a hard error rather than a silent fall-through. It
 // used to be ignored "over a typo in an optional knob", and the knob stopped
 // being optional when it became the difference between measuring paged and
-// measuring nothing: a typo would quietly seat the suite at 4 and still pass.
+// measuring nothing: a typo would quietly seat the suite at the default and
+// still pass.
 func ResolveMaxConcurrent(explicit int) (int, error) {
 	if explicit != 0 {
 		return explicit, nil
@@ -184,10 +184,8 @@ type ProviderConfig struct {
 	// is the only way to select paged, which is the entire reason the testbed
 	// writes a config file at all.
 	//
-	// SETTING THIS ALONE IS A TRAP. Selecting a backend makes the testbed
-	// write a TOML, which moves the provider onto its config-DECODER
-	// defaults — and that path still reads `engine_v2_max_concurrent` as 4,
-	// not the 8 the v0.8.0 flip put in the memberwise init. So "paged" on its
+	// SETTING THIS ALONE IS A TRAP. Leaving MaxConcurrent at 0 seats the
+	// provider on its own default, which is 4 as of v0.8.1. So "paged" on its
 	// own is paged@4: 0.98x of contiguous, against 1.17x at B=8. Name
 	// MaxConcurrent whenever you name KVBackend.
 	KVBackend string
@@ -195,9 +193,8 @@ type ProviderConfig struct {
 	// (`engine_v2_max_concurrent` under `[backend]`). The provider clamps the
 	// value to [1, 8]. Travels through the same generated TOML as KVBackend.
 	//
-	// 0 leaves the provider to pick, which is 8 only when NOTHING else caused
-	// a TOML to be written — see ResolveMaxConcurrent for the two-defaults
-	// split and why 0 is not a safe way to ask for 8.
+	// 0 leaves the provider to pick, which is 4 as of v0.8.1 — see
+	// ResolveMaxConcurrent for why 0 is not a way to ask for 8.
 	MaxConcurrent int
 }
 

@@ -67,7 +67,10 @@ public struct StandaloneServerConfig: Sendable {
     /// retained for CLI compatibility, currently unused on the v2 path.
     public let hardware: HardwareInfo?
     /// Box-wide concurrent-decode cap per v2 engine
-    /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8].
+    /// (`[backend] engine_v2_max_concurrent`), clamped to [1, 8]. Defaults to
+    /// ``BackendSettings/defaultEngineV2MaxConcurrent`` rather than a literal:
+    /// a third independent copy of the fleet default is exactly how the
+    /// memberwise/decode pair drifted in v0.8.0.
     public let engineV2MaxConcurrent: UInt64
     /// Per-model overrides (`engine_v2_max_concurrent_by_model`).
     public let engineV2MaxConcurrentByModel: [String: UInt64]
@@ -87,7 +90,7 @@ public struct StandaloneServerConfig: Sendable {
         maxCachedModels: Int = 3,
         authToken: String? = nil,
         hardware: HardwareInfo? = nil,
-        engineV2MaxConcurrent: UInt64 = 8,
+        engineV2MaxConcurrent: UInt64 = BackendSettings.defaultEngineV2MaxConcurrent,
         engineV2MaxConcurrentByModel: [String: UInt64] = [:],
         engineV2KVBackend: String = "auto",
         engineV2KVBackendByModel: [String: String] = [:],

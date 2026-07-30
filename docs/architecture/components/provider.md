@@ -58,8 +58,11 @@ enable` copies the independently signed executable to
 The helper accepts an activity lease only from the exact Darkbloom Developer ID
 team and provider signing identifier. It receives no prompts, model data,
 credentials, or network access. Lease expiry, XPC invalidation, sleep, thermal
-pressure, and write failures restore macOS automatic fan mode. The boundary is
-defined in `DarkbloomFanProtocol/FanIPC.swift`, `DarkbloomFanService/`, and
+pressure, invalid sensors, and write failures restore macOS automatic fan mode.
+The helper rejects leases until fan and GPU-sensor discovery is ready, retries
+transient discovery in-process, and uses the same bounded verified Auto restore
+for live rollback and startup journal recovery. The boundary is defined in
+`DarkbloomFanProtocol/FanIPC.swift`, `DarkbloomFanService/`, and
 `DarkbloomFanHelper/FanXPCService.swift`.
 
 ## Privacy-relevant boundaries

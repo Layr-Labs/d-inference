@@ -208,6 +208,11 @@ public enum GPUTemperatureCatalog {
             return []
         }
     }
+
+    public static func minimumReadyCount(for family: FanChipFamily) -> Int {
+        let count = keys(for: family).count
+        return count == 0 ? 1 : max(1, (count + 1) / 2)
+    }
 }
 
 public enum FanChipIdentity {

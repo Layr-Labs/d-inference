@@ -2,8 +2,8 @@ import Foundation
 
 public enum FanIPC {
     public static let machServiceName = "io.darkbloom.fan"
-    public static let protocolVersion = 1
-    public static let helperVersion = "1"
+    public static let protocolVersion = 2
+    public static let helperVersion = "2"
     public static let helperIdentifier = "io.darkbloom.fan-helper"
     public static let providerIdentifier = "io.darkbloom.provider"
     public static let teamID = "SLDQ2GJ6TL"
@@ -96,6 +96,10 @@ public struct FanServiceStatus: Codable, Equatable, Sendable {
     public let speedPercent: Double
     public let fans: [FanServiceFanStatus]
     public let lastError: String?
+    public let hardwareReady: Bool?
+    public let recoveryPending: Bool?
+    public let discoveryError: String?
+    public let quarantinedSensorKeys: [String]?
     public let updatedAt: Date
 
     public init(
@@ -113,6 +117,10 @@ public struct FanServiceStatus: Codable, Equatable, Sendable {
         speedPercent: Double,
         fans: [FanServiceFanStatus],
         lastError: String?,
+        hardwareReady: Bool? = nil,
+        recoveryPending: Bool? = nil,
+        discoveryError: String? = nil,
+        quarantinedSensorKeys: [String]? = nil,
         updatedAt: Date = Date()
     ) {
         self.helperVersion = helperVersion
@@ -129,6 +137,10 @@ public struct FanServiceStatus: Codable, Equatable, Sendable {
         self.speedPercent = speedPercent
         self.fans = fans
         self.lastError = lastError
+        self.hardwareReady = hardwareReady
+        self.recoveryPending = recoveryPending
+        self.discoveryError = discoveryError
+        self.quarantinedSensorKeys = quarantinedSensorKeys
         self.updatedAt = updatedAt
     }
 }

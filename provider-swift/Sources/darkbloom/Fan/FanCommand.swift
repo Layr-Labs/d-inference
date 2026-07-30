@@ -134,6 +134,18 @@ extension Fan {
                 if let temperature = helper.gpuTemperatureC {
                     Swift.print("GPU: \(format(temperature)) C")
                 }
+                if helper.hardwareReady == false {
+                    Swift.print(
+                        helper.recoveryPending == true
+                            ? "Hardware readiness: recovering"
+                            : "Hardware readiness: unsupported"
+                    )
+                }
+                if let quarantined = helper.quarantinedSensorKeys,
+                   !quarantined.isEmpty
+                {
+                    Swift.print("Quarantined GPU sensors: \(quarantined.joined(separator: ", "))")
+                }
                 if let error = helper.lastError {
                     Swift.print("Last error: \(error)")
                 }

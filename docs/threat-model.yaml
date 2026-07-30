@@ -2314,6 +2314,7 @@ threats:
     adversaries: [ADV-001]
     affected_assets: [A-014]
     affected_files:
+      - provider-swift/Sources/DarkbloomFanCore/FanAutomaticRestore.swift
       - provider-swift/Sources/DarkbloomFanCore/FanController.swift
       - provider-swift/Sources/DarkbloomFanHelper/FanDaemon.swift
       - provider-swift/Sources/DarkbloomFanService/FanOwnershipRecovery.swift
@@ -2329,6 +2330,11 @@ threats:
       - description: >
           Signal shutdown, sleep, administrator disable, and uninstall restore and
           verify Auto. Uninstall refuses to delete recovery state if restoration fails.
+        status: implemented
+      - description: >
+          Live rollback and startup reconciliation share a bounded verified retry
+          loop, retain unresolved ownership, and recheck fan modes after releasing an
+          owned Ftst gate so asynchronous firmware transitions can converge.
         status: implemented
     open_findings: []
     severity: high
@@ -2386,6 +2392,12 @@ threats:
       - description: >
           Takeover never lowers the existing target; serious/critical macOS thermal
           pressure, invalid readings, or control failures restore system Auto.
+        status: implemented
+      - description: >
+          Incomplete discovery rejects leases and retries in-process. A runtime invalid
+          sensor revokes the lease and restores Auto before rediscovery can quarantine
+          it; a fresh lease requires both the chip-family catalog quorum and the
+          root-owned last-known-good sensor-set quorum to remain healthy across restart.
         status: implemented
     open_findings: []
     severity: medium

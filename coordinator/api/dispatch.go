@@ -956,12 +956,14 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// mid-ladder rejection looped to maxDispatchAttempts re-running the
 		// doomed scan). Nothing has been committed to the client at a
 		// reservation failure except, possibly, a prefill keepalive's HTTP
-		// 200 from an earlier attempt — the status code is then frozen, so
-		// route that case through the exhausted ladder, which surfaces the
-		// 429 in-band exactly once. takeOver() also guarantees no keepalive
-		// goroutine can commit the SSE 200 while the 429 below is written.
+		// 200 — the status code is then frozen, so route that case through the
+		// exhausted ladder, which surfaces the 429 in-band exactly once.
+		// takeOver() also guarantees no keepalive goroutine can commit the SSE
+		// 200 while the 429 below is written. The keepalive now starts before
+		// the dispatch loop, so this must be checked on EVERY attempt: at
+		// attempt 0 a request that queued long enough can already be committed.
 		if dispatchErr == errTTFTTooSlow && (attempt == 0 || ttftTerminalRejectEnabled()) {
-			if attempt > 0 && d.keepalive.takeOver() {
+			if d.keepalive.takeOver() {
 				d.setLastError(dispatchErr, dispatchErrCode)
 				return outcomeFailFast
 			}
@@ -1053,16 +1055,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:over_capacity"})
 			retryAfter := s.estimateRetryAfter(d.model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			d.refundReservation()
-			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision))
+			info := d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity — retry shortly", withCode("machine_busy")))
+				d.preContentTerminal(info, retryAfter, "machine_busy",
+					"your machine is at capacity — retry shortly", "machine_busy")
 			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				d.preContentTerminal(info, retryAfter, "rate_limit_exceeded",
 					fmt.Sprintf("all providers for model %q are at capacity and queue is full", d.publicModel),
-					withCode("rate_limit_exceeded")))
+					"rate_limit_exceeded")
 			}
 			return outcomeResponseWritten
 		}
@@ -1100,8 +1101,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				s.triggerWarmPool()
 				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
-				s.recordRejection(d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
-				s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
+				d.ttftTooSlowTerminal(
+					d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision),
+					retryAfter,
+					ttftTooSlowMessage(d.publicModel, bestTTFT, d.deadline, retryAfter))
 				return outcomeResponseWritten
 			}
 			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
@@ -1110,15 +1113,16 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"error", "model_capability_unsupported",
 					http.StatusServiceUnavailable))
 				d.refundReservation()
-				s.recordRejection(d.rejectionInfoWithDecision(
-					"queue", "model_capability_unsupported",
-					http.StatusServiceUnavailable, 0, queuedReq.Decision))
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+				d.preContentTerminal(
+					d.rejectionInfoWithDecision(
+						"queue", "model_capability_unsupported",
+						http.StatusServiceUnavailable, 0, queuedReq.Decision),
+					0,
 					"model_unavailable",
 					fmt.Sprintf(
 						"no online provider for model %q supports inference-time tool_choice enforcement",
 						d.publicModel),
-					withParam("model")))
+					"model_unavailable")
 				return outcomeResponseWritten
 			}
 			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
@@ -1126,15 +1130,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
 			retryAfter := s.estimateRetryAfter(d.model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
+			info := d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
+				d.preContentTerminal(info, retryAfter, "machine_busy",
+					"your machine is at capacity (timed out waiting for a free slot) — retry shortly",
+					"machine_busy")
 			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				d.preContentTerminal(info, retryAfter, "rate_limit_exceeded",
 					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", d.publicModel),
-					withCode("rate_limit_exceeded")))
+					"rate_limit_exceeded")
 			}
 			return outcomeResponseWritten
 		}
@@ -2538,6 +2542,11 @@ func (d *dispatchState) run() {
 	// nil-safe (no-op when keepalives are disabled or the writer already took over).
 	defer func() { d.keepalive.takeOver() }()
 
+	// Arm prefill keepalives before the dispatch loop so the timer covers routing
+	// and the queue wait too, not just provider prefill. See
+	// startPrefillKeepalive for the production measurement that motivates this.
+	d.startPrefillKeepalive()
+
 	for attempt := range maxDispatchAttempts {
 		d.attempt = attempt
 		// Deadline-bounded failover: after the first attempt, stop failing over
@@ -2572,15 +2581,6 @@ func (d *dispatchState) run() {
 			d.timing.RoutedAt = time.Now()
 		}
 
-		// Now that the request is dispatched to a provider, start prefill SSE
-		// keepalives for streaming requests so a long prefill does not leave the
-		// consumer connection idle (OpenRouter's fetch timeout would otherwise fire
-		// and fail us over). Started once; it persists across retries/speculation
-		// and is taken over by the response writer when the first chunk commits.
-		if d.stream && d.keepalive == nil && s.prefillKeepaliveInterval > 0 {
-			d.keepalive = s.newPrefillKeepaliver(w, d.requestID)
-			d.keepalive.start(r.Context())
-		}
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + d.provider.ID, "model:" + d.model})
 

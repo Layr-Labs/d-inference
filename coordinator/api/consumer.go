@@ -696,8 +696,17 @@ func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel stri
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 	s.ddIncr("routing.decisions", []string{"model:" + model, "model_type:" + s.registry.ModelType(model), "outcome:ttft_429"})
 	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
-		fmt.Sprintf("all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds", publicModel, int(math.Ceil(threshold.Seconds())), bestTTFT.Seconds(), retryAfter),
+		ttftTooSlowMessage(publicModel, bestTTFT, threshold, retryAfter),
 		withCode("rate_limit_exceeded")))
+}
+
+// ttftTooSlowMessage is the single wording for a fleet-wide TTFT rejection, so
+// the status-coded response and the in-band SSE form (used when a prefill
+// keepalive already froze the status code) cannot drift apart.
+func ttftTooSlowMessage(publicModel string, bestTTFT, threshold time.Duration, retryAfter int) string {
+	return fmt.Sprintf(
+		"all providers for model %q are above the %ds TTFT target (best estimate %.1fs); retry after %ds",
+		publicModel, int(math.Ceil(threshold.Seconds())), bestTTFT.Seconds(), retryAfter)
 }
 
 func (s *Server) triggerWarmPool() {

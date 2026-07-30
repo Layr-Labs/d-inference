@@ -4,7 +4,7 @@ import Foundation
 /// persists after `WatchdogPolicy.crashLoopTripThreshold` consecutive
 /// crash-loop-shaped restarts (`WatchdogPolicy.crashLoopCount`).
 ///
-/// WHY IT EXISTS. v0.8.0 resolves `.auto` to PAGED, and a paged defect that
+/// WHY IT EXISTS. v0.8.0 resolved `.auto` to PAGED, and a paged defect that
 /// kills the daemon at load or first decode had no automated way back: the
 /// provider's launchd job has `KeepAlive = false`, so the watchdog is the
 /// only restarter — and it restarted the same binary into the same config
@@ -14,8 +14,17 @@ import Foundation
 /// crash-looping box back to contiguous is that box itself. This record is
 /// that flip.
 ///
+/// DORMANT SINCE v0.8.1, RETAINED ON PURPOSE. `.auto` resolves contiguous
+/// again, so the guard's scope (`.auto` slots that resolved paged) is
+/// currently empty and the record can no longer change any outcome. It is
+/// kept whole — store, watchdog trip, doctor clear, staleness rules —
+/// because it is the automated safety net a future re-flip requires, and
+/// rebuilding it under an incident is exactly the wrong time. The
+/// description below is written in the present tense for that world.
+///
 /// EFFECT. While the record is present AND its `providerVersion` equals the
-/// RUNNING binary's version, `.auto` resolves CONTIGUOUS with
+/// RUNNING binary's version, an `.auto` slot that would resolve paged
+/// instead resolves CONTIGUOUS with
 /// `kvBackendFallbackReason = "crash_loop_guard"`
 /// (`EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous`, enforced in
 /// `EngineV2Factory.prepareProductionBackend` — the same deepest layer the
@@ -119,7 +128,10 @@ public enum KVBackendGuardStore {
     public static let futureSkewToleranceSeconds: Double = 86_400
 
     /// nil when the record is missing, unreadable, or garbage — the fail-open
-    /// contract: `.auto` then resolves normally (paged).
+    /// contract: backend selection then resolves normally (contiguous for
+    /// `.auto` as of v0.8.1, which is what the guard would have forced
+    /// anyway; the guard's effect is dormant until `.auto` resolves paged
+    /// again).
     ///
     /// "Garbage" includes SEMANTIC corruption, not just undecodable JSON: a
     /// syntactically valid file with `tripped_at: -1e308` decodes fine, and

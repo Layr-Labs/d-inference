@@ -158,20 +158,30 @@ jobs:
             -skip '^TestIntegrationExactCacheRouting$'
 
       # EXPECTED RED — because of the FIXTURE, not because of the default.
-      # `.auto` resolves PAGED as of v0.8.0, so paged is what the fleet
-      # serves. This test runs gemma-4-e2b-it-4bit, and e2b is the one
-      # checkpoint where paged ADOPTION is the inexact arm: an adopted
-      # paged slot answers differently from its own cold run. e2b appears
-      # zero times in the production catalog -- on the two models we do
-      # serve, paged adoption is the EXACT arm and contiguous is the one
-      # that diverges -- so this red describes the fixture, not the fleet.
+      # This test runs gemma-4-e2b-it-4bit, and e2b is the one checkpoint
+      # where paged ADOPTION is the inexact arm: an adopted paged slot
+      # answers differently from its own cold run. e2b appears zero times
+      # in the production catalog -- on the two models we do serve, paged
+      # adoption is the EXACT arm and contiguous is the one that diverges.
+      #
+      # STILL RED AFTER THE v0.8.1 FLIP, and deliberately unchanged. The
+      # v0.8.0 comment here predicted this: "promote back to blocking when
+      # the fixture stops being the exception -- NOT on any further `.auto`
+      # change." This lane pins DARKBLOOM_TESTBED_KV_BACKEND=paged
+      # EXPLICITLY, so it never read the default in the first place; it
+      # still runs e2b on paged and still hits the one adoption path that
+      # diverges. `.auto` moving to contiguous changes what the FLEET
+      # serves, not what this lane measures.
+      #
+      # (The v0.8.1 contiguous prefix-cache gate does not reach it either:
+      # that gate skips cache construction only on a RESOLVED-contiguous
+      # slot, and this lane resolves paged.)
       #
       # EXPECTED RED until the e2b paged adoption path is fixed or this
       # fixture moves to a served model. Kept, pinned, and visible rather
       # than removed: the red IS the finding, and unpinning it would
       # recreate the "gate that cannot fail" pattern this release fixed
-      # four separate times. Promote back to blocking when the fixture
-      # stops being the exception -- NOT on any further `.auto` change.
+      # four separate times.
       #
       # ISOLATED in its own step (v0.8.0 gate audit) so `continue-on-error`
       # covers exactly the one expected-red test instead of the entire paged
@@ -209,16 +219,22 @@ jobs:
       # naming `auto` would write a TOML and thereby change the launch path
       # and drop the cap to the decoder's 4, testing neither default.
       #
-      # `.auto` resolves PAGED as of v0.8.0 — that is the release posture and
-      # what a stock install serves. (This step's name previously claimed
-      # `.auto = contiguous`, a leftover from before the flip: the BLOCKING
-      # smoke was labeled as covering the fleet's non-default backend while
-      # actually covering its default.) `.auto` is also the posture that is
-      # ALLOWED to degrade silently, so this lane sets
-      # DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged: a stock install that
-      # quietly falls back to contiguous now FAILS this gate with the
-      # engine-reported fallback reason instead of green-lighting a fleet
-      # that no longer serves what the release shipped.
+      # `.auto` resolves CONTIGUOUS as of v0.8.1 — that is the release
+      # posture and what a stock install serves. This is the ONE lane that
+      # reads the default, so it is the one that has to move with it: it was
+      # `contiguous` before v0.8.0, `paged` for v0.8.0, and is `contiguous`
+      # again now. Keep the expectation equal to the shipped default; a lane
+      # that asserts the previous release's default is a lane that fails on
+      # every correct build.
+      #
+      # The expectation is still armed (not dropped) even though contiguous
+      # is now also the DEGRADE target, because it catches the opposite
+      # drift: a build that resolves paged here would mean the flip did not
+      # land in the binary under test. It no longer distinguishes "resolved
+      # contiguous" from "degraded to contiguous" — nothing can, once they
+      # are the same value — so the thing that pins the difference is the
+      # unit gate (`EngineV2KVBackendGateTests`, which asserts a NIL
+      # fallback reason on `.auto`), not this lane.
       #
       # COST, honestly: this is a second provider boot plus a second
       # gpt-oss-20b load (warm HF cache, but the weights still page in) for
@@ -227,22 +243,22 @@ jobs:
       # same two tests. The full job arithmetic (95m of test allowances —
       # the reverse lane counts TWICE, two sequential 15m runs — plus cold
       # setup overhead) lives on `timeout-minutes` at the top of the job.
-      - name: Run default-posture smoke (.auto = paged — BLOCKING gate)
+      - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
         env:
-          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: paged
+          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: contiguous
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
           if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
             echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
-                 "the kill switch degrades paged silently and voids this gate"
+                 "this lane must measure the DEFAULT, not a killed paged"
             exit 1
           fi
           echo "KV posture requested: provider default (no testbed override;" \
-               ".auto resolves paged as of v0.8.0)"
-          echo "Backend assertion armed: a silent .auto degrade to contiguous" \
-               "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=paged."
+               ".auto resolves contiguous as of v0.8.1)"
+          echo "Backend assertion armed: a stock install that resolves paged" \
+               "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous."
           go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
             -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
 

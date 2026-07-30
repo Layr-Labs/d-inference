@@ -209,7 +209,8 @@ extension Start {
             print(
                 "Cleared stale crash-loop KV-backend guard from "
                     + "v\(cleared.providerVersion) (this binary is "
-                    + "v\(ProviderCore.version)); `.auto` resolves paged again.")
+                    + "v\(ProviderCore.version)); backend selection resolves "
+                    + "normally again.")
         }
 
         // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----

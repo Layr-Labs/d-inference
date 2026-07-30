@@ -59,9 +59,9 @@ struct Benchmark: AsyncParsableCommand {
 
     @Option(name: .long, help: """
         KV backend EVERY engine this command builds is built with — \
-        auto|contiguous|paged (default auto, which resolves to PAGED as of \
-        v0.8.0 and degrades to contiguous only on a box that cannot serve \
-        paged). Applies to --sweep, --scheduler-prefill and \
+        auto|contiguous|paged (default auto, which resolves to CONTIGUOUS as \
+        of v0.8.1 — pass --kv-backend paged to measure the paged arm). \
+        Applies to --sweep, --scheduler-prefill and \
         --arrival-invariance alike, so the three phases of a wrapper run can \
         never measure different arms. An explicit paged selection FAILS the \
         run rather than degrading: if paged cannot be served, engine \

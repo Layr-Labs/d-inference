@@ -152,16 +152,21 @@ end = "08:00"
   it to 8 once, logs a warning saying so, and stamps `config_version`. If
   you want 4, set it again afterwards — from then on it is honoured.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` (default — resolves **PAGED** as of v0.8.0; grep
-  `case .auto: resolvedKind` in
+  `"auto"` (default — resolves **CONTIGUOUS** as of v0.8.1, reverting the
+  v0.8.0 paged default; grep `case .auto: resolvedKind` in
   `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
-  for the argument). On the two models the network serves, paged is the arm
-  whose prefix-cache adoption is exact; contiguous is the arm that diverges
-  from its own cold decode. **gemma-4 greedy outputs change under paged** —
-  measurably closer to an fp32 reference, but different text for the same
-  prompt. Set `"contiguous"` per slot, or
-  `DARKBLOOM_CBV2_PAGED_KV=0` fleet-wide, to go back. A box that cannot
-  build paged degrades to contiguous on its own and keeps serving.
+  for the argument). Paged sizes its KV pool from a physical-capacity policy
+  rather than the slot's logical grant, which cost the fleet roughly 10x its
+  KV and produced widespread admission failures; contiguous gets the whole
+  grant. Set `"paged"` to opt a box back in — note that an explicit `"paged"`
+  on a box that cannot build it **refuses the load (503)** rather than
+  degrading, which is the point of naming it. There is no env var that turns
+  paged on: `DARKBLOOM_CBV2_PAGED_KV=0` is a kill switch and only forces
+  contiguous. **gemma-4 greedy outputs differ between the two backends** —
+  paged is measurably closer to an fp32 reference, but the text is not
+  identical. A resolved-contiguous slot also runs with the SSD prefix cache
+  OFF: adoption is not bit-exact on contiguous for the served models, so the
+  cache is not constructed there.
   Vision (VLM) models are NOT forced to contiguous. The
   VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
   (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:162`)

@@ -15,12 +15,12 @@
 //     families the engine is correct-by-construction for; GPT-OSS's
 //     `newCacheV2` also primes its sinks-activation probe at build time),
 //   * a KV backend sized from the unified-memory KV budget —
-//     `PagedKVBackend` for "auto" (v0.8.0 ships paged as the default;
-//     the argument is at `case .auto: resolvedKind` below) or for an
-//     explicit "paged", slabs capped by `PagedKVPhysicalCapacityPolicy`
-//     and committed lazily (`.atFirstAdmission`);
-//     `CBv2ContiguousKVBackend` for an explicit "contiguous", a slot
-//     veto, the kill switch, or an `.auto` paged failure,
+//     `PagedKVBackend` for an explicit "paged", slabs capped by
+//     `PagedKVPhysicalCapacityPolicy` and committed lazily
+//     (`.atFirstAdmission`); `CBv2ContiguousKVBackend` for "auto" (v0.8.1
+//     reverts the default to contiguous; the argument is at
+//     `case .auto: resolvedKind` below), an explicit "contiguous", a slot
+//     veto, or the kill switch,
 //   * `CBv2LayerCacheBank` over the model-built caches,
 //   * `CBv2DefaultSampler` + `CBv2TextDetokenizerFactory` (real incremental
 //     detokenization with stop-string holdback).
@@ -455,9 +455,9 @@ extension EngineV2Factory {
     ///
     /// KV-backend gate (see `EngineV2KVBackendPolicy` for the full layer
     /// order): the caller passes the operator selection with slot vetoes
-    /// (VLM) already applied; `.auto` resolves PAGED (grep
-    /// `case .auto: resolvedKind` below for the argument), so paged is the
-    /// common path here, not just an explicit operator selection.
+    /// (VLM) already applied; `.auto` resolves CONTIGUOUS (grep
+    /// `case .auto: resolvedKind` below for the argument), so paged is
+    /// reached only by an explicit operator selection.
     /// The `DARKBLOOM_CBV2_PAGED_KV=0` fleet kill switch is enforced at
     /// THIS deepest layer so no call path (benchmarks included) bypasses
     /// it, and it DEGRADES rather than refuses — an operator override is
@@ -549,50 +549,85 @@ extension EngineV2Factory {
         switch kvBackend {
         case .contiguous: resolvedKind = .contiguous
         case .paged: resolvedKind = .paged
-        // v0.8.0: `.auto` resolves PAGED. This is the release's headline
-        // decision and it was made twice — flipped, reverted on evidence
-        // from `gemma-4-e2b-it-4bit`, then re-flipped when that evidence
-        // turned out not to describe production.
+        // v0.8.1: `.auto` resolves CONTIGUOUS again. v0.8.0 flipped it to
+        // paged on adoption-exactness evidence (see below, still true) and
+        // production answered with a capacity failure large enough to
+        // dominate every other property the backend has.
         //
-        // WHY PAGED, measured on the real slot path with the SSD tier, six
-        // arms, backend label confirmed on every one, cold-twin
-        // byte-identical throughout. Prefix-cache ADOPTION exactness:
+        // WHY CONTIGUOUS — the paged pool is too small to serve the fleet.
+        // A contiguous slot's KV capacity IS its logical grant. A paged
+        // slot's is `PagedKVPhysicalCapacityPolicy.decide`, the minimum of
+        // FIVE terms:
+        //
+        //   min(logicalGrant,                       // what contiguous gets
+        //       usefulDemand   = 32Ki tok x B x rate,
+        //       machineCap     = min(8 GiB, RAM/16),
+        //       liveKVHeadroom / 4,                 // liveHeadroomDivisor
+        //       2 x Metal maxBufferLength)
+        //
+        // Summed over the real fleet that is 1,137 GiB of KV against
+        // 11,453 GiB under contiguous — an order of magnitude less. Since
+        // v0.8.0 shipped: 32.7% of provider attempts return
+        // `token_budget_exhausted`, TTFT p95 12.8s / p99 33s, ~8.8% of
+        // client requests are cancelled before their first token, and
+        // OpenRouter-scored uptime sits near 85%.
+        //
+        // Relaxing the static caps was considered and REJECTED. The binding
+        // term on most boxes is `liveKVHeadroom / 4`, which pins any paged
+        // pool to 25% of the contiguous grant no matter how the other four
+        // move; raising `absoluteHardCapBytes` and `physicalMemoryDivisor`
+        // recovers only ~10% of the deficit. The pool is small by
+        // CONSTRUCTION, not by tuning.
+        //
+        // WHAT WOULD HAVE TO BE TRUE TO MOVE IT AGAIN: a paged slot must
+        // advertise KV capacity within a small factor of the same box's
+        // contiguous grant. That means the four non-grant terms above stop
+        // binding — which needs eager slabs replaced by a headroom model
+        // that can be sized against real residency rather than a fixed
+        // quarter of a probe, not a bigger constant. Throughput is NOT the
+        // blocker and was never the argument: paged still wins the batch
+        // curve (1.27x aggregate decode B=4->B=8 against contiguous's
+        // 1.07x, plus faster long prefill), and this revert knowingly gives
+        // back ~15% aggregate decode at B=8 on gemma-4/M4 Max to buy back
+        // 10x the KV. Capacity dominates because a request that is never
+        // admitted has no decode rate at all.
+        //
+        // WHAT THIS COSTS, and where it is paid. The v0.8.0 evidence stands
+        // — measured on the real slot path with the SSD tier, six arms,
+        // backend label confirmed on every one, cold-twin byte-identical
+        // throughout. Prefix-cache ADOPTION exactness:
         //
         //   model                     paged        contiguous
         //   gemma-4-26B-A4B-it-qat    EXACT        DIVERGES at byte 4
         //   gpt-oss-20b-MXFP4-Q8      EXACT        DIVERGES
         //   gemma-4-e2b-it-4bit       diverges     exact
         //
-        // The first two are the ENTIRE production catalog. e2b appears zero
-        // times in it — it is an e2e fixture. So on every model we actually
-        // serve, contiguous is the arm that returns a different answer when
-        // a prefix-cache hit occurs, and paged is the arm that does not.
+        // The first two are the ENTIRE production catalog, so on every
+        // model we actually serve, contiguous is the arm that answers
+        // differently when a prefix-cache hit occurs. Roughly 2.3% of
+        // flagship traffic clears the 26,624-token donation floor and would
+        // silently receive a truncated answer instead of an error. That
+        // class is closed in the SAME release, not accepted: the SSD prefix
+        // cache is NOT CONSTRUCTED for a resolved-contiguous slot
+        // (`PrefixCachePolicy.adoptionIsExact(onResolvedBackend:)`, applied
+        // in `EngineV2SlotFactory`), so no prefix is ever staged, matched
+        // or adopted there. Contiguous slots trade cache hits — a latency
+        // optimization — for correctness, and paged keeps both.
         //
-        // The split follows the RESOLVED backend 6/6, including a control
-        // nobody designed: an arm that REQUESTED paged, resolved contiguous
-        // under the kill switch, and diverged with the contiguous rows.
-        // Requested does not predict; resolved does.
+        // gemma-4 greedy token ids move back to the contiguous values.
+        // Paged is measurably closer to an fp32 reference (7-17x on the
+        // full-attention layers), so this is a real accuracy give-back and
+        // is taken deliberately, same as the flip that introduced it.
         //
-        // Throughput agrees rather than trading off: 1.27x aggregate decode
-        // from B=4->B=8 against contiguous's 1.07x, and faster long prefill.
-        // The B=1 case is 0.92x, which is the idle case — the coordinator's
-        // quality cap returns 8 for gemma-4 on either backend's measured
-        // solo rate.
-        //
-        // KNOWN AND ACCEPTED. gemma-4 greedy token ids differ from
-        // contiguous. Measurably closer to an fp32 reference (7-17x on the
-        // full-attention layers) but DIFFERENT — same prompt, different
-        // text. That is a product decision, taken explicitly.
-        //
-        // The e2e exact-cache lane runs e2b, the one checkpoint where paged
-        // adoption is the inexact arm, so that lane is expected red until
-        // either the e2b paged path is fixed or the fixture moves to a
-        // served model. It is kept pinned rather than silenced.
-        //
-        // Roll back fleet-wide with `DARKBLOOM_CBV2_PAGED_KV=0`, which
-        // lands on the kill-switch degrade below, not on a refusal. Per
-        // slot: `engine_v2_kv_backend = "contiguous"`.
-        case .auto: resolvedKind = .paged
+        // Paged is unchanged and fully supported: `engine_v2_kv_backend =
+        // "paged"` (global or by-model) still resolves paged, and the
+        // parity harness, the blocking paged CI lane, the kill switch and
+        // the crash-loop guard all still exercise it. NOTE the asymmetry a
+        // contiguous default creates: `DARKBLOOM_CBV2_PAGED_KV` is a
+        // negative-polarity KILL switch, so there is no env var that turns
+        // paged back ON — re-enabling it fleet-wide is a release, and
+        // per-box it is the config key.
+        case .auto: resolvedKind = .contiguous
         }
         var fallbackReason: String?
         // DEGRADE, not refuse — even on an explicit paged selection. This
@@ -633,6 +668,14 @@ extension EngineV2Factory {
         // through the injected `environment` (path override
         // `DARKBLOOM_KV_BACKEND_GUARD`), keeping this seam as hermetically
         // testable as the kill switch's.
+        //
+        // DORMANT as of v0.8.1 and deliberately kept: `.auto` no longer
+        // resolves paged, so the two conditions below cannot both hold in
+        // production today. The guard costs one file read on a path that
+        // already builds an engine, and it is the thing that makes a future
+        // re-flip safe to attempt — deleting it would have to be undone by
+        // whoever attempts one. `autoHonorsCrashLoopGuard` keeps it live by
+        // driving `.auto` through the factory directly.
         if resolvedKind == .paged, kvBackend == .auto,
             EngineV2KVBackendPolicy.crashLoopGuardForcesContiguous(
                 record: KVBackendGuardStore.read(environment: environment),
@@ -648,23 +691,19 @@ extension EngineV2Factory {
         // BEFORE preflight, so the reason names the typo rather than
         // whatever unrelated failure preflight would have hit first.
         //
-        // Under `.auto` a malformed value now DEGRADES to contiguous
-        // (`fallbackReason = "invalid_dtype: …"`). This REVERSES the
-        // pre-flip rule, and the old argument deserves an honest burial: it
-        // held that a malformed value is neither "we CANNOT" nor "do NOT"
-        // but a request nobody can interpret, so it should refuse "for
-        // `.auto` too, which since v0.8.0 is every slot that reaches here".
-        // That last clause is exactly what flipped the trade-off: `.auto`
-        // is now every slot on a ~94-box fleet, so one typo'd env var
-        // refusing every load turns a measurement knob into a fleet-wide
-        // 503 — while the fp32 value the knob exists to select only ever
-        // matters to the parity harness, which runs explicit `.paged`. So
-        // the split is again by WHO asked (`degradesPagedFailure`): an
-        // explicit `.paged` still REFUSES loudly with the original
-        // `invalidPagedPoolDType` (classified `paged_kv_dtype_invalid`, not
-        // `pagedUnavailable` — a typo must stay separable from paged
-        // infrastructure failing), so a control arm can never silently
-        // measure fp16 wearing an fp32 label; `.auto` serves, and says why.
+        // Under `.auto` a malformed value DEGRADES to contiguous
+        // (`fallbackReason = "invalid_dtype: …"`) rather than refusing, so
+        // one typo'd env var cannot turn a measurement knob into a
+        // fleet-wide 503. An explicit `.paged` still REFUSES loudly with
+        // the original `invalidPagedPoolDType` (classified
+        // `paged_kv_dtype_invalid`, not `pagedUnavailable` — a typo must
+        // stay separable from paged infrastructure failing), so a control
+        // arm can never silently measure fp16 wearing an fp32 label.
+        //
+        // The `.auto` half of that split is dormant as of v0.8.1 for the
+        // same reason as the guard above — `.auto` never arrives here
+        // paged — and stays for the same reason: it is the safety property
+        // a re-flip depends on, and `degradesPagedFailure` still pins it.
         var pagedDType = DType.float16
         if resolvedKind == .paged {
             do {
@@ -684,9 +723,10 @@ extension EngineV2Factory {
         // degrade-or-refuse rule itself lives in
         // `EngineV2KVBackendPolicy.degradesPagedFailure`, next to the
         // other four selection layers and unit-testable without building
-        // an engine. Since v0.8.0 resolves `.auto` to paged, the degrade
-        // branch is the COMMON path for a paged-ineligible machine, not a
-        // corner: every `.auto` slot reaches this code.
+        // an engine. As of v0.8.1 only an explicit `.paged` reaches this
+        // code, so in production it is the REFUSAL half that fires; the
+        // degrade half was the common path for the one release where
+        // `.auto` resolved paged and is retained for the next one.
         //
         // The refusal is a catchable throw, never a trap: the slot factory
         // maps it to ERROR `engine_v2_refusal` (reason

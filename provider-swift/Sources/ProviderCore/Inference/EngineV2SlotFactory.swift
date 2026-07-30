@@ -173,10 +173,13 @@ enum EngineV2SlotFactory {
         // ASK rather than assume. A veto is policy, so it is silent even
         // for an explicit paged request. kv_quant is gone from the product
         // entirely — it is no longer a veto, no longer a parameter, and no
-        // longer warned about. `auto` resolves PAGED as of v0.8.0; that
-        // resolution, the fleet kill switch, physical-capacity planning,
-        // and the degrade-or-REFUSE decision for an explicit paged request
-        // all live in `EngineV2Factory.prepareProductionBackend`.
+        // longer warned about. `auto` resolves CONTIGUOUS as of v0.8.1;
+        // that resolution, the fleet kill switch, physical-capacity
+        // planning, and the degrade-or-REFUSE decision for an explicit
+        // paged request all live in
+        // `EngineV2Factory.prepareProductionBackend`. The RESOLVED backend
+        // that comes back also decides whether this slot gets an SSD
+        // prefix cache at all — see the construction gate below.
         let parsedKVBackend = EngineV2KVBackendPolicy.parseSelection(
             global: kvBackendConfig, byModel: kvBackendConfigByModel, modelID: modelId)
         if let unrecognized = parsedKVBackend.unrecognized {
@@ -299,7 +302,38 @@ enum EngineV2SlotFactory {
             cacheConstructionStatus = PrefixCacheConstructionStatus(
                 state: .disabled, reason: .unsupportedBackend)
         } else if PrefixCachePolicy.isEnabled(environment: environment) {
-            if let preparedBackend {
+            if let preparedBackend,
+                !PrefixCachePolicy.adoptionIsExact(
+                    onResolvedBackend: preparedBackend.kind)
+            {
+                // v0.8.1: no cache object at all for a resolved-contiguous
+                // slot, because on both production checkpoints a contiguous
+                // adoption answers differently from the same prompt's cold
+                // run (see `PrefixCachePolicy.adoptionIsExact` for the
+                // measurement and for why this gates CONSTRUCTION rather
+                // than lookup). Nil here is the single switch that disarms
+                // the whole tier: the engine gets no `CBv2PrefixCache`, the
+                // bridge's pre-submit `stage` never runs, nothing is
+                // donated, and no stats logger starts.
+                //
+                // Keyed on the RESOLVED kind, which is the only correct
+                // input — a slot that asked for paged and degraded under
+                // the kill switch is serving contiguous and diverges with
+                // the contiguous rows.
+                //
+                // POLICY, so no construction-failure telemetry: this is the
+                // `.disabled` shape the `DARKBLOOM_PREFIX_CACHE=0` path
+                // already reports, not a failure to build something that
+                // should have built.
+                cacheCapability = PrefixCachePolicy.adoptionDisabledCapability(
+                    layerKinds: preparedBackend.layerKinds)
+                cacheConstructionStatus = PrefixCacheConstructionStatus(
+                    state: .disabled, reason: .unsupportedBackend)
+                logInfo(
+                    "engine_v2: SSD prefix cache skipped for \(modelId) — "
+                        + "prefix adoption is not bit-exact on the contiguous "
+                        + "KV backend (v0.8.1); paged slots keep the cache")
+            } else if let preparedBackend {
                 let ssdLayerKinds = preparedBackend.layerKinds
                 // Hoisted: `ProductionBackendPreparation` is non-Sendable, so
                 // the @Sendable construction-failure closure below must

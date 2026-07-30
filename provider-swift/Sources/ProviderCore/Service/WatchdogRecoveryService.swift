@@ -428,7 +428,8 @@ public struct WatchdogRecoveryService: Sendable {
             } else {
                 deps.log(
                     "crash-loop backend guard could not be persisted (check ~/.darkbloom) — "
-                        + "`.auto` will keep resolving paged and the crash loop may continue")
+                        + "a slot with an explicit paged selection will keep resolving "
+                        + "paged and the crash loop may continue")
             }
         }
         // Every failure exit below runs through this. It only acts while the

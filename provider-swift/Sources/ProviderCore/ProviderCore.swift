@@ -195,5 +195,22 @@ public enum ProviderCore {
     // paged — measurably more accurate against an fp32 reference, but not
     // identical. kv-quantization and the compiled [B,1] decode path are
     // removed; `kv_quant` is accepted and ignored via RetiredCodingKeys.
-    public static let version = "0.8.0"
+    //
+    // 0.8.1 — `.auto` RESOLVES CONTIGUOUS again. v0.8.0's paged default
+    // sized the fleet's KV at 1,137 GiB against contiguous's 11,453 GiB
+    // (the paged pool is the min of five terms, and `liveKVHeadroom / 4`
+    // structurally pins it to a quarter of the logical grant), and the
+    // resulting admission failures — 32.7% of provider attempts returning
+    // token_budget_exhausted, TTFT p95 12.8s / p99 33s, ~8.8% of client
+    // requests cancelled before first token, OpenRouter-scored uptime near
+    // 85% — dominate paged's batch-curve and adoption-exactness wins. Costs
+    // ~15% aggregate decode at B=8 on gemma-4/M4 Max, knowingly. The
+    // exactness loss is CLOSED, not accepted: the SSD prefix cache is no
+    // longer constructed on a resolved-contiguous slot, so no prefix is
+    // staged, matched or adopted where adoption diverges. Paged code, the
+    // DARKBLOOM_CBV2_PAGED_KV kill switch, the crash-loop guard and the
+    // blocking paged CI lane all stay; `engine_v2_kv_backend = "paged"`
+    // still resolves paged. `engine_v2_max_concurrent = 8` is NOT coupled
+    // to paged and stays at 8.
+    public static let version = "0.8.1"
 }

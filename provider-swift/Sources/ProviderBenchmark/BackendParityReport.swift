@@ -562,7 +562,7 @@ public struct BackendParityObservation: Codable, Sendable, Equatable {
         /// independently of the arm engine and today does so invisibly.
         ///
         /// Both halves are required and neither substitutes for the other:
-        /// `.auto` resolves paged as of v0.8.0, so an arm reporting
+        /// `.auto` resolves contiguous as of v0.8.1, so an arm reporting
         /// contiguous — under `.auto` or under an explicit `.paged` degraded
         /// by a kill switch or a missing kernel resource — resolves to the
         /// SAME string whether it was configured that way or fell back to it,

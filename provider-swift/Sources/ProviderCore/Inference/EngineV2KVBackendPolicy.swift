@@ -34,13 +34,13 @@
 //      difference in scope: it degrades ONLY `.auto`. An explicit "paged"
 //      is operator intent, and automation must not override a human — the
 //      kill switch may, because it IS a human.
-//   4. "auto" resolves PAGED as of v0.8.0 — the release's headline
-//      decision. The evidence (prefix-cache adoption exactness on the
-//      served catalog, throughput, the known greedy-token-id change) is
-//      argued once at `case .auto: resolvedKind` in
-//      `EngineV2Factory.prepareProductionBackend`; do not restate it here.
-//      Not a family table: `.auto` means "we choose", so the vetoes above
-//      and the failure handling below can still land a slot on contiguous.
+//   4. "auto" resolves CONTIGUOUS as of v0.8.1, reverting the v0.8.0 paged
+//      default on fleet capacity evidence. The argument (paged's physical
+//      pool sizing against contiguous's logical grant, the admission
+//      failures that followed, and the prefix-cache exactness this costs
+//      and how it is paid for) is made once at `case .auto: resolvedKind`
+//      in `EngineV2Factory.prepareProductionBackend`; do not restate it
+//      here. Not a family table: `.auto` means "we choose".
 //   5. Failure handling, and it depends on WHO asked. Kernel preflight,
 //      physical-capacity planning, and `PagedKVBackend` construction can
 //      each fail. Under "auto" they degrade to contiguous — a
@@ -50,6 +50,16 @@
 //      fleet, benchmarks and e2e ARE the safety net, and a silent degrade
 //      makes a run report paged while measuring contiguous. The layer-3
 //      kill switch is an override, not a failure, and always degrades.
+//      Since layer 4 stopped sending `.auto` down the paged path, only an
+//      explicit "paged" reaches this layer at all, so the degrade half —
+//      like the layer-3b guard — is DORMANT rather than gone. Both are
+//      kept because they are what a future re-flip stands on.
+//
+//   One asymmetry worth naming, created by layers 3 and 4 together: there
+//   is no env var that turns paged ON. `DARKBLOOM_CBV2_PAGED_KV` is
+//   negative-polarity by design, so with a contiguous default the only
+//   routes to paged are `engine_v2_kv_backend = "paged"` (global or
+//   by-model) and a new release.
 
 import Foundation
 
@@ -61,9 +71,13 @@ public enum EngineV2KVBackendKind: String, Sendable, Equatable {
 
 /// Operator-facing backend selection (`engine_v2_kv_backend`).
 public enum EngineV2KVBackendSelection: String, Sendable, Equatable, CaseIterable {
-    /// Production default: PAGED for every current and future model as of
-    /// v0.8.0. Slot vetoes and the kill switch can still land it on
-    /// contiguous; `.auto` means "we choose", not "we promise paged".
+    /// Production default: CONTIGUOUS for every current and future model
+    /// as of v0.8.1, reverting v0.8.0's paged default — the paged pool's
+    /// physical-capacity policy sized the fleet's KV roughly 10x smaller
+    /// and the resulting admission failures dominated paged's throughput
+    /// and exactness wins (see the `.auto` case in
+    /// `EngineV2Factory.prepareProductionBackend`). `.auto` still means
+    /// "we choose", not "we promise contiguous".
     case auto
     /// Force paged. VLM slots still resolve contiguous (slot veto), but a
     /// paged FAILURE refuses instead of degrading — see layer 5.
@@ -81,8 +95,11 @@ public enum EngineV2KVBackendPolicy {
     /// Parse the operator selection for `modelID` (per-model override
     /// wins over the global value). `unrecognized` carries a raw value
     /// that failed to parse so the caller can WARN once; the returned
-    /// selection is then `.auto`, which resolves PAGED (see
-    /// `EngineV2Factory.prepareProductionBackend`).
+    /// selection is then `.auto`, which resolves CONTIGUOUS as of v0.8.1
+    /// (see `EngineV2Factory.prepareProductionBackend`). Failing safe to
+    /// the default matters more under a contiguous default than it did
+    /// under a paged one: a typo'd `engine_v2_kv_backend` now costs the
+    /// box paged rather than putting it on paged, and never refuses.
     public static func parseSelection(
         global: String,
         byModel: [String: String],

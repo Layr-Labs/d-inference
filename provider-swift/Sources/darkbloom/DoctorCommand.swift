@@ -21,7 +21,7 @@ struct Doctor: AsyncParsableCommand {
     @Flag(help: "Print local provider identifiers used for support/debugging.")
     var support = false
 
-    @Flag(help: "Clear the crash-loop KV-backend guard so `.auto` resolves paged again on the next model load, then exit.")
+    @Flag(help: "Clear the crash-loop KV-backend guard so backend selection resolves normally on the next model load, then exit.")
     var clearBackendGuard = false
 
     mutating func run() async throws {
@@ -116,7 +116,11 @@ struct Doctor: AsyncParsableCommand {
     /// KV-backend guard. The automatic exit is the next release (the record
     /// binds one binary version); this verb exists for the operator who has
     /// diagnosed the box — or set the kill switch / an explicit backend —
-    /// and wants `.auto` back on paged without waiting for one.
+    /// and wants `.auto` resolving normally again without waiting for one.
+    /// Since v0.8.1 "normally" is CONTIGUOUS, which is also what a tripped
+    /// guard forces, so clearing it is a no-op for backend selection on a
+    /// default box; it still matters for `status`/`doctor` reporting and
+    /// for any box that later takes an explicit paged selection.
     ///
     /// The clear also RESETS the persisted crash-loop chain
     /// (`watchdog-state.json`): the guard usually gets cleared within
@@ -169,8 +173,10 @@ struct Doctor: AsyncParsableCommand {
             }
         }
         output(
-            "Cleared. `.auto` resolves paged again on the next model load "
-                + "(`darkbloom restart` to reload now). If the box re-enters a crash "
+            "Cleared. Note that since v0.8.1 `.auto` resolves CONTIGUOUS on its "
+                + "own, so clearing the guard only restores normal resolution — it "
+                + "does not move this box onto paged; that needs "
+                + "`engine_v2_kv_backend = \"paged\"`. If the box re-enters a crash "
                 + "loop, the guard re-trips after "
                 + "\(WatchdogPolicy.crashLoopTripThreshold) crash-loop restarts.")
     }

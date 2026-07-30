@@ -48,9 +48,9 @@ public enum ThroughputSweep {
     /// per-batch medians.
     ///
     /// `kvBackend` is the operator-facing selection handed to the production
-    /// factory. `.auto` resolves PAGED as of v0.8.0 (see
-    /// `EngineV2Factory.prepareProductionBackend`) but still degrades to
-    /// contiguous on a box that cannot serve paged; an explicit `.paged`
+    /// factory. `.auto` resolves CONTIGUOUS as of v0.8.1 (see
+    /// `EngineV2Factory.prepareProductionBackend`), so measuring paged
+    /// requires naming it; an explicit `.paged`
     /// REFUSES rather than degrading. Either way the selection is not the
     /// outcome, so the report carries the backend each cell ACTUALLY built
     /// with — per cell in `decode[].resolvedKVBackend`, and de-duplicated in

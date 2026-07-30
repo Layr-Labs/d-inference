@@ -49,10 +49,12 @@ const kvBackendTagKey = "kv_backend:"
 // BackendSlotCapacity.kv_backend_fallback_reason. It is what makes a
 // `kv_backend:contiguous` sample interpretable: without it, an operator who
 // chose contiguous and a paged slot that fell back are the same point on the
-// dashboard. `.auto` resolves PAGED in v0.8.0, so this dimension separates the
-// rollout's real failure population — boxes that degraded on kernel preflight,
-// physical capacity, ineligibility or pool construction — from a deliberate
-// contiguous configuration and from a DARKBLOOM_CBV2_PAGED_KV kill switch.
+// dashboard. `.auto` resolves CONTIGUOUS as of v0.8.1, so the bulk of the
+// fleet is now `kv_backend:contiguous` + `kv_backend_fallback:none` — and this
+// dimension is what keeps that expected population separable from the boxes
+// that asked for paged and could not get it (kernel preflight, physical
+// capacity, ineligibility, pool construction) and from a
+// DARKBLOOM_CBV2_PAGED_KV kill switch.
 // `none` is a real value here, not a filler — see
 // registry.KVBackendFallbackTag.
 const kvBackendFallbackTagKey = "kv_backend_fallback:"

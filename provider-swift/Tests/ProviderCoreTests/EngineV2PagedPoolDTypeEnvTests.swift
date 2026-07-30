@@ -11,14 +11,16 @@
 //      `PagedKVPoolConfig` literal the test handed in. A knob that is
 //      merely accepted is a capability flag; a knob whose slabs changed
 //      size is evidence.
-//   2. A typo REFUSES an EXPLICIT paged selection and DEGRADES `.auto` to
-//      contiguous (fallback reason "invalid_dtype: …"). The refusal half:
-//      the seam exists so a parity harness — which runs explicit `.paged` —
-//      can trust its fp32 control arm; a mistyped value that silently
-//      served fp16 would give it a second copy of the baseline, which
-//      looks exactly like agreement. The degrade half: since v0.8.0
-//      `.auto` is every slot on the fleet, and one typo'd env var must
-//      cost the box paged, not cost it SERVICE.
+//   2. A typo REFUSES an EXPLICIT paged selection: the seam exists so a
+//      parity harness — which runs explicit `.paged` — can trust its fp32
+//      control arm; a mistyped value that silently served fp16 would give
+//      it a second copy of the baseline, which looks exactly like
+//      agreement. (The knob's `.auto` half degraded rather than refused,
+//      for the one release where `.auto` resolved paged. As of v0.8.1
+//      `.auto` is contiguous and never reads the knob at all, so that
+//      degrade is dormant; `autoIgnoresThePageDTypeKnob` pins the inertness
+//      and `EngineV2KVBackendPolicy.degradesPagedFailure` still pins the
+//      rule itself.)
 //   3. fp32 pages cost 2x, and the physical plan is computed at the fp16
 //      rate — so the same grant buys HALF the pages, half the seats, and a
 //      grant that fits at fp16 can refuse outright at fp32. That refusal
@@ -190,48 +192,52 @@ struct EngineV2PagedPoolDTypeEnvTests {
         await unset.engine.shutdown()
     }
 
-    @Test("`.auto` + a malformed value DEGRADES to contiguous and names the typo")
-    func autoDegradesOnMalformedValue() async throws {
+    @Test("`.auto` IGNORES the page dtype entirely — malformed or not (v0.8.1)")
+    func autoIgnoresThePageDTypeKnob() async throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        // The fleet case: `.auto` on every slot, one box exports a mangled
-        // DARKBLOOM_CBV2_PAGED_KV_DTYPE. Pre-guard this refused — a typo in
-        // a measurement knob 503'd every load on the box. Now it serves
-        // contiguous and the heartbeat names the typo verbatim, so the fix
-        // is one `grep invalid_dtype` away.
-        let build = try EngineV2Factory.makeProductionBuild(
-            model: try dtypeFixtureModel(),
-            tokenizer: StubBridgeTokenizer(),
-            kvBytesCapacity: dtypeTestCapacity,
-            maxConcurrentRequests: dtypeTestConcurrency,
-            kvBackend: .auto,
-            maxContextLength: dtypeTestContext,
-            environment: [
-                EngineV2Factory.pagedPoolDTypeEnvKey: "fp32",
-                // Hermetic: a dev box's real crash-loop guard must not
-                // preempt the dtype resolution under test.
-                KVBackendGuardStore.pathEnvKey: "/dev/null",
-            ],
-            pagedPreflightOverride: { _ in })
-        #expect(build.kvBackendKind == .contiguous)
-        #expect(build.kvBackendFallbackReason == "invalid_dtype: fp32")
-        // Contiguous has no pages: the fp32 the typo was aiming at must
-        // not be reported as if a pool were built with it.
-        #expect(build.pagedPoolDType == nil)
-        await build.engine.shutdown()
+        // Since v0.8.1 `.auto` resolves CONTIGUOUS, so it never reaches the
+        // dtype read at all — the knob is inert on a default slot, and both
+        // the old `.auto` outcomes (degrade-with-reason on a typo, fp32
+        // pool on a valid value) are unreachable. Driven with a MALFORMED
+        // value because that is the one an operator hits by accident: on a
+        // ~94-box fleet it must cost nothing, not 503 the box and not label
+        // the build as having fallen back from something it never tried.
+        for raw in ["fp32", "float32"] {
+            let build = try EngineV2Factory.makeProductionBuild(
+                model: try dtypeFixtureModel(),
+                tokenizer: StubBridgeTokenizer(),
+                kvBytesCapacity: dtypeTestCapacity,
+                maxConcurrentRequests: dtypeTestConcurrency,
+                kvBackend: .auto,
+                maxContextLength: dtypeTestContext,
+                environment: [
+                    EngineV2Factory.pagedPoolDTypeEnvKey: raw,
+                    // Hermetic: a dev box's real crash-loop guard must not
+                    // preempt the resolution under test.
+                    KVBackendGuardStore.pathEnvKey: "/dev/null",
+                ],
+                pagedPreflightOverride: { _ in })
+            #expect(build.kvBackendKind == .contiguous)
+            #expect(build.kvBackendFallbackReason == nil)
+            // Contiguous has no pages: the fp32 the knob was aiming at must
+            // not be reported as if a pool were built with it.
+            #expect(build.pagedPoolDType == nil)
+            await build.engine.shutdown()
+        }
     }
 
-    @Test("`.auto` + a VALID value still serves paged with that dtype")
-    func autoServesValidDType() async throws {
+    @Test("an EXPLICIT paged selection + a VALID value still serves that dtype")
+    func explicitPagedServesValidDType() async throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
-        // Guards the degrade from over-reach: only the MALFORMED value may
-        // move `.auto` off paged. A well-formed float32 under `.auto`
-        // builds the fp32 pool exactly as an explicit selection would.
+        // The live half of the knob after the flip, and the one the parity
+        // harness depends on: it runs explicit `.paged`, so a well-formed
+        // float32 must still build the fp32 pool.
         let build = try EngineV2Factory.makeProductionBuild(
             model: try dtypeFixtureModel(),
             tokenizer: StubBridgeTokenizer(),
             kvBytesCapacity: dtypeTestCapacity,
             maxConcurrentRequests: dtypeTestConcurrency,
-            kvBackend: .auto,
+            kvBackend: .paged,
             maxContextLength: dtypeTestContext,
             environment: [
                 EngineV2Factory.pagedPoolDTypeEnvKey: "float32",

@@ -477,8 +477,12 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     /// opposite signals: the first is a choice, the second is a paged
     /// regression wearing a contiguous label.
     ///
-    /// `.auto` resolves PAGED as of v0.8.0, so EVERY class here is live on
-    /// the default fleet, not just `"kill_switch"`. A machine whose paged
+    /// `.auto` resolves CONTIGUOUS as of v0.8.1, so on the default fleet
+    /// NO class here fires — a stock slot resolves contiguous with no
+    /// fallback reason at all, and a non-nil value now means the box
+    /// carries an explicit `engine_v2_kv_backend = "paged"`. Every class
+    /// stays decodable: the paged failure classes are live on exactly
+    /// those boxes and on the paged CI lane. A machine whose paged
     /// kernel preflight, physical-capacity plan, or pool construction
     /// fails degrades under `.auto` and reports `"kernel_preflight: …"`,
     /// `"physical_capacity: …"`, `"ineligible: …"` or

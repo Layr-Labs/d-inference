@@ -83,9 +83,11 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// Box-wide concurrent-request cap per v2 engine slot
     /// (`engine_v2_max_concurrent` under `[backend]`). Default
     /// ``defaultEngineV2MaxConcurrent`` — 8 as of v0.8.0, raised from 4
-    /// alongside the `.auto` paged flip, though the raise does not depend
+    /// alongside the `.auto` paged flip, though the raise never depended
     /// on it: B=8 is the better operating point on either backend, with
-    /// contiguous gaining ~1.07x from B=4 to B=8 and paged ~1.27x.
+    /// contiguous gaining ~1.07x from B=4 to B=8 and paged ~1.27x. It is
+    /// therefore UNCHANGED by the v0.8.1 revert to a contiguous default —
+    /// the two knobs were shipped together and are not coupled.
     /// Clamped to
     /// [1, 8] at use: the engine's KV byte-ledger admission binds long
     /// before count does, and caps past 8 recreate the batch-collapse
@@ -98,21 +100,27 @@ public struct BackendSettings: Sendable, Equatable, Codable {
     /// `engineV2MaxConcurrent`.
     public var engineV2MaxConcurrentByModel: [String: UInt64]
     /// CBv2 KV-backend selection (`engine_v2_kv_backend` under
-    /// `[backend]`): "auto" (default — resolves PAGED as of v0.8.0; see
+    /// `[backend]`): "auto" (default — resolves CONTIGUOUS as of v0.8.1,
+    /// reverting v0.8.0's paged default; see
     /// `EngineV2Factory.prepareProductionBackend`), "paged", or
-    /// "contiguous". VLM slots
-    /// are NOT forced to contiguous: the veto in
+    /// "contiguous". Setting "paged" explicitly is the ONLY way to put a
+    /// box on paged — the `DARKBLOOM_CBV2_PAGED_KV` env var is a
+    /// negative-polarity kill switch and cannot turn paged on. Note the
+    /// consequence of an explicit "paged" under a contiguous default: a
+    /// box that cannot serve paged now REFUSES the load
+    /// (`EngineV2ProductionError.pagedUnavailable` ⇒ 503, the coordinator
+    /// reroutes) rather than degrading, because refusal is reserved for a
+    /// selection someone asked for by name.
+    /// VLM slots are NOT forced to contiguous by the veto in
     /// `EngineV2KVBackendPolicy.applySlotVetoes` (`guard isVLM,
-    /// !pagedHonorsSpanMasks`) fires only when the paged
-    /// cache does not affirm span masks, and
+    /// !pagedHonorsSpanMasks`): it fires only when the paged cache does
+    /// not affirm span masks, and
     /// `PagedLayerCache.honorsSpanMaskContextsByConstruction` — what
-    /// `EngineV2SlotFactory` passes — is `true`, so the veto
-    /// is inert and a VLM slot gets paged under "auto" like any other.
-    /// A model that cannot serve
-    /// paged falls back to contiguous with an INFO event; under an
-    /// explicit "paged" it REFUSES the load instead, so a paged fleet
-    /// can never silently serve contiguous. Fleet kill switch
-    /// `DARKBLOOM_CBV2_PAGED_KV=0` always degrades, never refuses.
+    /// `EngineV2SlotFactory` passes — is `true`, so the veto is inert and
+    /// an explicit "paged" VLM slot gets paged like any other.
+    /// The fleet kill switch `DARKBLOOM_CBV2_PAGED_KV=0` always degrades,
+    /// never refuses. A resolved-contiguous slot also gets NO SSD prefix
+    /// cache (`PrefixCachePolicy.adoptionIsExact`).
     /// See `EngineV2KVBackendPolicy`.
     public var engineV2KVBackend: String
     /// Optional per-model override map (`engine_v2_kv_backend_by_model`

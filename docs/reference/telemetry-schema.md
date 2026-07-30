@@ -246,10 +246,14 @@ It carries the provider's degrade reason verbatim — `kill_switch`,
 slot resolved to a backend other than the one it was configured for. The
 resolved kind alone cannot separate an operator who chose contiguous from a
 paged slot that fell back, and those are opposite signals: a choice and a
-regression. `.auto` resolves **paged** in v0.8.0, so every class above is
-live on the default fleet: `kernel_preflight`, `physical_capacity`,
+regression. `.auto` resolves **contiguous** as of v0.8.1 (it resolved paged
+for v0.8.0 only), which inverts how to read this field: the default fleet now
+reports contiguous with this key **absent**, so a present value marks a box
+carrying an explicit `engine_v2_kv_backend = "paged"`. Every class stays on
+the wire — v0.8.0 providers coexist during rollout, and the paged classes
+stay live on explicitly-paged boxes. `kernel_preflight`, `physical_capacity`,
 `ineligible` and `pool_construction_capacity` mean the box could not serve
-paged and degraded (the rollout's primary failure signal);
+paged and degraded;
 `crash_loop_guard` means the box's watchdog counted 3 consecutive
 crash-loop-shaped restarts and flipped `.auto` to contiguous itself (an
 INCIDENT marker — the box was crash-looping minutes earlier; it also emits

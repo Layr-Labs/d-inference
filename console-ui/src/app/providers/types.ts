@@ -60,10 +60,11 @@ export interface MyBackendSlot {
   // authoritative "did not degrade", and only `kv_backend` undefined is
   // unknown.
   //
-  // `kv_backend` alone cannot answer the question the rollout has to ask.
-  // Since `.auto` resolves paged, a slot reporting "contiguous" is either an
-  // operator who chose contiguous or a box that could not build paged, and
-  // those are opposite signals wearing the same label.
+  // `kv_backend` alone cannot answer the question the rollout has to ask: a
+  // slot reporting "contiguous" is the v0.8.1 default, an operator who chose
+  // contiguous, or a box that asked for paged and could not build it — a
+  // steady state and a regression wearing the same label. This field is what
+  // separates them.
   kv_backend_fallback_reason?: string;
 }
 

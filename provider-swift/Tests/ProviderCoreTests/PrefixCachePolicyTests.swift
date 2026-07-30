@@ -29,6 +29,47 @@ struct PrefixCachePolicyTests {
         #expect(PrefixCachePolicy.isEnabled(environment: ["DARKBLOOM_PREFIX_CACHE": ""]))
     }
 
+    // MARK: - Backend adoption-exactness gate (v0.8.1)
+
+    @Test("adoptionIsExact: paged yes, contiguous NO — the whole gate, as a table")
+    func adoptionExactnessByResolvedBackend() {
+        // Measured, not assumed: on both production checkpoints a
+        // contiguous slot that adopts a cached prefix answers differently
+        // from its own cold run (v0.8.0's six-arm gate; the numbers are in
+        // `PrefixCachePolicy.adoptionIsExact`'s doc comment). Flipping
+        // either row here re-opens a silent wrong-answer class, so the
+        // table is pinned rather than left implicit in the slot factory.
+        #expect(PrefixCachePolicy.adoptionIsExact(onResolvedBackend: .paged))
+        #expect(!PrefixCachePolicy.adoptionIsExact(onResolvedBackend: .contiguous))
+    }
+
+    @Test("adoptionDisabledCapability reports NO replay strategy, not an unknown one")
+    func adoptionDisabledCapabilityIsExplicitlyUnsupported() {
+        // The heartbeat distinction: `none` means "no replay happens on
+        // this slot" and `unknown` means "nobody resolved it". A gated
+        // contiguous slot is the first, and an operator reading
+        // `state=disabled reason=unsupported_backend` alongside a live
+        // strategy name would reasonably conclude the cache was running.
+        let layerKinds: [CBv2LayerKind] = [
+            CBv2LayerKind(
+                attention: .slidingWindow(16), headDim: 64, kvHeads: 2, queryHeads: 4),
+            CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 2, queryHeads: 4),
+        ]
+        let capability = PrefixCachePolicy.adoptionDisabledCapability(
+            layerKinds: layerKinds)
+        #expect(!capability.isSupported)
+        #expect(capability.strategy == nil)
+        #expect(PrefixCacheReplayStrategy(capability) == PrefixCacheReplayStrategy.none)
+
+        // Contrast: the same layout on a backend that DOES support reuse
+        // resolves a real strategy — so `none` above is the gate speaking,
+        // not the layout being unusable.
+        let supported = PrefixCachePolicy.prefixReuseCapability(
+            layerKinds: layerKinds, backendSelection: .paged)
+        #expect(supported.isSupported)
+        #expect(PrefixCacheReplayStrategy(supported) != PrefixCacheReplayStrategy.none)
+    }
+
     // MARK: - Stats cadence
 
     @Test("statsIntervalSecs: default 120 / 0 disables / override / malformed")

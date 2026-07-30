@@ -35,7 +35,6 @@ pub fn normalize(
         .ok_or(NormalizeError::MissingModel)?
         .to_owned();
 
-    validate_raw_auto_tool_schemas(&body)?;
     normalize_tool_parameter_types(&mut body);
     normalize_legacy_function_calls(&mut body)?;
     let mut messages = template_messages(&body)?;
@@ -270,25 +269,6 @@ fn validate_function_definition(
         Some(_) => return Err(NormalizeError::InvalidTools),
     }
     Ok(function.clone())
-}
-
-fn validate_raw_auto_tool_schemas(body: &Map<String, Value>) -> Result<(), NormalizeError> {
-    let choice = body.get("tool_choice");
-    let mode = choice.and_then(Value::as_str).or_else(|| {
-        choice
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("type"))
-            .and_then(Value::as_str)
-    });
-    if choice.is_some() && mode != Some("auto") {
-        return Ok(());
-    }
-    let tools = body
-        .get("tools")
-        .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_default();
-    crate::tool_constraint::validate_auto_tool_patterns(tools)
 }
 
 fn normalize_legacy_function_calls(body: &mut Map<String, Value>) -> Result<(), NormalizeError> {
@@ -673,49 +653,10 @@ fn assertion_family_types(object: &Map<String, Value>) -> HashSet<&'static str> 
         .collect()
 }
 
-/// Whether a typeless node's assertions cannot determine a single renderable
-/// type: either its assertion keywords span more than one type family (e.g.
-/// `{"minimum":5,"minLength":2}`) or its only assertion is `not` (e.g.
-/// `{"not":{"type":"string"}}`, which accepts every non-string — no injected
-/// type can preserve that, and the string default would make the schema
-/// unsatisfiable). Callers reject these before normalization. Structural,
-/// union, or finite-value evidence takes priority.
-pub(crate) fn typeless_assertion_families_ambiguous(object: &Map<String, Value>) -> bool {
-    for key in [
-        "properties",
-        "patternProperties",
-        "additionalProperties",
-        "items",
-        "prefixItems",
-    ] {
-        if object.contains_key(key) {
-            return false;
-        }
-    }
-    for key in ["anyOf", "oneOf", "allOf"] {
-        if let Some(variants) = object.get(key).and_then(Value::as_array)
-            && variants.iter().any(|variant| {
-                variant
-                    .as_object()
-                    .and_then(|variant| variant.get("type"))
-                    .and_then(Value::as_str)
-                    .is_some_and(|kind| kind != "null")
-            })
-        {
-            return false;
-        }
-    }
-    let families = assertion_family_types(object);
-    if families.len() > 1 {
-        return true;
-    }
-    families.is_empty() && object.contains_key("not")
-}
-
 /// JSON type names of a node's const/enum values: the set of concrete
 /// (non-null) member types plus whether null appears. `None` when the node
 /// carries no const and no non-empty enum array.
-pub(crate) fn finite_value_types(object: &Map<String, Value>) -> Option<(HashSet<String>, bool)> {
+fn finite_value_types(object: &Map<String, Value>) -> Option<(HashSet<String>, bool)> {
     let values: Vec<&Value> = if let Some(constant) = object.get("const") {
         vec![constant]
     } else if let Some(members) = object.get("enum").and_then(Value::as_array) {
@@ -1390,79 +1331,6 @@ mod tests {
     }
 
     #[test]
-    fn typeless_mixed_assertion_families_are_rejected_before_normalization() {
-        for value in [
-            json!({"minimum":5,"minLength":2}),
-            json!({"not":{"type":"string"}}),
-        ] {
-            let body = json!({
-                "model":"gemma-4-fixture",
-                "messages":[{"role":"user","content":"x"}],
-                "tools":[{"type":"function","function":{
-                    "name":"pick",
-                    "parameters":{"type":"object","properties":{"value":value}}
-                }}],
-                "tool_choice":"auto"
-            });
-            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
-        }
-    }
-
-    #[test]
-    fn typeless_mixed_finite_values_are_rejected_before_normalization() {
-        for value in [json!({"enum":["a",1]}), json!({"enum":[true,"on"]})] {
-            let body = json!({
-                "model":"gemma-4-fixture",
-                "messages":[{"role":"user","content":"x"}],
-                "tools":[{"type":"function","function":{
-                    "name":"pick",
-                    "parameters":{"type":"object","properties":{"value":value}}
-                }}],
-                "tool_choice":"auto"
-            });
-            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
-        }
-    }
-
-    #[test]
-    fn unevaluated_assertions_are_rejected_before_inference() {
-        for value in [
-            json!({"type":"object","unevaluatedProperties":false}),
-            json!({"type":"array","items":{"type":"string"},"unevaluatedItems":false}),
-        ] {
-            let body = json!({
-                "model":"gemma-4-fixture",
-                "messages":[{"role":"user","content":"x"}],
-                "tools":[{"type":"function","function":{
-                    "name":"pick",
-                    "parameters":{"type":"object","properties":{"value":value}}
-                }}],
-                "tool_choice":"auto"
-            });
-            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
-        }
-    }
-
-    #[test]
-    fn dynamic_and_recursive_references_are_rejected_before_inference() {
-        for value in [
-            json!({"$dynamicRef":"#address"}),
-            json!({"$recursiveRef":"#"}),
-        ] {
-            let body = json!({
-                "model":"gemma-4-fixture",
-                "messages":[{"role":"user","content":"x"}],
-                "tools":[{"type":"function","function":{
-                    "name":"pick",
-                    "parameters":{"type":"object","properties":{"value":value}}
-                }}],
-                "tool_choice":"auto"
-            });
-            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
-        }
-    }
-
-    #[test]
     fn rejects_shapes_the_swift_request_decoder_rejects() {
         for body in [
             json!({
@@ -1574,9 +1442,11 @@ mod tests {
     }
 
     #[test]
-    fn auto_regex_support_is_rejected_before_inference() {
-        let body = |pattern: &str| {
-            json!({
+    fn auto_regex_patterns_survive_normalization() {
+        // `auto` never compiles a sampler grammar, so an arbitrary regex is a
+        // post-generation assertion the provider validator evaluates itself.
+        for pattern in ["^city$", "^[a-z]+$", "(?i)\\p{L}{2,}|[0-9]{3}"] {
+            let body = json!({
                 "model":"gemma-4-fixture",
                 "messages":[{"role":"user","content":"x"}],
                 "tools":[{"type":"function","function":{
@@ -1586,60 +1456,16 @@ mod tests {
                     }}
                 }}],
                 "tool_choice":"auto"
-            })
-        };
-        assert!(
-            normalize(
-                body("^city$").as_object().unwrap().clone(),
-                Some("gemma4_text")
-            )
-            .is_ok()
-        );
-        assert!(
-            normalize(
-                body("^[a-z]+$").as_object().unwrap().clone(),
-                Some("gemma4_text")
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn auto_pattern_validation_distinguishes_keywords_from_property_names() {
-        let body = json!({
-            "model":"gemma-4-fixture",
-            "messages":[{"role":"user","content":"x"}],
-            "tools":[{"type":"function","function":{
-                "name":"lookup",
-                "parameters":{"type":"object","properties":{
-                    "pattern":{"type":"string","pattern":"^city$"}
-                }}
-            }}],
-            "tool_choice":"auto"
-        });
-        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
-    }
-
-    #[test]
-    fn auto_pattern_validation_does_not_double_count_tuple_containers() {
-        let mut item = json!({"type":"string","pattern":"^city$"});
-        for _ in 0..17 {
-            item = json!({"type":"array","items":[item]});
+            });
+            assert!(
+                normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok(),
+                "{pattern}"
+            );
         }
-        let body = json!({
-            "model":"gemma-4-fixture",
-            "messages":[{"role":"user","content":"x"}],
-            "tools":[{"type":"function","function":{
-                "name":"lookup",
-                "parameters":{"type":"object","properties":{"value":item}}
-            }}],
-            "tool_choice":"auto"
-        });
-        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
     }
 
     #[test]
-    fn auto_pattern_validation_bounds_malformed_nested_tuple_arrays() {
+    fn auto_accepts_deeply_nested_tuple_containers() {
         let mut items = json!({"type":"string","pattern":"^city$"});
         for _ in 0..40 {
             items = json!([items]);
@@ -1653,15 +1479,29 @@ mod tests {
             }}],
             "tool_choice":"auto"
         });
-        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+        assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok());
     }
 
+    // `auto` compiles no inference grammar: every one of these constructs is
+    // enforced post-generation by the provider's JSON Schema validator, so
+    // prompt normalization must pass them through untouched instead of
+    // rejecting the request. Regression guard for the #561 pre-flight scan.
     #[test]
-    fn unsupported_auto_semantics_fail_before_render_normalization() {
+    fn auto_accepts_standard_json_schema_constructs() {
         for property_schema in [
             json!({"type":["string","integer"]}),
+            json!({"anyOf":[{"type":"string"},{"type":"integer"}]}),
             json!({"oneOf":[{"type":"string"},{"type":"integer"}]}),
             json!({"$ref":"#/$defs/Address"}),
+            json!({"$dynamicRef":"#address"}),
+            json!({"$recursiveRef":"#"}),
+            json!({"minimum":5,"minLength":2}),
+            json!({"not":{"type":"string"}}),
+            json!({"enum":["a",1]}),
+            json!({"enum":[true,"on"]}),
+            json!({"type":"number","enum":[0.1]}),
+            json!({"type":"object","unevaluatedProperties":false}),
+            json!({"type":"array","items":{"type":"string"},"unevaluatedItems":false}),
             json!({
                 "if":{"properties":{"kind":{"const":"business"}}},
                 "then":{"required":["tax_id"]}
@@ -1698,12 +1538,51 @@ mod tests {
                 }}],
                 "tool_choice":"auto"
             });
-            assert!(normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_err());
+            assert!(
+                normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).is_ok(),
+                "{body}"
+            );
         }
     }
 
     #[test]
-    fn supported_decimal_multiple_schemas_survive_preflight() {
+    fn auto_union_and_pattern_properties_normalize_for_rendering() {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"lookup",
+                "parameters":{"type":"object","properties":{
+                    "value":{"anyOf":[
+                        {"type":"string"},
+                        {"type":"integer"},
+                        {"type":"object","properties":{"id":{"type":"string"}}}
+                    ]},
+                    "headers":{
+                        "type":"object",
+                        "patternProperties":{
+                            "^x-[A-Za-z0-9-]+$":{"type":"string"}
+                        }
+                    }
+                }}
+            }}],
+            "tool_choice":"auto"
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text"))
+            .expect("union and patternProperties are auto-legal");
+        let properties = &normalized.tools.unwrap()[0]["function"]["parameters"]["properties"];
+        // The union survives; the render type is the first concrete branch and
+        // the multi-type members stay in `anyOf` for post-generation checking.
+        assert_eq!(properties["value"]["type"], "string");
+        assert_eq!(properties["value"]["anyOf"][1]["type"], "integer");
+        assert_eq!(
+            properties["headers"]["patternProperties"]["^x-[A-Za-z0-9-]+$"]["type"],
+            "string"
+        );
+    }
+
+    #[test]
+    fn supported_decimal_multiple_schemas_survive_normalization() {
         for multiple in [
             json!(1),
             json!(0.1),

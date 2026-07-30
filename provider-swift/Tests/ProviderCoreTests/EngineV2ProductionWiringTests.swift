@@ -1470,22 +1470,67 @@ struct EngineV2RequestRoutingTests {
                         engineV2Bridge: bridge)
                 ]
             })
+        for choice: OpenAIToolChoice in [
+            .mode(.required), .function(name: "calculate"),
+        ] {
+            let request = OpenAIChatCompletionRequest(
+                model: "gemma-4-26b-qat-4bit",
+                messages: [.init(
+                    role: .user,
+                    content: .parts([
+                        .text("describe"),
+                        .imageURL("data:image/png;base64,AA=="),
+                    ]))],
+                tools: [.init(function: .init(name: "calculate"))],
+                toolChoice: choice)
+
+            do {
+                _ = try await providerEngine.streamChatCompletion(request: request)
+                Issue.record("expected forced multimodal tool choice rejection")
+            } catch let error as MultiModelBatchSchedulerEngineError {
+                #expect(error == .invalidToolPayload(
+                    "inference-enforced tool_choice is not supported for multimodal requests"))
+            }
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
+    @Test("tool choice none is admitted on the multimodal path")
+    func noneToolChoiceIsAdmittedForMultimodalRequest() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        container: makeStubContainer(),
+                        isVLM: true,
+                        engineV2Bridge: bridge)
+                ]
+            })
         let request = OpenAIChatCompletionRequest(
             model: "gemma-4-26b-qat-4bit",
             messages: [.init(
                 role: .user,
-                content: .parts([.text("describe"), .imageURL("data:image/png;base64,AA==")]))],
+                content: .parts([
+                    .text("describe"),
+                    .imageURL("data:image/png;base64,AA=="),
+                ]))],
             tools: [.init(function: .init(name: "calculate"))],
-            toolChoice: .mode(.required))
+            toolChoice: .mode(.none))
 
+        // `none` hides the tools from the prompt and is enforced after
+        // generation, so the media path constrains nothing and must admit it.
+        // The request gets far enough to decode the (deliberately truncated)
+        // PNG payload, which is exactly the step past the tool-choice guard.
         do {
             _ = try await providerEngine.streamChatCompletion(request: request)
-            Issue.record("expected forced multimodal tool choice rejection")
-        } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests"))
+            Issue.record("expected the stub media payload to fail decoding")
+        } catch let error as MediaIngest.MediaError {
+            #expect(error.description == "failed to decode image data into a CIImage")
         }
-        #expect(engine.submitted.isEmpty)
     }
 
     @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")

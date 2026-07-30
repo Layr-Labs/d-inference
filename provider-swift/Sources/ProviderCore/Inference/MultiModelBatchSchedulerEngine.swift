@@ -268,7 +268,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // must pass through THIS branch first (the text tokenization below
         // silently discards image parts; media must never reach it).
         if isVLM, let container, MediaIngest.hasMedia(request) {
-            guard prepared.mode == .auto else {
+            // `.auto` constrains nothing and `.none` hides the tools outright
+            // (post-generation validation rejects any emitted call), so both
+            // ride the media path unchanged. `.required`/`.named` need the
+            // token automaton this path cannot install.
+            guard prepared.mode == .auto || prepared.mode == .none else {
                 await releaseBox.fire()
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "inference-enforced tool_choice is not supported for multimodal requests")

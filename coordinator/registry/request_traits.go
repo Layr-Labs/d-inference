@@ -18,10 +18,13 @@ type RequestTraits struct {
 	// therefore gated by capabilityVersionFloors and by the per-model
 	// template_render_ok advertisement.
 	HasTools bool
-	// RequiresToolConstraint is true for none/required/exact named choices.
-	// These requests route only to providers that explicitly advertise the
-	// concrete model under tool-constraint protocol v1. Auto remains valid on
-	// the ordinary tools floor for mixed-version compatibility.
+	// RequiresToolConstraint is true for required/exact-named choices — the
+	// modes that compile a sampler grammar. These requests route only to
+	// providers that explicitly advertise the concrete model under
+	// tool-constraint protocol v1. Auto and none remain valid on the ordinary
+	// tools floor: auto is unconstrained, and none is honored by hiding tools
+	// from the prompt plus post-generation rejection, neither of which needs
+	// an enforcing sampler.
 	RequiresToolConstraint bool
 	// Responses output policy, carried with the request so lifecycle snapshots
 	// echo what was actually enforced instead of hardcoded auto/parallel=true.

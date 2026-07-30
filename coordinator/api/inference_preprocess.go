@@ -247,6 +247,20 @@ func (s *Server) visionToolsFailFast(
 			policy.prefer,
 			allowedProviderSerials...,
 		) {
+		// Distinguish "nobody serves this model right now" (retryable capacity,
+		// 503) from "the fleet serves this model but no build of it enforces
+		// tool_choice at inference time" — the latter is a permanent per-model
+		// incapability, and dressing it as model_unavailable sends clients into
+		// a retry loop that can never succeed. Owner-scoped routing (self-route
+		// / prefer) is not expressible as a serial set here, so those paths keep
+		// the conservative 503.
+		if !policy.enabled && !policy.prefer &&
+			s.registry.HasProviderForModel(model, allowedProviderSerials...) {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+				fmt.Sprintf("inference-enforced tool_choice (required/named) is not supported for model %q", publicModel),
+				withParam("tool_choice")))
+			return true
+		}
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q advertises inference-time tool_choice enforcement", publicModel),
 			withParam("model")))

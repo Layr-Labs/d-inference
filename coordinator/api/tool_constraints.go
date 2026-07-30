@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
-	"strings"
 )
 
 type toolChoiceMode string
@@ -31,9 +30,10 @@ var toolFunctionNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 const (
 	maxConstrainedStopSequences = 4
 	maxConstrainedStopBytes     = 256
-	maxSafeAutoPatternBytes     = 128
-	maxSafeAutoPatternCount     = 32
-	maxAutoPatternDepth         = 32
+	// Recursion bound for the reserved-metadata walk. Exceeding it stops the
+	// descent without rejecting: the walk is a forgery guard, not a schema
+	// feasibility check, so a legitimately deep schema must still be accepted.
+	maxReservedMetadataDepth = 32
 )
 
 type validatedToolConstraintPolicy struct {
@@ -86,8 +86,12 @@ func validateToolConstraintPolicy(body []byte) (validatedToolConstraintPolicy, e
 			return policy, err
 		}
 	}
+	// The constrained path already sees the reserved marker through
+	// validateConstrainedSchema, which enforces its canonical form; the
+	// standalone forgery walk therefore covers exactly the modes that path
+	// skips — auto and none.
 	tools, err := validateDeclaredTools(
-		root["tools"], enforceSchema, selected, mode == toolChoiceAuto)
+		root["tools"], enforceSchema, selected, !enforceSchema)
 	if err != nil {
 		return policy, err
 	}
@@ -151,8 +155,14 @@ func validateConstrainedStops(raw any) error {
 	return nil
 }
 
+// requiresGrammar reports whether the mode needs a sampler-level grammar, and
+// therefore a provider advertising inference-time tool_choice enforcement.
+// `none` is deliberately excluded: it is honored by hiding tools from the
+// rendered prompt and rejecting any call the model emits anyway after
+// generation, so it needs no grammar and must not be fenced to the
+// Gemma-class constrained provider pool.
 func (m toolChoiceMode) requiresGrammar() bool {
-	return m == toolChoiceNone || m == toolChoiceRequired || m == toolChoiceNamed
+	return m == toolChoiceRequired || m == toolChoiceNamed
 }
 
 func parseToolChoice(raw any) (toolChoiceMode, string, error) {
@@ -215,7 +225,7 @@ func validateDeclaredTools(
 	raw any,
 	enforceSchema bool,
 	selected string,
-	validateAutoPatterns bool,
+	checkReservedMetadata bool,
 ) (map[string]map[string]any, error) {
 	if raw == nil {
 		return nil, nil
@@ -255,8 +265,8 @@ func validateDeclaredTools(
 				if _, duplicate := tools[name]; duplicate {
 					return nil, invalidToolConstraint("tool function names must be unique", "tools")
 				}
-				if validateAutoPatterns && parameters != nil {
-					if err := validateAutoSchemaPatterns(parameters, 0); err != nil {
+				if checkReservedMetadata && parameters != nil {
+					if err := rejectReservedSchemaMetadata(parameters, 0); err != nil {
 						return nil, err
 					}
 				}
@@ -282,8 +292,8 @@ func validateDeclaredTools(
 		if parameters == nil {
 			parameters = map[string]any{"type": "object"}
 		}
-		if validateAutoPatterns {
-			if err := validateAutoSchemaPatterns(parameters, 0); err != nil {
+		if checkReservedMetadata {
+			if err := rejectReservedSchemaMetadata(parameters, 0); err != nil {
 				return nil, err
 			}
 		}
@@ -304,24 +314,6 @@ func validateDeclaredTools(
 		tools[name] = function
 	}
 	return tools, nil
-}
-
-func validateAutoFiniteNumberIdentity(schema map[string]any) error {
-	var values []any
-	if constant, exists := schema["const"]; exists {
-		values = append(values, constant)
-	}
-	if enumeration, ok := schema["enum"].([]any); ok {
-		values = append(values, enumeration...)
-	}
-	for _, value := range values {
-		number, ok := value.(json.Number)
-		if ok && !constrainedJSONInteger(number) {
-			return unsupportedToolConstraint(
-				"auto numeric enum/const values require an exactly representable integer")
-		}
-	}
-	return nil
 }
 
 // representableToolSpelling mirrors the provider's
@@ -345,14 +337,27 @@ func representableToolSpelling(tool map[string]any) (name string, parameters any
 	return "", nil, false
 }
 
-func validateAutoSchemaPatterns(schema any, depth int) error {
-	if depth > maxAutoPatternDepth {
-		return unsupportedToolConstraint("auto tool schema exceeds pattern-validation depth")
+// rejectReservedSchemaMetadata walks a declared tool schema looking for the
+// coordinator's own normalization marker. NormalizeToolSchemas stamps
+// originalBooleanSchemaKey onto schemas it rewrites so the provider can
+// restore the original allow/deny-all semantics after generation; a caller
+// that plants the key itself would forge that decision. Validation runs on
+// the pre-normalization body (consumer.go's originalRawBody), so any
+// occurrence here is client-supplied and must be refused.
+//
+// This is deliberately NOT a grammar-feasibility check. Auto and none never
+// compile a sampler grammar — their tool calls are checked post-generation by
+// the provider's JSON-Schema validator, which handles anyOf/oneOf/$ref/
+// pattern/if-then natively — so every other JSON-Schema construct passes
+// through untouched.
+func rejectReservedSchemaMetadata(schema any, depth int) error {
+	if depth > maxReservedMetadataDepth {
+		return nil
 	}
 	switch value := schema.(type) {
 	case []any:
 		for _, child := range value {
-			if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+			if err := rejectReservedSchemaMetadata(child, depth+1); err != nil {
 				return err
 			}
 		}
@@ -360,115 +365,6 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 		if _, forged := value[originalBooleanSchemaKey]; forged {
 			return invalidToolConstraint(
 				"tool schema contains reserved internal metadata", "tools")
-		}
-		for _, keyword := range []string{"$ref", "$dynamicRef", "$recursiveRef"} {
-			if _, hasReference := value[keyword]; hasReference {
-				return unsupportedToolConstraint(
-					"auto tool schemas do not support schema references")
-			}
-		}
-		for _, keyword := range []string{"if", "then", "else"} {
-			if _, conditional := value[keyword]; conditional {
-				return unsupportedToolConstraint(
-					"auto tool schemas do not support conditional assertions")
-			}
-		}
-		for _, keyword := range []string{
-			"dependentSchemas", "dependentRequired", "dependencies", "propertyNames",
-			"unevaluatedItems", "unevaluatedProperties",
-		} {
-			if _, unsupported := value[keyword]; unsupported {
-				return unsupportedToolConstraint(
-					"auto tool schemas do not support dependency, property-name, or unevaluated assertions")
-			}
-		}
-		if err := validateAutoFiniteNumberIdentity(value); err != nil {
-			return err
-		}
-		// A typeless node with mixed-type const/enum values (e.g.
-		// `{"enum":["a",1]}`) or assertions spanning multiple type families
-		// (e.g. `{"minimum":5,"minLength":2}`) has no single renderable type:
-		// normalization would have to pick one and silently break the rest
-		// post-generation. Fail early instead, mirroring the multi-type
-		// union policy.
-		if _, hasType := value["type"]; !hasType {
-			if concrete, _, ok := finiteValueTypes(value); ok {
-				if len(concrete) > 1 {
-					return unsupportedToolConstraint(
-						"auto tool schemas require an explicit type for mixed-type enum/const values")
-				}
-			} else if typelessAssertionFamiliesAmbiguous(value) {
-				return unsupportedToolConstraint(
-					"auto tool schemas require an explicit type when assertions cannot determine one")
-			}
-		}
-		if rawTypes, ok := value["type"].([]any); ok {
-			concrete := make(map[string]struct{}, len(rawTypes))
-			for _, rawType := range rawTypes {
-				member, ok := rawType.(string)
-				if !ok {
-					return unsupportedToolConstraint(
-						"auto tool schema type arrays must contain strings")
-				}
-				member = strings.ToLower(member)
-				if member != "null" {
-					concrete[member] = struct{}{}
-				}
-			}
-			if len(concrete) > 1 {
-				return unsupportedToolConstraint(
-					"auto tool schemas support only one concrete type plus null")
-			}
-		}
-		for _, keyword := range []string{"anyOf", "oneOf"} {
-			variants, ok := value[keyword].([]any)
-			if !ok {
-				continue
-			}
-			concrete := make(map[string]struct{})
-			for _, rawVariant := range variants {
-				variant, ok := rawVariant.(map[string]any)
-				if !ok {
-					return unsupportedToolConstraint(
-						"auto tool schema union members must be objects")
-				}
-				members, err := autoConcreteSchemaTypes(variant["type"])
-				if err != nil {
-					return unsupportedToolConstraint(
-						"auto tool schema union members require an explicit type")
-				}
-				for member := range members {
-					concrete[member] = struct{}{}
-				}
-			}
-			if len(concrete) > 1 {
-				return unsupportedToolConstraint(
-					"auto tool schemas do not support multi-type anyOf/oneOf unions")
-			}
-		}
-		if raw, exists := value["pattern"]; exists {
-			pattern, ok := raw.(string)
-			if !ok || !safeAutoSchemaPattern(pattern) {
-				return unsupportedToolConstraint(
-					"auto tool schemas support only bounded literal pattern and patternProperties assertions")
-			}
-		}
-		if raw, exists := value["patternProperties"]; exists {
-			patterns, ok := raw.(map[string]any)
-			if !ok {
-				return unsupportedToolConstraint(
-					"auto tool schema patternProperties must be an object")
-			}
-			if len(patterns) > maxSafeAutoPatternCount {
-				return unsupportedToolConstraint(
-					"auto tool schema has too many patternProperties assertions")
-			}
-			for pattern := range patterns {
-				if !safeAutoSchemaPattern(pattern) {
-					return unsupportedToolConstraint(
-						"auto tool schemas support only bounded literal pattern and patternProperties assertions")
-				}
-			}
 		}
 		for _, key := range []string{
 			"additionalProperties", "additionalItems", "contains", "contentSchema",
@@ -479,7 +375,7 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 			if !exists {
 				continue
 			}
-			if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+			if err := rejectReservedSchemaMetadata(child, depth+1); err != nil {
 				return err
 			}
 		}
@@ -489,22 +385,23 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 				continue
 			}
 			for _, child := range children {
-				if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+				if err := rejectReservedSchemaMetadata(child, depth+1); err != nil {
 					return err
 				}
 			}
 		}
+		// `items` is a schema in draft 2020-12 and a tuple in draft-07. The
+		// tuple array is a container, not a schema node, so it must not
+		// consume a level of the depth budget the way a nested schema does.
 		if items, exists := value["items"]; exists {
 			if tuple, ok := items.([]any); ok {
 				for _, child := range tuple {
-					if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+					if err := rejectReservedSchemaMetadata(child, depth+1); err != nil {
 						return err
 					}
 				}
-			} else {
-				if err := validateAutoSchemaPatterns(items, depth+1); err != nil {
-					return err
-				}
+			} else if err := rejectReservedSchemaMetadata(items, depth+1); err != nil {
+				return err
 			}
 		}
 		for _, key := range []string{
@@ -516,46 +413,13 @@ func validateAutoSchemaPatterns(schema any, depth int) error {
 				continue
 			}
 			for _, child := range children {
-				if err := validateAutoSchemaPatterns(child, depth+1); err != nil {
+				if err := rejectReservedSchemaMetadata(child, depth+1); err != nil {
 					return err
 				}
 			}
 		}
 	}
 	return nil
-}
-
-func autoConcreteSchemaTypes(raw any) (map[string]struct{}, error) {
-	concrete := make(map[string]struct{})
-	switch value := raw.(type) {
-	case string:
-		if member := strings.ToLower(value); member != "null" {
-			concrete[member] = struct{}{}
-		}
-	case []any:
-		for _, rawMember := range value {
-			member, ok := rawMember.(string)
-			if !ok {
-				return nil, fmt.Errorf("schema type member is not a string")
-			}
-			if member = strings.ToLower(member); member != "null" {
-				concrete[member] = struct{}{}
-			}
-		}
-	default:
-		return nil, fmt.Errorf("schema type is missing")
-	}
-	return concrete, nil
-}
-
-func safeAutoSchemaPattern(pattern string) bool {
-	if len([]byte(pattern)) > maxSafeAutoPatternBytes {
-		return false
-	}
-	literal := pattern
-	literal = strings.TrimPrefix(literal, "^")
-	literal = strings.TrimSuffix(literal, "$")
-	return !strings.ContainsAny(literal, `\.^$|?*+()[]{}`)
 }
 
 func invalidToolConstraint(message, param string) error {

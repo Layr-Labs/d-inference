@@ -334,6 +334,65 @@ struct GemmaToolConstraintTests {
         #expect(rejected)
     }
 
+    @Test("tool_choice none needs no sampler grammar off the Gemma contract")
+    func noneDoesNotRequireGemmaContract() throws {
+        let noneRequest = request(choice: .mode(.none))
+        let nonePrepared = try ToolChoicePromptPolicy.prepare(noneRequest)
+        // `none` is honored by hiding the tools plus post-generation
+        // rejection, so no automaton is needed off the pinned contract.
+        #expect(nonePrepared.tools == nil)
+        let offContract = try ToolConstraintFactory.make(
+            prepared: nonePrepared,
+            request: noneRequest,
+            tokenizer: tokenizer,
+            modelContext: .init(modelId: "llama-3-test", modelType: "llama"),
+            defaultMaxTokens: 128,
+            stopTokenIDs: [128])
+        #expect(offContract == nil)
+        let unverified = try ToolConstraintFactory.make(
+            prepared: nonePrepared,
+            request: noneRequest,
+            tokenizer: TokenizerHandle(ASCIIConstraintTokenizer()),
+            modelContext: .init(
+                modelId: noneRequest.model, modelType: "gemma4_text"),
+            defaultMaxTokens: 128,
+            stopTokenIDs: [128])
+        #expect(unverified == nil)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["city": .string("Paris")])),
+            ], prepared: nonePrepared)
+        }
+
+        // Grammar-compiled modes stay fail-closed off the contract.
+        for choice in [OpenAIToolChoice.mode(.required), .function(name: "weather")] {
+            let forced = request(choice: choice)
+            let prepared = try ToolChoicePromptPolicy.prepare(forced)
+            #expect(throws: MultiModelBatchSchedulerEngineError.self, "\(choice)") {
+                _ = try ToolConstraintFactory.make(
+                    prepared: prepared,
+                    request: forced,
+                    tokenizer: self.tokenizer,
+                    modelContext: .init(
+                        modelId: "llama-3-test", modelType: "llama"),
+                    defaultMaxTokens: 128,
+                    stopTokenIDs: [128])
+            }
+        }
+
+        // A Gemma-capable model keeps the real no-tool automaton.
+        let onContract = try ToolConstraintFactory.make(
+            prepared: nonePrepared,
+            request: noneRequest,
+            tokenizer: tokenizer,
+            modelContext: .init(
+                modelId: noneRequest.model, modelType: "gemma4_text"),
+            defaultMaxTokens: 128,
+            stopTokenIDs: [128])
+        #expect(onContract is GemmaNoToolTokenConstraint)
+    }
+
     @Test("unsupported constrained schema fails before engine submission")
     func unsupportedSchemaFailsClosed() {
         let unsupported: MLXLMCommon.JSONValue = .object([
@@ -740,8 +799,8 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("auto finite decimals fail before rounded identity comparison")
-    func autoFiniteDecimalsAreRejected() throws {
+    @Test("auto admits finite decimal enums and enforces them post-generation")
+    func autoFiniteDecimalsAreAdmitted() throws {
         let body = """
             {
               "model":"gemma-4-test",
@@ -761,8 +820,21 @@ struct GemmaToolConstraintTests {
         let decoded = try JSONDecoder().decode(
             OpenAIChatCompletionRequest.self,
             from: Data(body.utf8))
+        // `auto` compiles no grammar, so exact-render feasibility is
+        // irrelevant: the decimal enum survives to the post-generation
+        // validator, which compares JSON numbers mathematically.
+        let prepared = try ToolChoicePromptPolicy.prepare(decoded)
+        #expect(prepared.compiledTools == nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "calculate",
+                arguments: ["value": .double(0.10000000000000001)])),
+        ], prepared: prepared)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            _ = try ToolChoicePromptPolicy.prepare(decoded)
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "calculate", arguments: ["value": .double(0.5)])),
+            ], prepared: prepared)
         }
     }
 
@@ -817,6 +889,10 @@ struct GemmaToolConstraintTests {
             ], prepared: broadPrepared)
         }
 
+        // An unevaluatable regex must not reject. `auto` no longer pre-screens
+        // schemas, so `patternProperties` the validator cannot decide goes
+        // unenforced — and the `additionalProperties: false` fallback goes with
+        // it, because the property might have matched the undecided pattern.
         let unsafePatternSchema: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "patternProperties": .object([
@@ -824,36 +900,60 @@ struct GemmaToolConstraintTests {
             ]),
             "additionalProperties": .bool(false),
         ])
-        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            _ = try ToolChoicePromptPolicy.prepare(
-                request(
-                    choice: .mode(.auto),
-                    tools: [tool(parameters: unsafePatternSchema)],
-                    parallel: false))
+        let unsafePrepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: unsafePatternSchema)],
+                parallel: false))
+        #expect(unsafePrepared.compiledTools == nil)
+        for name in ["aaa", "zzz"] {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: [name: .string("ok")])),
+            ], prepared: unsafePrepared)
         }
     }
 
-    @Test("unsupported auto regex fails before inference")
-    func unsupportedAutoRegexFailsDuringPreparation() {
+    @Test("auto does not assert a regex the validator cannot evaluate")
+    func unevaluatableAutoRegexIsNotAsserted() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
                 "code": .object([
                     "type": .string("string"),
                     "pattern": .string("^[a-z]+$"),
+                    "minLength": .int(2),
                 ]),
             ]),
         ])
-        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-            _ = try ToolChoicePromptPolicy.prepare(
-                request(
-                    choice: .mode(.auto),
-                    tools: [tool(parameters: parameters)]))
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools == nil)
+        // The literal-pattern subset cannot decide a character class, and an
+        // undecided assertion is NOT asserted — never a failure.
+        for value in ["abc", "ABC-123"] {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["code": .string(value)])),
+            ], prepared: prepared)
+        }
+        // Decidable assertions on the same node still bite.
+        for invalid: MLXLMCommon.JSONValue in [.string("a"), .int(7)] {
+            #expect(
+                throws: MultiModelBatchSchedulerEngineError.self, "\(invalid)"
+            ) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["code": invalid])),
+                ], prepared: prepared)
+            }
         }
     }
 
-    @Test("unsupported auto semantics fail before inference")
-    func unsupportedAutoSemanticsFailDuringPreparation() {
+    @Test("auto admits every standard JSON-Schema construct unchanged")
+    func standardAutoSchemasPrepareSuccessfully() throws {
         let schemas: [MLXLMCommon.JSONValue] = [
             .object([
                 "type": .array([.string("string"), .string("integer")]),
@@ -918,17 +1018,71 @@ struct GemmaToolConstraintTests {
                 "type": .string("object"),
                 "properties": .object(["value": schema]),
             ])
-            #expect(throws: MultiModelBatchSchedulerEngineError.self) {
-                _ = try ToolChoicePromptPolicy.prepare(
-                    request(
-                        choice: .mode(.auto),
-                        tools: [tool(parameters: parameters)]))
-            }
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            // `auto` has no grammar, so the schema must reach the
+            // post-generation validator byte-for-byte.
+            #expect(
+                prepared.tools?.first?.function.parameters == parameters,
+                "\(schema)")
+            #expect(prepared.compiledTools == nil, "\(schema)")
         }
     }
 
-    @Test("dependent schemas fail before invalid tool calls can pass")
-    func dependentSchemasFailBeforeInference() {
+    @Test("auto validates multi-type anyOf branches post-generation")
+    func autoMultiTypeAnyOfValidatesEitherBranch() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "anyOf": .array([
+                        .object([
+                            "type": .string("string"), "minLength": .int(2),
+                        ]),
+                        .object([
+                            "type": .string("integer"), "minimum": .int(10),
+                        ]),
+                    ]),
+                ]),
+            ]),
+            "required": .array([.string("value")]),
+            "additionalProperties": .bool(false),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools == nil)
+        for value: MLXLMCommon.JSONValue in [.string("ok"), .int(11)] {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["value": value])),
+            ], prepared: prepared)
+        }
+        for value: MLXLMCommon.JSONValue in [.string("x"), .int(9), .bool(true)] {
+            #expect(
+                throws: MultiModelBatchSchedulerEngineError.self, "\(value)"
+            ) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["value": value])),
+                ], prepared: prepared)
+            }
+        }
+        // `required` still compiles a real grammar and still fails closed on
+        // the multi-type union.
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.required),
+                    tools: [tool(parameters: parameters)]))
+        }
+    }
+
+    @Test("auto admits dependentSchemas while required stays fail-closed")
+    func dependentSchemasAreAdmittedUnderAuto() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
@@ -941,16 +1095,26 @@ struct GemmaToolConstraintTests {
                 ]),
             ]),
         ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools == nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["credit_card": .string("4111")])),
+        ], prepared: prepared)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             _ = try ToolChoicePromptPolicy.prepare(
                 request(
-                    choice: .mode(.auto),
+                    choice: .mode(.required),
                     tools: [tool(parameters: parameters)]))
         }
     }
 
-    @Test("propertyNames fails before invalid tool calls can pass")
-    func propertyNamesFailsBeforeInference() {
+    @Test("auto admits propertyNames while required stays fail-closed")
+    func propertyNamesIsAdmittedUnderAuto() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "propertyNames": .object([
@@ -958,10 +1122,19 @@ struct GemmaToolConstraintTests {
             ]),
             "additionalProperties": .bool(true),
         ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools == nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["anything": .int(1)])),
+        ], prepared: prepared)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             _ = try ToolChoicePromptPolicy.prepare(
                 request(
-                    choice: .mode(.auto),
+                    choice: .mode(.required),
                     tools: [tool(parameters: parameters)]))
         }
     }
@@ -1004,36 +1177,24 @@ struct GemmaToolConstraintTests {
                 ]),
             ]),
         ])
-        _ = try ToolChoicePromptPolicy.prepare(
+        let prepared = try ToolChoicePromptPolicy.prepare(
             request(
                 choice: .mode(.auto),
                 tools: [tool(parameters: parameters)]))
-    }
-
-    @Test("auto pattern depth does not count tuple containers")
-    func autoPatternTupleContainerDepth() throws {
-        var item: MLXLMCommon.JSONValue = .object([
-            "type": .string("string"),
-            "pattern": .string("^city$"),
-        ])
-        for _ in 0 ..< 17 {
-            item = .object([
-                "type": .string("array"),
-                "items": .array([item]),
-            ])
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["pattern": .string("city")])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["pattern": .string("other")])),
+            ], prepared: prepared)
         }
-        let parameters: MLXLMCommon.JSONValue = .object([
-            "type": .string("object"),
-            "properties": .object(["value": item]),
-        ])
-        _ = try ToolChoicePromptPolicy.prepare(
-            request(
-                choice: .mode(.auto),
-                tools: [tool(parameters: parameters)]))
     }
 
-    @Test("auto pattern depth bounds malformed nested tuple arrays")
-    func autoPatternMalformedTupleDepthIsBounded() {
+    @Test("reserved-metadata walk is depth-bounded and never rejects on depth")
+    func reservedMetadataWalkIsDepthBounded() throws {
         var items: MLXLMCommon.JSONValue = .object([
             "type": .string("string"),
             "pattern": .string("^city$"),
@@ -1041,15 +1202,37 @@ struct GemmaToolConstraintTests {
         for _ in 0 ..< 40 {
             items = .array([items])
         }
-        let parameters: MLXLMCommon.JSONValue = .object([
-            "type": .string("array"),
-            "items": items,
+        // Nesting depth alone is not forgery: the bounded walk stops
+        // descending instead of rejecting.
+        _ = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: .object([
+                    "type": .string("array"),
+                    "items": items,
+                ]))]),
+            allowInternalSchemaMetadata: false)
+
+        // A marker inside the bound is still forgery.
+        var nested: MLXLMCommon.JSONValue = .object([
+            "type": .string("string"),
+            ToolSchemaNormalization.originalBooleanSchemaKey: .bool(true),
         ])
+        for _ in 0 ..< 4 {
+            nested = .object([
+                "type": .string("array"),
+                "items": nested,
+            ])
+        }
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             _ = try ToolChoicePromptPolicy.prepare(
                 request(
                     choice: .mode(.auto),
-                    tools: [tool(parameters: parameters)]))
+                    tools: [tool(parameters: .object([
+                        "type": .string("object"),
+                        "properties": .object(["value": nested]),
+                    ]))]),
+                allowInternalSchemaMetadata: false)
         }
     }
 

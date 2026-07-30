@@ -24,6 +24,12 @@ enum ToolConstraintFactory {
         guard Gemma4TemplateFix.applies(to: modelContext),
             tokenizer.toolConstraintContractVerified
         else {
+            // `.none` needs no sampler automaton: `ToolChoicePromptPolicy`
+            // already strips the tools and injects the "do not call any tool"
+            // instruction, and `ToolConstraintValidation.validate` rejects any
+            // call the model emits anyway. `.required`/`.named` genuinely
+            // depend on the compiled grammar, so they stay fail-closed.
+            if prepared.mode == .none { return nil }
             throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                 "inference-enforced tool_choice requires the pinned Gemma prompt contract")
         }

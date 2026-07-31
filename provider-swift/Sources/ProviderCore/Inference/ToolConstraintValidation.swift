@@ -264,18 +264,19 @@ enum ToolConstraintValidation {
             return accepts
         }
 
-        // This validator does not resolve references, so a node carrying
-        // `$ref`/`$dynamicRef`/`$recursiveRef` has an unknown true constraint
-        // set: its siblings — including the render `type` the normalizer
-        // injects so templates can subscript `value['type']` — belong to
-        // whatever the reference resolves to. Enforcing them here would
-        // reject emissions the REFERENCED schema accepts, so the node is
-        // entirely not-asserted, like an undecidable `pattern`.
-        if object["$ref"] != nil || object["$dynamicRef"] != nil
+        // This validator does not resolve references, so the `$ref`/
+        // `$dynamicRef`/`$recursiveRef` assertion itself is not-asserted.
+        // Sibling assertions are conjunctive with the reference (draft
+        // 2019-09+), so everything the AUTHOR wrote beside it — const, enum,
+        // combinators, bounds, properties — is still enforced below; skipping
+        // them would let a schema-violating call through merely because a
+        // reference sat beside the constraint. The one exception is the
+        // sibling `type`: the normalizer injects a render type onto typeless
+        // nodes (a bare `{"$ref":…}` becomes `type:"string"` even when the
+        // referenced schema is an object), so on a ref-bearing node `type`
+        // cannot be attributed to the author and is not enforced.
+        let refBearing = object["$ref"] != nil || object["$dynamicRef"] != nil
             || object["$recursiveRef"] != nil
-        {
-            return true
-        }
 
         // Finite-value identity subsumes typing: a typeless `{"enum":["a",1]}`
         // gets render type "string" injected from its first member, yet 1 is
@@ -349,7 +350,7 @@ enum ToolConstraintValidation {
         {
             return true
         }
-        if !unionAsserted, !finiteMatched {
+        if !unionAsserted, !finiteMatched, !refBearing {
             let types = schemaTypes(object["type"])
             if !types.isEmpty,
                 !types.contains(where: { matches(value, type: $0) })

@@ -1085,12 +1085,14 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("auto leaves $ref-bearing nodes entirely unasserted")
-    func autoRefBearingNodeIsNotAsserted() throws {
+    @Test("auto: $ref suppresses only the injected type, not author siblings")
+    func autoRefBearingNodeEnforcesAuthorSiblings() throws {
         // The normalizer stamps `type: "string"` on $ref-only nodes so
         // templates can subscript the render type; the validator cannot
-        // resolve the reference, so the injected type must not veto an
-        // emission the REFERENCED schema accepts.
+        // resolve the reference, so that injected type must not veto an
+        // emission the REFERENCED schema accepts. Author-written siblings
+        // are conjunctive with the reference (draft 2019-09+) and stay
+        // enforced — a $ref beside a const must not disable the const.
         let parameters: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
@@ -1098,9 +1100,15 @@ struct GemmaToolConstraintTests {
                     "$ref": .string("#/$defs/P"),
                     "type": .string("string"),
                 ]),
+                "mode": .object([
+                    "$ref": .string("#/$defs/M"),
+                    "enum": .array([.string("fast"), .string("safe")]),
+                    "type": .string("string"),
+                ]),
             ]),
             "$defs": .object([
                 "P": .object(["type": .string("object")]),
+                "M": .object(["type": .string("string")]),
             ]),
         ])
         let prepared = try ToolChoicePromptPolicy.prepare(
@@ -1108,11 +1116,26 @@ struct GemmaToolConstraintTests {
                 choice: .mode(.auto),
                 tools: [tool(parameters: parameters)]))
         #expect(prepared.compiledTools == nil)
+        // Injected type suppressed: an object emission for `p` passes.
         try ToolConstraintValidation.validate([
             .init(function: .init(
                 name: "weather",
-                arguments: ["p": .object(["street": .string("Main")])])),
+                arguments: [
+                    "p": .object(["street": .string("Main")]),
+                    "mode": .string("fast"),
+                ])),
         ], prepared: prepared)
+        // Author enum beside the $ref still bites.
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: [
+                        "p": .string("ok"),
+                        "mode": .string("reckless"),
+                    ])),
+            ], prepared: prepared)
+        }
     }
 
     @Test("injected union render type does not veto non-first branches")

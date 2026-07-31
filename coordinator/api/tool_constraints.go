@@ -345,8 +345,9 @@ func representableToolSpelling(tool map[string]any) (name string, parameters any
 // compile a sampler grammar — their tool calls are checked post-generation by
 // the provider's JSON-Schema validator, which enforces allOf/anyOf/oneOf/not/
 // enum/const/pattern/patternProperties/if-then-else/dependentRequired/
-// dependentSchemas/propertyNames and treats $ref nodes and the unevaluated*
-// assertions as not-asserted — so every other JSON-Schema construct passes
+// dependentSchemas/propertyNames. Unresolvable ($ref) and annotation-dependent
+// (unevaluated*) assertions are not-asserted — though author-written siblings
+// beside a $ref stay enforced — so every other JSON-Schema construct passes
 // through untouched.
 //
 // Depth bound: the walk must scan at least as deep as every walker that can

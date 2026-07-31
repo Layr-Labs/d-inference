@@ -117,13 +117,22 @@ func TestAutoToolChoiceForwardsStandardJSONSchema(t *testing.T) {
 	// cannot plant the coordinator's own normalization marker. Validation runs
 	// on the pre-normalization body, so any occurrence is forged.
 	t.Run("forged reserved metadata still rejected", func(t *testing.T) {
-		for _, choice := range []string{"auto", "none"} {
-			body := autoStandardSchemaBody("gpt-oss-20b", choice,
-				`{"type":"string","x-darkbloom-original-boolean-schema":true}`)
-			_, err := validateToolConstraintRequest([]byte(body))
-			var typed *toolConstraintRequestError
-			if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
-				t.Errorf("%s accepted forged reserved metadata: %T %v", choice, err, err)
+		// The multi-concrete `type` array beside an author combinator is the
+		// collapse-only normalization path — the guard must still descend the
+		// author's anyOf and catch a marker planted inside it.
+		for name, property := range map[string]string{
+			"bare marker": `{"type":"string","x-darkbloom-original-boolean-schema":true}`,
+			"marker inside author anyOf on a type-array node": `{"type":["string","object"],
+				"anyOf":[{"type":"string","x-darkbloom-original-boolean-schema":true}]}`,
+		} {
+			for _, choice := range []string{"auto", "none"} {
+				body := autoStandardSchemaBody("gpt-oss-20b", choice, property)
+				_, err := validateToolConstraintRequest([]byte(body))
+				var typed *toolConstraintRequestError
+				if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
+					t.Errorf("%s/%s accepted forged reserved metadata: %T %v",
+						choice, name, err, err)
+				}
 			}
 		}
 	})

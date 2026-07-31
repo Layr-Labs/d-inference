@@ -206,3 +206,33 @@ a stale provider with `invalidToolPayload`. That maps to HTTP 400, which
 deterministic client-shape rejection — returned once, no failover, no reputation
 damage. So the worst case during rollout is the same failed request with a different
 message; it self-heals as providers update.
+
+## Review follow-ups (PR #603)
+
+Codex review surfaced five gaps in the first cut; all five were verified real and fixed:
+
+1. **Normalization vs post-generation validation.** `NormalizeToolSchemas` stamps a
+   render `type` (first union branch / first finite value / `"string"` for `$ref`-only
+   nodes) and COLLAPSES multi-concrete `type` arrays, so the provider's validator was
+   enforcing constraints the author never wrote. Fixes: multi-concrete arrays now mirror
+   their members into `anyOf` (all three normalizers; `["x","null"]` pairs byte-identical
+   to before, parity vectors untouched); the Swift validator treats `$ref`-bearing nodes
+   as not-asserted, and a satisfied `anyOf`/`oneOf` or matched `const`/`enum` suppresses
+   the sibling render type (`allOf` stays conjunctive).
+2. **`tool_choice:"none"` version floor.** Tool-hiding shipped in v0.7.10
+   (`ToolChoicePromptPolicy`, #538) but prod routes ≥0.7.5. A tools-declaring `none`
+   request now routes only to ≥0.7.10 (`toolChoiceNonePromptPolicyFloor`), and the
+   consumer fail-fast uses `HasToolCapableProviderForTraits` so a whole pool below the
+   floor 503s instead of dying in the queue.
+3. **Previously unenforced keywords.** `if`/`then`/`else`, `dependentRequired`,
+   `dependentSchemas`, `propertyNames` are now enforced post-generation (decidable from
+   the instance alone). `unevaluated*`/`contentSchema` stay not-asserted, and the code
+   comments now say exactly that.
+4. **400 vs 503.** The permanent-incapability 400 additionally requires
+   `!HasProviderAdvertisingToolConstraint` — an advertisement-only scan that ignores
+   trust/freshness — so a trust-lapsed enforcing fleet stays a retryable 503.
+5. **Reserved-metadata fold window.** The guards now scan to the normalizer's own
+   traversal budget and FAIL CLOSED beyond it (Go: `maxToolSchemaDepth` = 64; Swift:
+   walk bound with rejection). Previously a forged marker at depth 33–63 escaped the
+   32-deep fail-open walk and `constantMarkedCombinator` folded it into shallow,
+   coordinator-vouched metadata.

@@ -434,6 +434,41 @@ fn inject_schema_types(node: &mut Value, positional: bool) {
         {
             object.insert("nullable".into(), Value::Bool(true));
         }
+        // A multi-concrete array (`["string","integer"]`) declares a real
+        // union the single render type cannot carry: the render pipeline
+        // needs one `value['type'] | upper` string, but the provider's
+        // post-generation validator enforces what is on the wire, so keeping
+        // only the first member would reject schema-valid emissions of every
+        // other branch. JSON Schema defines the array form as exactly an
+        // anyOf of its single types, so the surviving concrete members are
+        // mirrored into `anyOf` — that survives the wire, and the validator
+        // prefers union branches over the sibling render type. A node that
+        // already carries a combinator keeps the conjunctive semantics its
+        // author wrote (layering a second union would change them); that
+        // pathological shape stays knowingly narrowed to the first member.
+        // Mirrors: null member → `nullable` (above), concrete members →
+        // `anyOf` (here).
+        let mut concrete = Vec::new();
+        for member in &members {
+            if member != "null" && !concrete.contains(member) {
+                concrete.push(member.clone());
+            }
+        }
+        if concrete.len() >= 2
+            && !["anyOf", "oneOf", "allOf"]
+                .iter()
+                .any(|key| object.contains_key(*key))
+        {
+            object.insert(
+                "anyOf".into(),
+                Value::Array(
+                    concrete
+                        .iter()
+                        .map(|member| json!({ "type": member }))
+                        .collect(),
+                ),
+            );
+        }
         object.insert(
             "type".into(),
             Value::String(
@@ -1439,6 +1474,111 @@ mod tests {
         assert_eq!(value["type"], "string");
         assert_eq!(value["nullable"], true);
         assert!(properties["explicit"].get("nullable").is_none());
+    }
+
+    fn normalized_property(schema: Value, name: &str) -> Value {
+        let body = json!({
+            "model":"gemma-4-fixture",
+            "messages":[{"role":"user","content":"x"}],
+            "tools":[{"type":"function","function":{
+                "name":"f",
+                "parameters":{"type":"object","properties":{name: schema}}
+            }}]
+        });
+        let normalized = normalize(body.as_object().unwrap().clone(), Some("gemma4_text")).unwrap();
+        normalized.tools.unwrap()[0]["function"]["parameters"]["properties"][name].clone()
+    }
+
+    // Go: TestNormalizeToolSchemas_MultiConcreteTypeArrayPreservedViaAnyOf
+    // Swift: multiConcreteTypeArrayPreservedViaAnyOf
+    #[test]
+    fn multi_concrete_type_array_preserved_via_any_of() {
+        assert_eq!(
+            normalized_property(json!({"type":["string","integer"]}), "id"),
+            json!({"type":"string","anyOf":[{"type":"string"},{"type":"integer"}]})
+        );
+    }
+
+    // Go: TestNormalizeToolSchemas_MultiConcreteNullableTypeArrayKeepsNullAndUnion
+    // Swift: multiConcreteNullableTypeArrayKeepsNullAndUnion
+    #[test]
+    fn multi_concrete_nullable_type_array_keeps_null_and_union() {
+        // The null member rides the nullable side-channel, never the union.
+        assert_eq!(
+            normalized_property(json!({"type":["integer","string","null"]}), "id"),
+            json!({
+                "type":"integer",
+                "nullable":true,
+                "anyOf":[{"type":"integer"},{"type":"string"}]
+            })
+        );
+    }
+
+    // Go: TestNormalizeToolSchemas_CollapsesNullableArrayTypeToConcreteMember
+    // Swift: collapsesNullableArrayTypeToConcreteMember — a single-concrete
+    // nullable pair synthesizes NO anyOf (the parity corpus pins this shape).
+    #[test]
+    fn single_concrete_nullable_pair_gets_no_any_of() {
+        assert_eq!(
+            normalized_property(json!({"type":["string","null"]}), "city"),
+            json!({"type":"string","nullable":true})
+        );
+    }
+
+    // Go: TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollapsesOnly
+    // Swift: multiConcreteTypeArrayWithExistingCombinatorCollapsesOnly
+    #[test]
+    fn multi_concrete_type_array_with_existing_combinator_collapses_only() {
+        // The author's combinator keeps its written semantics: no second
+        // union is layered on; the authored member survives (type-injected
+        // only) and the type still collapses to the first concrete member.
+        let v = normalized_property(
+            json!({"type":["string","integer"],"anyOf":[{"minLength":1}]}),
+            "v",
+        );
+        assert_eq!(v["type"], "string");
+        let variants = v["anyOf"].as_array().unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0]["minLength"], 1);
+
+        let w = normalized_property(
+            json!({"type":["string","integer"],"allOf":[{"minLength":1}]}),
+            "w",
+        );
+        assert!(w.get("anyOf").is_none());
+        assert_eq!(w["type"], "string");
+    }
+
+    // Go: TestNormalizeToolSchemas_DuplicateTypeMembersDedupedCaseInsensitively
+    // Swift: duplicateTypeMembersDedupedCaseInsensitively
+    #[test]
+    fn duplicate_type_members_deduped_case_insensitively() {
+        assert_eq!(
+            normalized_property(json!({"type":["string","STRING","integer"]}), "id"),
+            json!({"type":"string","anyOf":[{"type":"string"},{"type":"integer"}]})
+        );
+    }
+
+    // Go: TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive
+    // Swift: multiConcreteUnionInjectionIsIdempotent
+    #[test]
+    fn multi_concrete_union_injection_is_idempotent() {
+        let mut node = json!({"type":["string","integer","null"]});
+        inject_schema_types(&mut node, true);
+        let once = node.clone();
+        // The rewritten node has a string type (the collapse branch cannot
+        // re-fire) and carries an anyOf (a second union cannot be layered),
+        // and the injected members are already normal-form.
+        inject_schema_types(&mut node, true);
+        assert_eq!(node, once);
+        assert_eq!(
+            once,
+            json!({
+                "type":"string",
+                "nullable":true,
+                "anyOf":[{"type":"string"},{"type":"integer"}]
+            })
+        );
     }
 
     #[test]

@@ -1553,7 +1553,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// sent via the Responses API surface (input-without-messages), because the
 	// Responses→chat lowering doesn't carry image/video parts through.
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
-		requiresToolConstraint,
+		requiresToolConstraint, string(validatedMode),
 		input != nil && len(messages) == 0, policy, allowedProviderSerials) {
 		return
 	}
@@ -3791,7 +3791,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 	// Anthropic bodies share the top-level "tools" field; neither has the
 	// Responses-API media surface, so rejectResponsesMedia is false here.
 	if s.visionToolsFailFast(w, model, publicModel, requiresVision, hasTools,
-		requiresToolConstraint,
+		requiresToolConstraint, string(validatedMode),
 		false, policy, allowedProviderSerials) {
 		return
 	}

@@ -520,3 +520,40 @@ func TestAliasResolutionFallsBackToConstraintCapablePreviousBuild(t *testing.T) 
 		t.Fatalf("ordinary alias resolved to %q ok=%v, want desired %q", build, ok, desired)
 	}
 }
+
+// tool_choice "none" is honored PROMPT-SIDE: ToolChoicePromptPolicy hides the
+// declared tools from the rendered prompt and injects the no-tool
+// instruction, and that policy first shipped in provider v0.7.10 (#538). A
+// tool-declaring `none` request must never route to an older provider — it
+// renders the tools verbatim and can emit a call despite the caller's
+// explicit `none`; the fleet-wide minimum version does not cover this. Other
+// modes and tool-less `none` are untouched by the floor.
+func TestToolChoiceNoneRequiresPromptPolicyVersionFloor(t *testing.T) {
+	reg := New(testLogger())
+	model := "none-floor-model"
+	provider := makeSchedulerProvider(t, reg, "provider", model, 100)
+	setProviderVersion(provider, "0.7.9")
+
+	noneTraits := RequestTraits{HasTools: true, ToolChoiceMode: "none"}
+	if reg.HasToolCapableProviderForTraits(model, noneTraits) {
+		t.Fatal("0.7.9 pre-dates ToolChoicePromptPolicy and must not serve tools + none")
+	}
+	if !reg.HasToolCapableProviderForTraits(
+		model, RequestTraits{HasTools: true, ToolChoiceMode: "auto"}) {
+		t.Fatal("auto at 0.7.9 must be unaffected by the none floor")
+	}
+	if !reg.HasToolCapableProviderForTraits(
+		model, RequestTraits{HasTools: true, ToolChoiceMode: "required"}) {
+		t.Fatal("required at 0.7.9 must be unaffected by the none floor")
+	}
+	// Tool-less none: nothing is declared, so there is nothing to hide.
+	if !reg.HasToolCapableProviderForTraits(
+		model, RequestTraits{ToolChoiceMode: "none"}) {
+		t.Fatal("tool-less none must not be version-fenced")
+	}
+
+	setProviderVersion(provider, "0.7.10")
+	if !reg.HasToolCapableProviderForTraits(model, noneTraits) {
+		t.Fatal("0.7.10 ships the prompt policy and must serve tools + none")
+	}
+}

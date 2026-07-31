@@ -78,6 +78,16 @@ var capabilityVersionFloors = map[string]string{
 	"tools": "0.6.3",
 }
 
+// toolChoiceNonePromptPolicyFloor is the minimum provider version that honors
+// tool_choice "none" on a request that DECLARES tools. Honoring `none` is
+// prompt-side: ToolChoicePromptPolicy hides the declared tools from the
+// rendered prompt and injects the no-tool instruction, and that policy first
+// shipped in provider v0.7.10 (#538). An older provider renders the tools
+// verbatim and can emit a tool call DESPITE the caller's explicit `none`; the
+// fleet-wide minimum version (prod 0.7.5) does not cover it. Tool-less `none`
+// requests need no floor: with nothing declared there is nothing to render.
+const toolChoiceNonePromptPolicyFloor = "0.7.10"
+
 // CompareVersions compares two dotted numeric versions, returning -1 when
 // a < b, 0 when equal, +1 when a > b. It is deliberately tolerant: a leading
 // "v"/"V" is stripped, segments compare numerically ("0.6.10" > "0.6.3"),
@@ -142,6 +152,12 @@ func (r *Registry) providerMeetsTraitFloorsLocked(p *Provider, t RequestTraits) 
 	if t.HasTools {
 		if floor := capabilityVersionFloors["tools"]; floor != "" {
 			if p.Version == "" || CompareVersions(p.Version, floor) < 0 {
+				return false
+			}
+		}
+		if t.ToolChoiceMode == "none" {
+			if p.Version == "" ||
+				CompareVersions(p.Version, toolChoiceNonePromptPolicyFloor) < 0 {
 				return false
 			}
 		}
@@ -213,6 +229,19 @@ func (r *Registry) providerEligibleForTraitsLocked(p *Provider, model string, t 
 // unrelated public provider and fail later with a misleading error.
 func (r *Registry) HasToolCapableProviderForModel(model string, allowedSerials ...string) bool {
 	traits := RequestTraits{HasTools: true}
+	return r.hasToolCapableProviderForModel(
+		model, traits, "", false, false, nil, allowedSerials...)
+}
+
+// HasToolCapableProviderForTraits is HasToolCapableProviderForModel with the
+// caller's full request traits, so trait-scoped floors beyond the plain tools
+// floor (today: the tool_choice "none" prompt-policy floor) participate in the
+// consumer's fail-fast. Without it a request whose WHOLE pool is below a
+// mode-specific floor would pass the trait-blind fail-fast, queue for up to
+// 120s, and die with a misleading capacity 429.
+func (r *Registry) HasToolCapableProviderForTraits(
+	model string, traits RequestTraits, allowedSerials ...string,
+) bool {
 	return r.hasToolCapableProviderForModel(
 		model, traits, "", false, false, nil, allowedSerials...)
 }

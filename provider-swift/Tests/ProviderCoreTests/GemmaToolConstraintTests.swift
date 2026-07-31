@@ -1045,6 +1045,10 @@ struct GemmaToolConstraintTests {
                             "type": .string("integer"), "minimum": .int(10),
                         ]),
                     ]),
+                    // Sibling render type pins the REAL wire shape: the
+                    // normalizer injects the FIRST branch's type so templates
+                    // can subscript `value['type']`.
+                    "type": .string("string"),
                 ]),
             ]),
             "required": .array([.string("value")]),
@@ -1081,8 +1085,273 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("auto admits dependentSchemas while required stays fail-closed")
-    func dependentSchemasAreAdmittedUnderAuto() throws {
+    @Test("auto leaves $ref-bearing nodes entirely unasserted")
+    func autoRefBearingNodeIsNotAsserted() throws {
+        // The normalizer stamps `type: "string"` on $ref-only nodes so
+        // templates can subscript the render type; the validator cannot
+        // resolve the reference, so the injected type must not veto an
+        // emission the REFERENCED schema accepts.
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "p": .object([
+                    "$ref": .string("#/$defs/P"),
+                    "type": .string("string"),
+                ]),
+            ]),
+            "$defs": .object([
+                "P": .object(["type": .string("object")]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(prepared.compiledTools == nil)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: ["p": .object(["street": .string("Main")])])),
+        ], prepared: prepared)
+    }
+
+    @Test("injected union render type does not veto non-first branches")
+    func autoInjectedUnionRenderTypeDoesNotVetoBranches() throws {
+        // The normalized wire shape: the sibling `type` is the render type
+        // injected from the FIRST union branch.
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "anyOf": .array([
+                        .object(["type": .string("string")]),
+                        .object([
+                            "type": .string("integer"), "minimum": .int(10),
+                        ]),
+                    ]),
+                    "type": .string("string"),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        for value: MLXLMCommon.JSONValue in [.string("ok"), .int(11)] {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["value": value])),
+            ], prepared: prepared)
+        }
+        // Branch assertions still bite: no branch admits 9 or a bool.
+        for value: MLXLMCommon.JSONValue in [.int(9), .bool(true)] {
+            #expect(
+                throws: MultiModelBatchSchedulerEngineError.self, "\(value)"
+            ) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["value": value])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
+    @Test("normalized mixed-type enum accepts every member")
+    func autoNormalizedMixedEnumAcceptsEveryMember() throws {
+        // A typeless {"enum":["a",1]} gets render type "string" injected
+        // from its first member; finite-value identity subsumes typing.
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "value": .object([
+                    "enum": .array([.string("a"), .int(1)]),
+                    "type": .string("string"),
+                ]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        for value: MLXLMCommon.JSONValue in [.string("a"), .int(1)] {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["value": value])),
+            ], prepared: prepared)
+        }
+        for value: MLXLMCommon.JSONValue in [.int(2), .string("b")] {
+            #expect(
+                throws: MultiModelBatchSchedulerEngineError.self, "\(value)"
+            ) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["value": value])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
+    @Test("auto enforces if/then/else")
+    func autoIfThenElseIsEnforced() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "credit_card": .object(["type": .string("string")]),
+                "billing_address": .object(["type": .string("string")]),
+            ]),
+            "if": .object(["required": .array([.string("credit_card")])]),
+            "then": .object([
+                "required": .array([.string("billing_address")]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["credit_card": .string("4111")])),
+            ], prepared: prepared)
+        }
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: [
+                    "credit_card": .string("4111"),
+                    "billing_address": .string("1 Main St"),
+                ])),
+        ], prepared: prepared)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(name: "weather", arguments: [:])),
+        ], prepared: prepared)
+
+        let withElse: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "card": .object(["type": .string("string")]),
+                "cash": .object(["type": .string("string")]),
+            ]),
+            "if": .object(["required": .array([.string("card")])]),
+            "else": .object(["required": .array([.string("cash")])]),
+        ])
+        let preparedElse = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: withElse)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["card": .string("visa")])),
+        ], prepared: preparedElse)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["cash": .string("20")])),
+        ], prepared: preparedElse)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(name: "weather", arguments: [:])),
+            ], prepared: preparedElse)
+        }
+    }
+
+    @Test("auto enforces dependentRequired")
+    func autoDependentRequiredIsEnforced() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "credit_card": .object(["type": .string("string")]),
+                "billing_address": .object(["type": .string("string")]),
+            ]),
+            "dependentRequired": .object([
+                "credit_card": .array([.string("billing_address")]),
+            ]),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["credit_card": .string("4111")])),
+            ], prepared: prepared)
+        }
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather",
+                arguments: [
+                    "credit_card": .string("4111"),
+                    "billing_address": .string("1 Main St"),
+                ])),
+        ], prepared: prepared)
+        try ToolConstraintValidation.validate([
+            .init(function: .init(name: "weather", arguments: [:])),
+        ], prepared: prepared)
+    }
+
+    @Test("auto propertyNames enforces literal-safe assertions on keys")
+    func autoPropertyNamesMaxLengthRejectsLongKey() throws {
+        let parameters: MLXLMCommon.JSONValue = .object([
+            "type": .string("object"),
+            "propertyNames": .object(["maxLength": .int(3)]),
+            "additionalProperties": .bool(true),
+        ])
+        let prepared = try ToolChoicePromptPolicy.prepare(
+            request(
+                choice: .mode(.auto),
+                tools: [tool(parameters: parameters)]))
+        try ToolConstraintValidation.validate([
+            .init(function: .init(
+                name: "weather", arguments: ["abc": .int(1)])),
+        ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["toolong": .int(1)])),
+            ], prepared: prepared)
+        }
+    }
+
+    @Test("allOf does not suppress the sibling type assertion")
+    func autoAllOfDoesNotSuppressSiblingType() throws {
+        // allOf branches are conjunctive, so a render type derived from
+        // branch one is implied by the conjunction; no exemption applies.
+        for branch: MLXLMCommon.JSONValue in [
+            .object(["type": .string("string")]),
+            .object(["minimum": .int(0)]),
+        ] {
+            let parameters: MLXLMCommon.JSONValue = .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "value": .object([
+                        "allOf": .array([branch]),
+                        "type": .string("string"),
+                    ]),
+                ]),
+            ])
+            let prepared = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: parameters)]))
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["value": .string("ok")])),
+            ], prepared: prepared)
+            #expect(
+                throws: MultiModelBatchSchedulerEngineError.self, "\(branch)"
+            ) {
+                try ToolConstraintValidation.validate([
+                    .init(function: .init(
+                        name: "weather", arguments: ["value": .int(5)])),
+                ], prepared: prepared)
+            }
+        }
+    }
+
+    @Test("auto enforces dependentSchemas while required stays fail-closed")
+    func dependentSchemasAreEnforcedUnderAuto() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "properties": .object([
@@ -1100,10 +1369,20 @@ struct GemmaToolConstraintTests {
                 choice: .mode(.auto),
                 tools: [tool(parameters: parameters)]))
         #expect(prepared.compiledTools == nil)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather",
+                    arguments: ["credit_card": .string("4111")])),
+            ], prepared: prepared)
+        }
         try ToolConstraintValidation.validate([
             .init(function: .init(
                 name: "weather",
-                arguments: ["credit_card": .string("4111")])),
+                arguments: [
+                    "credit_card": .string("4111"),
+                    "billing_address": .string("1 Main St"),
+                ])),
         ], prepared: prepared)
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             _ = try ToolChoicePromptPolicy.prepare(
@@ -1113,8 +1392,8 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("auto admits propertyNames while required stays fail-closed")
-    func propertyNamesIsAdmittedUnderAuto() throws {
+    @Test("auto enforces propertyNames while required stays fail-closed")
+    func propertyNamesIsEnforcedUnderAuto() throws {
         let parameters: MLXLMCommon.JSONValue = .object([
             "type": .string("object"),
             "propertyNames": .object([
@@ -1129,8 +1408,14 @@ struct GemmaToolConstraintTests {
         #expect(prepared.compiledTools == nil)
         try ToolConstraintValidation.validate([
             .init(function: .init(
-                name: "weather", arguments: ["anything": .int(1)])),
+                name: "weather", arguments: ["allowed": .int(1)])),
         ], prepared: prepared)
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            try ToolConstraintValidation.validate([
+                .init(function: .init(
+                    name: "weather", arguments: ["anything": .int(1)])),
+            ], prepared: prepared)
+        }
         #expect(throws: MultiModelBatchSchedulerEngineError.self) {
             _ = try ToolChoicePromptPolicy.prepare(
                 request(
@@ -1193,25 +1478,46 @@ struct GemmaToolConstraintTests {
         }
     }
 
-    @Test("reserved-metadata walk is depth-bounded and never rejects on depth")
-    func reservedMetadataWalkIsDepthBounded() throws {
-        var items: MLXLMCommon.JSONValue = .object([
+    @Test("reserved-metadata walk fails closed beyond its depth bound")
+    func reservedMetadataWalkFailsClosedBeyondBound() throws {
+        // Within the bound, nesting depth alone is not forgery.
+        var shallow: MLXLMCommon.JSONValue = .object([
             "type": .string("string"),
             "pattern": .string("^city$"),
         ])
-        for _ in 0 ..< 40 {
-            items = .array([items])
+        for _ in 0 ..< 20 {
+            shallow = .array([shallow])
         }
-        // Nesting depth alone is not forgery: the bounded walk stops
-        // descending instead of rejecting.
         _ = try ToolChoicePromptPolicy.prepare(
             request(
                 choice: .mode(.auto),
                 tools: [tool(parameters: .object([
                     "type": .string("array"),
-                    "items": items,
+                    "items": shallow,
                 ]))]),
             allowInternalSchemaMetadata: false)
+
+        // Beyond the bound the guard rejects rather than vouching for
+        // content it never scanned: the normalizer's marker-folding walk is
+        // depth-unbounded, so a forged marker below the guard's horizon
+        // would otherwise fold upward into vouched shallow metadata.
+        var forged: MLXLMCommon.JSONValue = .object([
+            "type": .string("string"),
+            ToolSchemaNormalization.originalBooleanSchemaKey: .bool(true),
+        ])
+        for _ in 0 ..< 40 {
+            forged = .array([forged])
+        }
+        #expect(throws: MultiModelBatchSchedulerEngineError.self) {
+            _ = try ToolChoicePromptPolicy.prepare(
+                request(
+                    choice: .mode(.auto),
+                    tools: [tool(parameters: .object([
+                        "type": .string("array"),
+                        "items": forged,
+                    ]))]),
+                allowInternalSchemaMetadata: false)
+        }
 
         // A marker inside the bound is still forgery.
         var nested: MLXLMCommon.JSONValue = .object([

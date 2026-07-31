@@ -637,14 +637,18 @@ func TestReservedMetadataWalkDoesNotChargeDepthForTupleContainers(t *testing.T) 
 	}
 }
 
-// Running out of depth budget is an UNDECIDABLE result, not a violation: the
-// walk only ever asserts "a reserved marker was found here". A schema too deep
-// to finish walking (or a malformed nest of bare arrays) must still be
-// forwarded — this is exactly the class of pre-flight guess that broke #561.
-func TestReservedMetadataWalkForwardsSchemasDeeperThanItsBudget(t *testing.T) {
-	var items any = map[string]any{"type": "string", "pattern": "^city$"}
+// A forged reserved marker used to hide below the old depth-32 scan horizon:
+// NormalizeToolSchemas walks to maxToolSchemaDepth and
+// constantMarkedCombinator folds marker-only combinators toward the root, so
+// a marker planted at depth 33-63 escaped the fail-open guard and could then
+// surface as shallow, coordinator-vouched metadata the provider trusts. The
+// guard now scans the normalizer's full budget and must catch it.
+func TestReservedMetadataGuardScansToNormalizerDepth(t *testing.T) {
+	var node any = map[string]any{
+		"type": "string", originalBooleanSchemaKey: true,
+	}
 	for range 40 {
-		items = []any{items}
+		node = map[string]any{"anyOf": []any{node}}
 	}
 	body, err := json.Marshal(map[string]any{
 		"model":    "m",
@@ -652,10 +656,8 @@ func TestReservedMetadataWalkForwardsSchemasDeeperThanItsBudget(t *testing.T) {
 		"tools": []any{map[string]any{
 			"type": "function",
 			"function": map[string]any{
-				"name": "lookup",
-				"parameters": map[string]any{
-					"type": "array", "items": items,
-				},
+				"name":       "lookup",
+				"parameters": node,
 			},
 		}},
 		"tool_choice": "auto",
@@ -663,8 +665,56 @@ func TestReservedMetadataWalkForwardsSchemasDeeperThanItsBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := validateToolConstraintRequest(body); err != nil {
-		t.Fatalf("schema beyond the walk's depth bound was rejected: %v", err)
+	_, verr := validateToolConstraintRequest(body)
+	var typed *toolConstraintRequestError
+	if !errors.As(verr, &typed) || typed.status != http.StatusBadRequest ||
+		!strings.Contains(typed.message, "reserved internal metadata") {
+		t.Fatalf("forged marker below the old scan horizon escaped: %T %v", verr, verr)
+	}
+}
+
+// The depth bound fails CLOSED: a schema too deep to finish scanning cannot
+// be vouched marker-free (the normalizer walks exactly as deep and folds
+// marker-only combinators upward from anywhere it reaches), so it is rejected
+// rather than forwarded. Clean schemas within the normalizer's budget still
+// pass untouched.
+func TestReservedMetadataWalkRejectsSchemasDeeperThanNormalizerBudget(t *testing.T) {
+	nest := func(levels int) any {
+		var node any = map[string]any{"type": "string", "pattern": "^city$"}
+		for range levels {
+			node = map[string]any{"anyOf": []any{node}}
+		}
+		return node
+	}
+	body := func(parameters any) []byte {
+		encoded, err := json.Marshal(map[string]any{
+			"model":    "m",
+			"messages": []any{map[string]any{"role": "user", "content": "x"}},
+			"tools": []any{map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":       "lookup",
+					"parameters": parameters,
+				},
+			}},
+			"tool_choice": "auto",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	// Leaf at depth maxToolSchemaDepth — the deepest node the scan still
+	// covers. Clean, so forwarded.
+	if _, err := validateToolConstraintRequest(body(nest(maxToolSchemaDepth))); err != nil {
+		t.Fatalf("clean schema within the scan depth was rejected: %v", err)
+	}
+	// Past the budget: undecidable, therefore rejected (400), never vouched.
+	_, err := validateToolConstraintRequest(body(nest(maxToolSchemaDepth + 6)))
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusBadRequest ||
+		!strings.Contains(typed.message, "reserved-metadata scan depth") {
+		t.Fatalf("schema beyond the scan depth was not rejected: %T %v", err, err)
 	}
 }
 

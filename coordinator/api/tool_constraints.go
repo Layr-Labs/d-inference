@@ -30,10 +30,6 @@ var toolFunctionNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 const (
 	maxConstrainedStopSequences = 4
 	maxConstrainedStopBytes     = 256
-	// Recursion bound for the reserved-metadata walk. Exceeding it stops the
-	// descent without rejecting: the walk is a forgery guard, not a schema
-	// feasibility check, so a legitimately deep schema must still be accepted.
-	maxReservedMetadataDepth = 32
 )
 
 type validatedToolConstraintPolicy struct {
@@ -347,12 +343,27 @@ func representableToolSpelling(tool map[string]any) (name string, parameters any
 //
 // This is deliberately NOT a grammar-feasibility check. Auto and none never
 // compile a sampler grammar — their tool calls are checked post-generation by
-// the provider's JSON-Schema validator, which handles anyOf/oneOf/$ref/
-// pattern/if-then natively — so every other JSON-Schema construct passes
+// the provider's JSON-Schema validator, which enforces allOf/anyOf/oneOf/not/
+// enum/const/pattern/patternProperties/if-then-else/dependentRequired/
+// dependentSchemas/propertyNames and treats $ref nodes and the unevaluated*
+// assertions as not-asserted — so every other JSON-Schema construct passes
 // through untouched.
+//
+// Depth bound: the walk must scan at least as deep as every walker that can
+// LIFT a marker upward. NormalizeToolSchemas descends to maxToolSchemaDepth
+// and constantMarkedCombinator folds marker-only combinator nodes toward the
+// root, so a forged marker below the scan horizon could otherwise surface as
+// shallow, coordinator-vouched metadata — and the provider trusts vouched
+// bodies (its own byte-scan only guards unvouched ones). A schema deeper than
+// the horizon therefore cannot be vouched marker-free and is rejected: the
+// bound fails CLOSED, and it is maxToolSchemaDepth itself so the two walks
+// can never drift. Schemas past that depth do not occur in practice (the
+// pre-#603 scan rejected everything past depth 32 and no legitimate traffic
+// ever hit it).
 func rejectReservedSchemaMetadata(schema any, depth int) error {
-	if depth > maxReservedMetadataDepth {
-		return nil
+	if depth > maxToolSchemaDepth {
+		return invalidToolConstraint(
+			"tool schema exceeds the reserved-metadata scan depth", "tools")
 	}
 	switch value := schema.(type) {
 	case []any:

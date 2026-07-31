@@ -182,6 +182,29 @@ enum ToolSchemaNormalization {
                 dict["nullable"] as? Bool != true {
                 dict["nullable"] = true
             }
+            // A multi-concrete array (`["string","integer"]`) declares a real
+            // union the single render type cannot carry: the render pipeline
+            // needs one `value['type'] | upper` string, but the
+            // post-generation validator enforces what is on the wire, so
+            // keeping only the first member would reject schema-valid
+            // emissions of every other branch. JSON Schema defines the array
+            // form as exactly an anyOf of its single types, so the surviving
+            // concrete members are mirrored into `anyOf` — that survives the
+            // wire, and the validator prefers union branches over the sibling
+            // render type. A node that already carries a combinator keeps the
+            // conjunctive semantics its author wrote (layering a second union
+            // would change them); that pathological shape stays knowingly
+            // narrowed to the first member. Mirrors: null member → `nullable`
+            // (above), concrete members → `anyOf` (here).
+            var concrete = [String]()
+            for member in members where member != "null" && !concrete.contains(member) {
+                concrete.append(member)
+            }
+            if concrete.count >= 2,
+                dict["anyOf"] == nil, dict["oneOf"] == nil, dict["allOf"] == nil
+            {
+                dict["anyOf"] = concrete.map { ["type": $0] as [String: Any] }
+            }
             dict["type"] = collapsedType(members: members, in: dict)
         }
 

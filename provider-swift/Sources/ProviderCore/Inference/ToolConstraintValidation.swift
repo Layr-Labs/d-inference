@@ -104,11 +104,23 @@ enum ToolConstraintValidation {
         guard !allowInternalSchemaMetadata else { return }
         for tool in tools ?? [] {
             guard let parameters = tool.function.parameters else { continue }
-            guard !containsReservedSchemaMetadata(parameters, depth: 0) else {
+            switch scanReservedSchemaMetadata(parameters, depth: 0) {
+            case .clean:
+                continue
+            case .marker:
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
                     "tool schema contains reserved internal metadata")
+            case .beyondWalkBound:
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "tool schema exceeds the reserved-metadata scan depth")
             }
         }
+    }
+
+    private enum ReservedMetadataScan {
+        case clean
+        case marker
+        case beyondWalkBound
     }
 
     /// Schema-position walk: only nodes that ARE schemas are inspected. A map
@@ -117,22 +129,30 @@ enum ToolConstraintValidation {
     /// as a schema itself, so a tool that legitimately declares a property
     /// named after the marker is not mistaken for a forgery.
     ///
-    /// Bounded walk: beyond `maxMetadataWalkDepth` we stop descending rather
-    /// than reject — nesting depth alone is not forgery, and this guard must
-    /// never reject a schema for anything but the marker itself.
-    private static func containsReservedSchemaMetadata(
+    /// Fail-closed walk bound: the normalizer's marker-folding walk
+    /// (`constantMarkedCombinator`) is depth-unbounded, so a guard that
+    /// silently stopped scanning below its own horizon could vouch for a
+    /// schema whose forged marker later folds upward into a shallow position
+    /// downstream consumers trust. A schema too deep to scan cannot be
+    /// vouched marker-free, so a container beyond `maxMetadataWalkDepth`
+    /// rejects instead of passing unscanned; scalars cannot carry the marker
+    /// and stay clean at any depth.
+    private static func scanReservedSchemaMetadata(
         _ schema: ToolArgumentJSONValue,
         depth: Int
-    ) -> Bool {
-        guard depth <= maxMetadataWalkDepth else { return false }
+    ) -> ReservedMetadataScan {
         switch schema {
         case .array(let values):
-            return values.contains {
-                containsReservedSchemaMetadata($0, depth: depth + 1)
+            guard depth <= maxMetadataWalkDepth else { return .beyondWalkBound }
+            for child in values {
+                let scan = scanReservedSchemaMetadata(child, depth: depth + 1)
+                if scan != .clean { return scan }
             }
+            return .clean
         case .object(let object):
+            guard depth <= maxMetadataWalkDepth else { return .beyondWalkBound }
             if object[ToolSchemaNormalization.originalBooleanSchemaKey] != nil {
-                return true
+                return .marker
             }
             for key in [
                 "additionalProperties", "additionalItems", "contains",
@@ -140,27 +160,27 @@ enum ToolConstraintValidation {
                 "unevaluatedItems", "unevaluatedProperties", "items",
                 "allOf", "anyOf", "oneOf", "prefixItems",
             ] {
-                if let child = object[key],
-                    containsReservedSchemaMetadata(child, depth: depth + 1)
-                {
-                    return true
+                if let child = object[key] {
+                    let scan = scanReservedSchemaMetadata(
+                        child, depth: depth + 1)
+                    if scan != .clean { return scan }
                 }
             }
             for key in [
                 "properties", "patternProperties", "dependentSchemas",
                 "dependencies", "definitions", "$defs",
             ] {
-                if case .object(let children)? = object[key],
-                    children.values.contains(where: {
-                        containsReservedSchemaMetadata($0, depth: depth + 1)
-                    })
-                {
-                    return true
+                if case .object(let children)? = object[key] {
+                    for child in children.values {
+                        let scan = scanReservedSchemaMetadata(
+                            child, depth: depth + 1)
+                        if scan != .clean { return scan }
+                    }
                 }
             }
-            return false
+            return .clean
         default:
-            return false
+            return .clean
         }
     }
 
@@ -244,15 +264,32 @@ enum ToolConstraintValidation {
             return accepts
         }
 
-        if let constant = object["const"],
-            !jsonSchemaEqual(value, constant)
+        // This validator does not resolve references, so a node carrying
+        // `$ref`/`$dynamicRef`/`$recursiveRef` has an unknown true constraint
+        // set: its siblings — including the render `type` the normalizer
+        // injects so templates can subscript `value['type']` — belong to
+        // whatever the reference resolves to. Enforcing them here would
+        // reject emissions the REFERENCED schema accepts, so the node is
+        // entirely not-asserted, like an undecidable `pattern`.
+        if object["$ref"] != nil || object["$dynamicRef"] != nil
+            || object["$recursiveRef"] != nil
         {
-            return false
+            return true
         }
-        if case .array(let values)? = object["enum"],
-            !values.contains(where: { jsonSchemaEqual(value, $0) })
-        {
-            return false
+
+        // Finite-value identity subsumes typing: a typeless `{"enum":["a",1]}`
+        // gets render type "string" injected from its first member, yet 1 is
+        // still a schema-valid emission. A matched `const`/`enum` therefore
+        // suppresses the sibling `type` assertion below.
+        var finiteMatched = false
+        if let constant = object["const"] {
+            guard jsonSchemaEqual(value, constant) else { return false }
+            finiteMatched = true
+        }
+        if case .array(let values)? = object["enum"] {
+            guard values.contains(where: { jsonSchemaEqual(value, $0) })
+            else { return false }
+            finiteMatched = true
         }
         if case .array(let variants)? = object["allOf"],
             !variants.allSatisfy({
@@ -261,24 +298,49 @@ enum ToolConstraintValidation {
         {
             return false
         }
-        if case .array(let variants)? = object["anyOf"],
-            !variants.contains(where: {
+        // A satisfied non-empty `anyOf`/`oneOf` already enforced each
+        // branch's own `type` assertion. The sibling `type` on such nodes is
+        // (in every coordinator-normalized body) the render type injected
+        // from the FIRST branch; enforcing it conjunctively would veto every
+        // schema-valid emission from the other branches. `allOf` is NOT
+        // exempted: its branches are conjunctive, so a type derived from
+        // branch one is implied by the conjunction anyway.
+        var unionAsserted = false
+        if case .array(let variants)? = object["anyOf"] {
+            guard variants.contains(where: {
                 validateJSONSchema(value, schema: $0, depth: depth + 1)
-            })
-        {
-            return false
+            }) else { return false }
+            unionAsserted = true
         }
-        if case .array(let variants)? = object["oneOf"],
-            variants.filter({
+        if case .array(let variants)? = object["oneOf"] {
+            guard variants.filter({
                 validateJSONSchema(value, schema: $0, depth: depth + 1)
-            }).count != 1
-        {
-            return false
+            }).count == 1 else { return false }
+            unionAsserted = true
         }
         if let negated = object["not"],
             validateJSONSchema(value, schema: negated, depth: depth + 1)
         {
             return false
+        }
+        // `if`/`then`/`else` are fully decidable from the instance alone, so
+        // the auto path enforces them. `unevaluatedItems`/
+        // `unevaluatedProperties`/`contentSchema` need annotation tracking
+        // this validator does not do and stay not-asserted.
+        if let condition = object["if"] {
+            if validateJSONSchema(value, schema: condition, depth: depth + 1) {
+                if let consequent = object["then"],
+                    !validateJSONSchema(
+                        value, schema: consequent, depth: depth + 1)
+                {
+                    return false
+                }
+            } else if let alternative = object["else"],
+                !validateJSONSchema(
+                    value, schema: alternative, depth: depth + 1)
+            {
+                return false
+            }
         }
 
         if value == .null,
@@ -287,9 +349,13 @@ enum ToolConstraintValidation {
         {
             return true
         }
-        let types = schemaTypes(object["type"])
-        if !types.isEmpty, !types.contains(where: { matches(value, type: $0) }) {
-            return false
+        if !unionAsserted, !finiteMatched {
+            let types = schemaTypes(object["type"])
+            if !types.isEmpty,
+                !types.contains(where: { matches(value, type: $0) })
+            {
+                return false
+            }
         }
 
         switch value {
@@ -307,6 +373,42 @@ enum ToolConstraintValidation {
                     else {
                         return false
                     }
+                }
+            }
+            // `dependentRequired`, `dependentSchemas`, and `propertyNames`
+            // are fully decidable from the instance alone, so the auto path
+            // enforces them. A `dependentRequired` entry whose value is not
+            // an array, or a listed name that is not a string, is not an
+            // intelligible constraint and is not-asserted (skipped), never a
+            // rejection.
+            if case .object(let dependents)? = object["dependentRequired"] {
+                for (trigger, names) in dependents
+                where presentKeys.contains(unicodeScalarIdentity(trigger)) {
+                    guard case .array(let required) = names else { continue }
+                    for member in required {
+                        guard case .string(let name) = member else { continue }
+                        if !presentKeys.contains(unicodeScalarIdentity(name)) {
+                            return false
+                        }
+                    }
+                }
+            }
+            if case .object(let dependents)? = object["dependentSchemas"] {
+                for (trigger, subschema) in dependents
+                where presentKeys.contains(unicodeScalarIdentity(trigger)) {
+                    if !validateJSONSchema(
+                        .object(values), schema: subschema, depth: depth + 1)
+                    {
+                        return false
+                    }
+                }
+            }
+            if let names = object["propertyNames"] {
+                for key in values.keys
+                where !validateJSONSchema(
+                    .string(key), schema: names, depth: depth + 1)
+                {
+                    return false
                 }
             }
             let properties: [String: ToolArgumentJSONValue]

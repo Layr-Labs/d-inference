@@ -111,6 +111,7 @@ func TestPreferOwnerConstraintFailsBeforeQueueWithoutCapableFallback(t *testing.
 		false,
 		true,
 		true,
+		"required",
 		false,
 		selfRoutePolicy{prefer: true, ownerAccountID: "owner"},
 		nil,

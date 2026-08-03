@@ -5,6 +5,10 @@ import { useAuth } from "@/hooks/useAuth";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, Suspense } from "react";
 
+function isSafeNext(next: string): boolean {
+  return next.startsWith("/") && !next.startsWith("//") && !/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(next);
+}
+
 function LoginContent() {
   const { ready, authenticated, login } = useAuth();
   const router = useRouter();
@@ -13,7 +17,8 @@ function LoginContent() {
   useEffect(() => {
     if (ready && authenticated) {
       const next = searchParams.get("next") || "/";
-      router.replace(next);
+      const safeNext = isSafeNext(next) ? next : "/";
+      router.replace(safeNext);
     }
   }, [ready, authenticated, router, searchParams]);
 

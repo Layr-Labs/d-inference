@@ -9,7 +9,8 @@ export async function GET(req: NextRequest) {
 
   const url = new URL(req.url);
   const refresh = url.searchParams.get("refresh");
-  const upstream = `${coordinatorUrl()}/v1/billing/stripe/status${refresh ? `?refresh=${refresh}` : ""}`;
+  const safeRefresh = refresh && /^[a-zA-Z0-9_-]+$/.test(refresh) ? refresh : null;
+  const upstream = `${coordinatorUrl()}/v1/billing/stripe/status${safeRefresh ? `?refresh=${safeRefresh}` : ""}`;
 
   const res = await fetch(upstream, {
     headers: { ...(authHeader ? { Authorization: authHeader } : {}) },

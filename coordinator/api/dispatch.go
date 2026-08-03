@@ -183,6 +183,21 @@ type dispatchState struct {
 	// error-body message (the jinja_* stop surfaces the curated
 	// model_capability text, not the provider's raw template backtrace).
 	terminalClientErrorMessage string
+	// servedKVBackend latches the KV-cache backend attribution of the SLOT the
+	// most recent attempt was dispatched to (v0.8.0 paged rollout, Gate G5) —
+	// the resolved kind AND whether that kind was a silent degrade. It is NOT
+	// per-attempt scratch: the failure tails run after a retry has cleared
+	// d.provider/d.pr, and a 5xx from a paged slot that just fell over is
+	// exactly the sample the rollout dashboard must not lose. Zero value until
+	// the request reaches a slot, which tags unknown on both dimensions.
+	servedKVBackend kvBackendAttribution
+	// The (provider, model) the latch above was taken for. Not decoration: it
+	// is what lets kvBackendAttribution reuse the latch instead of re-entering
+	// the registry, while still honouring the rule that a LIVE d.pr wins — a
+	// speculative backup that beats the primary must be attributed to the
+	// backup's slot, and that shows up here as a key mismatch.
+	servedKVProviderID string
+	servedKVModel      string
 
 	// ---- per-attempt scratch (reset each attempt) ----
 	attempt          int
@@ -468,7 +483,15 @@ func applyTimingDecomposition(out *store.InferenceRouteOutcome, t *registry.Requ
 	}
 	out.ParseMs = timingMsBetween(t.ReceivedAt, t.ParsedAt)
 	out.ReserveMs = timingMsBetween(t.ParsedAt, t.ReservedAt)
-	out.RouteMs = timingMsBetween(t.ReservedAt, t.RoutedAt)
+	// Remote-media fetch (when it happened) sits between ReservedAt and
+	// RoutedAt; anchor the route segment past it so a multi-second download
+	// doesn't masquerade as routing latency. The fetch duration itself is
+	// reported via the X-Timing header and DD histogram (no outcome column).
+	routeAnchor := t.ReservedAt
+	if !t.MediaFetchedAt.IsZero() {
+		routeAnchor = t.MediaFetchedAt
+	}
+	out.RouteMs = timingMsBetween(routeAnchor, t.RoutedAt)
 	out.EncryptMs = timingMsBetween(t.RoutedAt, t.EncryptedAt)
 	out.QueueWaitMs = timingMsBetween(t.QueuedAt, t.DispatchedAt)
 	out.DispatchMs = timingMsBetween(t.DispatchedAt, firstChunk)
@@ -933,12 +956,14 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		// mid-ladder rejection looped to maxDispatchAttempts re-running the
 		// doomed scan). Nothing has been committed to the client at a
 		// reservation failure except, possibly, a prefill keepalive's HTTP
-		// 200 from an earlier attempt — the status code is then frozen, so
-		// route that case through the exhausted ladder, which surfaces the
-		// 429 in-band exactly once. takeOver() also guarantees no keepalive
-		// goroutine can commit the SSE 200 while the 429 below is written.
+		// 200 — the status code is then frozen, so route that case through the
+		// exhausted ladder, which surfaces the 429 in-band exactly once.
+		// takeOver() also guarantees no keepalive goroutine can commit the SSE
+		// 200 while the 429 below is written. The keepalive now starts before
+		// the dispatch loop, so this must be checked on EVERY attempt: at
+		// attempt 0 a request that queued long enough can already be committed.
 		if dispatchErr == errTTFTTooSlow && (attempt == 0 || ttftTerminalRejectEnabled()) {
-			if attempt > 0 && d.keepalive.takeOver() {
+			if d.keepalive.takeOver() {
 				d.setLastError(dispatchErr, dispatchErrCode)
 				return outcomeFailFast
 			}
@@ -950,7 +975,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				// both (the attempt-0 path emits neither, unchanged).
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
 				s.recordRejection(d.rejectionInfoWithDecision("dispatch", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, decision))
-				s.recordRequestOutcome(d.model, classifyOutcomeByCode(http.StatusTooManyRequests))
+				s.recordRequestOutcome(d.model, d.kvBackendAttribution(), classifyOutcomeByCode(http.StatusTooManyRequests))
 			}
 			s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
 			return outcomeResponseWritten
@@ -1030,16 +1055,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		if err := s.registry.Queue().Enqueue(queuedReq); err != nil {
 			s.ddIncr("routing.decisions", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model), "outcome:over_capacity"})
 			retryAfter := s.estimateRetryAfter(d.model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			d.refundReservation()
-			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision))
+			info := d.rejectionInfoWithDecision("queue", "queue_full", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity — retry shortly", withCode("machine_busy")))
+				d.preContentTerminal(info, retryAfter, "machine_busy",
+					"your machine is at capacity — retry shortly", "machine_busy")
 			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				d.preContentTerminal(info, retryAfter, "rate_limit_exceeded",
 					fmt.Sprintf("all providers for model %q are at capacity and queue is full", d.publicModel),
-					withCode("rate_limit_exceeded")))
+					"rate_limit_exceeded")
 			}
 			return outcomeResponseWritten
 		}
@@ -1077,8 +1101,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 				s.triggerWarmPool()
 				bestTTFT := time.Duration(queuedReq.Decision.BestTTFTMs * float64(time.Millisecond))
 				retryAfter := s.estimateTTFTRetryAfter(d.model, bestTTFT, d.deadline)
-				s.recordRejection(d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision))
-				s.writeTTFTTooSlow(w, d.model, d.publicModel, bestTTFT, d.deadline)
+				d.ttftTooSlowTerminal(
+					d.rejectionInfoWithDecision("queue", "ttft_too_slow", http.StatusTooManyRequests, retryAfter*1000, queuedReq.Decision),
+					retryAfter,
+					ttftTooSlowMessage(d.publicModel, bestTTFT, d.deadline, retryAfter))
 				return outcomeResponseWritten
 			}
 			if errors.Is(err, registry.ErrQueueToolConstraintUnavailable) {
@@ -1087,15 +1113,16 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 					"error", "model_capability_unsupported",
 					http.StatusServiceUnavailable))
 				d.refundReservation()
-				s.recordRejection(d.rejectionInfoWithDecision(
-					"queue", "model_capability_unsupported",
-					http.StatusServiceUnavailable, 0, queuedReq.Decision))
-				writeJSON(w, http.StatusServiceUnavailable, errorResponse(
+				d.preContentTerminal(
+					d.rejectionInfoWithDecision(
+						"queue", "model_capability_unsupported",
+						http.StatusServiceUnavailable, 0, queuedReq.Decision),
+					0,
 					"model_unavailable",
 					fmt.Sprintf(
 						"no online provider for model %q supports inference-time tool_choice enforcement",
 						d.publicModel),
-					withParam("model")))
+					"model_unavailable")
 				return outcomeResponseWritten
 			}
 			d.updateRoutingOutcome(d.errorRoutingOutcome("timeout", "queue_timeout", http.StatusTooManyRequests))
@@ -1103,15 +1130,15 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			s.ddIncr("request_queue.timeout", []string{"model:" + d.model, "model_type:" + s.registry.ModelType(d.model)})
 			s.registry.RecordWarmPoolQueueTimeout(d.model, time.Since(queuedReq.EnqueuedAt))
 			retryAfter := s.estimateRetryAfter(d.model)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			s.recordRejection(d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision))
+			info := d.rejectionInfoWithDecision("queue", "queue_timeout", http.StatusTooManyRequests, retryAfter*1000, decision)
 			if d.policy.enabled {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("machine_busy",
-					"your machine is at capacity (timed out waiting for a free slot) — retry shortly", withCode("machine_busy")))
+				d.preContentTerminal(info, retryAfter, "machine_busy",
+					"your machine is at capacity (timed out waiting for a free slot) — retry shortly",
+					"machine_busy")
 			} else {
-				writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+				d.preContentTerminal(info, retryAfter, "rate_limit_exceeded",
 					fmt.Sprintf("all providers for model %q are at capacity (queue timeout)", d.publicModel),
-					withCode("rate_limit_exceeded")))
+					"rate_limit_exceeded")
 			}
 			return outcomeResponseWritten
 		}
@@ -1269,6 +1296,10 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			return outcomeRetry
 		}
 	}
+	// The request is now on a slot. Latch that slot's KV backend so the
+	// exhaustion ladder can still attribute the outcome after a failover has
+	// cleared d.provider/d.pr (v0.8.0 paged rollout, Gate G5).
+	d.noteServingSlot()
 	return outcomeProceed
 }
 
@@ -1459,12 +1490,17 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.s.ddIncr("routing.dispatch_client_error_stop", []string{"model:" + d.model, "code:" + strconv.Itoa(msg.StatusCode), "src:race_loser"})
 		d.terminalClientError = true
 		d.terminalClientErrorCode = msg.StatusCode
+		// The verdict slot owns the terminal outcome's kv_backend attribution
+		// from this point (see latchTerminalAttribution): the response the
+		// client gets IS this loser's 4xx, whatever the surviving racer does.
+		d.latchTerminalAttribution(provider)
 		return
 	}
 	// Mirror the jinja_* reason stop (E4) at the race-loser site for the same
 	// masking reason: a deterministic template-render failure from the loser
 	// must not be storm-resumed through the survivor's transient error.
 	if d.latchJinjaTerminalReject(msg.ErrorReason, "race_loser") {
+		d.latchTerminalAttribution(provider)
 		return
 	}
 	budget := providerReportedBudget(provider, d.model)
@@ -1472,6 +1508,7 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 		d.s.ddIncr("routing.dispatch_to_capacity_503", []string{"model:" + d.model, "reason:deterministic"})
 		d.unservable = true
 		d.unservableReason = rejectionReasonOversized
+		d.latchTerminalAttribution(provider)
 	}
 }
 
@@ -1909,6 +1946,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				d.pr = backupPR
 				d.requestID = d.pr.RequestID
 				d.heldChunks = backupHeld
+				// The backup is now the serving slot; re-latch so a
+				// post-commit failure books under ITS backend, not the
+				// cancelled primary's.
+				d.noteServingSlot()
 				d.commitFirstContent(d.pr, chunk)
 				d.committed = true
 			} else {
@@ -1933,6 +1974,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 					d.pr = backupPR
 					d.requestID = d.pr.RequestID
 					d.heldChunks = backupHeld
+					d.noteServingSlot()
 					d.committed = true
 				}
 			}
@@ -1956,6 +1998,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			d.pr = backupPR
 			d.requestID = d.pr.RequestID
 			d.heldChunks = backupHeld
+			// The backup is the serving slot from here on: an accepted-wait
+			// failure clears d.pr, and the terminal fallback must read the
+			// backup's backend, not the cancelled primary's.
+			d.noteServingSlot()
 			d.accepted = true
 			return outcomeAccepted
 
@@ -2136,6 +2182,15 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Provider, backupPR *registry.PendingRequest, backupHeld []string) dispatchOutcome {
 	s := d.s
 	r := d.r
+	// The primary already failed and d.pr is cleared: the BACKUP is the only
+	// racer left, so every failure or timeout below is the backup's. Re-latch
+	// now so the terminal outcome names the backup's backend rather than
+	// falling back to the dead primary's latch. When the primary's failure
+	// latched a DETERMINISTIC verdict (latchDeterministicLoser just ran), the
+	// re-latch is a no-op by design: the terminal response will be the
+	// primary's 4xx/422/429, so the primary keeps the attribution even
+	// though the backup keeps racing (noteServingSlotFor's freeze rule).
+	d.noteServingSlotFor(backupPR)
 	backupDeadline := time.NewTimer(d.deadline - d.speculativeAt)
 	for {
 		select {
@@ -2487,6 +2542,11 @@ func (d *dispatchState) run() {
 	// nil-safe (no-op when keepalives are disabled or the writer already took over).
 	defer func() { d.keepalive.takeOver() }()
 
+	// Arm prefill keepalives before the dispatch loop so the timer covers routing
+	// and the queue wait too, not just provider prefill. See
+	// startPrefillKeepalive for the production measurement that motivates this.
+	d.startPrefillKeepalive()
+
 	for attempt := range maxDispatchAttempts {
 		d.attempt = attempt
 		// Deadline-bounded failover: after the first attempt, stop failing over
@@ -2521,15 +2581,6 @@ func (d *dispatchState) run() {
 			d.timing.RoutedAt = time.Now()
 		}
 
-		// Now that the request is dispatched to a provider, start prefill SSE
-		// keepalives for streaming requests so a long prefill does not leave the
-		// consumer connection idle (OpenRouter's fetch timeout would otherwise fire
-		// and fail us over). Started once; it persists across retries/speculation
-		// and is taken over by the response writer when the first chunk commits.
-		if d.stream && d.keepalive == nil && s.prefillKeepaliveInterval > 0 {
-			d.keepalive = s.newPrefillKeepaliver(w, d.requestID)
-			d.keepalive.start(r.Context())
-		}
 		s.ddIncr("routing.decisions", []string{"model:" + d.model, "outcome:selected"})
 		s.ddIncr("routing.provider_selected", []string{"provider_id:" + d.provider.ID, "model:" + d.model})
 
@@ -2637,6 +2688,10 @@ exhausted:
 			reason = "unservable_token_budget"
 			s.ddIncr("routing.unservable_reclassified", []string{"model:" + d.model})
 		}
+		// Resolved once: the telemetry event and the OR-uptime counter must agree
+		// on which slot's backend this failure belongs to, and on whether that
+		// backend was chosen or degraded into (v0.8.0 paged rollout).
+		kvBackend := d.kvBackendAttribution()
 		s.emitRequest(r.Context(), protocol.SeverityError, d.requestID,
 			fmt.Sprintf("inference failed after %d attempt(s)", d.attempt+1),
 			map[string]any{
@@ -2644,6 +2699,7 @@ exhausted:
 				"attempt":     d.attempt + 1,
 				"status_code": statusCode,
 				"last_error":  d.lastErr,
+				"kv_backend":  kvBackend.Backend,
 			})
 		if s.metrics != nil {
 			s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "failure"})
@@ -2653,9 +2709,9 @@ exhausted:
 		// pre-dispatch rejections emit from recordRejection instead). A failure
 		// after a keepalive committed HTTP 200 is a mid-stream error to the client.
 		if keepaliveCommitted {
-			s.recordRequestOutcome(d.model, orClassMidStream)
+			s.recordRequestOutcome(d.model, kvBackend, orClassMidStream)
 		} else {
-			s.recordRequestOutcome(d.model, classifyOutcomeByCode(statusCode))
+			s.recordRequestOutcome(d.model, kvBackend, classifyOutcomeByCode(statusCode))
 		}
 		if statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable {
 			retryAfter := s.estimateRetryAfter(d.model)
@@ -2754,7 +2810,7 @@ exhausted:
 	// once per dispatched request (disjoint from the exhausted branch above and
 	// from pre-dispatch rejections).
 	if d.stream {
-		s.recordRequestOutcome(d.model, orClassSuccess)
+		s.recordRequestOutcome(d.model, d.kvBackendAttribution(), orClassSuccess)
 	}
 
 	d.writeCommittedResponse()
@@ -2882,13 +2938,17 @@ func (d *dispatchState) writeCommittedResponse() {
 	// Latency decomposition header for observability.
 	if timing := pr.Timing; timing != nil {
 		type timingJSON struct {
-			ParseUs    int64 `json:"parse_us"`
-			ReserveUs  int64 `json:"reserve_us"`
-			RouteUs    int64 `json:"route_us"`
-			QueueUs    int64 `json:"queue_us"`
-			EncryptUs  int64 `json:"encrypt_us"`
-			DispatchUs int64 `json:"dispatch_us"`
-			ProviderUs int64 `json:"provider_us"`
+			ParseUs   int64 `json:"parse_us"`
+			ReserveUs int64 `json:"reserve_us"`
+			// MediaFetchUs covers the post-reservation remote media download +
+			// inline step (media_resolve.go); omitted for the (typical) request
+			// that fetched nothing.
+			MediaFetchUs int64 `json:"media_fetch_us,omitempty"`
+			RouteUs      int64 `json:"route_us"`
+			QueueUs      int64 `json:"queue_us"`
+			EncryptUs    int64 `json:"encrypt_us"`
+			DispatchUs   int64 `json:"dispatch_us"`
+			ProviderUs   int64 `json:"provider_us"`
 		}
 		tj := timingJSON{}
 		if !timing.ParsedAt.IsZero() {
@@ -2897,8 +2957,15 @@ func (d *dispatchState) writeCommittedResponse() {
 		if !timing.ReservedAt.IsZero() && !timing.ParsedAt.IsZero() {
 			tj.ReserveUs = timing.ReservedAt.Sub(timing.ParsedAt).Microseconds()
 		}
-		if !timing.RoutedAt.IsZero() && !timing.ReservedAt.IsZero() {
-			tj.RouteUs = timing.RoutedAt.Sub(timing.ReservedAt).Microseconds()
+		// Media fetch (when present) sits between reserve and route; anchor the
+		// route segment past it so a download never inflates route_us.
+		routeAnchor := timing.ReservedAt
+		if !timing.MediaFetchedAt.IsZero() && !timing.ReservedAt.IsZero() {
+			tj.MediaFetchUs = timing.MediaFetchedAt.Sub(timing.ReservedAt).Microseconds()
+			routeAnchor = timing.MediaFetchedAt
+		}
+		if !timing.RoutedAt.IsZero() && !routeAnchor.IsZero() {
+			tj.RouteUs = timing.RoutedAt.Sub(routeAnchor).Microseconds()
 		}
 		if !timing.QueuedAt.IsZero() && !timing.DispatchedAt.IsZero() {
 			tj.QueueUs = timing.DispatchedAt.Sub(timing.QueuedAt).Microseconds()
@@ -2967,9 +3034,9 @@ func (d *dispatchState) writeCommittedResponse() {
 		s.handleNonStreamingResponseWithFirstChunk(sw, r, pr, firstChunks)
 		switch {
 		case sw.status == http.StatusOK:
-			s.recordRequestOutcome(d.model, orClassSuccess)
+			s.recordRequestOutcome(d.model, d.kvBackendAttribution(), orClassSuccess)
 		case sw.status > 0:
-			s.recordRequestOutcome(d.model, classifyOutcomeByCode(sw.status))
+			s.recordRequestOutcome(d.model, d.kvBackendAttribution(), classifyOutcomeByCode(sw.status))
 		}
 	}
 }

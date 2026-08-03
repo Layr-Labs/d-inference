@@ -18,6 +18,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+
+	"github.com/eigeninference/d-inference/coordinator/registry"
 )
 
 // maxInferenceBodyBytes caps the plaintext inference request body. Without it
@@ -195,6 +197,7 @@ func (s *Server) visionToolsFailFast(
 	w http.ResponseWriter,
 	model, publicModel string,
 	requiresVision, hasTools, requiresToolConstraint bool,
+	toolChoiceMode string,
 	rejectResponsesMedia bool,
 	policy selfRoutePolicy,
 	allowedProviderSerials []string,
@@ -225,15 +228,23 @@ func (s *Server) visionToolsFailFast(
 		}
 	}
 	// Tools fail-fast (mirrors the vision gate): when every constraint-eligible
-	// provider serving this model is trait-gated — below the tools version floor
-	// or advertising a broken chat-template render — the request can never
-	// route. Without this gate it passes the trait-blind QuickCapacityCheck
-	// preflight, queues for up to 120s, and dies with a misleading capacity 429.
+	// provider serving this model is trait-gated — below the tools version floor,
+	// below the mode-specific floor (tool_choice "none" needs the v0.7.10
+	// prompt-side policy that hides declared tools), or advertising a broken
+	// chat-template render — the request can never route. Without this gate it
+	// passes the trait-blind QuickCapacityCheck preflight, queues for up to 120s,
+	// and dies with a misleading capacity 429. The traits here must match what
+	// the scheduler enforces at dispatch or the fail-fast and the queue disagree.
 	// Constrained to allowedProviderSerials so a public tool-capable provider
 	// can't satisfy an allowlist-pinned request. The inference-time constraint
 	// gate below is owner-aware so self-route checks only owned machines while
 	// prefer-owner checks both the owned pool and its public fallback.
-	if hasTools && !policy.enabled && !policy.prefer && !s.registry.HasToolCapableProviderForModel(model, allowedProviderSerials...) {
+	if hasTools && !policy.enabled && !policy.prefer &&
+		!s.registry.HasToolCapableProviderForTraits(
+			model,
+			registry.RequestTraits{HasTools: true, ToolChoiceMode: toolChoiceMode},
+			allowedProviderSerials...,
+		) {
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q supports tool calls (requires provider >= 0.6.3 with a healthy chat template) — providers may still be updating", publicModel),
 			withParam("model")))
@@ -247,6 +258,26 @@ func (s *Server) visionToolsFailFast(
 			policy.prefer,
 			allowedProviderSerials...,
 		) {
+		// Distinguish "nobody can enforce this right now" (retryable, 503) from
+		// "no build of this model will EVER enforce tool_choice" (permanent,
+		// 400). The permanent verdict requires BOTH: the fleet serves the model
+		// AND zero registered online providers even ADVERTISE the constraint
+		// capability for it. The advertisement scan deliberately ignores trust
+		// minimums and attestation freshness — a trust-lapsed or
+		// freshness-expired enforcing provider is a transient outage, not a
+		// permanent incapability, and must stay retryable — while dressing a
+		// true incapability as model_unavailable would send clients into a
+		// retry loop that can never succeed. Owner-scoped routing (self-route /
+		// prefer) is not expressible as a serial set here, so those paths keep
+		// the conservative 503.
+		if !policy.enabled && !policy.prefer &&
+			s.registry.HasProviderForModel(model, allowedProviderSerials...) &&
+			!s.registry.HasProviderAdvertisingToolConstraint(model, allowedProviderSerials...) {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error",
+				fmt.Sprintf("inference-enforced tool_choice (required/named) is not supported for model %q", publicModel),
+				withParam("tool_choice")))
+			return true
+		}
 		writeJSON(w, http.StatusServiceUnavailable, errorResponse("model_unavailable",
 			fmt.Sprintf("no online provider for model %q advertises inference-time tool_choice enforcement", publicModel),
 			withParam("model")))

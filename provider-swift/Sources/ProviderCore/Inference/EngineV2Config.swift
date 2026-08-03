@@ -8,7 +8,7 @@
 //   * The old `DARKBLOOM_ENGINE_V2` / `DARKBLOOM_ENGINE_V2_MODELS` env
 //     switches and the `engine_v2` provider-config key are RETIRED. The
 //     config key is still parsed (a startup WARN fires when an operator
-//     set `engine_v2 = false` — see `ProviderLoop.run()`), but selection
+//     set `engine_v2 = false` — see `RetiredKnobWarnings`), but selection
 //     is unconditionally v2. Rollback is release-level (re-point latest
 //     to the previous release), not a per-box switch.
 //   * Which MODELS can serve is architecture-derived at scan/advertise
@@ -28,8 +28,9 @@ import MLXLMCommon
 // MARK: - Retired selection surface
 
 /// Retired v0.7.0–v0.7.4 selection knobs, kept ONLY so startup can warn
-/// operators who still set them (`ProviderLoop.run()`); nothing consults
-/// them for selection anymore.
+/// operators who still set them (`RetiredKnobWarnings`, emitted by
+/// `Start.run()` for every serving mode); nothing consults them for
+/// selection anymore.
 public enum EngineV2Config {
     /// RETIRED master flag (was the per-box kill switch). Ignored.
     public static let environmentFlag = "DARKBLOOM_ENGINE_V2"
@@ -88,6 +89,24 @@ public enum EngineV2RefusalReason: String, Sendable {
     /// A load-time KV re-slice would push some co-resident slot below the
     /// minimum serviceable grant (`EngineV2KVSizing` floor).
     case resliceFloor = "reslice_floor"
+    /// An EXPLICITLY requested paged backend could not be served
+    /// (`EngineV2ProductionError.pagedUnavailable`): kernel preflight,
+    /// physical-capacity planning, or `PagedKVBackend` construction. Kept
+    /// SEPARATE from `engineInitFailed` on purpose — with no canary fleet
+    /// this is the aggregate signal that a paged rollout is regressing,
+    /// and folding it into the catch-all would make it indistinguishable
+    /// from an unrelated bad model load. An `.auto` selection never lands
+    /// here; it degrades to contiguous and reports INFO
+    /// `engine_v2_kv_backend` with a fallback reason instead.
+    case pagedBackendUnavailable = "paged_backend_unavailable"
+    /// `DARKBLOOM_CBV2_PAGED_KV_DTYPE` carried a value that is neither
+    /// `float16` nor `float32`
+    /// (`EngineV2ProductionError.invalidPagedPoolDType`). Kept SEPARATE
+    /// from `pagedBackendUnavailable`, which is the paged-rollout
+    /// regression signal: this is an operator typo in a measurement knob,
+    /// and folding the two together would make a mistyped env var look
+    /// like paged infrastructure failing.
+    case pagedKVDTypeInvalid = "paged_kv_dtype_invalid"
     /// Any other engine-construction failure.
     case engineInitFailed = "engine_init_failed"
 
@@ -98,6 +117,10 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .noKVHeadroom
         case EngineV2ProductionError.unsupportedModel:
             return .unsupportedModel
+        case EngineV2ProductionError.pagedUnavailable:
+            return .pagedBackendUnavailable
+        case EngineV2ProductionError.invalidPagedPoolDType:
+            return .pagedKVDTypeInvalid
         case is EngineV2VLMTextExtractionError:
             return .vlmExtractionFailed
         default:
@@ -161,6 +184,10 @@ public enum EngineV2Factory {
                 ssdPrefixCache: ssdPrefixCache,
                 prefixCacheStatus: prefixCacheStatus,
                 kvBackendKind: build.kvBackendKind,
+                // Same value the INFO event below reports, but on a channel
+                // that cannot be dropped: the bridge republishes it on every
+                // heartbeat as `BackendSlotCapacity.kv_backend_fallback_reason`.
+                kvBackendFallbackReason: build.kvBackendFallbackReason,
                 emitTelemetry: emitTelemetry
             )
         } catch {
@@ -191,37 +218,33 @@ public enum EngineV2Factory {
         error: Error?,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
     ) {
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .error,
-            kind: .engineHealth,
-            message: "engine_v2: refused to serve — \(reason.rawValue)"
-        )
-        var fields: [String: AnyCodableValue] = [
-            "component": .string("engine"),
-            "operation": .string("engine_v2_refusal"),
-            "backend": .string("engine_v2"),
-            "model": .string(modelId),
-            "reason": .string(reason.rawValue),
-        ]
+        var extra: [String: AnyCodableValue] = ["reason": .string(reason.rawValue)]
         if let error {
-            fields["error_class"] = .string(String(reflecting: type(of: error)))
+            extra["error_class"] = .string(String(reflecting: type(of: error)))
             // Human-readable detail ("error" is allowlisted on both sides).
-            fields["error"] = .string(String(describing: error))
+            extra["error"] = .string(String(describing: error))
         }
-        event.fields = TelemetryFieldFilter.filter(fields)
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        // No `kv_backend`: a refusal can happen before the backend is
+        // resolved, and this path has no way to know which.
+        emitEngineHealth(
+            EngineHealthEvent.make(
+                severity: .error,
+                message: "engine_v2: refused to serve — \(reason.rawValue)",
+                operation: "engine_v2_refusal",
+                model: modelId,
+                kvBackend: nil,
+                extra: extra),
+            sink: emitTelemetry)
     }
 
     /// INFO `engine_health` event reporting which KV backend a slot was
-    /// built with (`operation=engine_v2_kv_backend`, `reason=paged |
-    /// contiguous | fallback:<why>`). Emitted once per engine construction
-    /// so the fleet dashboard can attribute serving backends and spot
-    /// unexpected fallbacks. Allowlisted fields only — no wire changes.
+    /// built with (`operation=engine_v2_kv_backend`, `kv_backend=paged |
+    /// contiguous`, `reason=paged | contiguous | fallback:<why>`). Emitted
+    /// once per engine construction, so it is a NOTIFICATION of a load, not
+    /// a fleet inventory — the sink drops on full behind a rate limit. The
+    /// recurring per-slot inventory is `engine_v2_slot_posture`
+    /// (`EngineV2Bridge+MTP`) plus `BackendSlotCapacity.kv_backend` on every
+    /// heartbeat. Allowlisted fields only — no wire changes.
     static func emitKVBackendTelemetry(
         modelId: String,
         kind: EngineV2KVBackendKind,
@@ -230,52 +253,19 @@ public enum EngineV2Factory {
     ) {
         let reason =
             fallbackReason.map { "fallback:\($0)" } ?? kind.rawValue
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .info,
-            kind: .engineHealth,
-            message: "engine_v2: serving with \(kind.rawValue) KV backend"
-                + (fallbackReason.map { " (fallback: \($0))" } ?? "")
-        )
-        event.fields = TelemetryFieldFilter.filter([
-            "component": .string("engine"),
-            "operation": .string("engine_v2_kv_backend"),
-            "backend": .string("engine_v2"),
-            "model": .string(modelId),
-            "reason": .string(reason),
-        ])
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
-    }
-
-    /// WARN `engine_health` event when a model configured for `kv_quant` is
-    /// served through engine_v2, which does NOT support KV-quant and uses
-    /// unquantized native-float caches (`makeProductionEngine` builds
-    /// `CBv2LayerCache`, never a quantized cache). Surfacing this keeps the operator from assuming
-    /// the memory savings apply. Allowlisted fields only.
-    static func emitKVQuantUnsupportedTelemetry(
-        modelId: String,
-        emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?
-    ) {
-        var event = TelemetryEvent(
-            source: .provider,
-            severity: .warn,
-            kind: .engineHealth,
-            message: "engine_v2: kv_quant not supported — using unquantized native KV"
-        )
-        event.fields = TelemetryFieldFilter.filter([
-            "component": .string("engine"),
-            "operation": .string("engine_v2_kv_quant_unsupported"),
-            "backend": .string("engine_v2"),
-            "model": .string(modelId),
-        ])
-        if let emitTelemetry {
-            emitTelemetry(event)
-        } else {
-            TelemetryClient.shared.emit(event)
-        }
+        // The kind used to live only inside the free-form `reason` string,
+        // where "fallback:kill_switch" hid it from any `group by`. It has its
+        // own `kv_backend` key so this event joins the heartbeat and the
+        // posture sample on the same value.
+        emitEngineHealth(
+            EngineHealthEvent.make(
+                severity: .info,
+                message: "engine_v2: serving with \(kind.rawValue) KV backend"
+                    + (fallbackReason.map { " (fallback: \($0))" } ?? ""),
+                operation: "engine_v2_kv_backend",
+                model: modelId,
+                kvBackend: kind.rawValue,
+                extra: ["reason": .string(reason)]),
+            sink: emitTelemetry)
     }
 }

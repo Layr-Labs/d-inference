@@ -19,27 +19,9 @@ extension ProviderLoop {
     // MARK: - Main Run Loop
 
     public func run() async throws {
-        // v0.7.5 one-engine: the v2 selection knobs are retired — warn
-        // operators still setting them so nobody believes a kill switch
-        // exists that doesn't. Selection is unconditional; rollback is
-        // release-level.
-        for retired in EngineV2Config.retiredEnvironmentKeysSet() {
-            logger.warning(
-                "\(retired) is retired and IGNORED as of v0.7.5 — the v2 engine serves "
-                    + "everything; rollback is release-level, not a per-box switch")
-        }
-        for retired in loopConfig.config.backend.retiredKeysPresent {
-            logger.warning(
-                "provider.toml sets [backend] \(retired), which is retired and IGNORED as "
-                    + "of v0.7.5 (one engine) — remove the key")
-        }
-        if loopConfig.config.backend.kvQuant {
-            logger.warning(
-                "provider.toml sets kv_quant = true, which is REJECTED as of v0.7.5 — the "
-                    + "v2 engine serves fp16-only KV caches (the legacy KV-quant schemes "
-                    + "died with the legacy engine; a CBv2-native KV-quant fast-follow is "
-                    + "planned). The value is NOT silently honored.")
-        }
+        // Retired-knob warnings are emitted once by `Start.run()`, before
+        // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
+        // reached only the coordinator-serving modes.
 
         logger.info("darkbloom \(ProviderCore.version) starting")
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")

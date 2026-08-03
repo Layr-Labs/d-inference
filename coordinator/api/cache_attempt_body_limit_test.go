@@ -126,7 +126,9 @@ func TestAdmissionDoesNotInvent413WithoutIncompatibleProvider(t *testing.T) {
 			refundReservation:         func() { refunded = true },
 		},
 	)
-	if !handled || !refunded || recorder.Code != http.StatusServiceUnavailable {
+	// An empty fleet sheds as transient capacity (429 + Retry-After), never as a
+	// request-shape error: nothing about this request is too large.
+	if !handled || !refunded || recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("admission handled=%v refunded=%v status=%d body=%s",
 			handled, refunded, recorder.Code, recorder.Body.String())
 	}

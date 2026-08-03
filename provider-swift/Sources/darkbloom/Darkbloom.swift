@@ -178,6 +178,8 @@ private let staleCoordinatorURLs: [(pattern: String, label: String)] = [
 ///    file there (keeping the old one for backward compat).
 /// 2. **Coordinator URL**: if the TOML text contains a known stale
 ///    coordinator URL (localhost, dev), rewrite it to production in-place.
+/// 3. **Schema migration**: bring `config_version` up to date, applying any
+///    `ConcurrencyDefaultMigration` step the old stamp calls for.
 func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderConfig {
     let fm = FileManager.default
     guard fm.fileExists(atPath: configPath.path) else { return config }
@@ -222,6 +224,27 @@ func migrateConfigIfNeeded(configPath: URL, config: ProviderConfig) -> ProviderC
         }
     }
 
+    // --- 3. config_version migration (+ concurrency default) ---
+    // Runs on any out-of-date file, even one whose concurrency line needs no
+    // change. The stamp is the whole point: it is what lets a LATER hand-edit
+    // back to the old cap stick, instead of being migrated again on the next
+    // boot. The in-memory value already changed at decode
+    // (`ProviderConfig.init(from:)`); this only makes it durable and visible.
+    var appliedSteps = migrateConfigSchema(in: configPath)
+    if copiedToCanonical {
+        // Both paths hold the same content, so the same step applies to both.
+        // Report each step once, not once per file.
+        let alsoCanonical = migrateConfigSchema(in: canonicalPath)
+        appliedSteps += alsoCanonical.filter { !appliedSteps.contains($0) }
+    }
+    for step in appliedSteps {
+        printError(
+            "  Migrated [backend] engine_v2_max_concurrent "
+                + "\(step.fromCap) -> \(step.toCap) "
+                + "(the default config_version \(step.fromVersion) generated; "
+                + "re-set it to keep the old value)")
+    }
+
     if didMigrateURL {
         let source = migratedLabel ?? "stale URL"
         printError("  Migrated coordinator URL from \(source) to api.darkbloom.dev")
@@ -257,6 +280,41 @@ private func rewriteStaleURLs(in path: URL) -> String? {
     } catch {
         return nil
     }
+}
+
+/// Bring a `provider.toml`'s `config_version` up to date on disk, applying any
+/// concurrency-default step the old stamp calls for. Returns the cap-bearing
+/// steps applied — empty when only the stamp moved, or when nothing was
+/// needed. An already-current or unreadable file is left untouched, so each
+/// step runs at most once per config.
+///
+/// Text surgery rather than `ConfigManager.save`, for the same reason
+/// `rewriteStaleURLs` is: a `TOMLEncoder` round-trip would drop the
+/// operator's comments AND their retired `[backend]` keys, and startup still
+/// needs those keys present in order to warn about them.
+///
+/// The matching and rewriting live in ProviderCore
+/// (`ConcurrencyDefaultMigration`), shared with the decode-time change in
+/// `ProviderConfig.init(from:)`: the two halves once disagreed on
+/// `= 4 # comment` (changed in memory, never rewritten on disk), which stamped
+/// the file and silently reverted the box from boot 2 on. This function owns
+/// only the file I/O.
+///
+/// Internal rather than `private` (unlike `rewriteStaleURLs`) so
+/// `DarkbloomCLITests` can drive it over a temp file: it edits an operator's
+/// config in place, and `migrateConfigIfNeeded` cannot be exercised directly
+/// without its legacy-path branch writing into the real `~/.config`.
+func migrateConfigSchema(in path: URL) -> [ConcurrencyMigrationStep] {
+    guard let content = try? String(contentsOf: path, encoding: .utf8),
+        let outcome = ConcurrencyDefaultMigration.migrate(content: content)
+    else { return [] }
+
+    do {
+        try outcome.text.write(to: path, atomically: true, encoding: .utf8)
+    } catch {
+        return []
+    }
+    return outcome.applied
 }
 
 func describeConfigPath(_ snapshot: RuntimeSnapshot) -> String {

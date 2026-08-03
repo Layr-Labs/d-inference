@@ -565,10 +565,13 @@ func TestWarmPoolPicksBetterIdleProvider(t *testing.T) {
 // --- Little's Law target math (pure, warm_pool_target.go) ---
 
 func TestQualityConcurrencyFromDecodeFloor(t *testing.T) {
-	k := effectiveTPSLoadFactor // 0.27
-	// solo 100, floor 15: B <= (100/15 - 1)/0.27 = 20.98 -> 20 (under cap 32).
-	if got := qualityConcurrency(100, 15, k, 32, 4); got != 20 {
-		t.Fatalf("qc(solo100,floor15,cap32) = %d, want 20", got)
+	k := effectiveTPSLoadFactor
+	// solo 100, floor 15: B <= (100/15 - 1)/k, under the cap of 32 at any
+	// measured k (20 at the legacy 0.27, 14 at the CBv2-re-fit 0.39).
+	// strictQualityBatch reaches the same answer from the defining
+	// inequality, so this pins the closed form, not the coefficient.
+	if want, got := strictQualityBatch(100, 15, k, 32), qualityConcurrency(100, 15, k, 32, 4); got != want {
+		t.Fatalf("qc(solo100,floor15,cap32) = %d, want %d (k=%.2f)", got, want, k)
 	}
 	// Capped by the provider concurrency limit.
 	if got := qualityConcurrency(100, 15, k, 6, 4); got != 6 {

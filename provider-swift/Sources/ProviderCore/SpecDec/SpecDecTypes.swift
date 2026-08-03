@@ -31,6 +31,16 @@ public enum MTPFallbackReason: String, Sendable, Equatable {
     case assistantResliceFloor = "assistant_reslice_floor"
     case assistantPostBuildHeadroom = "assistant_post_build_headroom"
     case engineInactive = "engine_inactive"
+    /// ENABLED BUT INERT — the one reason that is not a load failure. The
+    /// drafter loaded, the engine reports MTP active, and yet not one round
+    /// has run because every planned row was skipped as `kv_unsupported`
+    /// (`EngineLoopV2+MTPPlanning.mtpPlanAction`). Today's shape: a paged
+    /// gemma-4 slot, whose windowed layers the drafter's KV path cannot
+    /// serve — it charges full drafter residency and returns nothing.
+    /// Distinct from `engineInactive`, where the engine says it is OFF;
+    /// here the engine says it is ON and produces nothing, which is why
+    /// this state was invisible until it was given a name.
+    case inertKVUnsupported = "inert_kv_unsupported"
 }
 
 public enum SpecDecArtifactSource: String, Sendable, Equatable {

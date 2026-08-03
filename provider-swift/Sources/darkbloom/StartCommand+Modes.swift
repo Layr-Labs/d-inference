@@ -89,7 +89,6 @@ extension Start {
                 host: bind,
                 maxCachedModels: Int(clamping: config.backend.maxModelSlots),
                 authToken: token,
-                kvQuant: config.backend.kvQuant,
                 hardware: hardware,
                 engineV2MaxConcurrent: config.backend.engineV2MaxConcurrent,
                 engineV2MaxConcurrentByModel: config.backend.engineV2MaxConcurrentByModel,
@@ -195,6 +194,23 @@ extension Start {
             try? WatchdogAgent.installAndStart(
                 configPath: snapshot.configPath
             )
+        }
+
+        // A crash-loop KV-backend guard binds only the binary version that
+        // tripped it, and a NEW version booting here is the fleet's
+        // fix-delivery event. The version check in the engine factory
+        // already keeps a mismatched record inert; deleting it too keeps
+        // `status`/`doctor` from describing a guard that can never bind
+        // again. A matching record is deliberately left alone — this
+        // binary tripped it, so `.auto` keeps resolving contiguous.
+        if let cleared = KVBackendGuardStore.clearIfStale(
+            runningVersion: ProviderCore.version)
+        {
+            print(
+                "Cleared stale crash-loop KV-backend guard from "
+                    + "v\(cleared.providerVersion) (this binary is "
+                    + "v\(ProviderCore.version)); backend selection resolves "
+                    + "normally again.")
         }
 
         // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----

@@ -6,7 +6,43 @@ import argparse
 from pathlib import Path
 
 
+# Schema of the *wrapper* report (distinct from the per-benchmark payload
+# schemas the Swift binary stamps onto `raw.*`). Consumers dispatch on it, so
+# any field rename or required addition bumps it.
+#
+#   2 — the arrival summary carries measured delivered-topology evidence
+#       (offsets, arrival error, tolerance, discarded attempts).
+#   3 — `configuration.maxBatch` REMOVED in favour of the enumerated
+#       `configuration.batchSizes` ladder, and a required top-level
+#       `kvBackend` block added (requested selection, resolved backends,
+#       per-batch-size resolution, posture violations).
+#   4 — `kvBackend.byPhase` added (required): the backend EVERY phase built,
+#       not just the decode curve's. The scheduler-prefill and arrival
+#       commands now take the selection too, so `kvBackend.resolved` is the
+#       whole run's population rather than the sweep's.
+SCHEMA_VERSION = 4
+
+
 DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
+# The canonical posture this release is measured under. Both defaults are
+# load-bearing:
+#
+#   paged      — `auto` resolves PAGED as of v0.8.0, but it degrades
+#                SILENTLY (kill switch, kernel preflight, pool capacity)
+#                while an explicit `paged` REFUSES. Naming the backend is
+#                the only way this wrapper can promise it measured what it
+#                reports, so it is requested by name even though `auto`
+#                would usually land on the same engine.
+#   1,2,4,8    — paged-vs-contiguous aggregate decode crosses over at ~B=5
+#                (measured on gemma-4 / M4 Max: 0.92x at B=1, 0.98x at B=4,
+#                1.17x at B=8). A curve that stops at 4 structurally cannot
+#                observe the win and reads as a regression. B=8 is also the
+#                raised production concurrency ceiling. The list is sparse on
+#                purpose: a dense 1..8 ladder doubles wall time for cells no
+#                gate reads.
+DEFAULT_KV_BACKEND = "paged"
+DEFAULT_BATCH_SIZES = [1, 2, 4, 8]
+KV_BACKENDS = ("auto", "contiguous", "paged")
 EXPECTED_ARRIVAL_PATTERNS = {
     "burst": [0, 0, 0, 0],
     "stagger-25ms": [0, 25, 50, 75],
@@ -37,7 +73,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prefill-lengths", type=parse_positive_ints, default=[128, 512, 2048]
     )
-    parser.add_argument("--max-batch", type=int, default=4)
+    parser.add_argument(
+        "--batch-sizes",
+        type=parse_positive_ints,
+        default=list(DEFAULT_BATCH_SIZES),
+        help=(
+            "comma-separated decode batch sizes "
+            f"(default {','.join(map(str, DEFAULT_BATCH_SIZES))})"
+        ),
+    )
+    parser.add_argument(
+        "--kv-backend",
+        choices=KV_BACKENDS,
+        default=DEFAULT_KV_BACKEND,
+        help=(
+            "KV backend the decode sweep is built with "
+            f"(default {DEFAULT_KV_BACKEND}; 'auto' may silently resolve "
+            "either backend, so it cannot pin a measurement)"
+        ),
+    )
     parser.add_argument("--decode-prompt-tokens", type=int, default=64)
     parser.add_argument("--decode-tokens", type=int, default=64)
     parser.add_argument("--arrival-prompt-tokens", type=int, default=512)
@@ -62,7 +116,6 @@ def parse_args() -> argparse.Namespace:
 
     numeric = {
         "--iterations": args.iterations,
-        "--max-batch": args.max_batch,
         "--decode-prompt-tokens": args.decode_prompt_tokens,
         "--decode-tokens": args.decode_tokens,
         "--arrival-prompt-tokens": args.arrival_prompt_tokens,
@@ -75,4 +128,7 @@ def parse_args() -> argparse.Namespace:
         parser.error("--prefill-lengths values must be >= 2")
     if len(set(args.prefill_lengths)) != len(args.prefill_lengths):
         parser.error("--prefill-lengths must not contain duplicates")
+    if len(set(args.batch_sizes)) != len(args.batch_sizes):
+        parser.error("--batch-sizes must not contain duplicates")
+    args.batch_sizes = sorted(args.batch_sizes)
     return args

@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
 func TestEventBufferByKind(t *testing.T) {
@@ -124,4 +126,37 @@ func TestDefaultConfigs(t *testing.T) {
 	assert.Equal(t, 7, multiSpec.TotalProviders())
 	assert.Equal(t, []string{"model-a", "model-b"}, multiSpec.AllModelIDs())
 	assert.Equal(t, "model-a", multiSpec.PrimaryModelID())
+}
+
+// TestReportedPrivacyCapabilities pins the accessor contract the
+// mixed-version gate depends on: the three registration outcomes stay
+// distinguishable, and the caller cannot reach back into suite state.
+func TestReportedPrivacyCapabilities(t *testing.T) {
+	s := &Suite{privacyAtRegistration: map[string]*protocol.PrivacyCapabilities{
+		"reported": {TextBackendInprocess: true, SIPEnabled: true},
+		"silent":   nil,
+	}}
+
+	caps, ok := s.ReportedPrivacyCapabilities("reported")
+	assert.True(t, ok)
+	if assert.NotNil(t, caps) {
+		assert.True(t, caps.TextBackendInprocess)
+		assert.True(t, caps.SIPEnabled)
+	}
+
+	// A provider that registered without a privacy_capabilities block is a
+	// real outcome and must NOT look like an unknown provider.
+	silent, ok := s.ReportedPrivacyCapabilities("silent")
+	assert.True(t, ok, "provider registered; it simply reported no block")
+	assert.Nil(t, silent)
+
+	unknown, ok := s.ReportedPrivacyCapabilities("never-registered")
+	assert.False(t, ok)
+	assert.Nil(t, unknown)
+
+	// The returned block is a copy: mutating it must not rewrite the snapshot,
+	// or one subtest could launder a value into another's assertions.
+	caps.TextBackendInprocess = false
+	again, _ := s.ReportedPrivacyCapabilities("reported")
+	assert.True(t, again.TextBackendInprocess, "accessor leaked its internal pointer")
 }

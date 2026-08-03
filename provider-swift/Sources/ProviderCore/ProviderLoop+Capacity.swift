@@ -149,6 +149,29 @@ extension ProviderLoop {
             }),
             statuses: loadedSlots.map { _, bridge in bridge.prefixCacheModelStatus() },
             runtimeIdentityAvailable: binaryHash?.isEmpty == false)
+
+        // Per-slot KV-backend + MTP posture for the diagnostics state file
+        // (`darkbloom status` / `doctor`). Sampled HERE, on the existing
+        // capacity cadence, because `mtpStatusSnapshot()` is an actor hop
+        // and `writeDaemonState()` is synchronous — and because this is the
+        // same tick that already reports `BackendSlotCapacity.kv_backend` to
+        // the coordinator, so the box and the fleet cannot disagree about
+        // which backend a slot resolved to.
+        //
+        // EVERY slot, not just `loadedSlots`: a model that is loaded but not
+        // advertised is still occupying memory on the backend an operator is
+        // asking about.
+        // Assembled by the BRIDGE (`slotPosture`), not here, so this and the
+        // `engine_v2_slot_posture` telemetry event cannot describe the same
+        // slot differently — that shared accessor is what makes the sentence
+        // above true rather than merely intended.
+        var postures: [DaemonSlotPostureBuilder.LiveSlot] = []
+        postures.reserveCapacity(modelSlots.count)
+        for (_, slot) in modelSlots {
+            let bridge = slot.engineV2
+            postures.append(bridge.slotPosture(await bridge.mtpStatusSnapshot()))
+        }
+        lastLiveSlotPostures = postures
     }
 
 }

@@ -56,20 +56,24 @@ func TestProviderBudgetFitsWarmSlotLiveBudget(t *testing.T) {
 func TestProviderBudgetFitsColdLoadPostLoadBudget(t *testing.T) {
 	// gemma-4-26b shape: 28 GB catalog weights on a 48 GB box. Padded weights
 	// = 28 × ~1.1176 ≈ 31.3 GiB ≤ free_for_load 32 → the weight gate admits.
+	// 48 GB leaves ~11.9 GB post-load, out of which the provider holds back the
+	// flat 5.5 GiB activation reserve — the same amount for every model, whatever
+	// its attention posture (UnifiedMemoryCap.defaultActivationReserveBytes).
 	freeForLoad := 32.0
 	snap := routingSnapshot{
 		totalMemoryGB:   48,
 		modelSizeGB:     28,
 		freeForLoadGB:   &freeForLoad,
 		availableOnDisk: true,
+		binaryVersion:   "0.8.0",
 	}
 	if admit, reported := reportedFreeForLoadAdmits(snap.modelSizeGB, snap.freeForLoadGB); !reported || !admit {
 		t.Fatalf("precondition: weight-only cold gate must admit (admit=%v, reported=%v)", admit, reported)
 	}
 
 	// Post-load budget per the provider's own headroom math:
-	// (0.90×48 − paddedWeights − 3 GB activation reserve) / 400000 B/token.
-	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0)
+	// (0.90×48 − paddedWeights − 5.5 GiB activation floor) / 400000 B/token.
+	budget := coldTokenBudgetEstimate(snap.totalMemoryGB, snap.modelSizeGB, 0, snap.binaryVersion)
 	if budget <= 0 || budget >= 30_000 {
 		t.Fatalf("cold post-load budget = %d, want a positive value below the 30k request", budget)
 	}
@@ -110,12 +114,17 @@ func TestProviderBudgetFitsFailsOpenOnUnknown(t *testing.T) {
 func TestPredictServableColdWeightFitInsufficientBudgetSheds(t *testing.T) {
 	reg := New(testLogger())
 	model := "cold-budget-model"
-	// 28 GB weights on a 48 GB node: min_ram 36 ≤ 48 passes the hardware gate,
-	// and the post-load budget is coldTokenBudgetEstimate(48, 28, 0) ≈ 23.9k.
+	// 28 GB weights on a 48 GB node running v0.8.0: min_ram 36 ≤ 48 passes the
+	// hardware gate, and the post-load budget is
+	// coldTokenBudgetEstimate(48, 28, 0, "0.8.0") = 17200
+	// (see TestColdTokenBudgetEstimate case (b2)).
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 28, MinRAMGB: 36}})
-	makeWarmPoolColdProvider(t, reg, "cold-48gb", model, 80, 48, 0)
+	cold := makeWarmPoolColdProvider(t, reg, "cold-48gb", model, 80, 48, 0)
+	cold.mu.Lock()
+	cold.Version = "0.8.0"
+	cold.mu.Unlock()
 
-	budget := coldTokenBudgetEstimate(48, 28, 0)
+	budget := coldTokenBudgetEstimate(48, 28, 0, "0.8.0")
 	if budget <= 0 {
 		t.Fatalf("cold budget = %d, want > 0", budget)
 	}

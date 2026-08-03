@@ -450,6 +450,57 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     public var maxConcurrency: UInt32
     public var modelLoadTimeMs: Int64
 
+    /// The KV-cache backend this slot's engine was actually built with:
+    /// `EngineV2Bridge.kvBackendKind.rawValue` — "paged" | "contiguous",
+    /// the RESOLVED kind after every veto and fallback, not the operator's
+    /// requested `engine_v2_kv_backend`. The coordinator's only per-slot,
+    /// every-heartbeat record of the v0.8.0 paged rollout.
+    ///
+    /// OPTIONAL, deliberately: nil ⇒ not reported, which the coordinator
+    /// reads as UNKNOWN and never as contiguous (mirrors the Go
+    /// `KVBackend *string`). Encoded with `encodeIfPresent`, NOT the
+    /// non-zero/false omission the counters below use, so an explicit ""
+    /// still goes on the wire — Go's pointer `omitempty` tests the pointer,
+    /// not the pointee, and the two sides must agree on that.
+    public var kvBackend: String?
+
+    /// Why this slot's engine DEGRADED away from the backend it was asked
+    /// for — `EngineV2Factory.ProductionBuild.kvBackendFallbackReason`,
+    /// carried verbatim: `"kill_switch"`, `"kernel_preflight: …"`,
+    /// `"physical_capacity: …"`, `"ineligible: …"`,
+    /// `"pool_construction_capacity: …"`. nil when the slot got what it
+    /// asked for.
+    ///
+    /// This is the other half of `kvBackend`. The resolved kind alone
+    /// cannot separate "the operator configured contiguous" from "the
+    /// operator configured paged and this slot fell back", and those are
+    /// opposite signals: the first is a choice, the second is a paged
+    /// regression wearing a contiguous label.
+    ///
+    /// `.auto` resolves CONTIGUOUS as of v0.8.1, so on the default fleet
+    /// NO class here fires — a stock slot resolves contiguous with no
+    /// fallback reason at all, and a non-nil value now means the box
+    /// carries an explicit `engine_v2_kv_backend = "paged"`. Every class
+    /// stays decodable: the paged failure classes are live on exactly
+    /// those boxes and on the paged CI lane. A machine whose paged
+    /// kernel preflight, physical-capacity plan, or pool construction
+    /// fails degrades under `.auto` and reports `"kernel_preflight: …"`,
+    /// `"physical_capacity: …"`, `"ineligible: …"` or
+    /// `"pool_construction_capacity: …"`; a fleet with
+    /// `DARKBLOOM_CBV2_PAGED_KV=0` reports `"kill_switch"` and is serving
+    /// contiguous on purpose. Nothing else on the wire separates them.
+    ///
+    /// ABSENT MEANS NO DEGRADE — the inverse of `kvBackend`, whose absence
+    /// means UNKNOWN. The two are read as a PAIR: a build old enough to
+    /// omit this key omits `kvBackend` too (both ship in v0.8.0), so
+    /// `kvBackend` present + this absent is an authoritative "did not
+    /// degrade", and only `kvBackend` absent is unknown. Encoded with
+    /// `encodeIfPresent` — mirroring `KVBackendFallbackReason *string` +
+    /// `omitempty` in coordinator/protocol/messages.go — so nil never
+    /// reaches the wire as an empty string, which would read as a degrade
+    /// nobody can name.
+    public var kvBackendFallbackReason: String?
+
     // MARK: - Engine-health (first-token wedge) signals
     //
     // Low-cardinality, NON-PRIVATE diagnostic counters that let the coordinator
@@ -501,6 +552,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         case kvBytesPerToken = "kv_bytes_per_token"
         case maxConcurrency = "max_concurrency"
         case modelLoadTimeMs = "model_load_time_ms"
+        case kvBackend = "kv_backend"
+        case kvBackendFallbackReason = "kv_backend_fallback_reason"
         case stepsExecuted = "steps_executed"
         case admits
         case firstTokensEmitted = "first_tokens_emitted"
@@ -526,6 +579,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget: Int64 = 0,
         kvBytesPerToken: Int64 = 0,
         modelLoadTimeMs: Int64 = 0,
+        kvBackend: String? = nil,
+        kvBackendFallbackReason: String? = nil,
         stepsExecuted: Int64 = 0,
         admits: Int64 = 0,
         firstTokensEmitted: Int64 = 0,
@@ -549,6 +604,8 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         self.queuedTokenBudget = queuedTokenBudget
         self.kvBytesPerToken = kvBytesPerToken
         self.modelLoadTimeMs = modelLoadTimeMs
+        self.kvBackend = kvBackend
+        self.kvBackendFallbackReason = kvBackendFallbackReason
         self.stepsExecuted = stepsExecuted
         self.admits = admits
         self.firstTokensEmitted = firstTokensEmitted
@@ -575,6 +632,14 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         queuedTokenBudget = try container.decodeIfPresent(Int64.self, forKey: .queuedTokenBudget) ?? 0
         kvBytesPerToken = try container.decodeIfPresent(Int64.self, forKey: .kvBytesPerToken) ?? 0
         modelLoadTimeMs = try container.decodeIfPresent(Int64.self, forKey: .modelLoadTimeMs) ?? 0
+        // No `?? ""` fallback: absent must stay absent, or the coordinator
+        // cannot tell a pre-0.8.0 provider from one reporting an empty kind.
+        kvBackend = try container.decodeIfPresent(String.self, forKey: .kvBackend)
+        // Same no-fallback rule as above, opposite meaning: absent is "this
+        // slot did not degrade" whenever `kvBackend` is present. A `?? ""`
+        // here would forge an unnameable degrade on every healthy slot.
+        kvBackendFallbackReason = try container.decodeIfPresent(
+            String.self, forKey: .kvBackendFallbackReason)
         stepsExecuted = try container.decodeIfPresent(Int64.self, forKey: .stepsExecuted) ?? 0
         admits = try container.decodeIfPresent(Int64.self, forKey: .admits) ?? 0
         firstTokensEmitted = try container.decodeIfPresent(Int64.self, forKey: .firstTokensEmitted) ?? 0
@@ -601,6 +666,9 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
         try encodeIfNonZero(queuedTokenBudget, forKey: .queuedTokenBudget, into: &container)
         try encodeIfNonZero(kvBytesPerToken, forKey: .kvBytesPerToken, into: &container)
         try encodeIfNonZero(modelLoadTimeMs, forKey: .modelLoadTimeMs, into: &container)
+        try container.encodeIfPresent(kvBackend, forKey: .kvBackend)
+        try container.encodeIfPresent(
+            kvBackendFallbackReason, forKey: .kvBackendFallbackReason)
         try encodeIfNonZero(stepsExecuted, forKey: .stepsExecuted, into: &container)
         try encodeIfNonZero(admits, forKey: .admits, into: &container)
         try encodeIfNonZero(firstTokensEmitted, forKey: .firstTokensEmitted, into: &container)

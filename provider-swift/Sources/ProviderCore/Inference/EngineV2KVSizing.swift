@@ -2,40 +2,15 @@
 //
 // Per-token KV byte-cost resolution for the ContinuousBatchingV2 bridge.
 //
-// The v2 engine builds UNQUANTIZED native-float `CBv2LayerCache`s regardless
-// of the provider's `kv_quant` setting — KV-quant is not composed with EngineV2
-// (`EngineV2Factory.makeProductionEngine` always uses `CBv2LayerCache`). The
-// sizing snapshot remains an all-fp16 baseline; slot assembly adds GPT-OSS's
-// fp32 owning-full-row delta before heartbeat/shared-budget publication. A
-// stale or test sizing input can still carry a quantized `kvBytesPerToken`
-// rate that is 2–4× smaller than fp16. Feeding that rate into the bridge would
-// make heartbeat token budgets (`kvBytesCapacity / kvBytesPerToken`) and
-// active-token counts (`kvBytesInUse / kvBytesPerToken`) OVERSTATE capacity by
-// the same 2–4×, and would under-size the native shared-budget KV reservation.
-//
-// `resolve` is retained as compatibility test math for the removed quantized
-// input shape. Production v0.7.5 rejects kv_quant intent with a warning and
-// takes the fp16 baseline from SlotSizingSnapshot before native-width resolution.
+// The v2 engine builds UNQUANTIZED native-float `CBv2LayerCache`s: KV
+// quantization was removed from the product in v0.8.0, so there is exactly
+// one per-token cost. The sizing snapshot is an all-fp16 baseline; slot
+// assembly adds GPT-OSS's fp32 owning-full-row delta before
+// heartbeat/shared-budget publication.
 
 import Foundation
 
 enum EngineV2KVSizing {
-    /// Compatibility math for a historical quantized/fp16 input pair.
-    ///
-    /// - Parameters:
-    ///   - quantizedRate: a candidate `kvBytesPerToken` input.
-    ///   - fp16Rate: the unquantized cost the EngineV2 caches consume.
-    /// - Returns: `rate` = fp16 cost to size the bridge with (falls back to
-    ///   the quantized rate only when fp16 is unknown/0); `warnKVQuantUnsupported`
-    ///   = true iff kv_quant engaged (quantized rate strictly below fp16).
-    static func resolve(
-        quantizedRate: Int, fp16Rate: Int
-    ) -> (rate: Int, warnKVQuantUnsupported: Bool) {
-        let rate = fp16Rate > 0 ? fp16Rate : quantizedRate
-        let warn = fp16Rate > 0 && quantizedRate > 0 && quantizedRate < fp16Rate
-        return (rate, warn)
-    }
-
     /// Conservative residual KV capacity for one engine, sized against the
     /// whole process. New engines receive runtime-resizable grants from
     /// `resliceGrants`; this helper remains the heartbeat safety clamp and a

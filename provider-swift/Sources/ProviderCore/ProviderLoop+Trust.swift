@@ -25,8 +25,15 @@ extension ProviderLoop {
     /// Best-effort and cheap; safe to call from the trust handler and the
     /// periodic capacity loop.
     internal func writeDaemonState() {
+        DaemonStateFile.write(currentDaemonState())
+    }
+
+    /// The snapshot `writeDaemonState` persists. Split out so a test can
+    /// assert its contents without a global `DARKBLOOM_STATE_FILE` override
+    /// racing every other suite.
+    internal func currentDaemonState() -> DaemonState {
         let cap = state.backendCapacity
-        let snapshot = DaemonState(
+        return DaemonState(
             pid: getpid(),
             processIdentity: ProcessIdentity.current(),
             version: ProviderCore.version,
@@ -47,9 +54,47 @@ extension ProviderLoop {
                     gpuMemoryActiveGb: $0.gpuMemoryActiveGb,
                     gpuMemoryCacheGb: $0.gpuMemoryCacheGb)
             },
-            lastModelLoadError: lastModelLoadError
+            lastModelLoadError: lastModelLoadError,
+            // Joined at WRITE time, not at sample time: a refused explicit
+            // paged request builds no engine, so its only trace is
+            // `lastModelLoadError` — and `recordModelLoadError` writes the
+            // state file immediately, before the next capacity refresh.
+            slots: DaemonSlotPostureBuilder.build(
+                live: lastLiveSlotPostures,
+                requestedGlobal: loopConfig.config.backend.engineV2KVBackend,
+                requestedByModel: loopConfig.config.backend.engineV2KVBackendByModel,
+                lastModelLoadError: lastModelLoadError,
+                desiredModels: desiredModelsForPosture(),
+                // Expiry follows THIS box's idle-unload horizon, not the
+                // default: 0 (unload disabled) never expires by age, a
+                // longer-than-default timeout keeps evidence just as long.
+                failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
+                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins))
         )
-        DaemonStateFile.write(snapshot)
+    }
+
+    /// The set of models this daemon still wants to serve, for the
+    /// synthetic failed-slot suppression in `DaemonSlotPostureBuilder`.
+    /// nil when `enabled_models` is empty — that config serves ANY
+    /// downloaded or coordinator-pushed model, so membership proves
+    /// nothing and the builder falls back to age expiry alone. When the
+    /// allowlist is set, the pinned `model` and `preload_models` join it,
+    /// and so does the LIVE advertised set: a daemon launched with
+    /// `--model X` or `--all` deliberately selects models OUTSIDE
+    /// `enabled_models` (the launch path seeds them into
+    /// `loopConfig.models` → `advertisedModels`, and background prefetch
+    /// appends more at runtime) while the config object passed in here is
+    /// unchanged — a failed load of such a model is a real refusal the
+    /// operator asked to see, and must never be suppressed as "undesired"
+    /// by a config filter the launch flags overrode.
+    internal func desiredModelsForPosture() -> Set<String>? {
+        let backend = loopConfig.config.backend
+        guard !backend.enabledModels.isEmpty else { return nil }
+        var desired = Set(backend.enabledModels)
+        desired.formUnion(backend.preloadModels)
+        if let pinned = backend.model { desired.insert(pinned) }
+        desired.formUnion(advertisedModels.keys)
+        return desired
     }
 
     /// Records a model-load failure for the diagnostics state file so the

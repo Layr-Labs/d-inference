@@ -76,11 +76,61 @@ def lookup_comparison(
     return index_by(comparisons.get(section, []), lookup_key).get(key, {})
 
 
+def kv_backend_lines(kv_backend: dict) -> list[str]:
+    """Requested backend versus the one every engine actually built.
+
+    Rendered as its own section rather than a configuration row because the
+    selection is an input and the resolution is a result: an operator reading
+    `paged` in the configuration table has been told what was asked for, not
+    what was measured.
+
+    Per phase as well as per decode cell. The three phases build their own
+    engines, so "this run measured paged" is three separate claims, and the
+    row is the only place a reader can see one of them fail.
+    """
+    resolved = kv_backend["resolved"] or ["none"]
+    lines = [
+        "",
+        "## KV Backend",
+        "",
+        "| Field | Value |",
+        "|---|---|",
+        f"| Requested | `{kv_backend['selection']}` |",
+        f"| Resolved | `{'` + `'.join(resolved)}` |",
+        f"| Descriptors | {', '.join(f'`{item}`' for item in kv_backend['resolvedDescriptors']) or 'none'} |",
+    ]
+    by_batch = kv_backend["byBatchSize"]
+    if kv_backend["degrades"]:
+        # The only place a reader learns WHY paged was not served: kill
+        # switch, kernel preflight, pool capacity, or the SwiftPM resource
+        # bundle missing beside the executable — the last being a packaging
+        # fault on a capable machine, which reads as a hardware verdict if
+        # the reason is not shown verbatim.
+        lines.append(
+            f"| Degraded because | {'; '.join(kv_backend['degrades'])} |"
+        )
+    if by_batch:
+        per_cell = ", ".join(
+            f"B={batch}: `{kind}`"
+            for batch, kind in sorted(by_batch.items(), key=lambda kv: int(kv[0]))
+        )
+        lines.append(f"| Per batch size | {per_cell} |")
+    by_phase = kv_backend["byPhase"]
+    if by_phase:
+        per_phase = ", ".join(
+            f"{phase}: `{kind}`" for phase, kind in by_phase.items()
+        )
+        lines.append(f"| Per phase | {per_phase} |")
+    return lines
+
+
 def markdown_report(report: dict) -> str:
     summary = report["summary"]
     metadata = report["metadata"]
     configuration = report["configuration"]
     comparisons = report.get("comparison")
+    kv_backend = report["kvBackend"]
+    violations = kv_backend["postureViolations"]
     hardware = report["raw"]["throughputSweep"]["hardware"]
     model_path = report["raw"]["throughputSweep"]["modelPath"]
     dirty = metadata["gitStatus"] or ["clean"]
@@ -110,9 +160,14 @@ def markdown_report(report: dict) -> str:
         f"| Iterations | {configuration['iterations']} |",
         f"| Prefill lengths | {', '.join(map(str, configuration['prefillLengths']))} |",
         f"| Decode prompt / output | {configuration['decodePromptTokens']} / {configuration['decodeTokens']} tokens |",
-        f"| Maximum decode batch | {configuration['maxBatch']} |",
+        f"| Decode batch sizes | {', '.join(map(str, configuration['batchSizes']))} |",
         f"| Decode samples per batch | {configuration['decodeIterations']} |",
         f"| Arrival prompt / output | {configuration['arrivalPromptTokens']} / {configuration['arrivalDecodeTokens']} tokens |",
+    ]
+
+    lines += kv_backend_lines(kv_backend)
+
+    lines += [
         "",
         "## Raw Prefill",
         "",
@@ -214,6 +269,13 @@ def markdown_report(report: dict) -> str:
         "## Validation",
         "",
         f"- Exact output invariance: {'PASS' if invariant else 'FAIL'}",
+        f"- KV backend posture: {'PASS' if not violations else 'FAIL'} "
+        + (
+            f"(requested `{kv_backend['selection']}`, measured "
+            f"`{'` + `'.join(kv_backend['resolved']) or 'none'}`)"
+            if not violations
+            else "— " + "; ".join(violations)
+        ),
         f"- Delivered arrival topology: {'PASS' if arrivals_delivered else 'FAIL'} "
         f"(worst arrival error {worst_arrival_error:.2f} ms against a "
         f"{summary['arrivalToleranceMs']:.2f} ms tolerance)",

@@ -1,0 +1,1961 @@
+// Copyright © 2026 Eigen Labs.
+//
+// Gate G2's verdict logic, exercised WITHOUT a model.
+//
+// The live half needs 15 GB of weights and both KV backends; the decision half
+// — which criterion passed, which was skipped, and what the process exit
+// status is — is pure and must be provable in CI. Every honesty rule the gate
+// claims is pinned here, in particular the one the sweep benchmark got wrong
+// this wave: a run that evaluated NOTHING must not exit 0.
+
+import Foundation
+import Testing
+
+@testable import ProviderBenchmark
+
+@Suite("gate G2: parity report verdicts and exit status")
+struct BackendParityReportTests {
+
+    // MARK: - Fixtures
+
+    private func criterion(
+        _ id: BackendParityReport.CriterionID,
+        _ verdict: BackendParityReport.Verdict
+    ) -> BackendParityReport.Criterion {
+        BackendParityReport.Criterion(
+            id: id, title: "\(id.rawValue)", verdict: verdict, detail: "fixture")
+    }
+
+    private func row(
+        _ prompt: String, _ tokens: [Int], finish: String = "stop"
+    ) -> BackendParityObservation.Row {
+        BackendParityObservation.Row(prompt: prompt, tokens: tokens, finishReason: finish)
+    }
+
+    /// A fully-populated arm that passes every criterion, so each test can
+    /// perturb exactly one thing.
+    private func healthyArm(
+        selection: String,
+        resolved: String,
+        prefillTokensSaved: Int = 256
+    ) -> BackendParityObservation {
+        BackendParityObservation(
+            selection: selection,
+            resolvedBackend: resolved,
+            rows: [row("a", [1, 2, 3]), row("b", [4, 5])],
+            mtp: BackendParityObservation.MTP(
+                rows: [row("a", [1, 2, 3]), row("b", [4, 5])],
+                driverConstructed: true,
+                rounds: 6,
+                draftedTokens: 30,
+                acceptedTokens: 21),
+            packedPrefill: BackendParityObservation.Capability(
+                active: true, detail: "probe active"),
+            visionSpans: BackendParityObservation.Capability(
+                active: true, detail: "span served"),
+            prefixReuse: BackendParityObservation.PrefixReuse(
+                capabilitySupported: true,
+                capabilityStrategy: "direct",
+                replayBoundTokens: 25600,
+                promptTokens: 28672,
+                donatedEntries: 4,
+                firstOutcome: "miss",
+                secondOutcome: "hit",
+                secondMatchedTokens: prefillTokensSaved,
+                secondPrefillTokensSaved: prefillTokensSaved,
+                cacheHits: 1,
+                cacheMisses: 1,
+                cacheTokensSaved: prefillTokensSaved))
+    }
+
+    /// An arm carrying ONLY a prefix-reuse block, for the criteria that read
+    /// only that block. Every parameter defaults to the gemma-4-26B-A4B shape
+    /// the prefix-reuse gates are written against — 28,672-token prompt,
+    /// 28,416 matched, frozen full replay — so a test names the one or two
+    /// fields it is actually perturbing and nothing else.
+    ///
+    /// Deliberately NOT `healthyArm` with more defaults: these arms carry no
+    /// rows, no MTP and no capability probes, and that absence is load-bearing
+    /// for anything that reaches `evaluate`. Two builders, two shapes.
+    private func prefixArm(
+        _ selection: String,
+        supported: Bool = true,
+        strategy: String? = "frozen_full_replay",
+        unsupportedReason: String? = nil,
+        bound: Int = 25600,
+        promptTokens: Int = 28672,
+        donated: Int = 1,
+        first: String = "miss",
+        second: String = "hit",
+        firstFinish: String = "",
+        matched: Int = 28416,
+        saved: Int = 2816,
+        hits: Int = 1,
+        misses: Int = 1,
+        tokensSaved: Int = 0,
+        exact: Bool? = nil,
+        mismatchReason: String? = nil,
+        inconclusiveReason: String? = nil,
+        comparedTokens: Int = 0,
+        probeResolved: String? = nil
+    ) -> BackendParityObservation {
+        BackendParityObservation(
+            selection: selection, resolvedBackend: selection,
+            prefixReuse: BackendParityObservation.PrefixReuse(
+                capabilitySupported: supported,
+                capabilityStrategy: strategy,
+                capabilityUnsupportedReason: unsupportedReason,
+                replayBoundTokens: bound,
+                promptTokens: promptTokens,
+                donatedEntries: donated,
+                firstOutcome: first,
+                secondOutcome: second,
+                firstFinishReason: firstFinish,
+                secondMatchedTokens: matched,
+                secondPrefillTokensSaved: saved,
+                cacheHits: hits,
+                cacheMisses: misses,
+                cacheTokensSaved: tokensSaved,
+                adoptionTokenExact: exact,
+                adoptionMismatchReason: mismatchReason,
+                adoptionInconclusiveReason: inconclusiveReason,
+                adoptionComparedTokens: comparedTokens,
+                probeResolvedBackend: probeResolved))
+    }
+
+    /// An arm carrying rows and an MTP block, for the token-exactness criteria.
+    /// `tokens` drives both the plain and the MTP rows, since the criteria that
+    /// read this compare the two against each other.
+    private func mtpArm(
+        _ selection: String,
+        tokens: [Int] = [1, 2, 3],
+        finish: String = "stop",
+        driverConstructed: Bool = true,
+        inactiveReason: String? = nil,
+        rounds: Int = 4,
+        draftedTokens: Int = 16,
+        acceptedTokens: Int = 9,
+        prefixReuse: BackendParityObservation.PrefixReuse? = nil,
+        capabilities: Bool = false
+    ) -> BackendParityObservation {
+        let rows = [row("a", tokens, finish: finish)]
+        return BackendParityObservation(
+            selection: selection, resolvedBackend: selection,
+            rows: rows,
+            mtp: BackendParityObservation.MTP(
+                rows: rows,
+                driverConstructed: driverConstructed,
+                inactiveReason: inactiveReason,
+                rounds: rounds,
+                draftedTokens: draftedTokens,
+                acceptedTokens: acceptedTokens),
+            // Non-optional with an `.undetermined("not probed")` default, so
+            // "no capabilities" is the ABSENCE of a probe, not a negative
+            // result — leave it to the type rather than passing a false.
+            packedPrefill: capabilities
+                ? BackendParityObservation.Capability(active: true, detail: "probe active")
+                : .undetermined("not probed"),
+            visionSpans: capabilities
+                ? BackendParityObservation.Capability(active: true, detail: "span served")
+                : .undetermined("not probed"),
+            prefixReuse: prefixReuse)
+    }
+
+    private var baseline: BackendParityObservation {
+        healthyArm(selection: "contiguous", resolved: "contiguous")
+    }
+
+    private var candidate: BackendParityObservation {
+        healthyArm(selection: "paged", resolved: "paged")
+    }
+
+    /// The gate this criterion could not previously fail. A backend may adopt
+    /// a prefix, skip exactly as much prefill as the baseline, and return a
+    /// DIFFERENT answer than it would have cold — which is what paged did at
+    /// token 20 of 32 while the criterion reported exact parity, because
+    /// "26,880 = 26,880" is a true statement about counts and silent about
+    /// correctness.
+    @Test("adoption that changes the answer is a FAIL, whatever the counts say")
+    func inexactAdoptionFailsRegardlessOfSavings() {
+        // Identical savings on both arms: the count comparison this criterion
+        // used to be is a clean PASS here.
+        func arm(_ selection: String, exact: Bool?) -> BackendParityObservation {
+            prefixArm(
+                selection, bound: 1536, saved: 26880, tokensSaved: 28416, exact: exact)
+        }
+
+        // Counts agree exactly, so the savings comparison cannot fault this —
+        // only the exactness oracle can.
+        let inexactCandidate = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: false))
+        #expect(inexactCandidate.verdict == .fail)
+        // The ACCUSATION names only the offending arm. `contiguous` does
+        // appear later, as the exact arm that proves the divergence is
+        // asymmetric — exonerating, not accused — so assert on the clause
+        // rather than on the bare substring.
+        #expect(inexactCandidate.detail.hasPrefix("adoption CHANGED THE ANSWER on paged"))
+        // No recorded reason falls back to the token-divergence phrasing —
+        // the only shape the oracle could see before terminals were judged.
+        #expect(inexactCandidate.detail.contains("paged (token streams diverged)"))
+        #expect(!inexactCandidate.detail.contains("ANSWER on contiguous"))
+
+        // The incumbent is not exempt: an inexact BASELINE is equally a FAIL,
+        // and is named rather than quietly setting the bar.
+        let inexactBaseline = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: false), candidate: arm("paged", exact: true))
+        #expect(inexactBaseline.verdict == .fail)
+        #expect(inexactBaseline.detail.hasPrefix("adoption CHANGED THE ANSWER on contiguous"))
+
+        // Both exact: the criterion falls through to the savings comparison.
+        let bothExact = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: true))
+        #expect(bothExact.verdict == .pass)
+
+        // NOT MEASURED must not fail the run — but it must not silently pass
+        // as exact either. It leaves the verdict to the counts, which is what
+        // every artifact predating the oracle contains.
+        let unmeasured = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: nil), candidate: arm("paged", exact: nil))
+        #expect(unmeasured.verdict == .pass)
+        #expect(!unmeasured.detail.contains("adoption CHANGED THE ANSWER"))
+    }
+
+    /// Exactness is a claim about the whole REQUEST OUTCOME. Before terminals
+    /// were judged, the same token IDs under `stop` vs `length` — or under an
+    /// `error(…)` that cut one stream short — recorded exact and let the
+    /// criterion PASS while adoption changed how the request ended.
+    @Test("same tokens with a different terminal are NOT exact, and the reason is named")
+    func terminalMismatchDefeatsExactness() {
+        typealias Harness = BackendParityHarness
+
+        // The clean case: identical tokens, identical clean terminal.
+        let clean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "stop")
+        #expect(clean == .exact)
+
+        // Same tokens, different clean terminals: the request ENDED
+        // differently, so the comparison is not exact and says why.
+        let stopVsLength = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "length")
+        #expect(stopVsLength
+            == .inexact(
+                reason: "terminal mismatch: cold finished 'stop', adopted finished 'length'"))
+
+        // Same tokens, one arm cut short by machinery: the mismatch AND the
+        // unclean side are both named — an `error(…)` must never be
+        // summarized as a mere stop/length disagreement.
+        let errorArm = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "error(pool exhausted)")
+        guard case .inexact(let errorReason) = errorArm else {
+            Issue.record("expected .inexact, got \(errorArm)")
+            return
+        }
+        #expect(errorReason.contains("terminal mismatch"))
+        #expect(errorReason.contains(
+            "non-clean terminal on adopted ('error(pool exhausted)')"))
+
+        // Diverging tokens keep their original phrasing; a simultaneous
+        // terminal mismatch is appended, not substituted.
+        let diverged = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 9],
+            coldFinish: "stop", adoptedFinish: "length")
+        guard case .inexact(let divergedReason) = diverged else {
+            Issue.record("expected .inexact, got \(diverged)")
+            return
+        }
+        #expect(divergedReason.hasPrefix("token streams diverged"))
+        #expect(divergedReason.contains("terminal mismatch"))
+
+        // `length` on BOTH arms is clean: hitting the same budget the same
+        // way is a valid comparison, not a truncation artifact.
+        let bothLength = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "length", adoptedFinish: "length")
+        #expect(bothLength == .exact)
+    }
+
+    /// Two streams cut short IDENTICALLY by machinery prove nothing about
+    /// adoption in either direction: recording them as `exact = false` made
+    /// `prefixReuse` FAIL with "adoption CHANGED THE ANSWER" over a transient
+    /// watchdog kill that changed nothing observable. Identical failures are
+    /// a third state — not exact, not a mismatch, just no measurement.
+    @Test("identical failed runs are INCONCLUSIVE, not a mismatch — but real divergence still fails")
+    func identicalFailedAdoptionIsInconclusiveNotAMismatch() {
+        typealias Harness = BackendParityHarness
+
+        // Identical tokens, identical UNCLEAN terminal: inconclusive, with
+        // the shared failure named.
+        let bothUnclean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "error(watchdog)", adoptedFinish: "error(watchdog)")
+        #expect(bothUnclean
+            == .inconclusive(
+                reason: "both arms were cut short identically ('error(watchdog)'), so "
+                    + "the identical truncated streams prove nothing about adoption"))
+
+        // Identical tokens, DIFFERENT terminals (one unclean): still a real
+        // mismatch — adoption changed how the request ended. Unchanged.
+        let differentTerminals = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 2, 3],
+            coldFinish: "stop", adoptedFinish: "error(watchdog)")
+        guard case .inexact = differentTerminals else {
+            Issue.record("expected .inexact, got \(differentTerminals)")
+            return
+        }
+
+        // DIVERGING tokens under the same shared failure: the streams
+        // observably differ before the cut, so that stays a mismatch — the
+        // shared unclean terminal is disclosed, not excusing.
+        let divergedUnclean = Harness.judgeAdoptionExactness(
+            coldTokens: [1, 2, 3], adoptedTokens: [1, 9],
+            coldFinish: "error(watchdog)", adoptedFinish: "error(watchdog)")
+        guard case .inexact(let reason) = divergedUnclean else {
+            Issue.record("expected .inexact, got \(divergedUnclean)")
+            return
+        }
+        #expect(reason.hasPrefix("token streams diverged"))
+        #expect(reason.contains("non-clean terminal on both arms: 'error(watchdog)'"))
+    }
+
+    /// The criterion half of the tri-state: an inconclusive arm blocks the
+    /// verdict entirely — savings cannot be certified over a comparison that
+    /// proved nothing — and the report names the shared failure, distinct
+    /// from both PASS and FAIL.
+    @Test("an inconclusive adoption comparison makes prefix_reuse UNAVAILABLE, never FAIL")
+    func inconclusiveAdoptionIsUnavailableNotFail() {
+        let shared = "both arms were cut short identically ('error(watchdog)'), so "
+            + "the identical truncated streams prove nothing about adoption"
+        let verdict = BackendParityCriteria.prefixReuse(
+            baseline: prefixArm("contiguous", saved: 26880, exact: true),
+            candidate: prefixArm(
+                "paged", saved: 26880, inconclusiveReason: shared))
+        #expect(verdict.verdict == .unavailable)
+        #expect(verdict.detail.contains("paged (\(shared))"))
+        #expect(verdict.detail.contains("identical truncated streams prove nothing"))
+
+        // A genuine mismatch on the OTHER arm still outranks it: per-arm
+        // judgment against that arm's own cold request FAILs, and the detail
+        // reports the inconclusive arm instead of claiming symmetry.
+        let mixed = BackendParityCriteria.prefixReuse(
+            baseline: prefixArm("contiguous", saved: 26880, inconclusiveReason: shared),
+            candidate: prefixArm(
+                "paged", saved: 26880, exact: false,
+                mismatchReason: "token streams diverged"))
+        #expect(mixed.verdict == .fail)
+        #expect(mixed.detail.contains("INCONCLUSIVE"))
+        #expect(!mixed.detail.contains("SYMMETRIC"))
+    }
+
+    @Test("the criterion detail discloses the recorded mismatch shape per arm")
+    func criterionDetailNamesTheMismatchShape() {
+        let verdict = BackendParityCriteria.prefixReuse(
+            baseline: prefixArm("contiguous", bound: 1536, saved: 26880, exact: true),
+            candidate: prefixArm(
+                "paged", bound: 1536, saved: 26880, exact: false,
+                mismatchReason: "terminal mismatch: cold finished 'stop', "
+                    + "adopted finished 'length'"))
+        #expect(verdict.verdict == .fail)
+        #expect(verdict.detail.contains(
+            "paged (terminal mismatch: cold finished 'stop', adopted finished 'length')"))
+        // A terminal-shaped mismatch is never excusable as precision drift;
+        // the wording that offers that excuse is scoped to token divergence.
+        #expect(verdict.detail.contains("token stream or terminal"))
+    }
+
+    /// A cold prefill and an adopted replay accumulate differently even when
+    /// adoption is correct, and gemma-4's argmax is sensitive enough to show
+    /// it. So "the tokens differ" on its own cannot indict a backend — only an
+    /// ASYMMETRY can. Both shapes FAIL, because a cache the caller cannot see
+    /// must not change the answer; they must never read alike.
+    @Test("only an ASYMMETRIC adoption divergence may be read as a backend defect")
+    func symmetricInexactnessIsNotABackendIndictment() {
+        func arm(_ selection: String, exact: Bool?) -> BackendParityObservation {
+            prefixArm(selection, strategy: nil, exact: exact)
+        }
+
+        // One arm exact, one not: precision cannot explain it, so the backend
+        // is named. This is the shape that disqualified paged as a default.
+        let asymmetric = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: true), candidate: arm("paged", exact: false))
+        #expect(asymmetric.verdict == .fail)
+        #expect(asymmetric.detail.contains("ASYMMETRIC"))
+        #expect(asymmetric.detail.contains("precision sensitivity cannot explain"))
+
+        // Both arms inexact: a model property. Still a FAIL, but it must state
+        // that it is not evidence against either backend, or someone will cite
+        // it as one.
+        let symmetric = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", exact: false), candidate: arm("paged", exact: false))
+        #expect(symmetric.verdict == .fail)
+        #expect(symmetric.detail.contains("SYMMETRIC"))
+        #expect(symmetric.detail.contains("property of the MODEL"))
+        #expect(symmetric.detail.contains("NOT evidence against either backend"))
+        #expect(!symmetric.detail.contains("ASYMMETRIC"))
+
+        // The two readings must be distinguishable, which is the entire point.
+        #expect(asymmetric.detail != symmetric.detail)
+    }
+
+    /// A PASS must carry its own sample size. `frozenFullReplay` replays
+    /// `min(matched, replayBound)`, so on gemma-4 at 28,672 only ~10% of the
+    /// prompt is genuinely adopted and the other 89% re-does the cold
+    /// arithmetic and cannot diverge. "Adoption was exact" over that sample
+    /// is a far smaller claim than it sounds, and the verdict is where a
+    /// reader will stop.
+    @Test("a PASS discloses how much of the prompt adoption actually exercised")
+    func passDisclosesAdoptionSampleSize() {
+        func arm(
+            _ selection: String, saved: Int, bound: Int, exact: Bool?
+        ) -> BackendParityObservation {
+            prefixArm(
+                selection, bound: bound, saved: saved, exact: exact,
+                comparedTokens: exact == nil ? 0 : 48,
+                probeResolved: selection)
+        }
+
+        // The gemma-4-26B-A4B shape specifically: bound 25,600, so 2,816 of
+        // 28,672 skipped = 9.8%. Named to the checkpoint on purpose — the
+        // bound is windowCount * maxWindow and differs per checkpoint, and an
+        // unqualified "gemma-4" here is how 26B's 25,600 got quoted against
+        // e2b-it-4bit (28 sliding x 512 = 14,336) three separate times today.
+        let thin = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", saved: 2816, bound: 25600, exact: true),
+            candidate: arm("paged", saved: 2816, bound: 25600, exact: true))
+        #expect(thin.verdict == .pass)
+        #expect(thin.detail.contains("9.8%"))
+        #expect(thin.detail.contains("over 48 completion tokens"))
+        #expect(thin.detail.contains("token 20"))
+        #expect(thin.detail.contains("NOT as 'adoption is exact'"))
+        // A PASS must not imply it covered the SSD tier — and must not be
+        // invertible into "so the defect is in the SSD tier" either. The tier
+        // the diverging adoption used was never pinned, so a green run here
+        // exonerates neither.
+        #expect(thin.detail.contains("says nothing about the SSD tier"))
+        #expect(thin.detail.contains("neither tier is exonerated"))
+
+        // Unmeasured must say the verdict is about counts only, and must not
+        // imply the answer was checked.
+        let unmeasured = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", saved: 2816, bound: 25600, exact: nil),
+            candidate: arm("paged", saved: 2816, bound: 25600, exact: nil))
+        #expect(unmeasured.verdict == .pass)
+        #expect(unmeasured.detail.contains("NOT MEASURED"))
+        #expect(!unmeasured.detail.contains("token-exact"))
+
+        // The summary carries verdict and sample size together, so neither can
+        // be quoted without the other.
+        let summary = BackendParityCriteria.prefixSummary(
+            arm("paged", saved: 2816, bound: 25600, exact: true).prefixReuse!)
+        #expect(summary.contains("adoptionExact=true/48tok"))
+        #expect(summary.contains("reused=9.8%"))
+        #expect(summary.contains("probeResolved=paged"))
+
+        // A probe arm that DEGRADED must not be readable as a real paged
+        // measurement. Same resolved string as an honest `.auto` contiguous
+        // arm, so only the reason distinguishes them.
+        let degraded = BackendParityObservation.PrefixReuse(
+            capabilitySupported: true,
+            promptTokens: 28672,
+            adoptionTokenExact: true,
+            adoptionComparedTokens: 48,
+            probeResolvedBackend: "contiguous",
+            probeFallbackReason: "kill_switch")
+        let degradedSummary = BackendParityCriteria.prefixSummary(degraded)
+        #expect(degradedSummary.contains("probeResolved=contiguous(DEGRADED: kill_switch)"))
+    }
+
+    // MARK: - Exit status
+
+    @Test("an all-skipped run does NOT exit 0 as if it passed")
+    func allSkippedIsNotSuccess() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .unavailable),
+            criterion(.mtpTokenExactness, .unavailable),
+            criterion(.packedPrefill, .unavailable),
+            criterion(.visionSpans, .unavailable),
+            criterion(.prefixReuse, .unavailable),
+        ])
+        #expect(outcome == .nothingEvaluated(skipped: 5))
+        #expect(outcome.exitStatus == 2)
+        #expect(outcome.exitStatus != 0)
+        #expect(outcome.summary.contains("INCONCLUSIVE"))
+        #expect(outcome.summary.contains("not a pass"))
+    }
+
+    @Test("no criteria at all is inconclusive, never a pass")
+    func emptyCriteriaIsNotSuccess() {
+        let outcome = BackendParityOutcome(criteria: [])
+        #expect(outcome == .nothingEvaluated(skipped: 0))
+        #expect(outcome.exitStatus == 2)
+    }
+
+    @Test("any failing criterion exits 1 and names the failures")
+    func failureExitsNonZero() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.mtpTokenExactness, .fail),
+            criterion(.prefixReuse, .fail),
+        ])
+        #expect(outcome == .failed(
+            criteria: ["mtp_token_exactness", "prefix_reuse"], shortfalls: []))
+        #expect(outcome.exitStatus == 1)
+        #expect(outcome.summary.contains("mtp_token_exactness"))
+        #expect(outcome.summary.contains("prefix_reuse"))
+    }
+
+    @Test("a failure outranks skips: the run is a FAIL, not inconclusive")
+    func failureOutranksSkips() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .fail),
+            criterion(.packedPrefill, .unavailable),
+            criterion(.visionSpans, .unavailable),
+        ])
+        #expect(outcome.exitStatus == 1)
+    }
+
+    @Test("all evaluated criteria passing exits 0")
+    func allPassExitsZero() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.prefixReuse, .pass),
+        ])
+        #expect(outcome == .passed(evaluated: 2, skipped: 0, shortfalls: []))
+        #expect(outcome.exitStatus == 0)
+        #expect(!outcome.summary.contains("UNAVAILABLE"))
+    }
+
+    @Test("a partial pass exits 0 but says how much it could not measure")
+    func partialPassAdvertisesSkips() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.packedPrefill, .unavailable),
+            criterion(.visionSpans, .unavailable),
+        ])
+        #expect(outcome == .passed(evaluated: 1, skipped: 2, shortfalls: []))
+        #expect(outcome.exitStatus == 0)
+        #expect(outcome.summary.contains("2 UNAVAILABLE"))
+    }
+
+    @Test("the three outcomes have three distinct exit statuses")
+    func statusesAreDistinguishable() {
+        let statuses = Set([
+            BackendParityOutcome.passed(evaluated: 1, skipped: 0, shortfalls: []).exitStatus,
+            BackendParityOutcome.failed(criteria: ["x"], shortfalls: []).exitStatus,
+            BackendParityOutcome.nothingEvaluated(skipped: 3).exitStatus,
+        ])
+        #expect(statuses.count == 3)
+    }
+
+    @Test("an EXPECTED_SHORTFALL does not fail the run on its own")
+    func expectedShortfallDoesNotExitNonZero() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.prefixReuse, .expectedShortfall),
+        ])
+        #expect(outcome == .passed(
+            evaluated: 2, skipped: 0, shortfalls: ["prefix_reuse"]))
+        #expect(outcome.exitStatus == 0)
+    }
+
+    @Test("an EXPECTED_SHORTFALL is named in the SUMMARY, not buried in a detail")
+    func expectedShortfallRidesTheSummaryLine() {
+        // A reader who only sees the tail of a CI log must not come away
+        // believing the backends matched.
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .pass),
+            criterion(.prefixReuse, .expectedShortfall),
+        ])
+        #expect(outcome.summary.contains("EXPECTED SHORTFALL"))
+        #expect(outcome.summary.contains("prefix_reuse"))
+        #expect(outcome.summary.contains("NOT parity"))
+    }
+
+    @Test("a shortfall still rides the summary when something else failed")
+    func shortfallSurvivesAFailure() {
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.tokenExactness, .fail),
+            criterion(.prefixReuse, .expectedShortfall),
+        ])
+        #expect(outcome == .failed(
+            criteria: ["token_exactness"], shortfalls: ["prefix_reuse"]))
+        #expect(outcome.exitStatus == 1)
+        #expect(outcome.summary.contains("G2 FAIL: token_exactness"))
+        #expect(outcome.summary.contains("EXPECTED SHORTFALL: prefix_reuse"))
+    }
+
+    @Test("a run of only shortfalls is evaluated, not inconclusive")
+    func shortfallCountsAsEvaluated() {
+        // A shortfall IS a measurement. Collapsing it into "nothing ran"
+        // would throw away the one number that was actually taken.
+        let outcome = BackendParityOutcome(criteria: [
+            criterion(.prefixReuse, .expectedShortfall),
+            criterion(.packedPrefill, .unavailable),
+        ])
+        #expect(outcome == .passed(
+            evaluated: 1, skipped: 1, shortfalls: ["prefix_reuse"]))
+        #expect(outcome.exitStatus == 0)
+    }
+
+    // MARK: - Comparison preconditions
+
+    @Test("two arms that resolved to the SAME backend are not a comparison")
+    func sameResolvedBackendBlocksEveryCriterion() {
+        // A kill-switched paged selection degrades to contiguous. Comparing
+        // contiguous with contiguous passes everything and proves nothing.
+        let degraded = BackendParityObservation(
+            selection: "paged",
+            resolvedBackend: "contiguous",
+            fallbackReason: "kill_switch",
+            rows: baseline.rows,
+            mtp: baseline.mtp,
+            packedPrefill: baseline.packedPrefill,
+            visionSpans: baseline.visionSpans,
+            prefixReuse: baseline.prefixReuse)
+
+        let criteria = BackendParityCriteria.evaluate(
+            baseline: baseline, candidate: degraded)
+        #expect(criteria.count == 5)
+        #expect(criteria.allSatisfy { $0.verdict == .unavailable })
+        #expect(criteria.allSatisfy { $0.detail.contains("both arms resolved to contiguous") })
+        #expect(criteria.allSatisfy { $0.detail.contains("kill_switch") })
+        #expect(BackendParityOutcome(criteria: criteria).exitStatus == 2)
+    }
+
+    @Test("an arm that built no engine blocks every criterion with its reason")
+    func constructionFailureBlocksEveryCriterion() {
+        let refused = BackendParityObservation(
+            selection: "paged",
+            constructionFailure: "pagedUnavailable(\"kernel preflight failed\")")
+        let criteria = BackendParityCriteria.evaluate(
+            baseline: baseline, candidate: refused)
+        #expect(criteria.allSatisfy { $0.verdict == .unavailable })
+        #expect(criteria.allSatisfy { $0.detail.contains("kernel preflight failed") })
+    }
+
+    @Test("arm labels report the RESOLVED backend, not the requested one")
+    func labelUsesResolvedBackend() {
+        let degraded = BackendParityObservation(
+            selection: "paged", resolvedBackend: "contiguous", fallbackReason: "kill_switch")
+        #expect(degraded.label == "contiguous (fallback: kill_switch)")
+        #expect(!degraded.label.hasPrefix("paged"))
+
+        let refused = BackendParityObservation(
+            selection: "paged", constructionFailure: "refused")
+        #expect(refused.label == "paged (unresolved)")
+
+        let clean = BackendParityObservation(selection: "paged", resolvedBackend: "paged")
+        #expect(clean.label == "paged")
+    }
+
+    // MARK: - Token exactness
+
+    @Test("identical token ids and finish reasons pass")
+    func tokenExactnessPasses() {
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: candidate)
+        #expect(result.verdict == .pass)
+        #expect(result.measurements["contiguous"] == "2 rows, 5 tokens, finish=stop")
+        #expect(result.measurements["paged"] == "2 rows, 5 tokens, finish=stop")
+    }
+
+    // MARK: - Zero-evidence rows
+
+    /// An arm whose submissions were REFUSED. `BackendParityHarness.generate`
+    /// returns a real `Row` for a failed submit — empty token list, a
+    /// `submit_error` finish reason — so the arm looks populated to anything
+    /// that only counts rows, and two such arms compare EQUAL.
+    private func refusedArm(
+        _ selection: String,
+        finish: String = "submit_error: capacity refused the request"
+    ) -> BackendParityObservation {
+        BackendParityObservation(
+            selection: selection, resolvedBackend: selection,
+            rows: [row("a", [], finish: finish), row("b", [], finish: finish)])
+    }
+
+    @Test("both arms failing to submit is UNAVAILABLE, never parity over zero tokens")
+    func bothArmsGeneratingNothingIsNotAPass() {
+        let finish = "submit_error: capacity refused the request"
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: refusedArm("contiguous", finish: finish),
+            candidate: refusedArm("paged", finish: finish))
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .pass)
+        // The reason must be NAMED, and the name is the submission failure.
+        #expect(result.detail.contains(finish))
+        #expect(result.detail.contains("NOTHING WAS COMPARED"))
+        #expect(result.detail.contains("NOT agreement"))
+        #expect(result.measurements["paged"] == "2 rows, 0 tokens, finish=\(finish)")
+
+        // Discrimination, not branch exercise: the ONLY thing that changes
+        // below is that tokens were actually generated. Same arms, same row
+        // count, same prompts, same order — so a guard keyed on anything but
+        // the ABSENCE OF TOKENS would move this verdict too, and a guard that
+        // simply refused more often would fail here.
+        func served(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [row("a", [11, 12]), row("b", [13])])
+        }
+        let agreed = BackendParityCriteria.tokenExactness(
+            baseline: served("contiguous"), candidate: served("paged"))
+        #expect(agreed.verdict == .pass)
+        #expect(agreed.detail.contains("3 generated token ids identical"))
+        #expect(!agreed.detail.contains("NOTHING WAS COMPARED"))
+    }
+
+    @Test("one arm generating nothing is named, not reported as a first flip")
+    func oneEmptyArmIsNamedRatherThanDiffed() {
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: refusedArm("paged"))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("paged generated no tokens"))
+        #expect(result.detail.contains("submit_error"))
+        // A zero-length stream is an ABSENCE, not a divergence at token 0.
+        #expect(!result.detail.contains("first flip"))
+    }
+
+    // MARK: - Same-backend numerics control
+
+    private func drifted() -> BackendParityObservation {
+        BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 2, 3]), row("b", [4, 99])])
+    }
+
+    @Test("a control that also flips leads the detail: NOT a backend difference")
+    func controlThatFlipsLeadsTheDetail() {
+        // The reader must meet "the incumbent also flips here" BEFORE the
+        // divergence it explains, so it cannot be missed.
+        let control = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: false,
+            detail: "paged fp32 diverged from paged fp16 on the SAME backend",
+            firstFlip: "1 of 3 rows diverged — prompt 'a' token 1")
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: control)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.hasPrefix("CONTROL SAYS THIS IS NOT A BACKEND DIFFERENCE"))
+        #expect(result.detail.contains("no cross-backend token comparison on this model is "
+            + "meaningful"))
+        #expect(result.measurements["control"] == "NOT token-exact")
+    }
+
+    @Test("a control that HOLDS says the difference is not benign numerics")
+    func controlThatHoldsIsStated() {
+        let control = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true,
+            detail: "identical across 3 prompts")
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: control)
+        #expect(result.detail.hasPrefix("CONTROL HELD"))
+        #expect(result.detail.contains("NOT explained by benign numerics"))
+        #expect(result.measurements["control"] == "TOKEN-EXACT")
+        // Still UNAVAILABLE: re-arming FAIL is gated on the promotion
+        // criterion, not on a single clean control.
+        #expect(result.verdict == .unavailable)
+    }
+
+    @Test("a control that could not run says so rather than implying either answer")
+    func controlNotRunIsStated() {
+        let control = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: nil,
+            detail: "requested fp32 pages but the pool resolved float16")
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: control)
+        #expect(result.detail.hasPrefix("CONTROL NOT RUN"))
+        #expect(result.detail.contains("pool resolved float16"))
+        #expect(result.measurements["control"] == "NOT RUN")
+    }
+
+    @Test("an ignored dtype knob can never masquerade as a clean control")
+    func ignoredKnobIsNotAControl() {
+        // tokenExact must be nil, never true, when the perturbation did not
+        // actually happen — otherwise a silently-ignored knob produces a
+        // second identical arm that looks like agreement.
+        let ignored = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: nil,
+            detail: "requested fp32 pages but the pool resolved nil — the perturbation "
+                + "never happened, so this arm is NOT a control")
+        #expect(ignored.tokenExact == nil)
+        #expect(ignored.headline.hasPrefix("CONTROL NOT RUN"))
+        #expect(!ignored.headline.contains("CONTROL HELD"))
+    }
+
+    @Test("the control survives a JSON round trip on the report")
+    func controlRoundTrips() throws {
+        let control = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: false, detail: "diverged", firstFlip: "prompt 'a' token 1",
+            candidatePoolDType: "float16", controlPoolDType: "float32")
+        let report = BackendParityReport(
+            modelID: "m", modelPath: "/tmp/m",
+            arms: [baseline.arm, candidate.arm],
+            numericsControl: control,
+            criteria: BackendParityCriteria.evaluate(
+                baseline: baseline, candidate: candidate, control: control))
+        let decoded = try JSONDecoder().decode(
+            BackendParityReport.self, from: Data(try report.jsonString().utf8))
+        #expect(decoded.numericsControl == control)
+        #expect(report.renderTable().contains("control (paged pool dtype float16 -> "
+            + "float32): NOT token-exact"))
+    }
+
+    @Test("a report with NO control says so loudly instead of saying nothing")
+    func absentControlIsNeverSilent() {
+        // The state that actually shipped. `numericsControl` was declared,
+        // stored and rendered while no call site built one, and the render
+        // was `if let` with no else — so a run that never asked the question
+        // produced a table IDENTICAL, in this region, to one where the
+        // control ran and held. Absence must be the loudest of the three.
+        let absent = BackendParityReport(
+            modelID: "m", modelPath: "/tmp/m",
+            arms: [baseline.arm, candidate.arm],
+            criteria: BackendParityCriteria.evaluate(
+                baseline: baseline, candidate: candidate))
+        #expect(absent.numericsControl == nil)
+        let table = absent.renderTable()
+        #expect(table.contains("control: NOT SUPPLIED"))
+        #expect(table.contains("nothing here distinguishes a backend difference from "
+            + "ordinary numerical drift"))
+        // It must not read as a control that ran, in EITHER direction.
+        #expect(!table.contains("TOKEN-EXACT"))
+        #expect(!table.contains("CONTROL HELD"))
+
+        // Discrimination, not branch exercise: the only thing that changes
+        // below is that a control REACHED the report. It is still the most
+        // pessimistic control there is — one that could not run — and it must
+        // STILL render differently from absence, because "we asked and could
+        // not answer" and "we never asked" are different facts with different
+        // owners. A guard keyed on anything but nil-ness would collapse them.
+        let inconclusive = BackendParityReport(
+            modelID: "m", modelPath: "/tmp/m",
+            arms: [baseline.arm, candidate.arm],
+            numericsControl: BackendParityReport.NumericsControl(
+                perturbation: "paged pool dtype float16 -> float32",
+                tokenExact: nil,
+                detail: "the candidate arm did not serve paged rows"),
+            criteria: BackendParityCriteria.evaluate(
+                baseline: baseline, candidate: candidate))
+        let asked = inconclusive.renderTable()
+        #expect(asked.contains("control (paged pool dtype float16 -> float32): NOT RUN"))
+        #expect(asked.contains("the candidate arm did not serve paged rows"))
+        #expect(!asked.contains("NOT SUPPLIED"))
+    }
+
+    // MARK: - Control dtype pinning and validity
+
+    @Test("the harness pins every engine to fp16 pages against ambient env dtype")
+    func harnessPinsCandidateDTypeAgainstAmbientEnvironment() {
+        // An operator (or a prior benchmark step) exporting
+        // DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32 must NOT leak into the
+        // candidate arm: the fp32 control would then compare two identical
+        // fp32 engines and hold tautologically.
+        let ambient = [
+            "DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32",
+            "HOME": "/Users/operator",
+        ]
+        let candidateEnv = BackendParityHarness.engineEnvironment(
+            ambient: ambient, overrides: [:])
+        #expect(candidateEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float16")
+        // The rest of the ambient environment passes through untouched.
+        #expect(candidateEnv["HOME"] == "/Users/operator")
+
+        // The fp32 control's explicit override still wins over the pin —
+        // the pin protects arms that did NOT ask, never one that did.
+        let controlEnv = BackendParityHarness.engineEnvironment(
+            ambient: ambient,
+            overrides: ["DARKBLOOM_CBV2_PAGED_KV_DTYPE": "float32"])
+        #expect(controlEnv["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float32")
+
+        // And with NO ambient dtype at all the pin still applies, so the
+        // candidate arm is fp16 by construction rather than by default.
+        let bare = BackendParityHarness.engineEnvironment(
+            ambient: ["HOME": "/Users/operator"], overrides: [:])
+        #expect(bare["DARKBLOOM_CBV2_PAGED_KV_DTYPE"] == "float16")
+    }
+
+    @Test("a control whose two arms resolved the SAME dtype is rejected at evaluation")
+    func sameDTypeControlIsRejectedAtEvaluation() {
+        // The artifact-level backstop: even a stored report from a harness
+        // that let ambient fp32 leak into the candidate must not have its
+        // "CONTROL HELD" quoted. Both dtypes are named in the refusal.
+        let tautology = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true,
+            detail: "identical across 3 prompts",
+            candidatePoolDType: "float32", controlPoolDType: "float32")
+        let blocker = BackendParityCriteria.controlValidityBlocker(tautology)
+        #expect(blocker != nil)
+        #expect(blocker?.contains("candidate float32") == true)
+        #expect(blocker?.contains("control float32") == true)
+        #expect(blocker?.contains("tautology") == true)
+
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: tautology)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.hasPrefix("CONTROL INVALID"))
+        #expect(!result.detail.contains("CONTROL HELD"))
+        #expect(result.measurements["control"]?.hasPrefix("INVALID") == true)
+        #expect(result.measurements["control"]?.contains("float32") == true)
+
+        // Discrimination: the ONLY change below is that the two arms carry
+        // DIFFERENT resolved dtypes — the same held control is then quoted.
+        let genuine = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true,
+            detail: "identical across 3 prompts",
+            candidatePoolDType: "float16", controlPoolDType: "float32")
+        #expect(BackendParityCriteria.controlValidityBlocker(genuine) == nil)
+        let honored = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted(), control: genuine)
+        #expect(honored.detail.hasPrefix("CONTROL HELD"))
+        #expect(honored.measurements["control"] == "TOKEN-EXACT")
+    }
+
+    @Test("artifacts that predate the dtype fields keep their controls")
+    func legacyControlWithoutDTypeFieldsIsNotRejected() {
+        // Absence of the record is not proof of a tautology: a report written
+        // before the fields existed stays exactly as trustworthy as it was.
+        let legacy = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true, detail: "identical across 3 prompts")
+        #expect(BackendParityCriteria.controlValidityBlocker(legacy) == nil)
+        // One side recorded is still not a tautology finding.
+        let half = BackendParityReport.NumericsControl(
+            perturbation: "paged pool dtype float16 -> float32",
+            tokenExact: true, detail: "identical across 3 prompts",
+            controlPoolDType: "float32")
+        #expect(BackendParityCriteria.controlValidityBlocker(half) == nil)
+    }
+
+    @Test("the observation records the arm's RESOLVED pool dtype through JSON")
+    func observationCarriesResolvedPoolDType() throws {
+        let arm = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            pagedPoolDType: "float16",
+            rows: [row("a", [1, 2])])
+        let decoded = try JSONDecoder().decode(
+            BackendParityObservation.self, from: try JSONEncoder().encode(arm))
+        #expect(decoded.pagedPoolDType == "float16")
+
+        // Old artifacts without the field decode with nil, not a throw. The
+        // legacy shape is a REAL encoding minus the key, so this cannot
+        // drift from whatever else the coder requires.
+        var json = try #require(
+            JSONSerialization.jsonObject(with: try JSONEncoder().encode(arm))
+                as? [String: Any])
+        json.removeValue(forKey: "pagedPoolDType")
+        let legacy = try JSONDecoder().decode(
+            BackendParityObservation.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        #expect(legacy.pagedPoolDType == nil)
+    }
+
+    // MARK: - Per-row evidence floor
+
+    @Test("one productive row out of three is below the evidence floor, not a PASS")
+    func partiallyFailedRunIsBelowTheEvidenceFloor() {
+        // The exact shape the review names: one prompt decoded, the other two
+        // failed IDENTICALLY on both arms. The matching submit_error rows
+        // used to count as row matches, so the criterion passed on almost
+        // zero evidence.
+        let failure = "submit_error: capacity refused the request"
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [], finish: failure),
+                    row("c", [], finish: failure),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .pass)
+        // The refusal names the count and the per-row failure shapes.
+        #expect(result.detail.contains("only 1 of 3"))
+        #expect(result.detail.contains(failure))
+        #expect(result.detail.contains("prompt 'b'"))
+        #expect(result.detail.contains("prompt 'c'"))
+        #expect(result.detail.contains("NOT agreement"))
+    }
+
+    @Test("a minority failed row is excluded and disclosed, not counted as a match")
+    func minorityFailureIsDisclosedButScored() {
+        let failure = "unterminated: stream ended without a finish reason"
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: failure),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        // Majority-productive: still evaluable...
+        #expect(result.verdict == .pass)
+        // ...but scored over the OBSERVED rows only, with the exclusion named.
+        #expect(result.detail.contains("2 prompts, 5 generated token ids identical"))
+        #expect(result.detail.contains("1 of 3 row(s) EXCLUDED as non-observations"))
+        #expect(result.detail.contains(failure))
+        #expect(result.measurements["excludedRows"]?.contains("prompt 'c'") == true)
+    }
+
+    @Test("a both-empty row with MISMATCHED failure shapes is excluded, not a first flip")
+    func mismatchedFailureShapesAreNonObservationsNotDivergence() {
+        // Both arms generated nothing on prompt 'c' but failed differently.
+        // That row carries no token evidence in either direction — it must
+        // be excluded with both shapes named, never booked as a divergence.
+        func arm(_ selection: String, cFinish: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: cFinish),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous", cFinish: "submit_error: refused"),
+            candidate: arm("paged", cFinish: "unterminated"))
+        #expect(result.verdict == .pass)
+        #expect(result.detail.contains("submit_error: refused vs unterminated"))
+        #expect(result.measurements["firstFlip"] == nil)
+    }
+
+    /// The exclusion predicate is "zero tokens AND failed terminals on BOTH
+    /// arms" — the failed half is load-bearing. One arm cleanly hitting EOS
+    /// with zero tokens while the other returned `submit_error` is a real
+    /// observed asymmetry: excluding it would let the run PASS while
+    /// claiming "finish reasons equal" about a row where they were not.
+    @Test("a clean zero-token arm against a failed arm is a divergence, not a non-observation")
+    func cleanVersusFailedEmptyRowIsCountedAsDivergence() {
+        func arm(_ selection: String, cFinish: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: cFinish),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous", cFinish: "stop"),
+            candidate: arm("paged", cFinish: "submit_error: pool exhausted"))
+        // Counted, and the finish-reason path reports it as the mismatch.
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains(
+            "prompt 'c' finish reason: stop vs submit_error: pool exhausted"))
+        // NOT excluded: the row is an observation.
+        #expect(!result.detail.contains("EXCLUDED"))
+        #expect(result.measurements["excludedRows"] == nil)
+    }
+
+    /// Both arms cleanly finishing `stop` with zero tokens (the model hit
+    /// EOS immediately, both sides) is a thin but valid matching
+    /// observation — agreement, not a non-observation.
+    @Test("a both-clean both-empty row is a matching observation, not an exclusion")
+    func bothCleanEmptyRowIsAMatchingObservation() {
+        func arm(_ selection: String) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", [4, 5]),
+                    row("c", [], finish: "stop"),
+                ])
+        }
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        #expect(result.verdict == .pass)
+        // All three rows scored — the clean-empty row counts as evidence.
+        #expect(result.detail.contains("3 prompts, 5 generated token ids identical"))
+        #expect(!result.detail.contains("EXCLUDED"))
+        #expect(result.measurements["excludedRows"] == nil)
+    }
+
+    @Test("a divergence among the observed rows still reports, with the exclusion noted")
+    func divergenceAmongObservedRowsCarriesTheExclusionNote() {
+        let failure = "submit_error: capacity refused the request"
+        func arm(_ selection: String, bTokens: [Int]) -> BackendParityObservation {
+            BackendParityObservation(
+                selection: selection, resolvedBackend: selection,
+                rows: [
+                    row("a", [1, 2, 3]),
+                    row("b", bTokens),
+                    row("c", [], finish: failure),
+                    row("d", [], finish: failure),
+                ])
+        }
+        // 2 of 4 rows observed: exactly half, so the floor does not fire —
+        // and one of the observed rows diverges.
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: arm("contiguous", bTokens: [4, 5]),
+            candidate: arm("paged", bTokens: [4, 99]))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("prompt 'b' token 1"))
+        #expect(result.detail.contains("2 of 4 row(s) EXCLUDED"))
+        #expect(result.measurements["firstFlip"]?.contains("prompt 'b'") == true)
+    }
+
+    @Test("token exactness NEVER fails: a divergence is UNAVAILABLE with the first flip")
+    func tokenExactnessIsPassOnly() {
+        // The incumbent fails free-running token exactness too — contiguous
+        // against contiguous diverges on gemma-4 under the operator-REACHABLE
+        // DARKBLOOM_CBV2_ATTN_QUERY_BLOCK knob (977a5893e). Reachable is the
+        // load-bearing word, not "supported": AttentionV1 accepts any value
+        // >= 0 at runtime with no version gate, so release policy declining
+        // to bless a non-default value does not close the path. A bar the
+        // incumbent cannot clear must not be used to accuse the challenger.
+        let healthy = candidate
+        let drifted = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 2, 3]), row("b", [4, 99])],
+            mtp: healthy.mtp, packedPrefill: healthy.packedPrefill,
+            visionSpans: healthy.visionSpans, prefixReuse: healthy.prefixReuse)
+
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted)
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .fail)
+        #expect(result.detail.contains("token 1"))
+        #expect(result.detail.contains("5 vs 99"))
+        #expect(result.detail.contains("NOT scored as a regression"))
+        #expect(result.measurements["firstFlip"] != nil)
+    }
+
+    @Test("token exactness reports only the FIRST flip, never a divergence rate")
+    func tokenExactnessReportsFirstFlipOnly() {
+        // Past the first flip the two arms decode different contexts, so
+        // later positions compare unrelated conversations. Only the first
+        // divergence per row is a real observation.
+        let drifted = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 9, 9]), row("b", [4, 5])])
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted)
+        #expect(result.verdict == .unavailable)
+        // One row flipped, at index 1 — not "2 of 3 tokens wrong".
+        #expect(result.detail.contains("1 of 2 rows diverged"))
+        #expect(result.detail.contains("token 1"))
+    }
+
+    @Test("an unresolvable argmax tie is named with its margin and floor")
+    func tokenExactnessReportsArgmaxSlack() {
+        // fp16 KV cannot resolve a gap below ~1/2048 of the logit scale, so
+        // the report must say whether the tie was decidable at all.
+        let tight = BackendParityObservation.Row(
+            prompt: "a", tokens: [1, 2, 3], finishReason: "stop",
+            margins: [4.0, 1e-6, 4.0])
+        let base = BackendParityObservation(
+            selection: "contiguous", resolvedBackend: "contiguous", rows: [tight])
+        let cand = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 7, 3])])
+        let result = BackendParityCriteria.tokenExactness(baseline: base, candidate: cand)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("NOT resolvable"))
+        #expect(result.measurements["argmaxMargin"] != nil)
+        #expect(result.measurements["resolvableFloor"] != nil)
+    }
+
+    @Test("a comfortably resolvable tie is reported as resolvable, still not a FAIL")
+    func tokenExactnessReportsResolvableSlack() {
+        let wide = BackendParityObservation.Row(
+            prompt: "a", tokens: [1, 2, 3], finishReason: "stop",
+            margins: [4.0, 3.5, 4.0])
+        let base = BackendParityObservation(
+            selection: "contiguous", resolvedBackend: "contiguous", rows: [wide])
+        let cand = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 7, 3])])
+        let result = BackendParityCriteria.tokenExactness(baseline: base, candidate: cand)
+        #expect(result.detail.contains("was resolvable"))
+        #expect(result.verdict == .unavailable)
+    }
+
+    @Test("a differing finish reason is also UNAVAILABLE, not a FAIL")
+    func tokenExactnessFinishReasonIsUnavailable() {
+        let drifted = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 2, 3]), row("b", [4, 5], finish: "length")])
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: drifted)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("stop vs length"))
+    }
+
+    @Test("a truncated stream is UNAVAILABLE rather than matching on its shared prefix")
+    func tokenExactnessPrefixIsUnavailable() {
+        let truncated = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 2, 3]), row("b", [4])])
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: truncated)
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .pass)
+        #expect(result.detail.contains("lengths 2 vs 1"))
+    }
+
+    @Test("no rows means UNAVAILABLE, never a pass")
+    func tokenExactnessWithoutRowsIsUnavailable() {
+        let empty = BackendParityObservation(selection: "paged", resolvedBackend: "paged")
+        let result = BackendParityCriteria.tokenExactness(
+            baseline: baseline, candidate: empty)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("no rows at all"))
+        #expect(result.detail.contains("nothing to compare"))
+    }
+
+    @Test("firstDivergence points at the index where the streams part")
+    func firstDivergenceIsExact() {
+        #expect(BackendParityCriteria.firstDivergence([1, 2, 3], [1, 2, 3]) == nil)
+        #expect(BackendParityCriteria.firstDivergence([1, 2, 3], [1, 9, 3]) == 1)
+        #expect(BackendParityCriteria.firstDivergence([1, 2], [1, 2, 3]) == 2)
+        #expect(BackendParityCriteria.firstDivergence([], []) == nil)
+        #expect(BackendParityCriteria.firstDivergence([], [7]) == 0)
+    }
+
+    // MARK: - MTP
+
+    @Test("MTP that produced NO drafts fails even though its tokens match")
+    func inertMTPFailsDespiteMatchingTokens() {
+        // The gemma-4 paged silent no-op: a constructed driver that never
+        // drafts emits the target's own tokens, so the output comparison is
+        // satisfied by a feature that did nothing.
+        let inert = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: baseline.mtp!.rows,
+                driverConstructed: true,
+                inactiveReason: nil,
+                rounds: 0,
+                draftedTokens: 0,
+                acceptedTokens: 0,
+                skippedRows: ["batch_gate": 12]))
+
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: inert)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("produced no drafts"))
+        #expect(result.detail.contains("paged"))
+        #expect(result.measurements["paged"]?.contains("rounds=0") == true)
+        #expect(result.measurements["paged"]?.contains("batch_gate=12") == true)
+    }
+
+    @Test("a non-nil MTP snapshot with zero counters is not enough to pass")
+    func constructedDriverAloneIsNotProof() {
+        let constructedOnly = BackendParityObservation.MTP(
+            rows: [], driverConstructed: true, rounds: 0, draftedTokens: 0)
+        #expect(!constructedOnly.producedDrafts)
+
+        let working = BackendParityObservation.MTP(
+            rows: [], driverConstructed: true, rounds: 3, draftedTokens: 12)
+        #expect(working.producedDrafts)
+
+        // Rounds without drafted tokens is still a no-op.
+        let roundsOnly = BackendParityObservation.MTP(
+            rows: [], driverConstructed: true, rounds: 3, draftedTokens: 0)
+        #expect(!roundsOnly.producedDrafts)
+    }
+
+    @Test("a driver refused on BOTH backends for the same reason is UNAVAILABLE")
+    func pairLevelMTPRefusalIsUnavailable() {
+        // `CBv2MTPRoundDriver.build` returning nil identically on both arms is
+        // a model/drafter-pair or process-config fact, not a paged regression.
+        // Booking it as FAIL would blame the backend for the pairing.
+        let reason = "model/drafter pair cannot prove matching MTP target identity"
+        func arm(_ selection: String) -> BackendParityObservation {
+            mtpArm(
+                selection, driverConstructed: false, inactiveReason: reason,
+                rounds: 0, draftedTokens: 0, acceptedTokens: 0)
+        }
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("no MTP driver was constructed on either backend"))
+        #expect(result.detail.contains(reason))
+    }
+
+    @Test("a driver refused on ONE backend only is a FAIL — that IS a parity gap")
+    func oneSidedMTPRefusalFails() {
+        let refusedOnPaged = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: baseline.mtp?.rows ?? [],
+                driverConstructed: false,
+                inactiveReason: "paged backend rejected the drafter"))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: refusedOnPaged)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("produced no drafts on paged"))
+    }
+
+    @Test("a missing assistant is UNAVAILABLE, not a failure")
+    func missingDrafterIsUnavailable() {
+        let noAssistant = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                unavailableReason: "no MTP assistant supplied (--assistant-model)"))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: noAssistant)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("--assistant-model"))
+    }
+
+    @Test("MTP not run at all on an arm is UNAVAILABLE")
+    func absentMTPIsUnavailable() {
+        let none = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged", rows: candidate.rows, mtp: nil)
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: none)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("no drafter supplied"))
+    }
+
+    /// An arm whose plain decode and MTP decode are stated independently, so
+    /// a test can perturb the two comparisons the criterion makes — the arm
+    /// against ITSELF, and the arm against the other arm — one at a time.
+    private func mtpArm(
+        selection: String,
+        resolved: String,
+        rows: [BackendParityObservation.Row],
+        mtpRows: [BackendParityObservation.Row]
+    ) -> BackendParityObservation {
+        BackendParityObservation(
+            selection: selection, resolvedBackend: resolved,
+            rows: rows,
+            mtp: BackendParityObservation.MTP(
+                rows: mtpRows,
+                driverConstructed: true, rounds: 6, draftedTokens: 30, acceptedTokens: 21))
+    }
+
+    @Test("MTP that reproduces its OWN decode on both arms passes despite base drift")
+    func mtpLosslessOnBothArmsPassesEvenWhenBaseDecodeDrifts() {
+        // The gemma-4 shape: plain greedy decode already differs between the
+        // backends, and the MTP rows carry that difference through. Scored
+        // cross-arm this looked like an MTP divergence and had to be waived.
+        // Scored per-arm it is a clean PASS with a PROOF attached: MTP == its
+        // own target on both sides, so the cross-backend MTP delta is exactly
+        // the base-decode delta and cannot be an MTP effect.
+        let driftedRows = [row("a", [1, 2, 9]), row("b", [4, 5])]
+        let drifted = mtpArm(
+            selection: "paged", resolved: "paged",
+            rows: driftedRows, mtpRows: driftedRows)
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: drifted)
+        #expect(result.verdict == .pass)
+        #expect(result.detail.contains("OWN plain greedy decode"))
+        #expect(result.detail.contains("EXACTLY the base-decode divergence"))
+        // The cross-backend difference is still reported, never hidden by the
+        // pass — a reader must not conclude the two streams matched.
+        #expect(result.measurements["crossBackendMTP"] != nil)
+        #expect(result.measurements["contiguous MTP vs own decode"] == "token-exact")
+        #expect(result.measurements["paged MTP vs own decode"] == "token-exact")
+    }
+
+    @Test("MTP lossy against its OWN decode on the candidate is a FAIL")
+    func mtpLossyOnCandidateOnlyFails() {
+        // Base decode agrees, so nothing here is inherited: the candidate's
+        // MTP rows differ from the candidate's own plain rows. Verified greedy
+        // speculation is lossless by construction, so that IS an MTP defect.
+        let mtpOnly = mtpArm(
+            selection: "paged", resolved: "paged",
+            rows: baseline.rows, mtpRows: [row("a", [1, 2, 9]), row("b", [4, 5])])
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: mtpOnly)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("OWN plain greedy"))
+        #expect(result.detail.contains("inherits no base-decode drift"))
+        #expect(result.measurements["paged MTP vs own decode"] != "token-exact")
+    }
+
+    @Test("an MTP defect on paged FAILS even when the base decode also drifts")
+    func mtpLossyOnCandidateFailsEvenWhenBaseDecodeDrifts() {
+        // THE regression test for the unreachable gate. Under the previous
+        // cross-arm scoring this exact shape returned UNAVAILABLE — the base
+        // decode diverges, so every MTP divergence was written off as
+        // inherited. On gemma-4 the base decode diverges on 2 of 3 parity
+        // prompts, so that branch swallowed every possible MTP defect on the
+        // one model the migration is about.
+        //
+        // Here paged's MTP differs from PAGED'S OWN plain decode on prompt b,
+        // which no amount of cross-backend drift can explain. It must FAIL.
+        let broken = mtpArm(
+            selection: "paged", resolved: "paged",
+            rows: [row("a", [1, 2, 9]), row("b", [4, 5])],
+            mtpRows: [row("a", [1, 2, 9]), row("b", [4, 77])])
+
+        // Both conditions the OLD cross-arm scoring keyed on are present in
+        // this fixture, which is exactly why it used to be waived: the base
+        // decode diverges between the arms, AND the two arms' MTP streams
+        // diverge. Asserting them here keeps this a real discriminator — if
+        // someone reverts to cross-arm scoring, the verdict below flips to
+        // UNAVAILABLE and this test fails.
+        #expect(BackendParityCriteria.rowMismatch(
+            baseline: baseline.rows, candidate: broken.rows) != nil)
+        #expect(BackendParityCriteria.rowMismatch(
+            baseline: baseline.mtp?.rows ?? [], candidate: broken.mtp?.rows ?? []) != nil)
+        // Neither of those can explain paged's MTP disagreeing with PAGED.
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: broken)
+        #expect(result.verdict == .fail)
+        #expect(result.verdict != .unavailable)
+        #expect(result.detail.contains("token 1: 5 vs 77"))
+    }
+
+    @Test("MTP lossy on the BASELINE is UNAVAILABLE and blames the incumbent")
+    func mtpLossyOnBaselineIsUnavailable() {
+        // A bar the incumbent fails cannot judge the challenger — the same
+        // rule tokenExactness applies to free-running decode.
+        let lossyBaseline = mtpArm(
+            selection: "contiguous", resolved: "contiguous",
+            rows: [row("a", [1, 2, 3]), row("b", [4, 5])],
+            mtpRows: [row("a", [1, 2, 3]), row("b", [4, 88])])
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: lossyBaseline, candidate: candidate)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("the INCUMBENT failed this bar"))
+        // A future reader must not mistake this for "paged was untestable".
+        #expect(result.detail.contains("NOT a statement that paged is"))
+        #expect(result.detail.contains("token-exact against its own plain decode"))
+        #expect(result.measurements["paged MTP vs own decode"] == "token-exact")
+    }
+
+    @Test("MTP lossy on BOTH arms is UNAVAILABLE, not a paged FAIL")
+    func mtpLossyOnBothArmsIsUnavailable() {
+        // Losing losslessness on both backends identically is a model/drafter
+        // property, not a paged regression.
+        let lossyBaseline = mtpArm(
+            selection: "contiguous", resolved: "contiguous",
+            rows: [row("a", [1, 2, 3])], mtpRows: [row("a", [1, 2, 88])])
+        let lossyCandidate = mtpArm(
+            selection: "paged", resolved: "paged",
+            rows: [row("a", [1, 2, 3])], mtpRows: [row("a", [1, 2, 88])])
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: lossyBaseline, candidate: lossyCandidate)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("not token-exact either"))
+    }
+
+    @Test("MTP rows without plain rows to compare them against is UNAVAILABLE")
+    func mtpWithoutOwnTargetIsUnavailable() {
+        // No own-target decode means the losslessness question has no left
+        // operand. Falling back to the cross-arm comparison here is exactly
+        // the shortcut this criterion was rewritten to remove.
+        let noPlainRows = mtpArm(
+            selection: "paged", resolved: "paged",
+            rows: [], mtpRows: [row("a", [1, 2, 3]), row("b", [4, 5])])
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: noPlainRows)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("nothing to measure MTP losslessness against"))
+    }
+
+    @Test("MTP passes only when both arms drafted AND each reproduced its own decode")
+    func mtpPassRequiresDraftsAndEquality() {
+        let pass = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: candidate)
+        #expect(pass.verdict == .pass)
+        #expect(pass.detail.contains("both backends drafted"))
+        // Nothing drifted anywhere, so no cross-backend caveat is attached.
+        #expect(pass.measurements["crossBackendMTP"] == nil)
+
+        let drifted = mtpArm(
+            selection: "paged", resolved: "paged",
+            rows: candidate.rows, mtpRows: [row("a", [1, 2, 3]), row("b", [4, 77])])
+        let fail = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: drifted)
+        #expect(fail.verdict == .fail)
+        #expect(fail.detail.contains("MTP output diverged"))
+    }
+
+    @Test("an MTP defect on paged makes the WHOLE G2 run exit non-zero")
+    func mtpDefectFailsTheRunNotJustTheCriterion() {
+        // The half of this blocker that a per-criterion assertion cannot
+        // catch. `BackendParityOutcome` only reaches `.failed` when some
+        // criterion is `.fail`; UNAVAILABLE merely increments `skipped`, so
+        // with any other criterion passing the run still exits 0. While MTP
+        // divergence could only ever be UNAVAILABLE, a run with observably
+        // different MTP token streams reported a G2 PASS.
+        //
+        // Same gemma-4 shape as above — base decode drifts AND paged's MTP is
+        // lossy against its own target — driven through the full evaluate()
+        // path to prove the exit status actually moves.
+        let broken = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: [row("a", [1, 2, 9]), row("b", [4, 5])],
+            mtp: BackendParityObservation.MTP(
+                rows: [row("a", [1, 2, 9]), row("b", [4, 77])],
+                driverConstructed: true, rounds: 6, draftedTokens: 30, acceptedTokens: 21),
+            packedPrefill: candidate.packedPrefill,
+            visionSpans: candidate.visionSpans,
+            prefixReuse: candidate.prefixReuse)
+
+        let criteria = BackendParityCriteria.evaluate(baseline: baseline, candidate: broken)
+        let mtp = criteria.first { $0.id == BackendParityReport.CriterionID.mtpTokenExactness.rawValue }
+        #expect(mtp?.verdict == .fail)
+
+        let outcome = BackendParityOutcome(criteria: criteria)
+        #expect(outcome.exitStatus == 1)
+        #expect(outcome.summary.contains("G2 FAIL"))
+        #expect(outcome.summary.contains("mtp_token_exactness"))
+        // Other criteria still passed; the failure is what decides the run.
+        if case .passed = outcome { Issue.record("a real MTP defect must not exit 0") }
+    }
+
+    @Test("drafts produced but no rows captured is UNAVAILABLE, not a pass")
+    func draftsWithoutRowsIsUnavailable() {
+        let noRows = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: [], driverConstructed: true, rounds: 4, draftedTokens: 20))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: noRows)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("emitted no tokens to score"))
+        #expect(result.detail.contains("no rows at all"))
+    }
+
+    @Test("an MTP arm that generated nothing on BOTH backends is not an inert drafter")
+    func bothArmsEmptyMTPIsNotADraftFailure() {
+        let finish = "submit_error: capacity refused the request"
+        func arm(_ selection: String, tokens: [Int]) -> BackendParityObservation {
+            mtpArm(
+                selection, tokens: tokens, finish: tokens.isEmpty ? finish : "stop",
+                rounds: 0, draftedTokens: 0, acceptedTokens: 0)
+        }
+        let refused = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: []), candidate: arm("paged", tokens: []))
+        #expect(refused.verdict == .unavailable)
+        #expect(refused.verdict != .fail)
+        #expect(refused.detail.contains("generated NOTHING on either backend"))
+        #expect(refused.detail.contains(finish))
+
+        // Discrimination: byte-identical MTP counters, but the engine actually
+        // SERVED the rows. A driver that emits the target's own tokens while
+        // drafting nothing is the gemma-4 silent no-op and must still FAIL.
+        let inert = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: [1, 2, 3]),
+            candidate: arm("paged", tokens: [1, 2, 3]))
+        #expect(inert.verdict == .fail)
+        #expect(inert.detail.contains("produced no drafts"))
+    }
+
+    @Test("MTP losslessness measured over zero tokens is UNAVAILABLE, not token-exact")
+    func mtpSelfComparisonNeedsGeneratedTokens() {
+        let finish = "submit_error: capacity refused the request"
+        func arm(_ selection: String, tokens: [Int]) -> BackendParityObservation {
+            mtpArm(selection, tokens: tokens, finish: tokens.isEmpty ? finish : "stop")
+        }
+        // Drafts WERE produced, so the inert-drafter FAIL does not apply. This
+        // is the path that used to certify "MTP reproduced each backend's OWN
+        // plain greedy decode" across zero generated tokens.
+        let empty = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: []), candidate: arm("paged", tokens: []))
+        #expect(empty.verdict == .unavailable)
+        #expect(empty.verdict != .pass)
+        #expect(empty.detail.contains(finish))
+
+        let served = BackendParityCriteria.mtpTokenExactness(
+            baseline: arm("contiguous", tokens: [5, 6]),
+            candidate: arm("paged", tokens: [5, 6]))
+        #expect(served.verdict == .pass)
+        #expect(served.detail.contains("MTP reproduced each backend's OWN plain greedy decode"))
+    }
+
+    @Test("an MTP stream of empty rows is not scored against a real plain decode")
+    func hollowMTPStreamIsUnavailableNotAFail() {
+        // Before the zero-evidence guard this reached `rowMismatch`, which
+        // read "2 rows of nothing vs 2 rows of tokens" as an MTP divergence
+        // and booked a FAIL against paged for what is a submission failure.
+        let finish = "submit_error: capacity refused the request"
+        let hollow = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            rows: candidate.rows,
+            mtp: BackendParityObservation.MTP(
+                rows: [row("a", [], finish: finish), row("b", [], finish: finish)],
+                driverConstructed: true, rounds: 4, draftedTokens: 20))
+        let result = BackendParityCriteria.mtpTokenExactness(
+            baseline: baseline, candidate: hollow)
+        #expect(result.verdict == .unavailable)
+        #expect(result.verdict != .fail)
+        #expect(result.detail.contains("emitted no tokens to score"))
+        #expect(result.detail.contains(finish))
+    }
+
+    @Test("a whole run where neither arm generated a token reports no token parity")
+    func evaluateRefusesZeroEvidenceEndToEnd() {
+        let finish = "submit_error: capacity refused the request"
+        func arm(_ selection: String) -> BackendParityObservation {
+            mtpArm(
+                selection, tokens: [], finish: finish,
+                rounds: 3, draftedTokens: 9, acceptedTokens: 0,
+                prefixReuse: baseline.prefixReuse, capabilities: true)
+        }
+        let criteria = BackendParityCriteria.evaluate(
+            baseline: arm("contiguous"), candidate: arm("paged"))
+        let token = criteria.first {
+            $0.id == BackendParityReport.CriterionID.tokenExactness.rawValue
+        }
+        let mtp = criteria.first {
+            $0.id == BackendParityReport.CriterionID.mtpTokenExactness.rawValue
+        }
+        #expect(token?.verdict == .unavailable)
+        #expect(mtp?.verdict == .unavailable)
+        // The token criteria abstained; nothing was converted into a FAIL.
+        #expect(criteria.allSatisfy { $0.verdict != .fail })
+    }
+
+    // MARK: - Capability criteria
+
+    @Test("an undetermined capability is UNAVAILABLE on either arm")
+    func undeterminedCapabilityIsUnavailable() {
+        let undetermined = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            packedPrefill: .undetermined("no public accessor reports the packed path"),
+            visionSpans: BackendParityObservation.Capability(
+                active: true, detail: "served"))
+        let packed = BackendParityCriteria.packedPrefill(
+            baseline: baseline, candidate: undetermined)
+        #expect(packed.verdict == .unavailable)
+        #expect(packed.detail.contains("no public accessor"))
+        #expect(packed.measurements["paged"]?.hasPrefix("UNDETERMINED") == true)
+
+        // The other capability on the same arm still resolves independently.
+        let vision = BackendParityCriteria.visionSpans(
+            baseline: baseline, candidate: undetermined)
+        #expect(vision.verdict == .pass)
+    }
+
+    @Test("a capability inactive on one arm fails and says which")
+    func inactiveCapabilityFails() {
+        let inactive = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            visionSpans: BackendParityObservation.Capability(
+                active: false, detail: "backend refused the span request"))
+        let result = BackendParityCriteria.visionSpans(
+            baseline: baseline, candidate: inactive)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("paged"))
+        #expect(result.detail.contains("backend refused"))
+        #expect(!result.detail.contains("contiguous:"))
+    }
+
+    @Test("a capability active on both arms passes")
+    func activeCapabilityPasses() {
+        let result = BackendParityCriteria.visionSpans(
+            baseline: baseline, candidate: candidate)
+        #expect(result.verdict == .pass)
+        #expect(result.detail.contains("active on contiguous and paged"))
+    }
+
+    // MARK: - Prefix reuse
+
+    @Test("zero reuse on BOTH backends is vacuous, not a pass")
+    func vacuousPrefixReuseIsUnavailable() {
+        // paged >= contiguous is arithmetically true at 0 >= 0 and means
+        // nothing: the workload never exercised the cache.
+        let noneBase = healthyArm(
+            selection: "contiguous", resolved: "contiguous", prefillTokensSaved: 0)
+        let noneCandidate = healthyArm(
+            selection: "paged", resolved: "paged", prefillTokensSaved: 0)
+        let result = BackendParityCriteria.prefixReuse(
+            baseline: noneBase, candidate: noneCandidate)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("vacuous"))
+    }
+
+    /// Two arms whose ONLY difference is the saving, with a 1024-token
+    /// structural allowance (paged bound 26624 vs contiguous 25600) — the
+    /// real gemma-4 shape.
+    private func reuseArms(
+        baselineSaved: Int,
+        candidateSaved: Int,
+        candidateSupported: Bool = true
+    ) -> (BackendParityObservation, BackendParityObservation) {
+        func arm(
+            _ selection: String, _ bound: Int, _ saved: Int, _ supported: Bool
+        ) -> BackendParityObservation {
+            prefixArm(
+                selection,
+                supported: supported,
+                strategy: supported ? "frozen_full_replay" : nil,
+                unsupportedReason: supported ? nil : "paged_hybrid_requires_dual_cursor",
+                bound: bound,
+                second: saved > 0 ? "hit" : "adoption_failed",
+                saved: saved)
+        }
+        return (
+            arm("contiguous", 25600, baselineSaved, true),
+            arm("paged", 26624, candidateSaved, candidateSupported)
+        )
+    }
+
+    @Test("a shortfall of exactly one maxWindow is EXPECTED_SHORTFALL, not FAIL")
+    func oneWindowShortfallIsExpected() {
+        // The measured gemma-4 case: 2816 contiguous, 1792 paged, delta 1024,
+        // which is exactly the maxWindow paged pays by construction.
+        let (base, cand) = reuseArms(baselineSaved: 2816, candidateSaved: 1792)
+        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: cand)
+        #expect(result.verdict == .expectedShortfall)
+        #expect(result.verdict != .pass)
+        #expect(result.detail.contains("short by 1024"))
+        // Percentage, because the same one-window cost is 36% here and 0.5%
+        // on a short-window model.
+        #expect(result.detail.contains("36.4%"))
+        #expect(result.detail.contains("NOT a regression"))
+        #expect(result.detail.contains("NOT parity"))
+        #expect(result.detail.contains("maxWindow/matched"))
+    }
+
+    @Test("a shortfall beyond one maxWindow is a real FAIL and says by how much")
+    func shortfallBeyondAllowanceFails() {
+        let (base, cand) = reuseArms(baselineSaved: 2816, candidateSaved: 1791)
+        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: cand)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("EXCEEDS the 1024-token structural allowance"))
+    }
+
+    @Test("an unsupported capability never hides inside the structural band")
+    func unsupportedCapabilityCannotClaimTheAllowance() {
+        // The allowance is the price of DOING frozen replay. A backend that
+        // derived unsupported is not paying it, it is not reusing at all.
+        let (base, cand) = reuseArms(
+            baselineSaved: 1000, candidateSaved: 0, candidateSupported: false)
+        let result = BackendParityCriteria.prefixReuse(baseline: base, candidate: cand)
+        #expect(result.verdict == .fail)
+        #expect(result.detail.contains("paged_hybrid_requires_dual_cursor"))
+    }
+
+    @Test("the shortfall percentage, not just the token count, reaches the reader")
+    func shortfallMagnitudeIsAPercentage() {
+        // The measured gpt-oss shape after F1's adoption fix: a 128-token
+        // window against a 26880-token baseline saving — same structural cost
+        // as gemma-4, two orders of magnitude less important.
+        func arm(_ selection: String, _ bound: Int, _ saved: Int)
+            -> BackendParityObservation
+        {
+            prefixArm(selection, bound: bound, saved: saved)
+        }
+        let result = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", 1536, 26880),
+            candidate: arm("paged", 1664, 26752))
+        #expect(result.verdict == .expectedShortfall)
+        #expect(result.detail.contains("short by 128"))
+        #expect(result.detail.contains("0.5%"))
+    }
+
+    @Test("a prefix that never got donated is UNAVAILABLE, not a missed reuse")
+    func undonatedPrefixIsUnavailable() {
+        // The harness failing to wait out the async donation would otherwise
+        // read as a backend that cannot reuse — a fabricated regression.
+        let stale = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            prefixReuse: BackendParityObservation.PrefixReuse(
+                capabilitySupported: true,
+                capabilityStrategy: "frozen_full_replay",
+                replayBoundTokens: 26624,
+                promptTokens: 28672,
+                donatedEntries: 0,
+                firstOutcome: "miss",
+                secondOutcome: "miss"))
+        let result = BackendParityCriteria.prefixReuse(baseline: baseline, candidate: stale)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("no prefix was donated"))
+        #expect(result.detail.contains("paged"))
+    }
+
+    /// The three ways an arm can donate nothing must never render alike. They
+    /// have different owners — an operator, the engine's telemetry, and the
+    /// donation path — and a single shared sentence sends every one of them to
+    /// the wrong person. This is the shape that made the MTP criterion
+    /// structurally unable to fail, caught here before it ships again.
+    @Test("undonated arms name WHICH failure occurred, and never share a sentence")
+    func undonatedDiagnosisSeparatesTheThreeCauses() {
+        func arm(
+            _ firstOutcome: String, _ secondOutcome: String,
+            hits: Int = 0, misses: Int = 0, finish: String = "",
+            supported: Bool = true, unsupportedReason: String? = nil
+        ) -> BackendParityObservation {
+            prefixArm(
+                "paged",
+                supported: supported,
+                strategy: nil,
+                unsupportedReason: unsupportedReason,
+                bound: 1536,
+                donated: 0,
+                first: firstOutcome,
+                second: secondOutcome,
+                firstFinish: finish,
+                matched: 0,
+                saved: 0,
+                hits: hits,
+                misses: misses)
+        }
+        func detail(_ observation: BackendParityObservation) -> String {
+            let result = BackendParityCriteria.prefixReuse(
+                baseline: baseline, candidate: observation)
+            #expect(result.verdict == .unavailable)
+            return result.detail
+        }
+
+        // 1. Genuinely off: nothing ever reached the cache and every
+        //    submission said so. The operator's problem.
+        let off = detail(arm("disabled", "disabled"))
+        #expect(off.contains("CACHE OFF"))
+
+        // 2. The live gpt-oss anomaly: `disabled` on the donor while the SAME
+        //    arm records lookups and a non-disabled second outcome. Both are
+        //    unreachable past `EngineV2.makePrefixLookup`'s nil-cache guard, so
+        //    the pair is a contradiction and the usage is what is wrong.
+        let misreported = detail(arm("disabled", "miss", misses: 2, finish: "terminal(watchdog)"))
+        #expect(misreported.contains("MIS-REPORTED"))
+        #expect(misreported.contains("terminal(watchdog)"))
+        #expect(!misreported.contains("CACHE OFF"))
+
+        // 3. Live cache, clean donor, nothing indexed — the only one of the
+        //    three that is a real donation-path failure.
+        let realFailure = detail(arm("miss", "miss", misses: 2, finish: "length"))
+        #expect(realFailure.contains("real donation-path failure"))
+        #expect(!realFailure.contains("CACHE OFF"))
+        #expect(!realFailure.contains("MIS-REPORTED"))
+
+        // An unsupported capability is its own cause and outranks all three.
+        let unsupported = detail(
+            arm("disabled", "disabled", supported: false, unsupportedReason: "unknown_backend"))
+        #expect(unsupported.contains("UNSUPPORTED"))
+        #expect(unsupported.contains("unknown_backend"))
+
+        #expect(Set([off, misreported, realFailure, unsupported]).count == 4)
+    }
+
+    @Test("a probe prompt under the frozen-replay bound is UNAVAILABLE, not a failure")
+    func belowReplayBoundIsUnavailable() {
+        // gemma-4: 25 windowed layers x 1024 = 25600 contiguous, +maxWindow =
+        // 26624 paged. A 1024-token probe measures the prompt, not the backend.
+        func arm(_ selection: String, _ bound: Int) -> BackendParityObservation {
+            prefixArm(
+                selection, bound: bound, promptTokens: 1024, donated: 4,
+                second: "skipped_policy", matched: 0, saved: 0, hits: 0, misses: 0)
+        }
+        let result = BackendParityCriteria.prefixReuse(
+            baseline: arm("contiguous", 25600), candidate: arm("paged", 26624))
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("1024-token probe prompt"))
+        #expect(result.detail.contains("26624"))
+        #expect(result.detail.contains("--parity-prefix-tokens"))
+        // Explicitly NOT the vacuous message: the reason is length, not workload.
+        #expect(!result.detail.contains("vacuous"))
+    }
+
+    @Test("paged reusing at least as much as contiguous passes")
+    func prefixReuseAtParityPasses() {
+        let base = healthyArm(
+            selection: "contiguous", resolved: "contiguous", prefillTokensSaved: 512)
+        let equal = healthyArm(selection: "paged", resolved: "paged", prefillTokensSaved: 512)
+        #expect(BackendParityCriteria.prefixReuse(baseline: base, candidate: equal).verdict
+            == .pass)
+
+        let better = healthyArm(selection: "paged", resolved: "paged", prefillTokensSaved: 768)
+        #expect(BackendParityCriteria.prefixReuse(baseline: base, candidate: better).verdict
+            == .pass)
+    }
+
+    @Test("an unmeasurable prefix arm is UNAVAILABLE with its reason")
+    func prefixReuseUnmeasurableIsUnavailable() {
+        let broken = BackendParityObservation(
+            selection: "paged", resolvedBackend: "paged",
+            prefixReuse: BackendParityObservation.PrefixReuse(
+                unavailableReason: "prefix-cache engine construction failed"))
+        let result = BackendParityCriteria.prefixReuse(baseline: baseline, candidate: broken)
+        #expect(result.verdict == .unavailable)
+        #expect(result.detail.contains("engine construction failed"))
+    }
+
+    // MARK: - Report assembly
+
+    @Test("a healthy two-arm run produces five criteria and exits 0")
+    func fullEvaluationPasses() {
+        let criteria = BackendParityCriteria.evaluate(
+            baseline: baseline, candidate: candidate)
+        #expect(criteria.map(\.id) == [
+            "token_exactness", "mtp_token_exactness", "packed_prefill",
+            "vision_spans", "prefix_reuse",
+        ])
+        #expect(criteria.allSatisfy { $0.verdict == .pass })
+        #expect(BackendParityOutcome(criteria: criteria).exitStatus == 0)
+    }
+
+    /// Schema 3 is the wave that added the dtype-provenance fields
+    /// (`pagedPoolDType`, `candidatePoolDType`/`controlPoolDType` with the
+    /// same-dtype validity rule), `adoptionMismatchReason`, and the
+    /// tri-state adoption evidence (`adoptionInconclusiveReason`). Pinned so
+    /// the next field addition forces a deliberate bump instead of shipping
+    /// a new shape under an old label — version-keyed consumers gate on it.
+    @Test("the serialized shape changes of this wave carry schema version 3")
+    func schemaVersionCoversTheNewFields() {
+        #expect(BackendParityReport.currentSchemaVersion == 3)
+    }
+
+    @Test("the report round-trips through JSON with its verdicts intact")
+    func reportRoundTrips() throws {
+        let report = BackendParityReport(
+            modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+            modelPath: "/tmp/gemma",
+            assistantModelID: "gemma-4-26B-A4B-it-qat-assistant-4bit",
+            arms: [baseline.arm, candidate.arm],
+            criteria: BackendParityCriteria.evaluate(
+                baseline: baseline, candidate: candidate),
+            notes: ["resolved, not requested"])
+
+        let decoded = try JSONDecoder().decode(
+            BackendParityReport.self,
+            from: Data(try report.jsonString().utf8))
+        #expect(decoded.schemaVersion == BackendParityReport.currentSchemaVersion)
+        #expect(decoded.modelID == report.modelID)
+        #expect(decoded.assistantModelID == "gemma-4-26B-A4B-it-qat-assistant-4bit")
+        #expect(decoded.arms.count == 2)
+        #expect(decoded.arms[1].resolvedBackend == "paged")
+        #expect(decoded.criteria.count == 5)
+        #expect(decoded.criteria.allSatisfy { $0.verdict == .pass })
+        #expect(decoded.outcome.exitStatus == 0)
+    }
+
+    @Test("an observation round-trips so a run can be replayed offline")
+    func observationRoundTrips() throws {
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(candidate)
+        let decoded = try JSONDecoder().decode(BackendParityObservation.self, from: data)
+        #expect(decoded == candidate)
+    }
+
+    @Test("the operator table names every verdict and the summary line")
+    func tableRendersVerdicts() {
+        let refused = BackendParityObservation(
+            selection: "paged", constructionFailure: "pagedUnavailable(\"no headroom\")")
+        let report = BackendParityReport(
+            modelID: "m", modelPath: "/tmp/m",
+            arms: [baseline.arm, refused.arm],
+            criteria: BackendParityCriteria.evaluate(baseline: baseline, candidate: refused))
+        let table = report.renderTable()
+        #expect(table.contains("arm paged -> resolved NOT BUILT"))
+        #expect(table.contains("no headroom"))
+        #expect(table.contains("[UNAVAILABLE]"))
+        #expect(table.contains("G2 INCONCLUSIVE"))
+    }
+}

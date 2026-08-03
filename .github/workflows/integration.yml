@@ -9,7 +9,16 @@ jobs:
   integration-tests:
     name: E2E Integration Tests
     runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 90
+    # Job budget = the sum of every step's worst case, not the warm-path wall
+    # time (a green run takes ~26m with warm caches). Test allowances:
+    # 25m (blocking paged lane) + 15m (expected-red exact-cache lane)
+    # + 10m (default-posture smoke) + 15m (mixed-version, released provider)
+    # + 30m (reverse lane: TWO sequential `go test -timeout 15m` runs)
+    # = 95m. Setup/build/download overhead: ~3m warm, but a cold runner pays
+    # the full Swift provider build, the cargo sidecar build, and the
+    # gpt-oss-20b (~12 GB) + gemma-4 snapshot downloads — budget 25m.
+    # 95m + 25m = 120m.
+    timeout-minutes: 120
     env:
       DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
       DARKBLOOM_PROMPT_SIDECAR_BINARY: ${{ github.workspace }}/coordinator/promptsidecar/target/release/promptsidecar
@@ -88,24 +97,241 @@ jobs:
           print(f"Pinned exact-cache snapshot: {selected.name}")
           PY
 
-      - name: Run integration + profile tests
+      # THE PAGED GATE — BLOCKING. Pinned to an EXPLICIT paged posture, not
+      # left on the provider's default, because `.auto` is ALLOWED to degrade:
+      # a paged preflight, capacity-planning or pool-construction failure
+      # silently lands an `.auto` slot on contiguous and the suite still
+      # passes. That made this job green whether or not paged ever ran.
+      #
+      # `EngineV2KVBackendPolicy.degradesPagedFailure` returns false for an
+      # explicit `.paged` selection: it REFUSES the load with
+      # `EngineV2ProductionError.pagedUnavailable` instead of degrading. So a
+      # paged regression that trips that path now fails this step rather than
+      # quietly swapping the system under test.
+      #
+      # The cap is pinned WITH the backend and not inherited. An unnamed cap
+      # seats the provider on its own default, which v0.8.1 reverted to 4 along
+      # with the contiguous KV default. Paged at B=4 measures 0.98x of
+      # contiguous against 1.17x at B=8, so setting the backend alone would
+      # have bought the B=1 regression and none of the throughput. This lane
+      # pins 8 explicitly, so the concurrency revert does not move it.
+      #
+      # DARKBLOOM_TESTBED_EXPECT_KV_BACKEND closes the last construction-side
+      # hole: after the providers register, the testbed pre-warms each
+      # advertised slot and asserts the ENGINE-REPORTED `kv_backend` on the
+      # heartbeat equals the lane's declared backend, failing the suite when
+      # it does not. Explicit-paged refusal covers the load path; the
+      # expectation covers everything else (a future degrade path, a testbed
+      # regression that stops writing the TOML, the wrong binary under test).
+      #
+      # BLOCKING as of the v0.8.0 gate audit. This step used to be
+      # `continue-on-error: true` because ONE fixture-specific test
+      # (TestIntegrationExactCacheRouting) is expected-red on paged — which
+      # meant the whole 16-test paged lane could fail without failing the
+      # job, and on the PR head it was in fact swallowing a live FAIL. The
+      # expected-red test now runs in its own informational step below;
+      # everything here must pass.
+      - name: Run integration + profile tests (paged @ 8 — BLOCKING gate)
+        env:
+          DARKBLOOM_TESTBED_KV_BACKEND: paged
+          DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
+          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: paged
         run: |
+          set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
+          # The one silent hole an explicit paged selection does NOT close: the
+          # fleet kill switch is an override, not a failure, so it degrades
+          # without refusing. Fail loudly rather than measure contiguous.
+          if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
+            echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
+                 "the kill switch degrades paged silently and voids this gate"
+            exit 1
+          fi
+          echo "KV posture requested: engine_v2_kv_backend=$DARKBLOOM_TESTBED_KV_BACKEND" \
+               "engine_v2_max_concurrent=$DARKBLOOM_TESTBED_MAX_CONCURRENT" \
+               "DARKBLOOM_CBV2_PAGED_KV=<unset>"
+          echo "Backend assertion armed: the testbed fails any suite whose" \
+               "providers do not report kv_backend=$DARKBLOOM_TESTBED_EXPECT_KV_BACKEND."
           go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestIntegration|TestProfile'
+            -run 'TestIntegration|TestProfile' \
+            -skip '^TestIntegrationExactCacheRouting$'
 
-      - name: Verify current coordinator with released v0.7.12 provider
+      # EXPECTED RED — because of the FIXTURE, not because of the default.
+      # This test runs gemma-4-e2b-it-4bit, and e2b is the one checkpoint
+      # where paged ADOPTION is the inexact arm: an adopted paged slot
+      # answers differently from its own cold run. e2b appears zero times
+      # in the production catalog -- on the two models we do serve, paged
+      # adoption is the EXACT arm and contiguous is the one that diverges.
+      #
+      # STILL RED AFTER THE v0.8.1 FLIP, and deliberately unchanged. The
+      # v0.8.0 comment here predicted this: "promote back to blocking when
+      # the fixture stops being the exception -- NOT on any further `.auto`
+      # change." This lane pins DARKBLOOM_TESTBED_KV_BACKEND=paged
+      # EXPLICITLY, so it never read the default in the first place; it
+      # still runs e2b on paged and still hits the one adoption path that
+      # diverges. `.auto` moving to contiguous changes what the FLEET
+      # serves, not what this lane measures.
+      #
+      # (The v0.8.1 contiguous prefix-cache gate does not reach it either:
+      # that gate skips cache construction only on a RESOLVED-contiguous
+      # slot, and this lane resolves paged.)
+      #
+      # EXPECTED RED until the e2b paged adoption path is fixed or this
+      # fixture moves to a served model. Kept, pinned, and visible rather
+      # than removed: the red IS the finding, and unpinning it would
+      # recreate the "gate that cannot fail" pattern this release fixed
+      # four separate times.
+      #
+      # ISOLATED in its own step (v0.8.0 gate audit) so `continue-on-error`
+      # covers exactly the one expected-red test instead of the entire paged
+      # lane it used to blanket. No DARKBLOOM_TESTBED_EXPECT_KV_BACKEND here:
+      # the expectation pre-warms every slot at suite start, and this test's
+      # cold-vs-adopted routing semantics are exactly what a pre-warm would
+      # perturb — its posture is already pinned by the explicit paged TOML.
+      - name: Run exact-cache routing (paged @ 8 — expected red, informational)
+        continue-on-error: true
+        env:
+          DARKBLOOM_TESTBED_KV_BACKEND: paged
+          DARKBLOOM_TESTBED_MAX_CONCURRENT: "8"
         run: |
+          set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
           export PATH
+          if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
+            echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
+                 "the kill switch degrades paged silently and voids this lane"
+            exit 1
+          fi
+          echo "Expected-red fixture lane: e2b paged adoption is the known inexact arm."
+          go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
+            -run '^TestIntegrationExactCacheRouting$'
+
+      # Default-posture lane. The steps above are the only ones that pin a
+      # backend, so without this NOTHING would still exercise what a stock
+      # install actually does: launch with no `--config` at all, on `.auto`,
+      # at the provider's own memberwise cap. That is a different code path
+      # from the gate — no TOML is written, no `--config` argument is added,
+      # and the config-migration cleanup never engages — so it cannot be
+      # inferred from a green paged run.
+      #
+      # Deliberately UNSET rather than `DARKBLOOM_TESTBED_KV_BACKEND=auto`:
+      # naming `auto` would write a TOML and thereby change the launch path
+      # and drop the cap to the decoder's 4, testing neither default.
+      #
+      # `.auto` resolves CONTIGUOUS as of v0.8.1 — that is the release
+      # posture and what a stock install serves. This is the ONE lane that
+      # reads the default, so it is the one that has to move with it: it was
+      # `contiguous` before v0.8.0, `paged` for v0.8.0, and is `contiguous`
+      # again now. Keep the expectation equal to the shipped default; a lane
+      # that asserts the previous release's default is a lane that fails on
+      # every correct build.
+      #
+      # The expectation is still armed (not dropped) even though contiguous
+      # is now also the DEGRADE target, because it catches the opposite
+      # drift: a build that resolves paged here would mean the flip did not
+      # land in the binary under test. It no longer distinguishes "resolved
+      # contiguous" from "degraded to contiguous" — nothing can, once they
+      # are the same value — so the thing that pins the difference is the
+      # unit gate (`EngineV2KVBackendGateTests`, which asserts a NIL
+      # fallback reason on `.auto`), not this lane.
+      #
+      # COST, honestly: this is a second provider boot plus a second
+      # gpt-oss-20b load (warm HF cache, but the weights still page in) for
+      # two inference round-trips. Same shape as each half of the
+      # reverse-compat lane below, which budgets 15m per `go test` for the
+      # same two tests. The full job arithmetic (95m of test allowances —
+      # the reverse lane counts TWICE, two sequential 15m runs — plus cold
+      # setup overhead) lives on `timeout-minutes` at the top of the job.
+      - name: Run default-posture smoke (.auto = contiguous — BLOCKING gate)
+        env:
+          DARKBLOOM_TESTBED_EXPECT_KV_BACKEND: contiguous
+        run: |
+          set -euo pipefail
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
+          if [ -n "${DARKBLOOM_CBV2_PAGED_KV:-}" ]; then
+            echo "::error::DARKBLOOM_CBV2_PAGED_KV=${DARKBLOOM_CBV2_PAGED_KV} is set;" \
+                 "this lane must measure the DEFAULT, not a killed paged"
+            exit 1
+          fi
+          echo "KV posture requested: provider default (no testbed override;" \
+               ".auto resolves contiguous as of v0.8.1)"
+          echo "Backend assertion armed: a stock install that resolves paged" \
+               "fails this gate via DARKBLOOM_TESTBED_EXPECT_KV_BACKEND=contiguous."
+          go test ./e2e/ -count=1 -v -timeout 10m -p=1 \
+            -run '^TestIntegration_(NonStreaming|Streaming)Inference$'
+
+      # The paged env is scoped to the gate STEP on purpose — do not promote it
+      # to the job's `env:`. This lane and the reverse one below run RELEASED
+      # v0.7.12 binaries, and a job-level setting would make the current
+      # testbed hand a v0.7.12 provider a TOML selecting a backend that release
+      # does not have.
+      #
+      # DARKBLOOM_MIXED_VERSION_EXPECT declares the coverage tier THIS runner
+      # must reach, and the lane goes red when it falls short of it.
+      #
+      #   artifact — verify the pinned v0.7.12 executable + metallib digests.
+      #              Needs no provider process, so it runs anywhere.
+      #   full     — additionally boot the released provider and exercise
+      #              every compatibility endpoint. Requires SIP ENABLED: the
+      #              v0.7.12 release build throws SecurityError.sipDisabled
+      #              before it registers (see mixedVersionSIPRequired).
+      #
+      # `artifact` and not `full`, because blacksmith-12vcpu-macos-latest is
+      # SIP-DISABLED and no SIP-enabled runner is available to this repo.
+      # Declaring `full` here would only make the step permanently red, which
+      # is not a gate either. Declaring `artifact` states plainly what this
+      # runner covers and, via the marker grep below, makes the lane fail if
+      # it stops covering even that. When a SIP-enabled runner exists, move
+      # this step to it and flip this to `full`: a skip is then red.
+      - name: Verify current coordinator with released v0.7.12 provider
+        env:
+          DARKBLOOM_MIXED_VERSION_EXPECT: artifact
+        run: |
+          set -euo pipefail
+          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
+          export PATH
+          # Recorded, not enforced: SIP state is a property of the runner, not
+          # of the candidate. What IS enforced is the tier grep below.
+          echo "Runner SIP state: $(/usr/bin/csrutil status 2>&1 || true)"
           RELEASED_PROVIDER=$(./scripts/fetch-v0712-provider.sh "$RUNNER_TEMP/released-providers")
+          MIXED_VERSION_LOG="$RUNNER_TEMP/mixed-version.log"
           DARKBLOOM_MIXED_VERSION=1 \
           DARKBLOOM_PROVIDER_BINARY="$RELEASED_PROVIDER" \
             go test ./e2e/ -count=1 -v -timeout 15m -p=1 \
-              -run TestIntegrationMixedVersionReleasedV0712Provider
+              -run TestIntegrationMixedVersionReleasedV0712Provider \
+            2>&1 | tee "$MIXED_VERSION_LOG"
+          # `go test` exits 0 for a skipped test, for a `-run` pattern that
+          # matched nothing, and for a package with no tests — so the exit
+          # code above cannot distinguish "gated the release artifact" from
+          # "ran nothing at all". That is exactly how this lane previously
+          # reported green while never executing. Require the tier marker.
+          if ! grep -q MIXED_VERSION_TIER_ARTIFACT_OK "$MIXED_VERSION_LOG"; then
+            echo "::error::mixed-version lane did not reach its declared" \
+                 "DARKBLOOM_MIXED_VERSION_EXPECT=artifact tier: no" \
+                 "MIXED_VERSION_TIER_ARTIFACT_OK in the log. The released v0.7.12" \
+                 "bundle pins were NOT verified — the lane was skipped, filtered" \
+                 "out, or renamed. This step gates nothing until that is fixed."
+            exit 1
+          fi
+          if grep -q MIXED_VERSION_TIER_FULL_OK "$MIXED_VERSION_LOG"; then
+            echo "::notice::mixed-version lane reached the FULL tier: the released" \
+                 "v0.7.12 provider booted and every compatibility endpoint was" \
+                 "exercised."
+          else
+            echo "::warning::mixed-version lane reached the ARTIFACT tier only:" \
+                 "the released v0.7.12 executable and metallib digests are verified," \
+                 "but the provider was NOT booted and no compatibility request was" \
+                 "served. Grep MIXED_VERSION_SIP_REQUIRED for why. Run this step on a" \
+                 "SIP-enabled runner with DARKBLOOM_MIXED_VERSION_EXPECT=full to gate" \
+                 "the wire surface."
+          fi
 
-      - name: Verify released coordinator with candidate v0.7.13 provider
+      # Reverse lane: the RELEASED v0.7.12 coordinator against the CANDIDATE
+      # provider. Named for v0.7.13 until v0.7.15; the pinned tag below has
+      # always been v0.7.12, which is what this actually checks out.
+      - name: Verify released v0.7.12 coordinator with candidate provider
         run: |
           set -euo pipefail
           PATH="$(brew --prefix postgresql@16)/bin:$PATH"
@@ -120,80 +346,17 @@ jobs:
               TESTBED_PROVIDER_CONFIG=debug \
               DARKBLOOM_CBV2_MTP=0 \
               DARKBLOOM_PREFIX_CACHE_ALLOW_EPHEMERAL=1 \
-              DARKBLOOM_PREFIX_CACHE_TEST_ROOT="$RUNNER_TEMP/v0713-reverse-cache-$test_name" \
+              DARKBLOOM_PREFIX_CACHE_TEST_ROOT="$RUNNER_TEMP/v0712-reverse-cache-$test_name" \
                 go test ./e2e -count=1 -v -timeout 15m -p=1 \
                   -run "^TestIntegration_${test_name}$"
             done
           )
 
-  benchmark:
-    name: E2E Benchmarks
-    runs-on: blacksmith-12vcpu-macos-latest
-    timeout-minutes: 30
-    if: github.event_name == 'pull_request'
-    environment: benchmarks
-    env:
-      DARKBLOOM_REPO_ROOT: ${{ github.workspace }}
-      TESTBED_PROVIDER_CONFIG: debug
-      BENCHMARK_MD_PATH: /tmp/benchmark-results.md
-      RUNNER_DESC: macos-15 (M1 Virtual)
-      GPT_OSS_REVISION: 773a7da77e569019bb0fd17a554b263738d669a3
-      GEMMA_REVISION: 0e3cbab38ce568cf6e23543010d08d03b731910c
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          submodules: recursive
-
-      - uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5.3.0
-        with:
-          go-version-file: go.mod
-
-      - name: Install Postgres
-        run: brew install postgresql@16
-
-      - name: Build provider (Swift)
-        run: |
-          cd provider-swift
-          swift build -c debug
-
-      - name: Extract mlx.metallib
-        run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
-
-      - name: Install Hugging Face client
-        # Benchmarks serve the CBv2 default (gpt-oss-20b, ~12 GB) plus the
-        # secondary multi-model checkpoint (gemma-4-26B QAT, ~14.5 GB) for
-        # TestBenchmark_MultiModelMultiProvider. Warm HF cache ⇒ no-op.
-        run: /tmp/mlxvenv/bin/pip install huggingface_hub
-
-      - name: Download public models (pull request)
-        run: |
-          echo "Pull request: downloading public models without Hugging Face authentication"
-          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gpt-oss-20b-MXFP4-Q8', revision=os.environ['GPT_OSS_REVISION'], token=False)"
-          /tmp/mlxvenv/bin/python -c "import os; from huggingface_hub import snapshot_download; snapshot_download('mlx-community/gemma-4-26B-A4B-it-qat-4bit', revision=os.environ['GEMMA_REVISION'], token=False)"
-
-      - name: Run benchmarks
-        run: |
-          PATH="$(brew --prefix postgresql@16)/bin:$PATH"
-          export PATH
-          go test ./e2e/ -count=1 -v -timeout 25m -p=1 \
-            -run 'TestBenchmark'
-
-      - name: Post benchmark results
-        if: always()
-        run: |
-          if [ ! -f /tmp/benchmark-results.md ]; then
-            echo "No benchmark results file found"
-            exit 0
-          fi
-          BODY=$(cat /tmp/benchmark-results.md)
-          gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY" \
-            --edit-last \
-            || gh pr comment ${{ github.event.pull_request.number }} \
-            --body "$BODY"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # The E2E Benchmarks job used to live here as a second job. It is gated on
+  # the approval-required `benchmarks` environment, which is created on every
+  # PR and — measured over this release's 26 PR runs — never approved, so the
+  # workflow-level status of "Integration Tests" was permanently `waiting`
+  # even when the integration job above had long since completed. The
+  # benchmark job now lives in `.github/workflows/benchmarks.yml` so its
+  # (deliberate, cost-controlling) approval gate holds only its own workflow
+  # open, and this one concludes with the integration job's real result.

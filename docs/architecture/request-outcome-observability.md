@@ -202,7 +202,7 @@ keep working.
 
 | Metric | Tags | Emitted from | Meaning |
 |---|---|---|---|
-| `d_inference.inference.request_outcome` | `model`, `class` | `api/dispatch.go` `run()` tail (committed → `success`, exhausted → failure-by-status) and `recordRejection` for pre-dispatch stages | Exactly one emit per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`}. Drives the live OpenRouter-formula uptime panel. |
+| `d_inference.inference.request_outcome` | `model`, `class`, `kv_backend` | `api/dispatch.go` `run()` tail (committed → `success`, exhausted → failure-by-status) and `recordRejection` for pre-dispatch stages | Exactly one emit per client request. `class` ∈ {`success`, `provider_5xx`, `mid_stream`, `timeout`, `rate_limited`, `client_error`}. Drives the live OpenRouter-formula uptime panel. |
 | `d_inference.routing.unservable_reclassified` | `model` | `api/dispatch.go` dispatch-exhausted backstop | A provider token-budget / KV / context 5xx that the dispatch path reclassified into an uptime-neutral 429. Always on (not gated). |
 
 The OpenRouter-formula uptime is `success / (success + provider_5xx + mid_stream + timeout)`.
@@ -224,6 +224,7 @@ Smart admission also adds reason codes to the rejection ledger (surfaced via
 |---|---|---|
 | `context_exceeded` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Request context length exceeds what any candidate provider can serve; rejected with a 429 before dispatch. |
 | `prompt_too_long` | preflight servability gate (`EIGENINFERENCE_SERVABILITY_GATE`) | Prompt alone exceeds the servable token budget; rejected with a 429 before dispatch. |
+| `no_provider` | preflight capacity | The model remains listed but no provider is currently eligible (including the fleet-reconnect window after coordinator startup); rejected with 429 + `Retry-After`, not uptime-penalized 503 ([`coordinator/api/inference_admission.go:493-591`](../../coordinator/api/inference_admission.go#L493-L591)). |
 | `unservable_token_budget` | dispatch backstop (always on) | Dispatch reclassified a provider token-budget/KV/context 5xx into a 429; pairs with `routing.unservable_reclassified`. |
 
 These preflight/backstop 429s also introduce the `routing.decisions` outcome tag
@@ -234,12 +235,57 @@ Two env flags tune the behavior:
 | Env flag | Type | Default | Effect |
 |---|---|---|---|
 | `EIGENINFERENCE_SERVABILITY_GATE` | bool | off | Enables the proactive preflight servability 429 gate (`context_exceeded` / `prompt_too_long`). When off, nothing is preflight-rejected; the always-on dispatch backstop still reclassifies unservable 5xx. |
-| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `10s` (on) | SSE prefill keepalives during long prefill. ON by default; the first keepalive fires one interval in, so only long prefills commit HTTP 200 early. Set `0` to disable; tune below OpenRouter's fetch timeout. |
+| `EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL` | Go duration | `5s` (on) | SSE prefill keepalives during long prefill. The first keepalive fires one interval in, safely before OpenRouter's observed ~10s silent-upstream timeout, so only long prefills commit HTTP 200 early. Set `0` to disable ([`coordinator/cmd/coordinator/main.go:60-65`](../../coordinator/cmd/coordinator/main.go#L60-L65), [`coordinator/api/prefill_keepalive.go:12-37`](../../coordinator/api/prefill_keepalive.go#L12-L37)). |
 
-Both new counters keep the metadata-only, low-cardinality invariant: `request_outcome`
-carries only `model` + `class`, and `unservable_reclassified` only `model`. No
-per-request identifiers, prompt/response content, client IDs, or provider IDs are
-attached to these metrics.
+Both counters keep the metadata-only, low-cardinality invariant: `request_outcome`
+carries only `model`, `class` and `kv_backend`, and `unservable_reclassified` only
+`model`. No per-request identifiers, prompt/response content, client IDs, or
+provider IDs are attached to these metrics.
+
+#### Implemented (Gate G5): per-KV-backend segmentation
+
+The v0.8.0 paged-KV rollout has no canary fleet, so per-backend segmentation is
+the only way to tell a paged regression from ordinary fleet noise. Three
+per-request families now carry a `kv_backend` dimension:
+
+| Metric | Tags | Emitted from | Meaning |
+|---|---|---|---|
+| `d_inference.inference.request_outcome` | `model`, `class`, `kv_backend` | as above | Because `class` already splits success from every failure kind, one tag segments the error RATE's numerator and denominator together. |
+| `d_inference.inference.ttft_ms` | `model`, `kv_backend` | `api/provider.go` `handleComplete` | Delivered-content TTFT (dispatch → first content chunk). The same value written to `inference_routes.actual_ttft_ms`, taken at the same instant, so metric and column cannot disagree. Skipped when unmeasurable rather than recorded as 0. |
+| `d_inference.inference.decode_tps` | `model`, `kv_backend` | `api/provider.go` `handleComplete` | Measured decode throughput (completion tokens over the first-chunk → completion window). Same value as `inference_routes.actual_decode_tps`. |
+
+`kv_backend` is deliberately the same key and vocabulary as
+[`BackendSlotCapacity.kv_backend`](../../coordinator/protocol/messages.go) on the
+heartbeat wire, so per-slot capacity, telemetry events and request metrics all
+group identically. Values:
+
+| Value | Meaning |
+|---|---|
+| `paged` / `contiguous` | the two shipped kinds, as resolved by the provider's engine |
+| `unspecified` | a 0.8.0+ provider reported the slot but sent an explicit empty kind |
+| `other` | the provider named a kind this build does not ship (cardinality fence for untrusted input) |
+| `unknown` | **no observation** — a pre-0.8.0 provider that omits the key, or a request that never reached a slot |
+
+`unknown` is never folded into a real kind. Coercing an absent value to
+`contiguous` would make the rollout dashboard show a clean contiguous baseline
+composed entirely of legacy providers, which is exactly why
+`BackendSlotCapacity.KVBackend` is a `*string`. A DogStatsD tag cannot be
+"absent but still groupable" the way an omitted JSON key can, so absence gets an
+explicit value here — the same convention `routing.client_gone` uses for an
+unknown chip family, and the opposite of the telemetry-EVENT rule, where
+`kv_backend` is omitted rather than guessed.
+
+Attribution follows the SLOT that served — `(provider, concrete build id)` — not
+the provider. A box holds up to `max_model_slots` (default 3) models at once and
+during a staged rollout may legitimately serve paged for one model and
+contiguous for another; provider-granularity tagging would blend the two
+populations the gate exists to separate. The record is sticky within a provider
+session (`coordinator/registry/kv_backend.go`), so a slot that OOMs, crashes or
+is evicted mid-request — which removes it from the next heartbeat entirely —
+keeps its attribution instead of collapsing into `unknown`.
+
+Measurement only: nothing consults `kv_backend` for routing, admission, scoring
+or shedding.
 
 ### 5. Rejection Ledger and Dashboards
 

@@ -139,6 +139,54 @@ var telemetryFieldAllowlist = map[string]struct{}{
 	"prefix_construction_failure": {},
 	"prefix_capacity_refusal":     {},
 	"prefix_cold_fallback":        {},
+	// KV-backend discriminator (v0.8.0 paged rollout). `backend` names the
+	// ENGINE or runtime ("engine_v2", "mlx-swift"); `kv_backend` names the KV
+	// storage kind ("paged" | "contiguous") and is deliberately the same key
+	// as BackendSlotCapacity.KVBackend on the heartbeat wire, so telemetry and
+	// per-slot capacity group identically. `prefix_reuse_backend` is the finer
+	// prefix-reuse row identity (contiguous_unquantized | contiguous_quantized
+	// | paged_fp16 | unknown) that "contiguous" alone cannot express.
+	"kv_backend":           {},
+	"prefix_reuse_backend": {},
+	// Paged KV pool metrics (v0.8.0). Aggregate pool counters only — never
+	// page contents or block hashes. Mirror of the Swift + TS allowlists.
+	// pages_pinned and cow_events are deliberately NOT allowlisted. Neither
+	// mechanism exists: PagedKVPool has no pin concept (only reserve/in-use)
+	// and copy-on-write page splitting is unimplemented — every page is
+	// refcount 0 or 1. An allowlisted key with no producer is worse than an
+	// absent one, because it reads as a legitimate zero: a panel built on
+	// cow_events would report "no COW events" for a feature that does not
+	// exist. Add the key WITH its mechanism, in all three mirrors at once.
+	"pool_utilization": {},
+	// Paged pool re-slice residue (v0.8.0 co-residency). RAW BYTES, and
+	// deliberately not a second ratio: pool_utilization above is OCCUPANCY,
+	// and a grant-vs-pool ratio under a near-identical name collides with it
+	// in every dashboard that groups by kv_backend. A clamped min(a,b)/b also
+	// discards the overflow magnitude — precisely the figure needed when a
+	// slot's fair share exceeds its committed pool and the box 503s on
+	// stranded slabs. pool_bytes is the denominator, emitted so share-of-pool
+	// stays derivable from the raw terms. See docs/reference/telemetry-schema.md
+	// "Adding a field: one key, one meaning".
+	"pool_bytes":                 {},
+	"pool_deferred_growth_bytes": {},
+	"pool_stranded_bytes":        {},
+	// Multi-token prediction (speculative decode) posture. MTP inflates
+	// observed_decode_tps with no discriminator, so a partially-MTP fleet
+	// biases coordinator routing on a metric it believes is homogeneous;
+	// these four make the split visible. mtp_inactive_reason carries
+	// MTPFallbackReason values plus "inert_kv_unsupported" — enabled, drafter
+	// resident, zero rounds executed, every row skipped as kv_unsupported.
+	// Bounded enums and counters only; never draft tokens or prompt content.
+	// mtp_proposed_tokens / mtp_accepted_tokens are the CUMULATIVE counters
+	// behind mtp_acceptance_rate — the weights a roll-up needs (weight each
+	// sample by proposed count; the bare ratio cannot distinguish a 1/1 slot
+	// from a 10,000/10,000 slot). Token COUNTS, never token contents.
+	"mtp_enabled":         {},
+	"mtp_active":          {},
+	"mtp_inactive_reason": {},
+	"mtp_acceptance_rate": {},
+	"mtp_proposed_tokens": {},
+	"mtp_accepted_tokens": {},
 	// Console UI context
 	"url":        {},
 	"user_agent": {},

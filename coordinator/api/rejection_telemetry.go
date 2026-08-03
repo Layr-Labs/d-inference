@@ -47,6 +47,14 @@ type rejectionInfo struct {
 	limitKind         string
 	overBy            int64
 
+	// suppressOutcome skips this row's OR-uptime emission because the caller
+	// books a different class itself. Set when a prefill keepalive already
+	// committed HTTP 200 and the failure went out in-band: the ledger keeps the
+	// true reason and status, but what the caller received was a broken stream
+	// (mid_stream), not the status class named here. Without this the request
+	// would be counted twice, under two different classes.
+	suppressOutcome bool
+
 	// Counterfactual. When servabilityComputed is true the caller already ran the
 	// capacity check (e.g. the pre-flight) and the candidate*/bestTTFTMs fields
 	// below are authoritative — recordRejection will NOT recompute. Otherwise, when
@@ -108,12 +116,17 @@ func (s *Server) recordRejection(info rejectionInfo) {
 	// exhausted rejection is skipped here because dispatch.go run()'s tail already
 	// counts that request exactly once; every other (pre-dispatch) stage has no
 	// route-outcome terminal, so it contributes its single outcome here.
-	if info.stage != "dispatch" {
+	//
+	// No KV backend: a pre-dispatch rejection never reached a slot, so there is
+	// nothing to attribute it to. The zero attribution normalizes to
+	// kv_backend:unknown / kv_backend_fallback:unknown — booking it to a real
+	// backend, or to "did not degrade", would invent a data point.
+	if info.stage != "dispatch" && !info.suppressOutcome {
 		model := info.resolvedModel
 		if model == "" {
 			model = info.requestedModel
 		}
-		s.recordRequestOutcome(model, orUptimeClassForRejection(info.httpStatus))
+		s.recordRequestOutcome(model, newUnknownKVBackendAttribution(), orUptimeClassForRejection(info.httpStatus))
 	}
 
 	// Seed the counterfactual from whatever the caller already computed.

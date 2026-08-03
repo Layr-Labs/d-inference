@@ -358,6 +358,28 @@ func injectDefaultTypesIntoSchema(dict map[string]any, depth int, changed *bool,
 					dict["nullable"] = true
 				}
 			}
+			// A multi-concrete array (`["string","integer"]`) declares a real
+			// union the single render type cannot carry: the render pipeline
+			// needs one `value['type'] | upper` string, but the provider's
+			// post-generation validator enforces what is on the wire, so
+			// keeping only the first member would reject schema-valid
+			// emissions of every other branch. JSON Schema defines the array
+			// form as exactly an anyOf of its single types, so the surviving
+			// concrete members are mirrored into `anyOf` — that survives the
+			// wire, and the validator prefers union branches over the sibling
+			// render type. A node that already carries a combinator keeps the
+			// conjunctive semantics its author wrote (layering a second union
+			// would change them); that pathological shape stays knowingly
+			// narrowed to the first member. Mirrors: null member → `nullable`
+			// (above), concrete members → `anyOf` (here).
+			if concrete := distinctConcreteTypeMembers(members); len(concrete) >= 2 &&
+				!hasSchemaUnionKey(dict) {
+				union := make([]any, len(concrete))
+				for i, m := range concrete {
+					union[i] = map[string]any{"type": m}
+				}
+				dict["anyOf"] = union
+			}
 			dict["type"] = collapsedType(members, dict)
 			*changed = true
 		}
@@ -554,6 +576,30 @@ func typeStringMembers(t any) []string {
 		}
 	}
 	return members
+}
+
+// distinctConcreteTypeMembers returns the distinct non-"null" members of an
+// array-form `type` in first-appearance order. Members arrive lowercased from
+// typeStringMembers, so distinctness is case-insensitive by construction.
+func distinctConcreteTypeMembers(members []string) []string {
+	concrete := make([]string, 0, len(members))
+	for _, m := range members {
+		if m != "null" && !slices.Contains(concrete, m) {
+			concrete = append(concrete, m)
+		}
+	}
+	return concrete
+}
+
+// hasSchemaUnionKey reports whether the node carries any combinator key
+// (anyOf/oneOf/allOf), regardless of the value's shape.
+func hasSchemaUnionKey(dict map[string]any) bool {
+	for _, key := range schemaUnionKeys {
+		if _, ok := dict[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // collapsedType collapses a non-string `type` value (pre-extracted string

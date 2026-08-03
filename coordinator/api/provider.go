@@ -2155,6 +2155,22 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		s.ddCount("inference.completion_tokens_total", int64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 		s.ddHistogram("inference.completion_tokens", float64(msg.Usage.CompletionTokens), []string{"model:" + pr.Model})
 
+		// Per-backend request quality (v0.8.0 paged rollout, Gate G5). Same two
+		// numbers just written to the route-outcome row, emitted as live
+		// histograms segmented by the SLOT that served — (provider, pr.Model),
+		// never the provider alone, because one box can hold several models on
+		// different backends during a staged rollout. See kv_backend_metrics.go.
+		//
+		// Attributed through the provider this read loop already holds, not a
+		// fresh registry lookup by id: this runs on the provider WebSocket
+		// goroutine, and re-resolving would take a second registry read lock
+		// per completion. It is also the more accurate object — if the box
+		// reconnected between dispatch and completion, the registry now holds
+		// a DIFFERENT *Provider for the same id, and the slot that served is
+		// this one.
+		s.emitRequestBackendLatency(pr.Model, s.providerKVBackendAttribution(provider, pr.Model),
+			outcome.ActualTTFTMs, outcome.ActualDecodeTPS)
+
 		// Resolve provider identity for payout.
 		p := s.registry.GetProvider(providerID)
 		if p == nil {

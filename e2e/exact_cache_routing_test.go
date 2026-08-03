@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -198,6 +199,22 @@ func TestIntegrationExactCacheRouting(t *testing.T) {
 	}, 2*time.Minute, 250*time.Millisecond,
 		"miss and donation lifecycle telemetry did not advance")
 
+	// The lifecycle struct is filled from two transports with very different
+	// latencies, and the wait above only synchronises one of them.
+	// SSDLookups / SSDMisses / SSDDonations come from the immediate
+	// `prefix_cache_ready_v2` push, so they are current the instant the
+	// donation settles. DonationOutcomes rides the periodic provider
+	// heartbeat instead, so the donation just counted still has its outcome
+	// in flight here. Left undrained it lands inside the exact-equality
+	// window below and reads as the protocol-v1 provider entering the
+	// exact-cache lifecycle, when it is really late telemetry for the v2
+	// owner's donation. Drain it BEFORE the downgrade below rather than
+	// after: that downgrade is a direct write onto the registry copy, and
+	// the next heartbeat from that provider re-asserts its real v2
+	// capabilities over it, so the window between downgrade and assertion
+	// must stay shorter than one heartbeat.
+	settleCacheRoutingTelemetry(t, suite.Coordinator.Registry)
+
 	// Bring the second provider into the candidate set as a protocol-v1 peer.
 	// Force one real request through it to prove a mixed v1/v2 fleet keeps the
 	// v1 provider available for ordinary cold inference without cache hints.
@@ -377,6 +394,51 @@ func stabilizeExactCacheRoutingCosts(providers []*registry.Provider, model strin
 			}
 		}
 		provider.Mu().Unlock()
+	}
+}
+
+// cacheTelemetryHeartbeat is the provider's default heartbeat period
+// (`CoordinatorConfig.heartbeatIntervalSecs`, 5s), which is the transport for
+// every counter the coordinator cannot observe inline.
+const cacheTelemetryHeartbeat = 5 * time.Second
+
+// settleCacheRoutingTelemetry blocks until nothing the coordinator has already
+// counted still has telemetry in flight, so a caller may compare two lifecycle
+// snapshots for exact equality and read the difference as caused by whatever
+// it did in between.
+//
+// Two conditions, because the struct has two clocks. First, every donation
+// receipt the coordinator accepted (SSDDonations, delivered immediately by
+// `prefix_cache_ready_v2`) must have its matching outcome reported: the
+// provider settles exactly one outcome per donation job, but that count only
+// reaches the coordinator on the heartbeat, so outcomes lag receipts by up to
+// one heartbeat and can never be fewer. Second, the whole snapshot must then
+// hold still for a full heartbeat, which retires any straggler with no
+// corresponding receipt.
+func settleCacheRoutingTelemetry(t *testing.T, r *registry.Registry) {
+	t.Helper()
+	const poll = 100 * time.Millisecond
+	settled := cacheTelemetryHeartbeat + time.Second
+	deadline := time.Now().Add(2 * time.Minute)
+	previous := r.CacheRoutingLifecycleStatus()
+	unchangedSince := time.Now()
+	for {
+		time.Sleep(poll)
+		current := r.CacheRoutingLifecycleStatus()
+		if !reflect.DeepEqual(current, previous) {
+			previous, unchangedSince = current, time.Now()
+		}
+		var reported uint64
+		for _, count := range current.DonationOutcomes {
+			reported += count
+		}
+		if reported >= current.SSDDonations &&
+			time.Since(unchangedSince) >= settled {
+			return
+		}
+		require.False(t, time.Now().After(deadline),
+			"cache-routing lifecycle telemetry never settled: %d donation receipts, "+
+				"%d outcomes reported", current.SSDDonations, reported)
 	}
 }
 

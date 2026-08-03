@@ -40,6 +40,32 @@ export interface MyBackendSlot {
   // they are optional here.
   observed_prefill_tps?: number; // EWMA of measured prefill TPS (admission→first token)
   model_load_time_ms?: number; // measured cold-start load time (ms) for this slot's model
+  // Per-slot KV-cache backend the provider's engine was actually built with,
+  // mirrored from Go BackendSlotCapacity.KVBackend (`*string`, omitempty).
+  // A pre-0.8.0 provider omits the key, so `undefined` means UNKNOWN — never
+  // read it as "contiguous", or the paged-rollout comparison silently counts
+  // every legacy provider as a contiguous sample.
+  kv_backend?: "paged" | "contiguous" | string;
+  // Why this slot ended up on `kv_backend` instead of the backend it was asked
+  // for, mirrored from Go BackendSlotCapacity.KVBackendFallbackReason
+  // (`*string`, omitempty). Verbatim provider text: "kill_switch",
+  // "kernel_preflight: …", "physical_capacity: …", "ineligible: …",
+  // "pool_construction_capacity: …".
+  //
+  // READ IT AS A PAIR WITH `kv_backend`, and note the ABSENCE RULE IS
+  // INVERTED. Undefined here means NO DEGRADE — the opposite of `kv_backend`,
+  // where undefined means UNKNOWN. Both keys ship together in v0.8.0, so a
+  // slot that named a `kv_backend` is running a build that also names this
+  // whenever there is one: `kv_backend` present + this undefined is an
+  // authoritative "did not degrade", and only `kv_backend` undefined is
+  // unknown.
+  //
+  // `kv_backend` alone cannot answer the question the rollout has to ask: a
+  // slot reporting "contiguous" is the v0.8.1 default, an operator who chose
+  // contiguous, or a box that asked for paged and could not build it — a
+  // steady state and a regression wearing the same label. This field is what
+  // separates them.
+  kv_backend_fallback_reason?: string;
 }
 
 export interface MyBackendCapacity {

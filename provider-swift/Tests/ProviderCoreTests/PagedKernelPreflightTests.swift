@@ -75,8 +75,49 @@ struct PagedKernelPreflightTests {
                 executableURL: child.executable,
                 childTimeout: 5)
             Issue.record("noisy failing child unexpectedly passed")
-        } catch PagedKernelPreflightError.childFailed(let status) {
+        } catch PagedKernelPreflightError.childFailed(let status, let tail) {
             #expect(status == 9)
+            // The child's own message IS the diagnosis. Discarding it cost an
+            // hour: a binary copied without its SwiftPM resource bundle made
+            // `runtime-smoke` exit 1 saying exactly that, the message was
+            // dropped, `.auto` degraded silently, and three runs that looked
+            // like clean paged arms were contiguous. Assert the tail SURVIVES
+            // and that it is the END of the stream -- this child emits 20,000
+            // lines, so a tail that kept the head would carry no diagnosis at
+            // all on a real compiler failure.
+            let tail = try #require(tail, "the child's stderr must reach the caller")
+            #expect(tail.contains("paged-kernel-compiler-diagnostic"))
+            #expect(tail.count <= 2048, "tail must stay bounded on a chatty child")
+        } catch {
+            Issue.record("unexpected preflight error: \(error)")
+        }
+    }
+
+    @Test("a short diagnostic from a fast-exiting child still reaches the caller")
+    func shortDiagnosticSurvivesTheRace() throws {
+        // The race the drain closes: `waitUntilExit()` reaps the CHILD, not
+        // the readability handler. A child that writes one line and exits
+        // immediately is the worst case -- fewest bytes, least time for the
+        // callback to run, and the case where the message matters most
+        // because it is the whole diagnosis.
+        let child = try makeChild(
+            """
+            #!/bin/bash
+            printf 'missing SwiftPM resource pagedattention.metal\\n' >&2
+            exit 1
+            """)
+        defer { try? FileManager.default.removeItem(at: child.directory) }
+
+        do {
+            try PagedKernelPreflight.run(
+                layerKinds: [layerKind()],
+                executableURL: child.executable,
+                childTimeout: 5)
+            Issue.record("failing child unexpectedly passed")
+        } catch PagedKernelPreflightError.childFailed(let status, let tail) {
+            #expect(status == 1)
+            let tail = try #require(tail, "a fast child's stderr must not be lost to the race")
+            #expect(tail.contains("pagedattention.metal"))
         } catch {
             Issue.record("unexpected preflight error: \(error)")
         }

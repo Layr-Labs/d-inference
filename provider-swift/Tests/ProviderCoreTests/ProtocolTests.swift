@@ -1306,6 +1306,138 @@ private func samplePrivacyCapabilities() -> PrivacyCapabilities {
     #expect(legacyDecoded.reasoningTokens == 0)
 }
 
+// The v0.8.0 paged-KV rollout discriminator. `kvBackend` is `String?`, not
+// `String`, and encodes with `encodeIfPresent` rather than the non-zero/false
+// omission every other additive field here uses: a pre-0.8.0 provider omits
+// `kv_backend` entirely and nil MUST stay distinguishable from an explicit
+// value, or the coordinator books every legacy provider as a contiguous
+// sample and the rollout A/B is measuring its own blind spot. Mirrors
+// `KVBackend *string` + `omitempty` in coordinator/protocol/messages.go; the
+// Go-side triple lives in messages_backend_capacity_test.go.
+//
+// BOTH directions on purpose. `BackendSlotCapacity` hand-rolls CodingKeys,
+// `init(from:)` and `encode(to:)`, so one wire field costs six coordinated
+// edits — and an encode-only assertion still passes when `init(from:)` forgot
+// the key.
+@Test func backendSlotCapacityRoundTripsKVBackendDiscriminator() throws {
+    // 1. PRESENT — both shipped kinds survive encode → wire → decode.
+    for kind in ["paged", "contiguous"] {
+        let slot = BackendSlotCapacity(
+            model: "gemma-4-26b-qat-4bit",
+            state: "running",
+            numRunning: 1,
+            numWaiting: 0,
+            activeTokens: 128,
+            maxTokensPotential: 512,
+            kvBackend: kind)
+        let encoded = try JSONEncoder().encode(slot)
+        let object = try jsonObject(encoded)
+        #expect(object["kv_backend"] as? String == kind)
+        let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: encoded)
+        #expect(decoded.kvBackend == kind)
+    }
+
+    // What the provider actually puts in that field is the RESOLVED engine
+    // kind (EngineV2Bridge+Capacity passes `kvBackendKind.rawValue`), so pin
+    // the two literals the wire can carry — renaming a case would otherwise
+    // change the wire silently.
+    #expect(EngineV2KVBackendKind.paged.rawValue == "paged")
+    #expect(EngineV2KVBackendKind.contiguous.rawValue == "contiguous")
+
+    // 2. OMITTED — a pre-0.8.0 payload decodes to nil (UNKNOWN, never
+    //    "contiguous"), and a slot that never sets it re-encodes without the
+    //    key, so the wire shape older consumers see is unchanged.
+    let legacyRaw = #"{"model":"qwen","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}"#
+    let legacy = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(legacyRaw.utf8))
+    #expect(legacy.kvBackend == nil)
+    let legacyReencoded = try jsonObject(JSONEncoder().encode(legacy))
+    #expect(legacyReencoded["kv_backend"] == nil)
+
+    // 3. EXPLICIT EMPTY — survives both directions and stays distinct from
+    //    omission. This is the case a plain `String` (or the `encodeIfNonZero`
+    //    treatment the counters get) would silently collapse into "unknown".
+    let emptyRaw = #"{"model":"qwen","state":"running","num_running":1,"num_waiting":0,"active_tokens":0,"max_tokens_potential":0,"kv_backend":""}"#
+    let empty = try JSONDecoder().decode(BackendSlotCapacity.self, from: Data(emptyRaw.utf8))
+    #expect(empty.kvBackend == "")
+    #expect(empty.kvBackend != legacy.kvBackend)
+    let emptyReencoded = try jsonObject(JSONEncoder().encode(empty))
+    #expect(emptyReencoded["kv_backend"] as? String == "")
+}
+
+// The other half of the rollout discriminator, with the OPPOSITE omission
+// rule: `kv_backend_fallback_reason` absent means the slot did NOT degrade,
+// where `kv_backend` absent means unknown. Mirrors
+// `KVBackendFallbackReason *string` + `omitempty` in
+// coordinator/protocol/messages.go; the Go-side triple lives in
+// messages_backend_capacity_test.go.
+//
+// Both halves are asserted. A field that is always present is not a signal:
+// the degraded slot carrying its reason is worth nothing unless the healthy
+// slot provably keeps the key OFF the wire.
+@Test func backendSlotCapacityRoundTripsKVBackendFallbackReason() throws {
+    // 1. DEGRADED — the slot was configured paged, paged did not happen, it
+    //    serves contiguous and says why.
+    let reason = "pool_construction_capacity: needed 3221225472, available 2147483648"
+    let degraded = BackendSlotCapacity(
+        model: "gemma-4-26b-qat-4bit",
+        state: "running",
+        numRunning: 1,
+        numWaiting: 0,
+        activeTokens: 128,
+        maxTokensPotential: 512,
+        kvBackend: "contiguous",
+        kvBackendFallbackReason: reason)
+    let degradedEncoded = try JSONEncoder().encode(degraded)
+    let degradedObject = try jsonObject(degradedEncoded)
+    #expect(degradedObject["kv_backend"] as? String == "contiguous")
+    #expect(degradedObject["kv_backend_fallback_reason"] as? String == reason)
+    let degradedDecoded = try JSONDecoder().decode(
+        BackendSlotCapacity.self, from: degradedEncoded)
+    #expect(degradedDecoded.kvBackendFallbackReason == reason)
+
+    // 2. NOT DEGRADED — an operator who configured contiguous. Same resolved
+    //    kind; the key must be ABSENT, not "" and not "none".
+    let chosen = BackendSlotCapacity(
+        model: "gemma-4-26b-qat-4bit",
+        state: "running",
+        numRunning: 1,
+        numWaiting: 0,
+        activeTokens: 128,
+        maxTokensPotential: 512,
+        kvBackend: "contiguous")
+    let chosenEncoded = try JSONEncoder().encode(chosen)
+    let chosenObject = try jsonObject(chosenEncoded)
+    #expect(chosenObject["kv_backend"] as? String == "contiguous")
+    #expect(chosenObject["kv_backend_fallback_reason"] == nil)
+    let chosenDecoded = try JSONDecoder().decode(
+        BackendSlotCapacity.self, from: chosenEncoded)
+    #expect(chosenDecoded.kvBackendFallbackReason == nil)
+
+    // The whole point: two slots reporting the same resolved kind are now
+    // distinguishable on the wire. Before this key they were identical.
+    #expect(degraded.kvBackend == chosen.kvBackend)
+    #expect(degradedEncoded != chosenEncoded)
+
+    // 3. PRE-0.8.0 — neither key. Absence of the reason here is NOT "did not
+    //    degrade": with no `kv_backend` either, the slot is unknown, which is
+    //    why the coordinator reads the two together.
+    let legacyRaw = #"{"model":"qwen","state":"running","num_running":2,"num_waiting":0,"active_tokens":3000,"max_tokens_potential":8000}"#
+    let legacy = try JSONDecoder().decode(
+        BackendSlotCapacity.self, from: Data(legacyRaw.utf8))
+    #expect(legacy.kvBackend == nil)
+    #expect(legacy.kvBackendFallbackReason == nil)
+    let legacyReencoded = try jsonObject(JSONEncoder().encode(legacy))
+    #expect(legacyReencoded["kv_backend_fallback_reason"] == nil)
+
+    // 4. Decode is wired too — an encode-only assertion still passes when
+    //    `init(from:)` forgot the key, and then the coordinator's own
+    //    heartbeat round-trip would drop it.
+    let wire = #"{"model":"qwen","state":"running","num_running":1,"num_waiting":0,"active_tokens":0,"max_tokens_potential":0,"kv_backend":"contiguous","kv_backend_fallback_reason":"kill_switch"}"#
+    let fromWire = try JSONDecoder().decode(
+        BackendSlotCapacity.self, from: Data(wire.utf8))
+    #expect(fromWire.kvBackendFallbackReason == "kill_switch")
+}
+
 private func jsonObject(_ data: Data) throws -> [String: Any] {
     guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         throw TestFailure.notJSONObject

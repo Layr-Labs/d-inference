@@ -98,6 +98,36 @@ Output includes:
 - Detected hardware (chip, RAM, GPU cores).
 - Schedule state (active/inactive).
 - Live daemon PID, uptime, trust verdict, and last model-load error.
+- Per-slot posture: the KV backend each loaded model actually resolved to
+  (`paged` / `contiguous`), the selection the config asked for, and whether
+  MTP is enabled, active, or enabled-but-inert.
+
+### Slot posture
+
+```
+Slot posture: state written 2s ago
+  google/gemma-4-26b: kv=paged (requested paged) | mtp=enabled, active
+  openai/gpt-oss-20b: kv=contiguous (requested auto) | mtp=enabled but INERT (inert_kv_unsupported)
+  big/model-70b: kv=NOT SERVING (requested paged) — load failed: …
+```
+
+`requested` is what `engine_v2_kv_backend` (or a per-model override in
+`engine_v2_kv_backend_by_model`) asked for; the `kv=` value is what the
+engine was actually built with. They differ when a request was vetoed,
+degraded, or refused — an explicitly requested `paged` backend that cannot
+be built REFUSES the load rather than serving contiguous, so that model
+shows `kv=NOT SERVING`.
+
+`mtp=enabled but INERT` means a drafter is resident and charging memory
+while producing no drafts. It is not the same state as `mtp=enabled,
+active`, and the reason is always named.
+
+These values come from the daemon's state file
+(`~/.darkbloom/daemon-state.json`, override with `DARKBLOOM_STATE_FILE`),
+which the running daemon rewrites every `heartbeat_interval_secs / 2`
+seconds — about every 2 s at the default. The header carries the snapshot's
+age, and the block is prefixed `STALE` once it has gone unrefreshed for
+four write cycles: a value from before a reload is worse than no value.
 
 ## `darkbloom doctor`
 
@@ -115,6 +145,26 @@ darkbloom doctor [--strict] [--coordinator <url>] [--support]
 
 `darkbloom doctor` is read-only except for the subprocess calls used by public
 ProviderCore checks.
+
+Two of the detailed checks cover the KV-backend rollout:
+
+| Check | Fails when |
+|-------|-----------|
+| `daemon state freshness` | The daemon is running but has not rewritten its state file for eight write periods — it is wedged, and every live value below it is a guess. The bar is derived from `heartbeat_interval_secs` (the daemon writes every half-heartbeat) with a 90 s floor, so raising the heartbeat does not make a healthy daemon look wedged. |
+| `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
+
+`auto` never fails this check — it promises nothing, so whichever backend it
+lands on is honoured by definition. It resolves paged as of v0.8.0 and
+degrades to contiguous on a box that cannot serve paged, so an `auto` slot
+reporting contiguous is expected output, not a finding. When
+the state file is past the wedge bar the backend verdict is WITHHELD rather
+than asserted from a snapshot that may predate a reload.
+
+An explicit `engine_v2_kv_backend` with no slot behind it — startup preload
+off, or every slot idle-unloaded — WARNs rather than passes: nothing on the
+box has loaded, let alone proved, the backend it was configured for. Under
+`--strict` (and therefore `darkbloom verify`) that warning exits non-zero,
+which is the point: an unproven paged rollout must not certify.
 
 ## `darkbloom verify`
 
@@ -221,13 +271,13 @@ darkbloom beta disable <feature>    # turn off
 
 | Feature | Effect |
 |---------|--------|
-| `kv-quant` | Forward-compatibility toggle; v0.7.5 warns and continues with fp16 KV |
 | `mtp` | Default-off Gemma 4 MTP code path; requires a separately published and verified `spec_dec` artifact, which production does not currently have |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
 beta list` also accepts `--json`. Installing a provider release does not enable
 MTP, and local parity results are not a blanket M1–M3/unknown-chip certification.
+`kv-quant` was removed in v0.8.0 and is no longer a valid feature id.
 
 ## `darkbloom fan` (experimental)
 

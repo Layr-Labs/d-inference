@@ -214,21 +214,122 @@ func TestIntegration_StreamingInference(t *testing.T) {
 	timer.Stop()
 	ri.EndWithDuration(0)
 
-	var chunks int
+	// Counting bare `data: ` lines was vacuous: the `[DONE]` sentinel is a
+	// `data: ` line, so a stream that produced NOTHING but its terminator
+	// (or only role-preamble boilerplate) still passed. Require at least one
+	// payload-bearing chunk: not `[DONE]`, parses as a chunk, and carries
+	// non-empty delta text. gpt-oss is a reasoning model, so the Harmony
+	// analysis channel (`delta.reasoning`) counts as payload exactly as
+	// TestIntegration_StreamingContentValidation already treats it — under a
+	// small token cap the final `content` channel may not start at all.
+	var chunks, payloadChunks int
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "data: ") {
-			chunks++
-			ri.StreamChunk(chunks)
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		chunks++
+		ri.StreamChunk(chunks)
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) > 0 &&
+			(chunk.Choices[0].Delta.Content != "" || chunk.Choices[0].Delta.Reasoning != "") {
+			payloadChunks++
 		}
 	}
 	require.Greater(t, chunks, 0, "expected at least one SSE chunk")
-	t.Logf("streaming: received %d SSE chunks", chunks)
+	require.Greater(t, payloadChunks, 0,
+		"expected at least one parseable chunk carrying delta content/reasoning — "+
+			"a stream of boilerplate plus [DONE] is not an inference")
+	t.Logf("streaming: received %d SSE chunks (%d payload-bearing)", chunks, payloadChunks)
 
 	run := tbprofile.NewProfiler(testbed.DefaultTestConfig(), buf).BuildProfile()
 	t.Logf("\n%s", run.SummaryTable())
 
 	assertAccounting(t, s)
+}
+
+// Within-backend greedy determinism: the same temperature-0 prompt, sent
+// twice to the same provider process, must produce byte-identical
+// completions. This is the one CONTENT property the e2e layer can assert
+// without lying: cross-backend token equality is known-divergent on gemma-4
+// (8.85% teacher-forced disagreement, accepted drift) and golden-token
+// pinning would break on any harmless kernel/template change — but a single
+// engine slot answering the same greedy question two different ways is a
+// nondeterminism bug on ANY backend, and no e2e test asserted anything about
+// content at all.
+//
+// The suite runs one provider (startSuite's default), so "the same provider"
+// is structural, and requests are sequential, so both runs decode at batch
+// size 1 — this does not depend on batch-composition invariance, which the
+// live Swift parity suite owns.
+func TestIntegration_GreedyDeterminism(t *testing.T) {
+	s := startSuite(t)
+
+	// 256 tokens for the same reason as TestIntegration_E2EEncryptionCorrectness:
+	// gpt-oss spends its first tokens in the Harmony analysis channel, and the
+	// assertion below wants the final `content` channel populated too.
+	const prompt = "What is 2+2? Answer with just the number."
+	type completion struct {
+		content   string
+		reasoning string
+		tokens    int
+	}
+	run := func(attempt int) completion {
+		resp := postChatCompletions(t, s, prompt, false, 256)
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		require.Equal(t, http.StatusOK, resp.StatusCode,
+			"attempt %d: body: %s", attempt, string(respBody[:min(len(respBody), 500)]))
+
+		var result struct {
+			Choices []struct {
+				Message struct {
+					Content   string `json:"content"`
+					Reasoning string `json:"reasoning"`
+				} `json:"message"`
+			} `json:"choices"`
+			Usage struct {
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
+		}
+		require.NoError(t, json.Unmarshal(respBody, &result), "attempt %d", attempt)
+		require.Len(t, result.Choices, 1, "attempt %d", attempt)
+		require.NotEmpty(t, result.Choices[0].Message.Content,
+			"attempt %d produced no content — nothing to compare", attempt)
+		return completion{
+			content:   result.Choices[0].Message.Content,
+			reasoning: result.Choices[0].Message.Reasoning,
+			tokens:    result.Usage.CompletionTokens,
+		}
+	}
+
+	first := run(1)
+	second := run(2)
+
+	require.Equal(t, first.content, second.content,
+		"greedy temperature-0 completions differ across two runs on the same provider — "+
+			"within-backend nondeterminism")
+	require.Equal(t, first.reasoning, second.reasoning,
+		"greedy reasoning channels differ across two runs on the same provider")
+	require.Equal(t, first.tokens, second.tokens,
+		"identical greedy runs reported different completion token counts")
+	t.Logf("determinism: two greedy runs byte-identical (%d completion tokens, content=%q)",
+		first.tokens, first.content[:min(len(first.content), 80)])
 }
 
 func TestIntegration_MultipleRequestsAccounting(t *testing.T) {

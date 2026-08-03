@@ -48,7 +48,7 @@ extension EngineV2Bridge {
         #if canImport(os)
         let rateStr = String(format: "%.1f", rate)
         Self.ssdStatsLogger.info(
-            "prefix cache stats (engine=v2, tier=ssd, model=\(modelId, privacy: .public)): lookups=\(lookups) hits=\(s.hits) misses=\(s.misses) hitRate=\(rateStr, privacy: .public)% tokensSaved=\(s.tokensSaved) stages=\(s.stages) stagedBytes=\(s.stagedBytesInUse) blocksWritten=\(s.blocksWritten) bytesWritten=\(s.bytesWritten) donationsDropped=\(s.donationsDropped) rateLimited=\(s.writeRateLimited) corruptDropped=\(s.corruptDropped) evictions=\(s.evictions) ttlExpired=\(s.ttlExpired) entries=\(s.entries) bytesOnDisk=\(s.bytesOnDisk)"
+            "prefix cache stats (engine=v2, tier=ssd, model=\(modelId, privacy: .public)): lookups=\(lookups) hits=\(s.hits) misses=\(s.misses) hitRate=\(rateStr, privacy: .public)% tokensSaved=\(s.tokensSaved) stages=\(s.stages) stagedBytes=\(s.stagedBytesInUse) blocksWritten=\(s.blocksWritten) bytesWritten=\(s.bytesWritten) windowSidecars=\(s.windowSidecarsWritten) windowsRestored=\(s.windowsRestored) donationsDropped=\(s.donationsDropped) rateLimited=\(s.writeRateLimited) corruptDropped=\(s.corruptDropped) evictions=\(s.evictions) ttlExpired=\(s.ttlExpired) entries=\(s.entries) bytesOnDisk=\(s.bytesOnDisk)"
         )
         #endif
     }

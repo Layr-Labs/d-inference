@@ -17,6 +17,27 @@ def run_step(
     subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
+class BenchmarkCommandFailure(RuntimeError):
+    """A benchmark command exited non-zero, carrying whatever it reported.
+
+    The sweep prints its structured report and THEN fails when an explicit
+    `--kv-backend` could not build a requested cell: the report names which
+    cells went unmeasured and why, which is exactly what an operator needs
+    when the run failed. Deciding to abort before parsing stdout threw that
+    away. The status still propagates -- only the discard was wrong.
+    """
+
+    def __init__(self, command: list[str], returncode: int, report: dict | None):
+        detail = "" if report is not None else " (no structured report on stdout)"
+        super().__init__(
+            f"benchmark command failed with status {returncode}{detail}: "
+            + shlex.join(command)
+        )
+        self.command = command
+        self.returncode = returncode
+        self.report = report
+
+
 def run_json(command: list[str], cwd: Path) -> dict:
     print(f"+ {shlex.join(command)}", file=sys.stderr, flush=True)
     result = subprocess.run(
@@ -26,15 +47,21 @@ def run_json(command: list[str], cwd: Path) -> dict:
         stdout=subprocess.PIPE,
         text=True,
     )
-    if result.returncode != 0:
-        if result.stdout:
-            print(result.stdout, file=sys.stderr)
-        raise subprocess.CalledProcessError(result.returncode, command)
     try:
-        return json.loads(result.stdout)
+        report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         print(result.stdout, file=sys.stderr)
+        if result.returncode != 0:
+            raise BenchmarkCommandFailure(command, result.returncode, None) from error
         raise RuntimeError(f"benchmark emitted invalid JSON: {error}") from error
+    if not isinstance(report, dict):
+        print(result.stdout, file=sys.stderr)
+        if result.returncode != 0:
+            raise BenchmarkCommandFailure(command, result.returncode, None)
+        raise RuntimeError("benchmark emitted JSON that is not an object")
+    if result.returncode != 0:
+        raise BenchmarkCommandFailure(command, result.returncode, report)
+    return report
 
 
 def capture(command: list[str], cwd: Path) -> str:

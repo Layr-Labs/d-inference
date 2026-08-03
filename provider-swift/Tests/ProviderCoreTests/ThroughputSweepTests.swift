@@ -100,6 +100,48 @@ struct DecodeBandwidthModelTests {
     }
 }
 
+@Suite("throughput sweep: row aggregation")
+struct ThroughputSweepRowAggregationTests {
+
+    @Test("clean rows aggregate tokens and the slowest row's elapsed")
+    func cleanRowsAggregate() {
+        let cell = ThroughputSweep.aggregateRows([
+            .init(produced: 10, elapsed: .seconds(1)),
+            .init(produced: 12, elapsed: .seconds(3)),
+            .init(produced: 11, elapsed: .seconds(2)),
+        ])
+        #expect(cell.totalTokens == 33)
+        #expect(cell.maxElapsed == .seconds(3))
+        #expect(cell.submitFailure == nil)
+    }
+
+    @Test("ANY row whose submit threw poisons the cell: it is unmeasured, not a zero sample")
+    func submitFailurePoisonsCell() {
+        // The regression this pins: a B=8 cell where one row's
+        // `engine.submit` threw (admission/runtime capacity) used to come
+        // back as a MEASURED cell with a deflated token count, and an
+        // explicit-backend sweep exited 0 over a corrupted curve. The
+        // failure must surface so the caller records the cell in
+        // `decodeCoverage.unmeasured` and the release gate rejects the run.
+        let cell = ThroughputSweep.aggregateRows([
+            .init(produced: 10, elapsed: .seconds(1)),
+            .init(produced: 0, elapsed: .zero, submitFailure: "capacityExhausted"),
+            .init(produced: 12, elapsed: .seconds(2)),
+        ])
+        #expect(cell.submitFailure == "capacityExhausted")
+    }
+
+    @Test("the first failure is kept when several rows throw")
+    func firstFailureKept() {
+        let cell = ThroughputSweep.aggregateRows([
+            .init(produced: 0, elapsed: .zero, submitFailure: "first"),
+            .init(produced: 0, elapsed: .zero, submitFailure: "second"),
+        ])
+        #expect(cell.submitFailure == "first")
+        #expect(cell.totalTokens == 0)
+    }
+}
+
 @Suite("throughput sweep: report assembly + JSON")
 struct ThroughputSweepReportTests {
 
@@ -171,6 +213,9 @@ struct ThroughputSweepReportTests {
         let json = try report.jsonString()
         #expect(json.contains("impliedReadFractionOfWeights"))
         #expect(json.contains("\"regime\""))
+        // A healthy run keeps its old shape: the OPEN-9 failure block is
+        // omitted from the JSON entirely, not emitted as null.
+        #expect(!json.contains("decodeConstructionFailure"))
 
         let decoded = try JSONDecoder().decode(
             ThroughputSweepReport.self, from: Data(json.utf8))
@@ -178,6 +223,172 @@ struct ThroughputSweepReportTests {
         #expect(decoded.decode.count == 2)
         #expect(decoded.derived.regime == .dense)
         #expect(decoded.schemaVersion == ThroughputSweepReport.currentSchemaVersion)
+    }
+
+    @Test("a refused sweep carries the reason, not just an empty curve")
+    func constructionFailureRoundTrip() throws {
+        // The OPEN-9 case: `--kv-backend paged` on a box that cannot serve
+        // paged now refuses per cell, so the sweep measures nothing. The
+        // report still ships (an operator needs the artifact) and must say
+        // WHY it is empty — `darkbloom benchmark` exits non-zero off this
+        // field and quotes the reason.
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: [], totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4, bandwidthGBps: 400)
+        let reason =
+            "engine_v2: paged KV backend explicitly requested but unavailable "
+            + "— kernel_preflight: PagedKernelPreflightError.ineligible"
+        let report = ThroughputSweepReport(
+            modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+            modelPath: "/models/gemma",
+            hardware: .init(
+                chipName: "Apple M4 Max", memoryGb: 128, gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            prefill: [],
+            decode: [],
+            derived: derived,
+            notes: ["kv backend: selection=paged, resolved=n/a (no decode cells ran)"],
+            decodeConstructionFailure: .init(
+                kvBackendSelection: "paged", reason: reason)
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ThroughputSweepReport.self, from: Data(try report.jsonString().utf8))
+        let failure = try #require(decoded.decodeConstructionFailure)
+        #expect(failure.kvBackendSelection == "paged")
+        #expect(failure.reason == reason)
+        #expect(decoded.decode.isEmpty)
+    }
+
+    @Test("selection and resolved backend are recorded separately, per cell")
+    func kvBackendResolutionRoundTrip() throws {
+        // The whole point of the block: "I asked for auto" and "I got
+        // contiguous at B=8" are different facts. A report that carried only
+        // the selection would let a degraded cell be read as a paged
+        // measurement, which is what `scripts/gemma_contbatch` gates on.
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: [], totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4, bandwidthGBps: 400)
+        let mixed = [
+            ThroughputSweepReport.DecodeSample(
+                batchSize: 1, decodeTokensPerSequence: 64,
+                aggregateTokensPerSecond: 21, perSequenceTokensPerSecond: 21,
+                elapsedMs: 1000, resolvedKVBackend: "paged"),
+            ThroughputSweepReport.DecodeSample(
+                batchSize: 8, decodeTokensPerSequence: 64,
+                aggregateTokensPerSecond: 96, perSequenceTokensPerSecond: 12,
+                elapsedMs: 1000,
+                resolvedKVBackend: "contiguous (fallback: pool capacity)"),
+        ]
+        let report = ThroughputSweepReport(
+            modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+            modelPath: "/models/gemma",
+            hardware: .init(
+                chipName: "Apple M4 Max", memoryGb: 128, gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            prefill: [],
+            decode: mixed,
+            derived: derived,
+            notes: [],
+            kvBackend: .init(
+                selection: "auto",
+                resolved: ["paged", "contiguous (fallback: pool capacity)"])
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ThroughputSweepReport.self, from: Data(try report.jsonString().utf8))
+        #expect(decoded.kvBackend.selection == "auto")
+        // Two entries, not one: a mixed-population curve must be visibly
+        // mixed rather than collapsed to whichever cell ran first.
+        #expect(decoded.kvBackend.resolved.count == 2)
+        #expect(decoded.decode.first?.resolvedKVBackend == "paged")
+        #expect(decoded.decode.last?.resolvedKVBackend?.hasPrefix("contiguous") == true)
+    }
+
+    @Test("a partially measured sweep records WHICH requested cell is missing")
+    func decodeCoverageRoundTrip() throws {
+        // Each cell builds its own engine sized by its own
+        // `maxConcurrentRequests`, which feeds paged physical-capacity
+        // planning — so B=1 can resolve paged while B=8 refuses. That run is
+        // neither a clean measurement nor a total failure:
+        // `decodeConstructionFailure` stays nil because something ran, and
+        // before `decodeCoverage` the refused cell was indistinguishable
+        // from a slow one (both are a number in the curve).
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: [], totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4, bandwidthGBps: 400)
+        let reason = "engine_v2: paged KV backend explicitly requested but "
+            + "unavailable — physical_capacity: pool of 8 sequences exceeds budget"
+        let report = ThroughputSweepReport(
+            modelID: "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+            modelPath: "/models/gemma",
+            hardware: .init(
+                chipName: "Apple M4 Max", memoryGb: 128, gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            prefill: [],
+            decode: [
+                ThroughputSweepReport.DecodeSample(
+                    batchSize: 1, decodeTokensPerSequence: 64,
+                    aggregateTokensPerSecond: 21, perSequenceTokensPerSecond: 21,
+                    elapsedMs: 1000, resolvedKVBackend: "paged"),
+                // The placeholder: zero tok/s, no backend, no measurement.
+                ThroughputSweepReport.DecodeSample(
+                    batchSize: 8, decodeTokensPerSequence: 64,
+                    aggregateTokensPerSecond: 0, perSequenceTokensPerSecond: 0,
+                    elapsedMs: 0, resolvedKVBackend: nil),
+            ],
+            derived: derived,
+            notes: [],
+            kvBackend: .init(selection: "paged", resolved: ["paged"]),
+            decodeCoverage: .init(
+                requestedBatchSizes: [1, 8],
+                unmeasured: [.init(batchSize: 8, reason: reason)])
+        )
+
+        let decoded = try JSONDecoder().decode(
+            ThroughputSweepReport.self, from: Data(try report.jsonString().utf8))
+        // A partial run is NOT a construction failure: that field only ever
+        // speaks for a sweep where nothing at all ran.
+        #expect(decoded.decodeConstructionFailure == nil)
+        #expect(decoded.decodeCoverage.requestedBatchSizes == [1, 8])
+        #expect(decoded.decodeCoverage.unmeasured.count == 1)
+        #expect(decoded.decodeCoverage.unmeasured.first?.batchSize == 8)
+        #expect(decoded.decodeCoverage.unmeasured.first?.reason == reason)
+        // The curve still carries the cell, so its length is not silently
+        // shorter than the request — the coverage block is what says the
+        // zero is an absence.
+        #expect(decoded.decode.count == 2)
+    }
+
+    @Test("a fully measured sweep reports empty coverage, not an absent block")
+    func decodeCoverageAlwaysPresent() throws {
+        // `decodeCoverage` is required since schema 4: a gate must be able
+        // to tell "no cells were skipped" from "this binary predates the
+        // check", and an omitted-when-empty block cannot.
+        let derived = ThroughputSweepReport.makeDerived(
+            decode: decodeSamples(b1Aggregate: 21), totalParams: 26_000_000_000,
+            weightBytes: Int(26_000_000_000.0 * DecodeBandwidthModel.fourBitBytesPerParam),
+            quantBits: 4, bandwidthGBps: 400)
+        let report = ThroughputSweepReport(
+            modelID: "m", modelPath: "/tmp/m",
+            hardware: .init(
+                chipName: "Apple M4 Max", memoryGb: 128, gpuCores: 40,
+                memoryBandwidthGbs: 546),
+            prefill: [], decode: decodeSamples(b1Aggregate: 21), derived: derived,
+            notes: [],
+            kvBackend: .init(selection: "paged", resolved: ["paged"]),
+            decodeCoverage: .init(requestedBatchSizes: [1, 2], unmeasured: []))
+        let json = try report.jsonString()
+        #expect(json.contains("decodeCoverage"))
+
+        let decoded = try JSONDecoder().decode(
+            ThroughputSweepReport.self, from: Data(json.utf8))
+        #expect(decoded.decodeCoverage.unmeasured.isEmpty)
+        #expect(decoded.decodeCoverage.requestedBatchSizes == [1, 2])
+        #expect(decoded.schemaVersion == 4)
     }
 }
 

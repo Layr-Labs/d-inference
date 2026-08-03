@@ -275,7 +275,6 @@ enum LiveInferenceFixtures {
             kvBytesCapacity: grant,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBudget: nil,
-            kvQuantConfigured: false,
             kvBackendConfig: kvBackendConfig,
             // Hermetic tests: master-kill EVERY prefix-cache tier. An empty
             // environment is no longer dormant — the SSD tier (v0.7.5) is

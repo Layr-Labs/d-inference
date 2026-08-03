@@ -108,6 +108,18 @@ Interpret provider eligibility in this order:
    `runtime_identity_unavailable`, `unsupported_layout`,
    `unsupported_backend`, and `paged_hybrid_unsupported` are deterministic
    exclusions. A binary-version upgrade alone does not make them ready.
+   Note on `paged_hybrid_unsupported`: providers ≥ 0.8.0 can no longer
+   produce it — the engine deleted the `paged_hybrid_requires_dual_cursor`
+   case from `CBv2PrefixReuseUnsupportedReason`
+   (`libs/mlx-swift-lm/.../ContinuousBatchingV2/PrefixReusePlan.swift:28-33`;
+   every remaining `derive` reason maps elsewhere), so the provider's
+   raw-string comparison in
+   `provider-swift/Sources/ProviderCore/Inference/PrefixCacheEligibilityStatus.swift:41`
+   can never match again — but **v0.7.x providers
+   still send it** — it stays in the coordinator's accepted vocabulary and
+   its count trends to zero as the fleet upgrades. Do not read a shrinking
+   count as a fix, and do not remove the value while any pre-0.8.0 provider
+   remains.
 3. `scan_failed`, `disk_unavailable`, and `cache_init_failed` require provider
    disk/key/cache initialization investigation.
 4. Donation outcomes explain durable-ready absence: policy/shape outcomes
@@ -366,6 +378,9 @@ sudo REQUIRED_FILE=/usr/local/lib/darkbloom-env/required-env-keys.txt \
 # authoritative; do not proceed if the refresh changed an approved value.
 sudo grep -E '^EIGENINFERENCE_(CACHE_ROUTING_MODE|CACHE_ROUTING_PERCENT|CACHE_ROUTING_MAX_PLAN_QPS|PROMPT_SIDECAR_ENABLED)=' \
   /etc/d-inference/env
+# 10s races OpenRouter's silent-upstream cancel and reproduces error-0.
+sudo grep -Fx 'EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL=5s' \
+  /etc/d-inference/env
 # Snapshot every cache-routing value after refresh and immediately before the
 # swap. This provider release permits no cache-control edit, so require equality
 # with the pre-refresh digest. Only digests are emitted; the key is never printed.
@@ -403,6 +418,20 @@ Rules learned the hard way:
 - **Preserve the 10-minute application drain.** Docker's default 10-second stop
   timeout would SIGKILL active requests; every stop and new container uses 630
   seconds.
+- **No deploy phase may answer 5xx.** OpenRouter scores uptime as
+  `success / (success + error-0 + 5xx)` and excludes 429/422/400 — the
+  2026-07-29 hour reads 7940/(7940+1234+149) = 85.17%, matching its dashboard
+  exactly. A draining coordinator already answers 429, and host Caddy converts a
+  missing `:8080` upstream into the same shape, but the *new* process used to
+  answer 503 `no_provider` until its in-memory registry refilled (77 in one
+  minute on 2026-07-29). That path is now a retryable 429
+  ([`coordinator/api/inference_admission.go:493-591`](../../coordinator/api/inference_admission.go#L493-L591)).
+- **`error-0` is a client-side cancel, not a status we emit.** OpenRouter drops
+  the connection at ~10s when no response bytes have arrived, which Caddy logs
+  as status 0; every production sample terminated at 9.99–10.4s. The SSE prefill
+  keepalive only starts ticking after dispatch, so a 10s interval could never
+  fire before that deadline. 5s is required, not merely preferred
+  ([`coordinator/api/prefill_keepalive.go:12-37`](../../coordinator/api/prefill_keepalive.go#L12-L37)).
 - **The volume mount is mandatory.** Omitting `-v /mnt/disks/userdata:/mnt/disks/userdata`
   boots a **blank MicroMDM** — every device lookup returns "device not found", the fleet
   falls to `self_signed` trust, and with `MIN_TRUST=hardware` the network is effectively
@@ -629,7 +658,7 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_QUALITY_CONCURRENCY_OVERCOMMIT`, `_BY_MODEL` | Per-box admission density (default 1.2) |
 | `EIGENINFERENCE_QUALITY_CAP_PER_MODEL_TPS` | Quality cap reads each model's own solo decode rate (default `true`; `false` restores the provider-level benchmark) |
 | `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` | Solo samples required before a per-(model, chip) median is trusted (default 5) |
-| `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gpt-oss-20b=30`); the in-memory TPS registry is restart-wiped |
+| `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` | Cold-start solo rates, `build-id[@Family\|Tier]=tok/s` CSV (e.g. `gemma-4-26b-qat-4bit=14,gemma-4-26b-qat-4bit@M4\|Max=70`); the in-memory TPS registry is restart-wiped. **Ships in `release-env-defaults` and is listed in `required-env-keys.txt`**, so `refresh-env.sh` installs it and then refuses an env where it is missing or blank — `deploy/environments/prod.env` is a sanitized reference and editing it changes nothing. A provider takes its own chip class's entry when one exists, else the unqualified entry, which is clamped to the slowest class named for that model — so a seed measured on one class can never over-admit a slower or unrecognized one. Seeding also re-enables cross-class solo-median transfer for a model: without a seed the coordinator refuses to transfer a median from chip classes that cannot bound it |
 | `EIGENINFERENCE_WARM_POOL_*` | Warm-pool controller (active; `OBSERVE_ONLY=false`) |
 | `EIGENINFERENCE_DEDICATED_MODELS` | Static dedicated-box partition (`gemma-4`) |
 | `EIGENINFERENCE_PROMPT_SIDECAR_*` | Sidecar lifecycle, independent health/planning deadlines, failure threshold, diagnostics, preload, and resource bounds. Keep it enabled at the physical artifact root; provider releases must not alter its operator-selected values. |
@@ -637,6 +666,24 @@ semantics is the code (`coordinator/registry/`, `coordinator/api/`); the highlig
 | `EIGENINFERENCE_CACHE_ROUTING_PERCENT`, `_MAX_PLAN_QPS` | Independent staged-rollout caps inside `on`. Preserve the current approved production stage; defaults apply only when bootstrapping a fresh environment. |
 | `EIGENINFERENCE_CACHE_MASTER_KEY` | Independent random 256-bit key required whenever routing is `on`. Preserve it byte-for-byte across releases; never derive from or reuse `MNEMONIC`, API, release, or database keys. |
 | `EIGENINFERENCE_IPAPI_KEY` | ip-api.com PRO key; unset falls back to the free 45 req/min tier |
+| `EIGENINFERENCE_MEDIA_FETCH_ENABLED` | Default `true`. Master switch for coordinator-side resolution of remote `http(s)` `image_url`/`video_url` parts into inline `data:` URIs. **Incident rollback lever:** set `false` to restore the previous `400` for remote URLs (inline `data:` URIs keep working). Read once at process start, like every other variable here — editing the env file is **not** enough, the container must be recreated (see the container-swap procedure above). No image rebuild is needed. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_FILE_BYTES` | Default `8388608` (8 MiB). Cap on a single fetched media item, raw bytes before base64. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_TOTAL_BYTES` | Default `10485760` (10 MiB). Cap on the sum of all media fetched for one request (~13.3 MiB once inlined). Authoritative over `MAX_FILE_BYTES`: a per-file cap above this value fails boot. |
+| `EIGENINFERENCE_MEDIA_FETCH_TIMEOUT_MS` | Default `15000`. Per-fetch deadline (connect + read) for one origin. |
+| `EIGENINFERENCE_MEDIA_FETCH_TOTAL_DEADLINE_MS` | Default `25000`. Deadline for the whole resolution step across every part of a request. |
+| `EIGENINFERENCE_MEDIA_FETCH_GLOBAL_CONCURRENCY` | Default `32`. Process-wide in-flight fetch cap — the bound on outbound sockets a media-heavy burst can open from the TEE. |
+| `EIGENINFERENCE_MEDIA_FETCH_MAX_IMAGE_MEGAPIXELS` | Default `100`. Header-only pixel-bomb gate for every accepted image format; mirrors the provider's `DARKBLOOM_MAX_IMAGE_MEGAPIXELS`. `0` disables the coordinator-side check (the provider's own pre-raster cap still applies). |
+| `EIGENINFERENCE_MEDIA_FETCH_BLOCKLIST_DOMAINS` | Default empty. Comma-separated hostnames refused for the initial request and every redirect hop. The IP-level SSRF policy applies regardless of this list. |
+| `EIGENINFERENCE_MEDIA_FETCH_ALLOW_PRIVATE_IPS` | Default `false`. **Dev/test only — disables an SSRF protection.** `true` removes the connect-time deny policy for loopback/private/link-local/metadata/CGNAT addresses, letting the coordinator be aimed at the TEE's own network. Never set in prod; boot logs a WARN when it is on. |
+| `EIGENINFERENCE_MEDIA_FETCH_ALLOW_NONSTANDARD_PORTS` | Default `false`. **Dev/test only — disables an SSRF protection.** `true` permits ports other than 80/443, turning the coordinator into a usable public-network port scanner. Never set in prod; boot logs a WARN when it is on. |
+
+Those ten `EIGENINFERENCE_MEDIA_FETCH_*` keys are the whole operator surface. Three further bounds — the post-inline body projection cap (16 MiB), the per-request part cap (8), and the per-request fetch worker count (4) — are compile-time constants in `coordinator/mediafetch/config.go` with no env var, on purpose: the first is protocol-derived (it mirrors the coordinator's own forwarded-body limit, so tuning it separately only moves where an oversized request fails), the second is matched to the provider's videos-per-request cap (changing one side desyncs the two), and the third is not a useful capacity lever — `GLOBAL_CONCURRENCY` is the one that bounds outbound sockets.
+
+Every numeric knob above is validated at boot: `AppConfig.Check()` → `mediafetch.Config.Check()` rejects any non-positive value and any `MAX_FILE_BYTES` above `MAX_TOTAL_BYTES`, so a typo (`MAX_TOTAL_BYTES=0`, `TIMEOUT_MS=-1`) aborts startup with a `media_fetch: ...` error naming the offending variable rather than silently reverting to a default the operator did not ask for. `MAX_IMAGE_MEGAPIXELS` is the one field where `0` is legal — it is the documented "coordinator-side pixel check off" value — so it is validated as `>= 0` and a negative (`MAX_IMAGE_MEGAPIXELS=-5`) fails boot rather than being quietly replaced by the 100 MP default. `NewResolver` still clamps out-of-range values as defense-in-depth for a programmatically supplied `ServerConfig.MediaFetch`, warning about whatever it had to clamp.
+
+The two `ALLOW_*` overrides are deliberately *not* boot errors — dev deployments need them — so they are surfaced as a `media fetch SSRF override enabled` WARN at construction instead. If that line appears in a prod coordinator's startup log, treat it as a misconfiguration incident.
+
+`EIGENINFERENCE_MEDIA_FETCH_ENABLED` ships as a `release-env-defaults` entry and is intentionally **not** listed in `required-env-keys.txt`: `refresh-env.sh` enforces the required-key manifest against the live `/etc/d-inference/env` *before* merging release defaults, so listing a key that no host has yet would fail both `--check` and `--apply`. This matches how every `EIGENINFERENCE_CACHE_ROUTING_*` and `EIGENINFERENCE_PROMPT_SIDECAR_*` key was introduced; it can be promoted into the manifest in a later release, once the key exists on every host.
 
 ## Troubleshooting
 

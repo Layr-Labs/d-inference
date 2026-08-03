@@ -159,10 +159,17 @@ public enum WatchdogAgent: Sendable {
         try data.write(to: plist, options: .atomic)
     }
 
+    /// `DARKBLOOM_KV_BACKEND_GUARD`: the watchdog is the crash-loop guard's
+    /// only WRITER (`KVBackendCrashLoopGuard.trip`), so a shell-set record
+    /// path must reach the launchd-spawned watchdog or it would write the
+    /// default file while the daemon and `doctor --clear-backend-guard` read
+    /// the overridden one. Mirrored in `LaunchAgent.passthroughEnvKeys` for
+    /// the daemon side.
     static let passthroughEnvKeys = [
         "DARKBLOOM_NO_UPDATE_CHECK",
         "DARKBLOOM_STATE_FILE",
         "DARKBLOOM_WATCHDOG_STATE",
+        "DARKBLOOM_KV_BACKEND_GUARD",
     ]
 
     static func passthroughEnvironment(

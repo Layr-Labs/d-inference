@@ -1490,9 +1490,10 @@ struct EngineV2FailLoudFactoryTests {
             from: Data(#"{"engine_v2": false}"#.utf8)
         )
         #expect(off.retiredKeysPresent == ["engine_v2"])
-        // New concurrency keys: default 4, per-model override map.
+        // New concurrency keys: default 4 as of v0.8.1 (the contiguous
+        // batch-curve knee — see ConfigTests), per-model override map.
         let absent = try decoder.decode(BackendSettings.self, from: Data(#"{}"#.utf8))
-        #expect(absent.engineV2MaxConcurrent == 4)
+        #expect(absent.engineV2MaxConcurrent == BackendSettings.defaultEngineV2MaxConcurrent)
         #expect(absent.engineV2MaxConcurrentByModel.isEmpty)
         let configured = try decoder.decode(
             BackendSettings.self,
@@ -1523,9 +1524,10 @@ struct EngineV2FailLoudFactoryTests {
         #expect(config.backend.engineV2MaxConcurrentByModel == [
             "gemma-4-26b-qat-4bit": 2, "gpt-oss-20b": 8,
         ])
-        // Defaults when the keys are absent.
+        // Missing keys use the shared v0.8.1 default. A pre-v0.8.0 file
+        // instead carries a serialized `= 4`, covered in ConfigTests.
         let defaults = ConfigManager.parse("[provider]\nname = \"cfg-test\"\n")
-        #expect(defaults.backend.engineV2MaxConcurrent == 4)
+        #expect(defaults.backend.engineV2MaxConcurrent == BackendSettings.defaultEngineV2MaxConcurrent)
         #expect(defaults.backend.engineV2MaxConcurrentByModel.isEmpty)
     }
 
@@ -1584,22 +1586,6 @@ private enum TestBudgets {
 
 @Suite("EngineV2 shared-budget KV accounting")
 struct EngineV2SharedBudgetTests {
-
-    @Test("kv_quant → fp16 sizing decision (EngineV2KVSizing)")
-    func fp16SizingDecision() {
-        // kv_quant OFF (rates equal): use the rate, no WARN.
-        let off = EngineV2KVSizing.resolve(quantizedRate: 400_000, fp16Rate: 400_000)
-        #expect(off.rate == 400_000)
-        #expect(!off.warnKVQuantUnsupported)
-        // kv_quant ON (quantized below fp16): pick fp16, WARN.
-        let on = EngineV2KVSizing.resolve(quantizedRate: 100_000, fp16Rate: 400_000)
-        #expect(on.rate == 400_000)
-        #expect(on.warnKVQuantUnsupported)
-        // fp16 unknown: fall back to the quantized rate, never WARN.
-        let unknown = EngineV2KVSizing.resolve(quantizedRate: 100_000, fp16Rate: 0)
-        #expect(unknown.rate == 100_000)
-        #expect(!unknown.warnKVQuantUnsupported)
-    }
 
     @Test("an in-flight v2 request reserves its worst-case KV in the shared budget, released on finish")
     func recordsAndReleasesReservation() async {

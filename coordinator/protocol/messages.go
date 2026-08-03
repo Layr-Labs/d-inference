@@ -281,6 +281,68 @@ type BackendSlotCapacity struct {
 	KVBytesPerToken       int64   `json:"kv_bytes_per_token,omitempty"`       // per-token KV cache memory cost in bytes (provider-side only)
 	ModelLoadTimeMS       int64   `json:"model_load_time_ms,omitempty"`       // measured cold-start load time (ms) for the model in this slot; omitted when unmeasured
 
+	// KVBackend names the KV-cache backend this slot's engine was actually
+	// built with — the provider's `EngineV2Bridge.kvBackendKind`, i.e. the
+	// RESOLVED kind after every veto and fallback, not the operator's
+	// requested `engine_v2_kv_backend`. Values: "paged" | "contiguous".
+	// This is the fleet's only per-slot, every-heartbeat record of the
+	// v0.8.0 paged rollout; without it a mixed fleet cannot be A/B'd on
+	// TTFT, decode TPS or error rate by backend, and a fleet-wide
+	// regression cannot be attributed to the rollout at all.
+	//
+	// POINTER, deliberately. Pre-0.8.0 providers omit the key entirely and
+	// nil MUST read as "unknown", never as "contiguous" — otherwise the
+	// rollout dashboard books every legacy provider as a contiguous sample
+	// and the comparison lies. A non-nil pointer to "" still marshals as
+	// `"kv_backend":""` (omitempty tests the pointer, not the pointee), so
+	// an authoritative "slot present, backend unnameable" stays distinct
+	// from omission. Same idiom as FreeForLoadGB / PrefixCacheStatuses.
+	//
+	// MEASUREMENT ONLY — decoded for observability; routing is NOT gated on
+	// it. Acting on the backend kind is a separate change.
+	KVBackend *string `json:"kv_backend,omitempty"`
+
+	// KVBackendFallbackReason says WHY this slot's engine ended up on
+	// KVBackend instead of the backend it was asked for — the provider's
+	// `EngineV2Factory.ProductionBuild.kvBackendFallbackReason`, verbatim:
+	// "kill_switch", "kernel_preflight: …", "physical_capacity: …",
+	// "ineligible: …", "pool_construction_capacity: …".
+	//
+	// KVBackend alone cannot answer the question the v0.8.0 rollout has to
+	// ask. A slot reporting "contiguous" is either an operator who chose
+	// contiguous or an operator who chose paged on a box where paged did not
+	// happen — a choice and a regression, indistinguishable.
+	//
+	// `.auto` resolves CONTIGUOUS again as of v0.8.1 (see the provider's
+	// EngineV2Factory.prepareProductionBackend), which INVERTS what a
+	// populated value means: a stock slot now reports contiguous with NO
+	// fallback reason, so any non-nil value identifies a box carrying an
+	// explicit engine_v2_kv_backend = "paged". Every class stays decodable
+	// — v0.8.0 providers are still in the fleet during rollout, and the
+	// paged classes remain live on explicitly-paged boxes.
+	// "kernel_preflight", "physical_capacity", "ineligible" and
+	// "pool_construction_capacity" mean this box could not serve paged and
+	// degraded — under v0.8.1 that combination is rare enough to alert on.
+	// "kill_switch" means DARKBLOOM_CBV2_PAGED_KV=0 and is a deliberate
+	// operator override that degrades rather than refuses by design. Do not
+	// alert on the two the same way.
+	//
+	// ABSENT MEANS NO DEGRADE — deliberately the OPPOSITE of KVBackend,
+	// where absent means unknown. Read the two as a pair: both keys ship in
+	// v0.8.0, so a slot that named a KVBackend is running a build that also
+	// names this whenever there is one. KVBackend present + this nil is an
+	// authoritative "did not degrade"; only KVBackend nil is unknown. See
+	// registry.KVBackendFallbackTag, which is the one place that mapping
+	// lives.
+	//
+	// UNTRUSTED, UNBOUNDED-ISH free text. The provider caps it, but nothing
+	// here may forward it to a metric tag: registry.KVBackendFallbackTag
+	// folds it onto a bounded class vocabulary first.
+	//
+	// MEASUREMENT ONLY — decoded for observability; routing is NOT gated on
+	// it, exactly like KVBackend above.
+	KVBackendFallbackReason *string `json:"kv_backend_fallback_reason,omitempty"`
+
 	// Engine-health (first-token wedge) signals — low-cardinality, NON-PRIVATE
 	// diagnostics that let the coordinator SEE a wedged MLX/Metal first-token
 	// path (provider emits the preamble, then the first blocking eval never

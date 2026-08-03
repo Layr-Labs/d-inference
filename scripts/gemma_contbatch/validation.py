@@ -31,12 +31,15 @@ def validate_prefill(args: argparse.Namespace, sweep: dict) -> None:
 
 
 def validate_decode(args: argparse.Namespace, sweep: dict) -> None:
-    # The decode curve is repeated once per iteration, so every batch size must
-    # carry exactly `--iterations` samples; anything else means the median in
-    # the summary would be computed over the wrong number of measurements.
+    # The decode curve is repeated once per iteration, so every requested batch
+    # size must carry exactly `--iterations` samples; anything else means the
+    # median in the summary would be computed over the wrong number of
+    # measurements. The expectation is the `--batch-sizes` list verbatim: a
+    # sparse curve must not be silently accepted as a dense ladder, nor the
+    # reverse.
     decode_samples = sweep.get("decode", [])
     expected_decode_counts = Counter(
-        {batch_size: args.iterations for batch_size in range(1, args.max_batch + 1)}
+        {batch_size: args.iterations for batch_size in args.batch_sizes}
     )
     actual_decode_counts = Counter(
         int(sample.get("batchSize", -1)) for sample in decode_samples

@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/api"
@@ -57,6 +58,20 @@ type Suite struct {
 	Coordinator *Coordinator
 	Providers   []*Provider
 	Users       []UserAccount
+
+	// privacyMu guards privacyAtRegistration, written once during Start and
+	// read afterwards from test goroutines.
+	privacyMu sync.Mutex
+	// privacyAtRegistration snapshots every provider's self-reported
+	// privacy_capabilities block exactly as it arrived over the wire, taken
+	// immediately BEFORE waitForProviderRegistration force-trusts the fleet.
+	// Force-trust overwrites most of that block with synthetic `true`s and
+	// materialises an empty one when the provider sent none, so an assertion
+	// made on the live registry copy after Start cannot fail. Tests that need
+	// the provider's actual claim read it through ReportedPrivacyCapabilities.
+	// A key is present for every provider that registered; a nil value means
+	// that provider reported no block at all.
+	privacyAtRegistration map[string]*protocol.PrivacyCapabilities
 }
 
 type Coordinator struct {
@@ -85,6 +100,16 @@ type Provider struct {
 	cmd    *os.Process
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// generatedConfig holds the provider TOML this instance wrote into
+	// StateDir. Empty when no KV-backend / concurrency knob was set, which is
+	// the default and launches with no --config at all.
+	generatedConfig string
+	// canonicalConfigExisted records whether ~/.config/darkbloom/provider.toml
+	// was present at launch. The provider copies a --config file there when it
+	// is missing; Stop undoes that copy so a testbed TOML never becomes the
+	// machine's default config.
+	canonicalConfigExisted bool
 }
 
 func NewSuite(cfg SuiteConfig) *Suite {
@@ -169,7 +194,14 @@ func (s *Suite) Start(ctx context.Context) (err error) {
 	if err = s.startProviders(); err != nil {
 		return err
 	}
-	err = s.waitForProviderRegistration(3 * time.Minute)
+	if err = s.waitForProviderRegistration(3 * time.Minute); err != nil {
+		return err
+	}
+	// Built-backend assertion: when the lane declares an expected KV backend
+	// (DARKBLOOM_TESTBED_EXPECT_KV_BACKEND or SuiteConfig.ExpectKVBackend),
+	// refuse to come up until every provider slot proves the engine it
+	// actually constructed matches. See kv_expectation.go.
+	err = s.verifyKVBackendExpectation()
 	return err
 }
 
@@ -290,6 +322,8 @@ func (s *Suite) startProviders() error {
 				TrustLevel:                 TrustNone,
 				AuthTokenPath:              authTokenPath,
 				EnableEphemeralPrefixCache: s.Config.EnableEphemeralPrefixCache,
+				KVBackend:                  s.Config.KVBackend,
+				MaxConcurrent:              s.Config.MaxConcurrent,
 			}); err != nil {
 				_ = os.RemoveAll(authDir)
 				return fmt.Errorf("start provider %d (%s): %w", providerIdx, strings.Join(modelIDs, ","), err)
@@ -348,10 +382,20 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 
 	time.Sleep(3 * time.Second)
 
+	// Snapshot each provider's self-reported privacy_capabilities BEFORE the
+	// force-trust mutation below overwrites it; see privacyAtRegistration.
+	snapshot := make(map[string]*protocol.PrivacyCapabilities)
+
 	// Force-trust all providers and link them to a user account so the
 	// payout destination check passes when billing is enabled.
 	s.Coordinator.Registry.ForEachProvider(func(p *registry.Provider) {
 		p.Mu().Lock()
+		if reported := p.PrivacyCapabilities; reported != nil {
+			copied := *reported
+			snapshot[p.ID] = &copied
+		} else {
+			snapshot[p.ID] = nil
+		}
 		p.Status = registry.StatusOnline
 		p.TrustLevel = registry.TrustSelfSigned
 		p.ChallengeVerifiedSIP = true
@@ -374,9 +418,33 @@ func (s *Suite) waitForProviderRegistration(timeout time.Duration) error {
 		}
 		p.Mu().Unlock()
 	})
+	s.privacyMu.Lock()
+	s.privacyAtRegistration = snapshot
+	s.privacyMu.Unlock()
 	s.Logger.Info("providers force-trusted for testing")
 
 	return nil
+}
+
+// ReportedPrivacyCapabilities returns the privacy_capabilities block the
+// given provider sent at registration, as captured before the testbed
+// force-trusted the fleet. The returned pointer is a copy the caller may
+// freely inspect; a nil block with ok==true means the provider registered
+// and reported no privacy_capabilities at all, which is a real and
+// distinguishable outcome. ok==false means no provider with that ID was
+// present when the snapshot was taken.
+//
+// Assert against this, not against Registry state: the live registry copy
+// has been overwritten with synthetic values by waitForProviderRegistration.
+func (s *Suite) ReportedPrivacyCapabilities(providerID string) (*protocol.PrivacyCapabilities, bool) {
+	s.privacyMu.Lock()
+	defer s.privacyMu.Unlock()
+	reported, ok := s.privacyAtRegistration[providerID]
+	if !ok || reported == nil {
+		return nil, ok
+	}
+	copied := *reported
+	return &copied, true
 }
 
 func (c *Coordinator) Start(ctx context.Context, logger *slog.Logger) error {
@@ -468,6 +536,35 @@ func (p *Provider) Start(ctx context.Context, coordinatorURL string, cfg Provide
 		p.StateDir = stateDir
 	}
 
+	// The KV backend and the per-slot concurrency cap have no env-var or CLI
+	// equivalent (DARKBLOOM_CBV2_PAGED_KV can only force paged OFF), so
+	// selecting them means handing the provider a TOML. Unset knobs render no
+	// file and add no argument: the default launch stays byte-identical.
+	generated, err := BuildProviderTOML(cfg, p.ProviderIndex)
+	if err != nil {
+		return fmt.Errorf("provider %d config: %w", p.ProviderIndex, err)
+	}
+	// Logged UNCONDITIONALLY, and before the file exists, because the case
+	// worth seeing in a green log is the one that writes no file: a run nobody
+	// pinned reads back "provider default" here instead of reading back
+	// nothing at all.
+	p.Logger.Info("provider KV posture",
+		"provider", p.ProviderIndex,
+		"posture", DescribeKVPosture(cfg))
+	if generated != "" {
+		configPath := filepath.Join(p.StateDir, "provider.toml")
+		if err := os.WriteFile(configPath, []byte(generated), 0600); err != nil {
+			return fmt.Errorf("write provider config: %w", err)
+		}
+		args = append(args, "--config", configPath)
+		p.generatedConfig = generated
+		if canonical := canonicalProviderConfigPath(); canonical != "" {
+			_, statErr := os.Stat(canonical)
+			p.canonicalConfigExisted = statErr == nil
+		}
+		p.Logger.Info("provider config written", "path", configPath)
+	}
+
 	cmd := execCommandContext(ctx, p.BinaryPath, args...)
 	cmd.Stdout = &logWriter{logger: p.Logger, prefix: "provider:stdout"}
 	cmd.Stderr = &logWriter{logger: p.Logger, prefix: "provider:stderr"}
@@ -536,5 +633,6 @@ func (p *Provider) Stop() {
 	if p.StateDir != "" {
 		_ = os.RemoveAll(p.StateDir)
 	}
+	removeMigratedTestbedConfig(p.generatedConfig, p.canonicalConfigExisted)
 	p.Logger.Info("provider stopped")
 }

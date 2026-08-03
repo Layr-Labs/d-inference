@@ -255,6 +255,53 @@ describe("useStripePayouts.openDashboard", () => {
     expect(tab.close).toHaveBeenCalled();
     expect(addToast).toHaveBeenCalledWith(expect.stringContaining("didn't return a dashboard link"));
   });
+
+  // The bank change happens in the other tab, so this one is stale the moment
+  // the link opens: a wrong destination on the card, and openWithdraw seeding
+  // "instant" off a stale instant_eligible for an account that now pays to a
+  // bank. Coming back must pull live (refresh=1) — account.updated may not
+  // have landed yet.
+  it("refreshes status with refresh=1 when the user returns from the dashboard tab", async () => {
+    vi.mocked(createStripeDashboardLink).mockResolvedValue({ url: LINK, stripe_account_id: "acct_1" });
+    vi.mocked(fetchStripeStatus).mockResolvedValue(readyStatus);
+    vi.mocked(fetchStripeWithdrawals).mockResolvedValue([]);
+    const tab = fakeTab();
+    stubWindowOpen(tab as unknown as Window);
+
+    const { result } = renderHook(() => useStripePayouts({ addToast: vi.fn(), enabled: true }));
+    await act(async () => {
+      await result.current.openDashboard();
+    });
+    expect(fetchStripeStatus).not.toHaveBeenCalledWith(true);
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(fetchStripeStatus).toHaveBeenCalledWith(true);
+
+    // One-shot: later tab switches must not re-hit Stripe on every focus.
+    vi.mocked(fetchStripeStatus).mockClear();
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(fetchStripeStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not refresh on tab focus when no dashboard link was opened", async () => {
+    vi.mocked(fetchStripeStatus).mockResolvedValue(readyStatus);
+    vi.mocked(fetchStripeWithdrawals).mockResolvedValue([]);
+
+    renderHook(() => useStripePayouts({ addToast: vi.fn(), enabled: true }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    vi.mocked(fetchStripeStatus).mockClear();
+
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(fetchStripeStatus).not.toHaveBeenCalled();
+  });
 });
 
 describe("StripePayoutsCard", () => {

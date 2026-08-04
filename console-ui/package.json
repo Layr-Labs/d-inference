@@ -21,7 +21,7 @@
     "@vercel/analytics": "^2.0.1",
     "asn1js": "^3.0.7",
     "lucide-react": "^1.0.1",
-    "next": "^16.2.11",
+    "next": "^16.3.0",
     "pkijs": "^3.4.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

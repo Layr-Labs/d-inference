@@ -22,6 +22,13 @@ public struct BetaFeature: Sendable, Identifiable {
     public let details: String
     /// Whether `darkbloom restart` is required for a change to take effect.
     public let requiresRestart: Bool
+    /// Where the backing field lives in `provider.toml`
+    /// (`[section]` + `key =`), so the CLI can tell "already at the requested
+    /// value AND pinned in the file" apart from "same value via decode
+    /// default". An absent key must be WRITTEN on an explicit toggle: the
+    /// operator asked for the value durably, not for today's decode default
+    /// (a future default flip would otherwise silently move their provider).
+    public let configAddress: (section: String, key: String)?
 
     private let read: @Sendable (ProviderConfig) -> Bool
     private let write: @Sendable (Bool, inout ProviderConfig) -> Void
@@ -32,6 +39,7 @@ public struct BetaFeature: Sendable, Identifiable {
         summary: String,
         details: String,
         requiresRestart: Bool,
+        configAddress: (section: String, key: String)? = nil,
         read: @escaping @Sendable (ProviderConfig) -> Bool,
         write: @escaping @Sendable (Bool, inout ProviderConfig) -> Void
     ) {
@@ -40,6 +48,7 @@ public struct BetaFeature: Sendable, Identifiable {
         self.summary = summary
         self.details = details
         self.requiresRestart = requiresRestart
+        self.configAddress = configAddress
         self.read = read
         self.write = write
     }
@@ -75,6 +84,7 @@ public enum BetaFeatures {
             prefill behavior.
             """,
             requiresRestart: true,
+            configAddress: (section: "gemma_optimizations", key: "prefill_layer18"),
             read: { $0.gemmaOptimizations.prefillLayer18 },
             write: { enabled, config in
                 config.gemmaOptimizations.prefillLayer18 = enabled
@@ -93,6 +103,7 @@ public enum BetaFeatures {
             and restart to restore both legacy paths together.
             """,
             requiresRestart: true,
+            configAddress: (section: "gemma_optimizations", key: "weighted_r1"),
             read: { $0.gemmaOptimizations.weightedR1 },
             write: { enabled, config in
                 config.gemmaOptimizations.weightedR1 = enabled
@@ -110,6 +121,7 @@ public enum BetaFeatures {
             leaving this enabled opts you in when it ships.
             """,
             requiresRestart: true,
+            configAddress: (section: "backend", key: "kv_quant"),
             read: { $0.backend.kvQuant },
             write: { enabled, config in config.backend.kvQuant = enabled }
         ),
@@ -126,6 +138,7 @@ public enum BetaFeatures {
             mtp_drafter_path under [backend] to a local drafter directory.
             """,
             requiresRestart: true,
+            configAddress: (section: "backend", key: "mtp"),
             read: { $0.backend.mtp },
             write: { enabled, config in config.backend.mtp = enabled }
         ),

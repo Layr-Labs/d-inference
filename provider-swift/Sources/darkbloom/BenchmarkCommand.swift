@@ -77,16 +77,37 @@ struct Benchmark: AsyncParsableCommand {
 
         // The low-level Gemma controls are process-start latches, so
         // `provider.toml` must be projected BEFORE the first MLX device
-        // access — exactly like the serve path (`Start.prepareServeRuntime`).
+        // access — exactly like the serve path (the shared seam is
+        // `ServeRuntimePreparer.prepareRuntime`; `Start` forwards to it).
         // Otherwise a rollback A/B benchmark silently measures the
         // default-enabled stack instead of the configured serving stack. A
         // rejected projection aborts before engine construction.
+        //
+        // A/B integrity: benchmark artifacts record the process environment
+        // (scripts/gemma_contbatch/runner.py logs os.environ). A shell-preset
+        // low-level key that CONFLICTS with the config projection would be
+        // silently overwritten by apply(), so the artifact metadata would
+        // then disagree with what was actually measured — refuse to run.
+        let gemmaSettings = snapshot.config.gemmaOptimizations
+        if let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: gemmaSettings
+        ) {
+            printError("""
+                benchmark is config-driven: refusing to run with \
+                \(conflict.key)=\(conflict.shellValue) set in this shell while \
+                provider.toml projects \(conflict.configValue). Toggle with \
+                `darkbloom beta` or edit [gemma_optimizations] in provider.toml, \
+                then re-run benchmark without the low-level override.
+                """)
+            throw ExitCode.failure
+        }
         do {
-            try Start.prepareServeRuntime(settings: snapshot.config.gemmaOptimizations)
+            try ServeRuntimePreparer.prepareRuntime(settings: gemmaSettings)
         } catch {
             printError("\(error)")
             throw ExitCode.failure
         }
+        print("gemma optimizations: prefill_layer18=\(gemmaSettings.prefillLayer18 ? "on" : "off") weighted_r1=\(gemmaSettings.weightedR1 ? "on" : "off")")
 
         guard let hardware = snapshot.hardware else {
             printError("hardware detection failed: \(snapshot.hardwareError?.localizedDescription ?? "unknown")")

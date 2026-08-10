@@ -15,7 +15,7 @@ surface. Process-wide optimization state is resolved at startup, so restart
 after changing a restart-required feature.
 
 The registry of available features lives in
-`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift:58-65`.
+`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift:73-80`.
 
 ### Canonical implementation references
 
@@ -25,11 +25,18 @@ The registry of available features lives in
   `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:332-334`
   (`decodeIfPresent` with the defaulted struct as fallback).
 - Startup projection before the first MLX device access (daemon, foreground,
-  `--local`, and `benchmark` processes):
-  `provider-swift/Sources/darkbloom/StartCommand.swift:87` and the ordering
-  seam at `provider-swift/Sources/darkbloom/StartCommand.swift:127-140`;
-  the benchmark path shares it at
-  `provider-swift/Sources/darkbloom/BenchmarkCommand.swift:76-85`.
+  `--local`, and `benchmark` processes): the shared ordering seam is
+  `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`
+  (`ServeRuntimePreparer.prepareRuntime`); the serve path calls it through
+  `Start`'s forwarding shim at
+  `provider-swift/Sources/darkbloom/StartCommand.swift:87`, and the benchmark
+  path calls it directly at
+  `provider-swift/Sources/darkbloom/BenchmarkCommand.swift:105`.
+  Benchmark A/B is config-driven — a shell-preset low-level key that
+  conflicts with the config projection is rejected rather than overwritten,
+  and the effective controls are printed before measuring
+  (`provider-swift/Sources/darkbloom/BenchmarkCommand.swift:91-110`, guard
+  helper `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:58-79`).
 - The config→environment projection and its overwrite authority:
   `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift:14-25`
   (`projection(for:)`) and `:57` (`apply(_:)`).

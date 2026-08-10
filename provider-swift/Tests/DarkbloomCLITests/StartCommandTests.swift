@@ -5,7 +5,7 @@ import Testing
 
 @testable import darkbloom
 
-@Suite("Start command runtime preparation")
+@Suite("Serve runtime preparation (shared Start/Benchmark seam)")
 struct StartCommandTests {
     @Test("TOML projection precedes the first MLX touch")
     func projectionPrecedesMetal() throws {
@@ -15,7 +15,7 @@ struct StartCommandTests {
         )
         var events: [String] = []
 
-        try Start.prepareServeRuntime(
+        try ServeRuntimePreparer.prepareRuntime(
             settings: settings,
             apply: { received in
                 #expect(received.prefillLayer18 == false)
@@ -44,7 +44,7 @@ struct StartCommandTests {
         // The coupled weighted-unsort/safe-R1 pair is a process-start latch:
         // a half-applied projection must never reach engine construction.
         do {
-            try Start.prepareServeRuntime(
+            try ServeRuntimePreparer.prepareRuntime(
                 settings: GemmaOptimizationSettings(),
                 apply: { _ in
                     events.append("projection")
@@ -86,7 +86,7 @@ struct StartCommandTests {
         }
         var metalProbed = false
 
-        try Start.prepareServeRuntime(
+        try ServeRuntimePreparer.prepareRuntime(
             settings: settings,
             requireMetal: { metalProbed = true }
         )
@@ -96,6 +96,74 @@ struct StartCommandTests {
             #expect(observed == value)
         }
         #expect(metalProbed)
+    }
+
+    @Test("the Start compatibility shim forwards to the shared seam")
+    func startShimForwards() throws {
+        var events: [String] = []
+        try Start.prepareServeRuntime(
+            settings: GemmaOptimizationSettings(),
+            apply: { _ in events.append("projection") },
+            requireMetal: { events.append("metal") }
+        )
+        #expect(events == ["projection", "metal"])
+    }
+
+    @Test("benchmark env guard: a conflicting shell preset is rejected")
+    func conflictingEnvironmentOverrideReportsConflict() throws {
+        let settings = GemmaOptimizationSettings(
+            prefillLayer18: true,
+            weightedR1: true
+        )
+        let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: settings
+        ) { key in
+            // Operator rolled back via the shell, config still selects on.
+            key == GemmaOptimizationEnvironment.safeR1Key ? "0" : nil
+        }
+
+        let found = try #require(conflict)
+        #expect(found.key == GemmaOptimizationEnvironment.safeR1Key)
+        #expect(found.shellValue == "0")
+        #expect(found.configValue == "1")
+    }
+
+    @Test("benchmark env guard: the paired weighted-unsort key is checked too")
+    func conflictingEnvironmentOverrideChecksWeightedKey() {
+        let settings = GemmaOptimizationSettings(
+            prefillLayer18: false,
+            weightedR1: false
+        )
+        let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: settings
+        ) { key in
+            key == GemmaOptimizationEnvironment.weightedUnsortKey ? "1" : nil
+        }
+
+        #expect(conflict?.key == GemmaOptimizationEnvironment.weightedUnsortKey)
+        #expect(conflict?.shellValue == "1")
+        #expect(conflict?.configValue == "0")
+    }
+
+    @Test("benchmark env guard: matching or unset shell values are not flagged")
+    func conflictingEnvironmentOverrideAllowsConsistent() {
+        let settings = GemmaOptimizationSettings(
+            prefillLayer18: true,
+            weightedR1: false
+        )
+        let projection = GemmaOptimizationEnvironment.projection(for: settings)
+
+        // Every preset value EQUALS the projection — consistent, proceed.
+        let consistent = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: settings
+        ) { projection[$0] }
+        #expect(consistent == nil)
+
+        // Nothing preset at all — proceed.
+        let unset = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: settings
+        ) { _ in nil }
+        #expect(unset == nil)
     }
 
     @Test("start accepts an explicit custom config")

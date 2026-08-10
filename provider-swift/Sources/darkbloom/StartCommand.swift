@@ -118,12 +118,12 @@ struct Start: AsyncParsableCommand {
         }
     }
 
-    /// Testable ordering seam for process-start environment projection. The
-    /// default closures are the production path; tests replace only the Metal
-    /// probe so they can assert ordering without constructing an MLX device.
-    ///
-    /// A rejected projection throws before `requireMetal()`, so a half-applied
-    /// weighted-unsort/safe-R1 pair can never reach engine construction.
+    /// Backward-compatible forwarding shim for the process-start environment
+    /// projection. The real seam (and its ordering contract: config projection
+    /// strictly BEFORE the first MLX touch; a rejected projection throws
+    /// before `requireMetal()`) lives in `ServeRuntimePreparer.prepareRuntime`
+    /// so `benchmark` mirrors the serve path without referencing `Start`.
+    /// Tests target `ServeRuntimePreparer` directly.
     internal static func prepareServeRuntime(
         settings: GemmaOptimizationSettings,
         apply: (GemmaOptimizationSettings) throws -> Void = {
@@ -133,8 +133,11 @@ struct Start: AsyncParsableCommand {
             _ = try GPUEnforcement.requireMetal()
         }
     ) throws {
-        try apply(settings)
-        try requireMetal()
+        try ServeRuntimePreparer.prepareRuntime(
+            settings: settings,
+            apply: apply,
+            requireMetal: requireMetal
+        )
     }
 
 }

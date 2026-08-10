@@ -6,7 +6,7 @@
 
 #### Performance
 
-- **Gemma 4 26B-A4B v0.8.2 optimization stack** — Layer-18 lazy prefill submission; coupled weighted-expert-unsort + safe-R1 expert-QMM gate (both default-on via `[gemma_optimizations]`); direct shared VLM text tower (deletes the duplicate extraction tower); packed multimodal prefill inside q=128 query blocks; source-matched metallib enforced across CI/release/packaged smoke. Measured on `gemma-4-26B-A4B-it-qat-4bit` vs the v0.7.15 baseline: 2K-prompt TTFT 1.23x (1715 -> 1390 ms), TTFT under concurrent load 1.39-1.76x, arrival end-to-end throughput +18-25%, decode +1.3-2.3%, peak memory unchanged. Dropped after measurement: expert gate/up packing, dense gate/up packing, standalone weighted-unsort, standalone R1. `0cc5fc9c9`
+- **Gemma 4 26B-A4B v0.8.2 optimization stack** — Layer-18 lazy prefill submission; coupled weighted-expert-unsort + safe-R1 expert-QMM gate (both default-on via `[gemma_optimizations]`); direct shared VLM text tower (deletes the duplicate extraction tower); packed multimodal prefill inside q=128 query blocks; source-matched metallib enforced across CI/release/packaged smoke. Measured on `gemma-4-26B-A4B-it-qat-4bit` vs the v0.7.15 baseline: 2K-prompt TTFT 1.23x (1715 -> 1390 ms), TTFT under concurrent load 1.38-1.76x, arrival end-to-end throughput +18-25%, decode +1.3-2.3%, retention memory control within 0.06 GiB of default (B1/B2/B4 peaks 14.0/14.64/15.05 GiB vs 14.06/14.70/15.11; tmp/benchmarks/v0-8-2-retention-comparison.json). Dropped after measurement: expert gate/up packing, dense gate/up packing, standalone weighted-unsort, standalone R1. `0cc5fc9c9`
 
 ---
 

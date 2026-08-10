@@ -430,6 +430,13 @@ public enum ConfigManager: Sendable {
     }
 
     /// Load config from a file path.
+    ///
+    /// This is the production file-loading boundary: a file that EXISTS but
+    /// cannot decode throws `ConfigError.parseFailed` (see
+    /// ``parseValidating(_:)``) instead of silently falling back to defaults.
+    /// Callers that want missing-file leniency check `fileExists` first; only
+    /// a NONEXISTENT path defaults (`readFailed` is thrown here, and the
+    /// snapshot/`loadDefault` layers substitute defaults in that case).
     public static func load(from path: URL) throws -> ProviderConfig {
         let content: String
         do {
@@ -437,7 +444,7 @@ public enum ConfigManager: Sendable {
         } catch {
             throw ConfigError.readFailed(path: path.path, underlying: error)
         }
-        return parse(content)
+        return try parseValidating(content)
     }
 
     /// Load config from the default path. Returns default config if file doesn't exist.
@@ -485,6 +492,13 @@ public enum ConfigManager: Sendable {
     // MARK: - TOML parsing
 
     /// Parse a TOML string into a ProviderConfig.
+    ///
+    /// LENIENT, test-facing entry point: ANY decode failure falls back to a
+    /// whole-config default, exactly matching historical behavior. Production
+    /// file loads must NOT use this — a malformed `[gemma_optimizations]`
+    /// entry (e.g. `weighted_r1 = 0` as an integer) would otherwise silently
+    /// re-enable the whole default-on optimization stack with zero log. Use
+    /// ``parseValidating(_:)`` (via ``load(from:)``) on that path.
     public static func parse(_ content: String) -> ProviderConfig {
         do {
             return try TOMLDecoder().decode(ProviderConfig.self, from: content)
@@ -495,6 +509,22 @@ public enum ConfigManager: Sendable {
                 backend: BackendSettings(),
                 coordinator: CoordinatorSettings()
             )
+        }
+    }
+
+    /// Parse a TOML string into a ProviderConfig, failing loudly.
+    ///
+    /// Unlike ``parse(_:)``, any decode failure throws
+    /// `ConfigError.parseFailed` carrying the decoder's description, so an
+    /// operator who fat-fingers `provider.toml` is told at startup instead of
+    /// unknowingly serving on whole-config defaults. Missing / partial content
+    /// still decodes with per-key defaults (default-on Gemma stack) — only an
+    /// undecodable FILE is rejected.
+    public static func parseValidating(_ content: String) throws -> ProviderConfig {
+        do {
+            return try TOMLDecoder().decode(ProviderConfig.self, from: content)
+        } catch {
+            throw ConfigError.parseFailed(detail: "\(error)")
         }
     }
 

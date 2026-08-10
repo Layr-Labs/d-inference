@@ -79,4 +79,18 @@ struct RuntimeSnapshotConfigTests {
         #expect(!snapshot.config.gemmaOptimizations.weightedR1)
         #expect(try String(contentsOf: url, encoding: .utf8) == original)
     }
+
+    @Test("update propagates existing-path read failures")
+    func updateRejectsUnreadableExistingPath() throws {
+        let url = tempConfigURL()
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        do {
+            _ = try loadUpdateConfig(configPath: url.path)
+            Issue.record("an existing path that cannot be read as TOML must not default")
+        } catch ConfigError.readFailed(let path, _) {
+            #expect(path == url.path)
+        }
+    }
 }

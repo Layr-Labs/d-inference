@@ -1,5 +1,24 @@
 import ArgumentParser
+import Foundation
 import ProviderCore
+
+private func updateConfigReadFailureIsMissing(_ error: Error) -> Bool {
+    let nsError = error as NSError
+    return (nsError.domain == NSCocoaErrorDomain
+        && nsError.code == CocoaError.Code.fileNoSuchFile.rawValue)
+        || (nsError.domain == NSPOSIXErrorDomain
+            && nsError.code == Int(POSIXErrorCode.ENOENT.rawValue))
+}
+
+func loadUpdateConfig(configPath: String?) throws -> ProviderConfig {
+    do {
+        return try loadRuntimeSnapshot(configPath: configPath).config
+    } catch ConfigError.readFailed(_, let underlying)
+        where updateConfigReadFailureIsMissing(underlying)
+    {
+        return ConfigManager.loadDefault()
+    }
+}
 
 struct Update: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
@@ -22,17 +41,7 @@ struct Update: AsyncParsableCommand {
     var overrideQuarantine = false
 
     mutating func run() async throws {
-        let config: ProviderConfig
-        do {
-            let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-            config = snapshot.config
-        } catch ConfigError.readFailed {
-            // Missing/unreadable config files legitimately fall back to
-            // defaults; a file that exists but doesn't parse must fail loudly
-            // instead of silently resetting (and quietly aiming an update
-            // check at the wrong coordinator).
-            config = ConfigManager.loadDefault()
-        }
+        let config = try loadUpdateConfig(configPath: configOptions.config)
 
         print("darkbloom update")
         print("Current version: \(ProviderCore.version)")

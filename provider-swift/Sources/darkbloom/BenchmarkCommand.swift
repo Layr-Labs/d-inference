@@ -1,4 +1,5 @@
 import ArgumentParser
+import Foundation
 import ProviderCore
 import ProviderBenchmark
 
@@ -107,7 +108,11 @@ struct Benchmark: AsyncParsableCommand {
             printError("\(error)")
             throw ExitCode.failure
         }
-        print("gemma optimizations: prefill_layer18=\(gemmaSettings.prefillLayer18 ? "on" : "off") weighted_r1=\(gemmaSettings.weightedR1 ? "on" : "off")")
+        // stderr, not stdout — benchmark subcommands emit machine-parsed JSON
+        // on stdout (any stray line breaks `darkbloom benchmark`'s consumers).
+        FileHandle.standardError.write(Data(
+            "gemma optimizations: prefill_layer18=\(gemmaSettings.prefillLayer18 ? "on" : "off") weighted_r1=\(gemmaSettings.weightedR1 ? "on" : "off")\n"
+            .utf8))
 
         guard let hardware = snapshot.hardware else {
             printError("hardware detection failed: \(snapshot.hardwareError?.localizedDescription ?? "unknown")")

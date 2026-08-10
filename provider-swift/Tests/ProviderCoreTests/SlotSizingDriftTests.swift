@@ -94,8 +94,7 @@ private func gemma4Kinds(from config: [String: Any]) -> [CBv2LayerKind] {
         globalHeadDim: config["global_head_dim"] as! Int,
         numAttentionHeads: config["num_attention_heads"] as! Int,
         numKeyValueHeads: config["num_key_value_heads"] as! Int,
-        numGlobalKeyValueHeads: config["num_global_key_value_heads"] as? Int,
-        attentionKeqV: config["attention_k_eq_v"] as! Bool)
+        numGlobalKeyValueHeads: config["num_global_key_value_heads"] as? Int)
 }
 
 // MARK: - Tests

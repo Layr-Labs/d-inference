@@ -48,7 +48,7 @@ struct GemmaOptimizationReportingTests {
             safeR1AOTAvailable: true,
             safeR1NAXAvailable: false)
         let rendered = effective.logLine(modelId: "gemma-4-production")
-        #expect(effective.states.allSatisfy(\.effective))
+        #expect(effective.states.allSatisfy { $0.effective })
         #expect(rendered.contains("layer18(requested=true,effective=true,reason=effective)"))
         #expect(rendered.contains("weighted_unsort(requested=true,effective=true,reason=effective)"))
         #expect(rendered.contains("safe_r1(requested=true,effective=true,reason=effective)"))

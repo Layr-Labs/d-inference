@@ -15,10 +15,10 @@ serving the public fleet, or use the same node for your own free inference via
 | **Network** | Outbound HTTPS (port 443) | Low-latency path to `api.darkbloom.dev` |
 
 The installer enforces macOS + Apple Silicon up front
-(`scripts/install.sh:41-48`). The start path rejects CPU-only execution via
-`GPUEnforcement.requireMetal()` (`provider-swift/Sources/darkbloom/StartCommand.swift:80-85`)
-and rejects machines with less than 8 GB RAM
-(`provider-swift/Sources/darkbloom/StartCommand.swift:444-447`).
+(`scripts/install.sh:41-48`). The start path rejects CPU-only execution through
+`Start.prepareServeRuntime` (`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`)
+and rejects machines with less than 8 GB RAM in `Start.runPreflightChecks`
+(`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:14-27`).
 
 ## Install
 
@@ -153,7 +153,7 @@ end = "08:00"
 - Provider TOML is authoritative for both controls. Changes take effect at
   process restart; after setting either key to `false`, run `darkbloom restart`
   to activate the rollback. The start path projects config before Metal access
-  (`provider-swift/Sources/darkbloom/StartCommand.swift:82-88` and
+  (`provider-swift/Sources/darkbloom/StartCommand.swift:84-91` and
   `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`), while
   `darkbloom beta` durably locks, reloads, and saves the selected value before
   printing the restart boundary
@@ -217,14 +217,14 @@ end = "08:00"
   under an explicit `"paged"` the model REFUSES to load instead, with the
   underlying reason attached:
   `EngineV2KVBackendPolicy.degradesPagedFailure`
-  (`selection != .paged`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:183`)
+  (`selection != .paged`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:229-233`)
   returns `false` for — and only for — an explicit `.paged` selection, so a
   paged fleet can never silently serve contiguous. That refusal surfaces as
   a 503 and the coordinator reroutes: the engine-construction catch wraps it
   as `InferenceError.modelLoadFailed`
   (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:543-549`),
   `loadErrorStatusCode` maps that case to 503
-  (`same file:975-983`), and the coordinator counts a 503 as
+  (`same file:979-1007`), and the coordinator counts a 503 as
   `capacityRejection` — no reputation strike — then cools the load-rejecting
   pair so retries skip it (`coordinator/api/provider.go:2332`, cool-down at
   `:2343-2351`).

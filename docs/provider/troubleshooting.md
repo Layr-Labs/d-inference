@@ -34,8 +34,10 @@ is stale. Re-download from the coordinator and verify again.
 
 ### `darkbloom start` fails immediately
 
-Preflight checks are in
-`provider-swift/Sources/darkbloom/StartCommand.swift:429-448`.
+Boot-security, debugger, and memory preflight checks are in
+`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:9-27`; Metal
+enforcement is in `Start.prepareServeRuntime`
+(`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`).
 
 | Error | Fix |
 |-------|-----|

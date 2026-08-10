@@ -9,8 +9,8 @@ the models you want to serve.
 | Component | Minimum | Notes |
 |-----------|---------|-------|
 | **CPU** | Apple M1 (or later) | Apple Silicon required; Intel Macs are not supported |
-| **RAM** | 8 GB | Start path rejects `< 8 GB` (`provider-swift/Sources/darkbloom/StartCommand.swift:444-447`) |
-| **GPU** | Apple Silicon integrated GPU | CPU-only execution is rejected (`provider-swift/Sources/darkbloom/StartCommand.swift:80-85`) |
+| **RAM** | 8 GB | Start path rejects `< 8 GB` (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:23-27`) |
+| **GPU** | Apple Silicon integrated GPU | CPU-only execution is rejected (`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`) |
 | **Storage** | 50 GB free | SSD required; model weights are large |
 | **macOS** | 14 (Sonoma) | Newer is better; install script enforces Darwin + arm64 |
 | **Network** | Outbound HTTPS to coordinator | No inbound port is required |

@@ -109,7 +109,7 @@ and missing-key decode are canonical in
 with the missing-section fallback in
 `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:397-400`.
 Startup applies that config before Metal initialization
-(`provider-swift/Sources/darkbloom/StartCommand.swift:82-88` and
+(`provider-swift/Sources/darkbloom/StartCommand.swift:84-91` and
 `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`), and the
 beta command's locked read-modify-write plus restart instruction is implemented
 at `provider-swift/Sources/darkbloom/BetaCommand.swift:201-235`.

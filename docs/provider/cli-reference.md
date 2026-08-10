@@ -37,8 +37,10 @@ darkbloom start [flags]
 | `--bind <addr>` | Bind address for local modes (default 127.0.0.1) |
 | `--no-auth` | Disable local API-key auth (trusted/airgapped only) |
 
-Preflight checks (SIP, debugger, GPU, memory) run before the model picker
-(`provider-swift/Sources/darkbloom/StartCommand.swift:429-448`).
+Preflight checks for boot security, debugger attachment, and memory run before
+the model picker (`provider-swift/Sources/darkbloom/StartCommand+Preflight.swift:9-27`);
+the Metal requirement is enforced by `Start.prepareServeRuntime`
+(`provider-swift/Sources/darkbloom/StartCommand.swift:128-147`).
 
 Examples:
 

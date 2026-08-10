@@ -138,9 +138,9 @@ private let gateTestCapacity = 8 << 20  // 8 MiB pool — tiny but constructible
 /// Hermetic default for every construction in this suite: point the
 /// crash-loop guard store at a file that can never decode. Without it a
 /// developer box whose REAL provider tripped the guard on the checked-out
-/// version would fail every `.auto`-resolves-paged assertion here — the
-/// same reason tests inject `environment:` instead of inheriting the
-/// shell's kill switch. A caller's explicit value wins.
+/// version would fail every explicit-paged assertion here — the same reason
+/// tests inject `environment:` instead of inheriting the shell's kill switch.
+/// A caller's explicit value wins.
 private let hermeticGuardEnvironment = [KVBackendGuardStore.pathEnvKey: "/dev/null"]
 
 private func gateEnvironment(_ overrides: [String: String] = [:]) -> [String: String] {
@@ -158,8 +158,9 @@ private func makeBuild(
         model: model,
         tokenizer: StubBridgeTokenizer(),
         kvBytesCapacity: gateTestCapacity,
-        // Deliberately 2, not the production 8: these gates assert BACKEND
-        // SELECTION, and a small pool keeps construction cheap.
+        // Deliberately 2: these gates assert BACKEND SELECTION, and a small
+        // pool keeps construction cheap. Production defaults to B=4 while
+        // still supporting explicit overrides through B=8.
         maxConcurrentRequests: 2,
         prefixCache: nil,
         kvBackend: kvBackend,
@@ -345,15 +346,13 @@ struct EngineV2KVBackendGateTests {
         #expect(reason?.hasPrefix("physical_capacity:") == true)
     }
 
-    @Test("`.auto` still degrades when paged cannot be served")
-    func autoDegradesOnPagedFailure() async throws {
-        // Layer 5's degrade half, as a predicate. Since v0.8.0 `.auto`
-        // RESOLVES PAGED, so the real construction path reaches this branch
-        // on every paged-ineligible box in the fleet — it is the COMMON
-        // path, not a hypothetical. The predicate stays pinned here; the
-        // three construction tests below drive the same answer through the
-        // real factory, one per failure stage (preflight, capacity
-        // planning, pool construction).
+    @Test("non-explicit selections permit paged-failure degradation")
+    func nonExplicitSelectionsPermitPagedFailureDegradation() async throws {
+        // Layer 5's degrade half, pinned as a policy predicate. `.auto`
+        // resolves contiguous as of v0.8.1 and therefore does not currently
+        // enter a paged-failure branch. The predicate remains the fail-open
+        // contract if a future release selects paged automatically; an
+        // explicit `.paged` request must continue to refuse instead.
         #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: .auto))
         #expect(EngineV2KVBackendPolicy.degradesPagedFailure(selection: .contiguous))
         #expect(!EngineV2KVBackendPolicy.degradesPagedFailure(selection: .paged))

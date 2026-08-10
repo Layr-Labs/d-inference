@@ -95,7 +95,8 @@ extension Start {
                 engineV2KVBackend: config.backend.engineV2KVBackend,
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
                 mtp: config.backend.mtp,
-                mtpDrafterPath: config.backend.mtpDrafterPath
+                mtpDrafterPath: config.backend.mtpDrafterPath,
+                memoryLimitGB: config.provider.memoryLimitGB
             ),
             models: advertised
         )

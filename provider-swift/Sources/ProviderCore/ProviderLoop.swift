@@ -151,7 +151,7 @@ internal enum ProviderLoopError: Error, CustomStringConvertible {
 // `internal` rather than `private` so this actor can be split by concern across
 // the companion `ProviderLoop+*.swift` files in this module (Swift `private` is
 // file-scoped). Only members actually reached across that split are widened;
-// purely-local members (e.g. `configuredMaxModelSlots`, `bytesPerGiB`,
+// purely-local members (e.g. `configuredMaxModelSlots`,
 // `createAttestationSigner`) stay `private`. Behavior is unchanged.
 public actor ProviderLoop {
     internal let loopConfig: ProviderLoopConfig
@@ -470,7 +470,6 @@ public actor ProviderLoop {
 
     internal static let shutdownDrainTimeout: Duration = .seconds(600)
     internal static let preloadShutdownTimeout: Duration = .seconds(10)
-    private static let bytesPerGiB: UInt64 = 1024 * 1024 * 1024
 
     // MARK: - Initialization
 
@@ -531,12 +530,14 @@ public actor ProviderLoop {
         self.startupModelCount = max(1, advertised.count)
         // KV budget derives its ceiling from the unified 90% cap + activation
         // reserve (UnifiedMemoryCap). It ALSO honors the operator-configured
-        // `memory_reserve_gb` — the same reserve the model LOAD gate applies
-        // (loadReserveBytes = max(configReserve, physical − cap)) — so runtime KV
-        // can't grow into memory the operator explicitly reserved once a model is
-        // loaded. No-op when the configured reserve is ≤ the cap's implied reserve.
+        // `memory_reserve_gb` AND the absolute `memory_limit_gb` (folded into
+        // one effective reserve — see MemoryLimit) — the same reserve the model
+        // LOAD gate applies (loadReserveBytes = max(effectiveReserve, physical −
+        // cap)) — so runtime KV can't grow into memory the operator explicitly
+        // withheld once a model is loaded. No-op when the effective reserve is
+        // ≤ the cap's implied reserve.
         self.kvBudget = GlobalKVCacheBudget(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: config.config.provider.memoryReserveGB))
+            configReserveBytes: config.config.provider.effectiveReserveBytes())
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.
@@ -553,11 +554,6 @@ public actor ProviderLoop {
                     + "(v0.7.5 serves everything through engine v2): "
                     + unsupportedModelIds.sorted().joined(separator: ", "))
         }
-    }
-
-    static func memoryReserveBytes(forGiB gb: UInt64) -> UInt64 {
-        let (bytes, overflow) = gb.multipliedReportingOverflow(by: bytesPerGiB)
-        return overflow ? UInt64.max : bytes
     }
 
     // MARK: - Model Slot

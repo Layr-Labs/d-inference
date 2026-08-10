@@ -66,6 +66,50 @@ private let gib = 1024 * 1024 * 1024
         explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "0"]) == 0)
 }
 
+@Test func mlxGuardHonorsOperatorLimitBelowReserveCeiling() {
+    // 256 GiB box, 6 GiB reserve → 250 GiB by-reserve ceiling; a 150 GiB
+    // operator limit must clamp the ceiling down to exactly the limit.
+    let limits = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(256 * gib), reserveBytes: UInt64(6 * gib),
+        limitBytes: UInt64(150 * gib))
+    #expect(limits.memoryLimitBytes == 150 * gib)
+    #expect(limits.cacheLimitBytes == Int(Double(150 * gib) * 0.75))
+    #expect(limits.cacheLimitBytes <= limits.memoryLimitBytes)
+}
+
+@Test func mlxGuardLimitAboveReserveCeilingIsInert() {
+    // A limit looser than physical − reserve can't bind: byte-identical to
+    // the nil-limit result.
+    let unlimited = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(64 * gib), reserveBytes: UInt64(6 * gib))
+    let loose = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(64 * gib), reserveBytes: UInt64(6 * gib),
+        limitBytes: UInt64(62 * gib))
+    #expect(loose == unlimited)
+}
+
+@Test func mlxGuardTinyLimitClampsToFloor() {
+    // A pathologically small limit must not hand MLX a sub-2GiB ceiling.
+    let limits = MLXMemoryGuard.recommendedLimits(
+        physicalBytes: UInt64(64 * gib), reserveBytes: UInt64(6 * gib),
+        limitBytes: UInt64(1 * gib))
+    #expect(limits.memoryLimitBytes == MLXMemoryGuard.minimumLimitBytes)
+    #expect(limits.cacheLimitBytes <= limits.memoryLimitBytes)
+}
+
+@Test func mlxGuardNilLimitMatchesTwoArgumentSizing() {
+    // limitBytes defaults to nil; passing it explicitly must not perturb the
+    // established sizing on any box.
+    for physGB in [16, 64, 256] {
+        let implicit = MLXMemoryGuard.recommendedLimits(
+            physicalBytes: UInt64(physGB * gib), reserveBytes: UInt64(6 * gib))
+        let explicit = MLXMemoryGuard.recommendedLimits(
+            physicalBytes: UInt64(physGB * gib), reserveBytes: UInt64(6 * gib),
+            limitBytes: nil)
+        #expect(explicit == implicit, "nil limit changed sizing on a \(physGB)GB box")
+    }
+}
+
 @Test func mlxGuardConfigureOnceAppliesExactlyOnce() {
     MLXMemoryGuard._resetForTest()
     var applied: [MLXMemoryGuard.Limits] = []

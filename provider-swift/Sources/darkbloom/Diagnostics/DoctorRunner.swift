@@ -84,13 +84,27 @@ enum DoctorRunner {
             let gpuActiveGb = (stateFresh ? state?.capacity?.gpuMemoryActiveGb : nil) ?? 0
             let gpuCacheGb = (stateFresh ? state?.capacity?.gpuMemoryCacheGb : nil) ?? 0
             let bytesPerGb = 1024.0 * 1024.0 * 1024.0
+            let physicalBytes = hw.memoryGb * 1_073_741_824
             let systemAvailableGb = SystemMemory.availableBytes().map { Double($0) / bytesPerGb }
+            // Effective reserve folds the operator's absolute cap
+            // (memory_limit_gb → physical − limit) into memory_reserve_gb, so
+            // doctor's fit verdict matches the daemon's real load gate.
             let usableGb = ModelFitDiagnostic.usableInferenceGb(
                 totalGb: Double(hw.memoryGb),
-                reserveGb: Double(snapshot.config.provider.memoryReserveGB),
+                reserveGb: Double(snapshot.config.provider.effectiveReserveBytes(physicalBytes: physicalBytes)) / 1_073_741_824.0,
                 systemAvailableGb: systemAvailableGb,
                 gpuActiveGb: gpuActiveGb,
                 gpuCacheGb: gpuCacheGb)
+
+            // Surface the operator cap next to the memory verdicts so a
+            // "doesn't fit" below is explainable when physical RAM alone
+            // would have fit the model.
+            if let limitGB = snapshot.config.provider.memoryLimitGB,
+               snapshot.config.provider.memoryLimitBytes(physicalBytes: physicalBytes) != nil {
+                out.append(Diagnostic(section: .traffic, name: "memory limit", level: .pass,
+                                      message: "provider capped at \(limitGB) GB of \(hw.memoryGb) GB physical (memory_limit_gb; remove with `darkbloom memory limit none`).",
+                                      fix: nil))
+            }
 
             // Prefer the live loaded model ONLY when the daemon is up and fresh;
             // otherwise diagnose the CONFIGURED model. A stale state file (daemon

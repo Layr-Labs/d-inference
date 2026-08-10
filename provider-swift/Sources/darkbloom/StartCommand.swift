@@ -28,6 +28,9 @@ struct Start: AsyncParsableCommand {
     @Option(help: "Idle timeout in minutes before unloading the model.")
     var idleTimeout: UInt64?
 
+    @Option(help: "Cap the provider's total memory use in GB, persisted to the config file ('none' removes the cap).")
+    var memoryLimit: String?
+
     @Flag(inversion: .prefixedNo, help: .hidden)
     var foreground = false
 
@@ -94,6 +97,30 @@ struct Start: AsyncParsableCommand {
         guard let hardware = snapshot.hardware else {
             printError("Cannot start: hardware detection failed (\(snapshot.hardwareError?.localizedDescription ?? "unknown"))")
             throw ExitCode.failure
+        }
+
+        // --memory-limit: validate against this box, persist BEFORE any daemon
+        // spawn or serve loop — the launchd child re-reads the config file, so
+        // the limit must be on disk by the time it starts — and fold it into
+        // the in-process config so --foreground/--local honor it too.
+        if let memoryLimit {
+            switch Memory.parseLimitArgument(memoryLimit, physicalGb: hardware.memoryGb) {
+            case .invalid(let message):
+                printError(message)
+                throw ExitCode.failure
+            case .clear:
+                effectiveConfig.provider.memoryLimitGB = nil
+            case .set(let gb):
+                effectiveConfig.provider.memoryLimitGB = gb
+            }
+            if effectiveConfig.provider.memoryLimitGB != snapshot.config.provider.memoryLimitGB
+                || !snapshot.configFileExists {
+                // Persist from snapshot.config, not effectiveConfig: runtime-only
+                // overrides (--idle-timeout) must not leak into the file.
+                var persisted = snapshot.config
+                persisted.provider.memoryLimitGB = effectiveConfig.provider.memoryLimitGB
+                try ConfigManager.save(persisted, to: snapshot.configPath)
+            }
         }
 
         // One WARN per retired knob still set, BEFORE the serving-mode split:

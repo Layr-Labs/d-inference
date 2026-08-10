@@ -415,3 +415,67 @@ import Testing
     #expect(decoded.backend.engineV2MaxConcurrent == 8)
     #expect(decoded.appliedMigrations.isEmpty)
 }
+
+// MARK: - memory_limit_gb (operator's absolute memory cap)
+
+@Test func configParsingHonoursMemoryLimitGB() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "x"
+    memory_limit_gb = 150
+    """)
+
+    #expect(config.provider.memoryLimitGB == 150)
+}
+
+@Test func configParsingDefaultsMemoryLimitGBToNil() throws {
+    let config = ConfigManager.parse("""
+    [provider]
+    name = "test-provider"
+
+    [backend]
+    port = 8100
+    """)
+
+    #expect(config.provider.memoryLimitGB == nil)
+}
+
+@Test func configSerializationRoundTripsMemoryLimitGB() throws {
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider", memoryLimitGB: 150),
+        backend: BackendSettings(),
+        coordinator: CoordinatorSettings()
+    )
+
+    let toml = ConfigManager.serialize(original)
+    let decoded = ConfigManager.parse(toml)
+
+    #expect(toml.contains("memory_limit_gb"))
+    #expect(decoded.provider.memoryLimitGB == 150)
+}
+
+@Test func configSerializationOmitsUnsetMemoryLimitGB() throws {
+    // No limit configured → the key must not appear at all (an emitted
+    // 0/placeholder would read as a real setting to an operator).
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider"),
+        backend: BackendSettings(),
+        coordinator: CoordinatorSettings()
+    )
+
+    let toml = ConfigManager.serialize(original)
+
+    #expect(!toml.contains("memory_limit_gb"))
+}
+
+@Test func providerSettingsEquatableRoundTripsMemoryLimitGB() throws {
+    let original = ProviderConfig(
+        provider: ProviderSettings(name: "test-provider", memoryReserveGB: 8, memoryLimitGB: 150),
+        backend: BackendSettings(),
+        coordinator: CoordinatorSettings()
+    )
+
+    let decoded = ConfigManager.parse(ConfigManager.serialize(original))
+
+    #expect(decoded.provider == original.provider)
+}

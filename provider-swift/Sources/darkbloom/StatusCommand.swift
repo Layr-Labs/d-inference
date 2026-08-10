@@ -30,7 +30,7 @@ struct Status: AsyncParsableCommand {
         print("Auto-restart: \(autoRestartStatus(config: config))")
 
         if let hardware = snapshot.hardware {
-            print("Hardware: \(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores")
+            print("Hardware: \(hardware.chipName), \(Status.memoryDescription(totalGb: hardware.memoryGb, limitGB: config.provider.memoryLimitGB)) RAM, \(hardware.gpuCores) GPU cores")
             print("Inference memory: \(hardware.memoryAvailableGb) GB available")
         } else {
             print("Hardware: unavailable (\(snapshot.hardwareError?.localizedDescription ?? "unknown error"))")
@@ -87,6 +87,14 @@ struct Status: AsyncParsableCommand {
         let status = bootSecurity.issues.isEmpty ? CheckStatus.pass : .warn
         return "Local boot checks: \(status.marker) \(bootSecurity.macOSSummary); "
             + "SIP \(bootSecurity.sip.summary); Secure Boot has no local public check"
+    }
+
+    /// Total-memory rendering with the operator cap appended when one is in
+    /// effect: "256 GB (limit: 150 GB)". Mirrors MemoryLimit normalization —
+    /// 0 or a value at/above physical means "no limit" and is not shown.
+    static func memoryDescription(totalGb: UInt64, limitGB: UInt64?) -> String {
+        guard let limitGB, limitGB > 0, limitGB < totalGb else { return "\(totalGb) GB" }
+        return "\(totalGb) GB (limit: \(limitGB) GB)"
     }
 
     /// Prints the running daemon's live state, including the coordinator's last

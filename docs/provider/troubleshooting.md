@@ -160,6 +160,8 @@ reserve (`provider-swift/Sources/ProviderCore/Inference/ModelLoadAdmission.swift
 Fixes:
 
 - Close other applications.
+- If you set an artificial cap (`darkbloom memory`), raise it or clear it with
+  `darkbloom memory limit none`.
 - Reduce `backend.max_model_slots` so fewer models are resident.
 - Increase `provider.memory_reserve_gb` only if you want the provider to be more
   conservative.

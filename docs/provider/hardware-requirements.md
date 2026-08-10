@@ -59,10 +59,19 @@ if the provider's stricter gate is not met.
 | Model weights | Use the size shown by `darkbloom models catalog` |
 | Load headroom | +2 GB per model |
 | OS reserve | `provider.memory_reserve_gb` (default 4 GB) |
+| Optional absolute cap | `provider.memory_limit_gb` — `darkbloom memory limit <GB>` |
 | Concurrent requests | Additional KV-cache usage; runtime-enforced |
 
 Example: a 12 GB weights model loads when roughly `12 + 2 + 4 = 18 GB` of usable
 memory is available.
+
+To dedicate only part of a machine to Darkbloom (say 150 GB of a 256 GB Mac),
+set an absolute cap with `darkbloom memory limit 150`. The provider then never
+plans weights + KV + activations past that figure, advertises the capped total
+to the coordinator, and pins MLX's allocator ceiling underneath it. The
+standard 90% cap and OS reserve still apply on top — the most conservative
+bound wins. Clear it with `darkbloom memory limit none`; inspect the effective
+cap with `darkbloom memory`.
 
 ## Storage
 

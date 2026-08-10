@@ -87,13 +87,14 @@ extension ProviderLoop {
             // smaller than the hooked figure (grants computed against the
             // override, clamp against real RAM) — nil hooks ⇒ production
             // behavior unchanged.
+            let fleetPhysical = engineV2SlotHooks?.physicalMemoryBytes
+                ?? ProcessInfo.processInfo.physicalMemory
             let engineV2 = await engineV2Runtime.capacitySummary(
                 fleetKV: EngineV2Runtime.FleetKVContext(
                     totalResidentWeightBytes: totalResidentWeightBytes,
-                    configReserveBytes: Self.memoryReserveBytes(
-                        forGiB: loopConfig.config.provider.memoryReserveGB),
-                    physicalBytes: engineV2SlotHooks?.physicalMemoryBytes
-                        ?? ProcessInfo.processInfo.physicalMemory))
+                    configReserveBytes: loopConfig.config.provider.effectiveReserveBytes(
+                        physicalBytes: fleetPhysical),
+                    physicalBytes: fleetPhysical))
             allSlots.append(contentsOf: engineV2.slots)
             totalActive += engineV2.activeRequests
         }
@@ -117,7 +118,8 @@ extension ProviderLoop {
         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
         let loadReserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
+            configReserveBytes: loopConfig.config.provider.effectiveReserveBytes(
+                physicalBytes: totalMem))
         // Subtract KV already promised to in-flight requests (coordinator + local
         // streams), exactly as the real load gate (availableMemoryGb) does, so the
         // heartbeat can't advertise reserved-but-not-yet-allocated bytes as loadable.
@@ -129,12 +131,21 @@ extension ProviderLoop {
             reserveBytes: loadReserve,
             outstandingReservationBytes: outstandingKV)
 
+        // Report the operator's absolute limit (`memory_limit_gb`) as the total
+        // when set: the coordinator's permanent fit gate (`modelFitsHardware`),
+        // legacy admission, and health penalties all read BackendCapacity's
+        // total, so a capped figure keeps it from planning models the load gate
+        // here would refuse. `freeForLoadGb` already honors the limit via the
+        // effective reserve above. Physical facts (registration `memory_gb`)
+        // stay raw — this is capacity, not hardware.
+        let reportedTotalMem =
+            loopConfig.config.provider.memoryLimitBytes(physicalBytes: totalMem) ?? totalMem
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
             gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
             gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
             gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
-            totalMemoryGb: Double(totalMem) / gbDivisor,
+            totalMemoryGb: Double(reportedTotalMem) / gbDivisor,
             freeForLoadGb: freeForLoadGb
         )
         state.inferenceActive = totalActive > 0

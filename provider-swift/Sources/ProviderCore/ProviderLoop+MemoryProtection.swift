@@ -25,10 +25,12 @@ extension ProviderLoop {
         // first big allocation happens in ensureModelLoaded → loadModelContainer,
         // which runs after this). Idempotent; StandaloneServer invokes the same
         // guard directly before its first load. See MLXMemoryGuard.
-        MLXMemoryGuard.configureOnce(log: { [logger] limits in
-            logger.info(
-                "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
-        })
+        MLXMemoryGuard.configureOnce(
+            limitBytes: loopConfig.config.provider.memoryLimitBytes(),
+            log: { [logger] limits in
+                logger.info(
+                    "MLX memory ceiling: limit=\(limits.memoryLimitBytes / (1024 * 1024 * 1024))GB cache=\(limits.cacheLimitBytes / (1024 * 1024 * 1024))GB")
+            })
 
         let now = Date()
         let since = OOMDetector.loadLastScan() ?? now.addingTimeInterval(-24 * 3600)

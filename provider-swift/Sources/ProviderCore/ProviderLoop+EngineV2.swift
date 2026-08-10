@@ -153,7 +153,8 @@ extension ProviderLoop {
     /// Fleet KV budget for a prospective residency set: the unified-memory
     /// cap minus Σ resident weights (ALL slots, including any mid-unload —
     /// their weights are still resident — plus the newcomer's), minus the
-    /// activation reserve, honoring the operator `memory_reserve_gb`.
+    /// activation reserve, honoring the operator `memory_reserve_gb` and
+    /// absolute `memory_limit_gb` (one effective reserve — see MemoryLimit).
     private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
         for (_, slot) in modelSlots {
@@ -166,8 +167,8 @@ extension ProviderLoop {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
-            configReserveBytes: Self.memoryReserveBytes(
-                forGiB: loopConfig.config.provider.memoryReserveGB))
+            configReserveBytes: loopConfig.config.provider.effectiveReserveBytes(
+                physicalBytes: physical))
     }
 
     /// Existing v2 slots eligible for re-slicing: live (not mid-unload)

@@ -432,11 +432,13 @@ extension ProviderLoop {
             }
             // Pin MLX's memory ceiling below physical RAM (idempotent). MLX's
             // default (1.5× working set) otherwise allows a jetsam OOM.
-            MLXMemoryGuard.configureOnce(log: { limits in
-                FileHandle.standardError.write(Data(
-                    "[mlx] memory ceiling set: limit=\(limits.memoryLimitBytes / (1024*1024*1024))GB cache=\(limits.cacheLimitBytes / (1024*1024*1024))GB\n".utf8
-                ))
-            })
+            MLXMemoryGuard.configureOnce(
+                limitBytes: loopConfig.config.provider.memoryLimitBytes(),
+                log: { limits in
+                    FileHandle.standardError.write(Data(
+                        "[mlx] memory ceiling set: limit=\(limits.memoryLimitBytes / (1024*1024*1024))GB cache=\(limits.cacheLimitBytes / (1024*1024*1024))GB\n".utf8
+                    ))
+                })
 
             // Target-only sizing snapshot. After assistant load/bind, the slot
             // factory replaces its auxiliary component with the bytes actually
@@ -832,11 +834,13 @@ extension ProviderLoop {
     /// for — a preload candidate that doesn't fit.
     internal func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
-        // Hold back enough to honor the 90% unified cap: max(configured reserve,
-        // physical − cap). Without this the free-memory gate would load models
-        // until only `configReserve` (4 GiB) remained — past the cap on big boxes.
+        // Hold back enough to honor the 90% unified cap: max(effective reserve,
+        // physical − cap), where the effective reserve folds `memory_reserve_gb`
+        // and the absolute `memory_limit_gb` together (MemoryLimit). Without this
+        // the free-memory gate would load models until only the reserve remained
+        // — past the cap on big boxes, past the operator's limit on capped ones.
         let reserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
+            configReserveBytes: loopConfig.config.provider.effectiveReserveBytes())
         return ModelLoadAdmission.freeForLoadGb(
             totalBytes: ProcessInfo.processInfo.physicalMemory,
             systemAvailableBytes: SystemMemory.availableBytes() ?? .max,

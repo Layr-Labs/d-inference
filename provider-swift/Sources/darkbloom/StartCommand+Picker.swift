@@ -220,7 +220,16 @@ extension Start {
             throw ExitCode.failure
         }
 
-        let memoryGb: Double = Double(snapshot.hardware?.memoryGb ?? 16)
+        // Fit budget honors the operator's absolute cap: a 256 GB box limited
+        // to 150 GB must not offer models that only fit in 256 GB. Mirrors
+        // MemoryLimit normalization (0 / ≥ physical means "no limit").
+        let physicalGb: Double = Double(snapshot.hardware?.memoryGb ?? 16)
+        let memoryGb: Double = {
+            guard let limit = config.provider.memoryLimitGB, limit > 0, Double(limit) < physicalGb else {
+                return physicalGb
+            }
+            return Double(limit)
+        }()
 
         // "Downloaded" must be computed from an UNFILTERED on-disk scan: the
         // memory-filtered `snapshot.models` drops models too large for available

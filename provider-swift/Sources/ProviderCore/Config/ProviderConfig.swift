@@ -22,6 +22,14 @@ import TOMLKit
 public struct ProviderSettings: Sendable, Equatable, Codable {
     public var name: String
     public var memoryReserveGB: UInt64
+    /// Absolute ceiling (GB) on the provider's total inference footprint
+    /// (weights + KV + activations). `nil`/0 or a value ≥ physical RAM means
+    /// "no artificial limit" — the standard 90% unified-memory cap alone
+    /// applies. When set, the effective cap becomes
+    /// `min(0.90 × physical, physical − memory_reserve_gb, memory_limit_gb)`
+    /// — the most conservative bound wins (see `MemoryLimit`). Set via
+    /// `darkbloom memory limit <GB>` or `memory_limit_gb` under `[provider]`.
+    public var memoryLimitGB: UInt64?
     public var autoUpdate: Bool
     /// When true (default), the watchdog relaunches the provider ~5 min after a
     /// crash. `false` opts out while keeping the provider installed.
@@ -38,12 +46,14 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     public init(
         name: String,
         memoryReserveGB: UInt64 = 4,
+        memoryLimitGB: UInt64? = nil,
         autoUpdate: Bool = true,
         autoRestart: Bool = true,
         updateJitterSeconds: UInt64 = 300
     ) {
         self.name = name
         self.memoryReserveGB = memoryReserveGB
+        self.memoryLimitGB = memoryLimitGB
         self.autoUpdate = autoUpdate
         self.autoRestart = autoRestart
         self.updateJitterSeconds = updateJitterSeconds
@@ -52,6 +62,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
     enum CodingKeys: String, CodingKey {
         case name
         case memoryReserveGB = "memory_reserve_gb"
+        case memoryLimitGB = "memory_limit_gb"
         case autoUpdate = "auto_update"
         case autoRestart = "auto_restart"
         case updateJitterSeconds = "update_jitter_seconds"
@@ -61,6 +72,7 @@ public struct ProviderSettings: Sendable, Equatable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.name = try container.decodeIfPresent(String.self, forKey: .name) ?? "darkbloom"
         self.memoryReserveGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryReserveGB) ?? 4
+        self.memoryLimitGB = try container.decodeIfPresent(UInt64.self, forKey: .memoryLimitGB)
         self.autoUpdate = try container.decodeIfPresent(Bool.self, forKey: .autoUpdate) ?? true
         self.autoRestart = try container.decodeIfPresent(Bool.self, forKey: .autoRestart) ?? true
         self.updateJitterSeconds = try container.decodeIfPresent(UInt64.self, forKey: .updateJitterSeconds) ?? 300

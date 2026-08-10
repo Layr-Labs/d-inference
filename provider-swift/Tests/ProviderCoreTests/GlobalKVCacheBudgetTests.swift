@@ -165,9 +165,9 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(await noReserve.reserveBytes(requestID: "fits-bare", bytes: 27 * gib))
 }
 
-@Test func providerLoopMemoryReserveBytesSaturatesOnOverflow() {
-    #expect(ProviderLoop.memoryReserveBytes(forGiB: 4) == 4 * 1024 * 1024 * 1024)
-    #expect(ProviderLoop.memoryReserveBytes(forGiB: UInt64.max) == UInt64.max)
+@Test func memoryLimitGiBToBytesSaturatesOnOverflow() {
+    #expect(MemoryLimit.saturatingGiBToBytes(4) == 4 * 1024 * 1024 * 1024)
+    #expect(MemoryLimit.saturatingGiBToBytes(UInt64.max) == UInt64.max)
 }
 
 // MARK: - Sustained-rejection reservation audit (v0.7.3 black-hole hardening)

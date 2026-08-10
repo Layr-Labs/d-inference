@@ -15,7 +15,26 @@ surface. Process-wide optimization state is resolved at startup, so restart
 after changing a restart-required feature.
 
 The registry of available features lives in
-`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift`.
+`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift:58-65`.
+
+### Canonical implementation references
+
+- Default-on decoding for omitted config sections:
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:16-20`
+  (both fields default to `true`) and
+  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:332-334`
+  (`decodeIfPresent` with the defaulted struct as fallback).
+- Startup projection before the first MLX device access (daemon, foreground,
+  `--local`, and `benchmark` processes):
+  `provider-swift/Sources/darkbloom/StartCommand.swift:87` and the ordering
+  seam at `provider-swift/Sources/darkbloom/StartCommand.swift:127-140`;
+  the benchmark path shares it at
+  `provider-swift/Sources/darkbloom/BenchmarkCommand.swift:76-85`.
+- The config→environment projection and its overwrite authority:
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift:14-25`
+  (`projection(for:)`) and `:57` (`apply(_:)`).
+- The `benchmark`-selected coupling of weighted unsort with safe R1 as one
+  control: `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:11-14`.
 
 ## The `darkbloom beta` command
 

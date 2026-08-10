@@ -73,14 +73,20 @@ struct Benchmark: AsyncParsableCommand {
     var arrivalIterations = 3
 
     mutating func run() async throws {
+        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+
+        // The low-level Gemma controls are process-start latches, so
+        // `provider.toml` must be projected BEFORE the first MLX device
+        // access — exactly like the serve path (`Start.prepareServeRuntime`).
+        // Otherwise a rollback A/B benchmark silently measures the
+        // default-enabled stack instead of the configured serving stack. A
+        // rejected projection aborts before engine construction.
         do {
-            _ = try GPUEnforcement.requireMetal()
+            try Start.prepareServeRuntime(settings: snapshot.config.gemmaOptimizations)
         } catch {
             printError("\(error)")
             throw ExitCode.failure
         }
-
-        let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
 
         guard let hardware = snapshot.hardware else {
             printError("hardware detection failed: \(snapshot.hardwareError?.localizedDescription ?? "unknown")")

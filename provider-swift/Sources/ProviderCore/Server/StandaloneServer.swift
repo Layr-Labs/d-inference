@@ -257,10 +257,12 @@ public actor StandaloneServer {
         // Standalone mode has no `memory_reserve_gb`, but the absolute
         // `memory_limit_gb` is machine-wide intent: fold it into the KV
         // budget's reserve so local serving can't grow past the limit.
-        self.kvBudget = GlobalKVCacheBudget(
-            configReserveBytes: MemoryLimit.impliedReserveBytes(
-                limitGB: config.memoryLimitGB,
-                physicalBytes: ProcessInfo.processInfo.physicalMemory))
+        let effectiveReserve = MemoryLimit.impliedReserveBytes(
+            limitGB: config.memoryLimitGB,
+            physicalBytes: ProcessInfo.processInfo.physicalMemory)
+        self.kvBudget = GlobalKVCacheBudget(configReserveBytes: effectiveReserve)
+        // Same reserve to the un-parameterized probes — see ProviderLoop.init.
+        ProviderMemoryPolicy.configure(effectiveReserveBytes: effectiveReserve)
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: nil)
@@ -1346,7 +1348,7 @@ public actor StandaloneServer {
             if !KVHeadroomProbe.hasServeableKVHeadroom() {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -1441,7 +1443,7 @@ public actor StandaloneServer {
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident

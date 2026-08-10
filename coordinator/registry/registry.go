@@ -3503,7 +3503,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	// trusting the operator-published requirement rather than a synthetic
 	// multiple that would exclude catalog-qualified nodes.
 	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
-		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
+		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, providerTotalMemoryGB(p)) {
 			return 0, false
 		}
 		// Live free-capacity gate (shared helper with the direct path): don't plan

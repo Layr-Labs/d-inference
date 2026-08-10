@@ -124,7 +124,7 @@ func (r *Registry) coldSpillProviderEligibleLocked(p *Provider, model string, tr
 	// weight heuristic only when unknown). Shares modelFitsHardware with the
 	// scheduler so the two cannot drift.
 	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
-		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
+		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, providerTotalMemoryGB(p)) {
 			return false
 		}
 		// Live free-capacity gate (shared helper): keep cold-spill in sync with the

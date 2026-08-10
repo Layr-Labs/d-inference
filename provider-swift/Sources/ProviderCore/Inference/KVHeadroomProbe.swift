@@ -18,11 +18,24 @@ public enum KVHeadroomProbe {
     /// (`active + cache`, reflecting every co-resident model's weights and
     /// KV) clamped to real OS-available memory. NO floor is applied, so it
     /// reports a true zero when the cap is already exhausted.
-    public static var measuredLiveKVHeadroomBytes: UInt64 {
+    ///
+    /// The operator reserve comes from ``ProviderMemoryPolicy`` (published at
+    /// startup) rather than a parameter, because the deepest caller
+    /// (`EngineV2Factory.prepareProductionBackend`) has no config in scope.
+    /// It MUST be included: `GlobalKVCacheBudget` — the gate that actually
+    /// admits requests — subtracts the same reserve, so a probe that omits it
+    /// measures headroom against `0.90 × physical` while serving is capped at
+    /// `physical − reserve`. On a 256 GB box limited to 150 GB that is an
+    /// ~80 GB overstatement, and the post-load guard below would then admit
+    /// exactly the "loaded but unserveable" slot it exists to reject.
+    public static func measuredLiveKVHeadroomBytes(
+        configReserveBytes: UInt64 = ProviderMemoryPolicy.effectiveReserveBytes
+    ) -> UInt64 {
         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         return UnifiedMemoryCap.liveKVHeadroomBytes(
             mlxUsedBytes: mlxUsed,
-            systemAvailableBytes: SystemMemory.availableBytes() ?? .max)
+            systemAvailableBytes: SystemMemory.availableBytes() ?? .max,
+            configReserveBytes: configReserveBytes)
     }
 
     /// Post-load guard: true iff the freshly-loaded model leaves at least
@@ -32,9 +45,12 @@ public enum KVHeadroomProbe {
     /// shape). Trim the cold-load buffer pool (`MLX.Memory.clearCache()`)
     /// BEFORE probing, or transient load buffers false-reject a serveable
     /// model.
-    public static func hasServeableKVHeadroom() -> Bool {
+    public static func hasServeableKVHeadroom(
+        configReserveBytes: UInt64 = ProviderMemoryPolicy.effectiveReserveBytes
+    ) -> Bool {
         UnifiedMemoryCap.loadIsServeable(
-            measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes)
+            measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes(
+                configReserveBytes: configReserveBytes))
     }
 
     /// Post-BRIDGE serveable-KV verdict for a freshly-built slot.
@@ -58,7 +74,7 @@ public enum KVHeadroomProbe {
         kvBackendKind: EngineV2KVBackendKind,
         pagedPoolBytes: UInt64,
         measuredHeadroomBytes: @autoclosure () -> UInt64 = KVHeadroomProbe
-            .measuredLiveKVHeadroomBytes
+            .measuredLiveKVHeadroomBytes()
     ) -> Bool {
         switch kvBackendKind {
         case .paged:

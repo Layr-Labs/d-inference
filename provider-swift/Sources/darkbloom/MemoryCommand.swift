@@ -44,7 +44,9 @@ struct Memory: AsyncParsableCommand {
                 printError("usage: darkbloom memory limit <GB>|none")
                 throw ExitCode.failure
             }
-            try setLimit(rawValue: action[1], physicalGb: physicalGb, snapshot: snapshot)
+            try setLimit(
+                rawValue: action[1], physicalGb: physicalGb, snapshot: snapshot,
+                advertised: advertisedModels(from: snapshot.models, config: snapshot.config))
 
         default:
             printError("Unknown action: '\(action[0])'. Use 'status' or 'limit <GB>|none'.")
@@ -54,7 +56,12 @@ struct Memory: AsyncParsableCommand {
 
     // MARK: - limit set/clear
 
-    private func setLimit(rawValue: String, physicalGb: UInt64, snapshot: RuntimeSnapshot) throws {
+    private func setLimit(
+        rawValue: String,
+        physicalGb: UInt64,
+        snapshot: RuntimeSnapshot,
+        advertised: [ModelInfo]
+    ) throws {
         switch Memory.parseLimitArgument(rawValue, physicalGb: physicalGb) {
         case .invalid(let message):
             printError(message)
@@ -65,6 +72,13 @@ struct Memory: AsyncParsableCommand {
         case .set(let gb):
             try writeLimit(gb, snapshot: snapshot)
             print("Memory limit set to \(gb) GB (of \(physicalGb) GB physical).")
+            var provider = snapshot.config.provider
+            provider.memoryLimitGB = gb
+            for line in Memory.fitWarnings(
+                provider: provider, physicalGb: physicalGb, advertised: advertised)
+            {
+                printError(line)
+            }
         }
         print("Restart the provider (darkbloom restart) to apply.")
     }
@@ -108,6 +122,57 @@ struct Memory: AsyncParsableCommand {
         return .set(gb)
     }
 
+    /// Effective inference cap in bytes: the most conservative of the 90%
+    /// unified-memory cap and `physical − effectiveReserve`. Mirrors the
+    /// daemon's real gate.
+    static func inferenceCapBytes(provider: ProviderSettings, physicalBytes: UInt64) -> UInt64 {
+        let reserve = provider.effectiveReserveBytes(physicalBytes: physicalBytes)
+        return min(
+            UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes),
+            physicalBytes > reserve ? physicalBytes - reserve : 0
+        )
+    }
+
+    /// Operator warnings for a newly-set limit. Pure — testable without IO.
+    ///
+    /// A limit can be valid (≥ 8 GB, below physical) and still be too small to
+    /// load anything this machine advertises. That state is worse than it
+    /// looks: base rewards require a warm advertised model
+    /// (`payments/baserewards/engine.go` gate 4 — `!p.Online || !p.ModelLoaded`
+    /// skips the candidate), so a provider that can load nothing earns **$0**,
+    /// not a reduced amount. Warn loudly rather than let the operator discover
+    /// it from a zero payout a month later.
+    static func fitWarnings(
+        provider: ProviderSettings,
+        physicalGb: UInt64,
+        advertised: [ModelInfo]
+    ) -> [String] {
+        guard !advertised.isEmpty else { return [] }
+        let physicalBytes = physicalGb * 1_073_741_824
+        let cap = inferenceCapBytes(provider: provider, physicalBytes: physicalBytes)
+        let headroom = UnifiedMemoryCap.loadHeadroomBytes()
+
+        func fits(_ model: ModelInfo) -> Bool {
+            let need = UInt64(max(0, model.estimatedMemoryGb) * 1_073_741_824)
+            let (total, overflow) = need.addingReportingOverflow(headroom)
+            return !overflow && total <= cap
+        }
+
+        let evicted = advertised.filter { !fits($0) }
+        guard !evicted.isEmpty else { return [] }
+
+        var lines = [
+            "  WARNING: \(evicted.count) advertised model(s) no longer fit under this limit:"
+        ]
+        lines.append(contentsOf: evicted.map { "    - \($0.id) (~\(Int($0.estimatedMemoryGb.rounded())) GB)" })
+        if evicted.count == advertised.count {
+            lines.append("  NO advertised model fits — the provider will load nothing, serve nothing,")
+            lines.append("  and earn NO base rewards (they require a warm model). Raise the limit or")
+            lines.append("  download a smaller model before restarting.")
+        }
+        return lines
+    }
+
     /// Pure renderer for the `memory` / `memory status` view. The inference
     /// cap mirrors the daemon's real gate: the most conservative of the 90%
     /// unified-memory cap and physical minus the effective reserve (which
@@ -118,11 +183,7 @@ struct Memory: AsyncParsableCommand {
         configDescription: String
     ) -> [String] {
         let physicalBytes = physicalGb * 1_073_741_824
-        let reserve = provider.effectiveReserveBytes(physicalBytes: physicalBytes)
-        let cap = min(
-            UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes),
-            physicalBytes > reserve ? physicalBytes - reserve : 0
-        )
+        let cap = inferenceCapBytes(provider: provider, physicalBytes: physicalBytes)
 
         let limitLine: String
         if let limit = provider.memoryLimitBytes(physicalBytes: physicalBytes) {

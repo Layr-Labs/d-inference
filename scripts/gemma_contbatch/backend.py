@@ -2,10 +2,11 @@
 
 A decode curve is only comparable to another decode curve if both were
 produced by the same KV backend. Nothing else in this harness can establish
-that: `--kv-backend auto` is a *selection*. It resolves paged as of v0.8.0
-(see the provider's `EngineV2Factory.prepareProductionBackend`) but degrades
-to contiguous on a box that cannot serve paged, and an explicit `paged` can
-still be vetoed by the fleet kill switch. A run that
+that: `--kv-backend auto` is a *selection* and resolves contiguous as of
+v0.8.1 (see the provider's `EngineV2Factory.prepareProductionBackend`). The
+wrapper requests `paged` explicitly; that selection refuses when paged cannot
+be built, while the fleet kill switch can deliberately degrade it to
+contiguous. A run that
 did not build the backend it names measures the fallback while every other
 check in this wrapper stays green, and a percentage delta against a baseline
 recorded on the other backend is a backend change wearing a performance

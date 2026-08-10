@@ -29,17 +29,14 @@ DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 # The canonical posture this release is measured under. Both defaults are
 # load-bearing:
 #
-#   paged      — `auto` resolves PAGED as of v0.8.0, but it degrades
-#                SILENTLY (kill switch, kernel preflight, pool capacity)
-#                while an explicit `paged` REFUSES. Naming the backend is
-#                the only way this wrapper can promise it measured what it
-#                reports, so it is requested by name even though `auto`
-#                would usually land on the same engine.
-#   1,2,4,8    — paged-vs-contiguous aggregate decode crosses over at ~B=5
-#                (measured on gemma-4 / M4 Max: 0.92x at B=1, 0.98x at B=4,
-#                1.17x at B=8). A curve that stops at 4 structurally cannot
-#                observe the win and reads as a regression. B=8 is also the
-#                raised production concurrency ceiling. The list is sparse on
+#   paged      — `auto` resolves CONTIGUOUS as of v0.8.1. Naming `paged` is
+#                therefore the only way this wrapper can promise it measured
+#                the paged arm; an explicit request refuses when paged cannot
+#                be built, except that the fleet kill switch deliberately
+#                degrades to contiguous and is caught by the posture checks.
+#   1,2,4,8    — the current production concurrency default is B=4 under the
+#                contiguous `auto` posture, while B=8 remains supported and is
+#                the explicit-paged measurement point. The list is sparse on
 #                purpose: a dense 1..8 ladder doubles wall time for cells no
 #                gate reads.
 DEFAULT_KV_BACKEND = "paged"

@@ -1005,9 +1005,9 @@ struct EngineV2KVBackendGateTests {
     /// resolved, so the next capability cannot land with the same invisible
     /// gap.
     ///
-    /// `preparedModel` is supplied so the VLM text extraction (which needs a
-    /// checkpoint directory) is skipped: the subject here is the ROUTING for
-    /// `isVLM: true`, not the extraction.
+    /// `preparedModel` is supplied so real VLM wrapper resolution is skipped:
+    /// the subject here is the ROUTING for `isVLM: true`, not selection of the
+    /// wrapper's directly owned text tower.
     @Test("slot factory routes a VLM slot to paged now that the cache vouches")
     func slotFactoryRoutesVLMToPagedWhenTheCacheVouches() async throws {
         #expect(

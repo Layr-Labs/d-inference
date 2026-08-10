@@ -15,6 +15,7 @@ from pathlib import Path
 
 from .config import SCHEMA_VERSION
 from .environment import baseline_environment
+from .gemma_optimizations import validate_gemma_optimizations
 
 
 NO_COMPARE_HINT = "omit --baseline to run without a comparison"
@@ -111,6 +112,8 @@ def validate_configuration_pin(
     if not isinstance(baseline_configuration, dict):
         raise RuntimeError("baseline does not record a configuration; " + NO_COMPARE_HINT)
     expected = {
+        "iterations": args.iterations,
+        "decodeIterations": args.iterations,
         "decodePromptTokens": args.decode_prompt_tokens,
         "decodeTokens": args.decode_tokens,
         "arrivalPromptTokens": args.arrival_prompt_tokens,
@@ -130,7 +133,9 @@ def validate_configuration_pin(
             + "; " + NO_COMPARE_HINT
         )
 
-    baseline_gemma = baseline_configuration.get("gemmaOptimizations")
+    baseline_gemma = validate_gemma_optimizations(
+        baseline_configuration.get("gemmaOptimizations"), "baseline configuration"
+    )
     if comparison_axis == "code":
         if baseline_gemma != gemma_optimizations:
             raise RuntimeError(

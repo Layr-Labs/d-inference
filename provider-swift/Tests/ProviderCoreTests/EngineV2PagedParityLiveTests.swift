@@ -158,10 +158,10 @@ struct EngineV2PagedParityLiveTests {
     /// "Insufficient memory (X GB free, need Y GB) …" message. Everything
     /// else reaching this catch IS a load-path regression the loop gates
     /// exist to expose — explicit-paged refusal (the policy REFUSES instead
-    /// of degrading for an explicit `.paged` selection), VLM extraction or
-    /// engine-construction breakage, an invalid model directory, the
-    /// post-bridge headroom guard unloading a fresh paged slot — and must
-    /// fail the test, not return green.
+    /// of degrading for an explicit `.paged` selection), VLM serving-model
+    /// resolution or engine-construction breakage, an invalid model
+    /// directory, the post-bridge headroom guard unloading a fresh paged slot
+    /// — and must fail the test, not return green.
     private func triageLoopGateLoadFailure(_ error: Error, arm: String) {
         if case InferenceError.modelLoadFailed(let message) = error,
             message.hasPrefix("Insufficient memory (")
@@ -521,9 +521,9 @@ struct EngineV2PagedParityLiveTests {
             try await loop.ensureModelLoaded(modelId: Self.gemmaModelID)
         } catch {
             // Same triage as the gpt-oss arm: only the pre-load free-memory
-            // refusal skips; explicit-paged refusal, VLM extraction failure,
-            // engine-construction breakage, an invalid model dir, and the
-            // post-bridge headroom guard all FAIL. See
+            // refusal skips; explicit-paged refusal, VLM serving-model
+            // resolution or engine-construction breakage, an invalid model
+            // dir, and the post-bridge headroom guard all FAIL. See
             // triageLoopGateLoadFailure.
             triageLoopGateLoadFailure(error, arm: "gemma-paged-loop")
             return

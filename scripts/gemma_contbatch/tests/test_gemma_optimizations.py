@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import unittest
+import copy
 import tempfile
+import unittest
 from pathlib import Path
 
 from .. import runner
@@ -20,6 +21,27 @@ def raw_outputs() -> dict[str, dict]:
         "schedulerPrefill": make_scheduler(),
         "arrivalInvariance": make_arrival(),
     }
+
+
+def baseline_configuration(args) -> dict:
+    return {
+        "iterations": args.iterations,
+        "decodeIterations": args.iterations,
+        "decodePromptTokens": args.decode_prompt_tokens,
+        "decodeTokens": args.decode_tokens,
+        "arrivalPromptTokens": args.arrival_prompt_tokens,
+        "arrivalDecodeTokens": args.arrival_decode_tokens,
+        "batchSizes": args.batch_sizes,
+        "prefillLengths": args.prefill_lengths,
+        "gemmaOptimizations": copy.deepcopy(fixtures.GEMMA_OPTIMIZATIONS),
+    }
+
+
+def opposite_gemma_optimizations() -> dict:
+    settings = copy.deepcopy(fixtures.GEMMA_OPTIMIZATIONS)
+    settings["prefillLayer18"] = False
+    settings["environment"]["DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL"] = "0"
+    return settings
 
 
 class GemmaOptimizationProvenanceTests(unittest.TestCase):
@@ -94,36 +116,15 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
 
     def test_baseline_with_different_effective_settings_is_refused(self):
         args = make_args()
-        baseline = {
-            "configuration": {
-                "decodePromptTokens": args.decode_prompt_tokens,
-                "decodeTokens": args.decode_tokens,
-                "arrivalPromptTokens": args.arrival_prompt_tokens,
-                "arrivalDecodeTokens": args.arrival_decode_tokens,
-                "batchSizes": args.batch_sizes,
-                "prefillLengths": args.prefill_lengths,
-                "gemmaOptimizations": {
-                    **fixtures.GEMMA_OPTIMIZATIONS,
-                    "prefillLayer18": False,
-                },
-            }
-        }
+        configuration = baseline_configuration(args)
+        configuration["gemmaOptimizations"] = opposite_gemma_optimizations()
+        baseline = {"configuration": configuration}
         with self.assertRaisesRegex(RuntimeError, "gemmaOptimizations"):
             validate_configuration_pin(args, baseline, fixtures.GEMMA_OPTIMIZATIONS)
 
     def test_gemma_axis_requires_different_settings(self):
         args = make_args(comparison_axis="gemma-optimizations")
-        baseline = {
-            "configuration": {
-                "decodePromptTokens": args.decode_prompt_tokens,
-                "decodeTokens": args.decode_tokens,
-                "arrivalPromptTokens": args.arrival_prompt_tokens,
-                "arrivalDecodeTokens": args.arrival_decode_tokens,
-                "batchSizes": args.batch_sizes,
-                "prefillLengths": args.prefill_lengths,
-                "gemmaOptimizations": fixtures.GEMMA_OPTIMIZATIONS,
-            }
-        }
+        baseline = {"configuration": baseline_configuration(args)}
         with self.assertRaisesRegex(RuntimeError, "requires different"):
             validate_configuration_pin(
                 args,
@@ -132,17 +133,72 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
                 comparison_axis=args.comparison_axis,
             )
 
-        off = {
-            **fixtures.GEMMA_OPTIMIZATIONS,
-            "prefillLayer18": False,
-            "environment": {
-                **fixtures.GEMMA_OPTIMIZATIONS["environment"],
-                "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
-            },
-        }
         validate_configuration_pin(
-            args, baseline, off, comparison_axis=args.comparison_axis
+            args,
+            baseline,
+            opposite_gemma_optimizations(),
+            comparison_axis=args.comparison_axis,
         )
+
+    def test_gemma_axis_refuses_absent_baseline_provenance(self):
+        args = make_args(comparison_axis="gemma-optimizations")
+        configuration = baseline_configuration(args)
+        del configuration["gemmaOptimizations"]
+        with self.assertRaisesRegex(
+            RuntimeError, "baseline configuration did not report effective"
+        ):
+            validate_configuration_pin(
+                args,
+                {"configuration": configuration},
+                opposite_gemma_optimizations(),
+                comparison_axis=args.comparison_axis,
+            )
+
+    def test_gemma_axis_refuses_malformed_baseline_provenance(self):
+        args = make_args(comparison_axis="gemma-optimizations")
+        configuration = baseline_configuration(args)
+        configuration["gemmaOptimizations"]["weightedR1"] = "on"
+        with self.assertRaisesRegex(
+            RuntimeError, "baseline configuration reported malformed"
+        ):
+            validate_configuration_pin(
+                args,
+                {"configuration": configuration},
+                opposite_gemma_optimizations(),
+                comparison_axis=args.comparison_axis,
+            )
+
+    def test_gemma_axis_refuses_partial_baseline_provenance(self):
+        args = make_args(comparison_axis="gemma-optimizations")
+        configuration = baseline_configuration(args)
+        del configuration["gemmaOptimizations"]["environment"][
+            "MLX_GATHER_QMM_EXPERT_SLICES"
+        ]
+        with self.assertRaisesRegex(RuntimeError, "environment projection"):
+            validate_configuration_pin(
+                args,
+                {"configuration": configuration},
+                opposite_gemma_optimizations(),
+                comparison_axis=args.comparison_axis,
+            )
+
+    def test_baseline_iterations_mismatch_is_refused(self):
+        args = make_args()
+        configuration = baseline_configuration(args)
+        configuration["iterations"] += 1
+        with self.assertRaisesRegex(RuntimeError, "iterations"):
+            validate_configuration_pin(
+                args, {"configuration": configuration}, fixtures.GEMMA_OPTIMIZATIONS
+            )
+
+    def test_baseline_decode_iterations_mismatch_is_refused(self):
+        args = make_args()
+        configuration = baseline_configuration(args)
+        configuration["decodeIterations"] += 1
+        with self.assertRaisesRegex(RuntimeError, "decodeIterations"):
+            validate_configuration_pin(
+                args, {"configuration": configuration}, fixtures.GEMMA_OPTIMIZATIONS
+            )
 
     def test_gemma_axis_requires_identical_binary_and_metallib(self):
         baseline = {

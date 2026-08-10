@@ -154,7 +154,7 @@ struct GemmaMTPProductionLiveTests {
     }
 
     @Test(
-        "VLM extraction and tool-templated decode retain greedy parity",
+        "shared VLM text tower and tool-templated decode retain greedy parity",
         .enabled(
             if: MTPProductionLiveFixtures.enabled,
             MTPProductionLiveFixtures.disabledReason))

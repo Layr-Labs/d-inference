@@ -555,13 +555,13 @@ extension ProviderLoop {
             var sizing = slotBuild.sizing
             var engineV2Bridge = engineBundle.bridge
 
-            // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): the
-            // engine build (and, for VLM slots, the text-model extraction +
-            // parity probe) can retain additional load-time memory beyond
-            // the weights the check above measured. Re-measure so a box
-            // whose full load-time footprint leaves no serveable KV unloads
-            // and 503s instead of advertising a model whose every request
-            // the shared KV gate rejects — the v0.7.2 black-hole shape.
+            // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): engine
+            // construction can retain additional load-time memory beyond the
+            // weights the check above measured. VLM slots reuse the wrapper's
+            // directly owned text tower; no extraction copy is built. Re-measure
+            // so a box whose full load-time footprint leaves no serveable KV
+            // unloads and 503s instead of advertising a model whose every
+            // request the shared KV gate rejects — the v0.7.2 black-hole shape.
             // BACKEND-AWARE: a PAGED slot's slabs are committed lazily at
             // the pool's FIRST ADMISSION (`.atFirstAdmission`, the D1 fix),
             // NOT at construction — so the measured headroom taken here

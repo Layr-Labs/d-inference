@@ -154,9 +154,10 @@ Two of the detailed checks cover the KV-backend rollout:
 | `kv backend posture` | An EXPLICIT `paged` or `contiguous` request was not honoured: refused (no engine built, the box serves nothing for that model) or silently degraded to another backend. |
 
 `auto` never fails this check — it promises nothing, so whichever backend it
-lands on is honoured by definition. It resolves paged as of v0.8.0 and
-degrades to contiguous on a box that cannot serve paged, so an `auto` slot
-reporting contiguous is expected output, not a finding. When
+lands on is honoured by definition. It resolves contiguous as of v0.8.1, so an
+`auto` slot reporting contiguous is expected output, not a finding. Explicit
+`paged` remains available and refuses a load it cannot serve instead of
+silently changing backends. When
 the state file is past the wedge bar the backend verdict is WITHHELD rather
 than asserted from a snapshot that may predate a reload.
 
@@ -279,7 +280,7 @@ darkbloom beta disable <feature>    # turn off
 |---------|--------|
 | `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
 | `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
-| `mtp` | Default-off Gemma 4 MTP code path; requires a separately published and verified `spec_dec` artifact, which production does not currently have |
+| `mtp` | Default-off Gemma 4 MTP code path; uses a valid local `mtp_drafter_path` or a verified catalog `spec_dec` artifact. The current production catalog publishes one for `gemma-4-26b-qat-4bit` |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
 is required. Restart is the activation boundary for process-wide optimization
@@ -288,6 +289,9 @@ state. The durable locked write and restart instruction are implemented in
 [Beta Features](beta-features.md) for the full guide. `darkbloom beta list` also
 accepts `--json`. Installing a provider release does not enable MTP, and local
 parity results are not a blanket M1-M3/unknown-chip certification.
+The published assistant metadata is visible in the
+[public production catalog](https://api.darkbloom.dev/v1/models/catalog?type=text)
+under `gemma-4-26b-qat-4bit.metadata.spec_dec`.
 `kv-quant` was removed in v0.8.0 and is no longer a valid feature id.
 
 ## `darkbloom fan` (experimental)

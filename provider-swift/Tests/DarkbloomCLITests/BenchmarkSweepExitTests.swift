@@ -129,10 +129,10 @@ struct BenchmarkSweepExitTests {
         // Under `auto` the operator named no backend, so a cell that could
         // not build one is an ordinary bad run, not a broken promise — the
         // same asymmetry `EngineV2KVBackendPolicy.degradesPagedFailure`
-        // encodes for the engine. `auto` resolves paged but DEGRADES on a
-        // paged failure rather than refusing, so a paged capacity refusal is
-        // still not reachable here; what is reachable is an ordinary
-        // construction error, and it keeps its exit status.
+        // encodes for the engine. `auto` resolves contiguous as of v0.8.1,
+        // so a paged capacity refusal is not reachable here; what is reachable
+        // is an ordinary construction error, and it keeps its exit status. The
+        // degrade rule remains for any future release that resolves auto paged.
         // Nil message ⇒ `runThroughputSweep` returns normally ⇒ 0.
         #expect(Benchmark.sweepFailureMessage(
             backend: .auto, failure: nil, coverage: coverage()) == nil)

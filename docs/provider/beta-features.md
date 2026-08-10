@@ -15,33 +15,34 @@ surface. Process-wide optimization state is resolved at startup, so restart
 after changing a restart-required feature.
 
 The registry of available features lives in
-`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift:73-80`.
+`BetaFeatures.all` in
+`provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift:73-133`.
 
 ### Canonical implementation references
 
-- Default-on decoding for omitted config sections:
-  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:16-20`
-  (both fields default to `true`) and
-  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:332-334`
-  (`decodeIfPresent` with the defaulted struct as fallback).
+- Default-on decoding for omitted keys is implemented by
+  `GemmaOptimizationSettings.init(from:)` in
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:29-35`.
+  The missing-section fallback is `ProviderConfig.init(from:)` in
+  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:391-400`.
 - Startup projection before the first MLX device access (daemon, foreground,
   `--local`, and `benchmark` processes): the shared ordering seam is
   `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`
   (`ServeRuntimePreparer.prepareRuntime`); the serve path calls it through
-  `Start`'s forwarding shim at
-  `provider-swift/Sources/darkbloom/StartCommand.swift:87`, and the benchmark
-  path calls it directly at
-  `provider-swift/Sources/darkbloom/BenchmarkCommand.swift:105`.
-  Benchmark A/B is config-driven — a shell-preset low-level key that
-  conflicts with the config projection is rejected rather than overwritten,
-  and the effective controls are printed before measuring
-  (`provider-swift/Sources/darkbloom/BenchmarkCommand.swift:91-110`, guard
-  helper `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:58-79`).
+  `Start.prepareServeRuntime` at
+  `provider-swift/Sources/darkbloom/StartCommand.swift:84-91,128-147`.
+  `Benchmark.run` rejects a conflicting shell override at
+  `provider-swift/Sources/darkbloom/BenchmarkCommand.swift:147-159`, prepares
+  the runtime at `:160-165`, and reports the effective controls at `:166-170`.
+  The guard helper is `ServeRuntimePreparer.conflictingEnvironmentOverride`
+  in `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:48-79`.
 - The config→environment projection and its overwrite authority:
-  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift:14-25`
-  (`projection(for:)`) and `:57` (`apply(_:)`).
+  `GemmaOptimizationEnvironment.projection(for:)` in
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift:10-23`
+  and `GemmaOptimizationEnvironment.apply(_:)` at `:52-64`.
 - The `benchmark`-selected coupling of weighted unsort with safe R1 as one
-  control: `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:11-14`.
+  control: `GemmaOptimizationSettings.weightedR1` in
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:10-14`.
 
 ## The `darkbloom beta` command
 
@@ -121,10 +122,14 @@ darkbloom beta enable mtp
 darkbloom restart
 ```
 
-Activation additionally requires a verified `spec_dec` assistant artifact in
-the model catalog. Production publishes that artifact for
-`gemma-4-26b-qat-4bit`; other models and providers without the explicit beta
-setting continue with target-only decoding.
+Without a valid local `[backend] mtp_drafter_path` override, activation also
+requires a verified `spec_dec` assistant artifact in the model catalog. The
+current public production catalog publishes `metadata.spec_dec` for
+`gemma-4-26b-qat-4bit` ([live catalog](https://api.darkbloom.dev/v1/models/catalog?type=text));
+other catalog models and providers without the explicit beta setting continue
+with target-only decoding. Artifact resolution and target-only fallback are in
+`ProviderLoop.specDecPreparation` at
+`provider-swift/Sources/ProviderCore/ProviderLoop+MTP.swift:35-54`.
 
 The implementation has target-authoritative verification and focused parity
 coverage. That is not a universal certification of token-identical behavior on

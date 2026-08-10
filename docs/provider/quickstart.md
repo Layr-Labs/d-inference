@@ -199,14 +199,15 @@ end = "08:00"
   cache is not constructed there.
   Vision (VLM) models are NOT forced to contiguous. The
   VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
-  (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:162`)
+  (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:202-210`)
   fires only when the paged cache does not affirm multimodal span masks, and
   `PagedLayerCache.honorsSpanMaskContextsByConstruction` is `true`
-  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:982`),
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:994`),
   which is what the slot factory passes
-  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:190`),
-  so the veto is inert: a VLM slot gets paged under `"auto"` like any
-  other model.
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:301-304`),
+  so the veto is inert: an explicitly paged VLM slot can use paged like any
+  other model. Under `"auto"`, every slot resolves contiguous as described
+  above.
   The concurrency cap above matters: paged only
   overtakes contiguous above ~5 concurrent rows, so pairing
   `engine_v2_kv_backend = "paged"` with a low `engine_v2_max_concurrent`

@@ -66,10 +66,11 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// (`EngineV2Factory.pagedPoolDType(environment:)`) and surfaced as a
     /// REFUSAL only for an EXPLICIT `.paged` selection — the measurement
     /// posture the knob exists for, where silently serving fp16 under an
-    /// fp32 label would fake a control arm. Under `.auto` (the fleet
-    /// default since v0.8.0) the factory catches it and DEGRADES to
-    /// contiguous with `fallbackReason = "invalid_dtype: …"` instead: one
-    /// typo'd env var must not 503 every slot on the fleet.
+    /// fp32 label would fake a control arm. If `.auto` resolves paged, the
+    /// factory catches this and DEGRADES to contiguous with
+    /// `fallbackReason = "invalid_dtype: …"` instead. That path is dormant
+    /// while `.auto` resolves contiguous as of v0.8.1, but remains the safety
+    /// contract for any future paged default.
     case invalidPagedPoolDType(String)
 
     var description: String {

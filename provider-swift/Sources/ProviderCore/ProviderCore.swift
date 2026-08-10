@@ -197,8 +197,10 @@ public enum ProviderCore {
     // staged, matched or adopted where adoption diverges. Paged code, the
     // DARKBLOOM_CBV2_PAGED_KV kill switch, the crash-loop guard and the
     // blocking paged CI lane all stay; `engine_v2_kv_backend = "paged"`
-    // still resolves paged. `engine_v2_max_concurrent = 8` is NOT coupled
-    // to paged and stays at 8.
+    // still resolves paged. The box-wide concurrency default returns to 4
+    // with contiguous. The v0.8.1 migration preserves an existing 8 only for
+    // an explicitly paged config, and 8 remains the supported upper bound for
+    // operator and per-model overrides.
     //
     // 0.8.2 adds the benchmark-retained Gemma 4 optimization stack: layer-18
     // lazy prefill submission plus the coupled weighted-unsort/safe-R1 path,

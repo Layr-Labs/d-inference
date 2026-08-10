@@ -1168,7 +1168,7 @@ public enum BackendParityHarness {
                 + "EngineV2SlotFactory). Every verdict here is a BACKEND result, not a "
                 + "statement about how production routes a slot to that backend."
                 + (isVLM ? " This checkpoint IS a VLM and is served here through the "
-                    + "text-extraction seam." : ""))
+                    + "wrapper's directly owned shared text tower." : ""))
         notes.append(
             "token comparisons are over RAW SAMPLED TOKEN IDS with temperature 0; text "
                 + "equality is a strictly weaker oracle and is not used.")

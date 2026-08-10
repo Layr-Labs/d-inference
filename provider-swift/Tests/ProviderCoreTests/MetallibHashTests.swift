@@ -2,10 +2,8 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
-/// Marked `.serialized` because every test in this suite mutates the
-/// process-wide MLX_METALLIB_PATH environment variable. Swift Testing's
-/// default parallel execution would race them and produce flakes like
-/// "metallibHash returned nil because another test just unset the env".
+/// Marked `.serialized` to avoid needless contention within this suite. The
+/// shared environment guard also excludes mutations from live-test fixtures.
 @Suite("metallib hash + locator", .serialized)
 struct MetallibHashTests {
 
@@ -16,11 +14,10 @@ struct MetallibHashTests {
         defer { try? FileManager.default.removeItem(at: tmp) }
         try Data("not really a metallib but exists".utf8).write(to: tmp)
 
-        setenv("MLX_METALLIB_PATH", tmp.path, 1)
-        defer { unsetenv("MLX_METALLIB_PATH") }
-
-        let located = locateMetallib()
-        #expect(located?.path == tmp.path)
+        MLXMetallibEnvironment.withPath(tmp.path) {
+            let located = locateMetallib()
+            #expect(located?.path == tmp.path)
+        }
     }
 
     @Test("metallibHash returns a 64-character hex string when located")
@@ -30,16 +27,15 @@ struct MetallibHashTests {
         defer { try? FileManager.default.removeItem(at: tmp) }
         try Data(repeating: 0x42, count: 1024).write(to: tmp)
 
-        setenv("MLX_METALLIB_PATH", tmp.path, 1)
-        defer { unsetenv("MLX_METALLIB_PATH") }
-
-        guard let hash = metallibHash() else {
-            Issue.record("metallibHash returned nil for an existing file at \(tmp.path)")
-            return
+        MLXMetallibEnvironment.withPath(tmp.path) {
+            guard let hash = metallibHash() else {
+                Issue.record("metallibHash returned nil for an existing file at \(tmp.path)")
+                return
+            }
+            #expect(hash.count == 64)
+            let hex = Set("0123456789abcdef")
+            #expect(hash.allSatisfy { hex.contains($0) })
         }
-        #expect(hash.count == 64)
-        let hex = Set("0123456789abcdef")
-        #expect(hash.allSatisfy { hex.contains($0) })
     }
 
     @Test("metallibHash is stable across calls for the same file")
@@ -49,13 +45,32 @@ struct MetallibHashTests {
         defer { try? FileManager.default.removeItem(at: tmp) }
         try Data("hello mlx".utf8).write(to: tmp)
 
-        setenv("MLX_METALLIB_PATH", tmp.path, 1)
-        defer { unsetenv("MLX_METALLIB_PATH") }
+        let competing = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("competing-mlx-\(UUID().uuidString).metallib")
+        defer { try? FileManager.default.removeItem(at: competing) }
+        try Data("different metallib".utf8).write(to: competing)
 
-        let a = metallibHash()
-        let b = metallibHash()
-        #expect(a != nil)
-        #expect(a == b)
+        let mutationAttempted = DispatchSemaphore(value: 0)
+        let mutationCompleted = DispatchSemaphore(value: 0)
+
+        MLXMetallibEnvironment.withPath(tmp.path) {
+            let firstHash = metallibHash()
+            let mutationThread = Thread {
+                mutationAttempted.signal()
+                MLXMetallibEnvironment.withPath(competing.path) {}
+                mutationCompleted.signal()
+            }
+            mutationThread.start()
+
+            #expect(mutationAttempted.wait(timeout: .now() + 5) == .success)
+            #expect(mutationCompleted.wait(timeout: .now() + 0.05) == .timedOut)
+
+            let secondHash = metallibHash()
+            #expect(firstHash != nil)
+            #expect(firstHash == secondHash)
+        }
+
+        #expect(mutationCompleted.wait(timeout: .now() + 5) == .success)
     }
 
     @Test("locateMetallib returns nil when nothing is found and no env override")
@@ -64,13 +79,12 @@ struct MetallibHashTests {
         // through to the binary-adjacent search and may or may not find one
         // (it could find one in the test bundle's .build path). We assert
         // on the env override semantics only.
-        setenv("MLX_METALLIB_PATH", "/var/empty/definitely-not-here.metallib", 1)
-        defer { unsetenv("MLX_METALLIB_PATH") }
-
-        // Env override misses → falls back to binary-adjacent search. The
-        // test binary may or may not have a colocated metallib; we don't
-        // assert one way or the other, just that the function returns
-        // without crashing.
-        _ = locateMetallib()
+        MLXMetallibEnvironment.withPath("/var/empty/definitely-not-here.metallib") {
+            // Env override misses → falls back to binary-adjacent search. The
+            // test binary may or may not have a colocated metallib; we don't
+            // assert one way or the other, just that the function returns
+            // without crashing.
+            _ = locateMetallib()
+        }
     }
 }

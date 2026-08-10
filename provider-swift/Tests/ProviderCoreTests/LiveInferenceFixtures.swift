@@ -7,8 +7,6 @@ import MLXLMCommon
 // MARK: - Tiny, fast model used for the bulk of live tests.
 
 enum LiveInferenceFixtures {
-    private static let metallibColocationLock = NSLock()
-
     /// Default tiny MLX-community model: ~600M params, ~1 GB on disk in 8-bit.
     /// Loads in seconds and finishes a 16-token generation in well under 1s
     /// on Apple Silicon. Has a chat template; no tool-calling weirdness.
@@ -88,47 +86,46 @@ enum LiveInferenceFixtures {
     /// source metallib could be found -- in which case the caller should skip
     /// the test rather than crashing in GPU initialization.
     static func ensureMetallibColocated() -> URL? {
-        metallibColocationLock.lock()
-        defer { metallibColocationLock.unlock() }
+        MLXMetallibEnvironment.withExclusiveAccess {
+            let fm = FileManager.default
 
-        let fm = FileManager.default
-
-        // 1. Find the test bundle's MacOS dir. Bundle(for:) reliably points
-        //    at the .xctest bundle even when launched via the system
-        //    `xctest` host (where _NSGetExecutablePath returns the host).
-        guard let testBundleMacOSDir = testBundleExecutableDir() else {
-            return nil
-        }
-        let destination = testBundleMacOSDir.appendingPathComponent("mlx.metallib")
-
-        // 2. Resolve the authoritative staged source before considering the
-        // runner copy. Existence alone does not prove source compatibility.
-        guard let source = findSourceMetallib() else {
-            return nil
-        }
-
-        do {
-            // Copy beside the destination, then atomically replace the runner
-            // file without loading the 150 MB+ metallib into process memory.
-            let temporary = testBundleMacOSDir
-                .appendingPathComponent(".mlx.metallib.\(UUID().uuidString)")
-            defer { try? fm.removeItem(at: temporary) }
-            try fm.copyItem(at: source, to: temporary)
-            if fm.fileExists(atPath: destination.path) {
-                _ = try fm.replaceItemAt(destination, withItemAt: temporary)
-            } else {
-                try fm.moveItem(at: temporary, to: destination)
+            // 1. Find the test bundle's MacOS dir. Bundle(for:) reliably points
+            //    at the .xctest bundle even when launched via the system
+            //    `xctest` host (where _NSGetExecutablePath returns the host).
+            guard let testBundleMacOSDir = testBundleExecutableDir() else {
+                return nil
             }
-            // Mirror to MLX_METALLIB_PATH so our own `locateMetallib()`
-            // (which trusts _NSGetExecutablePath, i.e. the xctest host
-            // path) can find it too if anyone else queries.
-            setenv("MLX_METALLIB_PATH", destination.path, 1)
-            return destination
-        } catch {
-            // The C++ runtime does not honor MLX_METALLIB_PATH, so failure to
-            // replace its runner-local copy must remain a fixture failure.
-            setenv("MLX_METALLIB_PATH", source.path, 1)
-            return nil
+            let destination = testBundleMacOSDir.appendingPathComponent("mlx.metallib")
+
+            // 2. Resolve the authoritative staged source before considering the
+            // runner copy. Existence alone does not prove source compatibility.
+            guard let source = findSourceMetallib() else {
+                return nil
+            }
+
+            do {
+                // Copy beside the destination, then atomically replace the runner
+                // file without loading the 150 MB+ metallib into process memory.
+                let temporary = testBundleMacOSDir
+                    .appendingPathComponent(".mlx.metallib.\(UUID().uuidString)")
+                defer { try? fm.removeItem(at: temporary) }
+                try fm.copyItem(at: source, to: temporary)
+                if fm.fileExists(atPath: destination.path) {
+                    _ = try fm.replaceItemAt(destination, withItemAt: temporary)
+                } else {
+                    try fm.moveItem(at: temporary, to: destination)
+                }
+                // Mirror to MLX_METALLIB_PATH so our own `locateMetallib()`
+                // (which trusts _NSGetExecutablePath, i.e. the xctest host
+                // path) can find it too if anyone else queries.
+                MLXMetallibEnvironment.setPath(destination.path)
+                return destination
+            } catch {
+                // The C++ runtime does not honor MLX_METALLIB_PATH, so failure to
+                // replace its runner-local copy must remain a fixture failure.
+                MLXMetallibEnvironment.setPath(source.path)
+                return nil
+            }
         }
     }
 

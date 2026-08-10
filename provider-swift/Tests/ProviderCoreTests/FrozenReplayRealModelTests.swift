@@ -88,7 +88,7 @@ struct FrozenReplayRealModelTests {
                 CBv2LayerCache(layerIndex: index, kind: kind)
             })
         case let gemma as Gemma4TextModel:
-            return CBv2LayerCacheBank(caches: gemma.newCacheV2 { index, kind in
+            return CBv2LayerCacheBank(caches: try! gemma.newCacheV2 { index, kind in
                 CBv2LayerCache(layerIndex: index, kind: kind)
             })
         default:

@@ -547,11 +547,11 @@ extension EngineV2Factory {
         let layerKinds: [CBv2LayerKind]
         let newCaches:
             ((Int, CBv2LayerKind) -> any CBv2AttendingLayerCache)
-                -> [any CBv2AttendingLayerCache]
+                throws -> [any CBv2AttendingLayerCache]
         switch model {
         case let gemma as Gemma4TextModel:
             layerKinds = gemma.cbv2LayerKinds
-            newCaches = { make in gemma.newCacheV2(makeLayerCache: make) }
+            newCaches = { make in try gemma.newCacheV2(makeLayerCache: make) }
         case let gptoss as GPTOSSModel:
             layerKinds = gptoss.cbv2LayerKinds
             newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
@@ -764,10 +764,10 @@ extension EngineV2Factory {
         let schedulerConfig = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests))
 
-        func contiguousPreparation() -> ProductionBackendPreparation {
+        func contiguousPreparation() throws -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(
                 config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
-            let caches = newCaches { index, kind in
+            let caches = try newCaches { index, kind in
                 CBv2LayerCache(layerIndex: index, kind: kind)
             }
             return ProductionBackendPreparation(
@@ -848,7 +848,7 @@ extension EngineV2Factory {
                         // exists, so no admitted page is ever unbacked.
                         slabCommitment: plan.commitment)
                     let pagedCaches = paged.makeLayerCaches()
-                    let caches = newCaches { index, _ in pagedCaches[index] }
+                    let caches = try newCaches { index, _ in pagedCaches[index] }
                     return ProductionBackendPreparation(
                         model: model,
                         maxConcurrentRequests: maxConcurrentRequests,
@@ -881,7 +881,7 @@ extension EngineV2Factory {
                 }
             }
         }
-        return contiguousPreparation()
+        return try contiguousPreparation()
     }
 
     /// Emergency rollback kill-switch for the monotonic deadline leases. Set

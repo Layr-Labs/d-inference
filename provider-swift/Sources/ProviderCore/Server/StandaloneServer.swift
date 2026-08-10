@@ -86,6 +86,11 @@ public struct StandaloneServerConfig: Sendable {
     /// Operator absolute memory limit (`memory_limit_gb`) — machine-wide
     /// intent, so local mode honors it too. nil = no artificial limit.
     public let memoryLimitGB: UInt64?
+    /// Operator `memory_reserve_gb` — forwarded by the CLI so local mode
+    /// holds back the SAME `max(reserve, physical − limit)` the daemon does;
+    /// a reserve larger than the limit-implied one must win here too.
+    /// 0 = no configured reserve (library default).
+    public let memoryReserveGB: UInt64
 
     public init(
         port: UInt16 = 8000,
@@ -99,7 +104,8 @@ public struct StandaloneServerConfig: Sendable {
         engineV2KVBackendByModel: [String: String] = [:],
         mtp: Bool = false,
         mtpDrafterPath: String? = nil,
-        memoryLimitGB: UInt64? = nil
+        memoryLimitGB: UInt64? = nil,
+        memoryReserveGB: UInt64 = 0
     ) {
         self.port = port
         self.host = host
@@ -113,6 +119,7 @@ public struct StandaloneServerConfig: Sendable {
         self.mtp = mtp
         self.mtpDrafterPath = mtpDrafterPath
         self.memoryLimitGB = memoryLimitGB
+        self.memoryReserveGB = memoryReserveGB
     }
 }
 
@@ -254,11 +261,13 @@ public actor StandaloneServer {
         // (`darkbloom start --local`) applies the same filter with an
         // operator-facing error and refuses to start when nothing remains.
         self.models = Self.filterSupported(models)
-        // Standalone mode has no `memory_reserve_gb`, but the absolute
-        // `memory_limit_gb` is machine-wide intent: fold it into the KV
-        // budget's reserve so local serving can't grow past the limit.
+        // The operator's cap intent is machine-wide: fold `memory_reserve_gb`
+        // and `memory_limit_gb` into ONE effective reserve (max of the two,
+        // exactly as ProviderLoop does) so local serving can't grow into
+        // memory the operator withheld by either knob.
         self.kvBudget = GlobalKVCacheBudget(
-            configReserveBytes: MemoryLimit.impliedReserveBytes(
+            configReserveBytes: MemoryLimit.effectiveReserveBytes(
+                reserveGB: config.memoryReserveGB,
                 limitGB: config.memoryLimitGB,
                 physicalBytes: ProcessInfo.processInfo.physicalMemory))
         self.specDecFunnel = SpecDecArtifactFunnel(
@@ -617,10 +626,10 @@ public actor StandaloneServer {
     }
 
     /// Fleet KV budget for a prospective residency set: the unified-memory
-    /// cap minus Σ resident weights (all slots + the newcomer's), with no
-    /// operator reserve (standalone mode has none — the cap-implied reserve
-    /// holds memory back, exactly as in `availableMemoryGb`) beyond the
-    /// reserve implied by an operator `memory_limit_gb`, when set.
+    /// cap minus Σ resident weights (all slots + the newcomer's), holding back
+    /// the same effective operator reserve as `availableMemoryGb` — the max of
+    /// the CLI-forwarded `memory_reserve_gb` and the reserve implied by
+    /// `memory_limit_gb` (0/none when neither is configured).
     private func fleetKVBudgetBytes(extraWeightBytes: Int) -> UInt64 {
         var totalWeights = UInt64(max(0, extraWeightBytes))
         for (_, slot) in slots {
@@ -633,7 +642,8 @@ public actor StandaloneServer {
         return UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: physical,
             residentWeightBytes: totalWeights,
-            configReserveBytes: MemoryLimit.impliedReserveBytes(
+            configReserveBytes: MemoryLimit.effectiveReserveBytes(
+                reserveGB: config.memoryReserveGB,
                 limitGB: config.memoryLimitGB, physicalBytes: physical))
     }
 
@@ -1001,12 +1011,13 @@ public actor StandaloneServer {
     /// `ModelLoadAdmission` for the rationale.
     private func availableMemoryGb() async -> Double {
         let outstanding = await kvBudget.outstandingReservedBytes()
-        // Honor the 90% unified cap here too: with no configured reserve in
-        // standalone mode, the cap-implied reserve (physical − cap) is what holds
-        // memory back so a load can't push past the cap — plus the reserve
-        // implied by an operator `memory_limit_gb`, when set.
+        // Honor the 90% unified cap here too, holding back the same effective
+        // operator reserve (`max(memory_reserve_gb, physical − memory_limit_gb)`)
+        // the daemon's load gate applies, so a local load can't push past
+        // either the cap or the operator's knobs.
         let reserve = UnifiedMemoryCap.loadReserveBytes(
-            configReserveBytes: MemoryLimit.impliedReserveBytes(
+            configReserveBytes: MemoryLimit.effectiveReserveBytes(
+                reserveGB: config.memoryReserveGB,
                 limitGB: config.memoryLimitGB,
                 physicalBytes: ProcessInfo.processInfo.physicalMemory))
         return ModelLoadAdmission.freeForLoadGb(

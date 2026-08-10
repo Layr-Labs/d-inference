@@ -89,16 +89,17 @@ struct Memory: AsyncParsableCommand {
     }
 
     /// Shared validation for the memory-limit value: a whole number of GB
-    /// that is ≥ 8 and strictly below this Mac's physical memory, or `none`
-    /// to remove the limit. Pure — testable without IO or hardware.
+    /// that is ≥ `MemoryLimit.minimumLimitGB` and strictly below this Mac's
+    /// physical memory, or `none` to remove the limit. Pure — testable
+    /// without IO or hardware.
     static func parseLimitArgument(_ raw: String, physicalGb: UInt64) -> LimitArgument {
         let value = raw.trimmingCharacters(in: .whitespaces).lowercased()
         if value == "none" { return .clear }
         guard let gb = UInt64(value) else {
             return .invalid("Invalid memory limit '\(raw)': use a whole number of GB (e.g. 150) or 'none'.")
         }
-        if gb < 8 {
-            return .invalid("Memory limit must be at least 8 GB (got \(gb)).")
+        if gb < MemoryLimit.minimumLimitGB {
+            return .invalid("Memory limit must be at least \(MemoryLimit.minimumLimitGB) GB (got \(gb)).")
         }
         if gb >= physicalGb {
             return .invalid(
@@ -109,20 +110,16 @@ struct Memory: AsyncParsableCommand {
     }
 
     /// Pure renderer for the `memory` / `memory status` view. The inference
-    /// cap mirrors the daemon's real gate: the most conservative of the 90%
-    /// unified-memory cap and physical minus the effective reserve (which
-    /// already folds `memory_limit_gb` in via `effectiveReserveBytes`).
+    /// cap is `MemoryLimit.effectiveCapBytes` — the SAME formula the daemon's
+    /// gates, the status line, and the local-mode model filter derive from,
+    /// so this view can never disagree with what the provider enforces.
     static func statusLines(
         provider: ProviderSettings,
         physicalGb: UInt64,
         configDescription: String
     ) -> [String] {
         let physicalBytes = physicalGb * 1_073_741_824
-        let reserve = provider.effectiveReserveBytes(physicalBytes: physicalBytes)
-        let cap = min(
-            UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes),
-            physicalBytes > reserve ? physicalBytes - reserve : 0
-        )
+        let cap = provider.effectiveCapBytes(physicalBytes: physicalBytes)
 
         let limitLine: String
         if let limit = provider.memoryLimitBytes(physicalBytes: physicalBytes) {

@@ -43,6 +43,36 @@ extension Start {
             throw ExitCode.failure
         }
 
+        // With an operator memory limit in effect, drop models that can never
+        // pass the load gate under the effective cap — otherwise /v1/models
+        // advertises them, startup "succeeds", and every request is rejected
+        // as over-cap. Same arithmetic as the daemon's gate: weights + load
+        // headroom must fit under min(90% cap, physical − effective reserve).
+        let physicalBytes = ProcessInfo.processInfo.physicalMemory
+        var served = advertised
+        if config.provider.memoryLimitBytes(physicalBytes: physicalBytes) != nil {
+            let capBytes = config.provider.effectiveCapBytes(physicalBytes: physicalBytes)
+            let headroom = UnifiedMemoryCap.loadHeadroomBytes()
+            served = advertised.filter { m in
+                let weights = UInt64(max(0, m.estimatedMemoryGb) * 1_073_741_824.0)
+                let (need, overflow) = weights.addingReportingOverflow(headroom)
+                return !overflow && need <= capBytes
+            }
+            for dropped in advertised where !served.contains(where: { $0.id == dropped.id }) {
+                printError(
+                    "Skipping \(dropped.id): \(String(format: "%.1f", dropped.estimatedMemoryGb)) GB "
+                        + "cannot load under the \(config.provider.memoryLimitGB ?? 0) GB memory limit "
+                        + "(effective cap \(capBytes / 1_073_741_824) GB incl. load headroom)")
+            }
+            guard !served.isEmpty else {
+                printError(
+                    "No models fit under the configured memory limit. "
+                        + "Raise it (`darkbloom memory limit <GB>`) or remove it "
+                        + "(`darkbloom memory limit none`).")
+                throw ExitCode.failure
+            }
+        }
+
         // Direct/local mode: mint (or reuse) a bearer token so the loopback
         // server isn't open to every local process / hostile webpage. --no-auth
         // opts out for trusted/airgapped use.
@@ -56,8 +86,8 @@ extension Start {
         let baseURL = "http://\(bind == "0.0.0.0" ? "127.0.0.1" : bind):\(port)/v1"
         print("darkbloom \(ProviderCore.version) (local / direct mode)")
         print("Listening on \(bind):\(port)")
-        print("Models: \(advertised.count)")
-        for m in advertised {
+        print("Models: \(served.count)")
+        for m in served {
             print("  \(m.id) (\(String(format: "%.1f", m.estimatedMemoryGb)) GB)")
         }
         print()
@@ -96,9 +126,10 @@ extension Start {
                 engineV2KVBackendByModel: config.backend.engineV2KVBackendByModel,
                 mtp: config.backend.mtp,
                 mtpDrafterPath: config.backend.mtpDrafterPath,
-                memoryLimitGB: config.provider.memoryLimitGB
+                memoryLimitGB: config.provider.memoryLimitGB,
+                memoryReserveGB: config.provider.memoryReserveGB
             ),
-            models: advertised
+            models: served
         )
         try await server.start()
 

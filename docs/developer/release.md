@@ -105,8 +105,9 @@ Local M4 release-preparation evidence on 2026-07-17:
 - Persistent Unix HTTP planning: p50 165 µs, p99 595 µs.
 - Real encrypted DBK3 fixture: miss p95 0.145 ms, hit-stage p95 9.182 ms.
 
-Frozen-full local evidence from 2026-07-19 is recorded in
-`docs/reports/2026-07-19-frozen-full-prefix-cache-proof.md`.
+Frozen-full local evidence from 2026-07-19 was recorded in an internal working
+report (`docs/reports/` is no longer tracked in git; ask the team for the
+archived copy if needed).
 
 The automated gates are derived from the configured one-second planning/stage
 deadlines; the Rust gate additionally requires at least a 16× p99 safety

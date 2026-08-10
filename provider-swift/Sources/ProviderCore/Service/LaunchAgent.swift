@@ -107,7 +107,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String] = [],
         idleTimeout: UInt64? = nil,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        configPath: URL? = nil
     ) throws {
         // Determine the binary path (current executable)
         let binaryPath = currentExecutablePath()
@@ -126,7 +127,8 @@ public enum LaunchAgent: Sendable {
             coordinatorURL: coordinatorURL,
             models: models,
             idleTimeout: idleTimeout,
-            localEndpoint: localEndpoint
+            localEndpoint: localEndpoint,
+            configPath: configPath
         )
         try loadService()
     }
@@ -303,7 +305,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String],
         idleTimeout: UInt64?,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        configPath: URL? = nil
     ) throws {
         let plist = plistPath()
         let parentDir = plist.deletingLastPathComponent()
@@ -322,6 +325,16 @@ public enum LaunchAgent: Sendable {
             "--coordinator-url",
             coordinatorURL,
         ]
+        // Pin the daemon to the exact config file this CLI invocation resolved
+        // (same contract as WatchdogAgent, which already pins + parses
+        // `--config` from its ProgramArguments). Without this, `start --config
+        // <custom> --memory-limit N` persists the cap to the custom file while
+        // the launchd child silently re-resolves the canonical one and runs
+        // uncapped.
+        if let configPath {
+            programArguments.append("--config")
+            programArguments.append(configPath.path)
+        }
         for model in models {
             programArguments.append("--model")
             programArguments.append(model)

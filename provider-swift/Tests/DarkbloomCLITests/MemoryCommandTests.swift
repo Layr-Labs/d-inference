@@ -133,4 +133,21 @@ struct MemoryCommandTests {
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 256) == "256 GB")
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 300) == "256 GB")
     }
+
+    // MARK: - status "Inference memory" clamp
+
+    @Test("inference memory line clamps to the effective cap under a limit")
+    func inferenceMemoryClampsUnderLimit() {
+        let gib: UInt64 = 1_073_741_824
+        let capped = ProviderSettings(name: "t", memoryReserveGB: 4, memoryLimitGB: 150)
+        // 256 GB box: hardware "available" (252) must clamp to the 150 GB cap.
+        #expect(
+            Status.inferenceMemoryGb(
+                availableGb: 252, provider: capped, physicalBytes: 256 * gib) == 150)
+        // Uncapped: the historical hardware-derived figure passes through.
+        let uncapped = ProviderSettings(name: "t", memoryReserveGB: 4)
+        #expect(
+            Status.inferenceMemoryGb(
+                availableGb: 252, provider: uncapped, physicalBytes: 256 * gib) == 252)
+    }
 }

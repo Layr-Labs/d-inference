@@ -32,6 +32,48 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(MemoryLimit.limitBytes(limitGB: UInt64.max, physicalBytes: 256 * gib) == nil)
 }
 
+@Test func limitBytesSubFloorClampsUpToMinimum() {
+    // A hand-edited TOML below the CLI floor is clamped UP, not honored
+    // (a 2 GB cap can hold no weights → silent blackhole) and not dropped
+    // (the operator asked for a cap; removing it inverts intent).
+    #expect(MemoryLimit.limitBytes(limitGB: 2, physicalBytes: 64 * gib) == 8 * gib)
+    #expect(MemoryLimit.limitBytes(limitGB: 7, physicalBytes: 64 * gib) == 8 * gib)
+    #expect(MemoryLimit.limitBytes(limitGB: 8, physicalBytes: 64 * gib) == 8 * gib)
+}
+
+@Test func limitBytesSubFloorOnTinyBoxDegradesToUnset() {
+    // Clamping to the floor on a box at/below the floor would mean
+    // limit ≥ physical — normalized away like any other non-binding limit.
+    #expect(MemoryLimit.limitBytes(limitGB: 4, physicalBytes: 8 * gib) == nil)
+}
+
+@Test func effectiveReserveStaticTakesTheLargerHoldback() {
+    // The review-flagged standalone case: reserve 120 GB dominates the
+    // 106 GB implied by a 150 GB limit on a 256 GB box.
+    #expect(
+        MemoryLimit.effectiveReserveBytes(reserveGB: 120, limitGB: 150, physicalBytes: 256 * gib)
+            == 120 * gib)
+    // And the converse: the limit-implied reserve dominates a small reserve.
+    #expect(
+        MemoryLimit.effectiveReserveBytes(reserveGB: 4, limitGB: 150, physicalBytes: 256 * gib)
+            == 106 * gib)
+}
+
+@Test func effectiveCapBytesIsTheSingleDisplayAndFitFormula() {
+    // Capped: min(0.90 × 256, 256 − max(4, 106)) = min(230.4, 150) = 150.
+    #expect(
+        MemoryLimit.effectiveCapBytes(reserveGB: 4, limitGB: 150, physicalBytes: 256 * gib)
+            == 150 * gib)
+    // Uncapped big box: the 0.90 fraction binds.
+    #expect(
+        MemoryLimit.effectiveCapBytes(reserveGB: 4, limitGB: nil, physicalBytes: 256 * gib)
+            == UnifiedMemoryCap.hardCapBytes(physicalBytes: 256 * gib))
+    // Reserve larger than the cap-implied holdback binds below the fraction.
+    #expect(
+        MemoryLimit.effectiveCapBytes(reserveGB: 120, limitGB: nil, physicalBytes: 256 * gib)
+            == 136 * gib)
+}
+
 // MARK: - impliedReserveBytes (physical − limit, the reserve a limit implies)
 
 @Test func impliedReserveIsZeroWithoutEffectiveLimit() {

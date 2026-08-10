@@ -46,7 +46,11 @@ extension Start {
             idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
-            )
+            ),
+            // Pin the daemon to the file this invocation resolved (and possibly
+            // just persisted --memory-limit into) — same contract as the
+            // watchdog below, which has always pinned snapshot.configPath.
+            configPath: snapshot.configPath
         )
 
         // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;

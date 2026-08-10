@@ -1,8 +1,8 @@
 # PagedAttention Migration — Journal
 
 Working log for the contiguous → paged KV migration shipping in **provider
-v0.8.0**. Plan of record: `docs/reports/2026-07-25-paged-kv-migration-plan.md`
-(Rev 2).
+v0.8.0**. Plan of record: the paged-KV migration plan, Rev 2 — an internal
+working report (`docs/reports/` is untracked; ask the team for the copy).
 
 Integration branch: `paged-kv/integration`.
 

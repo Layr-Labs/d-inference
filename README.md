@@ -271,6 +271,10 @@ idle_timeout_mins = 60     # unload an idle model after N minutes (0 = never)
 max_model_slots = 3        # max models resident at once
 continuous_batching = true
 
+[gemma_optimizations]
+prefill_layer18 = true     # default ON; 18-layer prefill submissions
+weighted_r1 = true         # default ON; coupled weighted-unsort + safe R1
+
 [coordinator]
 url = "wss://api.darkbloom.dev/ws/provider"
 heartbeat_interval_secs = 5
@@ -285,6 +289,11 @@ days  = ["mon", "tue", "wed", "thu", "fri"]
 start = "22:00"
 end   = "08:00"
 ```
+
+`[gemma_optimizations]` is authoritative for production provider processes.
+Both selected controls default to `true` even when an older config omits the
+section. To roll back either optimization, set its key to `false` and run
+`darkbloom restart`; restart is the activation boundary.
 
 ## Self-route & direct mode
 

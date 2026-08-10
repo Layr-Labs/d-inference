@@ -4,10 +4,8 @@
 // production Gemma 4 checkpoint (`gemma-4-26b-qat-4bit`). Self-contained
 // harness — deliberately independent of `GemmaVLMVisionEngineV2LiveTests`
 // (same precedent that file set vs the 0.7.3 suites; nothing here touches
-// it). Slots are built through `LiveInferenceFixtures.loadBridge` — the
-// production `EngineV2SlotFactory.makeProductionBridge` construction
-// (weight-sharing text extraction + parity gate), i.e. the ONE engine
-// every slot serves with since v0.7.5. Stages:
+// it). Slots use `LiveInferenceFixtures.loadBridge`, which follows production
+// direct shared-tower construction: one engine serves every slot request.
 //
 //   (a) CONSTRUCTION INTROSPECTION — `EngineV2VisionPrefill.prepare` on a
 //       real 4-distinct-frame clip: one span per sampled frame, spans ==
@@ -29,16 +27,10 @@
 //       measured and logged (informational — the vision tower runs
 //       pre-submit).
 //
-//       DELETED with the legacy engine (v0.7.5 one-engine): the wrapper
-//       parity reference. Media on a slot WITHOUT a v2 bridge no longer
-//       serves at all — `MultiModelBatchSchedulerEngine` throws the
-//       fail-loud "no serving engine for media (no v2 bridge)" internal
-//       error (pinned by the non-live routing tests) — so there is no
-//       legacy output to log. (Token-exact wrapper parity was never
-//       asserted anyway: the extracted model implements the checkpoint's
-//       declared `rope_type: "proportional"` correctly while the wrapper
-//       deviated, plus bf16 kernel-order noise — see
-//       EngineV2VLMTextExtraction.)
+//       The removed legacy comparison is no longer needed for tower parity:
+//       direct VLM and CBv2 now invoke the same `Gemma4TextModel` instance.
+//       Media without a v2 bridge still fails loudly, as pinned by non-live
+//       routing tests.
 //
 //   (c) 32-FRAME SAMPLING CAP — a 40-second, 40-frame clip: the processor
 //       samples uniformly and caps at 32; construction must carve ≤ 32

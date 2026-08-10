@@ -69,14 +69,16 @@ struct FrozenReplayRealModelTests {
                 eosTokenIds: context.configuration.eosTokenIds,
                 extraEOSTokens: context.configuration.extraEOSTokens.sorted())
         }
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: snapshot.model,
-            modelDirectory: directory)
+        let wrapper = try #require(snapshot.model as? MLXVLM.Gemma4)
+        let textModel = wrapper.textModel
+        let direct = try EngineV2Factory.directServingModel(
+            model: wrapper, isVLM: true)
+        #expect(ObjectIdentifier(direct) == ObjectIdentifier(textModel))
         return Loaded(
             container: container,
-            model: extraction.model,
-            layerKinds: extraction.model.cbv2LayerKinds,
-            vocabularySize: extraction.model.vocabularySize)
+            model: textModel,
+            layerKinds: textModel.cbv2LayerKinds,
+            vocabularySize: textModel.vocabularySize)
     }
 
     private func makeBank(_ loaded: Loaded) -> CBv2LayerCacheBank {

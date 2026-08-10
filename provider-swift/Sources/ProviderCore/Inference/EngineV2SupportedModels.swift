@@ -10,10 +10,9 @@
 // declares (the value `ModelScanner.parseModelInfo` stamps on `ModelInfo`):
 //
 //   * `gpt_oss`      — GPT-OSS (GPTOSSModel)
-//   * `gemma4`       — Gemma 4 VLM wrapper
+//   * `gemma4`       — Gemma 4 VLM wrapper, serving through its directly
+//                      owned text tower plus vision prefill
 //   * `gemma4_text`  — Gemma 4 text target
-//                      wrapper (`gemma4`, served via the weight-sharing
-//                      text-model extraction + vision prefill)
 //
 // Everything else (gemma3, qwen*, llama, …) has no CBv2 adapter: it is
 // dropped from the advertised set at startup and at prefetch-verify time

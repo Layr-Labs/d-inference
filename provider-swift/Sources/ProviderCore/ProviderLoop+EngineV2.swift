@@ -224,11 +224,11 @@ extension ProviderLoop {
 
     /// Re-slice KV grants for the newcomer + existing slots, shrink
     /// existing engines, and build the newcomer's bridge. On ANY throw —
-    /// re-slice floor, extraction failure, engine construction — the
-    /// newcomer's weights are RELEASED (box + clearCache) and only THEN is
-    /// every existing engine's grant RESTORED exactly (Codex-review
-    /// ordering: restoring first would let Σ(grants) exceed the true fleet
-    /// budget while the failed newcomer's weights are still resident).
+    /// direct serving-model resolution, re-slice floor, or engine construction
+    /// — the newcomer's weights are RELEASED (box + clearCache) and only THEN
+    /// every existing engine's grant is RESTORED exactly (restoring first
+    /// would let Σ(grants) exceed the true fleet budget while the failed
+    /// newcomer's weights are still resident).
     /// Returns the bridge, already registered with `engineV2Runtime`.
     /// CALLER HOLDS the re-slice gate (see `acquireResliceGate`), spanning
     /// through slot installation, so a concurrent idle-timeout unload's
@@ -259,9 +259,9 @@ extension ProviderLoop {
         return build.bundle.bridge
     }
 
-    /// MTP-aware load funnel. Target extraction and assistant load/bind complete
-    /// before final sizing and re-slicing, so fallback removes the prospective
-    /// assistant charge and active MTP adds it exactly once.
+    /// MTP-aware load funnel. Direct target resolution and assistant load/bind
+    /// complete before final sizing and re-slicing, so fallback removes the
+    /// prospective assistant charge and active MTP adds it exactly once.
     internal func resliceAndBuildEngineV2Bundle(
         modelId: String,
         modelType: String?,
@@ -279,7 +279,6 @@ extension ProviderLoop {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
-                modelDirectory: modelDirectory,
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
@@ -487,12 +486,11 @@ extension ProviderLoop {
     /// caller unloads and maps to 503. There is no legacy path.
     ///
     /// VLM slots: every production Gemma 4 checkpoint ships a vision tower,
-    /// so the loaded module is MLXVLM's wrapper — which has no CBv2 hooks.
-    /// The engine is built over `EngineV2VLMTextExtraction`'s weight-sharing
-    /// MLXLLM text model: TEXT requests serve through v2, and ALL media —
-    /// image, video, mixed — prefills through v2 via `EngineV2VisionPrefill`
-    /// (v0.7.5; media construction failures REFUSE loudly, 503 — see
-    /// `MultiModelBatchSchedulerEngine.streamChatCompletion`).
+    /// so the loaded MLXVLM wrapper directly exposes its owned MLXLLM text
+    /// tower to CBv2. Text, image, video, mixed, and MTP requests therefore
+    /// share one language-model identity; media prefills use
+    /// `EngineV2VisionPrefill` (construction failures refuse loudly with 503;
+    /// see `MultiModelBatchSchedulerEngine.streamChatCompletion`).
     ///
     /// On success the bridge is registered with `engineV2Runtime` BEFORE the
     /// caller installs the slot, so a request routed the instant the slot

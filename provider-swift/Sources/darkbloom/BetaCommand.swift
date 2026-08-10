@@ -5,12 +5,11 @@ import ProviderCore
 struct Beta: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "beta",
-        abstract: "Manage opt-in beta features.",
+        abstract: "Manage configurable beta features.",
         discussion: """
-        Beta features are experimental and off by default. Toggling one writes a
-        field in your provider TOML config, so the change also applies to the
-        launchd daemon (unlike environment variables, which the daemon does not
-        inherit).
+        Beta features are experimental and have feature-specific defaults.
+        Toggling one writes a field in your provider TOML config, which is the
+        authority for daemon, `--foreground`, and `--local` processes.
 
         Subcommands:
           list                 Show all beta features and whether each is on (default).
@@ -18,8 +17,9 @@ struct Beta: AsyncParsableCommand {
           disable <feature>    Turn a beta feature off.
           status [feature]     Show details for all features, or one.
 
-        Most changes require a restart to take effect:
-          darkbloom beta enable kv-quant
+        Changes that affect process-wide optimization state require a restart.
+        To roll back a default-on feature:
+          darkbloom beta disable gemma-weighted-r1
           darkbloom restart
         """,
         subcommands: [List.self, Enable.self, Disable.self, Status.self],
@@ -79,7 +79,7 @@ extension Beta {
                 }
             }
             print("")
-            print("Enable with:  darkbloom beta enable <feature>   (then: darkbloom restart)")
+            print("Change with:  darkbloom beta enable|disable <feature>   (then: darkbloom restart)")
             print("Details with: darkbloom beta status <feature>")
         }
     }

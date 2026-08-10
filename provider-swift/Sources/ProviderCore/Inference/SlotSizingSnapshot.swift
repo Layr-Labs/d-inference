@@ -116,7 +116,6 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         struct ModuleFacts: @unchecked Sendable {
             let bytes: Int
             let moduleKVRate: Int?
-            let isGemma4VLMWrapper: Bool
         }
         let facts = await container.perform { ctx -> ModuleFacts in
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
@@ -124,27 +123,24 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
             // layer kinds (GPT-OSS derives them from the LOADED trunk, so
             // they are congruent with the actual layers even when config.json
             // omits `layer_types`).
-            var rate: Int? = nil
-            var isWrapper = false
+            let rate: Int?
             switch ctx.model {
             case let gemma as Gemma4TextModel:
                 rate = fp16KVBytesPerToken(layerKinds: gemma.cbv2LayerKinds)
             case let gptoss as GPTOSSModel:
                 rate = fp16KVBytesPerToken(layerKinds: gptoss.cbv2LayerKinds)
-            case is MLXVLM.Gemma4:
-                // The VLM wrapper has no CBv2 hooks; its extracted text model
-                // does. Derive from the checkpoint's text_config below (the
-                // SAME decoder the extraction uses, so the kinds equal what
-                // the extracted model will report).
-                isWrapper = true
+            case let gemma as MLXVLM.Gemma4:
+                // Direct ownership makes the loaded tower engine truth with
+                // no config re-decode or second topology that can drift.
+                rate = fp16KVBytesPerToken(layerKinds: gemma.textModel.cbv2LayerKinds)
             default:
-                break
+                rate = nil
             }
-            return ModuleFacts(bytes: bytes, moduleKVRate: rate, isGemma4VLMWrapper: isWrapper)
+            return ModuleFacts(bytes: bytes, moduleKVRate: rate)
         }
 
-        // Architecture metadata (context window + the config-parse fallback
-        // rate) from config.json — the same parse the load-gate estimate uses.
+        // Architecture metadata (context window + non-CBv2 fallback rate)
+        // comes from the same config parse the load-gate estimate uses.
         let architecture: ModelArchitecture
         if let modelPath {
             architecture = KVEstimation.parseModelArchitecture(
@@ -154,15 +150,10 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         var kvRate = facts.moduleKVRate ?? 0
-        if kvRate <= 0, facts.isGemma4VLMWrapper, let modelPath {
-            kvRate = gemma4VLMTextKVRate(modelDirectory: modelPath) ?? 0
-        }
         if kvRate <= 0 {
-            // Non-CBv2 module (or a wrapper whose text_config failed to
-            // decode): fall back to the config-parse figure so callers that
-            // only need a rough rate (vision reservations in tests) still
-            // get one. Such a model cannot build a v2 engine and is refused
-            // at load — this value never sizes a real engine grant.
+            // Non-CBv2 module: fall back to the config-parse figure so
+            // callers that only need a rough rate still get one. Such a
+            // model cannot build a v2 engine and is refused at load.
             kvRate = KVEstimation.resolvedKVBytesPerToken(
                 architecture: architecture, weightBytes: facts.bytes)
         }
@@ -216,16 +207,4 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         return total
     }
 
-    /// CBv2 layer kinds for a Gemma 4 VLM checkpoint's TEXT model, decoded
-    /// from `config.json`'s `text_config` with the same decoder the
-    /// weight-sharing extraction uses (`EngineV2VLMTextExtraction`), so the
-    /// kinds equal what the extracted `Gemma4TextModel` will report.
-    static func gemma4VLMTextKVRate(modelDirectory: URL) -> Int? {
-        let configURL = modelDirectory.appendingPathComponent("config.json")
-        guard let configData = try? Data(contentsOf: configURL),
-            let textConfig = try? EngineV2VLMTextExtraction.decodeTextConfiguration(
-                configData: configData)
-        else { return nil }
-        return fp16KVBytesPerToken(layerKinds: textConfig.cbv2LayerKinds)
-    }
 }

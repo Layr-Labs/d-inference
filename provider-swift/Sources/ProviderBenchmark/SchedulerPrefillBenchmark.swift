@@ -54,8 +54,8 @@ public enum SchedulerPrefillBenchmark {
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
-        // VLM checkpoints load via the VLM factory and measure through the
-        // weight-sharing extracted text model (production serving path).
+        // VLM checkpoints load via the VLM factory and measure the exact
+        // text tower owned by the wrapper (the production serving path).
         let isVLM = ThroughputSweep.readHasVisionConfig(modelDirectory: modelDirectory)
         let container: ModelContainer
         if isVLM {
@@ -83,8 +83,7 @@ public enum SchedulerPrefillBenchmark {
             promptTokens: min(lengths.first ?? 128, 128),
             iteration: 0,
             weightBytes: facts.weightBytes,
-            isVLM: isVLM,
-            modelDirectory: modelDirectory
+            isVLM: isVLM
         )
 
         var samples: [SchedulerPrefillBenchmarkReport.Sample] = []
@@ -96,8 +95,7 @@ public enum SchedulerPrefillBenchmark {
                     promptTokens: length,
                     iteration: iteration,
                     weightBytes: facts.weightBytes,
-                    isVLM: isVLM,
-                    modelDirectory: modelDirectory
+                    isVLM: isVLM
                 )
                 log("  \(strategyLabel) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms)")
                 samples.append(sample)
@@ -120,8 +118,7 @@ public enum SchedulerPrefillBenchmark {
         promptTokens: Int,
         iteration: Int,
         weightBytes: Int,
-        isVLM: Bool,
-        modelDirectory: URL?
+        isVLM: Bool
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         // Same KV-ceiling derivation as a single-model serving slot; far
         // above what one row needs, so admission never binds.
@@ -133,7 +130,7 @@ public enum SchedulerPrefillBenchmark {
             UInt64(Int.max)))
         let engine = try await container.perform { ctx -> any CBv2Engine in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                model: ctx.model, isVLM: isVLM)
             return try EngineV2Factory.makeProductionEngine(
                 model: servingModel,
                 tokenizer: ctx.tokenizer,

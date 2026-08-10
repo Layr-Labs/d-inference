@@ -13,7 +13,8 @@ extension Start {
     internal mutating func launchDaemon(
         snapshot: RuntimeSnapshot,
         config: ProviderConfig,
-        coordinatorURL: String
+        coordinatorURL: String,
+        configPath: URL?
     ) async throws {
         // Run critical checks before downloading models or prompting.
         try runPreflightChecks(snapshot: snapshot)
@@ -44,6 +45,7 @@ extension Start {
             coordinatorURL: coordinatorURL,
             models: selectedModelIDs,
             idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
+            configPath: configPath,
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
             )

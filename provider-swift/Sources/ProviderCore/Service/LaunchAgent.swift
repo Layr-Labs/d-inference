@@ -107,6 +107,7 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String] = [],
         idleTimeout: UInt64? = nil,
+        configPath: URL? = nil,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
         // Determine the binary path (current executable)
@@ -126,6 +127,7 @@ public enum LaunchAgent: Sendable {
             coordinatorURL: coordinatorURL,
             models: models,
             idleTimeout: idleTimeout,
+            configPath: configPath,
             localEndpoint: localEndpoint
         )
         try loadService()
@@ -294,6 +296,7 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String],
         idleTimeout: UInt64?,
+        configPath: URL?,
         localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
     ) throws {
         let plist = plistPath()
@@ -305,30 +308,14 @@ public enum LaunchAgent: Sendable {
 
         let log = logPath().path
 
-        // Build the ProgramArguments array.
-        var programArguments: [String] = [
-            binaryPath,
-            "start",
-            "--foreground",
-            "--coordinator-url",
-            coordinatorURL,
-        ]
-        for model in models {
-            programArguments.append("--model")
-            programArguments.append(model)
-        }
-        if let timeout = idleTimeout {
-            programArguments.append("--idle-timeout")
-            programArguments.append("\(timeout)")
-        }
-        if localEndpoint.enabled {
-            programArguments.append("--local-endpoint")
-            programArguments.append(contentsOf: ["--port", "\(localEndpoint.port)"])
-            programArguments.append(contentsOf: ["--bind", localEndpoint.bind])
-            if localEndpoint.noAuth {
-                programArguments.append("--no-auth")
-            }
-        }
+        let programArguments = serviceProgramArguments(
+            binaryPath: binaryPath,
+            coordinatorURL: coordinatorURL,
+            models: models,
+            idleTimeout: idleTimeout,
+            configPath: configPath,
+            localEndpoint: localEndpoint
+        )
 
         let plistDict = makeServicePlist(
             label: label,
@@ -343,6 +330,44 @@ public enum LaunchAgent: Sendable {
             options: 0
         )
         try data.write(to: plist, options: .atomic)
+    }
+
+    /// Build the child argv without touching launchd or the filesystem.
+    /// A custom config is explicit so every relaunch reads the same TOML;
+    /// the canonical default remains implicit and follows normal migration.
+    static func serviceProgramArguments(
+        binaryPath: String,
+        coordinatorURL: String,
+        models: [String],
+        idleTimeout: UInt64?,
+        configPath: URL?,
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+    ) -> [String] {
+        var arguments = [
+            binaryPath,
+            "start",
+            "--foreground",
+            "--coordinator-url",
+            coordinatorURL,
+        ]
+        if let configPath {
+            arguments.append(contentsOf: ["--config", configPath.standardizedFileURL.path])
+        }
+        for model in models {
+            arguments.append(contentsOf: ["--model", model])
+        }
+        if let idleTimeout {
+            arguments.append(contentsOf: ["--idle-timeout", "\(idleTimeout)"])
+        }
+        if localEndpoint.enabled {
+            arguments.append("--local-endpoint")
+            arguments.append(contentsOf: ["--port", "\(localEndpoint.port)"])
+            arguments.append(contentsOf: ["--bind", localEndpoint.bind])
+            if localEndpoint.noAuth {
+                arguments.append("--no-auth")
+            }
+        }
+        return arguments
     }
 
     /// Build the launchd plist dictionary for the provider service. Pure (no I/O)

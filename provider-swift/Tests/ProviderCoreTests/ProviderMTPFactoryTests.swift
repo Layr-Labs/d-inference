@@ -1,8 +1,10 @@
 import Foundation
 import Crypto
 import MLX
+import MLXLLM
 import MLXLMCommon
 import MLXNN
+import MLXVLM
 import Testing
 @testable import ProviderCore
 import ProviderCoreFoundation
@@ -33,12 +35,56 @@ private struct MTPFactoryProcessor: UserInputProcessor {
     func prepare(input: UserInput) async throws -> LMInput { throw CancellationError() }
 }
 
-private func mtpFactoryContainer(_ target: MTPFactoryTarget = MTPFactoryTarget()) -> ModelContainer {
+private func mtpFactoryContainer(
+    _ target: any LanguageModel = MTPFactoryTarget()
+) -> ModelContainer {
     ModelContainer(context: ModelContext(
         configuration: ModelConfiguration(id: "test/mtp-factory"),
         model: target,
         processor: MTPFactoryProcessor(),
         tokenizer: MTPFactoryTokenizer()))
+}
+
+private func mtpFactoryVLM() throws -> MLXVLM.Gemma4 {
+    let data = Data(
+        """
+        {
+          "model_type": "gemma4",
+          "text_config": {
+            "hidden_size": 32,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "global_head_dim": 8,
+            "intermediate_size": 64,
+            "vocab_size": 128,
+            "sliding_window": 16,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "tie_word_embeddings": true,
+            "hidden_size_per_layer_input": 0,
+            "vocab_size_per_layer_input": 0,
+            "num_kv_shared_layers": 0,
+            "use_double_wide_mlp": false,
+            "enable_moe_block": false,
+            "use_bidirectional_attention": "vision"
+          },
+          "vision_config": {
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_hidden_layers": 1,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 2,
+            "head_dim": 8,
+            "patch_size": 8,
+            "position_embedding_size": 64,
+            "default_output_length": 4,
+            "pooling_kernel_size": 2
+          }
+        }
+        """.utf8)
+    return MLXVLM.Gemma4(
+        try JSONDecoder().decode(MLXVLM.Gemma4Configuration.self, from: data))
 }
 
 private func mtpFactoryArtifact() throws -> SpecDecArtifact {
@@ -207,7 +253,6 @@ struct ProviderMTPFactoryTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: model.id,
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: preparation,
             assistantLoader: MTPFactoryRecordingLoader(recorder: recorder, failure: nil))
@@ -227,7 +272,6 @@ struct ProviderMTPFactoryTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(target),
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)),
@@ -238,6 +282,51 @@ struct ProviderMTPFactoryTests {
         #expect(ObjectIdentifier(prepared.servingModel) == ObjectIdentifier(target))
         #expect(prepared.mtpStatus.active)
         #expect(prepared.assistantBytes == artifact.residentBytes)
+    }
+
+    @Test("Gemma 4 VLM hands its owned text tower directly to CBv2 and MTP")
+    func vlmOwnedTargetIdentity() async throws {
+        let vlm = try mtpFactoryVLM()
+        let container = mtpFactoryContainer(vlm)
+        let recorder = MTPFactoryIdentityRecorder()
+        let artifact = try mtpFactoryArtifact()
+        defer { try? FileManager.default.removeItem(at: artifact.directory) }
+
+        let prepared = try await EngineV2SlotFactory.prepareProductionModel(
+            modelId: "gemma-4-vlm-test",
+            isVLM: true,
+            container: container,
+            specDecPreparation: .init(
+                artifact: artifact, status: .candidate(artifact)),
+            assistantLoader: MTPFactoryRecordingLoader(
+                recorder: recorder, failure: nil))
+
+        let ownedID = ObjectIdentifier(vlm.textModel)
+        #expect(ObjectIdentifier(prepared.servingModel) == ownedID)
+        #expect(recorder.snapshot.0 == ownedID)
+        #expect(recorder.snapshot.1 == 1)
+        #expect(prepared.mtpStatus.active)
+
+        let recovered = try await EngineV2SlotFactory.prepareRecoveryModel(
+            modelId: "gemma-4-vlm-test",
+            isVLM: true,
+            container: container,
+            previousArtifact: prepared.mtpArtifact,
+            previousStatus: prepared.mtpStatus,
+            assistant: prepared.assistant)
+        #expect(ObjectIdentifier(recovered.servingModel) == ownedID)
+        let recoveredAssistant = try #require(recovered.assistant)
+        let preparedAssistant = try #require(prepared.assistant)
+        #expect(recoveredAssistant === preparedAssistant)
+        #expect(recovered.mtpStatus.active)
+    }
+
+    @Test("VLM resolution fails loud for an unsupported wrapper")
+    func unsupportedVLMWrapperRefuses() {
+        #expect(throws: EngineV2ProductionError.self) {
+            _ = try EngineV2Factory.directServingModel(
+                model: MTPFactoryTarget(), isVLM: true)
+        }
     }
 
     @Test("assistant load and bind failures are stable target-only fallbacks")
@@ -252,7 +341,6 @@ struct ProviderMTPFactoryTests {
             let prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: "gemma-4-test",
                 isVLM: false,
-                modelDirectory: nil,
                 container: mtpFactoryContainer(),
                 specDecPreparation: .init(
                     artifact: artifact, status: .candidate(artifact)),
@@ -272,7 +360,6 @@ struct ProviderMTPFactoryTests {
         let first = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)),
@@ -291,7 +378,6 @@ struct ProviderMTPFactoryTests {
         let rebuilt = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)),
@@ -317,7 +403,6 @@ struct ProviderMTPFactoryTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)),
@@ -342,7 +427,6 @@ struct ProviderMTPFactoryTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)),
@@ -361,7 +445,6 @@ struct ProviderMTPFactoryTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: .init(
                 artifact: artifact, status: .candidate(artifact)))
@@ -375,7 +458,6 @@ struct ProviderMTPFactoryTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: "gemma-4-test",
             isVLM: false,
-            modelDirectory: nil,
             container: mtpFactoryContainer(),
             specDecPreparation: .init(
                 artifact: nil,

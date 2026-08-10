@@ -119,6 +119,10 @@ idle_timeout_mins = 60
 max_model_slots = 3
 kv_quant = false
 
+[gemma_optimizations]
+prefill_layer18 = true
+weighted_r1 = true
+
 [coordinator]
 url = "wss://api.darkbloom.dev/ws/provider"
 heartbeat_interval_secs = 5
@@ -130,6 +134,15 @@ start = "22:00"
 end = "08:00"
 ```
 
+- `gemma_optimizations.prefill_layer18` — default ON, including when an older
+  config omits the section or key. Set to `false` and restart to restore legacy
+  one-final-submission Gemma prefill.
+- `gemma_optimizations.weighted_r1` — default ON, including when omitted. This
+  is one atomic production control for weighted unsort and safe R1; the two
+  paths cannot be configured independently.
+- Provider TOML is authoritative for both controls. Changes take effect at
+  process restart; after setting either key to `false`, run `darkbloom restart`
+  to activate the rollback.
 - `backend.enabled_models` — if non-empty, only these models are advertised.
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).

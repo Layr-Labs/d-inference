@@ -1,19 +1,18 @@
 # Beta Features
 
-Beta features are experimental provider capabilities that are **off by default**.
-They are validated enough to try in production but may change, carry caveats, or
-only apply to specific model families. Enable them per provider when you want to
-opt in.
+Beta features are experimental provider capabilities with feature-specific
+defaults. The benchmark-selected Gemma stack is **on by default**, including for
+existing configs that omit its section; reserved and opt-in features remain off
+until enabled. Every feature can be changed per provider.
 
 ## How beta features are toggled
 
-Beta features are **config-backed**, not environment-variable backed. Each one is
-a field in your provider TOML config (`~/.config/darkbloom/provider.toml`). This
-matters: the launchd daemon started by `darkbloom start` only inherits a tiny
-allowlist of `DARKBLOOM_*` environment variables
-(`provider-swift/Sources/ProviderCore/Daemon/LaunchAgent.swift`), so an env-var
-toggle would silently have no effect on the running daemon. A TOML field is always
-read by every serve path (daemon, `--foreground`, and `--local`).
+Beta features are **config-backed**. Each one is a field in your provider TOML
+config (`~/.config/darkbloom/provider.toml`), and that config is authoritative
+for daemon, `--foreground`, and `--local` processes. Low-level environment
+variables are implementation details, not an independent production control
+surface. Process-wide optimization state is resolved at startup, so restart
+after changing a restart-required feature.
 
 The registry of available features lives in
 `provider-swift/Sources/ProviderCore/Config/BetaFeatures.swift`.
@@ -28,18 +27,63 @@ darkbloom beta disable <feature>    # turn a feature off
 ```
 
 `enable`/`disable` perform a read-modify-write of the TOML config and print
-whether a restart is required. Most beta features take effect on the next backend
-start:
+whether a restart is required. For example, to roll back the default-on coupled
+Gemma expert optimization:
 
 ```bash
-darkbloom beta enable kv-quant
+darkbloom beta disable gemma-weighted-r1
 darkbloom restart
 ```
 
-You can also see which beta features are active in `darkbloom status` (the
-`Beta features:` line), or edit the TOML directly.
+The restart is the activation boundary. Re-enable and restart to restore the
+selected default. You can also see which beta features are active in
+`darkbloom status` (the `Beta features:` line), or edit the TOML directly.
 
 ## Available features
+
+### `gemma-prefill-layer18` — layer-18 prefill submission
+
+This optimization submits queued Gemma prefill work every 18 transformer
+layers instead of waiting for one final submission. It defaults ON for both new
+and pre-existing provider configs.
+
+```toml
+[gemma_optimizations]
+prefill_layer18 = true
+```
+
+Rollback is config-backed and restart-required:
+
+```bash
+darkbloom beta disable gemma-prefill-layer18
+darkbloom restart
+```
+
+Setting the key to `false` (or using the command above) restores the legacy
+one-final-submission behavior after restart.
+
+### `gemma-weighted-r1` — coupled weighted unsort + safe R1
+
+This optimization defaults ON and is deliberately one atomic production
+control. It enables both the direct weighted expert reduction and the safe
+exact-shape R1 QMM path. There is no supported config or beta combination that
+enables one without the other.
+
+```toml
+[gemma_optimizations]
+weighted_r1 = true
+```
+
+To roll back both paths together:
+
+```bash
+darkbloom beta disable gemma-weighted-r1
+darkbloom restart
+```
+
+Missing `[gemma_optimizations]` sections and missing keys decode as `true`, so
+old configs receive the selected v0.8.2 stack. An explicit `false` plus restart
+is the durable rollback.
 
 ### `kv-quant` — reserved KV-cache quantization toggle
 

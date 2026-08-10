@@ -7,6 +7,7 @@ import MLXLMCommon
 // MARK: - Tiny, fast model used for the bulk of live tests.
 
 enum LiveInferenceFixtures {
+    private static let metallibColocationLock = NSLock()
 
     /// Default tiny MLX-community model: ~600M params, ~1 GB on disk in 8-bit.
     /// Loads in seconds and finishes a 16-token generation in well under 1s
@@ -78,17 +79,18 @@ enum LiveInferenceFixtures {
     ///
     ///   `.build/<arch>/debug/<pkg>PackageTests.xctest/Contents/MacOS/`
     ///
-    /// `scripts/fetch-metallib.sh` only places the metallib at
-    /// `.build/debug/mlx.metallib`, which is *not* where MLX looks. This
-    /// helper finds the metallib in any well-known location (incl. the
-    /// fetch script's drop site) and copies it next to the test runner
-    /// so MLX's `current_binary_dir() / "mlx.metallib"` lookup succeeds
-    /// on the first GPU call. Idempotent.
+    /// The canonical source helper stages a metallib in the Swift build
+    /// directory. This helper finds that source and always replaces the copy
+    /// beside the test runner so a stale pre-existing file cannot survive into
+    /// the current test invocation.
     ///
-    /// Returns the path to the colocated metallib on success, or `nil` if
-    /// no source metallib could be found anywhere -- in which case the
-    /// caller should skip the test rather than crashing in the GPU init.
+    /// Returns the path to the colocated metallib on success, or `nil` if no
+    /// source metallib could be found -- in which case the caller should skip
+    /// the test rather than crashing in GPU initialization.
     static func ensureMetallibColocated() -> URL? {
+        metallibColocationLock.lock()
+        defer { metallibColocationLock.unlock() }
+
         let fm = FileManager.default
 
         // 1. Find the test bundle's MacOS dir. Bundle(for:) reliably points
@@ -99,28 +101,32 @@ enum LiveInferenceFixtures {
         }
         let destination = testBundleMacOSDir.appendingPathComponent("mlx.metallib")
 
-        if fm.fileExists(atPath: destination.path) {
-            return destination
-        }
-
-        // 2. Find a source metallib to copy.
+        // 2. Resolve the authoritative staged source before considering the
+        // runner copy. Existence alone does not prove source compatibility.
         guard let source = findSourceMetallib() else {
             return nil
         }
 
         do {
-            try fm.copyItem(at: source, to: destination)
+            // Copy beside the destination, then atomically replace the runner
+            // file without loading the 150 MB+ metallib into process memory.
+            let temporary = testBundleMacOSDir
+                .appendingPathComponent(".mlx.metallib.\(UUID().uuidString)")
+            defer { try? fm.removeItem(at: temporary) }
+            try fm.copyItem(at: source, to: temporary)
+            if fm.fileExists(atPath: destination.path) {
+                _ = try fm.replaceItemAt(destination, withItemAt: temporary)
+            } else {
+                try fm.moveItem(at: temporary, to: destination)
+            }
             // Mirror to MLX_METALLIB_PATH so our own `locateMetallib()`
             // (which trusts _NSGetExecutablePath, i.e. the xctest host
             // path) can find it too if anyone else queries.
             setenv("MLX_METALLIB_PATH", destination.path, 1)
             return destination
         } catch {
-            // Last resort: still set MLX_METALLIB_PATH so any code that
-            // queries `locateMetallib()` succeeds, even though the MLX
-            // C++ runtime won't honor it and tests will crash on first
-            // GPU call. Better to let the test report the failure than
-            // to silently skip.
+            // The C++ runtime does not honor MLX_METALLIB_PATH, so failure to
+            // replace its runner-local copy must remain a fixture failure.
             setenv("MLX_METALLIB_PATH", source.path, 1)
             return nil
         }
@@ -146,29 +152,33 @@ enum LiveInferenceFixtures {
         return nil
     }
 
-    /// Look for a metallib at the spots `scripts/fetch-metallib.sh` and the
-    /// release pipeline drop one. We anchor at the test bundle (which is
-    /// inside `.build/<arch>/debug/...`) and walk up to the package root.
+    /// Look for a metallib at the canonical helper's drop sites. We anchor at
+    /// the test bundle (`.build/<arch>/<configuration>/...`) and accept only
+    /// the configuration which contains the running test bundle.
     private static func findSourceMetallib() -> URL? {
         let fm = FileManager.default
-
-        if let env = ProcessInfo.processInfo.environment["MLX_METALLIB_SOURCE"],
-           !env.isEmpty,
-           fm.fileExists(atPath: env) {
-            return URL(fileURLWithPath: env)
-        }
 
         // Anchor at the test bundle path -- much more reliable than
         // _NSGetExecutablePath under `swift test`.
         let bundle = Bundle(for: BundleSentinel.self)
+        let components = bundle.bundleURL.pathComponents
+        let configuration: String
+        if let buildIndex = components.lastIndex(of: ".build"),
+           let activeConfiguration = components[components.index(after: buildIndex)...]
+            .first(where: { $0 == "debug" || $0 == "release" }) {
+            configuration = activeConfiguration
+        } else {
+            configuration = "debug"
+        }
+
         var cursor = bundle.bundleURL
         for _ in 0..<12 {
             if cursor.lastPathComponent == ".build" {
                 let candidates: [URL] = [
-                    cursor.appendingPathComponent("debug/mlx.metallib"),
-                    cursor.appendingPathComponent("release/mlx.metallib"),
-                    cursor.appendingPathComponent("arm64-apple-macosx/debug/mlx.metallib"),
-                    cursor.appendingPathComponent("arm64-apple-macosx/release/mlx.metallib"),
+                    cursor.appendingPathComponent("\(configuration)/mlx.metallib"),
+                    cursor.appendingPathComponent(
+                        "arm64-apple-macosx/\(configuration)/mlx.metallib"
+                    ),
                 ]
                 for candidate in candidates {
                     if fm.fileExists(atPath: candidate.path) {
@@ -215,9 +225,8 @@ enum LiveInferenceFixtures {
         let sizing: SlotSizingSnapshot
     }
 
-    /// Load a model and build its production v2 bridge (VLM-aware — the
-    /// same `ModelContainerLoading` + weight-sharing text extraction the
-    /// serve path uses).
+    /// Load a model and build its production v2 bridge, including direct use
+    /// of a VLM wrapper's owned text tower.
     ///
     /// - Throws: `LiveFixtureSkip` if the model isn't on disk, or if the
     ///   metallib isn't available.

@@ -75,26 +75,13 @@ public enum ProviderCore {
     // jinja_null_bridge / jinja_template / model_load), so durable telemetry can
     // tell the two indistinguishable gpt-oss 500 modes apart. Wire-compatible:
     // `error_reason` is an optional inference-error field, omitted when nil.
-    // 0.7.2 lets engine_v2 (continuous batching) serve TEXT requests on
-    // allowlisted VLM-loaded Gemma 4 slots. Every prod Gemma 4 checkpoint
-    // ships a vision tower, so it loads via VLMModelFactory and the per-slot
-    // isVLM gate previously kept 100% of Gemma traffic on the legacy engine.
-    // The slot factory now extracts the CBv2-adapted MLXLLM text model over
-    // the SAME weight arrays (zero extra weight memory) and serves text
-    // through v2; image/video requests keep the legacy VLM path. No protocol
-    // change — capability is behavioral, gated by the existing engine_v2
-    // allowlist + flag.
-    // 0.7.3 fixes the v0.7.2 black-hole incident: the VLM text extraction's
-    // two module trees each lazily built their own multi-GiB SwitchGLU fused
-    // gate+up expert cache at the load-time parity probe (~15 GiB × 2 on
-    // gemma-4-26b-8bit), pushing 64 GB (8-bit) and 36 GB (qat-4bit) boxes
-    // past the 90% unified-memory cap so the shared KV gate rejected every
-    // request forever. The trees now share ONE fused cache
-    // (SwitchGLU.shareFusedGateUpCache); the load path re-checks serveable
-    // KV headroom AFTER the engine build and unloads instead of advertising
-    // a dead model; and GlobalKVCacheBudget audits + drops stale
-    // reservations under sustained full-rejection (defense in depth). No
-    // protocol changes.
+    // 0.7.2 first enabled CBv2 for VLM-loaded Gemma 4 by reconstructing a
+    // separate MLXLLM text module over shared arrays. That convention was the
+    // source of the historical multi-tree memory/parity complexity.
+    // Gemma 4 VLM now owns the canonical `Gemma4TextModel` directly: direct
+    // VLM, CBv2, media prefill, and MTP all retain the same module identity.
+    // The post-build serveable-headroom guard and stale-reservation cleanup
+    // remain defense in depth; no protocol change is required.
     // 0.7.5 is the ONE-ENGINE release: every request — text, image, video,
     // mixed — on every slot serves through ContinuousBatchingV2, and the
     // legacy BatchScheduler engine is DELETED from the binary (~15k lines
@@ -169,5 +156,5 @@ public enum ProviderCore {
     // DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS=0 and
     // DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0; the opt-in mixed-step prefill
     // quota is DARKBLOOM_CBV2_MIXED_PREFILL_CAP.
-    public static let version = "0.7.15"
+    public static let version = "0.8.2"
 }

@@ -25,15 +25,9 @@
 //       masks / spliced embeddings must leave no residue in the engine's
 //       caches — the Qwen3.5-mrope-class regression pattern).
 //
-// DELETED with the legacy engine (v0.7.5): the wrapper-path greedy
-// comparison and the text/legacy-vision/text interleave. Media on a slot
-// WITHOUT a v2 bridge no longer serves at all — it throws the fail-loud
-// "no serving engine for media (no v2 bridge)" internal error, pinned by
-// the non-live routing tests — so there is no legacy output to compare
-// against. (Wrapper-vs-extracted token-exactness was never asserted anyway:
-// the extracted model implements the checkpoint's declared `rope_type:
-// "proportional"` correctly while the wrapper deviates, plus bf16
-// kernel-order noise — see EngineV2VLMTextExtraction.)
+// The removed legacy comparison is no longer needed for tower parity: direct
+// VLM and CBv2 now invoke the same `Gemma4TextModel` instance. Media without
+// a v2 bridge still fails loudly, as pinned by non-live routing tests.
 //
 // Teardown here is structured (bridge shutdown awaited on every exit path)
 // so this suite never overlaps residency with other serialized live runs.
@@ -82,10 +76,9 @@ struct GemmaVLMVisionEngineV2LiveTests {
 
     // MARK: - Harness (the provider's one-engine VLM slot shape)
 
-    /// One loaded v2 VLM slot: the PRODUCTION bridge (built through
-    /// `EngineV2SlotFactory.makeProductionBridge`, weight-sharing text
-    /// extraction + parity gate included), the retained VLM container the
-    /// vision tower runs in, and the tokenizer for the registry entry.
+    /// One loaded v2 VLM slot: the production bridge over the wrapper-owned
+    /// text tower, the retained VLM container that runs vision, and the
+    /// tokenizer for the registry entry.
     private struct LoadedV2VLMSlot {
         let modelID: String
         let bridge: EngineV2Bridge

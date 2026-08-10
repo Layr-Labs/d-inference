@@ -32,6 +32,52 @@ enum BoundedProcess {
         environment: [String: String]? = nil,
         timeout: TimeInterval
     ) throws {
+        try runProcess(
+            executable,
+            arguments: arguments,
+            environment: environment,
+            standardOutput: FileHandle.nullDevice,
+            timeout: timeout)
+    }
+
+    /// Run a bounded child while retaining stdout for signed-artifact
+    /// assertions. A temporary file avoids the pipe backpressure deadlock that
+    /// would otherwise let a verbose child fill its pipe before termination.
+    static func runCapturingStandardOutput(
+        _ executable: URL,
+        arguments: [String],
+        environment: [String: String]? = nil,
+        timeout: TimeInterval
+    ) throws -> Data {
+        let outputURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("darkbloom-child-\(UUID().uuidString).stdout")
+        guard FileManager.default.createFile(
+            atPath: outputURL.path, contents: nil)
+        else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? FileManager.default.removeItem(at: outputURL) }
+
+        let output = try FileHandle(forWritingTo: outputURL)
+        defer { try? output.close() }
+        try runProcess(
+            executable,
+            arguments: arguments,
+            environment: environment,
+            standardOutput: output,
+            timeout: timeout)
+        try output.synchronize()
+        try output.close()
+        return try Data(contentsOf: outputURL)
+    }
+
+    private static func runProcess(
+        _ executable: URL,
+        arguments: [String],
+        environment: [String: String]?,
+        standardOutput: Any,
+        timeout: TimeInterval
+    ) throws {
         let process = Process()
         process.executableURL = executable
         process.arguments = arguments
@@ -40,7 +86,7 @@ enum BoundedProcess {
                 environment,
                 uniquingKeysWith: { _, override in override })
         }
-        process.standardOutput = FileHandle.nullDevice
+        process.standardOutput = standardOutput
         process.standardError = FileHandle.nullDevice
         try process.run()
 

@@ -514,7 +514,7 @@ struct SelfUpdaterTests {
         return (tarball, release, install)
     }
 
-    @Test("signed extracted app runs real packaged verification before staging succeeds")
+    @Test("signed extracted child proves retained Gemma marker before staging succeeds")
     func signedAppRunsRealVerification() throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         let root = FileManager.default.temporaryDirectory
@@ -532,7 +532,7 @@ struct SelfUpdaterTests {
             release: validRelease,
             installDir: install)
         else {
-            Issue.record("real signed/runtime-verified staging failed")
+            Issue.record("real signed/runtime marker verification failed")
             return
         }
         staged.discard()

@@ -174,12 +174,16 @@ struct MTPBetaFeatureTests {
         feature.apply(true, to: &config)
         #expect(config.backend.mtp == true)
         #expect(feature.isEnabled(in: config) == true)
-        #expect(BetaFeatures.enabledIDs(in: config) == ["mtp"])
+        #expect(BetaFeatures.enabledIDs(in: config) == [
+            "gemma-prefill-layer18", "gemma-weighted-r1", "mtp",
+        ])
 
         feature.apply(false, to: &config)
         #expect(config.backend.mtp == false)
         #expect(feature.isEnabled(in: config) == false)
-        #expect(BetaFeatures.enabledIDs(in: config).isEmpty)
+        #expect(BetaFeatures.enabledIDs(in: config) == [
+            "gemma-prefill-layer18", "gemma-weighted-r1",
+        ])
     }
 
     @Test("apply only mutates its mapped field")
@@ -195,6 +199,7 @@ struct MTPBetaFeatureTests {
         #expect(config.backend.port == before.backend.port)
         #expect(config.provider == before.provider)
         #expect(config.coordinator == before.coordinator)
+        #expect(config.gemmaOptimizations == before.gemmaOptimizations)
     }
 
     // `darkbloom beta enable mtp` = apply(true) + ConfigManager.save; the

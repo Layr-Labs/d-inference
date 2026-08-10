@@ -580,8 +580,8 @@ public actor ProviderLoop {
         /// the slot never exists (`ensureModelLoaded` unloads + 503s).
         let engineBundle: ProviderEngineBundle
         var engineV2: EngineV2Bridge { engineBundle.bridge }
-        /// Retained for VLM vision preprocessing (the tower shares weights
-        /// with the extracted text model) and for liveness rebuilds.
+        /// Retained for VLM vision preprocessing and liveness rebuilds; the
+        /// wrapper owns the exact text tower retained by the engine.
         let container: MLXLMCommon.ModelContainer
         let tokenizer: TokenizerHandle
         /// Scheduler-free sizing facts (weights, fp16 KV rate, context) —

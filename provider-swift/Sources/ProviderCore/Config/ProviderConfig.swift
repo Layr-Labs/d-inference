@@ -10,6 +10,7 @@
 ///   - Backend settings (port, model, continuous batching, idle timeout)
 ///   - Coordinator connection settings (URL, heartbeat interval)
 ///   - Scheduling windows
+///   - Config-backed Gemma optimization controls
 ///
 /// A default config is generated based on detected hardware when the provider
 /// is first initialized. CLI flags can override config values at runtime.
@@ -298,17 +299,28 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
     public var backend: BackendSettings
     public var coordinator: CoordinatorSettings
     public var schedule: ScheduleConfig?
+    public var gemmaOptimizations: GemmaOptimizationSettings
 
     public init(
         provider: ProviderSettings,
         backend: BackendSettings = BackendSettings(),
         coordinator: CoordinatorSettings = CoordinatorSettings(),
-        schedule: ScheduleConfig? = nil
+        schedule: ScheduleConfig? = nil,
+        gemmaOptimizations: GemmaOptimizationSettings = GemmaOptimizationSettings()
     ) {
         self.provider = provider
         self.backend = backend
         self.coordinator = coordinator
         self.schedule = schedule
+        self.gemmaOptimizations = gemmaOptimizations
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case provider
+        case backend
+        case coordinator
+        case schedule
+        case gemmaOptimizations = "gemma_optimizations"
     }
 
     public init(from decoder: Decoder) throws {
@@ -317,6 +329,9 @@ public struct ProviderConfig: Sendable, Equatable, Codable {
         self.backend = try container.decodeIfPresent(BackendSettings.self, forKey: .backend) ?? BackendSettings()
         self.coordinator = try container.decodeIfPresent(CoordinatorSettings.self, forKey: .coordinator) ?? CoordinatorSettings()
         self.schedule = try container.decodeIfPresent(ScheduleConfig.self, forKey: .schedule)
+        self.gemmaOptimizations = try container.decodeIfPresent(
+            GemmaOptimizationSettings.self, forKey: .gemmaOptimizations
+        ) ?? GemmaOptimizationSettings()
     }
 
     /// Generate a default config based on detected hardware.

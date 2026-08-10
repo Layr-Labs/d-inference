@@ -44,11 +44,34 @@ prompt-sidecar: prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test p
 
 # ---- Provider (Swift, Apple Silicon) --------------------------------------
 
-provider-build: ## swift build for the Swift provider CLI
+provider-build: ## Build the Swift provider CLI with its source-matched metallib
 	cd provider-swift && swift build
+	@set -eu; \
+	    bin_path="$$(cd provider-swift && swift build --show-bin-path)"; \
+	    ./scripts/fetch-metallib.sh "$$bin_path"
 
-provider-test: ## swift test for the Swift provider CLI
-	cd provider-swift && swift test
+provider-test: ## Build and run Swift provider tests with source-matched metallibs
+	cd provider-swift && swift build --build-tests
+	@set -eu; \
+	    bin_path="$$(cd provider-swift && swift build --show-bin-path)"; \
+	    ./scripts/fetch-metallib.sh "$$bin_path"; \
+	    runner_tmp=""; \
+	    trap 'test -z "$$runner_tmp" || rm -f "$$runner_tmp"' EXIT; \
+	    trap 'exit 143' HUP INT TERM; \
+	    found=0; \
+	    for bundle in "$$bin_path"/*PackageTests.xctest; do \
+	        [ -d "$$bundle" ] || continue; \
+	        runner_dir="$$bundle/Contents/MacOS"; \
+	        mkdir -p "$$runner_dir"; \
+	        runner_tmp="$$runner_dir/.mlx.metallib.$$$$"; \
+	        cp "$$bin_path/mlx.metallib" "$$runner_tmp"; \
+	        mv -f "$$runner_tmp" "$$runner_dir/mlx.metallib"; \
+	        runner_tmp=""; \
+	        found=1; \
+	    done; \
+	    [ "$$found" -eq 1 ] || { echo "provider test runner bundle not found in $$bin_path" >&2; exit 1; }; \
+	    trap - EXIT HUP INT TERM
+	cd provider-swift && swift test --skip-build
 
 provider: provider-build provider-test ## Build + test provider
 

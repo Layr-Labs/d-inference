@@ -12,11 +12,15 @@ This package is **CLI-only**: no SwiftUI app, no `.app` bundle, no DMG.
 ## Build & test
 
 ```bash
-swift test
-swift build -c release
-# Outputs:
-#   .build/release/darkbloom
-#   .build/release/darkbloom-enclave
+# From the repository root. These targets build first, stage the matching
+# source-built metallib at every runtime path, and then run tests skip-build.
+make provider-test
+make provider-build
+
+# Optimized local binary:
+cd provider-swift && swift build -c release && cd ..
+./scripts/fetch-metallib.sh release
+# Outputs include provider-swift/.build/release/{darkbloom,mlx.metallib}.
 ```
 
 The package depends on local submodules at `../libs/mlx-swift` and `../libs/mlx-swift-lm`. Make sure they are checked out:
@@ -30,19 +34,23 @@ git submodule update --init --recursive
 
 `mlx-swift`'s `Cmlx` target does **not** auto-compile its Metal kernels through SwiftPM. The runtime needs an `mlx.metallib` file colocated with the binary (or inside the binary's resource bundle), or it crashes on the first MLX call with `Failed to load the default metallib`.
 
-Until we land a SwiftPM build-tool plugin for this, the workaround is to ship the matching `mlx.metallib` from the MLX Python wheel that pins the same C++ ABI as the fork (currently `mlx==0.31.2`). For local dev, the simplest setup is:
+The canonical helper builds the metallib from the exact nested MLX source used
+by `Cmlx` (`libs/mlx-swift/Source/Cmlx/mlx`), with Metal JIT disabled and the
+required deployment target and kernel completeness checks. It never extracts a
+Python wheel:
 
 ```bash
-python3 -m venv /tmp/mlxvenv
-/tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-   .build/release/mlx.metallib
+# From the repository root, after the corresponding Swift build:
+./scripts/fetch-metallib.sh debug
+./scripts/fetch-metallib.sh release
 
-# Then:
-.build/release/darkbloom serve --foreground
+provider-swift/.build/release/darkbloom serve --foreground
 ```
 
-`release-swift.yml` in CI does the same thing automatically and bakes the metallib into the released bundle next to `darkbloom`.
+The helper also accepts an absolute destination directory and
+`METALLIB_CACHE_DIR`; local, integration, CI, and release paths use this same
+source-matched builder. Release packaging colocates the resulting metallib with
+`darkbloom`.
 
 ## Layout
 
@@ -110,6 +118,6 @@ Done in v0.5.0:
 Still pending:
 
 - [ ] Phase 4b: true continuous batching (deferrable past cutover; today's `BatchScheduler` does prefill-serial + decode-concurrent on a single ModelContainer).
-- [ ] Phase 0: SwiftPM build-tool plugin to produce `mlx.metallib` directly from `libs/mlx-swift/Source/Cmlx/mlx-generated/metal/`. Today's local-dev workflow uses `scripts/fetch-metallib.sh` and CI uses the wheel-extraction step in `release-swift.yml`.
+- [ ] Phase 0: SwiftPM build-tool plugin to produce `mlx.metallib` directly from `libs/mlx-swift/Source/Cmlx/mlx`. Until then, local development and CI use the canonical source builder at `scripts/fetch-metallib.sh`.
 - [ ] First-class `metallib_hash` field on `protocol.RegisterMessage` and `protocol.AttestationResponseMessage` (today it rides as a key inside `template_hashes`, which the coordinator stores but does not enforce).
 - [ ] Build-time injection of `ProviderCore.version` from a git tag (today it is a hand-bumped constant; CI consumes it as-is).

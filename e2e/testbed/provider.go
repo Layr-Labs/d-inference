@@ -1,6 +1,7 @@
 package testbed
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
@@ -8,6 +9,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 func providerBuildConfig() string {
@@ -44,34 +47,37 @@ func BuildProvider(ctx context.Context, logger *slog.Logger) (string, error) {
 	providerDir := filepath.Join(repoRoot, "provider-swift")
 	cfg := providerBuildConfig()
 
-	binaryPath := providerDir + "/.build/" + cfg + "/darkbloom"
-	if _, err := os.Stat(binaryPath); err == nil {
-		metallibPath := providerDir + "/.build/" + cfg + "/mlx.metallib"
-		if _, err2 := os.Stat(metallibPath); err2 == nil {
-			logger.Info("using cached provider binary", "path", binaryPath)
-			return binaryPath, nil
-		}
+	showBinPath := exec.CommandContext(ctx, "swift", "build", "-c", cfg, "--show-bin-path")
+	showBinPath.Dir = providerDir
+	binPathOutput, err := showBinPath.Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve provider build path: %w", err)
 	}
+	binPath := strings.TrimSpace(string(binPathOutput))
+	if binPath == "" {
+		return "", fmt.Errorf("resolve provider build path: swift returned an empty path")
+	}
+	binaryPath := filepath.Join(binPath, "darkbloom")
 
 	logger.Info("building provider binary", "dir", providerDir, "config", cfg)
-
 	cmd := exec.CommandContext(ctx, "swift", "build", "-c", cfg)
 	cmd.Dir = providerDir
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("swift build provider: %w: %s", err, string(out))
+	out, buildErr := cmd.CombinedOutput()
+	if buildErr != nil {
+		return "", fmt.Errorf("swift build provider: %w: %s", buildErr, string(out))
 	}
-
-	if _, err := os.Stat(binaryPath); err != nil {
+	if info, statErr := os.Stat(binaryPath); statErr != nil || info.IsDir() || info.Mode()&0o111 == 0 {
 		return "", fmt.Errorf("provider binary not found after build: %s", binaryPath)
 	}
 
-	if err := ensureMetallib(providerDir, logger); err != nil {
+	// Candidate binaries always receive a freshly staged metallib from the
+	// exact nested MLX source. An existing colocated file is not evidence that
+	// it matches the host code.
+	if err := ensureMetallib(ctx, repoRoot, binPath, logger); err != nil {
 		return "", fmt.Errorf("metallib setup: %w", err)
 	}
 
-	logger.Info("provider binary built", "path", binaryPath)
+	logger.Info("provider binary ready", "path", binaryPath)
 	return binaryPath, nil
 }
 
@@ -94,37 +100,69 @@ func findRepositoryRoot(start string) (string, error) {
 	}
 }
 
-func ensureMetallib(providerDir string, logger *slog.Logger) error {
-	cfg := providerBuildConfig()
-	metallibPath := providerDir + "/.build/" + cfg + "/mlx.metallib"
-	if _, err := os.Stat(metallibPath); err == nil {
-		return nil
+func ensureMetallib(
+	ctx context.Context,
+	repoRoot string,
+	binPath string,
+	logger *slog.Logger,
+) error {
+	helper := filepath.Join(repoRoot, "scripts", "fetch-metallib.sh")
+	info, err := os.Stat(helper)
+	if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
+		return fmt.Errorf("source metallib helper is not executable: %s", helper)
 	}
 
-	if envPath := os.Getenv("MLX_METALLIB_PATH"); envPath != "" {
-		if _, err := os.Stat(envPath); err == nil {
-			return copyFile(envPath, metallibPath)
-		}
+	cmd := exec.Command(helper, binPath)
+	cmd.Dir = repoRoot
+	out, err := runProcessGroup(ctx, cmd)
+	if len(out) != 0 {
+		(&logWriter{logger: logger, prefix: "metallib helper"}).Write(out)
+	}
+	if err != nil {
+		return fmt.Errorf("build source-matched metallib: %w", err)
 	}
 
-	siteDirs, _ := filepath.Glob("/tmp/mlxvenv/lib/python*/site-packages/mlx/lib")
-	for _, dir := range siteDirs {
-		src := filepath.Join(dir, "mlx.metallib")
-		if _, err := os.Stat(src); err == nil {
-			logger.Info("copying mlx.metallib from Python wheel", "src", src)
-			return copyFile(src, metallibPath)
-		}
+	metallibPath := filepath.Join(binPath, "mlx.metallib")
+	metallib, err := os.Stat(metallibPath)
+	if err != nil || metallib.IsDir() || metallib.Size() == 0 {
+		return fmt.Errorf("source metallib helper did not stage %s", metallibPath)
 	}
-
-	return fmt.Errorf("mlx.metallib not found; install mlx==0.31.2 Python wheel and copy to %s or set MLX_METALLIB_PATH", metallibPath)
+	return nil
 }
 
-func copyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
+func runProcessGroup(ctx context.Context, cmd *exec.Cmd) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return os.WriteFile(dst, data, 0644)
+
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		return output.Bytes(), err
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-done:
+		return output.Bytes(), err
+	case <-ctx.Done():
+		// Let the helper shell handle TERM and run its EXIT cleanup. If CMake
+		// or a compiler child does not exit promptly, kill the entire group.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			<-done
+		}
+		return output.Bytes(), ctx.Err()
+	}
 }
 
 func findProviderBinary() string {

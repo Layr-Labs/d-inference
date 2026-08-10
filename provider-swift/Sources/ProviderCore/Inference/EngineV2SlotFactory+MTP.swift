@@ -1,4 +1,3 @@
-import Foundation
 import MLXLMCommon
 
 /// Model handle + EOS config snapshot pulled out of `ModelContainer.perform`.
@@ -9,8 +8,8 @@ struct EngineV2ModelSnapshot: @unchecked Sendable {
     let extraEOSTokens: [String]
 }
 
-/// Target extraction plus fail-open assistant preparation, completed before KV
-/// re-slicing so final sizing uses retained assistant bytes.
+/// Direct serving-target resolution plus fail-open assistant preparation,
+/// completed before KV re-slicing so sizing uses retained assistant bytes.
 struct EngineV2PreparedModel: @unchecked Sendable {
     let snapshot: EngineV2ModelSnapshot
     let servingModel: any LanguageModel
@@ -45,45 +44,31 @@ extension EngineV2SlotFactory {
     private static func servingModel(
         modelId: String,
         isVLM: Bool,
-        modelDirectory: URL?,
         snapshot: EngineV2ModelSnapshot,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?,
         logInfo: @escaping @Sendable (String) -> Void
     ) throws -> any LanguageModel {
         guard isVLM else { return snapshot.model }
-        guard let modelDirectory else {
-            let error = EngineV2VLMTextExtractionError.missingModelDirectory
-            EngineV2Factory.emitRefusalTelemetry(
-                modelId: modelId,
-                reason: .vlmExtractionFailed,
-                error: error,
-                emitTelemetry: emitTelemetry)
-            throw error
-        }
-        let extraction: EngineV2VLMTextExtraction.Extraction
         do {
-            extraction = try EngineV2VLMTextExtraction.extractTextModel(
-                from: snapshot.model, modelDirectory: modelDirectory)
+            let target = try EngineV2Factory.directServingModel(
+                model: snapshot.model, isVLM: true)
+            logInfo(
+                "engine_v2: \(modelId) using the Gemma 4 VLM-owned text tower "
+                    + "directly (shared identity and residency)")
+            return target
         } catch {
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId,
-                reason: .vlmExtractionFailed,
+                reason: EngineV2RefusalReason.classify(error),
                 error: error,
                 emitTelemetry: emitTelemetry)
             throw error
         }
-        if let parityDiff = extraction.parityMaxAbsLogitDiff {
-            logInfo(
-                "engine_v2: \(modelId) VLM text-model extraction passed the "
-                    + "load-time forward parity gate (max |Δlogit| \(parityDiff))")
-        }
-        return extraction.model
     }
 
     static func prepareProductionModel(
         modelId: String,
         isVLM: Bool,
-        modelDirectory: URL?,
         container: ModelContainer,
         specDecPreparation: SpecDecPreparation,
         assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
@@ -95,7 +80,6 @@ extension EngineV2SlotFactory {
         let servingModel = try servingModel(
             modelId: modelId,
             isVLM: isVLM,
-            modelDirectory: modelDirectory,
             snapshot: snapshot,
             emitTelemetry: emitTelemetry,
             logInfo: logInfo)
@@ -153,7 +137,6 @@ extension EngineV2SlotFactory {
     static func prepareRecoveryModel(
         modelId: String,
         isVLM: Bool,
-        modelDirectory: URL?,
         container: ModelContainer,
         previousArtifact: SpecDecArtifact?,
         previousStatus: MTPActivationStatus,
@@ -192,7 +175,6 @@ extension EngineV2SlotFactory {
             let target = try servingModel(
                 modelId: modelId,
                 isVLM: isVLM,
-                modelDirectory: modelDirectory,
                 snapshot: snapshot,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo)
@@ -208,7 +190,6 @@ extension EngineV2SlotFactory {
         let target = try servingModel(
             modelId: modelId,
             isVLM: isVLM,
-            modelDirectory: modelDirectory,
             snapshot: snapshot,
             emitTelemetry: emitTelemetry,
             logInfo: logInfo)

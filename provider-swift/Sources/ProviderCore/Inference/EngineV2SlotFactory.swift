@@ -7,12 +7,11 @@
 // slots through THIS one path so the assembly can never drift between
 // them: snapshot the loaded module's EOS config out of the container,
 // apply the model-specific EOS policy (`ModelEOSPolicy`), build the
-// production CBv2 engine over the loaded module (with the weight-sharing
-// VLM text extraction for Gemma 4 VLM checkpoints), and wrap it in an
-// `EngineV2Bridge` via the fail-loud `EngineV2Factory.makeBridge` (any
-// construction failure emits the ERROR `engine_v2_refusal` telemetry and
-// throws — the caller unloads and maps to a 503; there is no legacy
-// fallback).
+// production CBv2 engine over the loaded module (using the Gemma 4 VLM's
+// directly owned text tower), and wrap it in an `EngineV2Bridge` via the
+// fail-loud `EngineV2Factory.makeBridge` (any construction failure emits the
+// ERROR `engine_v2_refusal` telemetry and throws — the caller unloads and
+// maps to a 503; there is no legacy fallback).
 //
 // Call-site differences stay at the call sites: the ProviderLoop
 // registers the bridge with `EngineV2Runtime` (heartbeat/cancel fan-out)
@@ -21,9 +20,123 @@
 // are limited to `makeEngineOverride` (scripted engines, no weights).
 
 import Foundation
+import MLX
 import MLXLLM
 import MLXLMCommon
 import ProviderCoreFoundation
+
+enum GemmaOptimizationReason: String, Sendable, Equatable {
+    case disabled
+    case modelIneligible = "model_ineligible"
+    case aotUnavailable = "aot_unavailable"
+    case naxPrecedence = "nax_precedence"
+    case effective
+}
+
+struct GemmaOptimizationState: Sendable, Equatable {
+    let name: String
+    let requested: Bool
+    let effective: Bool
+    let reason: GemmaOptimizationReason
+
+    var compactDescription: String {
+        "\(name)(requested=\(requested),effective=\(effective),reason=\(reason.rawValue))"
+    }
+}
+
+/// Pure requested/effective resolution for the three retained Gemma controls.
+/// Safe R1 is inferred from one unarmed device snapshot; this type never
+/// resets, arms, or samples route counters.
+struct GemmaOptimizationReport: Sendable, Equatable {
+    let layer18: GemmaOptimizationState
+    let weightedUnsort: GemmaOptimizationState
+    let safeR1: GemmaOptimizationState
+
+    init(
+        layer18Requested: Bool,
+        layer18Effective: Bool,
+        weightedUnsortRequested: Bool,
+        weightedUnsortEffective: Bool,
+        safeR1Requested: Bool,
+        safeR1GeometryEligible: Bool,
+        safeR1AOTAvailable: Bool,
+        safeR1NAXAvailable: Bool
+    ) {
+        layer18 = Self.resolve(
+            name: "layer18",
+            requested: layer18Requested,
+            modelEligible: layer18Effective)
+        weightedUnsort = Self.resolve(
+            name: "weighted_unsort",
+            requested: weightedUnsortRequested,
+            modelEligible: weightedUnsortEffective)
+        safeR1 = Self.resolve(
+            name: "safe_r1",
+            requested: safeR1Requested,
+            modelEligible: safeR1GeometryEligible,
+            aotAvailable: safeR1AOTAvailable,
+            naxAvailable: safeR1NAXAvailable)
+    }
+
+    var states: [GemmaOptimizationState] {
+        [layer18, weightedUnsort, safeR1]
+    }
+
+    func logLine(modelId: String) -> String {
+        "engine_v2: \(modelId) gemma optimizations "
+            + states.map(\.compactDescription).joined(separator: " ")
+    }
+
+    func telemetryEvents(modelId: String) -> [TelemetryEvent] {
+        states.map { state in
+            var event = TelemetryEvent(
+                source: .provider,
+                severity: .info,
+                kind: .engineHealth,
+                message: "engine_v2: gemma optimization "
+                    + state.compactDescription)
+            event.fields = TelemetryFieldFilter.filter([
+                "component": .string("engine"),
+                "operation": .string("gemma_optimization_\(state.name)"),
+                "backend": .string("engine_v2"),
+                "model": .string(modelId),
+                // Existing allowlisted field, carrying the bounded 2-bit
+                // requested/effective state without a telemetry schema change.
+                "target": .string(
+                    "requested_\(state.requested ? 1 : 0)_effective_"
+                        + "\(state.effective ? 1 : 0)"),
+                "reason": .string(state.reason.rawValue),
+            ])
+            return event
+        }
+    }
+
+    private static func resolve(
+        name: String,
+        requested: Bool,
+        modelEligible: Bool,
+        aotAvailable: Bool? = nil,
+        naxAvailable: Bool = false
+    ) -> GemmaOptimizationState {
+        let reason: GemmaOptimizationReason
+        if !requested {
+            reason = .disabled
+        } else if !modelEligible {
+            reason = .modelIneligible
+        } else if aotAvailable == false {
+            reason = .aotUnavailable
+        } else if naxAvailable {
+            reason = .naxPrecedence
+        } else {
+            reason = .effective
+        }
+        return GemmaOptimizationState(
+            name: name,
+            requested: requested,
+            effective: reason == .effective,
+            reason: reason)
+    }
+}
 
 enum EngineV2SlotFactory {
 
@@ -62,10 +175,9 @@ enum EngineV2SlotFactory {
     /// - Parameters:
     ///   - modelId: catalog id the slot serves under.
     ///   - modelType: `model_type` from config.json (EOS policy input).
-    ///   - isVLM: config declares `vision_config` — the engine is built
-    ///     over `EngineV2VLMTextExtraction`'s weight-sharing text model.
-    ///   - modelDirectory: checkpoint dir (required for VLM extraction).
-    ///   - container: the just-loaded model container.
+    ///   - isVLM: config declares `vision_config` — the engine directly uses
+    ///     the `Gemma4TextModel` owned by the loaded VLM wrapper.
+    ///   - modelDirectory: checkpoint dir (prompt-contract identity input).
     ///   - tokenizer: the container's tokenizer handle.
     ///   - sizing: scheduler-free sizing snapshot (fp16 KV rate, context,
     ///     default max tokens).
@@ -88,7 +200,7 @@ enum EngineV2SlotFactory {
     ///     `ProviderLoop.EngineV2SlotHooks`); nil ⇒ the real
     ///     `EngineV2Factory.makeProductionEngine`. SSD cache instances and
     ///     stats logging exist only on the production path.
-    ///   - logInfo: sink for the VLM parity-gate + cache-state info lines.
+    ///   - logInfo: sink for shared-tower + cache-state info lines.
     ///   - logWarning: sink for the both-tiers-requested WARN line.
     static func makeProductionBridge(
         modelId: String,
@@ -138,8 +250,7 @@ enum EngineV2SlotFactory {
     }
 
     /// Production bundle assembly. Assistant preparation is deliberately
-    /// fail-open; target extraction/engine construction retain their existing
-    /// fail-loud semantics.
+    /// fail-open; direct target resolution and engine construction fail loud.
     static func makeProductionBundle(
         modelId: String,
         modelType: String?,
@@ -197,7 +308,6 @@ enum EngineV2SlotFactory {
             prepared = try await prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
-                modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: SpecDecPreparation(
                     artifact: nil, status: specDecPreparation.status),
@@ -209,7 +319,6 @@ enum EngineV2SlotFactory {
             prepared = try await prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
-                modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: specDecPreparation,
                 assistantLoader: assistantLoader,
@@ -280,12 +389,9 @@ enum EngineV2SlotFactory {
         // only RAM claims are per-request staging reservations in the
         // shared `GlobalKVCacheBudget` (refused ⇒ silent recompute).
         //
-        // VLM slots derive layer kinds from config.json's text_config
-        // alone (`EngineV2VLMTextExtraction.cbv2LayerKinds` — drift tests
-        // pin config-derived shape == engine truth); the weight-sharing
-        // extraction itself still runs inside engine construction. A
-        // family with no derivable kinds gets no cache (it would throw
-        // unsupportedModel at engine build anyway).
+        // VLM slots use the layer kinds of the exact text tower already
+        // resolved from the loaded wrapper. A family with no adapted serving
+        // model gets no prepared backend and is refused before cache creation.
         var ssdPrefixCache: SSDPrefixCache?
         var cacheCapability: CBv2PrefixReuseCapability?
         var cacheConstructionStatus = PrefixCacheConstructionStatus.configDisabled
@@ -443,6 +549,31 @@ enum EngineV2SlotFactory {
             await bridge.startSSDPrefixCacheStatsLogger(cache: ssdPrefixCache)
         }
         await bridge.configureMTPStatus(mtpStatus)
+        if let gemmaModel = servingModel as? Gemma4TextModel {
+            // One load-time snapshot only. Never arm the benchmark counters in
+            // production: the QMM hot path remains free of counter atomics.
+            let r1 = GPU.gemma4ExpertQMMDiagnostics()
+            let layerInterval = gemmaModel.cbv2PrefillChunkEvalInterval
+            let report = GemmaOptimizationReport(
+                layer18Requested: layerInterval > 0,
+                layer18Effective:
+                    layerInterval > 0
+                    && gemmaModel.cbv2LayerKinds.count >= layerInterval,
+                weightedUnsortRequested: gemmaModel.weightedExpertUnsortRequested,
+                weightedUnsortEffective: gemmaModel.weightedExpertUnsortEffective,
+                safeR1Requested: r1.requested,
+                safeR1GeometryEligible: gemmaModel.expertQMMGeometryEligible,
+                safeR1AOTAvailable: r1.aotAvailable,
+                safeR1NAXAvailable: r1.naxAvailable)
+            logInfo(report.logLine(modelId: modelId))
+            for event in report.telemetryEvents(modelId: modelId) {
+                if let emitTelemetry {
+                    emitTelemetry(event)
+                } else {
+                    TelemetryClient.shared.emit(event)
+                }
+            }
+        }
         logInfo(
             "engine_v2: \(modelId) prefix cache "
                 + prefixCacheStateDescription(

@@ -116,9 +116,14 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v2-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
-            spm-v2-${{ runner.os }}-
+            spm-v3-${{ runner.os }}-
+      - name: Discard metallibs restored by the generic SwiftPM cache
+        run: |
+          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
+          done
       - name: Install pinned Rust toolchain for production prompt parity
         run: |
           rustup toolchain install 1.88.0 --profile minimal
@@ -132,28 +137,29 @@ jobs:
           # The root helper is a separately packaged executable product and is
           # not guaranteed to be linked merely because the test bundle builds.
           swift build --product darkbloom-fan-helper
-      - name: Extract mlx.metallib
-        working-directory: provider-swift
+      - name: Build and stage source-matched mlx.metallib
         run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          metallib="/tmp/mlxvenv/lib/python$(/tmp/mlxvenv/bin/python -c 'import sys;print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages/mlx/lib/mlx.metallib"
-          # MLX's C++ loader (device.cpp load_default_library) searches for the
-          # metallib COLOCATED WITH THE RUNNING BINARY. Under `swift test` the
-          # running binary is the xctest runner INSIDE the .xctest bundle, so a
-          # copy in .build/debug alone is not found — it must sit next to the
-          # runner. Place it in both locations to cover `swift run`/built-binary
-          # paths and the test runner. Fail loudly if the source isn't there.
-          test -f "$metallib" || { echo "::error::mlx.metallib not found at $metallib"; exit 1; }
-          cp "$metallib" "$RUNNER_TEMP/mlx.metallib"
-          cp "$metallib" .build/debug/mlx.metallib
-          for bundle in .build/debug/*PackageTests.xctest; do
-            macos="$bundle/Contents/MacOS"
-            if [ -d "$macos" ]; then
-              cp "$metallib" "$macos/mlx.metallib"
-              echo "placed metallib in $macos"
-            fi
+          set -euo pipefail
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
+          metallib="$RUNNER_TEMP/mlx.metallib"
+          test -s "$metallib" || { echo "::error::source-matched mlx.metallib was not produced"; exit 1; }
+
+          # MLX loads the metallib from beside the running executable. Stage the
+          # helper-authorized artifact into every provider binary and XCTest
+          # location that the preceding build created.
+          provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
+          for destination in provider-swift/.build/debug "$provider_bin"; do
+            mkdir -p "$destination"
+            cp "$metallib" "$destination/mlx.metallib"
           done
+          while IFS= read -r macos; do
+            cp "$metallib" "$macos/mlx.metallib"
+            echo "placed source-matched metallib in $macos"
+          done < <(
+            find provider-swift/.build -type d -path '*.xctest/Contents/MacOS' -print
+          )
       - name: Run Swift tests
         working-directory: provider-swift
         # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
@@ -167,7 +173,12 @@ jobs:
         # 12-vcpu runner); warm runs restore libs/mlx-swift-lm/.build from
         # the SwiftPM cache and finish in ~1 min.
         timeout-minutes: 35
-        run: swift build --build-tests
+        run: |
+          # This standalone package otherwise resolves its remote mlx-swift
+          # branch while loading the root helper's local-source metallib.
+          swift package unedit --force mlx-swift >/dev/null 2>&1 || true
+          swift package edit --path ../mlx-swift mlx-swift
+          swift build --build-tests
       - name: Run nested paged and prompt-hash tests directly
         working-directory: libs/mlx-swift-lm
         timeout-minutes: 10
@@ -202,9 +213,14 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v2-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
-            spm-v2-${{ runner.os }}-
+            spm-v3-${{ runner.os }}-
+      - name: Discard metallibs restored by the generic SwiftPM cache
+        run: |
+          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+            [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
+          done
       - name: Build provider-swift
         working-directory: provider-swift
         run: |
@@ -215,7 +231,12 @@ jobs:
         # The test-provider job runs CBv2PagedSafetyTests from this nested
         # .build; saving it here keeps that lane warm across PRs.
         timeout-minutes: 35
-        run: swift build --build-tests
+        run: |
+          # Keep the warmed nested workspace on the same local MLX source used
+          # by provider builds and scripts/fetch-metallib.sh.
+          swift package unedit --force mlx-swift >/dev/null 2>&1 || true
+          swift package edit --path ../mlx-swift mlx-swift
+          swift build --build-tests
       - name: Save SwiftPM cache
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
@@ -224,7 +245,7 @@ jobs:
             ~/Library/org.swift.swiftpm
             provider-swift/.build
             libs/mlx-swift-lm/.build
-          key: spm-v2-${{ runner.os }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
+          key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 
   lint-console:
     name: Console UI Lint & Build

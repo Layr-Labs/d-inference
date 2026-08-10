@@ -1,6 +1,6 @@
 import Foundation
 
-/// A user-facing opt-in *beta* feature.
+/// A user-facing configurable *beta* feature.
 ///
 /// Beta features are intentionally **config-backed**, not environment-variable
 /// backed: the launchd daemon started by `darkbloom start` only inherits a tiny
@@ -55,13 +55,49 @@ public struct BetaFeature: Sendable, Identifiable {
     }
 }
 
-/// The registry of opt-in beta features.
+/// The registry of configurable beta features.
 ///
 /// Adding a beta toggle = adding one ``BetaFeature`` entry here (and its backing
-/// `ProviderConfig` field). The `darkbloom beta` command and `darkbloom status`
-/// are driven entirely off this list, so they need no per-feature code.
+/// `ProviderConfig` field). Features declare their own defaults; the
+/// `darkbloom beta` command and `darkbloom status` are driven entirely off this
+/// list, so they need no per-feature code.
 public enum BetaFeatures {
     public static let all: [BetaFeature] = [
+        BetaFeature(
+            id: "gemma-prefill-layer18",
+            title: "Gemma layer-18 prefill submission",
+            summary: "Default ON. Submit prefill work every 18 layers; disable for legacy submission behavior.",
+            details: """
+            Default ON for existing and new configs. Writes prefill_layer18 \
+            under [gemma_optimizations]; provider config is authoritative over \
+            the low-level process environment. Restart after changing it. \
+            Disable and restart to restore the legacy one-final-submission \
+            prefill behavior.
+            """,
+            requiresRestart: true,
+            read: { $0.gemmaOptimizations.prefillLayer18 },
+            write: { enabled, config in
+                config.gemmaOptimizations.prefillLayer18 = enabled
+            }
+        ),
+        BetaFeature(
+            id: "gemma-weighted-r1",
+            title: "Gemma weighted unsort + safe R1",
+            summary: "Default ON. Coupled weighted-unsort and safe-R1 expert paths with one rollback.",
+            details: """
+            Default ON for existing and new configs. Writes weighted_r1 under \
+            [gemma_optimizations]. This single production control keeps direct \
+            weighted expert reduction coupled to the safe exact-shape R1 QMM \
+            path; neither half can be selected independently. Provider config \
+            is authoritative over the low-level process environment. Disable \
+            and restart to restore both legacy paths together.
+            """,
+            requiresRestart: true,
+            read: { $0.gemmaOptimizations.weightedR1 },
+            write: { enabled, config in
+                config.gemmaOptimizations.weightedR1 = enabled
+            }
+        ),
         BetaFeature(
             id: "kv-quant",
             title: "KV-cache quantization",

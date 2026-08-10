@@ -191,8 +191,11 @@ struct SlotSizingDriftTests {
             // Engine truth from the REAL file.
             let engineRate: Int
             if checkpoint.textConfigWrapped {
-                let textConfig = try EngineV2VLMTextExtraction.decodeTextConfiguration(
-                    configData: configData)
+                let root = try JSONSerialization.jsonObject(with: configData) as! [String: Any]
+                let textConfigData = try JSONSerialization.data(
+                    withJSONObject: root["text_config"] as! [String: Any])
+                let textConfig = try JSONDecoder().decode(
+                    Gemma4TextConfiguration.self, from: textConfigData)
                 engineRate = SlotSizingSnapshot.fp16KVBytesPerToken(
                     layerKinds: textConfig.cbv2LayerKinds)
             } else {

@@ -1357,8 +1357,6 @@ struct EngineV2FailLoudFactoryTests {
             EngineV2ProductionError.noKVHeadroom) == .noKVHeadroom)
         #expect(EngineV2RefusalReason.classify(
             EngineV2ProductionError.unsupportedModel("Qwen3Model")) == .unsupportedModel)
-        #expect(EngineV2RefusalReason.classify(
-            EngineV2VLMTextExtractionError.parityMismatch("x")) == .vlmExtractionFailed)
         #expect(EngineV2RefusalReason.classify(SomeError()) == .engineInitFailed)
     }
 
@@ -1442,7 +1440,6 @@ struct EngineV2FailLoudFactoryTests {
         let cases: [(any Error, String)] = [
             (EngineV2ProductionError.noKVHeadroom, "no_kv_headroom"),
             (EngineV2ProductionError.unsupportedModel("StubModel"), "unsupported_model"),
-            (EngineV2VLMTextExtractionError.parityMismatch("probe"), "vlm_extraction_failed"),
         ]
         for (error, expectedReason) in cases {
             let telemetry = TelemetrySink()

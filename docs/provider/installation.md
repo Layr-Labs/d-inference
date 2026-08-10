@@ -92,10 +92,18 @@ enabled_models = []
 idle_timeout_mins = 60
 max_model_slots = 3
 
+[gemma_optimizations]
+prefill_layer18 = true
+weighted_r1 = true
+
 [coordinator]
 url = "wss://api.darkbloom.dev/ws/provider"
 private_only = false
 ```
+
+Both Gemma controls default ON when the section or either key is absent, so
+older configs receive the selected stack. Provider TOML is authoritative; set
+a key to `false` and run `darkbloom restart` for a durable rollback.
 
 ## Updating the provider
 

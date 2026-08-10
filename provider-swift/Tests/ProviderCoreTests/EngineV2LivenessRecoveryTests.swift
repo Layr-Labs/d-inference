@@ -350,8 +350,8 @@ struct EngineV2LivenessRecoveryTests {
 
     init() {
         // unloadModel / updateAggregateCapacity read MLX GPU counters — the
-        // mlx.metallib must be colocated with the test runner (CI extracts
-        // it; locally run `./scripts/fetch-metallib.sh debug` once).
+        // mlx.metallib must be colocated with the test runner (CI stages
+        // the source-built result; locally run `./scripts/fetch-metallib.sh debug` once).
         _ = LiveInferenceFixtures.ensureMetallibColocated()
     }
 

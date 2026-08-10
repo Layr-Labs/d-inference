@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import ProviderCore
 
@@ -81,6 +82,16 @@ struct LaunchAgentEnvironmentTests {
             from: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4", "PATH": "/usr/bin"])
         #expect(out == ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4"])
     }
+
+    @Test func excludesConfigBackedGemmaControlsFromDaemonEnvironment() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_PREFIX_CACHE": "0",
+            GemmaOptimizationEnvironment.prefillLayer18Key: "poison",
+            GemmaOptimizationEnvironment.weightedUnsortKey: "poison",
+            GemmaOptimizationEnvironment.safeR1Key: "poison",
+        ])
+        #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
+    }
 }
 
 @Suite("LaunchAgent service plist")
@@ -90,7 +101,13 @@ struct LaunchAgentServicePlistTests {
             label: "io.darkbloom.provider",
             programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
             logPath: "/tmp/p.log",
-            environment: ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin"]
+            environment: [
+                "DARKBLOOM_PREFIX_CACHE": "0",
+                GemmaOptimizationEnvironment.prefillLayer18Key: "poison",
+                GemmaOptimizationEnvironment.weightedUnsortKey: "poison",
+                GemmaOptimizationEnvironment.safeR1Key: "poison",
+                "PATH": "/usr/bin",
+            ]
         )
         // RunAtLoad=true so a rebooted / auto-login box restarts (and re-attests via
         // APNs) with no human; KeepAlive stays false to avoid racing the self-updater.
@@ -108,5 +125,28 @@ struct LaunchAgentServicePlistTests {
         )
         #expect(plist["EnvironmentVariables"] == nil)
         #expect(plist["RunAtLoad"] as? Bool == true)
+    }
+
+    @Test func customConfigFlagAndAbsolutePathStayAdjacent() throws {
+        let arguments = LaunchAgent.serviceProgramArguments(
+            binaryPath: "/usr/local/bin/darkbloom",
+            coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+            models: ["org/model"],
+            idleTimeout: 15,
+            configPath: URL(fileURLWithPath: "/tmp/custom provider.toml")
+        )
+        let flagIndex = try #require(arguments.firstIndex(of: "--config"))
+        #expect(arguments[flagIndex + 1] == "/tmp/custom provider.toml")
+    }
+
+    @Test func defaultConfigPathRemainsImplicit() {
+        let arguments = LaunchAgent.serviceProgramArguments(
+            binaryPath: "/usr/local/bin/darkbloom",
+            coordinatorURL: "wss://api.darkbloom.dev/ws/provider",
+            models: [],
+            idleTimeout: nil,
+            configPath: nil
+        )
+        #expect(!arguments.contains("--config"))
     }
 }

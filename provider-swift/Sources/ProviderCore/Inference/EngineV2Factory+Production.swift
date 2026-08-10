@@ -32,14 +32,14 @@ import Foundation
 import MLX
 import MLXLLM
 import MLXLMCommon
+import MLXVLM
 
 /// Failure modes of production v2-engine construction. Each maps to the
 /// factory's REFUSAL path (ERROR `engine_v2_refusal` telemetry + throw).
 enum EngineV2ProductionError: Error, CustomStringConvertible {
     /// The loaded module is not a CBv2-adapted family (an unexpected
-    /// architecture). Allowlisted Gemma 4 VLM wrappers do NOT land here —
-    /// the slot factory extracts their CBv2-adapted text model first
-    /// (`EngineV2VLMTextExtraction`) and hands THAT to this factory.
+    /// architecture). Gemma 4 VLM wrappers are resolved to their directly
+    /// owned text tower before engine construction.
     case unsupportedModel(String)
     /// No KV byte budget is left under the unified-memory cap — an engine
     /// admitted with a zero ceiling would reject every request, so the
@@ -57,6 +57,20 @@ enum EngineV2ProductionError: Error, CustomStringConvertible {
 }
 
 extension EngineV2Factory {
+    /// Resolve the exact module instance served by CBv2. Gemma 4 VLM owns
+    /// its `Gemma4TextModel`; direct VLM forwards and CBv2 therefore share
+    /// one language tower, one parameter tree, and one residency footprint.
+    static func directServingModel(
+        model: any LanguageModel, isVLM: Bool
+    ) throws -> any LanguageModel {
+        guard isVLM else { return model }
+        guard let gemma4 = model as? MLXVLM.Gemma4 else {
+            throw EngineV2ProductionError.unsupportedModel(
+                String(describing: type(of: model)))
+        }
+        return gemma4.textModel
+    }
+
 
     /// Clamp a KV admission ceiling to physical unified memory. A ceiling
     /// above physical RAM can only come from a mis-derivation upstream; the
@@ -129,8 +143,8 @@ extension EngineV2Factory {
     /// Build the real `EngineV2` over a loaded model.
     ///
     /// - Parameters:
-    ///   - model: the loaded language module (the SAME instance the legacy
-    ///     engine serves — weights are shared, never duplicated).
+    ///   - model: the loaded serving language module; for Gemma 4 VLM this
+    ///     is the exact text tower owned by the wrapper.
     ///   - tokenizer: the model's tokenizer, for incremental detokenization.
     ///   - kvBytesCapacity: admission ceiling for live sequence KV, in bytes
     ///     (derive from `UnifiedMemoryCap.kvBudgetBytes`).

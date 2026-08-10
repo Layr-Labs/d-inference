@@ -121,10 +121,9 @@ private let standaloneLogger = Logger(
 
 public actor StandaloneServer {
 
-    /// One resident model: its v2 bridge (the serving engine), the loaded
-    /// container (retained for the VLM media path — the vision tower shares
-    /// weights with the extracted text model), and the sizing facts the KV
-    /// re-slice needs. Mirrors `ProviderLoop.ModelSlot`.
+    /// One resident model: its v2 bridge, loaded container (the VLM owns both
+    /// vision and the exact text tower served by the bridge), and KV sizing
+    /// facts. Mirrors `ProviderLoop.ModelSlot`.
     struct CachedSlot {
         let bundle: ProviderEngineBundle
         var bridge: EngineV2Bridge { bundle.bridge }
@@ -715,7 +714,6 @@ public actor StandaloneServer {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
-                modelDirectory: modelDirectory,
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: v2TestHooks?.assistantLoader
@@ -1375,11 +1373,9 @@ public actor StandaloneServer {
             var bridge = bundle.bridge
 
             // Post-BRIDGE measured-headroom re-guard (mirrors ProviderLoop):
-            // the engine build (and, for VLM slots, the text-model
-            // extraction + parity probe) can retain additional load-time
-            // memory beyond the weights. Re-measure so a box whose full
-            // load-time footprint leaves no serveable KV tears down instead
-            // of publishing a model whose every request the KV gate rejects.
+            // engine construction/JIT may retain load-time memory beyond the
+            // weights. Re-measure so a box with no serveable KV tears down
+            // instead of publishing a model whose every request is rejected.
             // BACKEND-AWARE: a PAGED slot commits only its conservative
             // physical plan. Require both a useful pool and residual
             // whole-machine headroom after the build.

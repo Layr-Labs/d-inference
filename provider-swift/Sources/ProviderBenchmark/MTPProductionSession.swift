@@ -5,9 +5,9 @@ import MLXVLM
 import ProviderCore
 
 /// Cache-only model bundle for MTP validation. It loads the target through the
-/// same model factories as serving, resolves the exact VLM text model through
-/// ProviderCore's production extraction seam, and loads/binds the real Gemma 4
-/// assistant. It never downloads and never contains a decoder implementation.
+/// same model factories as serving, resolves the exact VLM-owned text tower,
+/// and loads/binds the real Gemma 4 assistant. It never downloads and never
+/// contains a decoder implementation.
 public final class MTPProductionModelBundle: @unchecked Sendable {
     public let targetID: String
     public let assistantID: String
@@ -106,8 +106,7 @@ public final class MTPProductionModelBundle: @unchecked Sendable {
             convertTokenToID: { snapshot.tokenizer.convertTokenToId($0) })
         let servingModel = try EngineV2Factory.benchmarkServingModel(
             model: snapshot.model,
-            isVLM: isVLM,
-            modelDirectory: targetDirectory)
+            isVLM: isVLM)
         guard let target = servingModel as? any Gemma4MTPTarget else {
             throw MTPBenchmarkError.mtpRequestedButInactive(
                 "target model \(type(of: servingModel)) is not Gemma4MTPTarget")

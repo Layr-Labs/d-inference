@@ -3,7 +3,7 @@
 // ContinuousBatchingV2 — media-prefill construction for VLM slots.
 //
 // v0.7.2 routed only TEXT requests on a VLM-loaded Gemma 4 slot through the
-// v2 engine (over the weight-shared extracted `Gemma4TextModel`); v0.7.5
+// v2 engine (over the directly owned/shared `Gemma4TextModel` tower); v0.7.5
 // added IMAGE requests via embedding-spliced vision prefill; v0.7.5 adds
 // VIDEO (and mixed image+video), removing the last media reason to keep a
 // legacy path. The engine contract is unchanged: `CBv2Request.multimodal`
@@ -81,8 +81,8 @@ public enum EngineV2MediaKind: String, Sendable {
 /// field and the client-facing rejection message, and must never embed
 /// prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
-    /// The slot's loaded module is not the MLXVLM Gemma4 wrapper (the only
-    /// VLM this seam supports — mirrors the v0.7.2 extraction gate).
+    /// The slot's loaded module is not the MLXVLM Gemma4 wrapper, the only
+    /// VLM whose directly owned text tower and media seam CBv2 supports.
     case notGemmaVLM(String)
     /// The processor produced neither image nor video pixels for a media
     /// request — every media part sits on a non-user role, which

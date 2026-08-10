@@ -93,11 +93,9 @@ struct EngineV2SSDPrefixCacheLiveTests {
 
     static let gemmaQatModelID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 
-    /// Prod gemma-4 checkpoints are VLM builds: load through the VLM
-    /// factory and extract the CBv2-adapted text model over the SAME
-    /// weight arrays — the identical path the slot factory takes. Layer
-    /// kinds ALSO derived config-only (the production SSD construction
-    /// path for VLM slots) and pinned equal to engine truth.
+    /// Production Gemma 4 checkpoints are VLM builds. Their loaded wrapper
+    /// owns and exposes the exact CBv2-adapted text tower; SSD topology comes
+    /// from that same live module with no config re-decode or extraction.
     private func loadGemmaQat() async throws -> LiveModel {
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
@@ -118,20 +116,18 @@ struct EngineV2SSDPrefixCacheLiveTests {
         let tokenizer: TokenizerHandle = await container.perform { ctx in
             TokenizerHandle(ctx.tokenizer)
         }
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: snapshot.model, modelDirectory: directory)
-        // The config-only derivation (what the slot factory hands the SSD
-        // cache for a VLM slot) must match engine truth.
-        let configKinds = EngineV2VLMTextExtraction.cbv2LayerKinds(modelDirectory: directory)
-        #expect(configKinds == extraction.model.cbv2LayerKinds,
-            "config-only layer kinds drifted from the extracted model's")
+        let wrapper = try #require(snapshot.model as? MLXVLM.Gemma4)
+        let textModel = wrapper.textModel
+        let direct = try EngineV2Factory.directServingModel(
+            model: wrapper, isVLM: true)
+        #expect(ObjectIdentifier(direct) == ObjectIdentifier(textModel))
         return LiveModel(
             modelID: "gemma-4-26b-qat-4bit",
             container: container,
-            model: extraction.model,
+            model: textModel,
             tokenizer: tokenizer,
             eosTokenIds: snapshot.eosTokenIds,
-            layerKinds: extraction.model.cbv2LayerKinds,
+            layerKinds: textModel.cbv2LayerKinds,
             modelDirectory: directory)
     }
 

@@ -37,12 +37,24 @@ jobs:
       - name: Build prompt-contract sidecar
         run: cargo build --manifest-path coordinator/promptsidecar/Cargo.toml --release
 
-      - name: Extract mlx.metallib
+      - name: Build and stage source-matched mlx.metallib
         run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
+          set -euo pipefail
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
+          metallib="$RUNNER_TEMP/mlx.metallib"
+          provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
+          for destination in provider-swift/.build/debug "$provider_bin"; do
+            mkdir -p "$destination"
+            cp "$metallib" "$destination/mlx.metallib"
+          done
+          while IFS= read -r macos; do
+            cp "$metallib" "$macos/mlx.metallib"
+          done < <(
+            find provider-swift/.build libs/mlx-swift-lm/.build \
+              -type d -path '*.xctest/Contents/MacOS' -print 2>/dev/null
+          )
 
       - name: Install Hugging Face client
         # v0.7.5 one-engine: the testbed default is the smallest
@@ -51,7 +63,9 @@ jobs:
         # register). Exact-cache routing additionally uses the small Gemma 4
         # checkpoint because GPT-OSS's dynamic-date template is cold-only.
         # A warm HF cache makes these downloads no-ops.
-        run: /tmp/mlxvenv/bin/pip install huggingface_hub
+        run: |
+          python3 -m venv /tmp/mlxvenv
+          /tmp/mlxvenv/bin/pip install huggingface_hub
 
       - name: Download model (protected read-only auth)
         if: github.event_name == 'push'
@@ -156,18 +170,32 @@ jobs:
           cd provider-swift
           swift build -c debug
 
-      - name: Extract mlx.metallib
+      - name: Build and stage source-matched mlx.metallib
         run: |
-          python3 -m venv /tmp/mlxvenv
-          /tmp/mlxvenv/bin/pip install 'mlx==0.31.2'
-          cp /tmp/mlxvenv/lib/python*/site-packages/mlx/lib/mlx.metallib \
-             provider-swift/.build/debug/mlx.metallib
+          set -euo pipefail
+          command -v cmake >/dev/null 2>&1 || brew install cmake
+          METALLIB_CACHE_DIR="$RUNNER_TEMP/metallib-cache" \
+            ./scripts/fetch-metallib.sh "$RUNNER_TEMP"
+          metallib="$RUNNER_TEMP/mlx.metallib"
+          provider_bin=$(cd provider-swift && swift build -c debug --show-bin-path)
+          for destination in provider-swift/.build/debug "$provider_bin"; do
+            mkdir -p "$destination"
+            cp "$metallib" "$destination/mlx.metallib"
+          done
+          while IFS= read -r macos; do
+            cp "$metallib" "$macos/mlx.metallib"
+          done < <(
+            find provider-swift/.build libs/mlx-swift-lm/.build \
+              -type d -path '*.xctest/Contents/MacOS' -print 2>/dev/null
+          )
 
       - name: Install Hugging Face client
         # Benchmarks serve the CBv2 default (gpt-oss-20b, ~12 GB) plus the
         # secondary multi-model checkpoint (gemma-4-26B QAT, ~14.5 GB) for
         # TestBenchmark_MultiModelMultiProvider. Warm HF cache ⇒ no-op.
-        run: /tmp/mlxvenv/bin/pip install huggingface_hub
+        run: |
+          python3 -m venv /tmp/mlxvenv
+          /tmp/mlxvenv/bin/pip install huggingface_hub
 
       - name: Download public models (pull request)
         run: |

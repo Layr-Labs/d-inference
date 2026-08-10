@@ -1150,11 +1150,19 @@ public struct SelfUpdater: Sendable {
                     + "\(PackagedRuntimeSmoke.mlxLMCommonBundleName)/pagedattention.metal "
                     + "(found \(bundles.count))")
         }
-        try BoundedProcess.run(
+        // The signed child must prove the production TOML projection,
+        // overwrite precedence, early safe-R1 latch, and packaged AOT before
+        // it reaches the existing paged-kernel GPU smoke.
+        let smokeOutput = try BoundedProcess.runCapturingStandardOutput(
             executable,
             arguments: ["runtime-smoke"],
             environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"],
             timeout: Self.artifactVerificationTimeout)
+        guard PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(smokeOutput)
+        else {
+            throw UpdateError.replaceFailed(
+                "packaged runtime smoke omitted the retained Gemma optimization marker")
+        }
     }
 
     private func verifyCodeSignature(

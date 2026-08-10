@@ -261,12 +261,10 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // Production slots always have a bridge; the bridge-less branch is
         // retained only for injected/test registry entries.
         //
-        // ORDERING CONTRACT (v0.7.2 VLM text routing): this media check MUST
-        // stay ABOVE the engineV2Bridge TEXT branch below. A VLM slot may
-        // carry a v2 bridge built over its extracted text model — text-only
-        // requests route through that bridge directly, but media requests
-        // must pass through THIS branch first (the text tokenization below
-        // silently discards image parts; media must never reach it).
+        // ORDERING CONTRACT: this media check MUST stay above the text bridge.
+        // A VLM slot's bridge owns the exact same text tower used by direct VLM
+        // forwards, but media must first run the wrapper's vision tower and
+        // splice its embeddings; token-only preparation would discard media.
         if isVLM, let container, MediaIngest.hasMedia(request) {
             guard prepared.mode == .auto else {
                 await releaseBox.fire()
@@ -329,14 +327,11 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 throw error
             }
 
-            // MEDIA → ENGINE V2 (v0.7.5): image, video, and mixed requests
-            // on a slot whose bridge serves the extracted text model prefill
-            // through the v2 engine — the wrapper's vision tower + projector
-            // run once up front (`EngineV2VisionPrefill`, under container
-            // isolation) and the resulting per-image / per-video-frame
-            // embeddings ride `CBv2Request.multimodal`, spliced at the
-            // placeholder spans by the engine's multimodal-prefill path
-            // (bidirectional span masks, chunk snapping).
+            // MEDIA → ENGINE V2: image, video, and mixed requests use the
+            // wrapper's vision tower/projector, then prefill its same owned
+            // text tower through CBv2. Per-image / per-video-frame embeddings
+            // ride `CBv2Request.multimodal` and are spliced at placeholder
+            // spans with bidirectional masks and chunk snapping.
             //
             // FAIL LOUD (v0.7.5): a construction failure is REFUSED — ERROR
             // `engine_v2_vision_refusal` telemetry (tagged with the media

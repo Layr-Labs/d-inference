@@ -100,7 +100,6 @@ struct GemmaMTPProductionLiveTests {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: MTPProductionLiveFixtures.targetID,
             isVLM: true,
-            modelDirectory: targetDirectory,
             container: container,
             specDecPreparation: preparation,
             assistantLoader: AlwaysFailMTPAssistantLoader())

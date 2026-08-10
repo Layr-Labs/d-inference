@@ -1,12 +1,10 @@
 #!/bin/bash
 # fetch-metallib.sh -- build the matching mlx.metallib for local Swift builds.
 #
-# NOTE: despite the name, this now BUILDS the .metallib from source rather than
-# fetching it from a PyPI wheel. Building from our own fork guarantees the GPU
-# kernels match the exact MLX commit the host C++ links against — including the
-# resource-count trim and the M5 `_nax` kernels — and needs no published wheel
-# (there is no mlx==0.32.0 on PyPI). This mirrors the release-swift.yml
-# "Build mlx.metallib from source" step.
+# NOTE: despite the name, this BUILDS the metallib from source rather than
+# fetching a PyPI wheel. The kernels match the exact MLX source that the host
+# C++ links against. This is the canonical metallib path for local,
+# integration, CI, and release builds.
 #
 # mlx-swift's Cmlx target does NOT compile its Metal kernels through SwiftPM, so
 # we compile them here with cmake from libs/mlx-swift/Source/Cmlx/mlx (the same
@@ -21,11 +19,20 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SWIFT_PROVIDER_DIR="${SWIFT_PROVIDER_DIR:-$REPO_ROOT/provider-swift}"
-# Source of truth: the mlx submodule the Cmlx target actually compiles against.
-MLX_SRC="${MLX_SRC:-$REPO_ROOT/libs/mlx-swift/Source/Cmlx/mlx}"
+# Source of truth: exactly the mlx tree the Cmlx target compiles against.
+MLX_SRC="$REPO_ROOT/libs/mlx-swift/Source/Cmlx/mlx"
 # The _nax kernels are only compiled when SDK >= 26.2 AND deployment target
 # >= 26.2 AND Metal >= 4.0 (mlx/backend/metal/kernels/CMakeLists.txt).
 DEPLOYMENT_TARGET="${MLX_METALLIB_DEPLOYMENT_TARGET:-26.2}"
+JIT_MODE="OFF"
+NAX_SYMBOL="_nax"
+GEMV_SYMBOL="gemv"
+R1_BUILDER_SYMBOL="build_gemma4_sorted_expert_tiles_bm32"
+R1_KERNEL_SYMBOL="affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32"
+COMPLETENESS_CONTRACT="$(
+    printf '%s\n' "$NAX_SYMBOL" "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" "$R1_KERNEL_SYMBOL" \
+        | shasum -a 256 | cut -d' ' -f1
+)"
 TARGET_ARG="${1:-debug}"
 
 case "$TARGET_ARG" in
@@ -37,6 +44,8 @@ esac
 mkdir -p "$DEST_DIR"
 
 command -v cmake >/dev/null 2>&1 || { echo "✗ cmake not found (brew install cmake)"; exit 1; }
+command -v xcodebuild >/dev/null 2>&1 || { echo "✗ xcodebuild not found"; exit 1; }
+command -v xcrun >/dev/null 2>&1 || { echo "✗ xcrun not found"; exit 1; }
 test -f "$MLX_SRC/mlx/version.h" || {
   echo "✗ mlx submodule missing at $MLX_SRC"
   echo "  run: git submodule update --init --recursive"
@@ -54,38 +63,51 @@ test -f "$MLX_SRC/mlx/version.h" || {
 # change the hash instead of collapsing to "Binary files differ",
 # --no-ext-diff so a user's difftool cannot alter the key, and --no-color so
 # terminal settings cannot either.
-if git -C "$MLX_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    MLX_SHA="$(git -C "$MLX_SRC" rev-parse HEAD 2>/dev/null || echo nogit)"
-    MLX_TREE_HASH="$({
-        git -C "$MLX_SRC" diff HEAD --binary --no-ext-diff --no-color -- 2>/dev/null || true
-        {
-            git -C "$MLX_SRC" ls-files --others --exclude-standard 2>/dev/null || true
-        } | while IFS= read -r f; do
-            printf '%s\n' "$f"
-            cat "$MLX_SRC/$f" 2>/dev/null || true
-        done
-    } | shasum -a 256 | cut -d' ' -f1)"
-else
-    # Not a git checkout (source tarball, vendored copy). There is no commit
-    # and no diff to read, so hashing nothing would mark ANY local edit as
-    # "clean" and reintroduce exactly the bug this key is meant to prevent.
-    # Hash the source contents instead.
-    MLX_SHA="nogit"
-    MLX_TREE_HASH="$(
-        find "$MLX_SRC/mlx" -type f \( -name '*.h' -o -name '*.metal' -o -name '*.cpp' \) -print0 2>/dev/null \
-            | sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1
-    )"
+compute_mlx_identity() {
+    if git -C "$MLX_SRC" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        MLX_SHA="$(git -C "$MLX_SRC" rev-parse HEAD 2>/dev/null || echo nogit)"
+        MLX_TREE_HASH="$({
+            git -C "$MLX_SRC" diff HEAD --binary --no-ext-diff --no-color -- 2>/dev/null || true
+            {
+                git -C "$MLX_SRC" ls-files --others --exclude-standard 2>/dev/null || true
+            } | while IFS= read -r f; do
+                printf '%s\n' "$f"
+                cat "$MLX_SRC/$f" 2>/dev/null || true
+            done
+        } | shasum -a 256 | cut -d' ' -f1)"
+    else
+        # Hash the entire source tree (including CMake inputs and generated
+        # manifests), not just kernel extensions.
+        MLX_SHA="nogit"
+        MLX_TREE_HASH="$(
+            find "$MLX_SRC" -type f ! -path '*/.git/*' -print0 2>/dev/null \
+                | sort -z | xargs -0 shasum -a 256 2>/dev/null | shasum -a 256 | cut -d' ' -f1
+        )"
+    fi
+}
+
+compute_mlx_identity
+INITIAL_MLX_SHA="$MLX_SHA"
+INITIAL_MLX_TREE_HASH="$MLX_TREE_HASH"
+if [ "$MLX_SHA" = "nogit" ]; then
     echo "→ mlx source is not a git checkout; keying metallib on file contents (${MLX_TREE_HASH:0:12})"
 fi
+assert_mlx_source_unchanged() {
+    compute_mlx_identity
+    if [ "$MLX_SHA" != "$INITIAL_MLX_SHA" ] \
+        || [ "$MLX_TREE_HASH" != "$INITIAL_MLX_TREE_HASH" ]
+    then
+        echo "✗ MLX source changed while preparing metallib; refusing stale cache publication"
+        return 1
+    fi
+}
 
 # Hash of empty input == a clean git tree.
 MLX_CLEAN_HASH="$(printf '' | shasum -a 256 | cut -d' ' -f1)"
 if [ "$MLX_SHA" != "nogit" ] && [ "$MLX_TREE_HASH" = "$MLX_CLEAN_HASH" ]; then
-    # Clean tree. The key is versioned (-c2) rather than bare: entries written
-    # by the PREVIOUS version of this script used the bare name and could have
-    # been built from a DIRTY tree, so reusing them would resurrect the very
-    # mismatch this change exists to prevent. The suffix retires them.
-    MLX_TREE_SUFFIX="-c2"
+    # Keep a visible clean-tree epoch; the helper and completeness contract are
+    # independently folded into the toolchain hash below.
+    MLX_TREE_SUFFIX="-c4"
 else
     MLX_TREE_SUFFIX="-w${MLX_TREE_HASH:0:12}"
     if [ "$MLX_SHA" != "nogit" ]; then
@@ -93,40 +115,178 @@ else
     fi
 fi
 
-# Cache the built metallib by mlx commit + working-tree contents + deployment
-# target so repeat runs are instant (the build is ~1 min). Override with
-# METALLIB_CACHE_DIR.
+# Cache identity covers every input which can change generated Metal code or
+# the helper's acceptance contract. In particular, a cache from another Xcode
+# or SDK must never be reused merely because the source commit is identical.
+XCODE_VERSION="$(xcodebuild -version | tr '\n' ';')"
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+SDK_BUILD_VERSION="$(xcrun --sdk macosx --show-sdk-build-version)"
+HELPER_CONTRACT_HASH="$(shasum -a 256 "$0" | cut -d' ' -f1)"
+TOOLCHAIN_HASH="$(
+    printf '%s\n' \
+        "$XCODE_VERSION" \
+        "$SDK_VERSION" \
+        "$SDK_BUILD_VERSION" \
+        "deployment=$DEPLOYMENT_TARGET" \
+        "jit=$JIT_MODE" \
+        "helper=$HELPER_CONTRACT_HASH" \
+        "completeness=$COMPLETENESS_CONTRACT" \
+        | shasum -a 256 | cut -d' ' -f1
+)"
+
 CACHE_DIR="${METALLIB_CACHE_DIR:-/tmp/mlx-metallib-cache}"
-CACHE_KEY="mlx-${MLX_SHA}${MLX_TREE_SUFFIX}-dt${DEPLOYMENT_TARGET}"
+CACHE_KEY="mlx-${MLX_SHA}${MLX_TREE_SUFFIX}-tc${TOOLCHAIN_HASH:0:16}-dt${DEPLOYMENT_TARGET}-jitoff-c${COMPLETENESS_CONTRACT:0:12}"
 CACHED="$CACHE_DIR/${CACHE_KEY}.metallib"
+
+verify_metallib() {
+    local metallib="$1"
+    local symbol matches
+
+    if [ ! -s "$metallib" ]; then
+        echo "✗ metallib missing or empty: $metallib"
+        return 1
+    fi
+
+    for symbol in \
+        "$NAX_SYMBOL" \
+        "$GEMV_SYMBOL" \
+        "$R1_BUILDER_SYMBOL" \
+        "$R1_KERNEL_SYMBOL"
+    do
+        # Use grep -c rather than grep -q: grep -q closes the pipe after its
+        # first match, causing strings to receive SIGPIPE under pipefail.
+        matches="$(strings "$metallib" | grep -F -c "$symbol" || true)"
+        if [ "$matches" -eq 0 ]; then
+            echo "✗ metallib missing required symbol string: $symbol"
+            return 1
+        fi
+    done
+}
+
+mkdir -p "$CACHE_DIR"
+
+# Serialize validation and publication for a cache key. A symlink is the
+# atomic owner-bearing primitive: it never exposes a lock without PID/start
+# identity. The unique target directory also provides an atomic reaper claim.
+CACHE_LOCK="$CACHE_DIR/.${CACHE_KEY}.lock"
+PROCESS_START_HASH="$(
+    LC_ALL=C TZ=UTC ps -p $$ -o lstart= | shasum -a 256 | cut -d' ' -f1
+)"
+LOCK_STATE_NAME=".${CACHE_KEY}.owner-$$-$PROCESS_START_HASH"
+LOCK_STATE="$CACHE_DIR/$LOCK_STATE_NAME"
+mkdir "$LOCK_STATE"
+LOCK_HELD=0
+LOCK_ATTEMPTS=0
+
+while :; do
+    if ln -s "$LOCK_STATE_NAME" "$CACHE_LOCK" 2>/dev/null; then
+        LOCK_HELD=1
+        break
+    fi
+
+    lock_target="$(readlink "$CACHE_LOCK" 2>/dev/null || true)"
+    case "$lock_target" in
+        ".${CACHE_KEY}.owner-"*)
+            owner_meta="${lock_target#".${CACHE_KEY}.owner-"}"
+            owner_pid="${owner_meta%%-*}"
+            owner_start_hash="${owner_meta#*-}"
+            current_start_hash=""
+            if kill -0 "$owner_pid" 2>/dev/null; then
+                current_start_hash="$(
+                    LC_ALL=C TZ=UTC ps -p "$owner_pid" -o lstart= 2>/dev/null \
+                        | shasum -a 256 | cut -d' ' -f1
+                )"
+            fi
+            if [ "$current_start_hash" != "$owner_start_hash" ]; then
+                stale_state="$CACHE_DIR/$lock_target"
+                # Recreate a missing target left by an interrupted release.
+                if [ ! -d "$stale_state" ]; then
+                    mkdir "$stale_state" 2>/dev/null || true
+                fi
+                if mkdir "$stale_state/reaper" 2>/dev/null; then
+                    if [ "$(readlink "$CACHE_LOCK" 2>/dev/null || true)" = "$lock_target" ]; then
+                        rm -f "$CACHE_LOCK"
+                    fi
+                    rmdir "$stale_state/reaper"
+                    rmdir "$stale_state"
+                    rm -rf "$CACHE_DIR"/.build-"$CACHE_KEY"."$owner_pid".*
+                    rm -f "$CACHE_DIR/.${CACHE_KEY}.${owner_pid}"
+                    continue
+                fi
+            fi
+            ;;
+    esac
+
+    if [ "$LOCK_ATTEMPTS" -eq 0 ]; then
+        echo "→ Waiting for concurrent metallib build $CACHE_KEY"
+    fi
+    LOCK_ATTEMPTS=$((LOCK_ATTEMPTS + 1))
+    if [ "$LOCK_ATTEMPTS" -ge 6000 ]; then
+        echo "✗ timed out waiting for metallib cache lock: $CACHE_LOCK"
+        exit 1
+    fi
+    sleep 0.1
+done
+
+BUILD_DIR=""
+CACHE_TMP=""
+DEST_TMP=""
+release_cache_lock() {
+    if [ "$LOCK_HELD" -eq 1 ]; then
+        if [ "$(readlink "$CACHE_LOCK" 2>/dev/null || true)" = "$LOCK_STATE_NAME" ]; then
+            rm -f "$CACHE_LOCK"
+        fi
+        LOCK_HELD=0
+    fi
+    rmdir "$LOCK_STATE" 2>/dev/null || true
+}
+cleanup() {
+    [ -z "$BUILD_DIR" ] || rm -rf "$BUILD_DIR"
+    [ -z "$CACHE_TMP" ] || rm -f "$CACHE_TMP"
+    [ -z "$DEST_TMP" ] || rm -f "$DEST_TMP"
+    release_cache_lock
+}
+trap cleanup EXIT
+trap 'exit 143' HUP INT TERM
+
+if [ -s "$CACHED" ]; then
+    if verify_metallib "$CACHED"; then
+        echo "→ Using cached metallib $CACHE_KEY"
+    else
+        echo "→ Discarding incomplete cached metallib $CACHE_KEY"
+        rm -f "$CACHED"
+    fi
+fi
 
 if [ ! -s "$CACHED" ]; then
     echo "→ Building mlx.metallib from $MLX_SRC @ $CACHE_KEY"
-    BUILD_DIR="$(mktemp -d)"
+    BUILD_DIR="$(mktemp -d "$CACHE_DIR/.build-${CACHE_KEY}.$$.XXXXXX")"
+    CACHE_TMP="$CACHE_DIR/.${CACHE_KEY}.$$"
+
     cmake -S "$MLX_SRC" -B "$BUILD_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
-        -DMLX_METAL_JIT=OFF \
+        -DMLX_METAL_JIT="$JIT_MODE" \
         -DMLX_BUILD_TESTS=OFF -DMLX_BUILD_EXAMPLES=OFF \
         -DMLX_BUILD_BENCHMARKS=OFF -DMLX_BUILD_PYTHON_BINDINGS=OFF >/dev/null
     cmake --build "$BUILD_DIR" --target mlx-metallib -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
-    mkdir -p "$CACHE_DIR"
-    cp "$BUILD_DIR/mlx/backend/metal/kernels/mlx.metallib" "$CACHED"
+    cp "$BUILD_DIR/mlx/backend/metal/kernels/mlx.metallib" "$CACHE_TMP"
+    verify_metallib "$CACHE_TMP"
+    assert_mlx_source_unchanged
+    mv -f "$CACHE_TMP" "$CACHED"
+    CACHE_TMP=""
     rm -rf "$BUILD_DIR"
-else
-    echo "→ Using cached metallib $CACHE_KEY"
+    BUILD_DIR=""
 fi
 
-# Sanity: the _nax kernels must be present, otherwise the build silently used an
-# SDK/deployment target < 26.2 and we'd ship a nax-less metallib. Use `grep -c`
-# (not `grep -q`): grep -q closes the pipe on first match, which makes `strings`
-# on this 150 MB+ file exit via SIGPIPE and trips `set -o pipefail` — a false
-# negative.
-NAX_KERNELS="$(strings "$CACHED" | grep -c "_nax" || true)"
-if [ "$NAX_KERNELS" -eq 0 ]; then
-    echo "✗ built metallib has no _nax kernels — is your Xcode SDK / deployment target >= 26.2?"
-    exit 1
-fi
-
-cp "$CACHED" "$DEST_DIR/mlx.metallib"
+# Always replace the destination, even on a cache hit. A merely existing file
+# may have been built from different host sources and can hang the GPU.
+DEST_TMP="$DEST_DIR/.mlx.metallib.$$"
+assert_mlx_source_unchanged
+cp "$CACHED" "$DEST_TMP"
+mv -f "$DEST_TMP" "$DEST_DIR/mlx.metallib"
+DEST_TMP=""
 echo "✓ wrote $DEST_DIR/mlx.metallib  ($(shasum -a 256 "$DEST_DIR/mlx.metallib" | cut -d' ' -f1))"
+
+release_cache_lock
+trap - EXIT HUP INT TERM

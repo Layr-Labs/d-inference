@@ -5,9 +5,8 @@
 // Both slot owners (`ProviderLoop.ensureModelLoaded` and the standalone
 // server's lazy load) pick the model factory the same way: a checkpoint
 // whose config.json declares `vision_config` loads via `VLMModelFactory`
-// (so image/video requests can run the container's prepare/generate
-// vision path and the v2 engine is built over the weight-sharing text
-// extraction); everything else loads via `LLMModelFactory`.
+// so image/video requests can use its vision path and CBv2 can directly use
+// the wrapper-owned text tower; everything else loads via `LLMModelFactory`.
 
 import Foundation
 import MLXLLM

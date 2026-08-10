@@ -1,35 +1,17 @@
 // Copyright © 2026 Eigen Labs.
 //
-// Live (weight-gated) validation of the v0.7.2 Gemma 4 VLM → engine_v2
-// text-model extraction, on the EXACT checkpoints production serves
-// (gemma-4-26b-qat-4bit / gemma-4-26b-8bit — both ship a vision tower, so
-// the provider loads them through VLMModelFactory exactly like
-// `ProviderLoop.loadModelContainer`). Two stages, mirroring the prod
-// serving path (updated for the v0.7.5 ONE-ENGINE release):
+// Live (weight-gated) validation of direct Gemma 4 VLM text-tower ownership
+// on the exact qat-4bit / 8bit checkpoints production serves. Both load via
+// `VLMModelFactory`, exactly like `ProviderLoop.loadModelContainer`.
 //
-//   (a) EXTRACTION + PARITY — extract the CBv2-adapted MLXLLM
-//       `Gemma4TextModel` over the wrapper's weight arrays; the extraction
-//       must not duplicate weights (MLX active memory grows by ~nothing),
-//       and the built-in load-time parity gate must pass (each side's greedy
-//       argmax sits in the other's top-5 at every probe position, max
-//       |Δlogit| bounded — see EngineV2VLMTextExtraction for why token-exact
-//       WRAPPER parity is structurally unattainable).
+//   (a) DIRECT OWNERSHIP + MEMORY — resolving the CBv2 serving model returns
+//       the wrapper's exact `textModel` object and does not construct or
+//       materialize a second tower.
+//   (b) V2 SERVE — that owned model serves a text request through the real
+//       production bridge/routing seam with deterministic greedy output.
 //
-//   (b) V2 SERVE — the extracted model must serve a text request through
-//       the REAL production seam (`EngineV2Bridge` +
-//       `MultiModelBatchSchedulerEngine.streamChatCompletion`, the exact
-//       engine construction the slot factory performs after its own
-//       extraction): non-empty greedy output, byte-identical across two
-//       identical submissions.
-//
-// DELETED with the legacy engine (v0.7.5 one-engine): the "v2 == legacy
-// greedy" stage (its reference — a legacy `BatchScheduler` run over the
-// same extracted module — no longer exists; the engine-repo v2-vs-legacy
-// invariant it verified died with the legacy engine) and the legacy-vision
-// interleave stage (media on a slot without a v2 bridge now throws the
-// fail-loud "no serving engine for media" error instead of serving via the
-// wrapper; vision-through-v2 interleave hygiene is pinned by
-// GemmaVLMVisionEngineV2LiveTests).
+// Vision-through-v2 image/video behavior and interleave hygiene remain pinned
+// by GemmaVLMVisionEngineV2LiveTests and GemmaVLMVideoEngineV2LiveTests.
 //
 // Gated like the other multi-GB Gemma tests: DARKBLOOM_LIVE_MLX_TESTS +
 // DARKBLOOM_LIVE_MLX_GEMMA, and each checkpoint is skipped cleanly when not
@@ -45,7 +27,7 @@ import Testing
 
 @testable import ProviderCore
 
-@Suite("Gemma 4 VLM engine_v2 extraction (live)", .serialized)
+@Suite("Gemma 4 VLM direct text tower (live)", .serialized)
 struct GemmaVLMEngineV2LiveTests {
 
     /// The two production Gemma 4 checkpoints (coordinator catalog ids
@@ -57,19 +39,14 @@ struct GemmaVLMEngineV2LiveTests {
 
     private struct LoadedVLMSlot {
         let modelID: String
-        let directory: URL
         let container: ModelContainer
         let tokenizer: TokenizerHandle
         let model: any LanguageModel
         let eosTokenIds: Set<Int>
     }
 
-    /// Load a checkpoint EXACTLY the way the provider does for a VLM slot:
-    /// `VLMModelFactory` (the container the vision tower lives in). Loaded
-    /// BY HAND rather than through `LiveInferenceFixtures.loadBridge`
-    /// because stage (a) must run the extraction ITSELF, on the raw wrapper
-    /// handle, with clean before/after memory readings — the fixture's
-    /// production bridge would run the extraction internally first.
+    /// Load a checkpoint exactly as the provider does for a VLM slot:
+    /// `VLMModelFactory`, retaining the wrapper that owns both towers.
     private func loadVLMSlot(modelID: String, budgetBytes: Int) async throws -> LoadedVLMSlot {
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
@@ -95,7 +72,6 @@ struct GemmaVLMEngineV2LiveTests {
         }
         return LoadedVLMSlot(
             modelID: modelID,
-            directory: directory,
             container: container,
             tokenizer: tokenizer,
             model: snapshot.model,
@@ -122,48 +98,36 @@ struct GemmaVLMEngineV2LiveTests {
         MLX.Memory.clearCache()
     }
 
-    /// Stage (a): weight-sharing extraction + the load-time parity gate.
-    ///
-    /// Two concerns, measured separately:
-    ///   * WEIGHT-SHARING — extract with the parity gate OFF and require MLX
-    ///     active memory to grow by no more than a small tolerance. Skeleton
-    ///     construction is lazy; `update(parameters:)` re-points at the
-    ///     wrapper's arrays; nothing multi-GiB may be retained (the removed
-    ///     SwitchGLU fused gate+up cache was the v0.7.2 black hole — a
-    ///     second weight copy would show up as ≥ the model size).
-    ///   * PARITY GATE — extract again with the gate ON (production default)
-    ///     and require it to pass and report a bounded max |Δlogit|. Both
-    ///     extractions share the same wrapper arrays, so this is not a second
-    ///     copy either; the returned model is the one stage (b) serves.
-    private func runExtractionStage(
+    /// Resolve the production serving model and prove it is the wrapper-owned
+    /// object. Merely exposing/resolving the tower must not add meaningful MLX
+    /// residency; a second checkpoint tower would exceed this allowance by
+    /// many GiB.
+    private func runDirectTowerStage(
         _ slot: LoadedVLMSlot
-    ) throws -> EngineV2VLMTextExtraction.Extraction {
-        // Weight-sharing invariant (parity gate off).
+    ) throws -> Gemma4TextModel {
+        let wrapper = try #require(
+            slot.model as? MLXVLM.Gemma4,
+            "production Gemma VLM checkpoint must load as MLXVLM.Gemma4")
         MLX.Memory.clearCache()
         let activeBefore = MLX.GPU.activeMemory
-        let noParity = try EngineV2VLMTextExtraction.extractTextModel(
-            from: slot.model, modelDirectory: slot.directory,
-            environment: ["DARKBLOOM_ENGINE_V2_VLM_PARITY_CHECK": "0"])
-        #expect(noParity.parityMaxAbsLogitDiff == nil)
+        let owned = wrapper.textModel
+        let serving = try EngineV2Factory.directServingModel(
+            model: wrapper, isVLM: true)
+        let textModel = try #require(serving as? Gemma4TextModel)
+
+        #expect(ObjectIdentifier(owned) == ObjectIdentifier(textModel))
+        #expect(wrapper.textModel === owned)
         let growth = max(0, MLX.GPU.activeMemory - activeBefore)
-        let allowance = 1_536 * 1024 * 1024
+        let allowance = 64 * 1024 * 1024
         #expect(
             growth < allowance,
             Comment(
-                rawValue: "extraction grew MLX active memory by \(growth) bytes "
-                    + "(> 1.5 GiB) — weights or a module cache were duplicated "
-                    + "instead of shared"))
-
-        // Parity gate (production default env). Returns the model stage
-        // (b) runs on.
-        let extraction = try EngineV2VLMTextExtraction.extractTextModel(
-            from: slot.model, modelDirectory: slot.directory)
-        let diff = try #require(
-            extraction.parityMaxAbsLogitDiff, "parity gate did not run under the default env")
+                rawValue: "direct tower resolution grew MLX active memory by "
+                    + "\(growth) bytes (> 64 MiB), suggesting duplicate residency"))
         print(
-            "[gemma-vlm-v2] \(slot.modelID) parity max |Δlogit| = \(diff), "
-                + "weight-share growth = \(growth) bytes")
-        return extraction
+            "[gemma-vlm-v2] \(slot.modelID) direct tower identity passed; "
+                + "resolution growth = \(growth) bytes")
+        return textModel
     }
 
     /// Drive one OpenAI-shaped text request through the production routing
@@ -208,15 +172,13 @@ struct GemmaVLMEngineV2LiveTests {
         return content
     }
 
-    /// Build the REAL production v2 engine + bridge over the extracted text
-    /// model — the same construction `EngineV2SlotFactory.makeProductionBridge`
-    /// performs right after ITS extraction, so stage (b) serves through the
-    /// exact one-engine seam production uses.
+    /// Build the real production v2 engine + bridge over the VLM-owned text
+    /// model, matching `EngineV2SlotFactory.makeProductionBridge`.
     private func makeBridge(
-        slot: LoadedVLMSlot, extracted: Gemma4TextModel
+        slot: LoadedVLMSlot, textModel: Gemma4TextModel
     ) throws -> EngineV2Bridge {
         let engine = try EngineV2Factory.makeProductionEngine(
-            model: extracted,
+            model: textModel,
             tokenizer: slot.tokenizer.inner,
             kvBytesCapacity: 4 * 1024 * 1024 * 1024
         )
@@ -231,10 +193,10 @@ struct GemmaVLMEngineV2LiveTests {
     /// Structured bridge lifecycle: `shutdown()` (engine drain + pump
     /// teardown) awaited on every exit path.
     private func withBridge(
-        slot: LoadedVLMSlot, extracted: Gemma4TextModel,
+        slot: LoadedVLMSlot, textModel: Gemma4TextModel,
         _ body: (EngineV2Bridge) async throws -> Void
     ) async throws {
-        let bridge = try makeBridge(slot: slot, extracted: extracted)
+        let bridge = try makeBridge(slot: slot, textModel: textModel)
         do {
             try await body(bridge)
         } catch {
@@ -244,22 +206,16 @@ struct GemmaVLMEngineV2LiveTests {
         await bridge.shutdown()
     }
 
-    /// Stages (a)+(b) for one checkpoint: measured extraction + parity
-    /// gate, then greedy serve determinism through the production seam.
-    private func runExtractionAndV2Serve(_ slot: LoadedVLMSlot) async throws {
-        // (a) extraction + load-time parity gate + weight-sharing invariant.
-        let extraction = try runExtractionStage(slot)
+    /// Direct identity/memory proof followed by deterministic production serve.
+    private func runDirectTowerAndV2Serve(_ slot: LoadedVLMSlot) async throws {
+        let textModel = try runDirectTowerStage(slot)
 
-        // (b) v2 serve: the extracted model, behind the real EngineV2
-        //     bridge, must produce non-empty greedy output through the
-        //     production routing seam — and byte-identical output for two
-        //     identical submissions (greedy decode is deterministic).
-        try await withBridge(slot: slot, extracted: extraction.model) { bridge in
+        try await withBridge(slot: slot, textModel: textModel) { bridge in
             let prompt = OpenAIMessageContent.text(
                 "Count from one to five as digits separated by commas.")
             let v2Text = try await streamText(
                 slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
-            #expect(!v2Text.isEmpty, "v2 text serve over the extracted model produced no content")
+            #expect(!v2Text.isEmpty, "v2 text serve over the VLM-owned model produced no content")
 
             let v2TextAgain = try await streamText(
                 slot: slot, bridge: bridge, userContent: prompt, maxTokens: 32)
@@ -267,37 +223,37 @@ struct GemmaVLMEngineV2LiveTests {
             #expect(
                 v2TextAgain == v2Text,
                 Comment(
-                    rawValue: "v2 greedy decode over the extracted model is "
+                    rawValue: "v2 greedy decode over the VLM-owned model is "
                         + "non-deterministic: \(v2Text.debugDescription) vs "
                         + "\(v2TextAgain.debugDescription)"))
         }
     }
 
-    // MARK: - qat-4bit: extraction parity + v2 serve
+    // MARK: - qat-4bit: direct ownership + v2 serve
 
     @Test(
-        "qat-4bit: extraction parity and v2 serve determinism",
+        "qat-4bit: direct tower identity, memory, and v2 serve determinism",
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
-    func qat4bitExtractionAndV2Serve() async throws {
+    func qat4bitDirectTowerAndV2Serve() async throws {
         try await withLoadedVLMSlot(
             modelID: Self.qat4bitModelID, budgetBytes: 48 * 1024 * 1024 * 1024
         ) { slot in
-            try await runExtractionAndV2Serve(slot)
+            try await runDirectTowerAndV2Serve(slot)
         }
     }
 
-    // MARK: - 8bit: extraction parity + v2 serve
+    // MARK: - 8bit: direct ownership + v2 serve
 
     @Test(
-        "8bit: extraction parity and v2 serve determinism",
+        "8bit: direct tower identity, memory, and v2 serve determinism",
         .enabled(if: LiveInferenceFixtures.gemmaTestsEnabled)
     )
-    func eightBitExtractionAndV2Serve() async throws {
+    func eightBitDirectTowerAndV2Serve() async throws {
         try await withLoadedVLMSlot(
             modelID: Self.eightBitModelID, budgetBytes: 64 * 1024 * 1024 * 1024
         ) { slot in
-            try await runExtractionAndV2Serve(slot)
+            try await runDirectTowerAndV2Serve(slot)
         }
     }
 }

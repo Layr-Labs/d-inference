@@ -59,9 +59,8 @@ public enum ThroughputSweep {
         log("loading model \(modelID)")
         log("  path: \(modelDirectory.path)")
 
-        // VLM checkpoints (config declares `vision_config`) load through the
-        // VLM factory and serve through the weight-sharing extracted text
-        // model — the same construction every production slot performs.
+        // VLM checkpoints load through the VLM factory and serve through the
+        // exact text tower owned by that wrapper, matching production.
         let isVLM = readHasVisionConfig(modelDirectory: modelDirectory)
         let container: ModelContainer
         if isVLM {
@@ -99,8 +98,7 @@ public enum ThroughputSweep {
             decodePromptTokens: decodePromptTokens,
             iterations: decodeIterations,
             weightBytes: facts.weightBytes,
-            isVLM: isVLM,
-            modelDirectory: modelDirectory
+            isVLM: isVLM
         )
 
         // One median sample per batch size: the B=1 implied read and the
@@ -207,8 +205,7 @@ public enum ThroughputSweep {
         decodePromptTokens: Int,
         iterations: Int,
         weightBytes: Int,
-        isVLM: Bool,
-        modelDirectory: URL?
+        isVLM: Bool
     ) async -> [ThroughputSweepReport.DecodeSample] {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
         guard !sizes.isEmpty else { return [] }
@@ -222,7 +219,7 @@ public enum ThroughputSweep {
         await runDecodeBatch(
             container: container, modelID: modelID, baseTokens: baseTokens,
             batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes,
-            isVLM: isVLM, modelDirectory: modelDirectory)
+            isVLM: isVLM)
 
         var samples: [ThroughputSweepReport.DecodeSample] = []
         for iteration in 1 ... repetitions {
@@ -230,7 +227,7 @@ public enum ThroughputSweep {
                 let (totalTokens, maxElapsed) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
-                    weightBytes: weightBytes, isVLM: isVLM, modelDirectory: modelDirectory)
+                    weightBytes: weightBytes, isVLM: isVLM)
                 let secs = seconds(maxElapsed)
                 let aggregate = secs > 0 ? Double(totalTokens) / secs : 0
                 let perSeq = aggregate / Double(batchSize)
@@ -261,8 +258,7 @@ public enum ThroughputSweep {
         decodeTokens: Int,
         promptLen: Int,
         weightBytes: Int,
-        isVLM: Bool,
-        modelDirectory: URL?
+        isVLM: Bool
     ) async -> (totalTokens: Int, maxElapsed: Duration) {
         // The engine's KV admission ceiling: the same unified-memory budget a
         // single-model provider slot would be granted. Far above what these
@@ -280,10 +276,10 @@ public enum ThroughputSweep {
         let parts: EngineParts
         do {
             parts = try await container.perform { ctx -> EngineParts in
-                // Serving-model resolution: VLM checkpoints run the
-                // weight-sharing text extraction, exactly like a slot build.
+                // Serving-model resolution matches production: VLM checkpoints
+                // use the exact text tower owned by the loaded wrapper.
                 let servingModel = try EngineV2Factory.benchmarkServingModel(
-                    model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
+                    model: ctx.model, isVLM: isVLM)
                 return EngineParts(
                     engine: try EngineV2Factory.makeProductionEngine(
                         model: servingModel,
@@ -415,8 +411,8 @@ public enum ThroughputSweep {
         return (sorted[middle - 1] + sorted[middle]) / 2
     }
 
-    /// Whether the checkpoint's config.json declares a `vision_config`
-    /// (VLM — load via the VLM factory, serve via the text extraction).
+    /// Whether config.json declares `vision_config` (load through VLMModelFactory
+    /// and serve through the wrapper-owned text tower).
     static func readHasVisionConfig(modelDirectory: URL) -> Bool {
         let url = modelDirectory.appendingPathComponent("config.json")
         guard let data = try? Data(contentsOf: url),

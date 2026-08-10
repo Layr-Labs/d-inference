@@ -208,9 +208,9 @@ This toggles `provider.auto_update` in `provider.toml`.
 
 ## `darkbloom beta`
 
-Manage opt-in beta features. Beta features are off by default and config-backed
-(a TOML field), so they apply to the launchd daemon too — unlike environment
-variables, which the daemon does not inherit.
+Manage configurable beta features. Defaults are feature-specific: the selected
+Gemma optimizations default on, while reserved/opt-in features default off.
+Provider TOML is authoritative for every serve mode.
 
 ```bash
 darkbloom beta list                 # all features + on/off (default subcommand)
@@ -221,13 +221,16 @@ darkbloom beta disable <feature>    # turn off
 
 | Feature | Effect |
 |---------|--------|
+| `gemma-prefill-layer18` | Default-on layer-18 prefill submission; disable and restart for legacy submission behavior |
+| `gemma-weighted-r1` | Default-on atomic weighted-unsort + safe-R1 pair; disable and restart to roll back both |
 | `kv-quant` | Forward-compatibility toggle; v0.7.5 warns and continues with fp16 KV |
 | `mtp` | Default-off Gemma 4 MTP code path; requires a separately published and verified `spec_dec` artifact, which production does not currently have |
 
 `enable`/`disable` read-modify-write the TOML config and report whether a restart
-is required. See [Beta Features](beta-features.md) for the full guide. `darkbloom
-beta list` also accepts `--json`. Installing a provider release does not enable
-MTP, and local parity results are not a blanket M1–M3/unknown-chip certification.
+is required. Restart is the activation boundary for process-wide optimization
+state. See [Beta Features](beta-features.md) for the full guide. `darkbloom beta
+list` also accepts `--json`. Installing a provider release does not enable MTP,
+and local parity results are not a blanket M1–M3/unknown-chip certification.
 
 ## `darkbloom fan` (experimental)
 

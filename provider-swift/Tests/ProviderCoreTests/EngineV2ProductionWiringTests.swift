@@ -422,40 +422,6 @@ struct EngineV2SlotBuildTests {
         #expect(events.first?.fields?["error_class"]?.description.contains("InitFailure") == true)
     }
 
-    @Test("VLM slot: extraction failure surfaces as vlm_extraction_failed refusal")
-    func vlmExtractionFailureRefusesLoudly() async throws {
-        let loop = try makeWiringLoop()
-        let runtime = EngineV2Runtime()
-        let telemetry = WiringTelemetrySink()
-        await loop.setEngineV2RuntimeForTesting(runtime)
-        await loop.setEngineV2SlotHooksForTesting(
-            ProviderLoop.EngineV2SlotHooks(
-                emitTelemetry: telemetry.callback(),
-                physicalMemoryBytes: wiringPhysicalBytes,
-                makeEngine: { _, _ in
-                    // Stands in for any extraction failure (config decode,
-                    // verify [.all] mismatch, forward-parity gate).
-                    throw EngineV2VLMTextExtractionError.parityMismatch("scripted")
-                }))
-
-        await #expect(throws: EngineV2VLMTextExtractionError.self) {
-            _ = try await loop.resliceAndBuildEngineV2SlotForTesting(
-                modelId: "gemma-4-26b-qat-4bit",
-                modelType: "gemma4",
-                isVLM: true,
-                container: makeStubContainer(),
-                tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                sizing: makeSizing(weightsGiB: 15)
-            )
-        }
-        #expect(await runtime.bridge(forModel: "gemma-4-26b-qat-4bit") == nil)
-        let refusal = telemetry.events.first {
-            $0.fields?["operation"]?.description == "engine_v2_refusal"
-        }
-        #expect(refusal != nil)
-        #expect(refusal?.severity == .error)
-        #expect(refusal?.fields?["reason"]?.description == "vlm_extraction_failed")
-    }
 
     @Test("production factory: unsupported model class throws (→ refusal)")
     func productionFactoryRejectsUnsupportedModel() {
@@ -1573,9 +1539,9 @@ struct EngineV2RequestRoutingTests {
 
 /// These tests drive the REAL `updateAggregateCapacity` / `unloadModel`
 /// paths, which read MLX GPU counters — so the mlx.metallib must be
-/// colocated with the test runner. CI places it under `.build` (see
-/// ci.yml "Extract mlx.metallib"); locally run `./scripts/fetch-metallib.sh
-/// debug` once. Mirrors the `LiveInferenceFixtures` pattern.
+/// colocated with the test runner. CI uses the canonical source builder and
+/// stages its result under `.build`; locally run
+/// `./scripts/fetch-metallib.sh debug` once. Mirrors the `LiveInferenceFixtures` pattern.
 @Suite("EngineV2 production wiring: runtime guards", .serialized)
 struct EngineV2RuntimeGuardTests {
 

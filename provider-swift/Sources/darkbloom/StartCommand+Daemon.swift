@@ -47,9 +47,9 @@ extension Start {
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
             ),
-            // Pin the daemon to the file this invocation resolved (and possibly
-            // just persisted --memory-limit into) — same contract as the
-            // watchdog below, which has always pinned snapshot.configPath.
+            // Pin the daemon to the config file this invocation resolved —
+            // the same contract WatchdogAgent uses — so a persisted
+            // --memory-limit is read by the daemon that actually starts.
             configPath: snapshot.configPath
         )
 

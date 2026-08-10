@@ -110,9 +110,9 @@ struct Memory: AsyncParsableCommand {
     }
 
     /// Pure renderer for the `memory` / `memory status` view. The inference
-    /// cap is `MemoryLimit.effectiveCapBytes` — the SAME formula the daemon's
+    /// cap is `MemoryLimit.effectiveCapBytes` — the same formula the daemon's
     /// gates, the status line, and the local-mode model filter derive from,
-    /// so this view can never disagree with what the provider enforces.
+    /// so this view can't disagree with what the provider enforces.
     static func statusLines(
         provider: ProviderSettings,
         physicalGb: UInt64,

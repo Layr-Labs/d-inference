@@ -101,8 +101,8 @@ struct Status: AsyncParsableCommand {
     /// clamped to the effective cap when an operator limit is in force — a
     /// 256 GB Mac limited to 150 GB must not print "252 GB available" one
     /// line under "limit: 150 GB". Uncapped boxes keep the historical
-    /// hardware-derived figure (the 90% cap is a serving budget, not an
-    /// availability claim, and changing that line is out of scope here).
+    /// hardware-derived figure: the 90% cap is a serving budget, not an
+    /// availability claim.
     static func inferenceMemoryGb(
         availableGb: UInt64,
         provider: ProviderSettings,

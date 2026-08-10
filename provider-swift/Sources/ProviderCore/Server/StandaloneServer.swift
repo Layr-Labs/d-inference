@@ -86,10 +86,10 @@ public struct StandaloneServerConfig: Sendable {
     /// Operator absolute memory limit (`memory_limit_gb`) — machine-wide
     /// intent, so local mode honors it too. nil = no artificial limit.
     public let memoryLimitGB: UInt64?
-    /// Operator `memory_reserve_gb` — forwarded by the CLI so local mode
-    /// holds back the SAME `max(reserve, physical − limit)` the daemon does;
-    /// a reserve larger than the limit-implied one must win here too.
-    /// 0 = no configured reserve (library default).
+    /// Operator `memory_reserve_gb`, forwarded by the CLI so local mode holds
+    /// back the same `max(reserve, physical − limit)` the daemon does — the
+    /// larger of the two knobs wins in either mode. 0 = no configured reserve
+    /// (library default).
     public let memoryReserveGB: UInt64
 
     public init(
@@ -262,9 +262,9 @@ public actor StandaloneServer {
         // operator-facing error and refuses to start when nothing remains.
         self.models = Self.filterSupported(models)
         // The operator's cap intent is machine-wide: fold `memory_reserve_gb`
-        // and `memory_limit_gb` into ONE effective reserve (max of the two,
-        // exactly as ProviderLoop does) so local serving can't grow into
-        // memory the operator withheld by either knob.
+        // and `memory_limit_gb` into the single effective reserve (max of the
+        // two, matching ProviderLoop) so local serving can't grow into memory
+        // the operator withheld by either knob.
         self.kvBudget = GlobalKVCacheBudget(
             configReserveBytes: MemoryLimit.effectiveReserveBytes(
                 reserveGB: config.memoryReserveGB,

@@ -48,8 +48,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 }
 
 @Test func effectiveReserveStaticTakesTheLargerHoldback() {
-    // The review-flagged standalone case: reserve 120 GB dominates the
-    // 106 GB implied by a 150 GB limit on a 256 GB box.
+    // A reserve larger than the limit-implied one dominates: 120 GB reserve
+    // beats the 106 GB implied by a 150 GB limit on a 256 GB box.
     #expect(
         MemoryLimit.effectiveReserveBytes(reserveGB: 120, limitGB: 150, physicalBytes: 256 * gib)
             == 120 * gib)

@@ -529,13 +529,13 @@ public actor ProviderLoop {
         self.configuredMaxModelSlots = max(1, Int(config.config.backend.maxModelSlots))
         self.startupModelCount = max(1, advertised.count)
         // KV budget derives its ceiling from the unified 90% cap + activation
-        // reserve (UnifiedMemoryCap). It ALSO honors the operator-configured
-        // `memory_reserve_gb` AND the absolute `memory_limit_gb` (folded into
-        // one effective reserve — see MemoryLimit) — the same reserve the model
-        // LOAD gate applies (loadReserveBytes = max(effectiveReserve, physical −
-        // cap)) — so runtime KV can't grow into memory the operator explicitly
-        // withheld once a model is loaded. No-op when the effective reserve is
-        // ≤ the cap's implied reserve.
+        // reserve (UnifiedMemoryCap). It also holds back the effective operator
+        // reserve — memory_reserve_gb and memory_limit_gb folded into one
+        // figure (MemoryLimit) — which is the same reserve the model load gate
+        // applies (loadReserveBytes = max(effectiveReserve, physical − cap)).
+        // Runtime KV therefore can't grow into memory the operator withheld
+        // once a model is loaded. No-op when the effective reserve is ≤ the
+        // cap's implied reserve.
         self.kvBudget = GlobalKVCacheBudget(
             configReserveBytes: config.config.provider.effectiveReserveBytes())
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.

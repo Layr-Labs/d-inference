@@ -29,17 +29,15 @@ DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 # The canonical posture this release is measured under. Both defaults are
 # load-bearing:
 #
-#   paged      — `auto` resolves CONTIGUOUS as of v0.8.1. Naming `paged` is
-#                therefore the only way this wrapper can promise it measured
-#                the paged arm; an explicit request refuses when paged cannot
-#                be built, except that the fleet kill switch deliberately
-#                degrades to contiguous and is caught by the posture checks.
+#   contiguous — `auto` resolves contiguous as of v0.8.1, but naming the
+#                backend keeps every phase's release posture explicit and
+#                prevents a future default flip from changing the benchmark.
 #   1,2,4,8    — the current production concurrency default is B=4 under the
-#                contiguous `auto` posture, while B=8 remains supported and is
-#                the explicit-paged measurement point. The list is sparse on
+#                contiguous `auto` posture, while B=8 remains a supported
+#                stress point. The list is sparse on
 #                purpose: a dense 1..8 ladder doubles wall time for cells no
 #                gate reads.
-DEFAULT_KV_BACKEND = "paged"
+DEFAULT_KV_BACKEND = "contiguous"
 DEFAULT_BATCH_SIZES = [1, 2, 4, 8]
 KV_BACKENDS = ("auto", "contiguous", "paged")
 EXPECTED_ARRIVAL_PATTERNS = {
@@ -101,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         choices=KV_BACKENDS,
         default=DEFAULT_KV_BACKEND,
         help=(
-            "KV backend the decode sweep is built with "
+            "KV backend every benchmark phase is built with "
             f"(default {DEFAULT_KV_BACKEND}; 'auto' may silently resolve "
             "either backend, so it cannot pin a measurement)"
         ),

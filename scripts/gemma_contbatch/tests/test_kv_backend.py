@@ -210,14 +210,14 @@ class PhaseArgvTests(unittest.TestCase):
 
 
 class DefaultPostureTests(unittest.TestCase):
-    def test_defaults_are_paged_and_reach_eight(self):
+    def test_defaults_are_contiguous_and_reach_eight(self):
         with mock.patch.object(sys, "argv", ["benchmark-gemma-contbatch.py"]):
             args = parse_args()
-        self.assertEqual(args.kv_backend, "paged")
+        self.assertEqual(args.kv_backend, "contiguous")
         self.assertEqual(args.kv_backend, DEFAULT_KV_BACKEND)
         self.assertEqual(args.batch_sizes, list(DEFAULT_BATCH_SIZES))
-        # The claim this release makes (1.17x aggregate) lives at B=8; a curve
-        # that stops earlier cannot observe it.
+        # B=8 remains a useful stress point even though stock serving caps at
+        # B=4 under the contiguous release posture.
         self.assertEqual(max(args.batch_sizes), 8)
 
     def test_auto_is_still_reachable_for_a_deliberate_run(self):

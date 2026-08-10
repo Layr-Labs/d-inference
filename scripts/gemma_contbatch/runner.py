@@ -312,9 +312,9 @@ def main() -> int:
             comparison_axis=args.comparison_axis,
             metadata=metadata,
         )
-        # The pin this release turns on. A paged-versus-contiguous difference
-        # would otherwise show up as a double-digit aggregate delta with no
-        # trace of its cause anywhere in the report.
+        # Keep the release's contiguous posture fixed across comparisons. A
+        # paged-versus-contiguous difference would otherwise read as a code or
+        # Gemma-optimization delta with no trace of its cause in the summary.
         validate_kv_backend_pin(baseline, kv_backend)
         report["comparison"] = compare(summary, baseline)
 

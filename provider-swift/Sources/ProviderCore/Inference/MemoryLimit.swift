@@ -38,7 +38,9 @@ public enum MemoryLimit {
         return physicalBytes - limit
     }
 
-    static func saturatingGiBToBytes(_ gib: UInt64) -> UInt64 {
+    /// GiB -> bytes, saturating instead of trapping. Public because the CLI
+    /// (`darkbloom memory`) converts operator-supplied GB values too.
+    public static func saturatingGiBToBytes(_ gib: UInt64) -> UInt64 {
         let (bytes, overflow) = gib.multipliedReportingOverflow(by: 1_073_741_824)
         return overflow ? UInt64.max : bytes
     }

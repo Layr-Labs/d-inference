@@ -507,7 +507,13 @@ extension EngineV2Factory {
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
-        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
+        pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil,
+        // Operator hold-back (`ProviderSettings.effectiveReserveBytes`, which
+        // folds in `memory_limit_gb`). The paged pool sizes one of its bounds
+        // from live KV headroom, so it must measure that headroom against the
+        // same ceiling the KV admission gate enforces — otherwise a capped box
+        // commits a pool larger than it can ever serve from.
+        configReserveBytes: UInt64 = 0
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
             throw EngineV2ProductionError.noKVHeadroom
@@ -794,7 +800,8 @@ extension EngineV2Factory {
                 maxConcurrentRequests: schedulerConfig.maxConcurrentRequests,
                 inputs: .init(
                     physicalMemoryBytes: ProcessInfo.processInfo.physicalMemory,
-                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes,
+                    liveKVHeadroomBytes: KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        configReserveBytes: configReserveBytes),
                     maxBufferLength: maxBufferLength))
             switch decision {
             case .contiguous(let reason):

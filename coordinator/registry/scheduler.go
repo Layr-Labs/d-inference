@@ -1310,6 +1310,28 @@ func (r *Registry) snapshotProviderLockedEx(p *Provider, model string, traits Re
 // this stays safe (slightly stricter); it must not be set BELOW the provider's.
 const coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30)) // ≈ 1.1176
 
+// providerTotalMemoryGB returns the memory figure every hardware-fit decision
+// must use: the live heartbeat total when the provider reports one, else the
+// registration hardware value.
+//
+// The heartbeat is authoritative because it is the only figure that reflects an
+// operator memory limit (`memory_limit_gb`): a 256 GB box capped to 150 GB
+// registers `hardware.memory_gb = 256` (raw hardware, which the base-reward
+// tier is priced from) but heartbeats `total_memory_gb = 150`. Sizing a fit
+// check from registration would plan loads the provider's own gate then
+// refuses. `snapshotProviderLocked` has always applied this precedence; this
+// helper exists so the hardware-fit gates that bypass the snapshot cannot drift
+// from it. `snapshotProviderLocked` itself still inlines the expression because
+// it reads several BackendCapacity fields under one nil check.
+//
+// Caller must hold the provider lock.
+func providerTotalMemoryGB(p *Provider) float64 {
+	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
+		return p.BackendCapacity.TotalMemoryGB
+	}
+	return float64(p.Hardware.MemoryGB)
+}
+
 // backendFreeForLoadGB returns the provider-reported free_for_load_gb (nil-safe).
 // Caller must hold the provider lock when passing p.BackendCapacity.
 func backendFreeForLoadGB(bc *protocol.BackendCapacity) *float64 {

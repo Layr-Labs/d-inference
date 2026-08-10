@@ -154,6 +154,9 @@ enum EngineV2SlotFactory {
         preparedModel: EngineV2PreparedModel? = nil,
         assemblyOverrides: AssemblyOverrides = AssemblyOverrides(),
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        /// Operator memory hold-back, relayed to the backend's paged-pool
+        /// sizing so it measures live headroom against the operator's ceiling.
+        configReserveBytes: UInt64 = 0,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)? = nil,
         makeEngineOverride: (@Sendable (String, Int) throws -> any CBv2Engine)? = nil,
         assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
@@ -264,7 +267,8 @@ enum EngineV2SlotFactory {
                     maxContextLength: sizing.maxContextLength > 0
                         ? sizing.maxContextLength : nil,
                     environment: environment,
-                    pagedPreflightOverride: assemblyOverrides.pagedPreflight)
+                    pagedPreflightOverride: assemblyOverrides.pagedPreflight,
+                    configReserveBytes: configReserveBytes)
             } catch {
                 EngineV2Factory.emitRefusalTelemetry(
                     modelId: modelId,

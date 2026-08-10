@@ -2032,11 +2032,8 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	// backend-reported figure, matching snapshotProviderLocked. A resident
 	// running/idle slot has already demonstrated fit and must bypass the
 	// heuristic. Owner-only off-catalog models use their advertised size.
-	totalMemoryGB := float64(p.Hardware.MemoryGB)
+	totalMemoryGB := providerTotalMemoryGB(p)
 	slotState := "unknown"
-	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
-		totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == buildID {
@@ -3503,7 +3500,7 @@ func (r *Registry) modelLoadCandidatePendingLocked(p *Provider, model string, no
 	// trusting the operator-published requirement rather than a synthetic
 	// multiple that would exclude catalog-qualified nodes.
 	if entry, ok := r.modelCatalog[model]; ok && (entry.MinRAMGB > 0 || entry.SizeGB > 0) {
-		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, float64(p.Hardware.MemoryGB)) {
+		if !modelFitsHardware(entry.MinRAMGB, entry.SizeGB, providerTotalMemoryGB(p)) {
 			return 0, false
 		}
 		// Live free-capacity gate (shared helper with the direct path): don't plan

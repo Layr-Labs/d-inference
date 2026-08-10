@@ -133,4 +133,77 @@ struct MemoryCommandTests {
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 256) == "256 GB")
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 300) == "256 GB")
     }
+
+    // MARK: - fitWarnings (models a new limit evicts)
+
+    private func model(_ id: String, gb: Double) -> ModelInfo {
+        ModelInfo(id: id, sizeBytes: UInt64(gb * 1_073_741_824), estimatedMemoryGb: gb)
+    }
+
+    private func settings(limit: UInt64?) -> ProviderSettings {
+        ProviderSettings(name: "p", memoryReserveGB: 4, memoryLimitGB: limit)
+    }
+
+    @Test("a roomy limit warns about nothing")
+    func fitWarningsSilentWhenEverythingFits() {
+        let advertised = [model("small", gb: 6), model("big", gb: 26)]
+        #expect(
+            Memory.fitWarnings(
+                provider: settings(limit: 150), physicalGb: 256, advertised: advertised
+            ).isEmpty)
+    }
+
+    @Test("a limit that evicts some models names them")
+    func fitWarningsNamesEvictedModels() {
+        // limit 16 -> usable 16 GB; a 6 GB model needs ~10 GB (weights + the
+        // ~4 GB load headroom) and fits, a 26 GB model does not.
+        let advertised = [model("small", gb: 6), model("big", gb: 26)]
+        let lines = Memory.fitWarnings(
+            provider: settings(limit: 16), physicalGb: 256, advertised: advertised)
+        #expect(lines.contains { $0.contains("big") })
+        #expect(!lines.contains { $0.contains("- small") })
+        // Some models still fit, so this is not the earnings-zeroing case.
+        #expect(!lines.contains { $0.contains("NO base rewards") })
+    }
+
+    @Test("the CLI's fit rule is the doctor's, which is the daemon's")
+    func fitWarningsUsesTheSharedDiagnostic() {
+        // Pins reuse: the threshold must be ModelFitDiagnostic's, not a second
+        // rule that can drift from what the provider actually enforces.
+        // limit 16 on a 256 GB box ⇒ effective reserve 240 GB.
+        let usable = Memory.inferenceCapGb(provider: settings(limit: 16), physicalGb: 256)
+        #expect(usable == ModelFitDiagnostic.usableInferenceGb(totalGb: 256, reserveGb: 240))
+
+        // The boundary is exactly ModelFitDiagnostic's requirement, so a model
+        // sized to sit just under it is silent and just over it warns.
+        let headroomGb = ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 0)
+        let widest = usable - headroomGb
+        #expect(
+            Memory.fitWarnings(
+                provider: settings(limit: 16), physicalGb: 256,
+                advertised: [model("fits", gb: widest - 0.1)]
+            ).isEmpty)
+        #expect(
+            !Memory.fitWarnings(
+                provider: settings(limit: 16), physicalGb: 256,
+                advertised: [model("just-over", gb: widest + 0.1)]
+            ).isEmpty)
+    }
+
+    @Test("a limit that fits nothing warns that base rewards go to zero")
+    func fitWarningsFlagsTheZeroEarningsCase() {
+        // 8 GB is a VALID limit (>= the floor, below physical) that still cannot
+        // load a 26 GB model — the case a range check alone would wave through.
+        let lines = Memory.fitWarnings(
+            provider: settings(limit: 8), physicalGb: 256, advertised: [model("big", gb: 26)])
+        #expect(lines.contains { $0.contains("NO advertised model fits") })
+        #expect(lines.contains { $0.contains("NO base rewards") })
+    }
+
+    @Test("no advertised models means no warnings to give")
+    func fitWarningsEmptyWithoutModels() {
+        #expect(
+            Memory.fitWarnings(provider: settings(limit: 8), physicalGb: 256, advertised: [])
+                .isEmpty)
+    }
 }

@@ -76,7 +76,7 @@ also treat warnings as failures.
 
 The canonical path is `~/.config/darkbloom/provider.toml`. The loader also reads
 legacy paths for backward compatibility; see
-`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:214-252`.
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:485-513`.
 
 A minimal example:
 
@@ -103,7 +103,16 @@ private_only = false
 
 Both Gemma controls default ON when the section or either key is absent, so
 older configs receive the selected stack. Provider TOML is authoritative; set
-a key to `false` and run `darkbloom restart` for a durable rollback.
+a key to `false` and run `darkbloom restart` for a durable rollback. The defaults
+and missing-key decode are canonical in
+`provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:16-34`,
+with the missing-section fallback in
+`provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:397-400`.
+Startup applies that config before Metal initialization
+(`provider-swift/Sources/darkbloom/StartCommand.swift:82-88` and
+`provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`), and the
+beta command's locked read-modify-write plus restart instruction is implemented
+at `provider-swift/Sources/darkbloom/BetaCommand.swift:201-235`.
 
 ## Updating the provider
 

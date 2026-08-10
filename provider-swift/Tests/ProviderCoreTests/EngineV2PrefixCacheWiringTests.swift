@@ -232,3 +232,172 @@ struct EngineV2PrefixCacheUsageTests {
         #expect(ProviderLoop.injectCachedTokens(into: usageFrame, cachedTokens: 0) == usageFrame)
     }
 }
+
+// MARK: - fp32 paged pages: KV rate wiring
+
+/// Engine stub whose only job is to report a fixed byte capacity, so the
+/// heartbeat's rate→budget division is observable without a model.
+private final class CapacityStubEngine: CBv2Engine, @unchecked Sendable {
+    private let kvBytesCapacity: Int
+
+    init(kvBytesCapacity: Int) {
+        self.kvBytesCapacity = kvBytesCapacity
+    }
+
+    func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
+        let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+        continuation.finish()
+        return stream
+    }
+
+    func cancel(_ id: CBv2RequestID) {}
+
+    func capacity() -> CBv2CapacitySnapshot {
+        CBv2CapacitySnapshot(
+            activeRequests: 0,
+            waitingRequests: 0,
+            kvBytesInUse: 0,
+            kvBytesCapacity: kvBytesCapacity,
+            activeTokens: 0)
+    }
+
+    func updateKVBytesCapacity(_ bytes: Int) {}
+    func shutdown() async {}
+}
+
+/// The fp32-page seam: `DARKBLOOM_CBV2_PAGED_KV_DTYPE=float32` doubles what a
+/// token costs in the pool, so the rate the slot hands `makeBridge` must
+/// double — and the heartbeat's advertised token budget must HALVE — or
+/// `BackendCapacity.Slots` being scheduler-authoritative lets the coordinator
+/// over-admit ~2x against a pool holding half the tokens.
+@Suite("EngineV2 fp32 paged pages: KV rate wiring")
+struct EngineV2FP32PagedRateTests {
+
+    @Test("processKVBytesPerToken doubles on fp32 pages and only there")
+    func processRateDoubling() {
+        // fp32 pages: flat 2x over the nominal rate.
+        #expect(EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: 100_000,
+            fp16FullKVBytesPerToken: 24_576,
+            fullRowsUseFP32: false,
+            pagedPoolDType: "float32"
+        ) == 200_000)
+        // fp16 pages and no dtype (contiguous): the base rate untouched.
+        #expect(EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: 100_000,
+            fp16FullKVBytesPerToken: 24_576,
+            fullRowsUseFP32: false,
+            pagedPoolDType: "float16"
+        ) == 100_000)
+        #expect(EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: 100_000,
+            fp16FullKVBytesPerToken: 24_576,
+            fullRowsUseFP32: false,
+            pagedPoolDType: nil
+        ) == 100_000)
+        // Contiguous GPT-OSS keeps the native-width adjustment.
+        #expect(EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: 100_000,
+            fp16FullKVBytesPerToken: 24_576,
+            fullRowsUseFP32: true,
+            pagedPoolDType: nil
+        ) == 124_576)
+        // Saturating, never trapping, on absurd rates.
+        #expect(EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: Int.max / 2 + 1,
+            fp16FullKVBytesPerToken: 0,
+            fullRowsUseFP32: false,
+            pagedPoolDType: "float32"
+        ) == Int.max)
+    }
+
+    @Test("the slot rate follows the CONSTRUCTED pool's dtype, not the request")
+    func slotRateFollowsPoolDType() {
+        // One owning full-attention layer: kvHeads * headDim * 2 (K+V) * 2
+        // bytes = 8 * 64 * 4 = 2048 fp16 full-row bytes per token.
+        let layerKinds = [
+            CBv2LayerKind(attention: .full, headDim: 64, kvHeads: 8, queryHeads: 16),
+            CBv2LayerKind(
+                attention: .slidingWindow(512), headDim: 64, kvHeads: 8, queryHeads: 16),
+        ]
+        let nominal = 100_000
+
+        // Paged pool built with fp32 pages: the whole row doubles.
+        #expect(EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .paged,
+            pagedPoolDType: "float32",
+            layerKinds: layerKinds,
+            nominalFP16BytesPerToken: nominal,
+            servingModelIsGPTOSS: false
+        ) == 200_000)
+
+        // Paged with default fp16 pages: nominal, unchanged.
+        #expect(EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .paged,
+            pagedPoolDType: "float16",
+            layerKinds: layerKinds,
+            nominalFP16BytesPerToken: nominal,
+            servingModelIsGPTOSS: false
+        ) == nominal)
+
+        // An fp32 REQUEST that degraded to contiguous has no pages to
+        // widen: the dtype is ignored on a contiguous build even if a
+        // stale value were threaded through.
+        #expect(EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .contiguous,
+            pagedPoolDType: "float32",
+            layerKinds: layerKinds,
+            nominalFP16BytesPerToken: nominal,
+            servingModelIsGPTOSS: false
+        ) == nominal)
+
+        // Contiguous GPT-OSS keeps the fp32 owning-full-row delta
+        // (native-width rate), exactly as before this seam existed.
+        #expect(EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .contiguous,
+            pagedPoolDType: nil,
+            layerKinds: layerKinds,
+            nominalFP16BytesPerToken: nominal,
+            servingModelIsGPTOSS: true
+        ) == nominal + 2048)
+
+        // Paged GPT-OSS never takes the native-width path (fp32 full rows
+        // are a contiguous-backend behavior).
+        #expect(EngineV2SlotFactory.slotKVBytesPerToken(
+            resolvedKind: .paged,
+            pagedPoolDType: "float16",
+            layerKinds: layerKinds,
+            nominalFP16BytesPerToken: nominal,
+            servingModelIsGPTOSS: true
+        ) == nominal)
+    }
+
+    @Test("a doubled rate halves the heartbeat's advertised token budget")
+    func doubledRateHalvesTokenBudget() async {
+        let capacityBytes = 8_000_000
+        let fp16Rate = 2_000
+
+        func budget(rate: Int) async -> (max: Int64, rate: Int64) {
+            let bridge = EngineV2Bridge(
+                engine: CapacityStubEngine(kvBytesCapacity: capacityBytes),
+                modelId: "gemma-4-26b-qat-4bit",
+                tokenizer: TokenizerHandle(PrefixStubTokenizer()),
+                eosTokenIds: [2],
+                kvBytesPerToken: rate,
+                kvBackendKind: .paged)
+            let slot = await bridge.backendSlotCapacity()
+            return (slot.activeTokenBudgetMax, slot.kvBytesPerToken)
+        }
+
+        let fp16 = await budget(rate: fp16Rate)
+        let fp32 = await budget(rate: EngineV2Factory.processKVBytesPerToken(
+            nominalFP16BytesPerToken: fp16Rate,
+            fp16FullKVBytesPerToken: 0,
+            fullRowsUseFP32: false,
+            pagedPoolDType: "float32"))
+
+        #expect(fp16.max == Int64(capacityBytes / fp16Rate))
+        #expect(fp32.rate == fp16.rate * 2)
+        #expect(fp32.max == fp16.max / 2, "fp32 pages hold half the tokens per byte grant")
+    }
+}

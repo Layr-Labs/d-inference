@@ -10,15 +10,18 @@ import Foundation
 import MLXLMCommon
 
 enum PagedKernelPreflightError: Error, CustomStringConvertible {
-    case childFailed(status: Int32)
+    case childFailed(status: Int32, stderrTail: String?)
     case childSignalled(signal: Int32)
     case childTimedOut(seconds: TimeInterval)
     case childWouldNotTerminate
 
     var description: String {
         switch self {
-        case .childFailed(let status):
-            return "paged kernel preflight child exited \(status)"
+        case .childFailed(let status, let tail):
+            guard let tail, !tail.isEmpty else {
+                return "paged kernel preflight child exited \(status)"
+            }
+            return "paged kernel preflight child exited \(status): \(tail)"
         case .childSignalled(let signal):
             return "paged kernel preflight child terminated by signal \(signal)"
         case .childTimedOut(let seconds):
@@ -72,9 +75,14 @@ enum PagedKernelPreflight {
                 executableURL,
                 arguments: ["runtime-smoke"] + shapes.map(\.argumentValue),
                 environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"],
-                timeout: timeout)
-        } catch BoundedProcess.Failure.exited(let status) {
-            throw PagedKernelPreflightError.childFailed(status: status)
+                timeout: timeout,
+                // The child's own message is the diagnosis. A missing
+                // SwiftPM resource bundle beside a relocated binary is a
+                // PACKAGING fault, and without this it reads as a hardware
+                // verdict on a perfectly capable machine.
+                captureStderrTail: 2048)
+        } catch BoundedProcess.Failure.exited(let status, let tail) {
+            throw PagedKernelPreflightError.childFailed(status: status, stderrTail: tail)
         } catch BoundedProcess.Failure.signalled(let signal) {
             throw PagedKernelPreflightError.childSignalled(signal: signal)
         } catch BoundedProcess.Failure.timedOut(let seconds) {

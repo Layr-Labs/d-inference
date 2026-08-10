@@ -116,8 +116,7 @@ public enum ProviderCore {
     //     DARKBLOOM_COMPILED_DECODE, B=1 fast-path + KV-quant + adaptive-
     //     prefill envs; [backend] engine_v2 /
     //     continuous_batching / adaptive_prefill / legacy_compiled_decode
-    //     parse-and-WARN as retired; kv_quant is REJECTED-with-WARN (a
-    //     CBv2-native KV-quant fast-follow is planned).
+    //     parse-and-WARN as retired.
     // Rollback is release-level (re-point latest to 0.7.4) — there is no
     // in-binary legacy engine to fall back to. No protocol changes: same
     // WebSocket message types, same BackendSlotCapacity wire shape;
@@ -127,7 +126,7 @@ public enum ProviderCore {
     // "auto" contiguous and leaves paged explicit/experimental. Explicit pools
     // eagerly commit only an independently capped physical plan, report pool
     // truth through existing heartbeat fields, and map terminal exhaustion to
-    // retryable capacity. VLM and kv-quant slots stay contiguous.
+    // retryable capacity. VLM slots stay contiguous.
     // 0.7.12 restores exact hybrid-attention SSD prefix reuse through
     // frozen-full tail replay and enforces Gemma tool choices during decoding.
     // Constrained requests advertise an explicit per-model protocol capability
@@ -156,5 +155,55 @@ public enum ProviderCore {
     // DARKBLOOM_GEMMA4_PREFILL_TAIL_ROWS=0 and
     // DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0; the opt-in mixed-step prefill
     // quota is DARKBLOOM_CBV2_MIXED_PREFILL_CAP.
+    //
+    // 0.8.0 — PagedAttention. The paged KV backend reaches parity with
+    // contiguous: prefix reuse at an identical bound on both gemma-4
+    // (25,600) and gpt-oss (1,536), packed prefill and vision spans ACTIVE,
+    // per-sequence KV 1.00x at 1k/10k/100k, and 1.27x aggregate decode from
+    // B=4 to B=8 where contiguous gains only 1.07x. The ring is 65 pages.
+    // `.auto` RESOLVES PAGED — the release's headline change. On the two
+    // models production actually serves (gemma-4-26B-A4B-it-qat and
+    // gpt-oss-20b-MXFP4-Q8) paged prefix-cache ADOPTION is exact and
+    // CONTIGUOUS is the arm that diverges from its own cold decode; the
+    // reverse holds only on gemma-4-e2b-it-4bit, an e2e fixture that
+    // appears zero times in the catalog. KNOWN AND ACCEPTED: gemma-4
+    // greedy token ids differ from contiguous — closer to an fp32
+    // reference, but different. Roll back fleet-wide with
+    // DARKBLOOM_CBV2_PAGED_KV=0 (degrades, never refuses) or per slot
+    // with engine_v2_kv_backend = "contiguous". See
+    // `case .auto: resolvedKind` in `EngineV2Factory+Production.swift`.
+    //
+    // The box-wide concurrency default DOES move 4 -> 8, and stands on
+    // its own: contiguous gains ~1.07x from B=4 to B=8. A `provider.toml`
+    // written before v0.8.0 carries the generated
+    // `engine_v2_max_concurrent = 4`; it is raised once, warned about,
+    // and stamped with `config_version`.
+    // Note gemma-4 greedy token ids differ under
+    // paged — measurably more accurate against an fp32 reference, but not
+    // identical. kv-quantization and the compiled [B,1] decode path are
+    // removed; `kv_quant` is accepted and ignored via RetiredCodingKeys.
+    //
+    // 0.8.1 — `.auto` RESOLVES CONTIGUOUS again. v0.8.0's paged default
+    // sized the fleet's KV at 1,137 GiB against contiguous's 11,453 GiB
+    // (the paged pool is the min of five terms, and `liveKVHeadroom / 4`
+    // structurally pins it to a quarter of the logical grant), and the
+    // resulting admission failures — 32.7% of provider attempts returning
+    // token_budget_exhausted, TTFT p95 12.8s / p99 33s, ~8.8% of client
+    // requests cancelled before first token, OpenRouter-scored uptime near
+    // 85% — dominate paged's batch-curve and adoption-exactness wins. Costs
+    // ~15% aggregate decode at B=8 on gemma-4/M4 Max, knowingly. The
+    // exactness loss is CLOSED, not accepted: the SSD prefix cache is no
+    // longer constructed on a resolved-contiguous slot, so no prefix is
+    // staged, matched or adopted where adoption diverges. Paged code, the
+    // DARKBLOOM_CBV2_PAGED_KV kill switch, the crash-loop guard and the
+    // blocking paged CI lane all stay; `engine_v2_kv_backend = "paged"`
+    // still resolves paged. `engine_v2_max_concurrent = 8` is NOT coupled
+    // to paged and stays at 8.
+    //
+    // 0.8.2 adds the benchmark-retained Gemma 4 optimization stack: layer-18
+    // lazy prefill submission plus the coupled weighted-unsort/safe-R1 path,
+    // both default-on and durably rollbackable through provider config. VLM,
+    // CBv2, media prefill, and MTP share the canonical Gemma text tower, and
+    // serve/benchmark startup projects config before the first MLX access.
     public static let version = "0.8.2"
 }

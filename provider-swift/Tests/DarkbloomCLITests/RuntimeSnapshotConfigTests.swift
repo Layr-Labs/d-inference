@@ -51,4 +51,32 @@ struct RuntimeSnapshotConfigTests {
             #expect(!detail.isEmpty)
         }
     }
+
+    @Test("benchmark-style loading never rewrites its config")
+    func readOnlyLoadPreservesFile() throws {
+        let url = tempConfigURL()
+        let original = """
+            config_version = 1
+
+            [provider]
+            name = "benchmark-a-b"
+
+            [backend]
+            engine_v2_max_concurrent = 8
+
+            [gemma_optimizations]
+            prefill_layer18 = false
+            weighted_r1 = false
+            """
+        try original.write(to: url, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let snapshot = try loadRuntimeSnapshot(
+            configPath: url.path,
+            migrateOnDisk: false)
+
+        #expect(!snapshot.config.gemmaOptimizations.prefillLayer18)
+        #expect(!snapshot.config.gemmaOptimizations.weightedR1)
+        #expect(try String(contentsOf: url, encoding: .utf8) == original)
+    }
 }

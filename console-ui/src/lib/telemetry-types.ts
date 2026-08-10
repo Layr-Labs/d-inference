@@ -140,4 +140,33 @@ export const TELEMETRY_ALLOWED_FIELDS = new Set<string>([
   "prefix_construction_failure",
   "prefix_capacity_refusal",
   "prefix_cold_fallback",
+  // KV-backend discriminator (v0.8.0 paged rollout). `backend` stays the
+  // engine/runtime name; `kv_backend` is the KV storage kind, the same key
+  // and vocabulary as BackendSlotCapacity.kv_backend on the heartbeat wire.
+  // `prefix_reuse_backend` is the finer prefix-reuse row identity.
+  "kv_backend",
+  "prefix_reuse_backend",
+  // Paged KV pool metrics: aggregate pool counters only.
+  // `pages_pinned` / `cow_events` deliberately absent: no mechanism exists,
+  // and a producerless key reads as a legitimate zero. See the Go mirror.
+  "pool_utilization",
+  // Paged pool re-slice residue: raw bytes, not a second ratio. Above,
+  // `pool_utilization` is OCCUPANCY; a grant-vs-pool ratio under a
+  // near-identical name collides with it in any `group by kv_backend`, and a
+  // clamped ratio drops the overflow magnitude. `pool_bytes` is the
+  // denominator, so share-of-pool stays derivable.
+  "pool_bytes",
+  "pool_deferred_growth_bytes",
+  "pool_stranded_bytes",
+  // MTP (speculative decode) posture. MTP inflates observed_decode_tps with
+  // no discriminator, so a partially-MTP fleet biases routing on a metric the
+  // coordinator believes is homogeneous. Bounded enums and counters only.
+  "mtp_enabled",
+  "mtp_active",
+  "mtp_inactive_reason",
+  "mtp_acceptance_rate",
+  // Cumulative counters behind the ratio — the weights a roll-up needs.
+  // Token counts, never token contents.
+  "mtp_proposed_tokens",
+  "mtp_accepted_tokens",
 ]);

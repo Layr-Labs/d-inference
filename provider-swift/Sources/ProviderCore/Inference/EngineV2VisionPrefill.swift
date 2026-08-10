@@ -49,15 +49,21 @@
 // is gone with it). Deterministic input faults (`MediaError` — malformed/
 // oversized media) keep their 4xx mapping and are not refusals.
 //
-// BACKEND NOTE: CBv2 multimodal prefill requires the CONTIGUOUS KV backend
-// (the paged backend cannot bind span attention masks and rejects at submit
-// with `CBv2MultimodalError.unsupportedBackend`). The KV-backend gate
-// forces every VLM slot to contiguous (`EngineV2KVBackendPolicy
-// .applySlotVetoes` — paged serves TEXT slots only), so the rejection is
-// unreachable in production; if it ever fires it maps to a deterministic
+// BACKEND NOTE: CBv2 multimodal prefill requires a KV backend whose layer
+// caches AFFIRM `CBv2MultimodalSpanCapableCache.honorsSpanMaskContexts`;
+// one that does not vouch rejects at submit with
+// `CBv2MultimodalError.unsupportedBackend`. Both shipping backends now
+// vouch — contiguous always did, and the paged cache applies the
+// bidirectional-within-block overlay in `PagedLayerCache.attendQueryBlock`
+// (WS-2.2) — so `EngineV2KVBackendPolicy.applySlotVetoes` no longer forces
+// VLM slots to contiguous unconditionally; it forces them only while the
+// paged cache does NOT vouch. The submit-time rejection is therefore still
+// unreachable in production, but for a different and better reason: not
+// "vision never reaches paged", but "vision only reaches a backend that
+// affirmed it can serve it". If it ever fires it maps to a deterministic
 // 4xx via `multimodal_rejected:` (see
 // `EngineV2Translation.admissionErrorMessage`) and doubles as the loud
-// signal that the veto was bypassed.
+// signal that the claim and the implementation disagreed.
 
 import Foundation
 import MLX

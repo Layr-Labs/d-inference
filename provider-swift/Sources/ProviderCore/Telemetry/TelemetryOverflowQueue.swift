@@ -5,13 +5,42 @@
 /// Size cap: 5 MB. On overflow, the oldest half of the file is discarded.
 ///
 /// The queue is intentionally simple: open-for-append for writes, read+rewrite
-/// for drains. It is NOT a cross-process durable queue -- one provider process
-/// owns the file. A crash mid-write may lose the last partial line; that's
-/// acceptable because telemetry is best-effort.
+/// for drains. TWO processes share the file: the daemon (panic hook pushes,
+/// TelemetryClient drains) and the persistent watchdog (crash-loop guard trip
+/// events, `KVBackendCrashLoopGuard`). A drain is a read-then-replace, so an
+/// unsynchronized watchdog push landing between the daemon's read and its
+/// replace would be silently clobbered — and the trip event is exactly the one
+/// operators alert on. Every mutation therefore takes an exclusive `flock` on
+/// a dedicated sidecar lock file (`<queue>.lock`) in addition to the
+/// in-process NSLock:
+///
+///   * the LOCK FILE, not the queue file, is flocked — a drain replaces the
+///     queue's inode (`replaceItemAt`), and a lock taken on the old inode
+///     would not exclude a writer that opened the path after the swap. The
+///     sidecar is created once and never replaced, so the lock identity is
+///     stable across drains.
+///   * `flock` over `NSFileCoordinator`: both processes are plain CLI
+///     processes on one machine writing one small file — flock is the
+///     smallest primitive that gives cross-process mutual exclusion, needs no
+///     coordination daemon, and (unlike a watchdog-suffixed second queue)
+///     leaves ONE file with ONE drain path instead of a merge-and-ordering
+///     question at every consumer.
+///   * fail-open: if the lock file cannot be opened or flocked, the mutation
+///     proceeds unlocked. Telemetry is best-effort; a lock failure must never
+///     make the daemon drop events it could have written, and the pre-lock
+///     behavior is the worst case.
+///
+/// A crash mid-write may lose the last partial line; that's acceptable
+/// because telemetry is best-effort.
 
 import Foundation
 #if canImport(os)
 import os
+#endif
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 // MARK: - Overflow Queue
@@ -40,12 +69,39 @@ public final class TelemetryOverflowQueue: @unchecked Sendable {
         }
     }
 
+    // MARK: - Cross-process lock
+
+    /// Acquire the exclusive cross-process lock (see the header). Returns the
+    /// open lock-file descriptor, or nil on failure (the caller proceeds
+    /// unlocked — fail-open). Caller must hold `lock` and must pass the
+    /// result to `releaseFileLock`.
+    private func acquireFileLock() -> Int32? {
+        ensureParentDirectory()
+        let lockPath = path.path + ".lock"
+        let fd = open(lockPath, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return nil }
+        guard flock(fd, LOCK_EX) == 0 else {
+            close(fd)
+            return nil
+        }
+        return fd
+    }
+
+    private func releaseFileLock(_ fd: Int32?) {
+        guard let fd else { return }
+        flock(fd, LOCK_UN)
+        close(fd)
+    }
+
     // MARK: - Push
 
-    /// Append an event to the disk queue. Thread-safe.
+    /// Append an event to the disk queue. Thread-safe within the process and
+    /// across processes (daemon + watchdog — see the header).
     public func push(_ event: TelemetryEvent) {
         lock.lock()
         defer { lock.unlock() }
+        let fileLock = acquireFileLock()
+        defer { releaseFileLock(fileLock) }
 
         guard let line = try? encoder.encode(event),
               let lineString = String(data: line, encoding: .utf8) else {
@@ -72,10 +128,15 @@ public final class TelemetryOverflowQueue: @unchecked Sendable {
     // MARK: - Drain
 
     /// Drain up to `limit` events from the head of the queue and rewrite the
-    /// rest back to disk. Returns the drained events. Thread-safe.
+    /// rest back to disk. Returns the drained events. Thread-safe within the
+    /// process and across processes: the read-then-replace runs under the
+    /// exclusive file lock, so a concurrent watchdog push cannot land between
+    /// the read and the replace and be clobbered.
     public func drain(limit: Int) -> [TelemetryEvent] {
         lock.lock()
         defer { lock.unlock() }
+        let fileLock = acquireFileLock()
+        defer { releaseFileLock(fileLock) }
 
         guard FileManager.default.fileExists(atPath: path.path) else {
             return []

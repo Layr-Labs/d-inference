@@ -59,7 +59,12 @@ public struct SelfUpdater: Sendable {
     private let coordinatorBaseURL: String
     private let installRootOverride: URL?
     private let verifyCodeSignatures: Bool
-    private let currentVersion: String
+    /// This PROCESS's compiled-in version (defaults to `ProviderCore.version`).
+    /// Internal (not private) so `WatchdogRecoveryService` can resolve the
+    /// installed daemon version through the same
+    /// `effectiveInstalledVersion(processVersion:recorded:)` arithmetic
+    /// `checkForUpdate` uses, from the same injected seam.
+    internal let currentVersion: String
     private let urlSession: URLSession
     private let now: @Sendable () -> Double
     /// Test seam threaded into every `UpdateRecoveryStore` this updater

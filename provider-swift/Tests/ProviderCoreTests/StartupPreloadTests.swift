@@ -442,34 +442,71 @@ struct StartupPreloadGateTests {
     @Test("gate proceeds at the timeout; loads continue in the background")
     func gateTimesOutAndContinuesInBackground() async throws {
         let recorder = PreloadRecorder()
+        let releaseLoad = PreloadGate()
         let loop = try await makePreloadLoop(
             models: [preloadModelInfo("a", memoryGb: 2)],
             backend: BackendSettings(
                 preloadModels: ["a"],
                 startupPreloadTimeoutSecs: 1,  // minimum configurable gate
                 startupSelftest: false))
-        // One 3s load vs a 1s gate: generous margins in both directions so a
-        // parallel-suite scheduling stall can't flip the outcome.
+        // EVENT-DRIVEN, not timer-vs-timer. This used to race a 1s gate
+        // against a 3s scripted load and assert the gate's wall-clock
+        // elapsed stayed under 2.8s — which measured the machine's
+        // scheduler, not the gate: under full-suite load either timer's
+        // wakeup could stretch past the margin and flip the outcome (the
+        // elapsed bound was the suite's reliable flake). The load now PARKS
+        // on an async gate the test releases only after the outcome is
+        // asserted, so "the gate released while the load was still running"
+        // is guaranteed by construction and no wall-clock number is
+        // asserted at all. The only timer left is the gate's own 1s
+        // timeout — the production code under test.
         await loop.setStartupPreloadLoadOverrideForTesting({ id in
-            try await Task.sleep(for: .seconds(3))
+            await releaseLoad.wait()
             recorder.recordLoad(id)
         })
 
-        let clock = ContinuousClock()
-        let start = clock.now
-        let outcome = await loop.runStartupPreloadGateForTesting()
-        let gateElapsed = clock.now - start
+        // FAIL-SAFE, independent of the code under test: the load stays
+        // parked until AFTER the outcome is asserted, so if the production
+        // 1s gate timeout regresses and never fires, the gate call would
+        // await forever and turn that regression into a suite-level hang
+        // (the CI step has no shorter timeout of its own). Race the gate
+        // against a 30s deadline — comfortably above the 1s production
+        // bound. When the deadline wins it releases the parked load (so the
+        // hung gate can unwind through the warm path and the task group can
+        // drain) and the test fails promptly with a clear message. The
+        // deadline arm signals ONLY on a genuine 30s elapse: on the normal
+        // path its sleep is cancelled and it exits without touching
+        // releaseLoad, keeping the loads-empty assertion below race-free.
+        let raced = await withTaskGroup(
+            of: ProviderLoop.StartupPreloadGateOutcome?.self
+        ) { group in
+            group.addTask { await loop.runStartupPreloadGateForTesting() }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    return nil  // gate resolved first; deadline cancelled
+                }
+                releaseLoad.signal()
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        guard let outcome = raced else {
+            Issue.record(
+                "startup preload gate did not resolve within the 30s test fail-safe — the production 1s gate timeout never fired. Failing instead of hanging the suite; the parked load was force-released so the run can unwind.")
+            return
+        }
 
-        // Availability beats perfection: the gate released at ~1s even though
-        // ~2s of loading remained. The wall-clock margin must absorb parallel-
-        // suite scheduling stalls on loaded machines (observed 3.5s); the
-        // semantic signal is the .timedOut outcome + background continuation,
-        // not the sub-second margin.
+        // Availability beats perfection: the gate released while the load
+        // (still parked on releaseLoad) provably had not finished.
         #expect(outcome == .timedOut)
-        #expect(gateElapsed < .milliseconds(4500))
         #expect(recorder.loads.isEmpty)
 
         // The driver keeps warming in the background after the gate released.
+        releaseLoad.signal()
         var waited = 0
         while recorder.loads.isEmpty, waited < 200 {
             try await Task.sleep(for: .milliseconds(50))

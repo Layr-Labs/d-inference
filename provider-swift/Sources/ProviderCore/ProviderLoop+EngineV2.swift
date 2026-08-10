@@ -577,12 +577,6 @@ extension ProviderLoop {
                 assistantBytes: status.assistantBytes,
                 mtpArtifact: preparedModel?.mtpArtifact,
                 mtpStatus: status)
-            // WARN once (per load) that kv_quant is ignored on the v2 path
-            // (fp16 caches are what the engine builds).
-            if loopConfig.config.backend.kvQuant {
-                EngineV2Factory.emitKVQuantUnsupportedTelemetry(
-                    modelId: modelId, emitTelemetry: hooks.emitTelemetry)
-            }
         } else {
             let slotLogger = logger
             bundle = try await EngineV2SlotFactory.makeProductionBundle(
@@ -596,7 +590,6 @@ extension ProviderLoop {
                 kvBytesCapacity: kvBytesCapacity,
                 maxConcurrentRequests: maxConcurrent,
                 kvBudget: kvBudget,
-                kvQuantConfigured: loopConfig.config.backend.kvQuant,
                 kvBackendConfig: loopConfig.config.backend.engineV2KVBackend,
                 kvBackendConfigByModel: loopConfig.config.backend.engineV2KVBackendByModel,
                 // SSD-tier metadata binding: the verified hash for the bytes

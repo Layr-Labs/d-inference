@@ -150,6 +150,8 @@ Knobs (all optional):
 |---|---|---|
 | `--prefill-lengths` | `128,512,2048` | prompt lengths (tokens) for the prefill sweep |
 | `--max-batch` | `6` | decode batch sweep runs `B = 1…N` |
+| `--batch-sizes` | — | explicit decode batch sizes (e.g. `1,2,4,8`); replaces the `--max-batch` ladder |
+| `--kv-backend` | `auto` | `auto`\|`contiguous`\|`paged`; `auto` may resolve either backend, an explicit `paged` refuses rather than degrading. The backend each cell actually built with is in `decode[].resolvedKVBackend` and the `kvBackend` block |
 | `--decode-tokens` | `64` | tokens generated per sequence in the decode sweep |
 | `--decode-prompt-tokens` | `64` | prompt length per sequence in the decode sweep |
 

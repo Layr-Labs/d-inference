@@ -3,6 +3,7 @@ import { ApiError } from "@/lib/api";
 import {
   classifyWithdrawError,
   classifyOnboardError,
+  classifyDashboardError,
   withdrawSuccessMessage,
   methodExplainer,
   standardEta,
@@ -131,6 +132,40 @@ describe("classifyOnboardError", () => {
   it("unknown errors keep the onboarding-failed prefix", () => {
     const p = classifyOnboardError(new Error(NETWORK_DOWN));
     expect(p.message).toBe("Stripe onboarding failed: network down");
+  });
+});
+
+describe("classifyDashboardError", () => {
+  // Codes must match the coordinator's existing payout vocabulary
+  // (stripe_payouts.go / stripe_withdraw.go), not a parallel spelling.
+  it("stripe_account_gone: unlink message + status refresh", () => {
+    const p = classifyDashboardError(new ApiError("your Stripe account no longer exists", "stripe_account_gone", 409));
+    expect(p.message).toContain("Your Stripe account was closed, so we've unlinked it");
+    expect(p.refreshStatus).toBe(true);
+  });
+
+  it("not_onboarded: points at finishing setup, refreshes the card branch", () => {
+    const p = classifyDashboardError(new ApiError("finish your payout setup first", "not_onboarded", 409));
+    expect(p.message).toBe("Finish your payout setup first, then you can manage the account in Stripe.");
+    expect(p.refreshStatus).toBe(true);
+  });
+
+  it("stripe_error: friendly transient message, no unlink implied", () => {
+    const p = classifyDashboardError(new ApiError("stripe 500: down", STRIPE_ERROR, 502));
+    expect(p.message).toBe("Stripe couldn't open your dashboard right now. Try again in a few minutes.");
+    expect(p.refreshStatus).toBe(false);
+  });
+
+  it("billing_error: does not promise a retry that can never work", () => {
+    const p = classifyDashboardError(new ApiError("Stripe Payouts not configured", "billing_error", 503));
+    expect(p.message).toBe("Payouts are temporarily unavailable. Please contact support.");
+    expect(p.message).not.toContain("Try again");
+  });
+
+  it("unknown errors keep the raw message", () => {
+    const p = classifyDashboardError(new Error(NETWORK_DOWN));
+    expect(p.message).toBe(NETWORK_DOWN);
+    expect(p.refreshStatus).toBe(false);
   });
 });
 

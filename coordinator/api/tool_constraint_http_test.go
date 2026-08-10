@@ -35,6 +35,16 @@ func TestToolConstraintValidationRunsThroughEveryHTTPShape(t *testing.T) {
 			"uses oneOf",
 		},
 		{
+			// #561: the same union that fails closed in constrained mode must
+			// clear admission under auto and be answered by routing, not by a
+			// 422 schema verdict the auto path never needed.
+			"chat auto union reaches model resolution",
+			"/v1/chat/completions",
+			`{"model":"m","messages":[{"role":"user","content":"x"}],"tools":[{"type":"function","function":{"name":"f","parameters":{"type":"object","properties":{"x":{"anyOf":[{"type":"string"},{"type":"object"}]}}}}}],"tool_choice":"auto"}`,
+			http.StatusServiceUnavailable,
+			"supports tool calls",
+		},
+		{
 			"chat constrained multimodal",
 			"/v1/chat/completions",
 			`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}],"tools":[{"type":"function","function":{"name":"safe","parameters":{"type":"object"}}}],"tool_choice":"required"}`,
@@ -101,6 +111,7 @@ func TestPreferOwnerConstraintFailsBeforeQueueWithoutCapableFallback(t *testing.
 		false,
 		true,
 		true,
+		"required",
 		false,
 		selfRoutePolicy{prefer: true, ownerAccountID: "owner"},
 		nil,

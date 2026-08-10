@@ -1,16 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchStripeStatus,
   startStripeOnboarding,
+  createStripeDashboardLink,
   withdrawStripe,
   fetchStripeWithdrawals,
   unlinkStripeAccount,
   type StripeStatus,
   type StripeWithdrawal,
 } from "@/lib/api";
-import { classifyOnboardError, classifyWithdrawError, withdrawSuccessMessage } from "./payout-copy";
+import {
+  classifyDashboardError,
+  classifyOnboardError,
+  classifyWithdrawError,
+  withdrawSuccessMessage,
+} from "./payout-copy";
 
 type WithdrawMethod = "standard" | "instant";
 
@@ -35,6 +41,9 @@ export interface UseStripePayouts {
   withdraw: () => Promise<void>;
   /** Open the withdraw modal, seeding the amount + best available method. */
   openWithdraw: (defaultAmount?: string) => void;
+  /** Open the Stripe Express Dashboard to change the payout bank account. */
+  openDashboard: () => Promise<void>;
+  dashboardLoading: boolean;
   /** Detach the linked Stripe account so a fresh one can be onboarded. */
   unlink: () => Promise<void>;
   unlinkLoading: boolean;
@@ -150,6 +159,60 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     setWithdrawOpen(true);
   }, [status?.instant_eligible]);
 
+  // Changing the payout bank account happens in Stripe's Express Dashboard,
+  // reached through a single-use login link. The tab is opened synchronously
+  // inside the click gesture, because opening it after the await would be
+  // swallowed by the popup blocker; `opener = null` disowns it before it ever
+  // points at Stripe. Every navigation uses replace() so the credential never
+  // lands in session history, and a blocked or closed tab falls back to this
+  // one rather than burning a link that can't be reissued.
+  const [dashboardLoading, setDashboardLoading] = useState(false);
+
+  // The dashboard opens in another tab, so this one keeps rendering whatever
+  // destination it loaded before the bank change — and openWithdraw seeds the
+  // method from that same stale instant_eligible, which can push a card-only
+  // instant payout at an account that now has a bank. Arm a one-shot refresh
+  // for when the user comes back. refresh=1, not the cached read: the
+  // account.updated webhook that mirrors the new destination may not have
+  // landed yet. The listener lives in an effect (not inside openDashboard) so
+  // it is torn down if the page unmounts before the user ever returns.
+  const dashboardReturnPending = useRef(false);
+  useEffect(() => {
+    if (!enabled) return;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!dashboardReturnPending.current) return;
+      dashboardReturnPending.current = false;
+      void reload(true);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [enabled, reload]);
+
+  const openDashboard = useCallback(async () => {
+    setDashboardLoading(true);
+    const tab = window.open("", "_blank");
+    if (tab) tab.opener = null;
+    try {
+      const { url } = await createStripeDashboardLink();
+      if (!url) throw new Error("Stripe didn't return a dashboard link.");
+      if (tab && !tab.closed) {
+        tab.location.replace(url);
+        dashboardReturnPending.current = true;
+      } else {
+        // Same-tab fallback: this page unloads, so there is nothing to keep
+        // fresh — coming back remounts and reloads from scratch.
+        window.location.replace(url);
+      }
+    } catch (e) {
+      tab?.close();
+      const p = classifyDashboardError(e);
+      addToast(p.message);
+      if (p.refreshStatus) await reload(false);
+    }
+    setDashboardLoading(false);
+  }, [addToast, reload]);
+
   const [unlinkLoading, setUnlinkLoading] = useState(false);
   const unlink = useCallback(async () => {
     setUnlinkLoading(true);
@@ -181,6 +244,8 @@ export function useStripePayouts(opts: StripePayoutsOptions): UseStripePayouts {
     onboard,
     withdraw,
     openWithdraw,
+    openDashboard,
+    dashboardLoading,
     unlink,
     unlinkLoading,
   };

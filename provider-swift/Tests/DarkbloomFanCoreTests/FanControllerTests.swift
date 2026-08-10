@@ -903,7 +903,17 @@ struct FanControllerTests {
         backend.installWriteHook { key, bytes in
             if key == "F0Md", bytes == [1] {
                 entered.signal()
-                release.wait()
+                // Holding engage INSIDE its critical section is the point of
+                // this test, and the hook runs on the actor's thread — a
+                // cooperative-pool thread — so this wait unavoidably parks
+                // one. Two mitigations keep that safe: the coordination
+                // below runs entirely on a GCD thread, so releasing this
+                // wait never itself needs a pool thread (no starvation
+                // cycle), and the wait is BOUNDED so a pathological stall
+                // degrades to a weaker-contention run instead of wedging
+                // the suite. Actor serialization still guarantees the
+                // ordering assertion either way.
+                _ = release.wait(timeout: .now() + 30)
             }
         }
         let controller = try makeController(backend: backend)
@@ -911,11 +921,27 @@ struct FanControllerTests {
         let engage = Task.detached {
             try await controller.engage(speedPercent: 80)
         }
-        #expect(await waitForSemaphore(entered, timeout: .now() + 2) == .success)
-        let restore = Task.detached {
-            try await controller.restoreAutomatic()
-        }
-        release.signal()
+        // Wait for engage to reach the held write, issue restore, and unblock
+        // the hook — all from ONE dedicated GCD thread. The previous shape did
+        // this from the test's own task with a 2-second deadline: under
+        // full-suite load the detached engage task could take longer than 2s
+        // just to be SCHEDULED, and the test flaked on scheduler latency
+        // rather than on anything about the controller. The deadline is now
+        // generous (it bounds only the failure path) and no step between
+        // "engage reached the hook" and "hook released" depends on the
+        // cooperative pool having a free thread.
+        let (reached, restore): (DispatchTimeoutResult, Task<Void, any Error>) =
+            await withCheckedContinuation { continuation in
+                DispatchQueue.global().async {
+                    let reached = entered.wait(timeout: .now() + 30)
+                    let restore = Task.detached {
+                        try await controller.restoreAutomatic()
+                    }
+                    release.signal()
+                    continuation.resume(returning: (reached, restore))
+                }
+            }
+        #expect(reached == .success, "engage never reached the held F0Md write")
         _ = try await engage.value
         try await restore.value
 
@@ -946,17 +972,6 @@ private func captureControllerError(
     } catch {
         Issue.record("unexpected error type: \(error)")
         return nil
-    }
-}
-
-private func waitForSemaphore(
-    _ semaphore: DispatchSemaphore,
-    timeout: DispatchTime
-) async -> DispatchTimeoutResult {
-    await withCheckedContinuation { continuation in
-        DispatchQueue.global().async {
-            continuation.resume(returning: semaphore.wait(timeout: timeout))
-        }
     }
 }
 

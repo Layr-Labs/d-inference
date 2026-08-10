@@ -256,8 +256,12 @@ func TestNamedToolChoiceValidatesOnlySelectedSchema(t *testing.T) {
 	}
 }
 
-func TestAutoToolChoiceRejectsUnsupportedRegexBeforeDispatch(t *testing.T) {
-	body := func(pattern string) []byte {
+// Auto never compiles a sampler grammar: its tool calls are checked after
+// generation by a validator that implements `pattern` natively. Any regex the
+// caller writes must therefore forward untouched. Only the grammar-compiled
+// modes fail closed on it.
+func TestAutoToolChoiceForwardsArbitraryRegexPatterns(t *testing.T) {
+	body := func(choice, pattern string) []byte {
 		return []byte(fmt.Sprintf(`{
 			"model":"m",
 			"messages":[{"role":"user","content":"x"}],
@@ -267,33 +271,48 @@ func TestAutoToolChoiceRejectsUnsupportedRegexBeforeDispatch(t *testing.T) {
 					"code":{"type":"string","pattern":%q}
 				}}
 			}}],
-			"tool_choice":"auto"
-		}`, pattern))
+			"tool_choice":%q
+		}`, pattern, choice))
 	}
-	if _, err := validateToolConstraintRequest(body("^city$")); err != nil {
-		t.Fatalf("bounded literal pattern rejected: %v", err)
+	for _, pattern := range []string{"^city$", "^[a-z]+$", `^[a-f0-9]{8}$`, `\d{3}-\d{4}`} {
+		if _, err := validateToolConstraintRequest(body("auto", pattern)); err != nil {
+			t.Fatalf("auto rejected regex %q: %v", pattern, err)
+		}
 	}
-	_, err := validateToolConstraintRequest(body("^[a-z]+$"))
+	_, err := validateToolConstraintRequest(body("required", "^[a-z]+$"))
 	var typed *toolConstraintRequestError
 	if !errors.As(err, &typed) || typed.status != http.StatusUnprocessableEntity {
-		t.Fatalf("unsupported regex was not rejected before dispatch: %T %v", err, err)
+		t.Fatalf("constrained mode accepted an uncompilable regex: %T %v", err, err)
 	}
 }
 
-func TestAutoPatternValidationDistinguishesSchemaKeywordsFromPropertyNames(t *testing.T) {
-	body := []byte(`{
-		"model":"m",
-		"messages":[{"role":"user","content":"x"}],
-		"tools":[{"type":"function","function":{
-			"name":"lookup",
-			"parameters":{"type":"object","properties":{
-				"pattern":{"type":"string","pattern":"^city$"}
-			}}
-		}}],
-		"tool_choice":"auto"
-	}`)
-	if _, err := validateToolConstraintRequest(body); err != nil {
-		t.Fatalf("property named pattern was treated as a schema keyword: %v", err)
+// The reserved-metadata walk descends schema *keyword* containers. A property
+// literally named after a keyword lives under `properties` and is a schema in
+// its own right — it must be traversed as one, and its name must never make
+// the parent look like it carries that keyword.
+func TestReservedMetadataWalkDistinguishesSchemaKeywordsFromPropertyNames(t *testing.T) {
+	body := func(inner string) []byte {
+		return []byte(fmt.Sprintf(`{
+			"model":"m",
+			"messages":[{"role":"user","content":"x"}],
+			"tools":[{"type":"function","function":{
+				"name":"lookup",
+				"parameters":{"type":"object","properties":{
+					"pattern":{"type":"string"},
+					"if":{"type":"object","properties":{"x":%s}}
+				}}
+			}}],
+			"tool_choice":"auto"
+		}`, inner))
+	}
+	if _, err := validateToolConstraintRequest(body(`{"type":"string"}`)); err != nil {
+		t.Fatalf("properties named after schema keywords rejected: %v", err)
+	}
+	forged := body(`{"type":"string","x-darkbloom-original-boolean-schema":true}`)
+	_, err := validateToolConstraintRequest(forged)
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
+		t.Fatalf("forged marker under a keyword-named property escaped: %T %v", err, err)
 	}
 }
 
@@ -319,7 +338,10 @@ func TestAutoToolChoiceRejectsForgedBooleanSchemaMetadata(t *testing.T) {
 	}
 }
 
-func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testing.T) {
+// Every construct here is decidable by the post-generation JSON-Schema
+// validator that auto and none actually use, so the pre-flight must forward
+// them verbatim instead of guessing at grammar feasibility it never needs.
+func TestAutoToolChoiceAcceptsStandardJSONSchemaConstructs(t *testing.T) {
 	schemas := map[string]any{
 		"multi-type union": map[string]any{
 			"type": []any{"string", "integer"},
@@ -395,32 +417,31 @@ func TestAutoToolChoiceRejectsUnsupportedSemanticSchemasBeforeDispatch(t *testin
 		},
 	}
 	for name, propertySchema := range schemas {
-		t.Run(name, func(t *testing.T) {
-			body, err := json.Marshal(map[string]any{
-				"model":    "m",
-				"messages": []any{map[string]any{"role": "user", "content": "x"}},
-				"tools": []any{map[string]any{
-					"type": "function",
-					"function": map[string]any{
-						"name": "lookup",
-						"parameters": map[string]any{
-							"type":       "object",
-							"properties": map[string]any{"value": propertySchema},
+		for _, choice := range []string{"auto", "none"} {
+			t.Run(name+"/"+choice, func(t *testing.T) {
+				body, err := json.Marshal(map[string]any{
+					"model":    "m",
+					"messages": []any{map[string]any{"role": "user", "content": "x"}},
+					"tools": []any{map[string]any{
+						"type": "function",
+						"function": map[string]any{
+							"name": "lookup",
+							"parameters": map[string]any{
+								"type":       "object",
+								"properties": map[string]any{"value": propertySchema},
+							},
 						},
-					},
-				}},
-				"tool_choice": "auto",
+					}},
+					"tool_choice": choice,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := validateToolConstraintRequest(body); err != nil {
+					t.Fatalf("standard JSON-Schema construct rejected: %v", err)
+				}
 			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, validationErr := validateToolConstraintRequest(body)
-			var typed *toolConstraintRequestError
-			if !errors.As(validationErr, &typed) ||
-				typed.status != http.StatusUnprocessableEntity {
-				t.Fatalf("unsupported auto schema accepted: %T %v", validationErr, validationErr)
-			}
-		})
+		}
 	}
 }
 
@@ -483,10 +504,12 @@ func TestAutoToolChoiceValidatesRepresentableAlternateSpellings(t *testing.T) {
 		"bad top-level name": `{"name":"bad name","parameters":{"type":"object"}}`,
 		"duplicate across spellings": `{"name":"lookup","parameters":{"type":"object"}},
 			{"type":"function","function":{"name":"lookup"}}`,
-		"ref in top-level parameters": `{"name":"probe","parameters":{
-			"type":"object","properties":{"v":{"$ref":"#/$defs/x"}}}}`,
-		"ref in custom input_schema": `{"type":"custom","name":"probe","input_schema":{
-			"type":"object","properties":{"v":{"$ref":"#/$defs/x"}}}}`,
+		"forged marker in top-level parameters": `{"name":"probe","parameters":{
+			"type":"object","properties":{"v":{"type":"string",
+			"x-darkbloom-original-boolean-schema":true}}}}`,
+		"forged marker in custom input_schema": `{"type":"custom","name":"probe","input_schema":{
+			"type":"object","properties":{"v":{"type":"string",
+			"x-darkbloom-original-boolean-schema":true}}}}`,
 	}
 	for name, entry := range rejected {
 		t.Run(name, func(t *testing.T) {
@@ -506,8 +529,10 @@ func TestAutoToolChoiceValidatesRepresentableAlternateSpellings(t *testing.T) {
 		"model":"m",
 		"messages":[{"role":"user","content":"x"}],
 		"tools":[
-			{"name":"flat_spelling","parameters":{"type":"object"}},
-			{"type":"custom","name":"anthropic_spelling","input_schema":{"type":"object"}}
+			{"name":"flat_spelling","parameters":{"type":"object",
+				"$defs":{"P":{"type":"string"}},"properties":{"p":{"$ref":"#/$defs/P"}}}},
+			{"type":"custom","name":"anthropic_spelling","input_schema":{
+				"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"integer"}]}}}}
 		],
 		"tool_choice":"auto"
 	}`)
@@ -568,41 +593,62 @@ func TestAutoToolChoiceAcceptsSupportedDecimalMultipleSchemas(t *testing.T) {
 	}
 }
 
-func TestAutoPatternValidationDoesNotDoubleCountTupleContainers(t *testing.T) {
-	var item any = map[string]any{"type": "string", "pattern": "^city$"}
-	for range 17 {
-		item = map[string]any{
-			"type":  "array",
-			"items": []any{item},
+// A draft-07 tuple `items` array is a container, not a schema node. Charging
+// it a level would halve the reachable depth and let a forged marker hide one
+// nest deeper than the budget suggests.
+func TestReservedMetadataWalkDoesNotChargeDepthForTupleContainers(t *testing.T) {
+	nest := func(leaf any, levels int) any {
+		item := leaf
+		for range levels {
+			item = map[string]any{"type": "array", "items": []any{item}}
 		}
+		return item
 	}
-	body, err := json.Marshal(map[string]any{
-		"model":    "m",
-		"messages": []any{map[string]any{"role": "user", "content": "x"}},
-		"tools": []any{map[string]any{
-			"type": "function",
-			"function": map[string]any{
-				"name": "lookup",
-				"parameters": map[string]any{
-					"type":       "object",
-					"properties": map[string]any{"value": item},
+	body := func(leaf any) []byte {
+		encoded, err := json.Marshal(map[string]any{
+			"model":    "m",
+			"messages": []any{map[string]any{"role": "user", "content": "x"}},
+			"tools": []any{map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name": "lookup",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"value": nest(leaf, 17)},
+					},
 				},
-			},
-		}},
-		"tool_choice": "auto",
-	})
-	if err != nil {
-		t.Fatal(err)
+			}},
+			"tool_choice": "auto",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
 	}
-	if _, err := validateToolConstraintRequest(body); err != nil {
-		t.Fatalf("tuple schema containers consumed pattern depth: %v", err)
+	clean := map[string]any{"type": "string", "pattern": "^city$"}
+	if _, err := validateToolConstraintRequest(body(clean)); err != nil {
+		t.Fatalf("deep tuple schema rejected: %v", err)
+	}
+	forged := map[string]any{"type": "string", originalBooleanSchemaKey: true}
+	_, err := validateToolConstraintRequest(body(forged))
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusBadRequest {
+		t.Fatalf("tuple containers consumed the metadata walk's depth: %T %v", err, err)
 	}
 }
 
-func TestAutoPatternValidationBoundsMalformedNestedTupleArrays(t *testing.T) {
-	var items any = map[string]any{"type": "string", "pattern": "^city$"}
+// A forged reserved marker used to hide below the old depth-32 scan horizon:
+// NormalizeToolSchemas walks to maxToolSchemaDepth and
+// constantMarkedCombinator folds marker-only combinators toward the root, so
+// a marker planted at depth 33-63 escaped the fail-open guard and could then
+// surface as shallow, coordinator-vouched metadata the provider trusts. The
+// guard now scans the normalizer's full budget and must catch it.
+func TestReservedMetadataGuardScansToNormalizerDepth(t *testing.T) {
+	var node any = map[string]any{
+		"type": "string", originalBooleanSchemaKey: true,
+	}
 	for range 40 {
-		items = []any{items}
+		node = map[string]any{"anyOf": []any{node}}
 	}
 	body, err := json.Marshal(map[string]any{
 		"model":    "m",
@@ -610,10 +656,8 @@ func TestAutoPatternValidationBoundsMalformedNestedTupleArrays(t *testing.T) {
 		"tools": []any{map[string]any{
 			"type": "function",
 			"function": map[string]any{
-				"name": "lookup",
-				"parameters": map[string]any{
-					"type": "array", "items": items,
-				},
+				"name":       "lookup",
+				"parameters": node,
 			},
 		}},
 		"tool_choice": "auto",
@@ -621,8 +665,56 @@ func TestAutoPatternValidationBoundsMalformedNestedTupleArrays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := validateToolConstraintRequest(body); err == nil {
-		t.Fatal("malformed nested tuple arrays bypassed pattern depth bound")
+	_, verr := validateToolConstraintRequest(body)
+	var typed *toolConstraintRequestError
+	if !errors.As(verr, &typed) || typed.status != http.StatusBadRequest ||
+		!strings.Contains(typed.message, "reserved internal metadata") {
+		t.Fatalf("forged marker below the old scan horizon escaped: %T %v", verr, verr)
+	}
+}
+
+// The depth bound fails CLOSED: a schema too deep to finish scanning cannot
+// be vouched marker-free (the normalizer walks exactly as deep and folds
+// marker-only combinators upward from anywhere it reaches), so it is rejected
+// rather than forwarded. Clean schemas within the normalizer's budget still
+// pass untouched.
+func TestReservedMetadataWalkRejectsSchemasDeeperThanNormalizerBudget(t *testing.T) {
+	nest := func(levels int) any {
+		var node any = map[string]any{"type": "string", "pattern": "^city$"}
+		for range levels {
+			node = map[string]any{"anyOf": []any{node}}
+		}
+		return node
+	}
+	body := func(parameters any) []byte {
+		encoded, err := json.Marshal(map[string]any{
+			"model":    "m",
+			"messages": []any{map[string]any{"role": "user", "content": "x"}},
+			"tools": []any{map[string]any{
+				"type": "function",
+				"function": map[string]any{
+					"name":       "lookup",
+					"parameters": parameters,
+				},
+			}},
+			"tool_choice": "auto",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	// Leaf at depth maxToolSchemaDepth — the deepest node the scan still
+	// covers. Clean, so forwarded.
+	if _, err := validateToolConstraintRequest(body(nest(maxToolSchemaDepth))); err != nil {
+		t.Fatalf("clean schema within the scan depth was rejected: %v", err)
+	}
+	// Past the budget: undecidable, therefore rejected (400), never vouched.
+	_, err := validateToolConstraintRequest(body(nest(maxToolSchemaDepth + 6)))
+	var typed *toolConstraintRequestError
+	if !errors.As(err, &typed) || typed.status != http.StatusBadRequest ||
+		!strings.Contains(typed.message, "reserved-metadata scan depth") {
+		t.Fatalf("schema beyond the scan depth was not rejected: %T %v", err, err)
 	}
 }
 
@@ -750,23 +842,31 @@ func TestValidateToolConstraintRequestAcceptsMathematicalIntegerFiniteValues(t *
 	}
 }
 
-func TestValidateToolConstraintRequestRejectsInexactAutoFiniteValues(t *testing.T) {
-	body := []byte(`{
-		"model":"m",
-		"messages":[{"role":"user","content":"x"}],
-		"tools":[{"type":"function","function":{
-			"name":"calculate",
-			"parameters":{"type":"object","properties":{
-				"value":{"type":"number","enum":[0.10000000000000001]}
-			}}
-		}}],
-		"tool_choice":"auto"
-	}`)
-	_, err := validateToolConstraintRequest(body)
+// Exact float representability only matters when the value has to survive a
+// round trip through the provider's grammar compiler. Auto never builds one,
+// so the literal forwards verbatim; only the constrained modes fail closed.
+func TestInexactFiniteValuesFailOnlyInConstrainedModes(t *testing.T) {
+	body := func(choice string) []byte {
+		return []byte(fmt.Sprintf(`{
+			"model":"m",
+			"messages":[{"role":"user","content":"x"}],
+			"tools":[{"type":"function","function":{
+				"name":"calculate",
+				"parameters":{"type":"object","properties":{
+					"value":{"type":"number","enum":[0.10000000000000001]}
+				}}
+			}}],
+			"tool_choice":%q
+		}`, choice))
+	}
+	if _, err := validateToolConstraintRequest(body("auto")); err != nil {
+		t.Fatalf("auto rejected an inexact finite value: %v", err)
+	}
+	_, err := validateToolConstraintRequest(body("required"))
 	var typed *toolConstraintRequestError
 	if !errors.As(err, &typed) ||
 		typed.status != http.StatusUnprocessableEntity {
-		t.Fatalf("inexact auto finite value accepted: %T %v", err, err)
+		t.Fatalf("constrained mode accepted an inexact finite value: %T %v", err, err)
 	}
 }
 

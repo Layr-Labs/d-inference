@@ -179,6 +179,82 @@ func TestCreateAccountLinkRequiresAccount(t *testing.T) {
 	}
 }
 
+// --- Login links (Express Dashboard) ---
+
+func TestCreateLoginLinkSuccess(t *testing.T) {
+	var gotMethod, gotPath string
+	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		_, _ = w.Write([]byte(`{"object":"login_link","url":"https://connect.stripe.com/express/acct_test_123/tok"}`))
+	})
+	link, err := client.CreateLoginLink("acct_test_123")
+	if err != nil {
+		t.Fatalf("create login link: %v", err)
+	}
+	if link != "https://connect.stripe.com/express/acct_test_123/tok" {
+		t.Errorf("got link %q", link)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method=%q, want POST", gotMethod)
+	}
+	if gotPath != "/v1/accounts/acct_test_123/login_links" {
+		t.Errorf("path=%q", gotPath)
+	}
+}
+
+func TestCreateLoginLinkRequiresAccount(t *testing.T) {
+	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) { t.Error("should not call Stripe") })
+	if _, err := client.CreateLoginLink(""); err == nil {
+		t.Fatal("expected error for missing account")
+	}
+}
+
+// The account ID is interpolated into the request path, so a malformed value
+// must be rejected before it can reshape the URL.
+func TestCreateLoginLinkRejectsMalformedAccountID(t *testing.T) {
+	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) { t.Error("should not call Stripe") })
+	for _, id := range []string{"acct_x/../../v1/payouts", "cus_123", "acct_x?foo=1"} {
+		if _, err := client.CreateLoginLink(id); err == nil {
+			t.Errorf("CreateLoginLink(%q) succeeded, want rejection", id)
+		}
+	}
+}
+
+// A 2xx with no url would otherwise hand the UI an empty redirect target.
+func TestCreateLoginLinkRejectsEmptyURL(t *testing.T) {
+	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"object":"login_link"}`))
+	})
+	if _, err := client.CreateLoginLink("acct_test_123"); err == nil {
+		t.Fatal("expected error for response without url")
+	}
+}
+
+func TestCreateLoginLinkPropagatesStripeError(t *testing.T) {
+	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"account_invalid","message":"No such account: acct_test_123"}}`))
+	})
+	_, err := client.CreateLoginLink("acct_test_123")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !IsAccountGoneErr(err) {
+		t.Errorf("error %v should classify as account-gone", err)
+	}
+}
+
+func TestCreateLoginLinkMockMode(t *testing.T) {
+	c := NewStripeConnect("", "", "US", true, silentLogger())
+	link, err := c.CreateLoginLink("acct_mock_1")
+	if err != nil {
+		t.Fatalf("mock login link: %v", err)
+	}
+	if !strings.Contains(link, "acct_mock_1") {
+		t.Errorf("mock link %q should embed the account id", link)
+	}
+}
+
 func TestGetAccountParsesDestinationAndInstantEligibility(t *testing.T) {
 	_, client := withTestStripe(t, func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{

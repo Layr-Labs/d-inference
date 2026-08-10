@@ -248,12 +248,24 @@ enum SSDPrefixCacheFactory {
             #endif
             return nil
         }
+        // WS-4.2 sidecars: the operator knob plus a layout that tiles into
+        // whole blocks. This drives the write and read paths, so the format
+        // and the corpus stay exercised. It deliberately does NOT move the
+        // replay bound — no row in this repo can install a restored window,
+        // so a boundary with complete sidecars still replays in full and a
+        // collapsed bound would advertise savings the adopter cannot deliver
+        // (see `PrefixCachePolicy.adoptionBoundTokens`).
+        let windowSidecar =
+            SSDPrefixCachePolicy.windowSidecarEnabled(environment: environment)
+            ? SSDWindowSidecarGeometry.derive(layerKinds: layerKinds, blockSize: blockSize)
+            : nil
+        let adoptionBoundTokens = prefixReuseCapability.conservativeReplayBoundTokens
         let config = SSDPrefixCache.Config(
             modelId: modelId,
             promptContractID: promptContractID,
             weightHash: weightHash,
             blockSize: blockSize,
-            adoptionBoundTokens: prefixReuseCapability.conservativeReplayBoundTokens,
+            adoptionBoundTokens: adoptionBoundTokens,
             nominalFullKVBytesPerToken: prefixReuseCapability.fullKVBytesPerToken,
             layoutEpoch: layoutEpoch,
             epochStore: epochStore,
@@ -262,9 +274,11 @@ enum SSDPrefixCacheFactory {
             ttlSeconds: SSDPrefixCachePolicy.ttlSeconds(environment: environment),
             minEffectiveTokens: PrefixCachePolicy.minEffectiveTokens(
                 capability: prefixReuseCapability,
+                adoptionBoundTokens: adoptionBoundTokens,
                 environment: environment),
             maxStageBytes: SSDPrefixCachePolicy.maxStageBytes(environment: environment),
             maxStageMillis: SSDPrefixCachePolicy.maxStageMillis(environment: environment),
+            windowSidecar: windowSidecar,
             nowSeconds: { Int64(Date().timeIntervalSince1970) })
         let cache = SSDPrefixCache(
             config: config,

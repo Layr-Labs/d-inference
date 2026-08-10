@@ -1,4 +1,5 @@
 import Foundation
+import ProviderCore
 
 /// Machine-readable result of `darkbloom benchmark --sweep`.
 ///
@@ -10,7 +11,13 @@ import Foundation
 public struct ThroughputSweepReport: Codable, Sendable {
 
     /// Bumped when the JSON shape changes so downstream parsers can gate.
-    public static let currentSchemaVersion = 1
+    /// 2 adds the optional `decodeConstructionFailure` block.
+    /// 3 adds the required `kvBackend` block and the per-cell
+    /// `decode[].resolvedKVBackend`.
+    /// 4 adds the required `decodeCoverage` block: which cells were ASKED
+    /// for versus which ones actually produced a measurement.
+    /// 5 adds required effective config-projected Gemma settings.
+    public static let currentSchemaVersion = 5
 
     public struct Hardware: Codable, Sendable {
         public let chipName: String
@@ -50,19 +57,29 @@ public struct ThroughputSweepReport: Codable, Sendable {
         public let aggregateTokensPerSecond: Double
         public let perSequenceTokensPerSecond: Double
         public let elapsedMs: Double
+        /// The KV backend the engine for THIS cell actually built with, or
+        /// nil when construction failed and the cell measured nothing. Each
+        /// batch size builds its own engine sized by its own
+        /// `maxConcurrentRequests`, so the outcome can differ per cell —
+        /// explicit `.paged` resolving at B=1 and refusing at B=8, or a
+        /// degrading selection resolving paged at B=1 and contiguous at
+        /// B=8. A single run-wide scalar would hide exactly that.
+        public let resolvedKVBackend: String?
 
         public init(
             batchSize: Int,
             decodeTokensPerSequence: Int,
             aggregateTokensPerSecond: Double,
             perSequenceTokensPerSecond: Double,
-            elapsedMs: Double
+            elapsedMs: Double,
+            resolvedKVBackend: String? = nil
         ) {
             self.batchSize = batchSize
             self.decodeTokensPerSequence = decodeTokensPerSequence
             self.aggregateTokensPerSecond = aggregateTokensPerSecond
             self.perSequenceTokensPerSecond = perSequenceTokensPerSecond
             self.elapsedMs = elapsedMs
+            self.resolvedKVBackend = resolvedKVBackend
         }
     }
 
@@ -124,6 +141,88 @@ public struct ThroughputSweepReport: Codable, Sendable {
         }
     }
 
+    /// Present ONLY when engine construction failed for EVERY decode cell,
+    /// so the sweep measured nothing at all. The samples are still emitted
+    /// (all zero) and `notes` still records the selection, but a reader —
+    /// human or script — needs the CAUSE, not just an empty curve.
+    ///
+    /// The case this exists for: `--kv-backend paged` on a box where paged
+    /// cannot be served. Since OPEN-9 that is a hard refusal rather than a
+    /// silent degrade to contiguous, so the run legitimately produces no
+    /// numbers, and `darkbloom benchmark` exits non-zero off this field
+    /// rather than reporting success with an empty curve.
+    public struct DecodeConstructionFailure: Codable, Sendable {
+        /// The `--kv-backend` selection the run was launched with.
+        public let kvBackendSelection: String
+        /// The construction error, verbatim, from the last cell that failed.
+        public let reason: String
+
+        public init(kvBackendSelection: String, reason: String) {
+            self.kvBackendSelection = kvBackendSelection
+            self.reason = reason
+        }
+    }
+
+    /// What was ASKED FOR versus what was BUILT. Two different facts: the
+    /// gap between them is the whole signal a paged rollout is measured on,
+    /// and collapsing them into one string makes an honest paged run
+    /// indistinguishable from an `.auto` run that degraded to contiguous.
+    ///
+    /// This exists as structured JSON rather than only as a `notes` line
+    /// because the release gates parse it: `scripts/gemma_contbatch` refuses
+    /// to diff two reports whose resolved backends differ, and a prose
+    /// sentence is not a contract a gate can hold.
+    ///
+    /// The same record the scheduler-prefill and arrival phases carry — one
+    /// type, so a wrapper that pins the sweep's backend pins theirs the same
+    /// way.
+    public typealias KVBackend = BenchmarkKVBackend
+
+    /// A requested decode cell that produced no measurement because its
+    /// engine never built.
+    ///
+    /// Each cell builds its own engine with its own `maxConcurrentRequests`,
+    /// which is an input to paged physical-capacity planning — so B=1 can
+    /// resolve paged while B=8 refuses for want of a concurrency-sized pool.
+    /// The cell still appears in `decode` as a placeholder zero (dropping it
+    /// would silently shorten the curve); this is the record that the zero is
+    /// an absence, not an observation.
+    public struct UnmeasuredCell: Codable, Sendable {
+        /// The batch size the operator asked for and did not get.
+        public let batchSize: Int
+        /// The construction error for this cell, verbatim.
+        public let reason: String
+
+        public init(batchSize: Int, reason: String) {
+            self.batchSize = batchSize
+            self.reason = reason
+        }
+    }
+
+    /// Requested-versus-measured decode cells.
+    ///
+    /// `decodeConstructionFailure` only speaks when NOTHING ran. A sweep
+    /// where one cell of four refused is not a total failure and not a clean
+    /// run either, and until this block existed that middle case was
+    /// unrepresentable: the failed cell's error was discarded and the curve
+    /// carried a zero that read like a measurement. An EXPLICIT
+    /// `--kv-backend` names a promise about every requested cell, so
+    /// `darkbloom benchmark` exits non-zero off `unmeasured` — see
+    /// `Benchmark.sweepFailureMessage`.
+    public struct DecodeCoverage: Codable, Sendable {
+        /// Every batch size the sweep set out to measure, ascending, after
+        /// the non-positive entries are dropped.
+        public let requestedBatchSizes: [Int]
+        /// The requested cells that never built an engine, one entry per
+        /// batch size in first-seen order. EMPTY on a fully measured run.
+        public let unmeasured: [UnmeasuredCell]
+
+        public init(requestedBatchSizes: [Int], unmeasured: [UnmeasuredCell]) {
+            self.requestedBatchSizes = requestedBatchSizes
+            self.unmeasured = unmeasured
+        }
+    }
+
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
@@ -132,6 +231,20 @@ public struct ThroughputSweepReport: Codable, Sendable {
     public let decode: [DecodeSample]
     public let derived: Derived
     public let notes: [String]
+    /// Config-projected Gemma settings this subprocess actually benchmarked.
+    public let gemmaOptimizations: BenchmarkGemmaOptimizations
+    /// Selection versus resolved backend. Always present since schema 3: a
+    /// decode curve whose backend is unknown is not comparable to anything.
+    public let kvBackend: KVBackend
+    /// Non-nil only when no decode cell could be constructed. Omitted from
+    /// the JSON entirely on a healthy run, so successful reports keep their
+    /// existing shape.
+    public let decodeConstructionFailure: DecodeConstructionFailure?
+    /// Requested versus measured decode cells. Always present since schema
+    /// 4: a curve that quietly skipped a cell is not the curve that was
+    /// asked for, and `decodeConstructionFailure` above only fires when
+    /// EVERY cell failed.
+    public let decodeCoverage: DecodeCoverage
 
     public init(
         schemaVersion: Int = ThroughputSweepReport.currentSchemaVersion,
@@ -141,7 +254,12 @@ public struct ThroughputSweepReport: Codable, Sendable {
         prefill: [PrefillSample],
         decode: [DecodeSample],
         derived: Derived,
-        notes: [String]
+        notes: [String],
+        gemmaOptimizations: BenchmarkGemmaOptimizations,
+        kvBackend: KVBackend = KVBackend(selection: "auto", resolved: []),
+        decodeConstructionFailure: DecodeConstructionFailure? = nil,
+        decodeCoverage: DecodeCoverage = DecodeCoverage(
+            requestedBatchSizes: [], unmeasured: [])
     ) {
         self.schemaVersion = schemaVersion
         self.modelID = modelID
@@ -151,6 +269,10 @@ public struct ThroughputSweepReport: Codable, Sendable {
         self.decode = decode
         self.derived = derived
         self.notes = notes
+        self.gemmaOptimizations = gemmaOptimizations
+        self.kvBackend = kvBackend
+        self.decodeConstructionFailure = decodeConstructionFailure
+        self.decodeCoverage = decodeCoverage
     }
 
     // MARK: - Derived assembly

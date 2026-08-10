@@ -60,11 +60,26 @@ validate_env_file() {
     ' "$file" || fail "invalid environment file: $file"
 }
 
+# require_existing_values fails when a manifest key is absent or empty in file.
+#
+# allow_defaults=1 exempts keys that DEFAULTS_FILE supplies. It is set only on
+# the PRE-merge pass: a key listed in BOTH manifests can never satisfy a
+# pre-merge existence check on a box that does not have it yet, which is
+# precisely the box the release default exists to fix — the deploy would fail
+# instead of installing the key. The POST-merge pass runs with no exemption, so
+# every manifest key is still guaranteed present and non-empty in the generated
+# file, and an operator who blanks such a key still fails the run (the merge
+# only adds ABSENT keys, so an empty value is preserved and then rejected).
 require_existing_values() {
     local file=$1
+    local allow_defaults=${2:-0}
     local missing=""
     while IFS= read -r key; do
         case "$key" in ""|\#*) continue ;; esac
+        if [ "$allow_defaults" = 1 ] &&
+            awk -F= -v key="$key" '$1 == key { found=1 } END { exit !found }' "$DEFAULTS_FILE"; then
+            continue
+        fi
         if ! awk -F= -v key="$key" '$1 == key && length(substr($0, index($0, "=") + 1)) > 0 { found=1 } END { exit !found }' "$file"; then
             missing="$missing $key"
         fi
@@ -73,8 +88,8 @@ require_existing_values() {
 }
 
 validate_env_file "$ENV_FILE"
-require_existing_values "$ENV_FILE"
 validate_env_file "$DEFAULTS_FILE"
+require_existing_values "$ENV_FILE" 1
 
 mkdir -p "$ENV_DIR"
 tmp=$(mktemp "$ENV_DIR/.env.release.XXXXXX")
@@ -114,6 +129,14 @@ migrate_exact_value \
     EIGENINFERENCE_PROMPT_SIDECAR_HEALTH_INTERVAL_MS \
     100 \
     1000
+
+# OpenRouter cancels a silent upstream at approximately 10s. The old 10s
+# keepalive raced that boundary and produced status-0 requests; migrate only the
+# shipped value so explicit operator tuning remains authoritative.
+migrate_exact_value \
+    EIGENINFERENCE_PREFILL_KEEPALIVE_INTERVAL \
+    10s \
+    5s
 
 added=0
 while IFS= read -r line; do

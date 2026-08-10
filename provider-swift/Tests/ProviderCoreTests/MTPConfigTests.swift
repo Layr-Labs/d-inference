@@ -194,7 +194,7 @@ struct MTPBetaFeatureTests {
 
         feature.apply(true, to: &config)
 
-        #expect(config.backend.kvQuant == before.backend.kvQuant)
+        #expect(config.backend.maxModelSlots == before.backend.maxModelSlots)
         #expect(config.backend.mtpDrafterPath == before.backend.mtpDrafterPath)
         #expect(config.backend.port == before.backend.port)
         #expect(config.provider == before.provider)

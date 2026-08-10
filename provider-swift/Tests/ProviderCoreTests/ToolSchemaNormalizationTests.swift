@@ -166,6 +166,9 @@ extension ToolSchemaNormalizationTests {
         #expect(city["type"] as? String == "string")
         // Nullability preserved losslessly via the template-supported key.
         #expect(city["nullable"] as? Bool == true)
+        // The nullable pair has ONE concrete member — no union to preserve,
+        // so no anyOf is synthesized (the parity corpus pins this shape).
+        #expect(city["anyOf"] == nil)
     }
 
     @Test func nullableUnionOverridesExplicitFalse() throws {
@@ -310,5 +313,109 @@ extension ToolSchemaNormalizationTests {
         let addl = try #require((props["kv"] as? [String: Any])?["additionalProperties"] as? [String: Any])
         #expect(addl["type"] as? String == "number")
         #expect(addl["nullable"] as? Bool == true)
+    }
+
+    private func anyOfTypes(_ node: [String: Any]) -> [String]? {
+        (node["anyOf"] as? [[String: Any]])?.compactMap { member in
+            member.count == 1 ? member["type"] as? String : nil
+        }
+    }
+
+    // Go: TestNormalizeToolSchemas_MultiConcreteTypeArrayPreservedViaAnyOf
+    @Test func multiConcreteTypeArrayPreservedViaAnyOf() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "id":{"type":["string","integer"]}}}}}]}
+        """#.data(using: .utf8)!
+
+        let props = try #require(
+            toolParams(ToolSchemaNormalization.ensureParameterTypes(in: body))["properties"]
+                as? [String: Any])
+        let id = try #require(props["id"] as? [String: Any])
+        #expect(id["type"] as? String == "string")
+        #expect(anyOfTypes(id) == ["string", "integer"])
+        #expect(id["nullable"] == nil)
+    }
+
+    // Go: TestNormalizeToolSchemas_MultiConcreteNullableTypeArrayKeepsNullAndUnion
+    @Test func multiConcreteNullableTypeArrayKeepsNullAndUnion() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "id":{"type":["integer","string","null"]}}}}}]}
+        """#.data(using: .utf8)!
+
+        let props = try #require(
+            toolParams(ToolSchemaNormalization.ensureParameterTypes(in: body))["properties"]
+                as? [String: Any])
+        let id = try #require(props["id"] as? [String: Any])
+        #expect(id["type"] as? String == "integer")
+        #expect(id["nullable"] as? Bool == true)
+        // The null member rides the nullable side-channel, never the union.
+        #expect(anyOfTypes(id) == ["integer", "string"])
+    }
+
+    // Go: TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollapsesOnly
+    @Test func multiConcreteTypeArrayWithExistingCombinatorCollapsesOnly() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "v":{"type":["string","integer"],"anyOf":[{"minLength":1}]},
+            "w":{"type":["string","integer"],"allOf":[{"minLength":1}]}}}}}]}
+        """#.data(using: .utf8)!
+
+        let props = try #require(
+            toolParams(ToolSchemaNormalization.ensureParameterTypes(in: body))["properties"]
+                as? [String: Any])
+        // The author's combinator keeps its written semantics: no second
+        // union is layered on; the authored member survives (type-injected
+        // only) and the type still collapses to the first concrete member.
+        let v = try #require(props["v"] as? [String: Any])
+        #expect(v["type"] as? String == "string")
+        let variants = try #require(v["anyOf"] as? [[String: Any]])
+        #expect(variants.count == 1)
+        #expect(variants.first?["minLength"] as? Int == 1)
+        let w = try #require(props["w"] as? [String: Any])
+        #expect(w["anyOf"] == nil)
+        #expect(w["type"] as? String == "string")
+    }
+
+    // Go: TestNormalizeToolSchemas_DuplicateTypeMembersDedupedCaseInsensitively
+    @Test func duplicateTypeMembersDedupedCaseInsensitively() throws {
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "id":{"type":["string","STRING","integer"]}}}}}]}
+        """#.data(using: .utf8)!
+
+        let props = try #require(
+            toolParams(ToolSchemaNormalization.ensureParameterTypes(in: body))["properties"]
+                as? [String: Any])
+        let id = try #require(props["id"] as? [String: Any])
+        #expect(id["type"] as? String == "string")
+        #expect(anyOfTypes(id) == ["string", "integer"])
+    }
+
+    // Go: TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive
+    // Rust: multi_concrete_union_injection_is_idempotent
+    @Test func multiConcreteUnionInjectionIsIdempotent() throws {
+        // The rewritten node has a string type (the collapse branch cannot
+        // re-fire) and carries an anyOf (a second union cannot be layered),
+        // so the second pass is a no-op.
+        let body = #"""
+        {"tools":[{"type":"function","function":{"name":"f",
+          "parameters":{"type":"object","properties":{
+            "id":{"type":["string","integer","null"]}}}}}]}
+        """#.data(using: .utf8)!
+
+        let once = ToolSchemaNormalization.ensureParameterTypes(in: body)
+        let twice = ToolSchemaNormalization.ensureParameterTypes(in: once)
+        #expect(parse(once) as NSDictionary == parse(twice) as NSDictionary)
+        let props = try #require(toolParams(once)["properties"] as? [String: Any])
+        let id = try #require(props["id"] as? [String: Any])
+        #expect(id["type"] as? String == "string")
+        #expect(id["nullable"] as? Bool == true)
+        #expect(anyOfTypes(id) == ["string", "integer"])
     }
 }

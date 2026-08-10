@@ -3,10 +3,20 @@
 // Physical-capacity policy for the experimental paged KV backend.
 //
 // A slot's logical unified-memory grant is an admission ceiling, not an
-// instruction to preallocate that many bytes. Paged slabs are physically
-// materialized at engine construction, so their budget is independently
-// bounded by useful concurrent context, live OS/MLX headroom, machine size,
-// and Metal's per-buffer limit.
+// instruction to preallocate that many bytes. The paged pool's slabs are a
+// fixed-size reservoir whose byte budget is independently bounded by useful
+// concurrent context, live OS/MLX headroom, machine size, and Metal's
+// per-buffer limit — this file computes that bound.
+//
+// It also decides WHEN the planned slabs become resident. They used to be
+// wired during engine construction, which made an idle pool visible to the
+// next model's post-load headroom measurement and broke two-model
+// co-residency on a 36 GiB box (D1): the first model's untouched 2.25 GiB
+// pool left the second measuring 0.15 GiB against a 1 GiB serveable-KV
+// minimum, so it was unloaded with a 503, where an all-contiguous pair
+// measured 2.40 GiB and served. Deferring the commitment to the pool's first
+// admission makes paged residency mean what contiguous residency already
+// means — bytes actually in use — without moving any floor.
 
 import Foundation
 import MLXLMCommon
@@ -20,9 +30,9 @@ enum PagedKVPhysicalCapacityPolicy {
     /// when the finite pool can reserve them; otherwise they retry on a
     /// contiguous provider.
     static let usefulContextTokensPerRequest = 32_768
-    /// A paged slot may eagerly own at most 1/16 of physical RAM.
+    /// A paged slot may own at most 1/16 of physical RAM.
     static let physicalMemoryDivisor = 16
-    /// Never eagerly materialize more than 8 GiB for one model.
+    /// Never plan more than 8 GiB of pool for one model.
     static let absoluteHardCapBytes = 8 * gib
     /// Use at most one quarter of currently safe live KV headroom. The
     /// remainder absorbs co-resident loads, non-MLX processes, and sampling
@@ -31,6 +41,21 @@ enum PagedKVPhysicalCapacityPolicy {
     /// Production grants must still leave a useful pool; otherwise explicit
     /// paged selection degrades to contiguous before allocation.
     static let minimumProductionPoolBytes = 1 * gib
+
+    /// When a planned pool's slabs become MLX-resident.
+    ///
+    /// `.atFirstAdmission` is the production posture and the D1 fix. It is a
+    /// deliberate statement about what a slot's memory report MEANS: an
+    /// admitted-but-idle pool is a logical grant, not residency, and logical
+    /// grants have never been visible in MLX residency for the contiguous
+    /// backend either. The guard that refuses a slot on LOGICAL grounds is
+    /// the re-slice serviceability floor, which is backend-independent and
+    /// untouched here; the guard that refuses a paged slot on PHYSICAL
+    /// grounds is `KVHeadroomProbe.postBuildServeable`, whose paged arm reads
+    /// `CBv2CapacitySnapshot.kvBytesBackendCapacity` — a construction-fixed
+    /// page-arithmetic figure that this change does not move. Neither floor
+    /// is lowered.
+    static let slabCommitment: PagedKVSlabCommitment = .atFirstAdmission
 
     struct Inputs: Sendable, Equatable {
         let physicalMemoryBytes: UInt64
@@ -43,6 +68,38 @@ enum PagedKVPhysicalCapacityPolicy {
         let usefulDemandBytes: UInt64
         let liveAllocationLimitBytes: UInt64
         let machineHardCapBytes: UInt64
+        /// Handed to `PagedKVBackend.init`; see `slabCommitment`.
+        let commitment: PagedKVSlabCommitment
+
+        /// Bytes this pool contributes to `MLX.GPU.activeMemory` — and so
+        /// removes from a CO-RESIDENT model's post-load headroom
+        /// measurement — while it has served nothing.
+        var idleResidencyBytes: Int {
+            PagedKVPhysicalCapacityPolicy.idleResidencyBytes(
+                capacityBytes: capacityBytes, commitment: commitment)
+        }
+    }
+
+    /// Bytes a pool of `capacityBytes` contributes to `MLX.GPU.activeMemory`
+    /// — and so REMOVES from the next model's post-load headroom
+    /// measurement (`KVHeadroomProbe.measuredLiveKVHeadroomBytes` reads
+    /// active + cache) — while it has served nothing.
+    ///
+    /// This is the whole of D1 as a number. On a 36 GiB box the first
+    /// model's pool is 2.25 GiB: under `.atConstruction` that is what the
+    /// second model loses and why it was refused; under `.atFirstAdmission`
+    /// it is zero until the slot serves something.
+    ///
+    /// Takes the commitment explicitly rather than reading the module
+    /// default, so the pre-D1 posture stays expressible and testable
+    /// instead of only being describable in a comment.
+    static func idleResidencyBytes(
+        capacityBytes: Int, commitment: PagedKVSlabCommitment
+    ) -> Int {
+        switch commitment {
+        case .atConstruction: return max(0, capacityBytes)
+        case .atFirstAdmission: return 0
+        }
     }
 
     enum Decision: Sendable, Equatable {
@@ -127,7 +184,8 @@ enum PagedKVPhysicalCapacityPolicy {
                 capacityBytes: Int(rounded),
                 usefulDemandBytes: usefulDemand,
                 liveAllocationLimitBytes: liveLimit,
-                machineHardCapBytes: machineCap))
+                machineHardCapBytes: machineCap,
+                commitment: slabCommitment))
     }
 
     private static func saturatingMultiply(

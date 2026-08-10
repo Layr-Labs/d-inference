@@ -51,17 +51,33 @@ public struct ArrivalInvarianceBenchmarkReport: Codable, Sendable {
         public let arrivalWithinTolerance: Bool
     }
 
+    /// 2 adds the measured delivered-topology evidence (per-row
+    ///   `submittedAtMs`/`arrivalErrorMs`, the tolerance, discarded attempts).
+    /// 3 adds the required `kvBackend` block: the selection this run was
+    ///   launched with and the backend its engine actually built. Without it
+    ///   the phase's numbers cannot be attributed to an arm, and `.auto`
+    ///   resolves CONTIGUOUS.
+    /// 4 adds required effective config-projected Gemma settings.
+    public static let currentSchemaVersion = 4
+
     public let schemaVersion: Int
     public let modelID: String
     public let modelPath: String
     public let promptTokensPerRequest: Int
     public let decodeTokensPerRequest: Int
     public let iterations: Int
+    /// Config-projected Gemma settings this subprocess actually benchmarked.
+    public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Bound enforced on every measured row's `arrivalErrorMs`. Samples that
     /// exceed it are re-run, and the benchmark fails rather than reporting
     /// numbers produced by a topology it did not actually deliver.
     public let arrivalToleranceMs: Double
     public let arrivalMaxAttemptsPerSample: Int
+    /// Selection versus the backend the ONE engine every pattern is measured
+    /// on actually resolved to. One engine per run (deliberately: every
+    /// arrival topology must see the same warm engine), so `resolved` carries
+    /// exactly one descriptor on any run that got that far.
+    public let kvBackend: BenchmarkKVBackend
     public let patterns: [Pattern]
 
     public func jsonString() throws -> String {
@@ -90,6 +106,8 @@ public enum ArrivalInvarianceBenchmark {
     // needs no `@unchecked` escape hatch (same reasoning as EngineV2Bridge).
     private struct EngineParts: Sendable {
         let engine: any CBv2Engine
+        /// The backend the factory resolved to, with any fallback reason.
+        let resolvedBackend: String
     }
 
     private struct MeasuredRow: Sendable {
@@ -134,6 +152,10 @@ public enum ArrivalInvarianceBenchmark {
     /// Settle time between a rejected attempt and its retry.
     private static let retryCooldownNanoseconds: UInt64 = 250_000_000
 
+    /// `kvBackend` is the operator-facing selection handed to the production
+    /// factory, exactly as in `ThroughputSweep.run`. `.auto` resolves
+    /// CONTIGUOUS, so a run that does not forward the wrapper's selection
+    /// here measures a different arm than the sweep it is reported beside.
     public static func run(
         modelID: String,
         modelDirectory: URL,
@@ -141,7 +163,9 @@ public enum ArrivalInvarianceBenchmark {
         decodeTokens: Int = 64,
         iterations: Int = 3,
         arrivalToleranceMs: Double? = nil,
-        maxAttemptsPerSample: Int = 3
+        maxAttemptsPerSample: Int = 3,
+        kvBackend: EngineV2KVBackendSelection = .auto,
+        gemmaOptimizations: GemmaOptimizationSettings
     ) async throws -> ArrivalInvarianceBenchmarkReport {
         let promptTokens = max(2, promptTokens)
         let decodeTokens = max(2, decodeTokens)
@@ -181,12 +205,16 @@ public enum ArrivalInvarianceBenchmark {
             )
         }
 
-        let engine = try await makeEngine(
+        let engineParts = try await makeEngine(
             container: container,
             isVLM: isVLM,
             weightBytes: facts.weightBytes,
-            maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1
+            maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1,
+            kvBackend: kvBackend
         )
+        let engine = engineParts.engine
+        log("kv backend selection \(kvBackend.rawValue), engine resolved "
+            + engineParts.resolvedBackend)
 
         var samplesByPattern = Dictionary(
             uniqueKeysWithValues: patterns.map { ($0.name, [MeasuredSample]()) }
@@ -290,14 +318,19 @@ public enum ArrivalInvarianceBenchmark {
         }
 
         return ArrivalInvarianceBenchmarkReport(
-            schemaVersion: 2,
+            schemaVersion: ArrivalInvarianceBenchmarkReport.currentSchemaVersion,
             modelID: modelID,
             modelPath: modelDirectory.path,
             promptTokensPerRequest: promptTokens,
             decodeTokensPerRequest: decodeTokens,
             iterations: iterations,
+            gemmaOptimizations: BenchmarkGemmaOptimizations(
+                settings: gemmaOptimizations),
             arrivalToleranceMs: toleranceMs,
             arrivalMaxAttemptsPerSample: maxAttempts,
+            kvBackend: BenchmarkKVBackend(
+                selection: kvBackend.rawValue,
+                resolved: [engineParts.resolvedBackend]),
             patterns: patternReports
         )
     }
@@ -478,8 +511,9 @@ public enum ArrivalInvarianceBenchmark {
         container: ModelContainer,
         isVLM: Bool,
         weightBytes: Int,
-        maxConcurrentRequests: Int
-    ) async throws -> any CBv2Engine {
+        maxConcurrentRequests: Int,
+        kvBackend: EngineV2KVBackendSelection
+    ) async throws -> EngineParts {
         let kvCapacity = Int(min(
             UnifiedMemoryCap.kvBudgetBytes(
                 physicalBytes: ProcessInfo.processInfo.physicalMemory,
@@ -488,19 +522,26 @@ public enum ArrivalInvarianceBenchmark {
             ),
             UInt64(Int.max)
         ))
-        let parts = try await container.perform { context -> EngineParts in
+        // `makeProductionBuild` is the construction `makeProductionEngine`
+        // wraps, and additionally hands back the backend the engine actually
+        // resolved to — without it a forwarded selection could not be shown
+        // to have been honoured.
+        return try await container.perform { context -> EngineParts in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
                 model: context.model,
                 isVLM: isVLM
             )
-            return EngineParts(engine: try EngineV2Factory.makeProductionEngine(
+            let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: context.tokenizer,
                 kvBytesCapacity: kvCapacity,
-                maxConcurrentRequests: maxConcurrentRequests
-            ))
+                maxConcurrentRequests: maxConcurrentRequests,
+                kvBackend: kvBackend
+            )
+            return EngineParts(
+                engine: build.engine,
+                resolvedBackend: build.resolvedKVBackendDescriptor)
         }
-        return parts.engine
     }
 
     private static func consumeRow(

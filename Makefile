@@ -2,7 +2,7 @@
 .PHONY: help \
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
-        provider-build provider-test provider benchmark-gemma-contbatch \
+        provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         test build all clean
@@ -75,6 +75,9 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 
 provider: provider-build provider-test ## Build + test provider
 
+benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
+	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
+
 benchmark-gemma-contbatch: ## Build and benchmark Gemma 4 26B continuous batching
 	python3 scripts/benchmark-gemma-contbatch.py $(GEMMA_BENCHMARK_ARGS)
 
@@ -107,7 +110,7 @@ e2e: e2e-integration ## Run the integration suite
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test ## Run all unit tests
+test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test ## Run all unit tests
 
 build: coordinator-build prompt-sidecar-build provider-build ui-build ## Build all components
 

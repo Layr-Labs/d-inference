@@ -6,5 +6,6 @@ export { MethodOption } from "./MethodOption";
 export { StripeWithdrawModal } from "./StripeWithdrawModal";
 export { CountryPicker } from "./CountryPicker";
 export { WithdrawalsList } from "./WithdrawalsList";
+export { PayoutDestinationRow } from "./PayoutDestinationRow";
 export { StripePayoutsCard } from "./StripePayoutsCard";
 export { useStripePayouts, type UseStripePayouts } from "./useStripePayouts";

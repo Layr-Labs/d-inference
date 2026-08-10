@@ -85,13 +85,17 @@ darkbloom logs --last 1h
 ```
 
 `darkbloom doctor` runs local checks (hardware, Metal, SIP, Secure Boot,
-hardened runtime, binary hash, MDM enrollment) and fetches the coordinator's
-view of your provider from `/v1/providers/attestation`
+hardened runtime, binary hash, MDM enrollment), verifies that each loaded
+slot resolved to the KV backend the config asked for, and fetches the
+coordinator's view of your provider from `/v1/providers/attestation`
 (`provider-swift/Sources/darkbloom/DoctorCommand.swift`).
 
 `darkbloom status` prints config, hardware, schedule, and live daemon state
-including the coordinator's current trust verdict
-(`provider-swift/Sources/darkbloom/StatusCommand.swift`).
+including the coordinator's current trust verdict and, per loaded model,
+the resolved KV backend and MTP posture
+(`provider-swift/Sources/darkbloom/StatusCommand.swift`). Both read the
+daemon's state file rather than the live engine, so both report the
+snapshot's age — see `docs/provider/cli-reference.md`.
 
 ## Configuration
 
@@ -105,6 +109,8 @@ It is created automatically on first start. The TOML schema is defined in
 `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift`.
 
 ```toml
+config_version = 2
+
 [provider]
 name = "darkbloom-mac16-1"
 memory_reserve_gb = 4
@@ -113,11 +119,9 @@ auto_restart = true
 
 [backend]
 model = ""
-continuous_batching = true
 enabled_models = []
 idle_timeout_mins = 60
 max_model_slots = 3
-kv_quant = false
 
 [gemma_optimizations]
 prefill_layer18 = true
@@ -136,31 +140,107 @@ end = "08:00"
 
 - `gemma_optimizations.prefill_layer18` — default ON, including when an older
   config omits the section or key. Set to `false` and restart to restore legacy
-  one-final-submission Gemma prefill.
+  one-final-submission Gemma prefill. The default and missing-key decode are in
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:16-34`;
+  the missing-section fallback is in
+  `provider-swift/Sources/ProviderCore/Config/ProviderConfig.swift:397-400`.
 - `gemma_optimizations.weighted_r1` — default ON, including when omitted. This
   is one atomic production control for weighted unsort and safe R1; the two
-  paths cannot be configured independently.
+  paths cannot be configured independently
+  (`provider-swift/Sources/ProviderCore/Config/GemmaOptimizationSettings.swift:10-18`,
+  coupled projection at
+  `provider-swift/Sources/ProviderCore/Config/GemmaOptimizationEnvironment.swift:14-22`).
 - Provider TOML is authoritative for both controls. Changes take effect at
   process restart; after setting either key to `false`, run `darkbloom restart`
-  to activate the rollback.
+  to activate the rollback. The start path projects config before Metal access
+  (`provider-swift/Sources/darkbloom/StartCommand.swift:82-88` and
+  `provider-swift/Sources/darkbloom/ServeRuntimePreparer.swift:24-35`), while
+  `darkbloom beta` durably locks, reloads, and saves the selected value before
+  printing the restart boundary
+  (`provider-swift/Sources/darkbloom/BetaCommand.swift:201-235`).
 - `backend.enabled_models` — if non-empty, only these models are advertised.
 - `backend.idle_timeout_mins` — minutes of inactivity before an idle model is
   unloaded (default 60; 0 disables eviction).
 - `backend.max_model_slots` — maximum resident models at once (default 3).
-- `backend.kv_quant` — retained for forward compatibility, but v0.7.5 serves
-  fp16-only KV. Setting it logs a warning and does not enable quantization. See
-  [Beta Features](beta-features.md).
+- `config_version` — schema version of this file, written automatically on
+  first start after upgrading. It only dates the file, so the provider can
+  tell a value the previous release GENERATED from one you chose. Leave it
+  alone; deleting it re-runs the one-time upgrade migrations below.
+- `backend.engine_v2_max_concurrent` — box-wide concurrent-request cap per
+  engine slot (default **4** as of v0.8.1, clamped to `[1, 8]`). v0.8.0 raised
+  it to 8 because PagedAttention made the batch curve keep climbing (paged
+  gains 1.27x from B=4 to B=8, contiguous only 1.069x); v0.8.1 reverts the
+  paged default, so the raise goes back with it. 4 is the knee of the measured
+  contiguous curve — aggregate throughput is flat from B=4 to B=8 and collapses
+  below it, while per-request decode is aggregate/B and so improves as the
+  batch shrinks, which is what a time-to-first-token deadline is scored on.
+  A `provider.toml` written by v0.8.0 carries an explicit `= 8` that release
+  generated; because that is **indistinguishable from a deliberate 8**, first
+  start after upgrading changes it to 4 once, logs a warning saying so, and
+  bumps `config_version` to 2. If you want 8, set it again afterwards — from
+  then on it is honoured. The `[1, 8]` upper bound is unchanged, so 8 stays
+  available both box-wide and per-model, which is what a box running
+  `engine_v2_kv_backend = "paged"` wants.
 - `backend.engine_v2_kv_backend` — KV-cache backend for the inference engine:
-  `"auto"` (default — contiguous for every model), experimental `"paged"`,
-  or `"contiguous"`. Vision models and `kv_quant`
-  configurations always serve contiguous; models the paged kernel cannot
-  serve fall back to contiguous automatically. Per-model overrides:
-  `engine_v2_kv_backend_by_model` (TOML table of model id → value). Fleet
-  kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0` (survives restarts —
-  it is forwarded into the launchd service environment). An explicit paged
-  model eagerly commits a separately capped physical pool derived from useful
-  concurrent context demand, live memory, machine size, and Metal buffer
-  limits; it never preallocates the full logical admission grant.
+  `"auto"` (default — resolves **CONTIGUOUS** as of v0.8.1, reverting the
+  v0.8.0 paged default; grep `case .auto: resolvedKind` in
+  `provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
+  for the argument). Paged sizes its KV pool from a physical-capacity policy
+  rather than the slot's logical grant, which cost the fleet roughly 10x its
+  KV and produced widespread admission failures; contiguous gets the whole
+  grant. Set `"paged"` to opt a box back in — note that an explicit `"paged"`
+  on a box that cannot build it **refuses the load (503)** rather than
+  degrading, which is the point of naming it. There is no env var that turns
+  paged on: `DARKBLOOM_CBV2_PAGED_KV=0` is a kill switch and only forces
+  contiguous. **gemma-4 greedy outputs differ between the two backends** —
+  paged is measurably closer to an fp32 reference, but the text is not
+  identical. A resolved-contiguous slot also runs with the SSD prefix cache
+  OFF: adoption is not bit-exact on contiguous for the served models, so the
+  cache is not constructed there.
+  Vision (VLM) models are NOT forced to contiguous. The
+  VLM veto in `EngineV2KVBackendPolicy.applySlotVetoes`
+  (`guard isVLM, !pagedHonorsSpanMasks`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:162`)
+  fires only when the paged cache does not affirm multimodal span masks, and
+  `PagedLayerCache.honorsSpanMaskContextsByConstruction` is `true`
+  (`libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/Paged/PagedLayerCache.swift:982`),
+  which is what the slot factory passes
+  (`provider-swift/Sources/ProviderCore/Inference/EngineV2SlotFactory.swift:190`),
+  so the veto is inert: a VLM slot gets paged under `"auto"` like any
+  other model.
+  The concurrency cap above matters: paged only
+  overtakes contiguous above ~5 concurrent rows, so pairing
+  `engine_v2_kv_backend = "paged"` with a low `engine_v2_max_concurrent`
+  (say 2) buys you paged at a small loss, not a win. Under `"auto"`, a
+  model the paged kernel cannot serve still falls back to contiguous
+  automatically;
+  under an explicit `"paged"` the model REFUSES to load instead, with the
+  underlying reason attached:
+  `EngineV2KVBackendPolicy.degradesPagedFailure`
+  (`selection != .paged`, `provider-swift/Sources/ProviderCore/Inference/EngineV2KVBackendPolicy.swift:183`)
+  returns `false` for — and only for — an explicit `.paged` selection, so a
+  paged fleet can never silently serve contiguous. That refusal surfaces as
+  a 503 and the coordinator reroutes: the engine-construction catch wraps it
+  as `InferenceError.modelLoadFailed`
+  (`provider-swift/Sources/ProviderCore/ProviderLoop+ModelLoading.swift:543-549`),
+  `loadErrorStatusCode` maps that case to 503
+  (`same file:975-983`), and the coordinator counts a 503 as
+  `capacityRejection` — no reputation strike — then cools the load-rejecting
+  pair so retries skip it (`coordinator/api/provider.go:2332`, cool-down at
+  `:2343-2351`).
+  Per-model overrides: `engine_v2_kv_backend_by_model` (TOML table of model
+  id → value). Fleet kill switch: launch with `DARKBLOOM_CBV2_PAGED_KV=0`
+  (survives restarts — it is forwarded into the launchd service
+  environment); the kill switch always degrades and never refuses, so
+  pulling it on a paged fleet gives you contiguous service, not failed
+  loads. An explicit paged model PLANS a separately capped physical pool
+  derived from useful concurrent context demand, live memory, machine size,
+  and Metal buffer limits, but does not commit it eagerly: slabs become
+  MLX-resident lazily, at first admission
+  (`PagedKVPhysicalCapacityPolicy.slabCommitment = .atFirstAdmission`,
+  `provider-swift/Sources/ProviderCore/Inference/PagedKVPhysicalCapacityPolicy.swift:58`),
+  so an admitted-but-idle pool contributes 0 bytes of idle residency
+  (`PagedKVPhysicalCapacityPolicy.idleResidencyBytes`, same file:101). It
+  never preallocates the full logical admission grant.
 - `coordinator.private_only` — serve only your own self-route traffic; never
   join the public fleet.
 

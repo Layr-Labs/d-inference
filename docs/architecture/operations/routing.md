@@ -91,15 +91,89 @@ Each term maps to a field in `RoutingDecision`:
 
 Penalty constants are defined at `scheduler.go:16-36`.
 
-### Effective decode TPS
+### Effective decode TPS (routing cost)
 
-`resolveEffectiveTPS` (`scheduler.go:950-958`) chooses the best available decode estimate in this order:
+`resolveEffectiveTPS` (`scheduler.go:1704`) chooses the best available decode
+estimate for the **cost function** in this order:
 
 1. Provider-reported observed EWMA (`slot.ObservedDecodeTPS`).
 2. Fleet median TPS for the same model and chip family (`tpsRegistry.Median`).
-3. Load-scaled benchmark TPS (`effectiveDecodeTPS`, `scheduler.go:971-983`).
+3. Load-scaled benchmark TPS (`effectiveDecodeTPS`, `scheduler.go:1745`).
 
-The load-scaled fallback divides the static benchmark TPS by `1 + effectiveTPSLoadFactor × backendRunning`, with `effectiveTPSLoadFactor = 0.27` (`scheduler.go:64`).
+The load-scaled fallback divides the static benchmark TPS by
+`1 + effectiveTPSLoadFactor × backendRunning`, with
+`effectiveTPSLoadFactor = 0.39` (`scheduler.go:97`).
+
+This chain is deliberately **load-inclusive**: it estimates what a request will
+actually experience right now, so an under-load EWMA is the *right* input.
+
+### Solo decode TPS (quality-concurrency cap)
+
+Do not confuse this with the chain above — it answers a different question and
+takes the opposite stance on load. `resolvedSoloModelTPSLocked`
+(`concurrency_cap.go:361`) resolves the **static single-stream** rate the
+admission cap is computed from. It must never be an under-load EWMA: the
+observed rate collapses under the very overload the cap exists to prevent,
+which would drive the cap to 1 in a feedback loop.
+
+Five steps, most- to least-specific. Each advances only when its own condition
+fails:
+
+| # | Source | Advances to the next step when |
+|---|---|---|
+| 1 | Per-(model, chip **class**) solo median (`SoloMedian`) | fewer than `EIGENINFERENCE_QUALITY_CAP_SOLO_MIN_SAMPLES` (default 5) gated samples, or the median is 0 |
+| 2 | MIN of per-class solo medians across chip classes (`SoloMedianAllChips`), clamped from above by the seed, and only when the transfer is **bounded** (below) | fewer than the same sample floor in total, 0, or unbounded |
+| 3 | The same two medians again with the sample floor **relaxed to ≥ 1** — under-sampled but still measured and still solo-gated (cross-class still seed-clamped and bounded) | the model has no solo sample at all on this coordinator |
+| 4 | `EIGENINFERENCE_MODEL_SOLO_TPS_SEED` for this build id **and this chip class** — the `build-id@Family|Tier` entry when present, else the unqualified entry clamped to the slowest class named for that model | no seed entry of either shape |
+| 5 | `resolvedDecodeTPS(p)` — the registration benchmark `decode_tps`, else `sqrt(memory_bandwidth)` | terminal |
+
+"Gated" (steps 1–3) means the sample was ingested only from a heartbeat where
+the **whole box** was uncontended (Σ running+waiting ≤ 1 across all slots) and
+the reporting slot had a running decode (`NumRunning > 0`) — see
+`soloSampleEligible`. That gate is what keeps a measured rate a *solo* rate.
+
+Steps 2 and 3 hand a provider a rate its own chip class did not produce, so the
+transferred value needs an upper bound. **At least one of three things must
+supply it**, or the transfer is refused outright and the chain drops to step
+4/5:
+
+- a seed applies to this provider's chip class (`soloTPSSeedForClass`);
+- the provider's own class contributed ≥ 1 sample, so the min of per-class
+  medians cannot exceed what its own class demonstrated;
+- ≥ 2 classes contributed, so the minimum is a genuine cross-class minimum.
+
+With none of them the "MIN of per-class medians" is a *single* class's median
+wearing the name of a minimum — one M4 Max sample setting an unsampled M1 Pro's
+rate, the exact over-admission the class keying exists to prevent. Production
+seeds every catalog model, so in practice this refusal is the backstop for a
+model nobody seeded.
+
+The step-2/3 clamp and step 4 both use the **class-scoped** seed
+(`soloTPSSeedForClass`). A seed is a measurement of one chip class: the
+production gemma seed was taken on an M4 Max at ~99.5 tok/s solo, and applying
+it to an M1 Pro that decodes at ~14 tok/s would grant cap 8 against a 15 tok/s
+floor. Unqualified entries are therefore clamped at parse time to the slowest
+class the operator named for that model, so a class nobody named — including
+an unrecognized chip, which reports `Unknown|Unknown` — can never out-rank the
+slowest class that was named. The error direction is under-admission.
+
+Step 3 exists because the alternative below it is worse information, not
+better: step 5's `sqrt(memory_bandwidth)` is **model-agnostic** (16–28 tok/s
+across Apple silicon) and has nothing to do with the model being capped. One
+solo-gated measurement of the actual model beats it outright. Under-sampled
+readings converge from **below** — the α = 0.3 provider EWMA still carries
+batched history when the box drops to a single request — so the error direction
+is a tighter cap, never a permissive one.
+
+Step 5 is reached in production only at **cold start**. The Swift provider
+never sends `decode_tps` at registration (deliberately: on a multi-model box a
+single provider-level benchmark lends one model's rate to another — the
+postmortem layer-6 failure), and a provider that has completed no request
+reports no `observed_decode_tps` at all, so `p.DecodeTPS` is 0 and the proxy is
+all that is left. For a **dedicated** model that yields a cap of 2; for a
+non-dedicated one the guard in `effectiveMaxConcurrencyForModelRateLocked`
+(`concurrency_cap.go:425`) leaves the provider's reported cap alone. This is
+why the seed at step 4 stays configured — see the v0.8.0 release notes.
 
 ## Slot states and penalties
 

@@ -433,6 +433,12 @@ public actor ProviderLoop {
     /// (not ContinuousClock) so it survives across the CLI process boundary.
     internal var lastTrustStatus: DaemonState.Trust?
     internal var lastModelLoadError: DaemonState.ModelLoadError?
+    /// Live per-slot KV-backend + MTP posture, resampled once per capacity
+    /// refresh (`updateAggregateCapacity`) because `mtpStatusSnapshot()` is
+    /// an actor hop and `writeDaemonState()` is synchronous. Joined with
+    /// `lastModelLoadError` at write time so a failure recorded BETWEEN
+    /// refreshes still reaches the state file immediately.
+    internal var lastLiveSlotPostures: [DaemonSlotPostureBuilder.LiveSlot] = []
     internal let startedAtEpoch: Double = Date().timeIntervalSince1970
 
     /// Keeps the network stack alive during sleep for APN push notifications.

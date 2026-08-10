@@ -251,7 +251,8 @@ func TestNormalizeToolSchemas_NullSchemasPreservedAcrossShapes(t *testing.T) {
 func TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive(t *testing.T) {
 	body := []byte(`{"model":"m","max_tokens":9007199254740993,"tools":[` +
 		`{"type":"function","function":{"name":"chat","parameters":` +
-		`{"properties":{"a":{"type":["integer","null"],"default":9007199254740993}}}}},` +
+		`{"properties":{"a":{"type":["integer","null"],"default":9007199254740993},` +
+		`"u":{"type":["string","integer","null"]}}}}},` +
 		`{"type":"function","name":"flat","parameters":` +
 		`{"properties":{"b":{"enum":["x"],"default":0.30000000000000004}}}},` +
 		`{"name":"anthropic","input_schema":` +
@@ -280,6 +281,16 @@ func TestNormalizeToolSchemas_AllShapesIdempotentAndNumbersSurvive(t *testing.T)
 	a := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[0], "tools[0]")["function"], "function")["parameters"], "chat parameters")["properties"], "chat properties")["a"], "a")
 	if got := tsnType(t, a, "a"); got != "integer" || a["nullable"] != true {
 		t.Errorf("chat a = type %q nullable %v, want integer/true", got, a["nullable"])
+	}
+	// The multi-concrete union is preserved via anyOf AND survives the second
+	// pass unchanged (the injected members are already normal-form, and the
+	// node now carries a type string plus an anyOf, so no rewrite re-fires).
+	u := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[0], "tools[0]")["function"], "function")["parameters"], "chat parameters")["properties"], "chat properties")["u"], "u")
+	if got := tsnType(t, u, "u"); got != "string" || u["nullable"] != true {
+		t.Errorf("chat u = type %q nullable %v, want string/true", got, u["nullable"])
+	}
+	if got := tsnAnyOfTypes(t, u, "u"); len(got) != 2 || got[0] != "string" || got[1] != "integer" {
+		t.Errorf("chat u anyOf types = %v, want [string integer]", got)
 	}
 	b := tsnMap(t, tsnMap(t, tsnMap(t, tsnMap(t, tools[1], "tools[1]")["parameters"], "flat parameters")["properties"], "flat properties")["b"], "b")
 	if got := tsnType(t, b, "b"); got != "string" {

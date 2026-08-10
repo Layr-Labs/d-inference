@@ -5,7 +5,9 @@ import ProviderCore
 struct Doctor: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Run local provider diagnostics.",
-        discussion: "Diagnostics are read-only except for subprocesses used by public ProviderCore checks."
+        discussion: "Diagnostics are read-only except for subprocesses used by public "
+            + "ProviderCore checks, and except --clear-backend-guard, which removes "
+            + "the crash-loop KV-backend guard record."
     )
 
     @OptionGroup var configOptions: ConfigOptions
@@ -19,7 +21,14 @@ struct Doctor: AsyncParsableCommand {
     @Flag(help: "Print local provider identifiers used for support/debugging.")
     var support = false
 
+    @Flag(help: "Clear the crash-loop KV-backend guard so backend selection resolves normally on the next model load, then exit.")
+    var clearBackendGuard = false
+
     mutating func run() async throws {
+        if clearBackendGuard {
+            try Self.runClearBackendGuard()
+            return
+        }
         await runUpdateBannerIfEnabled()
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
@@ -42,6 +51,30 @@ struct Doctor: AsyncParsableCommand {
         let daemonState = DaemonStateFile.read()
         let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
         print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
+
+        // §16.5: did this box serve the KV backend it was configured for,
+        // and is the snapshot that answer comes from still being refreshed?
+        // Appended to the detailed checks so a refused explicit paged
+        // request exits non-zero like any other FAIL. The configured
+        // selection goes in alongside the state because an explicit
+        // selection with no loaded slot is invisible in the state file.
+        checks.append(contentsOf: KVPostureDiagnosis.checks(
+            state: daemonState,
+            daemonRunning: daemonRunning,
+            now: Date().timeIntervalSince1970,
+            heartbeatIntervalSecs: snapshot.config.coordinator.heartbeatIntervalSecs,
+            configured: KVBackendSelection(
+                global: snapshot.config.backend.engineV2KVBackend,
+                byModel: snapshot.config.backend.engineV2KVBackendByModel)))
+
+        // Crash-loop KV-backend guard, whether or not the daemon is running
+        // — the guard matters MOST on a box the daemon just crash-looped on.
+        if let guardRecord = KVBackendGuardStore.read() {
+            checks.append(KVBackendGuardDiagnostics.doctorCheck(
+                record: guardRecord,
+                now: Date().timeIntervalSince1970,
+                runningVersion: ProviderCore.version))
+        }
 
         // The high-signal diagnosis first (sectioned, with fixes).
         let rendered = DiagnosticReportRenderer.render(diagnosis)
@@ -77,6 +110,75 @@ struct Doctor: AsyncParsableCommand {
         if hasFailure || (strict && hasWarning) {
             throw ExitCode.failure
         }
+    }
+
+    /// `doctor --clear-backend-guard`: the manual exit from the crash-loop
+    /// KV-backend guard. The automatic exit is the next release (the record
+    /// binds one binary version); this verb exists for the operator who has
+    /// diagnosed the box — or set the kill switch / an explicit backend —
+    /// and wants `.auto` resolving normally again without waiting for one.
+    /// Since v0.8.1 "normally" is CONTIGUOUS, which is also what a tripped
+    /// guard forces, so clearing it is a no-op for backend selection on a
+    /// default box; it still matters for `status`/`doctor` reporting and
+    /// for any box that later takes an explicit paged selection.
+    ///
+    /// The clear also RESETS the persisted crash-loop chain
+    /// (`watchdog-state.json`): the guard usually gets cleared within
+    /// minutes of the trip, so the state still holds a threshold-level
+    /// counter and a recent `lastRestartAt` — without the reset, ONE crash
+    /// during the operator's `darkbloom restart` retry would continue the
+    /// old chain past the threshold and re-trip the guard immediately,
+    /// instead of after the `crashLoopTripThreshold` restarts this command
+    /// promises. The restart TIMERS (`downSince`, `lastRestartAt`) are kept:
+    /// they describe real outages, not chain length, and a zero counter
+    /// alone guarantees the next crash computes count 1.
+    ///
+    /// Parameters are seams for tests; production callers use the defaults.
+    static func runClearBackendGuard(
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        watchdogStateURL: URL = WatchdogStateStore.path(),
+        now: Double = Date().timeIntervalSince1970,
+        output: (String) -> Void = { print($0) }
+    ) throws {
+        guard let record = KVBackendGuardStore.read(environment: environment, now: now) else {
+            output("No crash-loop KV-backend guard is present; nothing to clear.")
+            return
+        }
+        output(
+            "Crash-loop KV-backend guard: tripped "
+                + "\(KVBackendGuardDiagnostics.ageText(record: record, now: now)) ago on "
+                + "v\(record.providerVersion) after \(record.crashCount) crash-loop restarts.")
+        guard KVBackendGuardStore.clear(environment: environment) else {
+            printError(
+                "Could not remove \(KVBackendGuardStore.path(environment: environment).path) "
+                    + "— check permissions.")
+            throw ExitCode.failure
+        }
+        var watchdogState = WatchdogStateStore.read(from: watchdogStateURL)
+        if watchdogState.consecutiveCrashLoopRestarts != 0
+            || watchdogState.lastRestartVersion != nil
+        {
+            let previousCount = watchdogState.consecutiveCrashLoopRestarts
+            watchdogState.consecutiveCrashLoopRestarts = 0
+            watchdogState.lastRestartVersion = nil
+            if WatchdogStateStore.write(watchdogState, to: watchdogStateURL) {
+                output(
+                    "Also reset the watchdog's crash-loop restart chain "
+                        + "(was \(previousCount)) so the retry gets a fresh trial window.")
+            } else {
+                output(
+                    "WARNING: could not reset the crash-loop restart chain at "
+                        + "\(watchdogStateURL.path) — one crash during the retry may "
+                        + "re-trip the guard immediately.")
+            }
+        }
+        output(
+            "Cleared. Note that since v0.8.1 `.auto` resolves CONTIGUOUS on its "
+                + "own, so clearing the guard only restores normal resolution — it "
+                + "does not move this box onto paged; that needs "
+                + "`engine_v2_kv_backend = \"paged\"`. If the box re-enters a crash "
+                + "loop, the guard re-trips after "
+                + "\(WatchdogPolicy.crashLoopTripThreshold) crash-loop restarts.")
     }
 }
 

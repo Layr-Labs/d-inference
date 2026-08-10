@@ -42,7 +42,11 @@ jobs:
       - name: Run tests
         env:
           DATABASE_URL: postgres://testbed:testbed@127.0.0.1:5432/testbed?sslmode=disable
-        run: go test -race $(go list ./... | grep -v /e2e)
+        run: |
+          # Word splitting is the point here: one argument per package path,
+          # and Go package paths contain no spaces.
+          # shellcheck disable=SC2046
+          go test -race $(go list ./... | grep -v /e2e)
       - name: Check formatting
         run: |
           UNFORMATTED=$(gofmt -l .)
@@ -167,7 +171,22 @@ jobs:
         run: swift test
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
-      - name: Build nested paged safety tests
+      # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
+      # under `if: ${{ !cancelled() && ... }}`. Before this, the nested paged
+      # suites ran with the default `success()` condition, so ANY earlier step
+      # failure — including a known-flaky unit test in `Run Swift tests` —
+      # SKIPPED all six paged correctness gates. On the v0.8.0 PR head that is
+      # exactly what happened: the unit step failed on unrelated flakes and
+      # the paged gates reported `skipped`, i.e. the release's central
+      # correctness signal was silenced by an unrelated flake. `!cancelled()`
+      # keeps the gates running after an earlier failure; each nested RUN step
+      # still requires its own build/metallib prerequisites to have succeeded
+      # so a red build produces one attributable failure, not six cascading
+      # ones. A nested-step failure fails the job as usual (no
+      # continue-on-error anywhere in this chain).
+      - name: Build nested mlx-swift-lm tests
+        id: build-nested-tests
+        if: ${{ !cancelled() }}
         working-directory: libs/mlx-swift-lm
         # Cold builds compile the full Cmlx C++/Metal tree (~20 min on the
         # 12-vcpu runner); warm runs restore libs/mlx-swift-lm/.build from
@@ -179,9 +198,10 @@ jobs:
           swift package unedit --force mlx-swift >/dev/null 2>&1 || true
           swift package edit --path ../mlx-swift mlx-swift
           swift build --build-tests
-      - name: Run nested paged and prompt-hash tests directly
+      - name: Place metallib for nested test bundles
+        id: place-nested-metallib
+        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
-        timeout-minutes: 10
         run: |
           set -euo pipefail
           cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
@@ -191,8 +211,79 @@ jobs:
               cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
             fi
           done
-          swift test --skip-build --filter CBv2PagedSafetyTests
-          swift test --skip-build --filter CBv2PrefixCacheHasherTests
+      # NOTE (v0.8.0): the guards below exist because these gates once
+      # reported GREEN while executing NOTHING. `Tests/BenchCBv2Tests`
+      # depended on the BenchCBv2 EXECUTABLE target, so SwiftPM routed the
+      # swift-testing pass at that binary, which rejects
+      # `--test-bundle-path` and exits — every `@Test` in the package was
+      # unreachable and only XCTestCase classes ran. `swift test` exits 0 in
+      # that state, which is why it went unnoticed.
+      #
+      # FIXED: BenchCBv2 is now split into a `BenchCBv2Core` library plus a
+      # thin executable shim, and the test target depends on the library.
+      #
+      # The guards STAY as a permanent tripwire. This failure mode is silent
+      # by construction — a dark suite and a passing one are
+      # indistinguishable by exit code — so any future change that re-routes
+      # the swift-testing pass must be RED here, not green.
+      # The suites below are already compiled by the `swift build
+      # --build-tests` step above but were never executed, so the paged-KV
+      # migration had no automated numerical gate. They add no compile time,
+      # only run time; one step each so a slow or failing suite is
+      # attributable straight from the job summary. They reuse the metallib
+      # placed by the step above.
+      #
+      # The bodies are ONE script (scripts/run-nested-suite.sh), which is what
+      # carries the executed-count and zero-skip tripwires. ALL six suites go
+      # through it — a bare `swift test --filter` here would bypass the
+      # tripwire and reintroduce the dark-gate hole the script closes (the
+      # safety and prompt-hash suites below used to run bare for exactly that
+      # reason). Inline copies of a check whose failure mode is silence are
+      # that many chances to edit one and miss the rest.
+      - name: Run nested paged safety tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Runtime smoke over the JIT-compiled paged Metal kernels.
+        timeout-minutes: 10
+        run: ../../scripts/run-nested-suite.sh CBv2PagedSafetyTests
+      - name: Run nested prompt-hash tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Prefix-cache prompt-hash identity; pure Swift.
+        timeout-minutes: 10
+        run: ../../scripts/run-nested-suite.sh CBv2PrefixCacheHasherTests
+      - name: Run nested paged eligibility tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Pure Swift threadgroup-budget arithmetic; no GPU dispatch.
+        timeout-minutes: 5
+        run: ../../scripts/run-nested-suite.sh CBv2PagedEligibilityTests
+      - name: Run nested paged backend tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Pool bookkeeping, per-sequence page tables, windowed rings,
+        # reservation admission, backend lifecycle. Small MLX arrays only.
+        timeout-minutes: 10
+        run: ../../scripts/run-nested-suite.sh CBv2PagedBackendTests
+      - name: Run nested paged kernel parity tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Heaviest of the set: fp32 decode-kernel parity, bitwise
+        # batch-composition invariance, and a 200-step greedy token match.
+        # Dispatches the JIT-compiled Metal kernels, exactly as
+        # CBv2PagedSafetyTests' runtimeSmoke already does in this job.
+        timeout-minutes: 20
+        run: ../../scripts/run-nested-suite.sh CBv2PagedKernelTests
+      - name: Run nested KV-sharing contiguous/paged parity tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Two-arm differential over TinyTestModel's KV-sharing variant. The
+        # paged arm used to XCTSkip when the backend was unavailable; the
+        # runner script now FAILS on any skip, because "paged unavailable on
+        # the gate runner" is precisely the condition this lane must not be
+        # green under.
+        timeout-minutes: 10
+        run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
@@ -228,7 +319,8 @@ jobs:
           swift build -c release --product darkbloom-fan-helper
       - name: Build nested mlx-swift-lm tests (warms nested cache)
         working-directory: libs/mlx-swift-lm
-        # The test-provider job runs CBv2PagedSafetyTests from this nested
+        # The test-provider job runs the CBv2 paged suites (safety, kernel
+        # parity, backend, eligibility, KV-sharing parity) from this nested
         # .build; saving it here keeps that lane warm across PRs.
         timeout-minutes: 35
         run: |

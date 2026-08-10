@@ -73,6 +73,15 @@ struct Watchdog: AsyncParsableCommand {
             coordinatorBaseURL: settings.coordinatorURL,
             urlSession: SelfUpdater.watchdogURLSession()
         )
+        // Model attribution for a guard-trip telemetry event: the daemon died
+        // before anyone could ask it what it was loading, so the last state
+        // snapshot's current model is the best available witness.
+        let lastKnownModel = daemonState?.currentModel
+        // The version-scoped chain the recovery flow resolved (effective
+        // count + the installed version it is scoped to). Captured out of
+        // the dependency callback; consumed ONLY when the outcome reports an
+        // issued restart, so a deferred/moot recovery persists nothing.
+        let resolvedChain = CrashLoopChainCapture()
         let recovery = WatchdogRecoveryService(
             updater: updater,
             dependencies: .init(
@@ -89,6 +98,16 @@ struct Watchdog: AsyncParsableCommand {
                     return ProcessLifecycle.terminate(identity)
                 },
                 isPastTickDeadline: { ContinuousClock.now > tickDeadline },
+                tripKVBackendGuard: { crashCount, tripNow, guardedVersion in
+                    KVBackendCrashLoopGuard.stageTrip(
+                        crashCount: crashCount,
+                        now: tripNow,
+                        guardedVersion: guardedVersion,
+                        lastKnownModel: lastKnownModel)
+                },
+                noteCrashLoopChain: { count, version in
+                    resolvedChain.set(count: count, version: version)
+                },
                 log: { Self.log($0) }
             ),
             candidateStartupTimeoutSeconds: settings.candidateStartupTimeoutSeconds
@@ -96,14 +115,52 @@ struct Watchdog: AsyncParsableCommand {
 
         let grace = Int(WatchdogPolicy.defaultGraceSeconds)
         var persistenceDecision = decision
+        // Counter value the final state write persists for `.restart`; nil
+        // keeps the current one. Only an ISSUED restart advances the chain —
+        // a deferred (lock-busy / rollback-backoff) or moot (no longer
+        // loaded) outcome restarted nothing, so it must not walk the counter
+        // toward the backend guard.
+        var issuedCrashLoopCount: Int?
+        // Installed daemon version the issued restart booted (resolved by
+        // the recovery flow); persisted alongside the counter so the next
+        // tick's chain is version-scoped. nil (degraded restart path never
+        // resolved one) preserves the recorded version.
+        var issuedCrashLoopVersion: String?
+        // Timestamp the final state write persists as `lastRestartAt`. The
+        // tick-entry `now` is only the default: the recovery path may legally
+        // spend minutes in the update download (bounded by the watchdog
+        // URLSession's 600s resource timeout) BEFORE the kickstart, and the
+        // crash-loop chain measures the daemon's uptime as
+        // `downSince − lastRestartAt` — a stamp 600s before the daemon
+        // actually launched inflates its apparent uptime by that much and can
+        // wrongly reset the chain to 1 (a crash-loop bound is only 900s).
+        // Re-read the clock when the outcome reports an issued restart: the
+        // kickstart happened milliseconds ago at that point.
+        var persistedNow = now
         switch decision {
         case .restart:
+            let crashLoopCount = WatchdogPolicy.crashLoopCount(
+                current: state,
+                effectiveDownSince: downSince
+            )
             let outcome = await recovery.recoverDownProvider(
                 autoUpdateEnabled: settings.autoUpdate,
                 inactiveProviderIdentity: providerIdentity,
                 providerProcessAlive: liveness.running,
+                crashLoopRestartCount: crashLoopCount,
+                lastRestartVersion: state.lastRestartVersion,
                 now: now
             )
+            if case .restartIssued = outcome {
+                // Prefer the recovery flow's version-scoped chain (reset to
+                // 1 when the installed version changed); the raw count is
+                // only the degraded-path fallback where no session — and so
+                // no version — could be resolved.
+                let chain = resolvedChain.value
+                issuedCrashLoopCount = chain?.count ?? crashLoopCount
+                issuedCrashLoopVersion = chain?.version
+                persistedNow = Date().timeIntervalSince1970
+            }
             persistenceDecision = Self.recordRecoveryOutcome(
                 outcome,
                 grace: grace,
@@ -161,9 +218,26 @@ struct Watchdog: AsyncParsableCommand {
             break
         }
 
-        if let newState = WatchdogPolicy.nextState(for: persistenceDecision, current: state, now: now),
-           !WatchdogStateStore.write(newState) {
+        if let newState = WatchdogPolicy.nextState(
+            for: persistenceDecision,
+            current: state,
+            now: persistedNow,
+            crashLoopCount: issuedCrashLoopCount,
+            crashLoopVersion: issuedCrashLoopVersion
+        ), !WatchdogStateStore.write(newState) {
             Self.log("warning: could not persist watchdog state (check ~/.darkbloom)")
+        }
+    }
+
+    /// Thread-safe box for the chain the recovery flow reports through its
+    /// `noteCrashLoopChain` dependency (a `@Sendable` callback cannot write
+    /// a captured local directly).
+    private final class CrashLoopChainCapture: @unchecked Sendable {
+        private let lock = NSLock()
+        private var chain: (count: Int, version: String)?
+        var value: (count: Int, version: String)? { lock.withLock { chain } }
+        func set(count: Int, version: String) {
+            lock.withLock { chain = (count, version) }
         }
     }
 
@@ -206,7 +280,14 @@ struct Watchdog: AsyncParsableCommand {
         settings(configPath: configPath).autoRestart
     }
 
-    private static func recordRecoveryOutcome(
+    /// Map a recovery outcome to the decision the state write persists.
+    /// Internal (not private) so the decision-table tests can pin the one
+    /// property that matters: ONLY `.restartIssued` maps to `.restart` — the
+    /// sole decision that stamps `lastRestartAt`. `.noLongerLoaded` restarted
+    /// nothing (the job is unloaded — the `.notManaged` shape), and a stamp
+    /// with no restart behind it would let a later unrelated crash read as
+    /// continuing an old chain.
+    static func recordRecoveryOutcome(
         _ outcome: WatchdogRecoveryService.DownOutcome,
         grace: Int,
         now: Double
@@ -221,7 +302,7 @@ struct Watchdog: AsyncParsableCommand {
             return .restart
         case .noLongerLoaded:
             log("provider no longer loaded — skipping restart")
-            return .restart
+            return .notManaged
         case .retryBackoff(let until, let reason):
             log(
                 "restart deferred for rollback safety until \(ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: until))): \(reason)")

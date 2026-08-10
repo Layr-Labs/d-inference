@@ -25,6 +25,7 @@ enum ToolConstraintValidation {
     private static let maxSafePatternBytes = 128
     private static let maxSafePatternCount = 32
     private static let maxSafePatternInputBytes = 16 * 1024
+    private static let maxMetadataWalkDepth = 32
     private static let exactDoubleIntegerLimit = 9_007_199_254_740_992.0
 
     static func validate(
@@ -86,21 +87,100 @@ enum ToolConstraintValidation {
         }
     }
 
-    static func validateAutoSchemas(
+    /// Reserved-metadata forgery guard for untrusted payloads. The
+    /// `originalBooleanSchemaKey` marker is injected by our own normalizer, so
+    /// a client that sends it is forging internal state.
+    ///
+    /// This is deliberately NOT a grammar-feasibility check: `auto` never
+    /// compiles an inference grammar (`ToolConstraintFactory.make` returns nil
+    /// for `.auto`), so every JSON-Schema construct `validateJSONSchema`
+    /// understands — unions, `$ref`/`$defs`, `pattern`, `if`/`then` — stays
+    /// admissible. Coordinator-fed bodies arrive already normalized and
+    /// legitimately carry the marker, hence the opt-out.
+    static func rejectReservedSchemaMetadata(
         _ tools: [OpenAITool]?,
         allowInternalSchemaMetadata: Bool = true
     ) throws {
+        guard !allowInternalSchemaMetadata else { return }
         for tool in tools ?? [] {
             guard let parameters = tool.function.parameters else { continue }
-            guard autoSchemaIsSupported(
-                parameters,
-                depth: 0,
-                allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-            else {
+            switch scanReservedSchemaMetadata(parameters, depth: 0) {
+            case .clean:
+                continue
+            case .marker:
                 throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
-                    "auto tool schema uses unsupported assertions or reserved metadata"
-                )
+                    "tool schema contains reserved internal metadata")
+            case .beyondWalkBound:
+                throw MultiModelBatchSchedulerEngineError.invalidToolPayload(
+                    "tool schema exceeds the reserved-metadata scan depth")
             }
+        }
+    }
+
+    private enum ReservedMetadataScan {
+        case clean
+        case marker
+        case beyondWalkBound
+    }
+
+    /// Schema-position walk: only nodes that ARE schemas are inspected. A map
+    /// whose *keys* are user-chosen names — `properties`, `patternProperties`,
+    /// `definitions`, `$defs` — is descended through its values, never treated
+    /// as a schema itself, so a tool that legitimately declares a property
+    /// named after the marker is not mistaken for a forgery.
+    ///
+    /// Fail-closed walk bound: the normalizer's marker-folding walk
+    /// (`constantMarkedCombinator`) is depth-unbounded, so a guard that
+    /// silently stopped scanning below its own horizon could vouch for a
+    /// schema whose forged marker later folds upward into a shallow position
+    /// downstream consumers trust. A schema too deep to scan cannot be
+    /// vouched marker-free, so a container beyond `maxMetadataWalkDepth`
+    /// rejects instead of passing unscanned; scalars cannot carry the marker
+    /// and stay clean at any depth.
+    private static func scanReservedSchemaMetadata(
+        _ schema: ToolArgumentJSONValue,
+        depth: Int
+    ) -> ReservedMetadataScan {
+        switch schema {
+        case .array(let values):
+            guard depth <= maxMetadataWalkDepth else { return .beyondWalkBound }
+            for child in values {
+                let scan = scanReservedSchemaMetadata(child, depth: depth + 1)
+                if scan != .clean { return scan }
+            }
+            return .clean
+        case .object(let object):
+            guard depth <= maxMetadataWalkDepth else { return .beyondWalkBound }
+            if object[ToolSchemaNormalization.originalBooleanSchemaKey] != nil {
+                return .marker
+            }
+            for key in [
+                "additionalProperties", "additionalItems", "contains",
+                "contentSchema", "if", "then", "else", "not", "propertyNames",
+                "unevaluatedItems", "unevaluatedProperties", "items",
+                "allOf", "anyOf", "oneOf", "prefixItems",
+            ] {
+                if let child = object[key] {
+                    let scan = scanReservedSchemaMetadata(
+                        child, depth: depth + 1)
+                    if scan != .clean { return scan }
+                }
+            }
+            for key in [
+                "properties", "patternProperties", "dependentSchemas",
+                "dependencies", "definitions", "$defs",
+            ] {
+                if case .object(let children)? = object[key] {
+                    for child in children.values {
+                        let scan = scanReservedSchemaMetadata(
+                            child, depth: depth + 1)
+                        if scan != .clean { return scan }
+                    }
+                }
+            }
+            return .clean
+        default:
+            return .clean
         }
     }
 
@@ -184,15 +264,33 @@ enum ToolConstraintValidation {
             return accepts
         }
 
-        if let constant = object["const"],
-            !jsonSchemaEqual(value, constant)
-        {
-            return false
+        // This validator does not resolve references, so the `$ref`/
+        // `$dynamicRef`/`$recursiveRef` assertion itself is not-asserted.
+        // Sibling assertions are conjunctive with the reference (draft
+        // 2019-09+), so everything the AUTHOR wrote beside it — const, enum,
+        // combinators, bounds, properties — is still enforced below; skipping
+        // them would let a schema-violating call through merely because a
+        // reference sat beside the constraint. The one exception is the
+        // sibling `type`: the normalizer injects a render type onto typeless
+        // nodes (a bare `{"$ref":…}` becomes `type:"string"` even when the
+        // referenced schema is an object), so on a ref-bearing node `type`
+        // cannot be attributed to the author and is not enforced.
+        let refBearing = object["$ref"] != nil || object["$dynamicRef"] != nil
+            || object["$recursiveRef"] != nil
+
+        // Finite-value identity subsumes typing: a typeless `{"enum":["a",1]}`
+        // gets render type "string" injected from its first member, yet 1 is
+        // still a schema-valid emission. A matched `const`/`enum` therefore
+        // suppresses the sibling `type` assertion below.
+        var finiteMatched = false
+        if let constant = object["const"] {
+            guard jsonSchemaEqual(value, constant) else { return false }
+            finiteMatched = true
         }
-        if case .array(let values)? = object["enum"],
-            !values.contains(where: { jsonSchemaEqual(value, $0) })
-        {
-            return false
+        if case .array(let values)? = object["enum"] {
+            guard values.contains(where: { jsonSchemaEqual(value, $0) })
+            else { return false }
+            finiteMatched = true
         }
         if case .array(let variants)? = object["allOf"],
             !variants.allSatisfy({
@@ -201,24 +299,49 @@ enum ToolConstraintValidation {
         {
             return false
         }
-        if case .array(let variants)? = object["anyOf"],
-            !variants.contains(where: {
+        // A satisfied non-empty `anyOf`/`oneOf` already enforced each
+        // branch's own `type` assertion. The sibling `type` on such nodes is
+        // (in every coordinator-normalized body) the render type injected
+        // from the FIRST branch; enforcing it conjunctively would veto every
+        // schema-valid emission from the other branches. `allOf` is NOT
+        // exempted: its branches are conjunctive, so a type derived from
+        // branch one is implied by the conjunction anyway.
+        var unionAsserted = false
+        if case .array(let variants)? = object["anyOf"] {
+            guard variants.contains(where: {
                 validateJSONSchema(value, schema: $0, depth: depth + 1)
-            })
-        {
-            return false
+            }) else { return false }
+            unionAsserted = true
         }
-        if case .array(let variants)? = object["oneOf"],
-            variants.filter({
+        if case .array(let variants)? = object["oneOf"] {
+            guard variants.filter({
                 validateJSONSchema(value, schema: $0, depth: depth + 1)
-            }).count != 1
-        {
-            return false
+            }).count == 1 else { return false }
+            unionAsserted = true
         }
         if let negated = object["not"],
             validateJSONSchema(value, schema: negated, depth: depth + 1)
         {
             return false
+        }
+        // `if`/`then`/`else` are fully decidable from the instance alone, so
+        // the auto path enforces them. `unevaluatedItems`/
+        // `unevaluatedProperties`/`contentSchema` need annotation tracking
+        // this validator does not do and stay not-asserted.
+        if let condition = object["if"] {
+            if validateJSONSchema(value, schema: condition, depth: depth + 1) {
+                if let consequent = object["then"],
+                    !validateJSONSchema(
+                        value, schema: consequent, depth: depth + 1)
+                {
+                    return false
+                }
+            } else if let alternative = object["else"],
+                !validateJSONSchema(
+                    value, schema: alternative, depth: depth + 1)
+            {
+                return false
+            }
         }
 
         if value == .null,
@@ -227,9 +350,13 @@ enum ToolConstraintValidation {
         {
             return true
         }
-        let types = schemaTypes(object["type"])
-        if !types.isEmpty, !types.contains(where: { matches(value, type: $0) }) {
-            return false
+        if !unionAsserted, !finiteMatched, !refBearing {
+            let types = schemaTypes(object["type"])
+            if !types.isEmpty,
+                !types.contains(where: { matches(value, type: $0) })
+            {
+                return false
+            }
         }
 
         switch value {
@@ -249,6 +376,42 @@ enum ToolConstraintValidation {
                     }
                 }
             }
+            // `dependentRequired`, `dependentSchemas`, and `propertyNames`
+            // are fully decidable from the instance alone, so the auto path
+            // enforces them. A `dependentRequired` entry whose value is not
+            // an array, or a listed name that is not a string, is not an
+            // intelligible constraint and is not-asserted (skipped), never a
+            // rejection.
+            if case .object(let dependents)? = object["dependentRequired"] {
+                for (trigger, names) in dependents
+                where presentKeys.contains(unicodeScalarIdentity(trigger)) {
+                    guard case .array(let required) = names else { continue }
+                    for member in required {
+                        guard case .string(let name) = member else { continue }
+                        if !presentKeys.contains(unicodeScalarIdentity(name)) {
+                            return false
+                        }
+                    }
+                }
+            }
+            if case .object(let dependents)? = object["dependentSchemas"] {
+                for (trigger, subschema) in dependents
+                where presentKeys.contains(unicodeScalarIdentity(trigger)) {
+                    if !validateJSONSchema(
+                        .object(values), schema: subschema, depth: depth + 1)
+                    {
+                        return false
+                    }
+                }
+            }
+            if let names = object["propertyNames"] {
+                for key in values.keys
+                where !validateJSONSchema(
+                    .string(key), schema: names, depth: depth + 1)
+                {
+                    return false
+                }
+            }
             let properties: [String: ToolArgumentJSONValue]
             if case .object(let raw)? = object["properties"] {
                 properties = raw
@@ -264,7 +427,14 @@ enum ToolConstraintValidation {
             } else {
                 patterns = [:]
             }
-            guard patterns.count <= maxSafePatternCount else { return false }
+            // INVARIANT: an assertion this validator declines to evaluate is
+            // never allowed to fail a schema-valid tool call. `auto` has no
+            // pre-flight feasibility gate, so an unevaluatable
+            // `patternProperties` entry goes UNENFORCED — and so does the
+            // `additionalProperties` fallback for that property, which would
+            // otherwise reject a name that might have matched the pattern we
+            // could not decide.
+            let enforcePatterns = patterns.count <= maxSafePatternCount
             for (name, child) in values {
                 let nameIdentity = unicodeScalarIdentity(name)
                 if let schema = declared[nameIdentity],
@@ -272,13 +442,25 @@ enum ToolConstraintValidation {
                 {
                     return false
                 }
-                let matching = patterns.filter { safePatternMatches(name, pattern: $0.key) }
+                var matching: [ToolArgumentJSONValue] = []
+                var undecided = !enforcePatterns
+                if enforcePatterns {
+                    for (pattern, patternSchema) in patterns {
+                        guard let matched = patternAssertionSatisfied(
+                            name, pattern: pattern)
+                        else {
+                            undecided = true
+                            continue
+                        }
+                        if matched { matching.append(patternSchema) }
+                    }
+                }
                 if matching.contains(where: {
-                    !validateJSONSchema(child, schema: $0.value, depth: depth + 1)
+                    !validateJSONSchema(child, schema: $0, depth: depth + 1)
                 }) {
                     return false
                 }
-                if declared[nameIdentity] == nil, matching.isEmpty,
+                if declared[nameIdentity] == nil, matching.isEmpty, !undecided,
                     let additional = object["additionalProperties"],
                     !validateJSONSchema(child, schema: additional, depth: depth + 1)
                 {
@@ -365,7 +547,7 @@ enum ToolConstraintValidation {
                 return false
             }
             if case .string(let pattern)? = object["pattern"],
-                !safePatternMatches(string, pattern: pattern)
+                patternAssertionSatisfied(string, pattern: pattern) == false
             {
                 return false
             }
@@ -380,22 +562,30 @@ enum ToolConstraintValidation {
         }
     }
 
+    /// Tri-state pattern assertion: `true` = the value matches, `false` = the
+    /// value decisively does not match, `nil` = the assertion CANNOT be
+    /// evaluated here and is therefore NOT ASSERTED. Only a decisive `false`
+    /// may reject — `auto` no longer pre-screens tool schemas for grammar
+    /// feasibility, so a regex outside this subset must leave an otherwise
+    /// schema-valid tool call intact.
+    ///
     /// Linear-time subset for post-generation `auto` validation. Foundation's
     /// backtracking regex engine can spend unbounded CPU on user-controlled
     /// schemas. Literal contains/prefix/suffix/exact patterns cover the common
-    /// JSON-Schema cases while regex metacharacters fail closed.
+    /// JSON-Schema cases; anything else — and any oversized input — is
+    /// undecided rather than failed.
     ///
     /// Comparison is by Unicode scalar sequence: Swift `String` equality and
     /// prefix/suffix/contains use canonical equivalence, but JSON Schema regex
     /// matching does not normalize, so a precomposed `^é$` must not match a
     /// generated decomposed `e\u{301}`.
-    private static func safePatternMatches(
+    private static func patternAssertionSatisfied(
         _ value: String,
         pattern: String
-    ) -> Bool {
+    ) -> Bool? {
         guard value.utf8.count <= maxSafePatternInputBytes,
             let components = safePatternComponents(pattern)
-        else { return false }
+        else { return nil }
         let candidate = unicodeScalarIdentity(value)
         let literal = unicodeScalarIdentity(components.literal)
         switch (components.anchoredStart, components.anchoredEnd) {
@@ -425,248 +615,6 @@ enum ToolConstraintValidation {
             }
         }
         return false
-    }
-
-    private static func autoSchemaIsSupported(
-        _ schema: ToolArgumentJSONValue,
-        depth: Int,
-        allowInternalSchemaMetadata: Bool
-    ) -> Bool {
-        guard depth <= 32 else { return false }
-        switch schema {
-        case .array(let values):
-            return values.allSatisfy {
-                autoSchemaIsSupported(
-                    $0,
-                    depth: depth + 1,
-                    allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-            }
-        case .object(let object):
-            if !allowInternalSchemaMetadata,
-                object[ToolSchemaNormalization.originalBooleanSchemaKey] != nil
-            {
-                return false
-            }
-            if object["$ref"] != nil
-                || object["$dynamicRef"] != nil
-                || object["$recursiveRef"] != nil
-                || object["if"] != nil
-                || object["then"] != nil
-                || object["else"] != nil
-                || object["dependentSchemas"] != nil
-                || object["dependentRequired"] != nil
-                || object["dependencies"] != nil
-                || object["propertyNames"] != nil
-                || object["unevaluatedItems"] != nil
-                || object["unevaluatedProperties"] != nil
-            {
-                return false
-            }
-            if !autoFiniteNumberIdentityIsExact(object) {
-                return false
-            }
-            // Mixed-type const/enum or mixed-family assertions on a typeless
-            // node have no single renderable type; normalization would
-            // silently break every member outside its picked type. Mirrors
-            // the multi-type union policy.
-            if object["type"] == nil {
-                if let concrete = finiteAutoValueTypes(object) {
-                    if concrete.count > 1 { return false }
-                } else if typelessAssertionFamiliesAmbiguous(object) {
-                    return false
-                }
-            }
-            if case .array(let rawTypes)? = object["type"] {
-                var concrete = Set<String>()
-                for rawType in rawTypes {
-                    guard case .string(let rawType) = rawType else { return false }
-                    if rawType.lowercased() != "null" {
-                        concrete.insert(rawType.lowercased())
-                    }
-                }
-                if concrete.count > 1 { return false }
-            }
-            for keyword in ["anyOf", "oneOf"] {
-                guard case .array(let variants)? = object[keyword] else { continue }
-                var concrete = Set<String>()
-                for variant in variants {
-                    guard case .object(let variant) = variant else { return false }
-                    let declared = schemaTypes(variant["type"])
-                    if declared.isEmpty { return false }
-                    let members = declared
-                        .filter { $0 != "null" }
-                    concrete.formUnion(members)
-                }
-                if concrete.count > 1 { return false }
-            }
-            if let pattern = object["pattern"] {
-                guard case .string(let pattern) = pattern,
-                    safePatternComponents(pattern) != nil
-                else { return false }
-            }
-            if let patternProperties = object["patternProperties"] {
-                guard case .object(let patterns) = patternProperties,
-                    patterns.count <= maxSafePatternCount,
-                    patterns.keys.allSatisfy({
-                        safePatternComponents($0) != nil
-                    })
-                else { return false }
-            }
-            for key in [
-                "additionalProperties", "additionalItems", "contains", "contentSchema",
-                "if", "then", "else", "not", "propertyNames",
-                "unevaluatedItems", "unevaluatedProperties",
-            ] {
-                if let child = object[key],
-                    !autoSchemaIsSupported(
-                        child,
-                        depth: depth + 1,
-                        allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-                {
-                    return false
-                }
-            }
-            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
-                if case .array(let children)? = object[key],
-                    !children.allSatisfy({
-                        autoSchemaIsSupported(
-                            $0,
-                            depth: depth + 1,
-                            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-                    })
-                {
-                    return false
-                }
-            }
-            if let items = object["items"] {
-                if case .array(let tuple) = items {
-                    if !tuple.allSatisfy({
-                        autoSchemaIsSupported(
-                            $0,
-                            depth: depth + 1,
-                            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-                    }) {
-                        return false
-                    }
-                } else if !autoSchemaIsSupported(
-                    items,
-                    depth: depth + 1,
-                    allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-                {
-                    return false
-                }
-            }
-            for key in [
-                "properties", "patternProperties", "definitions", "$defs",
-            ] {
-                if case .object(let children)? = object[key],
-                    !children.values.allSatisfy({
-                        autoSchemaIsSupported(
-                            $0,
-                            depth: depth + 1,
-                            allowInternalSchemaMetadata: allowInternalSchemaMetadata)
-                    })
-                {
-                    return false
-                }
-            }
-            return true
-        default:
-            return true
-        }
-    }
-
-    private static func autoFiniteNumberIdentityIsExact(
-        _ schema: [String: ToolArgumentJSONValue]
-    ) -> Bool {
-        var values: [ToolArgumentJSONValue] = []
-        if let constant = schema["const"] {
-            values.append(constant)
-        }
-        if case .array(let enumeration)? = schema["enum"] {
-            values.append(contentsOf: enumeration)
-        }
-        return values.allSatisfy {
-            switch $0 {
-            case .double(let value):
-                value.isFinite
-                    && value.rounded() == value
-                    && abs(value) < exactDoubleIntegerLimit
-            default:
-                true
-            }
-        }
-    }
-
-    /// Whether a typeless node's assertions cannot determine a single
-    /// renderable type: either its assertion keywords span more than one type
-    /// family (e.g. `{"minimum":5,"minLength":2}`) or its only assertion is
-    /// `not` (e.g. `{"not":{"type":"string"}}`, which accepts every
-    /// non-string — no injected type can preserve that, and the string
-    /// default would make the schema unsatisfiable). Structural, union, or
-    /// finite-value evidence takes priority.
-    private static func typelessAssertionFamiliesAmbiguous(
-        _ object: [String: ToolArgumentJSONValue]
-    ) -> Bool {
-        for key in [
-            "properties", "patternProperties", "additionalProperties",
-            "items", "prefixItems",
-        ] where object[key] != nil {
-            return false
-        }
-        for key in ["anyOf", "oneOf", "allOf"] {
-            guard case .array(let variants)? = object[key] else { continue }
-            let hasConcreteMember = variants.contains { variant in
-                if case .object(let variant) = variant,
-                    case .string(let kind)? = variant["type"],
-                    kind != "null"
-                {
-                    return true
-                }
-                return false
-            }
-            if hasConcreteMember { return false }
-        }
-        var families = Set<String>()
-        for (keyword, family) in ToolSchemaNormalization.assertionFamilyByKeyword
-        where object[keyword] != nil {
-            families.insert(family)
-        }
-        if families.count > 1 { return true }
-        return families.isEmpty && object["not"] != nil
-    }
-
-    /// Concrete (non-null) JSON type names of a node's const/enum values.
-    /// nil when the node carries no const and no enum array.
-    private static func finiteAutoValueTypes(
-        _ object: [String: ToolArgumentJSONValue]
-    ) -> Set<String>? {
-        let values: [ToolArgumentJSONValue]
-        if let constant = object["const"] {
-            values = [constant]
-        } else if case .array(let members)? = object["enum"] {
-            values = members
-        } else {
-            return nil
-        }
-        var concrete = Set<String>()
-        for value in values {
-            switch value {
-            case .null:
-                continue
-            case .bool:
-                concrete.insert("boolean")
-            case .int, .double:
-                concrete.insert("number")
-            case .string:
-                concrete.insert("string")
-            case .array:
-                concrete.insert("array")
-            case .object:
-                concrete.insert("object")
-            }
-        }
-        return concrete
     }
 
     private static func safePatternComponents(

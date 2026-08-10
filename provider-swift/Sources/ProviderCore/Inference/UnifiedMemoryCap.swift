@@ -34,15 +34,69 @@ public enum UnifiedMemoryCap {
     /// OS (e.g. an 8 GiB box gets a 6 GiB cap, not 7.2 GiB).
     static let minimumReserveBytes: UInt64 = 2 * 1024 * 1024 * 1024  // 2 GiB
 
-    /// Default activation/working-memory reserve carved out INSIDE the cap.
+    /// The activation/working-memory reserve carved out INSIDE the cap — for
+    /// every model, every attention posture, every batch. FLAT. Nothing in
+    /// this type scales it; only an explicit operator or programmatic override
+    /// moves it (`DARKBLOOM_ACTIVATION_RESERVE_GB`, which may only RAISE it).
     ///
-    /// Measured on M5 Max (Gemma-4-26B-qat-4bit + GPT-OSS-20B, both MoE): a
-    /// 4-concurrent ~3000-token long-prefill burst moved RSS by only ~9 MB over
-    /// the resident-weight baseline — MoE activates few experts, MLX fuses
-    /// attention, and intermediates churn through the (count-bounded) buffer
-    /// cache rather than growing the live set. So activations are small in
-    /// practice; this is a conservative SAFETY FLOOR, not a per-batch estimate.
-    static let defaultActivationReserveBytes: UInt64 = 3 * 1024 * 1024 * 1024  // 3 GiB
+    /// 5.5 GiB as of v0.8.0, sized against the table below: this release
+    /// raises the decode batch to 8, and the measured gemma-4 peak at B=8 is
+    /// **5.05 GiB** — ABOVE the previous flat 3 GiB, which was sized when the
+    /// fleet ran B=4 (3.40 GiB peak). An activation overshoot is not a
+    /// recoverable error: there is no MLX allocation-failure handler, so a
+    /// mid-request OOM kills the daemon. 5.5 GiB = measured 5.05 + ~0.45
+    /// slack for prompt shapes the sweep did not cover. The cost is real and
+    /// deliberate — 2.5 GiB less KV budget per box, fewer co-resident models
+    /// on small boxes — and protective: the alternative is a fleet-wide
+    /// daemon-kill lottery at exactly the batch depth this release ships.
+    ///
+    /// Measured on M4 Max / 128 GiB, peak-over-resident-weights across a batch
+    /// sweep at ~1.5k-token prompts (`libs/mlx-swift-lm/benchmarks/reports/`,
+    /// `*-paged-gate-2026-07-09.md`, run 2026-07-10):
+    ///
+    ///     gemma-4-26B-qat-4bit  composed, head_dim 256/512   B=4 3.40  B=8 5.05 GiB
+    ///     gpt-oss-20b-MXFP4-Q8  fused,    head_dim 64        B=4 2.20  B=8 2.56 GiB
+    ///
+    /// Two things follow, and together they are why this is NOT a function of
+    /// prefill shape. The composed/fused gap is real but small (+1.2 GiB at
+    /// B=4), and the FUSED model — which materialises no score tensor at all —
+    /// still spends 2.2 GiB. The dominant term is the non-attention working
+    /// set, which no attention-shape estimate models: a `[rows, heads, C, kL]`
+    /// score estimate predicts ~205 MB for the 3.40 GiB actually measured, and
+    /// exactly 0 for the 2.20 GiB. Sizing the reserve off the score tensor
+    /// would track the smaller, better-behaved half of the cost.
+    ///
+    /// This is also a FORWARD-LOOKING hold-back, not an accounting of live
+    /// bytes. Transient growth during a step is already visible to
+    /// ``liveKVHeadroomBytes``, which subtracts real MLX `active + cache`; the
+    /// reserve only has to keep the NEXT step's working set from crossing the
+    /// cap. Retune it against a measurement, in one place, for the whole fleet
+    /// — and mirror any change in `coordinator/registry/servability.go`
+    /// (`servabilityActivationFloorGB`), which predicts this exact arithmetic
+    /// for cold providers.
+    ///
+    /// KNOWN EXCEPTIONS, neither new nor yet measured as harmful. A composed
+    /// attention model (head_dim outside MLX's fused-SDPA set {64, 80, 128})
+    /// materialises an fp32 `[rows, heads, C, kL]` prefill score tensor. TEXT
+    /// prefill is query sub-blocked on both KV backends, which bounds it;
+    /// span-bearing VISION chunks are not — they take one unblocked call and
+    /// their `L` may snap over `prefillChunkSize` up to the step budget. They
+    /// are pinned to batch 1 on both backends (`CBv2AttentionV1`'s
+    /// `spanContext == nil || (B == 1 && L > 1)`, `PagedLayerCache`'s
+    /// "span-bearing chunks are never packed"), so at most ONE is ever live —
+    /// batch. Separately, `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK=0` unblocks TEXT on
+    /// both backends: the one OPERATOR-REACHABLE configuration where this
+    /// floor is provably wrong for the common case. That is a fact about the
+    /// code and holds whatever we sanction; as policy, v0.8.0 declines to
+    /// sanction `0` specifically for this reason. A non-default but NON-ZERO
+    /// width is a different matter and stays supported here — sub-blocking is
+    /// still on and the score tensor gets SMALLER, so it costs exactness
+    /// (summation order), not memory. Either way the answer here is the env
+    /// override, not a per-model formula.
+    // 5.5 GiB (11 × 2^30 / 2 = 5_905_580_032). Mirrored by
+    // coordinator/registry/servability.go (servabilityActivationFloorGB);
+    // the two MUST move in the same commit — see the doc comment above.
+    static let defaultActivationReserveBytes: UInt64 = 11 * 1024 * 1024 * 1024 / 2
 
     /// Minimum KV headroom (bytes) a freshly-loaded model must have under the cap
     /// to be worth loading — a model that loads but can serve no KV is useless.
@@ -229,11 +283,18 @@ public enum UnifiedMemoryCap {
     }
 
     /// Activation reserve from explicit bytes, env
-    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or the default floor. A `<= 0` or
-    /// non-finite env value is treated as UNSET (→ the 3 GiB default floor): a
-    /// `0` reserve would remove the activation headroom the cap exists to
-    /// guarantee, so an operator can RAISE the reserve but not silently disable it
-    /// via env. An explicit programmatic value (tests) is honored as given.
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
+    ///
+    /// The env override is RAISE-ONLY, enforced, not just documented: the
+    /// resolved value is `max(env, default)`. A value below the floor —
+    /// most likely a legacy `3` set when 3 GiB WAS the default — would
+    /// silently recreate the B=8 activation OOM the 5.5 GiB floor exists to
+    /// prevent, while the coordinator keeps predicting capacity with the
+    /// floor (`servability.go`). A `<= 0` or non-finite env value is
+    /// likewise treated as UNSET (→ the floor): a `0` reserve would remove
+    /// the activation headroom the cap exists to guarantee. An explicit
+    /// programmatic value (tests) is honored as given, below the floor
+    /// included — test fixtures legitimately model small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
@@ -242,7 +303,8 @@ public enum UnifiedMemoryCap {
         if let raw = env["DARKBLOOM_ACTIVATION_RESERVE_GB"], let gb = Double(raw),
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
-            return scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
+            return max(bytes, defaultActivationReserveBytes)
         }
         return defaultActivationReserveBytes
     }

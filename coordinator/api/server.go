@@ -40,6 +40,7 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/mdm"
+	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/payments/baserewards"
 	"github.com/eigeninference/d-inference/coordinator/profilesign"
@@ -142,7 +143,12 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // release has been registered in the store (e.g. in-memory dev setups).
 // Production reads the latest version from the releases table.
 //
-// 0.6.0 is the APNs code-identity / VLM-routing / graceful-update release.
+// 0.8.1 reverts v0.8.0's fleet default back to the CONTIGUOUS KV backend:
+// the paged pool's physical-capacity policy sized fleet KV roughly 10x
+// smaller than contiguous, and the resulting token-budget exhaustion
+// dominated paged's throughput and prefix-adoption wins. Paged remains
+// fully supported behind an explicit `engine_v2_kv_backend = "paged"` (see
+// the provider's EngineV2Factory.prepareProductionBackend for the argument).
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
 var LatestProviderVersion = "0.8.2"
@@ -423,6 +429,15 @@ type Server struct {
 	// Server built directly (e.g. &Server{} in tests) leaves it nil, and
 	// submitTelemetry falls back to a per-write saferun.Go in that case.
 	routeTelemetry *telemetrySink
+
+	// mediaResolver fetches remote http(s) image_url/video_url links into
+	// inline base64 data: URIs before the request body is E2E-encrypted to a
+	// provider, so consumers can pass links instead of pre-encoding media
+	// client-side (media_resolve.go). The coordinator is the single SSRF
+	// chokepoint; the provider still only ever sees data: URIs. Set by
+	// NewServer from env; nil (e.g. a &Server{} built directly in tests)
+	// behaves as disabled and falls back to the legacy pre-dispatch rejection.
+	mediaResolver *mediafetch.Resolver
 }
 
 // SetRateLimiter configures the per-account rate limiter applied to
@@ -691,6 +706,13 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 	// Wire the store into the registry for provider fleet persistence.
 	reg.SetStore(st)
 
+	// main.go supplies the AppConfig-validated media-fetch config; a nil field
+	// (bare ServerConfig{} literals, tests) falls back to the environment.
+	mediaFetchCfg := mediafetch.ConfigFromEnv()
+	if cfg.MediaFetch != nil {
+		mediaFetchCfg = *cfg.MediaFetch
+	}
+
 	s := &Server{
 		registry:             reg,
 		store:                st,
@@ -709,6 +731,7 @@ func NewServer(reg *registry.Registry, st store.Store, cfg ServerConfig, logger 
 		zombieCanceller:      newZombieStreamCanceller(),
 		serviceReservations:  newServiceReservationManager(st, cfg.ServiceReservations),
 		routeTelemetry:       newTelemetrySink(logger, defaultTelemetrySinkCapacity, defaultTelemetrySinkWorkers),
+		mediaResolver:        mediafetch.NewResolver(mediaFetchCfg, logger),
 	}
 	s.registerDefaultGauges()
 	s.routes()
@@ -1810,9 +1833,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/billing/stripe/status", s.requireAuth(s.handleStripeStatus))
 	s.mux.HandleFunc("POST /v1/billing/withdraw/stripe", s.requireAuth(s.handleStripeWithdraw))
 	s.mux.HandleFunc("GET /v1/billing/stripe/withdrawals", s.requireAuth(s.handleStripeWithdrawals))
-	// requirePrivyAuth (not requireAuth): unlink is an account-management
-	// operation — a leaked inference API key must not be able to detach the
-	// user's payout account.
+	// requirePrivyAuth (not requireAuth): both of these are account-management
+	// operations — a leaked inference API key must not be able to detach the
+	// user's payout account, nor mint a dashboard session that can point their
+	// earnings at a different bank account.
+	//
+	// The dashboard route additionally carries rateLimitFinancial: every call
+	// is a live Stripe POST that mints a credential, so an authenticated
+	// session must not be able to loop it and burn the platform's Stripe
+	// request capacity. Chained INSIDE requirePrivyAuth because the limiter
+	// keys on the account ID the auth middleware puts in the request context.
+	s.mux.HandleFunc("POST /v1/billing/stripe/dashboard", s.requirePrivyAuth(s.rateLimitFinancial(s.handleStripeDashboardLink)))
 	s.mux.HandleFunc("DELETE /v1/billing/stripe/account", s.requirePrivyAuth(s.handleStripeUnlink))
 	s.mux.HandleFunc("POST /v1/billing/stripe/connect/webhook", s.handleStripeConnectWebhook) // no auth — Stripe signs it
 

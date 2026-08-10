@@ -66,7 +66,7 @@ path only; `PagedLayerCache.prefillAttend` still materialises the full
 | gemma-4 donatable traffic | 2.3% | **~37%** | donation settle counters |
 | Per-slot KV-backend on the wire | **absent** | **present** | `BackendSlotCapacity` |
 | Paged correctness on CI | **none** | **gated** | CI job |
-| MTP | token-exact | **token-exact** (non-negotiable) | parity suite |
+| MTP | cross-arm diff only (unreachable on gemma-4) | **lossless vs each backend's OWN greedy decode** (non-negotiable) | `mtp_token_exactness` in the G2 parity report |
 | Vision, packed prefill | working | **working** | e2e |
 
 **Non-goals:** beating contiguous at B=1; preserving compiled decode (§14);
@@ -283,12 +283,12 @@ Six stop-or-continue decisions (G0 split; G5 added).
 | **G0a** | Does the coordinator actually dispatch 8? | `effectiveMaxConcurrencyForModelRateLocked` returns 8 for gemma-4 on a canary; `slot.NumRunning` observed at 8 |
 | **G0b** | Does batching pay end to end? | agg throughput ≥ 1.07x of B=4 at matched prompt mix; per-request decode ≥ 22 tok/s |
 | **G1** | Is paged sized correctly? | **per-sequence** paged KV ≤ contiguous at ctx {1k, 10k, 100k}; pool footprint fits 36 GB boxes |
-| **G2** | Is parity green? | MTP token-exact, vision serving, packed prefill active, prefix reuse ≥ contiguous |
+| **G2** | Is parity green? | MTP lossless against each backend's own greedy decode, vision serving, packed prefill active, prefix reuse ≥ contiguous |
 | **G3** | Does gpt-oss canary hold? | 24h at parity or better on TTFT p50/p90, decode TPS, 503 rate |
 | **G4** | Does gemma-4 hold? | same, plus donation rate materially above 2.3% |
 | **G5** | Is the canary observable? | coordinator can segment TTFT/TPS/error-rate by KV backend (§18) |
 
-Three changes from Rev 1, all forced by measurement:
+Four changes from Rev 1, all forced by measurement:
 
 - **G0 is split.** G0a is the coordinator co-change; without it G0b is
   unmeasurable. Rev 1 collapsed them and would have reported "no gain."
@@ -299,6 +299,22 @@ Three changes from Rev 1, all forced by measurement:
   (30.5–32.5 GiB) is dominated by the `--kv-gb 16` pool reservation, not by
   KV/seq, and `gpuActive` is inert (13.48 GiB on every row — weights only).
   As emitted, those columns do not answer G1.
+- **G2's MTP bar is per-arm losslessness, not a cross-arm diff.** Rev 1 scored
+  MTP by diffing the two arms' token streams against each other. That form
+  cannot fail wherever plain greedy decode already diverges — and it does
+  diverge on 2 of 3 gemma-4 parity prompts with no backend involved, purely
+  under the shipped `DARKBLOOM_CBV2_ATTN_QUERY_BLOCK` knob (977a5893e). So on
+  gemma-4 every MTP divergence classified as "inherited from the base decode"
+  and the criterion was structurally unable to reach a FAIL: a gate in name
+  only, on the one model this migration is named for. It now compares each
+  arm's MTP output against **its own** plain greedy output. Verified greedy
+  speculation is lossless by construction, and both sides of that comparison
+  share a backend, its kernels and its storage order, so base-decode drift
+  cancels instead of propagating. The criterion can accuse again, and it
+  attributes to the right backend. Corollary: once both arms are self-
+  lossless, a cross-backend MTP difference *is* exactly the base-decode
+  difference `token_exactness` reports — the old attribution guess becomes a
+  proof.
 
 Gates map to **waves**, not to elapsed weeks — see §6.
 
@@ -615,6 +631,33 @@ vision chunks remain unblocked (0.2), so the parametric reserve must be
 `f(maxBatchedTokensPerStep, maxContext, heads, subBlockSize, spanChunkMaxL)`
 with the span path costed at full `L`.
 
+> **RETIRED — Track E is closed and the table above is wrong.** Two errors, one
+> fatal. (1) The `concurrent prefills` axis does not apply to the span path,
+> which is the only path this section is really costing. Span-bearing chunks
+> are pinned to batch 1 on BOTH backends —
+> `AttentionV1.swift:153` and `:379` (`spanContext == nil || (B == 1 && L > 1)`)
+> and `PagedLayerCache.swift:228-230` (`precondition(boundSpanContext == nil ||
+> b == 1, "span-bearing chunks are never packed")`) — so at most ONE span score
+> tensor is ever live and raising `maxBatchedTokensPerStep` does not multiply
+> it. The `8 (after §13.2) → 13.1 GB` row is **unreachable**; §13 item 6.2's
+> "requires 0.3 first (activation memory doubles)" dependency is void.
+> (2) Both rows are computed at heads = 8, which is gemma-4's KV-head count.
+> The score tensor is materialised after the GQA repeat, so the multiplier is
+> the QUERY-head count, 16 — see the gemma-4 config dump in
+> `2026-07-25-paged-gate-results.md` (grep `num_attention_heads`; :600 at time
+> of writing, and it has already moved once). The table understates its own
+> model by 2x.
+>
+> The parametric reserve shipped provider-side with zero call sites and was
+> deleted; the coordinator mirror that DID ship was charging a surcharge no
+> provider gate held back, which 429'd servable prompts. Both sides are now
+> flat at 3 GiB. Measured transient peak-over-weights (M4 Max 128 GB,
+> 2026-07-10) is 3.40 GiB for gemma-4 and 2.20 GiB for gpt-oss at B=4, i.e. the
+> dominant term is non-attention working set — which this table does not model
+> at all, and which is 0 under this formula for the fused model that spends
+> 2.20 GiB of it. Retune the flat floor against a measurement, in both repos,
+> or not at all.
+
 > **Rev 1 pointed at the wrong coordinator file.** It said to thread this
 > through `freeMemoryAdmits` (`registry/scheduler.go:1301`). That function is
 > **reserve-blind by design** — it charges flat tokens against the
@@ -870,9 +913,49 @@ ring fails nothing. Track T must add an upper-bound assertion.
 | **Packed prefill** | `precondition(b == 1, ...)` at `PagedLayerCache.swift:142` (twin at `:175`) | Replace with the per-row loop `AttentionV1.updateAndAttend` already uses for `B>1, L>1` (`:127` → `updateAndAttendRow:235`). Nothing in it is storage-specific — `row.update(...)` then `attend(...)`, both `CBv2SequenceKV` protocol surface. | **3 d** |
 | **Vision / spans** | No `CBv2SpanMaskBinding` conformance | Compose the span overlay onto the mask `prefillAttend` already builds in absolute coordinates. Paged is *better* positioned than contiguous, which must abandon symbolic `.causal`. **Carries the `spanChunkMask` trap forward** — see below. | 1.5 wk |
 | **Capability protocol** | `supportsPackedPrefill = caches.allSatisfy { $0 is CBv2LayerCache }` (`LayerCacheBankV2.swift:121-123`) | A type check makes every future backend second-class by construction. Convert to an affirmative protocol. | 3 d |
-| Last-query prefill | No `CBv2LastQueryPrefillLayerCache` conformance | Days — and **dead on gemma-4-26B anyway**: `gemma4SupportsLastQueryPrefill` (`Gemma4Text.swift:80-84`) requires `!layerUsesSharedKV(numHiddenLayers-1)`, but `numKvSharedLayers` defaults to 20 (`:156`, `:252`) and `layerUsesSharedKV` (`:330`) always returns true for the last layer when it is > 0. `DARKBLOOM_GEMMA4_PREFILL_LAST_QUERY=0` is a no-op kill switch. | 2 d |
+| **Last-query prefill** | No `CBv2LastQueryPrefillLayerCache` conformance | **LIVE on the flagship model — Rev 2 was wrong to call this dead.** See the correction below; this is a real paged-vs-contiguous perf regression, not a no-op. | 2 d |
 | `uniformAttentionSoftcap` | Bank only inspects `CBv2LayerCache` (`:99`) → nil → fail-safe compiled veto (`EngineV2.swift:205-215`) | Report it for paged caches. **Not sufficient alone** — `EngineV2.swift:225` carries an independent `backendVeto = !producesCompiledDecodeEligibleRows` OR'd on the same line. Moot if §14 deletes compiled decode. | 2 d |
 | Slot vetoes | VLM and kv-quant forced to contiguous (`EngineV2SlotFactory.swift:182-185`) | Lift the VLM veto once spans land. **Note:** the vetoes are currently load-bearing for *test* correctness — `LiveInferenceFixtures` defaults `kvBackendConfig: "auto"`, so a default flip repoints ~10 live suites at paged and the VLM veto bounces them back. | 1 d |
+
+> ### Correction (Rev 2.1): last-query prefill is NOT dead
+>
+> Rev 2 claimed the feature was dead on gemma-4-26B because
+> `gemma4SupportsLastQueryPrefill` (`Gemma4Text.swift:80-84`) requires
+> `!layerUsesSharedKV(numHiddenLayers-1)` and `numKvSharedLayers` "defaults to
+> 20". **That default applies only when the JSON key is ABSENT.** Every
+> shipping checkpoint sets it explicitly. Verified on disk:
+>
+> | checkpoint | `num_kv_shared_layers` | `num_hidden_layers` | `layer_types[-1]` |
+> |---|---:|---:|---|
+> | `gemma-4-26B-A4B-it-qat-4bit` | **0** | 30 | `full_attention` |
+> | `gemma-4-26b-a4b-it-4bit` | **0** | 30 | `full_attention` |
+>
+> So `layerUsesSharedKV(29)` short-circuits false (`:330`), all three
+> conditions hold, and the feature is **live**: every prompt chunk ≥ 128
+> tokens selects it on the final layer via `Gemma4TextModel.cbv2Prefill` →
+> `SteppableAdapterV2.swift:78`, because `CBv2LayerCache` conforms to
+> `CBv2LastQueryPrefillLayerCache` (`LayerCacheV2.swift:186`).
+>
+> **Why the wrong conclusion looked tested.** The cited proof,
+> `CBv2LastQueryPrefillTests.swift:729-734`, uses
+> `TinyGemma.sharedFinalConfig()` — a synthetic fixture deliberately built
+> with `numKvSharedLayers = 2`. It pins the NEGATIVE case only and never
+> exercised the production shape. A production-shape test now exists
+> (`CBv2LastQueryPrefillProductionShapeTests`).
+>
+> **Consequence for the migration — this makes WS-2.4 more important, not
+> less.** Under paged, if `PagedLayerCache` does not conform to
+> `CBv2LastQueryPrefillLayerCache`, `hasCapableCache` goes false and the trunk
+> falls back to ordinary chunk attention. That is correct but slower, on the
+> flagship model, on the final layer of every chunk — a paged-vs-contiguous
+> regression that was not priced. It is a perf item, not a correctness one, so
+> it does not block the flip; it does belong in the release measurement.
+>
+> **Process lesson, recorded because it nearly cost a silent production
+> regression.** A Swift struct default is evidence about absent keys only,
+> never about a shipping checkpoint. The contradicting fact
+> (`num_kv_shared_layers: 0`, read from the real `config.json`) was already
+> present elsewhere in this document's own research and was not reconciled.
 
 **The `spanChunkMask` trap, relocated from Rev 1's §0.2.** `AttentionV1.swift:559-577`
 is the only absolute-coordinate mask site in the file:
@@ -1540,3 +1623,4 @@ Every item below was verified against `e65b5bbc1` / `abd1985`.
 | 24 | — (absent) | **New:** paged prefill gets none of #85's memory win and adds a gathered copy (§7.0.2p). |
 | 25 | — (absent) | **New:** multi-model co-residency under paged is known-broken and unscheduled (§15). |
 | 26 | — (absent) | **New:** `effectiveTPSLoadFactor = 0.27` mispredicts CBv2 B=8 by ~16x and drives four systems (§3.4). |
+| 27 | §7.0.3's B=8 → 13.1 GB score-tensor row; Track E "parametric activation reserve" | **Unreachable and retired.** Span chunks are batch-1-pinned on both backends (`AttentionV1.swift:153`/`:379`, `PagedLayerCache.swift:228-230`), so the step batch never multiplies the span score tensor; the table is also computed at KV heads (8) not query heads (16). Provider-side machinery deleted, coordinator mirror flattened — both sides now hold a flat 3 GiB (§7.0.3). |

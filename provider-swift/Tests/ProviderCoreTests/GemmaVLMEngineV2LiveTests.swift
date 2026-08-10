@@ -180,7 +180,8 @@ struct GemmaVLMEngineV2LiveTests {
         let engine = try EngineV2Factory.makeProductionEngine(
             model: textModel,
             tokenizer: slot.tokenizer.inner,
-            kvBytesCapacity: 4 * 1024 * 1024 * 1024
+            kvBytesCapacity: 4 * 1024 * 1024 * 1024,
+            maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
         )
         return EngineV2Bridge(
             engine: engine,

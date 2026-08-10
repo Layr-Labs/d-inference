@@ -214,7 +214,8 @@ private let wiringReserveBytes: UInt64 = 1 * wiringGiB
 
 private func makeWiringLoop(
     engineV2MaxConcurrent: UInt64 = 4,
-    engineV2MaxConcurrentByModel: [String: UInt64] = [:]
+    engineV2MaxConcurrentByModel: [String: UInt64] = [:],
+    kvBackend: String = "auto"
 ) throws -> ProviderLoop {
     let config = ProviderLoopConfig(
         coordinatorURL: "ws://127.0.0.1:0/ignored",
@@ -230,7 +231,8 @@ private func makeWiringLoop(
             backend: BackendSettings(
                 idleTimeoutMins: 0, maxModelSlots: 3,
                 engineV2MaxConcurrent: engineV2MaxConcurrent,
-                engineV2MaxConcurrentByModel: engineV2MaxConcurrentByModel),
+                engineV2MaxConcurrentByModel: engineV2MaxConcurrentByModel,
+                engineV2KVBackend: kvBackend),
             coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)
         )
     )
@@ -240,14 +242,16 @@ private func makeWiringLoop(
 private func makeBridge(
     engine: WiringScriptedEngine,
     modelId: String = "gemma-4-26b-qat-4bit",
-    kvBytesPerToken: Int = 0
+    kvBytesPerToken: Int = 0,
+    kvBackendKind: EngineV2KVBackendKind = .contiguous
 ) -> EngineV2Bridge {
     EngineV2Bridge(
         engine: engine,
         modelId: modelId,
         tokenizer: TokenizerHandle(WiringStubTokenizer()),
         eosTokenIds: [2],
-        kvBytesPerToken: kvBytesPerToken
+        kvBytesPerToken: kvBytesPerToken,
+        kvBackendKind: kvBackendKind
     )
 }
 
@@ -432,7 +436,8 @@ struct EngineV2SlotBuildTests {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
                 tokenizer: WiringStubTokenizer(),
-                kvBytesCapacity: 1 << 20
+                kvBytesCapacity: 1 << 20,
+                maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
         }
     }
@@ -443,7 +448,8 @@ struct EngineV2SlotBuildTests {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: WiringStubLanguageModel(),
                 tokenizer: WiringStubTokenizer(),
-                kvBytesCapacity: 0
+                kvBytesCapacity: 0,
+                maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
         }
     }
@@ -651,17 +657,212 @@ struct EngineV2ReslicingWiringTests {
         #expect(engineA.capacityUpdates.last == grownA)
     }
 
-    @Test("mixed paged+contiguous: re-slice moves ledgers only; the paged pool never resizes and bounds every regrow")
+    @Test("all-paged co-residency: the shrink strands physical KV, the regrow is deferred, and both residues are measured")
+    func allPagedCoResidencyStrandsThenDefers() async throws {
+        // THE POST-FLIP SHAPE. Once `.auto` resolves `.paged` there is no
+        // contiguous slot left to contrast against — BOTH co-resident slots
+        // are paged — so the surviving asymmetry is not paged-vs-contiguous.
+        // It is between a slot's CONSTRUCTION-FIXED pool and the fair share
+        // the fleet re-slicer keeps moving underneath it.
+        //
+        // Each pool here is smaller than the logical grant its slot was
+        // built with: the production shape since #535, where
+        // `PagedKVPhysicalCapacityPolicy` bounds physical capacity by useful
+        // concurrent context, machine size, and live headroom — never by the
+        // grant. (The stale premise in §15 of the migration plan, that a
+        // lone paged slot commits ~the whole fleet budget as slabs, predates
+        // that policy: it was written in #531 and bounded in #535.)
+        //
+        // The drill:
+        //   1. A loads alone at the FULL fleet budget and materializes a
+        //      pool sized for the box as it looked THEN;
+        //   2. B arrives and the share is re-cut. A's pool is now LARGER
+        //      than A's share — the surplus is STRANDED: re-promised to B on
+        //      paper, still held by A's slabs in Metal;
+        //   3. B leaves and A's share returns to the whole budget, far past
+        //      the pool, which cannot grow — the regrow is DEFERRED.
+        // Not one byte moves either way today. Both residues are now
+        // MEASURED, which is exactly what a pool resize consumes and the
+        // only signal an operator gets with no canary fleet.
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        let recorder = GrantRecorder()
+        let telemetry = WiringTelemetrySink()
+        let enginesBox = EngineBox()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+        await loop.setEngineV2SlotHooksForTesting(
+            ProviderLoop.EngineV2SlotHooks(
+                eosTokenIds: [2],
+                emitTelemetry: telemetry.callback(),
+                physicalMemoryBytes: wiringPhysicalBytes,
+                kvBackendKindByModel: [
+                    "gemma-4-26b-qat-4bit": .paged,
+                    "gpt-oss-20b": .paged,
+                ],
+                makeEngine: { _, grant in
+                    recorder.record(grant)
+                    let engine = WiringScriptedEngine(
+                        script: .manual,
+                        kvBytesCapacity: grant,
+                        // Demand-shaped pool, capped below the logical grant.
+                        kvBytesBackendCapacity: grant * 3 / 5)
+                    enginesBox.append(engine)
+                    return engine
+                }))
+
+        let sizingA = makeSizing(weightsGiB: 15, kvRate: 20_480, maxContext: 262_144)
+        let bridgeA = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            modelType: "gemma4",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: sizingA)
+        await loop.installModelSlotForTesting(
+            modelId: "gemma-4-26b-qat-4bit",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeA,
+            sizing: sizingA,
+            modelType: "gemma4")
+        let engineA = enginesBox.all[0]
+        let grantA0 = recorder.granted[0]
+        let poolA = grantA0 * 3 / 5
+        #expect(await bridgeA.kvBackendKind == .paged)
+        #expect(await bridgeA.kvBackendPoolBytes() == UInt64(poolA))
+        // A lone slot has not been re-sliced, so there is no residue to
+        // report yet — its ceiling IS its pool, by construction.
+        #expect(await bridgeA.pagedPoolResizeShortfall() == nil)
+
+        // ---- Load paged B: A's ledger shrinks past its own pool. ----
+        let sizingB = makeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
+        let bridgeB = try await loop.resliceAndBuildEngineV2SlotForTesting(
+            modelId: "gpt-oss-20b",
+            modelType: "gpt_oss",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            sizing: sizingB)
+        await loop.installModelSlotForTesting(
+            modelId: "gpt-oss-20b",
+            container: makeStubContainer(),
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            engineV2: bridgeB,
+            sizing: sizingB,
+            modelType: "gpt_oss")
+        #expect(await bridgeB.kvBackendKind == .paged)
+
+        let fleetBudget2 = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes + sizingB.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        let targets = EngineV2KVSizing.resliceGrants(
+            existing: [
+                .init(
+                    modelId: "gemma-4-26b-qat-4bit",
+                    fp16KVBytesPerToken: sizingA.fp16KVBytesPerToken,
+                    maxContextLength: sizingA.maxContextLength)
+            ],
+            newcomer: .init(
+                modelId: "gpt-oss-20b",
+                fp16KVBytesPerToken: sizingB.fp16KVBytesPerToken,
+                maxContextLength: sizingB.maxContextLength),
+            fleetKVBudgetBytes: fleetBudget2)
+        let targetA = try #require(targets["gemma-4-26b-qat-4bit"])
+        let targetB = try #require(targets["gpt-oss-20b"])
+
+        // The ledger contract is unchanged: the shrink reaches the engine
+        // unclamped and the pool does not move a byte.
+        #expect(targetA < poolA)
+        #expect(engineA.capacityUpdates.last == targetA)
+        #expect(await bridgeA.engineKVBytesCapacity() == targetA)
+        #expect(await bridgeA.kvBackendPoolBytes() == UInt64(poolA))
+        #expect(await bridgeB.engineKVBytesCapacity() == targetB)
+
+        // …and the shrink's residue is now named: physical KV A still owns
+        // after its share was cut. A ledger-only shrink frees nothing, so
+        // callers must never bank these bytes.
+        let afterLoad = try #require(await bridgeA.pagedPoolResizeShortfall())
+        #expect(afterLoad.poolBytes == poolA)
+        #expect(afterLoad.requestedBytes == targetA)
+        #expect(afterLoad.strandedBytes == poolA - targetA)
+        #expect(afterLoad.deferredGrowthBytes == 0)
+        #expect(!afterLoad.isExact)
+
+        // DEFECT PIN (migration plan §15). This is the whole reason a pool
+        // resize is a release blocker: Σ(logical grants) ≤ fleet budget
+        // still holds, but Σ(PHYSICAL pools) does not — A's slabs were
+        // sized against a box that no longer exists. When the resize lands
+        // this assertion MUST be inverted, not deleted.
+        let poolB = await bridgeB.kvBackendPoolBytes()
+        #expect(UInt64(targetA + targetB) <= fleetBudget2)
+        #expect(UInt64(poolA) + poolB > fleetBudget2)
+
+        // ---- Unload B: the regrow is deferred, not honoured. ----
+        await loop.unloadModel("gpt-oss-20b")
+        let regrowTarget = UnifiedMemoryCap.kvBudgetBytes(
+            physicalBytes: wiringPhysicalBytes,
+            residentWeightBytes: UInt64(sizingA.weightsBytes),
+            configReserveBytes: wiringReserveBytes)
+        #expect(regrowTarget > UInt64(poolA))
+        #expect(engineA.capacityUpdates.last == poolA)
+        #expect(await bridgeA.engineKVBytesCapacity() == poolA)
+        #expect(await bridgeA.kvBackendPoolBytes() == UInt64(poolA))
+        #expect(await bridgeA.slotKVBytesClaim() == poolA)
+
+        let afterUnload = try #require(await bridgeA.pagedPoolResizeShortfall())
+        #expect(afterUnload.requestedBytes == Int(regrowTarget))
+        #expect(afterUnload.deferredGrowthBytes == Int(regrowTarget) - poolA)
+        #expect(afterUnload.strandedBytes == 0)
+
+        // Both residues surfaced, in order, as operator-visible signals —
+        // the substitute for a canary fleet.
+        let clamps = telemetry.events.filter {
+            $0.fields?["operation"]?.description == "paged_pool_resize_clamped"
+        }
+        #expect(clamps.map { $0.fields?["reason"]?.description } == [
+            "unreclaimed_shrink", "deferred_grow",
+        ])
+        #expect(clamps.allSatisfy { $0.severity == .warn })
+        #expect(clamps.allSatisfy { $0.fields?["kv_backend"]?.description == "paged" })
+        #expect(clamps.allSatisfy {
+            $0.fields?["model"]?.description == "gemma-4-26b-qat-4bit"
+        })
+        // Raw bytes, never a ratio (Main's ruling): the denominator ships
+        // with every delta, so share-of-pool is derivable and the overflow
+        // magnitude survives — a clamped ratio would read 1.0 for both of
+        // these and lose exactly the number co-residency is diagnosed by.
+        // The allowlist filter is applied at the producer, so an unmirrored
+        // key would vanish silently; asserting the values back is what
+        // proves all three cleared it.
+        #expect(clamps.allSatisfy {
+            $0.fields?["pool_bytes"]?.description == String(poolA)
+        })
+        let shrinkEvent = try #require(clamps.first)
+        #expect(shrinkEvent.fields?["pool_stranded_bytes"]?.description
+            == String(poolA - targetA))
+        #expect(shrinkEvent.fields?["pool_deferred_growth_bytes"]?.description == "0")
+        let regrowEvent = try #require(clamps.last)
+        #expect(regrowEvent.fields?["pool_deferred_growth_bytes"]?.description
+            == String(Int(regrowTarget) - poolA))
+        #expect(regrowEvent.fields?["pool_stranded_bytes"]?.description == "0")
+    }
+
+    @Test("mixed paged+contiguous: only the contiguous survivor can actually take its regrow")
     func mixedPagedContiguousResliceIsLedgerOnly() async throws {
+        // A mixed box stays reachable after the flip: `.auto` degrades to
+        // contiguous whenever `PagedKVPhysicalCapacityPolicy` cannot carve a
+        // ≥1 GiB pool, which is the normal outcome for the SECOND load on a
+        // small box. So this pins what mixed now means, rather than the
+        // pre-flip paged-vs-contiguous contrast that a paged default erases.
+        //
         // Slot A is PAGED with a demand-capped physical pool SMALLER than
-        // its logical grant (the production shape after the v0.7.6 fix:
-        // physical capacity is designed from demand, never the full
-        // logical grant). Slot B is contiguous. The ProviderLoop-driven
+        // its logical grant; slot B is contiguous. The ProviderLoop-driven
         // load/unload re-slice must:
         //   * shrink/grow ONLY admission ledgers,
         //   * keep A's physical pool byte-for-byte constant, and
-        //   * clamp A's regrow to pool truth — a ledger-only re-slice can
-        //     never "restore" physical bytes the pool does not hold.
+        //   * let the CONTIGUOUS survivor take its regrow in full — the one
+        //     thing its paged neighbour cannot do (see
+        //     `allPagedCoResidencyStrandsThenDefers`), and the reason a
+        //     paged-by-default fleet loses capacity that a mixed one keeps.
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let recorder = GrantRecorder()
@@ -723,6 +924,7 @@ struct EngineV2ReslicingWiringTests {
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")
+        let engineB = enginesBox.all[1]
         #expect(await bridgeB.kvBackendKind == .contiguous)
 
         let fleetBudget2 = UnifiedMemoryCap.kvBudgetBytes(
@@ -742,28 +944,36 @@ struct EngineV2ReslicingWiringTests {
                 maxContextLength: sizingB.maxContextLength),
             fleetKVBudgetBytes: fleetBudget2)
         let targetA = try #require(targets["gemma-4-26b-qat-4bit"])
+        let targetB = try #require(targets["gpt-oss-20b"])
         // The two-model fair share sits below the pool here, so the shrink
         // reaches the engine unclamped — and the pool still never moved.
         #expect(UInt64(targetA) < poolA)
         #expect(engineA.capacityUpdates.last == targetA)
         #expect(await bridgeA.engineKVBytesCapacity() == targetA)
         #expect(await bridgeA.kvBackendPoolBytes() == poolA)
-        #expect(await bridgeB.engineKVBytesCapacity() == targets["gpt-oss-20b"])
+        #expect(await bridgeB.engineKVBytesCapacity() == targetB)
+        // The paged slot is holding physical KV its share no longer covers.
+        #expect(
+            await bridgeA.pagedPoolResizeShortfall()?.strandedBytes
+                == Int(poolA) - targetA)
+        // A contiguous slot resizes ledger and physical capacity together,
+        // so it has no residue to report at all.
+        #expect(await bridgeB.pagedPoolResizeShortfall() == nil)
 
-        // Unload B: the regrow's single-survivor target is the FULL fleet
-        // budget (> pool), but the paged bridge clamps the restore to pool
-        // truth — admission can never advertise physical bytes the slabs
-        // do not hold, and the pool itself is byte-for-byte unchanged.
-        await loop.unloadModel("gpt-oss-20b")
-        let regrowTarget = UnifiedMemoryCap.kvBudgetBytes(
+        // Unload the PAGED slot: the contiguous survivor's regrow target is
+        // the FULL fleet budget under its own weights, and — unlike its
+        // paged neighbour, whose identical regrow clamps to pool truth — it
+        // takes every byte.
+        await loop.unloadModel("gemma-4-26b-qat-4bit")
+        let regrowB = UnifiedMemoryCap.kvBudgetBytes(
             physicalBytes: wiringPhysicalBytes,
-            residentWeightBytes: UInt64(sizingA.weightsBytes),
+            residentWeightBytes: UInt64(sizingB.weightsBytes),
             configReserveBytes: wiringReserveBytes)
-        #expect(regrowTarget > poolA)
-        #expect(engineA.capacityUpdates.last == Int(poolA))
-        #expect(await bridgeA.engineKVBytesCapacity() == Int(poolA))
-        #expect(await bridgeA.kvBackendPoolBytes() == poolA)
-        #expect(await bridgeA.slotKVBytesClaim() == Int(poolA))
+        #expect(regrowB > UInt64(targetB))
+        #expect(engineB.capacityUpdates.last == Int(regrowB))
+        #expect(await bridgeB.engineKVBytesCapacity() == Int(regrowB))
+        #expect(await bridgeB.slotKVBytesClaim() == Int(regrowB))
+        #expect(await bridgeB.pagedPoolResizeShortfall() == nil)
     }
 
     @Test("restore-on-throw: B's construction failure restores A's grant EXACTLY")
@@ -807,9 +1017,15 @@ struct EngineV2ReslicingWiringTests {
 
     @Test("serviceability floor: a slice below 1 GiB per slot REFUSES the load (reslice_floor)")
     func resliceFloorRefusesLoad() async throws {
-        // A 8 GiB "machine": budget after 4 GiB of weights ≈ 8×0.9−4−3 ≈
-        // ~0 — any two-way slice lands below the 1 GiB floor.
-        let tinyPhysical: UInt64 = 8 * wiringGiB
+        // A 16 GiB "machine": cap = min(0.9×16, 16−2) = 14 GiB. After slot
+        // A's 6 GiB of weights the budget is 14 − 6 − 5.5 (activation
+        // reserve) = 2.5 GiB — A loads. Adding B's 6 GiB zeroes it
+        // (14 − 12 − 5.5 < 0), so any two-way slice lands below the 1 GiB
+        // floor. (An 8 GiB machine no longer works as this fixture: its
+        // 6 GiB cap minus the 5.5 GiB reserve cannot clear the floor for
+        // even ONE slot — the deliberate consequence of the v0.8.0 reserve
+        // raise for the smallest boxes.)
+        let tinyPhysical: UInt64 = 16 * wiringGiB
         let loop = try makeWiringLoop()
         let runtime = EngineV2Runtime()
         let telemetry = WiringTelemetrySink()
@@ -824,7 +1040,7 @@ struct EngineV2ReslicingWiringTests {
                 }))
 
         // Slot A exists with a small grant already.
-        let sizingA = makeSizing(weightsGiB: 2, kvRate: 20_480)
+        let sizingA = makeSizing(weightsGiB: 6, kvRate: 20_480)
         let bridgeA = try await loop.resliceAndBuildEngineV2SlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
@@ -850,7 +1066,7 @@ struct EngineV2ReslicingWiringTests {
                 modelType: "gpt_oss",
                 container: makeStubContainer(),
                 tokenizer: TokenizerHandle(WiringStubTokenizer()),
-                sizing: makeSizing(weightsGiB: 2, kvRate: 24_576)
+                sizing: makeSizing(weightsGiB: 6, kvRate: 24_576)
             )
         }
         #expect(await bridgeA.engineKVBytesCapacity() == grantA0)
@@ -1220,22 +1436,67 @@ struct EngineV2RequestRoutingTests {
                         engineV2Bridge: bridge)
                 ]
             })
+        for choice: OpenAIToolChoice in [
+            .mode(.required), .function(name: "calculate"),
+        ] {
+            let request = OpenAIChatCompletionRequest(
+                model: "gemma-4-26b-qat-4bit",
+                messages: [.init(
+                    role: .user,
+                    content: .parts([
+                        .text("describe"),
+                        .imageURL("data:image/png;base64,AA=="),
+                    ]))],
+                tools: [.init(function: .init(name: "calculate"))],
+                toolChoice: choice)
+
+            do {
+                _ = try await providerEngine.streamChatCompletion(request: request)
+                Issue.record("expected forced multimodal tool choice rejection")
+            } catch let error as MultiModelBatchSchedulerEngineError {
+                #expect(error == .invalidToolPayload(
+                    "inference-enforced tool_choice is not supported for multimodal requests"))
+            }
+        }
+        #expect(engine.submitted.isEmpty)
+    }
+
+    @Test("tool choice none is admitted on the multimodal path")
+    func noneToolChoiceIsAdmittedForMultimodalRequest() async throws {
+        let engine = WiringScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "gemma-4-26b-qat-4bit": .init(
+                        tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                        modelType: "gemma4",
+                        container: makeStubContainer(),
+                        isVLM: true,
+                        engineV2Bridge: bridge)
+                ]
+            })
         let request = OpenAIChatCompletionRequest(
             model: "gemma-4-26b-qat-4bit",
             messages: [.init(
                 role: .user,
-                content: .parts([.text("describe"), .imageURL("data:image/png;base64,AA==")]))],
+                content: .parts([
+                    .text("describe"),
+                    .imageURL("data:image/png;base64,AA=="),
+                ]))],
             tools: [.init(function: .init(name: "calculate"))],
-            toolChoice: .mode(.required))
+            toolChoice: .mode(.none))
 
+        // `none` hides the tools from the prompt and is enforced after
+        // generation, so the media path constrains nothing and must admit it.
+        // The request gets far enough to decode the (deliberately truncated)
+        // PNG payload, which is exactly the step past the tool-choice guard.
         do {
             _ = try await providerEngine.streamChatCompletion(request: request)
-            Issue.record("expected forced multimodal tool choice rejection")
-        } catch let error as MultiModelBatchSchedulerEngineError {
-            #expect(error == .invalidToolPayload(
-                "inference-enforced tool_choice is not supported for multimodal requests"))
+            Issue.record("expected the stub media payload to fail decoding")
+        } catch let error as MediaIngest.MediaError {
+            #expect(error.description == "failed to decode image data into a CIImage")
         }
-        #expect(engine.submitted.isEmpty)
     }
 
     @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")
@@ -1588,6 +1849,93 @@ struct EngineV2RuntimeGuardTests {
         #expect(capacity?.slots.count == 1)
     }
 
+    @Test("the daemon state file carries each slot's resolved KV backend and MTP posture")
+    func daemonStateCarriesSlotPosture() async throws {
+        // §16.5: `darkbloom status` / `doctor` read the state file, not the
+        // live engine. If the resolved backend never reaches that file the
+        // operator cannot answer "is this box on paged?" at all.
+        let loop = try makeWiringLoop()
+        let runtime = EngineV2Runtime()
+        await loop.setEngineV2RuntimeForTesting(runtime)
+
+        let pagedBridge = makeBridge(
+            engine: WiringScriptedEngine(script: .manual),
+            modelId: "gemma-4-26b-qat-4bit",
+            kvBackendKind: .paged)
+        // `.zero` disables the posture sampler; this test is about the state
+        // file, not the telemetry producer.
+        await pagedBridge.configureMTPStatus(
+            MTPActivationStatus(
+                configured: true, active: true, reason: nil, source: nil, revision: nil,
+                artifactBytes: 0, assistantBytes: 0),
+            metricsInterval: .zero)
+        let contiguousBridge = makeBridge(
+            engine: WiringScriptedEngine(script: .manual),
+            modelId: "gpt-oss-20b",
+            kvBackendKind: .contiguous)
+
+        for (modelId, bridge) in [
+            ("gemma-4-26b-qat-4bit", pagedBridge), ("gpt-oss-20b", contiguousBridge),
+        ] {
+            await runtime.register(modelId: modelId, bridge: bridge)
+            await loop.installModelSlotForTesting(
+                modelId: modelId,
+                container: makeStubContainer(),
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                engineV2: bridge,
+                modelType: "gemma4")
+        }
+
+        await loop.updateAggregateCapacity()
+        let slots = try #require(await loop.currentDaemonState().slots)
+        #expect(slots.map(\.model) == ["gemma-4-26b-qat-4bit", "gpt-oss-20b"])
+        #expect(slots[0].kvBackend == "paged")
+        #expect(slots[1].kvBackend == "contiguous")
+        // A scripted engine is not a concrete EngineV2 and reports no MTP
+        // metrics, so a configured-and-activated slot resolves to
+        // enabled-but-not-producing. That is precisely the distinction the
+        // operator surface exists to make: enabled != producing drafts, and
+        // the reason must always be named.
+        #expect(slots[0].mtpEnabled == true)
+        #expect(slots[0].mtpActive == false)
+        #expect(slots[0].mtpInactiveReason == MTPFallbackReason.engineInactive.rawValue)
+        #expect(slots[1].mtpEnabled == false)
+        #expect(slots.allSatisfy { $0.loadError == nil })
+    }
+
+    @Test("a refused explicit paged load reaches the state file as a non-serving slot")
+    func daemonStateCarriesRefusedPagedLoad() async throws {
+        // An explicit paged request that cannot be built REFUSES, so no
+        // engine and no live slot survives. `recordModelLoadError` writes
+        // the state file immediately, and the join turns that record into a
+        // slot entry rather than leaving doctor to guess from absence.
+        // `recordModelLoadError` writes the REAL state file, so redirect it
+        // (this suite is `.serialized` and nothing else reads the default
+        // path) — then read the bytes back, which is the actual contract:
+        // the CLI decodes this file, it does not call into the daemon.
+        let stateURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dstate-refused-\(UUID().uuidString).json")
+        setenv("DARKBLOOM_STATE_FILE", stateURL.path, 1)
+        defer {
+            unsetenv("DARKBLOOM_STATE_FILE")
+            try? FileManager.default.removeItem(at: stateURL)
+        }
+
+        let loop = try makeWiringLoop(kvBackend: "paged")
+        await loop.recordModelLoadError(
+            model: "gemma-4-26b-qat-4bit",
+            message: "Model 'gemma-4-26b-qat-4bit' loaded but its v2 engine construction "
+                + "failed: engine_v2: paged KV backend explicitly requested but unavailable "
+                + "— kernel preflight failed — unloaded")
+
+        let slots = try #require(DaemonStateFile.read(from: stateURL)?.slots)
+        #expect(slots.count == 1)
+        #expect(slots[0].model == "gemma-4-26b-qat-4bit")
+        #expect(slots[0].kvBackend == nil, "no engine was built; naming a backend would be a lie")
+        #expect(slots[0].kvBackendRequested == "paged")
+        #expect(slots[0].loadError?.contains("explicitly requested but unavailable") == true)
+    }
+
     @Test("model_load_time_ms rides the slot after recordModelLoadTime")
     func modelLoadTimeRidesTheSlot() async throws {
         let engine = WiringScriptedEngine(script: .manual)
@@ -1648,5 +1996,98 @@ struct EngineV2RuntimeGuardTests {
         #expect(await runtime.bridge(forModel: "gemma-4-26b-qat-4bit") == nil)
         #expect(engine.shutdownCalls == 1)
         #expect(await loop.hasEngineV2SlotsForTesting() == false)
+    }
+}
+
+// MARK: - KV-backend degrade → heartbeat
+
+/// The KV-backend degrade is DELIBERATE and unchanged by these tests; what
+/// they pin is that it stops being SILENT. The path under test is the real
+/// one, end to end inside the provider: `ProductionBuild.kvBackendFallbackReason`
+/// → `EngineV2Factory.makeBridge` → `EngineV2Bridge` → `backendSlotCapacity()`
+/// → `BackendSlotCapacity.kv_backend_fallback_reason` on the heartbeat wire.
+///
+/// It rides the HEARTBEAT, not the telemetry-event sink, on purpose: the
+/// once-per-construction `engine_v2_kv_backend` event is best-effort and
+/// droppable, so a fleet that misses it books a degraded slot as a
+/// deliberately-contiguous one for the life of the slot.
+@Suite("EngineV2 production wiring: KV-backend degrade is visible on the heartbeat")
+struct EngineV2KVBackendFallbackHeartbeatTests {
+
+    private func heartbeatSlot(
+        kind: EngineV2KVBackendKind,
+        fallbackReason: String?
+    ) async throws -> BackendSlotCapacity {
+        let bridge = try EngineV2Factory.makeBridge(
+            modelId: "gemma-4-26b-qat-4bit",
+            tokenizer: TokenizerHandle(WiringStubTokenizer()),
+            eosTokenIds: [2],
+            makeEngine: {
+                EngineV2Factory.ProductionBuild(
+                    engine: WiringScriptedEngine(script: .manual),
+                    kvBackendKind: kind,
+                    kvBackendFallbackReason: fallbackReason)
+            })
+        return await bridge.backendSlotCapacity()
+    }
+
+    @Test("a degraded slot reports the reason on EVERY heartbeat")
+    func degradedSlotReportsTheReason() async throws {
+        let slot = try await heartbeatSlot(
+            kind: .contiguous,
+            fallbackReason: "kernel_preflight: paged kernels unavailable")
+        // The resolved kind is contiguous — the degrade really happened and
+        // the slot really serves contiguous. That is exactly why the kind
+        // alone cannot carry the signal.
+        #expect(slot.kvBackend == "contiguous")
+        #expect(slot.kvBackendFallbackReason == "kernel_preflight: paged kernels unavailable")
+
+        // …and it survives the wire, where the coordinator reads it.
+        let encoded = try JSONEncoder().encode(slot)
+        let decoded = try JSONDecoder().decode(BackendSlotCapacity.self, from: encoded)
+        #expect(decoded.kvBackendFallbackReason == slot.kvBackendFallbackReason)
+    }
+
+    @Test("a slot that did NOT degrade omits the field entirely")
+    func cleanSlotOmitsTheField() async throws {
+        // Same resolved kind as the degraded slot above — an operator who
+        // configured contiguous. This half matters as much as the other: a
+        // field that is always present is not a signal.
+        let chosen = try await heartbeatSlot(kind: .contiguous, fallbackReason: nil)
+        #expect(chosen.kvBackend == "contiguous")
+        #expect(chosen.kvBackendFallbackReason == nil)
+        let chosenJSON = try JSONSerialization.jsonObject(
+            with: try JSONEncoder().encode(chosen)) as? [String: Any]
+        #expect(chosenJSON?["kv_backend_fallback_reason"] == nil)
+
+        // A paged slot that got what it asked for is likewise silent.
+        let paged = try await heartbeatSlot(kind: .paged, fallbackReason: nil)
+        #expect(paged.kvBackend == "paged")
+        #expect(paged.kvBackendFallbackReason == nil)
+    }
+
+    @Test("the kill switch degrade is reported, not hidden")
+    func killSwitchDegradeIsReported() async throws {
+        // `DARKBLOOM_CBV2_PAGED_KV=0` on a paged-configured fleet is a
+        // deliberate rollback, and the fleet still has to SEE that the slot it
+        // is measuring is not the backend it configured.
+        let slot = try await heartbeatSlot(kind: .contiguous, fallbackReason: "kill_switch")
+        #expect(slot.kvBackendFallbackReason == "kill_switch")
+    }
+
+    @Test("an over-long reason is clamped, keeping the class the fleet groups on")
+    func longReasonIsClamped() async throws {
+        // The reasons interpolate arbitrary MLX/Metal error text and this
+        // rides every heartbeat of every slot, unlike the once-per-load event.
+        let cap = EngineV2Bridge.maxHeartbeatFallbackReasonLength
+        let long = "ineligible: " + String(repeating: "x", count: cap * 4)
+        let slot = try await heartbeatSlot(kind: .contiguous, fallbackReason: long)
+        let reported = try #require(slot.kvBackendFallbackReason)
+        #expect(reported.count == cap)
+        // Truncated from the TAIL, so the leading class survives.
+        #expect(reported.hasPrefix("ineligible:"))
+
+        // The clamp must not turn "no degrade" into an empty-string degrade.
+        #expect(EngineV2Bridge.heartbeatFallbackReason(nil) == nil)
     }
 }

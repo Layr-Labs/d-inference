@@ -44,6 +44,8 @@ struct BetaCommandTests {
     @Test("enable with an absent section writes the key despite the matching default")
     func enableMaterializesAbsentKey() throws {
         let url = try makeTempConfig("""
+            config_version = 2
+
             [provider]
             name = "beta-test"
             """)
@@ -84,6 +86,8 @@ struct BetaCommandTests {
     @Test("a key pinned at the target value is a no-op without a rewrite")
     func pinnedKeyIsNoOp() throws {
         let url = try makeTempConfig("""
+            config_version = 2
+
             [provider]
             name = "beta-test"
 
@@ -103,7 +107,7 @@ struct BetaCommandTests {
 
     @Test("disable with an absent key still writes a default-off feature")
     func disableMaterializesAbsentKey() throws {
-        // kv-quant defaults off: disabling an absent key used to no-op without
+        // MTP defaults off: disabling an absent key used to no-op without
         // persisting the operator's intent.
         let url = try makeTempConfig("""
             [provider]
@@ -112,12 +116,12 @@ struct BetaCommandTests {
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }
 
         try withGuardedCanonicalConfig {
-            try setBetaFeature("kv-quant", enabled: false, configPath: url.path)
+            try setBetaFeature("mtp", enabled: false, configPath: url.path)
         }
 
         let written = try String(contentsOf: url, encoding: .utf8)
-        #expect(written.contains("kv_quant = false"))
-        #expect(tomlKeyPresent(written, section: "backend", key: "kv_quant"))
+        #expect(written.contains("mtp = false"))
+        #expect(tomlKeyPresent(written, section: "backend", key: "mtp"))
     }
 
     @Test("disable flips a pinned key and keeps its neighbour")

@@ -9,6 +9,13 @@ from .arrival import validate_arrival
 from .checks import assert_finite, require_positive
 
 
+RAW_SCHEMA_VERSIONS = {
+    "throughput sweep": 5,
+    "scheduler prefill": 2,
+    "arrival invariance": 4,
+}
+
+
 def validate_prefill(args: argparse.Namespace, sweep: dict) -> None:
     expected_prefill_counts = Counter(
         {length: args.iterations for length in args.prefill_lengths}
@@ -31,12 +38,15 @@ def validate_prefill(args: argparse.Namespace, sweep: dict) -> None:
 
 
 def validate_decode(args: argparse.Namespace, sweep: dict) -> None:
-    # The decode curve is repeated once per iteration, so every batch size must
-    # carry exactly `--iterations` samples; anything else means the median in
-    # the summary would be computed over the wrong number of measurements.
+    # The decode curve is repeated once per iteration, so every requested batch
+    # size must carry exactly `--iterations` samples; anything else means the
+    # median in the summary would be computed over the wrong number of
+    # measurements. The expectation is the `--batch-sizes` list verbatim: a
+    # sparse curve must not be silently accepted as a dense ladder, nor the
+    # reverse.
     decode_samples = sweep.get("decode", [])
     expected_decode_counts = Counter(
-        {batch_size: args.iterations for batch_size in range(1, args.max_batch + 1)}
+        {batch_size: args.iterations for batch_size in args.batch_sizes}
     )
     actual_decode_counts = Counter(
         int(sample.get("batchSize", -1)) for sample in decode_samples
@@ -99,6 +109,12 @@ def validate_raw_outputs(
         ("scheduler prefill", scheduler),
         ("arrival invariance", arrival),
     ):
+        expected_schema = RAW_SCHEMA_VERSIONS[name]
+        if payload.get("schemaVersion") != expected_schema:
+            raise RuntimeError(
+                f"{name} schemaVersion is {payload.get('schemaVersion')!r}, "
+                f"expected {expected_schema}"
+            )
         if payload.get("modelID", "").replace("\\/", "/") != args.model:
             raise RuntimeError(f"{name} returned the wrong model ID")
         assert_finite(payload, name)

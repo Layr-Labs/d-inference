@@ -20,6 +20,11 @@ func TestNormalizeToolSchemas_CollapsesNullableArrayTypeToConcreteMember(t *test
 	if city["nullable"] != true {
 		t.Errorf("city nullable = %v, want true", city["nullable"])
 	}
+	// The nullable pair has ONE concrete member — no union to preserve, so no
+	// anyOf is synthesized (the parity corpus pins this byte shape).
+	if _, ok := city["anyOf"]; ok {
+		t.Errorf("city anyOf = %v, want absent for single-concrete pair", city["anyOf"])
+	}
 	if req, ok := tsnParams(t, out)["required"].([]any); !ok || len(req) != 1 || req[0] != "city" {
 		t.Errorf("required = %v, want [city]", tsnParams(t, out)["required"])
 	}
@@ -219,5 +224,103 @@ func TestNormalizeToolSchemas_PreservesBooleanSchemaSemantics(t *testing.T) {
 		if got, ok := schema[originalBooleanSchemaKey].(bool); !ok || got != want {
 			t.Fatalf("%s marker = %#v, want %v", name, schema[originalBooleanSchemaKey], want)
 		}
+	}
+}
+
+// tsnAnyOfTypes asserts the node's anyOf is a list of bare {"type": ...}
+// members and returns the member types in order.
+func tsnAnyOfTypes(t *testing.T, node map[string]any, what string) []string {
+	t.Helper()
+	variants, ok := node["anyOf"].([]any)
+	if !ok {
+		t.Fatalf("%s anyOf = %#v, want array", what, node["anyOf"])
+	}
+	types := make([]string, 0, len(variants))
+	for i, v := range variants {
+		member := tsnMap(t, v, what+".anyOf member")
+		if len(member) != 1 {
+			t.Fatalf("%s anyOf[%d] = %v, want bare type-only schema", what, i, member)
+		}
+		types = append(types, tsnType(t, member, what+".anyOf member"))
+	}
+	return types
+}
+
+// Swift: multiConcreteTypeArrayPreservedViaAnyOf
+func TestNormalizeToolSchemas_MultiConcreteTypeArrayPreservedViaAnyOf(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "id":{"type":["string","integer"]}}}}}]}`)
+
+	id := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["id"], "id")
+	if got := tsnType(t, id, "id"); got != "string" {
+		t.Errorf("id type = %q, want first concrete member string", got)
+	}
+	if got := tsnAnyOfTypes(t, id, "id"); len(got) != 2 || got[0] != "string" || got[1] != "integer" {
+		t.Errorf("id anyOf types = %v, want [string integer]", got)
+	}
+	if _, ok := id["nullable"]; ok {
+		t.Errorf("id nullable = %v, want absent without a null member", id["nullable"])
+	}
+}
+
+// Swift: multiConcreteNullableTypeArrayKeepsNullAndUnion
+func TestNormalizeToolSchemas_MultiConcreteNullableTypeArrayKeepsNullAndUnion(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "id":{"type":["integer","string","null"]}}}}}]}`)
+
+	id := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["id"], "id")
+	if got := tsnType(t, id, "id"); got != "integer" {
+		t.Errorf("id type = %q, want first concrete member integer", got)
+	}
+	if id["nullable"] != true {
+		t.Errorf("id nullable = %v, want true", id["nullable"])
+	}
+	// The null member rides the nullable side-channel, never the union.
+	if got := tsnAnyOfTypes(t, id, "id"); len(got) != 2 || got[0] != "integer" || got[1] != "string" {
+		t.Errorf("id anyOf types = %v, want [integer string]", got)
+	}
+}
+
+// Swift: multiConcreteTypeArrayWithExistingCombinatorCollapsesOnly
+func TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollapsesOnly(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "v":{"type":["string","integer"],"anyOf":[{"minLength":1}]},
+	    "w":{"type":["string","integer"],"allOf":[{"minLength":1}]}}}}}]}`)
+
+	props := tsnProps(t, NormalizeToolSchemas(body))
+	v := tsnMap(t, props["v"], "v")
+	if got := tsnType(t, v, "v"); got != "string" {
+		t.Errorf("v type = %q, want string", got)
+	}
+	// The author's combinator keeps its written semantics: no second union is
+	// layered on, and the existing member survives (type-injected only).
+	variants, ok := v["anyOf"].([]any)
+	if !ok || len(variants) != 1 {
+		t.Fatalf("v anyOf = %#v, want the single authored member", v["anyOf"])
+	}
+	if member := tsnMap(t, variants[0], "v.anyOf[0]"); member["minLength"] == nil {
+		t.Errorf("v anyOf[0] = %v, want the authored minLength member", member)
+	}
+	w := tsnMap(t, props["w"], "w")
+	if _, ok := w["anyOf"]; ok {
+		t.Errorf("w anyOf = %v, want absent beside authored allOf", w["anyOf"])
+	}
+}
+
+// Swift: duplicateTypeMembersDedupedCaseInsensitively
+func TestNormalizeToolSchemas_DuplicateTypeMembersDedupedCaseInsensitively(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
+	  "parameters":{"type":"object","properties":{
+	    "id":{"type":["string","STRING","integer"]}}}}}]}`)
+
+	id := tsnMap(t, tsnProps(t, NormalizeToolSchemas(body))["id"], "id")
+	if got := tsnType(t, id, "id"); got != "string" {
+		t.Errorf("id type = %q, want string", got)
+	}
+	if got := tsnAnyOfTypes(t, id, "id"); len(got) != 2 || got[0] != "string" || got[1] != "integer" {
+		t.Errorf("id anyOf types = %v, want deduped [string integer]", got)
 	}
 }

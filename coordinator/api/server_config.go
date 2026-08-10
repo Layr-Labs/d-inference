@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/env"
+	"github.com/eigeninference/d-inference/coordinator/mediafetch"
 )
 
 // ServerConfig holds coordinator HTTP server and URL configuration.
@@ -22,6 +23,11 @@ type ServerConfig struct {
 	ReleaseKey          string
 	ServiceReservations bool
 	BaseRewards         BaseRewardsConfig
+	// MediaFetch is the remote media resolution config (mediafetch package).
+	// nil means "read it from the environment in NewServer", which keeps the
+	// bare ServerConfig{} literals used by tests working unchanged. main.go
+	// threads the AppConfig-validated value in.
+	MediaFetch *mediafetch.Config
 }
 
 // BaseRewardsConfig holds the deployment knobs for the provider base-rewards

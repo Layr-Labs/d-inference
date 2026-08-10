@@ -37,8 +37,9 @@ func chatRequestWithHeaders(ctx context.Context, baseURL, model string) (int, st
 // TestDedicatedModelShed429NotServiceUnavailable verifies that when a dedicated
 // model (gemma-4) is served by the fleet but no DEDICATED box can take the
 // request (only a mixed gemma-4+qwen box exists), the coordinator sheds to
-// OpenRouter with a transient 429 + Retry-After — NOT a 503. A truly-absent,
-// non-dedicated model still returns 503.
+// OpenRouter with a transient 429 + Retry-After — NOT a 503. A model with no
+// currently connected provider is also transient capacity: this is the exact
+// post-coordinator-restart window while the in-memory fleet registry rebuilds.
 func TestDedicatedModelShed429NotServiceUnavailable(t *testing.T) {
 	ts, reg := setupAdaptiveCapacityIntegration(t)
 	defer ts.Close()
@@ -86,16 +87,21 @@ func TestDedicatedModelShed429NotServiceUnavailable(t *testing.T) {
 		t.Fatalf("gemma 429 missing Retry-After header")
 	}
 
-	// Control: a non-dedicated model absent from the fleet still 503s.
-	statusC, bodyC, _, err := chatRequestWithHeaders(ctx, ts.URL, "totally-absent-model")
+	// Control/regression: a non-dedicated model with no connected provider also
+	// sheds as 429. Returning 503 here caused the OpenRouter uptime collapse
+	// during the provider-reconnect minute after a coordinator deployment.
+	statusC, bodyC, retryAfterC, err := chatRequestWithHeaders(ctx, ts.URL, "reconnecting-model")
 	if err != nil {
 		t.Fatalf("control request: %v", err)
 	}
-	if statusC != http.StatusServiceUnavailable {
-		t.Fatalf("control status = %d, want 503; body = %s", statusC, bodyC)
+	if statusC != http.StatusTooManyRequests {
+		t.Fatalf("control status = %d, want 429; body = %s", statusC, bodyC)
 	}
-	if !strings.Contains(bodyC, "model_unavailable") {
-		t.Fatalf("control body = %s, want model_unavailable", bodyC)
+	if !strings.Contains(bodyC, "rate_limit_exceeded") {
+		t.Fatalf("control body = %s, want rate_limit_exceeded", bodyC)
+	}
+	if retryAfterC == "" {
+		t.Fatal("control 429 missing Retry-After header")
 	}
 
 	// The legacy /v1/completions endpoint (handleGenericInference) must classify

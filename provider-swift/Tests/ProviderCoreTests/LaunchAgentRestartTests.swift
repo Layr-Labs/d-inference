@@ -92,6 +92,19 @@ struct LaunchAgentEnvironmentTests {
         ])
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
+
+    @Test func forwardsKVBackendGuardPathToDaemonAndWatchdog() {
+        // The crash-loop guard record has one writer (the launchd watchdog)
+        // and several readers (the launchd daemon's engine factory, a
+        // shell-invoked status/doctor). A shell-set path override must reach
+        // BOTH launchd jobs or the writers and readers split across two
+        // files and the guard silently never binds.
+        let env = [KVBackendGuardStore.pathEnvKey: "/tmp/guard.json", "PATH": "/usr/bin"]
+        #expect(LaunchAgent.passthroughEnvironment(from: env)
+            == [KVBackendGuardStore.pathEnvKey: "/tmp/guard.json"])
+        #expect(WatchdogAgent.passthroughEnvironment(from: env)
+            == [KVBackendGuardStore.pathEnvKey: "/tmp/guard.json"])
+    }
 }
 
 @Suite("LaunchAgent service plist")

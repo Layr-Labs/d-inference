@@ -12,7 +12,7 @@ import Foundation
 /// are stored as `@Sendable` closures so the registry is a concurrency-safe
 /// `static let` under Swift 6 strict concurrency.
 public struct BetaFeature: Sendable, Identifiable {
-    /// Stable CLI identifier, e.g. `kv-quant`. Lowercase, hyphenated.
+    /// Stable CLI identifier, e.g. `mtp`. Lowercase, hyphenated.
     public let id: String
     /// Short human-readable name.
     public let title: String
@@ -110,22 +110,6 @@ public enum BetaFeatures {
             }
         ),
         BetaFeature(
-            id: "kv-quant",
-            title: "KV-cache quantization",
-            summary: "CURRENTLY REJECTED (v0.7.5 serves fp16-only KV; CBv2 fast-follow planned).",
-            details: """
-            The legacy engine's 8-bit KV schemes died with the one-engine \
-            release: v0.7.5 serves fp16-only KV caches, and a kv_quant = true \
-            is REJECTED with a startup WARN rather than silently ignored. A \
-            ContinuousBatchingV2-native KV-quant is a planned fast-follow; \
-            leaving this enabled opts you in when it ships.
-            """,
-            requiresRestart: true,
-            configAddress: (section: "backend", key: "kv_quant"),
-            read: { $0.backend.kvQuant },
-            write: { enabled, config in config.backend.kvQuant = enabled }
-        ),
-        BetaFeature(
             id: "mtp",
             title: "Multi-token prediction (speculative decoding)",
             summary: "Gemma 4 drafter-assisted decode on CBv2 — faster greedy decode, token-identical output.",
@@ -143,7 +127,9 @@ public enum BetaFeatures {
             write: { enabled, config in config.backend.mtp = enabled }
         ),
         // (adaptive-prefill was retired with the legacy engine, v0.7.5 —
-        // CBv2 chunks prefill engine-internally.)
+        // CBv2 chunks prefill engine-internally. kv-quant was retired in
+        // v0.8.0 with the KV-quantization feature itself; its `kv_quant`
+        // config key is handled by `BackendSettings.RetiredCodingKeys`.)
     ]
 
     /// Look up a feature by its CLI id (case-insensitive).

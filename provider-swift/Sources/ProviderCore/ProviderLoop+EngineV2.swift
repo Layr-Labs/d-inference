@@ -600,6 +600,7 @@ extension ProviderLoop {
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: preparedModel,
+                configReserveBytes: loopConfig.config.provider.effectiveReserveBytes(),
                 logInfo: { slotLogger.info($0) },
                 logWarning: { slotLogger.warning($0) })
         }

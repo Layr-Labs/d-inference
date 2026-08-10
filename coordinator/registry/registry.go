@@ -2032,11 +2032,8 @@ func (r *Registry) providerStructurallyCanRouteBuildLocked(
 	// backend-reported figure, matching snapshotProviderLocked. A resident
 	// running/idle slot has already demonstrated fit and must bypass the
 	// heuristic. Owner-only off-catalog models use their advertised size.
-	totalMemoryGB := float64(p.Hardware.MemoryGB)
+	totalMemoryGB := providerTotalMemoryGB(p)
 	slotState := "unknown"
-	if p.BackendCapacity != nil && p.BackendCapacity.TotalMemoryGB > 0 {
-		totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-	}
 	if p.BackendCapacity != nil {
 		for _, slot := range p.BackendCapacity.Slots {
 			if slot.Model == buildID {

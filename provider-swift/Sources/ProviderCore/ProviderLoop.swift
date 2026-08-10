@@ -536,13 +536,8 @@ public actor ProviderLoop {
         // cap)) — so runtime KV can't grow into memory the operator explicitly
         // withheld once a model is loaded. No-op when the effective reserve is
         // ≤ the cap's implied reserve.
-        let effectiveReserve = config.config.provider.effectiveReserveBytes()
-        self.kvBudget = GlobalKVCacheBudget(configReserveBytes: effectiveReserve)
-        // Publish the SAME reserve to the un-parameterized probes
-        // (KVHeadroomProbe → the post-load serveability guard and the paged
-        // pool's live limit). Deriving both from one local is what keeps the
-        // guard and the admitting gate from disagreeing.
-        ProviderMemoryPolicy.configure(effectiveReserveBytes: effectiveReserve)
+        self.kvBudget = GlobalKVCacheBudget(
+            configReserveBytes: config.config.provider.effectiveReserveBytes())
         // Sweep only the retired checkpoint tier's `darkbloom/kv` directory.
         // The EngineV2 SSD tier uses the separate `darkbloom/kv3` root,
         // so this cleanup cannot delete current cache data.

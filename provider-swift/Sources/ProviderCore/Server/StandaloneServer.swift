@@ -228,6 +228,10 @@ public actor StandaloneServer {
         case stopping
     }
     private var lifecycleState: LifecycleState = .stopped
+    /// Effective memory hold-back for this process (limit-implied; standalone
+    /// has no `memory_reserve_gb`). Shared by the KV budget and the
+    /// serveability probes.
+    private let standaloneEffectiveReserveBytes: UInt64
     private let kvBudget: GlobalKVCacheBudget
     var specDecFunnel: SpecDecArtifactFunnel
     /// Phase 3: global disk accountant (process-wide, shared across models).
@@ -257,12 +261,16 @@ public actor StandaloneServer {
         // Standalone mode has no `memory_reserve_gb`, but the absolute
         // `memory_limit_gb` is machine-wide intent: fold it into the KV
         // budget's reserve so local serving can't grow past the limit.
+        // Standalone mode has no `memory_reserve_gb`, but the absolute
+        // `memory_limit_gb` is machine-wide intent. One local feeds BOTH the KV
+        // admission gate and the serveability probes below, so the gate that
+        // admits requests and the guard that decides a slot is serveable can
+        // never disagree about how much memory is held back.
         let effectiveReserve = MemoryLimit.impliedReserveBytes(
             limitGB: config.memoryLimitGB,
             physicalBytes: ProcessInfo.processInfo.physicalMemory)
+        self.standaloneEffectiveReserveBytes = effectiveReserve
         self.kvBudget = GlobalKVCacheBudget(configReserveBytes: effectiveReserve)
-        // Same reserve to the un-parameterized probes — see ProviderLoop.init.
-        ProviderMemoryPolicy.configure(effectiveReserveBytes: effectiveReserve)
         self.specDecFunnel = SpecDecArtifactFunnel(
             resolver: SpecDecResolver(),
             catalog: nil)
@@ -840,6 +848,7 @@ public actor StandaloneServer {
                 weightHash: cacheEligibleWeightHash,
                 specDecPreparation: specDecPreparation,
                 preparedModel: prepared,
+                configReserveBytes: standaloneEffectiveReserveBytes,
                 emitTelemetry: v2TestHooks?.emitTelemetry,
                 makeEngineOverride: v2TestHooks?.makeEngine,
                 logInfo: { standaloneLogger.info("\($0)") },
@@ -1345,10 +1354,12 @@ public actor StandaloneServer {
             // a model with no serveable KV headroom under the cap rather than
             // publish a "loaded but every request rejected" model. Serialized by
             // isLoadingAny, so the MLX measurement reflects this load.
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            if !KVHeadroomProbe.hasServeableKVHeadroom(
+                configReserveBytes: standaloneEffectiveReserveBytes) {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        configReserveBytes: standaloneEffectiveReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -1404,7 +1415,8 @@ public actor StandaloneServer {
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: bridge.kvBackendKind,
-                pagedPoolBytes: await bridge.kvBackendPoolBytes())
+                pagedPoolBytes: await bridge.kvBackendPoolBytes(),
+                configReserveBytes: standaloneEffectiveReserveBytes)
             let runtimeMTPActive = await bridge.mtpStatusSnapshot().active
             if bundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -1438,12 +1450,14 @@ public actor StandaloneServer {
                 MLX.Memory.clearCache()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: bridge.kvBackendKind,
-                    pagedPoolBytes: await bridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await bridge.kvBackendPoolBytes(),
+                configReserveBytes: standaloneEffectiveReserveBytes)
             }
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        configReserveBytes: standaloneEffectiveReserveBytes)) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident

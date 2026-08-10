@@ -19,18 +19,17 @@ public enum KVHeadroomProbe {
     /// KV) clamped to real OS-available memory. NO floor is applied, so it
     /// reports a true zero when the cap is already exhausted.
     ///
-    /// The operator reserve comes from ``ProviderMemoryPolicy`` (published at
-    /// startup) rather than a parameter, because the deepest caller
-    /// (`EngineV2Factory.prepareProductionBackend`) has no config in scope.
-    /// It MUST be included: `GlobalKVCacheBudget` — the gate that actually
-    /// admits requests — subtracts the same reserve, so a probe that omits it
-    /// measures headroom against `0.90 × physical` while serving is capped at
-    /// `physical − reserve`. On a 256 GB box limited to 150 GB that is an
+    /// `configReserveBytes` is REQUIRED, not defaulted, and must be the same
+    /// effective reserve `GlobalKVCacheBudget` was built with
+    /// (`ProviderSettings.effectiveReserveBytes`, which folds in
+    /// `memory_limit_gb`). A probe that omits it measures headroom against
+    /// `0.90 × physical` while the gate that actually admits requests enforces
+    /// `physical − reserve`: on a 256 GB box limited to 150 GB that is an
     /// ~80 GB overstatement, and the post-load guard below would then admit
-    /// exactly the "loaded but unserveable" slot it exists to reject.
-    public static func measuredLiveKVHeadroomBytes(
-        configReserveBytes: UInt64 = ProviderMemoryPolicy.effectiveReserveBytes
-    ) -> UInt64 {
+    /// exactly the "loaded but unserveable" slot it exists to reject. A default
+    /// of 0 would make that divergence the silent behavior at any call site
+    /// someone forgets to update, so there is no default.
+    public static func measuredLiveKVHeadroomBytes(configReserveBytes: UInt64) -> UInt64 {
         let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
         return UnifiedMemoryCap.liveKVHeadroomBytes(
             mlxUsedBytes: mlxUsed,
@@ -45,9 +44,7 @@ public enum KVHeadroomProbe {
     /// shape). Trim the cold-load buffer pool (`MLX.Memory.clearCache()`)
     /// BEFORE probing, or transient load buffers false-reject a serveable
     /// model.
-    public static func hasServeableKVHeadroom(
-        configReserveBytes: UInt64 = ProviderMemoryPolicy.effectiveReserveBytes
-    ) -> Bool {
+    public static func hasServeableKVHeadroom(configReserveBytes: UInt64) -> Bool {
         UnifiedMemoryCap.loadIsServeable(
             measuredLiveKVHeadroomBytes: measuredLiveKVHeadroomBytes(
                 configReserveBytes: configReserveBytes))
@@ -67,23 +64,39 @@ public enum KVHeadroomProbe {
     ///     the residual check catches unaccounted engine/JIT residency or
     ///     concurrent OS pressure without rejecting every valid pool.
     ///
-    /// Pure over its inputs (the live measurement is a defaulted
-    /// autoclosure) so the matrix is unit-testable without touching MLX
-    /// counters.
+    /// Live form: measures headroom now, so the operator reserve is REQUIRED.
+    /// There is deliberately no default — a `= 0` here would silently restore
+    /// the reserve-blind measurement at any call site that forgets it, which is
+    /// the exact defect this overload exists to prevent.
     public static func postBuildServeable(
         kvBackendKind: EngineV2KVBackendKind,
         pagedPoolBytes: UInt64,
-        measuredHeadroomBytes: @autoclosure () -> UInt64 = KVHeadroomProbe
-            .measuredLiveKVHeadroomBytes()
+        configReserveBytes: UInt64
+    ) -> Bool {
+        postBuildServeable(
+            kvBackendKind: kvBackendKind,
+            pagedPoolBytes: pagedPoolBytes,
+            measuredHeadroomBytes: measuredLiveKVHeadroomBytes(
+                configReserveBytes: configReserveBytes))
+    }
+
+    /// Pure form: the caller supplies the measurement, so no reserve is
+    /// involved. Splitting the two overloads makes "measured live" and
+    /// "supplied" mutually exclusive at the type level — you cannot get a
+    /// reserve-blind live measurement by omitting an argument.
+    public static func postBuildServeable(
+        kvBackendKind: EngineV2KVBackendKind,
+        pagedPoolBytes: UInt64,
+        measuredHeadroomBytes: UInt64
     ) -> Bool {
         switch kvBackendKind {
         case .paged:
             return pagedPoolBytes >= UnifiedMemoryCap.minimumLoadKVBytes
                 && UnifiedMemoryCap.loadIsServeable(
-                    measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
+                    measuredLiveKVHeadroomBytes: measuredHeadroomBytes)
         case .contiguous:
             return UnifiedMemoryCap.loadIsServeable(
-                measuredLiveKVHeadroomBytes: measuredHeadroomBytes())
+                measuredLiveKVHeadroomBytes: measuredHeadroomBytes)
         }
     }
 }

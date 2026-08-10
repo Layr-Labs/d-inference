@@ -713,12 +713,9 @@ func (r *Registry) warmPoolCandidateReasonLocked(p *Provider, model string, now 
 	if r.providerExcludedByDedicatedRuleLocked(p, model) {
 		return warmPoolCandidate{}, warmColdDedicated
 	}
-	totalMemoryGB := float64(p.Hardware.MemoryGB)
+	totalMemoryGB := providerTotalMemoryGB(p)
 	gpuActiveGB := 0.0
 	if p.BackendCapacity != nil {
-		if p.BackendCapacity.TotalMemoryGB > 0 {
-			totalMemoryGB = p.BackendCapacity.TotalMemoryGB
-		}
 		gpuActiveGB = p.BackendCapacity.GPUMemoryActiveGB
 	}
 	if !modelFitsHardware(r.catalogMinRAMGbLocked(model), r.catalogSizeGBLocked(model), totalMemoryGB) {

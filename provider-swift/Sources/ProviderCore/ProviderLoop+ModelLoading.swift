@@ -476,10 +476,12 @@ extension ProviderLoop {
             // serveable model. Mirrors evictUntilAvailable / fastAdmissionReject's
             // clearCache-then-measure self-heal.
             MLX.Memory.clearCache()
-            if !KVHeadroomProbe.hasServeableKVHeadroom() {
+            if !KVHeadroomProbe.hasServeableKVHeadroom(
+                configReserveBytes: loopConfig.config.provider.effectiveReserveBytes()) {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        configReserveBytes: loopConfig.config.provider.effectiveReserveBytes())) / (1024.0 * 1024.0 * 1024.0))
                 let minGb = String(
                     format: "%.1f", Double(UnifiedMemoryCap.minimumLoadKVBytes) / (1024.0 * 1024.0 * 1024.0))
                 // Pre-shrink failure: no grants were mutated, so ordering is
@@ -581,7 +583,8 @@ extension ProviderLoop {
             MLX.Memory.clearCache()
             var postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                 kvBackendKind: engineV2Bridge.kvBackendKind,
-                pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+                pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
+                configReserveBytes: loopConfig.config.provider.effectiveReserveBytes())
             let runtimeMTPActive = await engineV2Bridge.mtpStatusSnapshot().active
             if engineBundle.mtpStatus.active,
                 !postBridgeServeable || !runtimeMTPActive
@@ -622,12 +625,14 @@ extension ProviderLoop {
                 MLX.Memory.clearCache()
                 postBridgeServeable = KVHeadroomProbe.postBuildServeable(
                     kvBackendKind: engineV2Bridge.kvBackendKind,
-                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes())
+                    pagedPoolBytes: await engineV2Bridge.kvBackendPoolBytes(),
+                configReserveBytes: loopConfig.config.provider.effectiveReserveBytes())
             }
             if !postBridgeServeable {
                 let headroomGb = String(
                     format: "%.1f",
-                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    Double(KVHeadroomProbe.measuredLiveKVHeadroomBytes(
+                        configReserveBytes: loopConfig.config.provider.effectiveReserveBytes())) / (1024.0 * 1024.0 * 1024.0))
                 // Retire the bridge, release the newcomer's weights, THEN
                 // regrow survivors — in that order (Codex review): regrowing
                 // while the aborted newcomer's weights are still resident

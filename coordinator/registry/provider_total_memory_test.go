@@ -2,6 +2,7 @@ package registry
 
 import (
 	"testing"
+	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
@@ -40,32 +41,39 @@ func TestProviderTotalMemoryFallsBackToRegistration(t *testing.T) {
 	}
 }
 
-// The behavioral consequence: a 256 GB box capped to 150 GB must NOT pass the
-// static hardware-fit gate for a model only a 256 GB box could hold. Before the
-// fix, cold-spill and the warm-pool load planner used registration memory and
-// admitted it, then the provider's authoritative load gate refused.
-func TestCappedProviderFailsHardwareFitForOversizedModel(t *testing.T) {
-	capped := &Provider{
-		Hardware:        protocol.Hardware{MemoryGB: 256},
-		BackendCapacity: &protocol.BackendCapacity{TotalMemoryGB: 150},
-	}
-	uncapped := &Provider{
-		Hardware:        protocol.Hardware{MemoryGB: 256},
-		BackendCapacity: &protocol.BackendCapacity{TotalMemoryGB: 256},
+// The behavioral consequence, driven through the REAL planner rather than the
+// helper: a 256 GB box capped to 150 GB must not be planned a load only a
+// 256 GB box could hold. Reverting the one-line call-site change in
+// registry.go fails this test — asserting on providerTotalMemoryGB alone would
+// not, since the helper would still be correct while nothing used it.
+func TestLoadPlannerRespectsCappedTotalMemory(t *testing.T) {
+	reg := New(testLogger())
+	const model = "capped-box-oversized"
+	// Catalog-authoritative requirement no capped box can satisfy.
+	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 180, MinRAMGB: 200}})
+
+	p := registerProviderWithModel(reg, "p1", model)
+	makeProviderRoutable(p)
+	now := time.Now()
+
+	setMemory := func(totalMemoryGB float64) {
+		p.mu.Lock()
+		p.Hardware.MemoryGB = 256 // registration always reports raw hardware
+		p.BackendCapacity = &protocol.BackendCapacity{TotalMemoryGB: totalMemoryGB}
+		p.mu.Unlock()
 	}
 
-	const minRAMGb = 200 // catalog-authoritative requirement
-	const sizeGB = 180.0
+	// Uncapped: heartbeat equals physical, planner admits (precondition — this
+	// is what the old registration-only expression always did).
+	setMemory(256)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); !ok {
+		t.Fatal("precondition: an uncapped 256 GB box must be a load candidate")
+	}
 
-	if modelFitsHardware(minRAMGb, sizeGB, providerTotalMemoryGB(capped)) {
-		t.Error("a 150 GB-capped provider must not pass the fit gate for a 200 GB model")
-	}
-	if !modelFitsHardware(minRAMGb, sizeGB, providerTotalMemoryGB(uncapped)) {
-		t.Error("an uncapped 256 GB provider must still pass the fit gate")
-	}
-	// Regression guard on the old expression: registration memory alone would
-	// have admitted the capped box.
-	if !modelFitsHardware(minRAMGb, sizeGB, float64(capped.Hardware.MemoryGB)) {
-		t.Error("precondition: registration memory admits the model (that was the bug)")
+	// Capped to 150 GB via memory_limit_gb: registration still says 256, but
+	// the provider's own load gate will refuse, so the planner must not push.
+	setMemory(150)
+	if _, ok := reg.modelLoadCandidatePendingLocked(p, model, now); ok {
+		t.Error("planner must not plan a 200 GB-minimum model onto a 150 GB-capped box")
 	}
 }

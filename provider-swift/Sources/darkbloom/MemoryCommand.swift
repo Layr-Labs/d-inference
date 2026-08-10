@@ -122,15 +122,24 @@ struct Memory: AsyncParsableCommand {
         return .set(gb)
     }
 
-    /// Effective inference cap in bytes: the most conservative of the 90%
-    /// unified-memory cap and `physical − effectiveReserve`. Mirrors the
-    /// daemon's real gate.
-    static func inferenceCapBytes(provider: ProviderSettings, physicalBytes: UInt64) -> UInt64 {
-        let reserve = provider.effectiveReserveBytes(physicalBytes: physicalBytes)
-        return min(
-            UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes),
-            physicalBytes > reserve ? physicalBytes - reserve : 0
-        )
+    /// Effective inference cap in GB: the most conservative of the 90%
+    /// unified-memory cap and `physical − effectiveReserve`.
+    ///
+    /// Delegates to `ModelFitDiagnostic` — the same helper `doctor` uses, which
+    /// in turn delegates to `ModelLoadAdmission`, the arithmetic the running
+    /// daemon enforces. Sharing it is what keeps the CLI's "this model no
+    /// longer fits" from drifting from what the provider actually does.
+    ///
+    /// This is the IDLE ceiling: it assumes nothing resident and all of
+    /// physical available. The daemon's live figure is always ≤ this, so the
+    /// warnings below can under-warn but never falsely warn — the safe
+    /// direction for an advisory.
+    static func inferenceCapGb(provider: ProviderSettings, physicalGb: UInt64) -> Double {
+        let physicalBytes = MemoryLimit.saturatingGiBToBytes(physicalGb)
+        return ModelFitDiagnostic.usableInferenceGb(
+            totalGb: Double(physicalGb),
+            reserveGb: Double(provider.effectiveReserveBytes(physicalBytes: physicalBytes))
+                / 1_073_741_824.0)
     }
 
     /// Operator warnings for a newly-set limit. Pure — testable without IO.
@@ -148,23 +157,22 @@ struct Memory: AsyncParsableCommand {
         advertised: [ModelInfo]
     ) -> [String] {
         guard !advertised.isEmpty else { return [] }
-        let physicalBytes = physicalGb * 1_073_741_824
-        let cap = inferenceCapBytes(provider: provider, physicalBytes: physicalBytes)
-        let headroom = UnifiedMemoryCap.loadHeadroomBytes()
+        let usableGb = inferenceCapGb(provider: provider, physicalGb: physicalGb)
 
-        func fits(_ model: ModelInfo) -> Bool {
-            let need = UInt64(max(0, model.estimatedMemoryGb) * 1_073_741_824)
-            let (total, overflow) = need.addingReportingOverflow(headroom)
-            return !overflow && total <= cap
+        // Same "needs ~X GB" the doctor reports and the load gate requires.
+        let evicted = advertised.filter {
+            ModelFitDiagnostic.requiredGb(estimatedMemoryGb: $0.estimatedMemoryGb) > usableGb
         }
-
-        let evicted = advertised.filter { !fits($0) }
         guard !evicted.isEmpty else { return [] }
 
         var lines = [
             "  WARNING: \(evicted.count) advertised model(s) no longer fit under this limit:"
         ]
-        lines.append(contentsOf: evicted.map { "    - \($0.id) (~\(Int($0.estimatedMemoryGb.rounded())) GB)" })
+        lines.append(
+            contentsOf: evicted.map {
+                "    - \($0.id) (needs ~\(Int(ModelFitDiagnostic.requiredGb(estimatedMemoryGb: $0.estimatedMemoryGb).rounded())) GB, "
+                    + "\(Int(usableGb.rounded())) GB usable)"
+            })
         if evicted.count == advertised.count {
             lines.append("  NO advertised model fits — the provider will load nothing, serve nothing,")
             lines.append("  and earn NO base rewards (they require a warm model). Raise the limit or")
@@ -182,8 +190,8 @@ struct Memory: AsyncParsableCommand {
         physicalGb: UInt64,
         configDescription: String
     ) -> [String] {
-        let physicalBytes = physicalGb * 1_073_741_824
-        let cap = inferenceCapBytes(provider: provider, physicalBytes: physicalBytes)
+        let physicalBytes = MemoryLimit.saturatingGiBToBytes(physicalGb)
+        let capGb = inferenceCapGb(provider: provider, physicalGb: physicalGb)
 
         let limitLine: String
         if let limit = provider.memoryLimitBytes(physicalBytes: physicalBytes) {
@@ -199,7 +207,7 @@ struct Memory: AsyncParsableCommand {
             "Physical memory: \(physicalGb) GB",
             limitLine,
             "Memory reserve: \(provider.memoryReserveGB) GB (memory_reserve_gb)",
-            "Inference cap: \(formatGb(cap)) GB",
+            "Inference cap: \(formatGbValue(capGb)) GB",
             "Config: \(configDescription)",
         ]
     }
@@ -207,7 +215,12 @@ struct Memory: AsyncParsableCommand {
     /// Bytes → GB string, whole numbers without a decimal ("150"), else one
     /// decimal ("230.4").
     private static func formatGb(_ bytes: UInt64) -> String {
-        let gb = Double(bytes) / 1_073_741_824.0
+        formatGbValue(Double(bytes) / 1_073_741_824.0)
+    }
+
+    /// Whole numbers without a decimal ("150"), else one decimal ("230.4").
+    private static func formatGbValue(_ gb: Double) -> String {
+        guard gb.isFinite, gb >= 0 else { return "0" }
         return gb == gb.rounded() ? String(UInt64(gb)) : String(format: "%.1f", gb)
     }
 }

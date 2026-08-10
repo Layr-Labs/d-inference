@@ -155,6 +155,8 @@ struct MemoryCommandTests {
 
     @Test("a limit that evicts some models names them")
     func fitWarningsNamesEvictedModels() {
+        // limit 16 -> usable 16 GB; a 6 GB model needs ~10 GB (weights + the
+        // ~4 GB load headroom) and fits, a 26 GB model does not.
         let advertised = [model("small", gb: 6), model("big", gb: 26)]
         let lines = Memory.fitWarnings(
             provider: settings(limit: 16), physicalGb: 256, advertised: advertised)
@@ -162,6 +164,30 @@ struct MemoryCommandTests {
         #expect(!lines.contains { $0.contains("- small") })
         // Some models still fit, so this is not the earnings-zeroing case.
         #expect(!lines.contains { $0.contains("NO base rewards") })
+    }
+
+    @Test("the CLI's fit rule is the doctor's, which is the daemon's")
+    func fitWarningsUsesTheSharedDiagnostic() {
+        // Pins reuse: the threshold must be ModelFitDiagnostic's, not a second
+        // rule that can drift from what the provider actually enforces.
+        // limit 16 on a 256 GB box ⇒ effective reserve 240 GB.
+        let usable = Memory.inferenceCapGb(provider: settings(limit: 16), physicalGb: 256)
+        #expect(usable == ModelFitDiagnostic.usableInferenceGb(totalGb: 256, reserveGb: 240))
+
+        // The boundary is exactly ModelFitDiagnostic's requirement, so a model
+        // sized to sit just under it is silent and just over it warns.
+        let headroomGb = ModelFitDiagnostic.requiredGb(estimatedMemoryGb: 0)
+        let widest = usable - headroomGb
+        #expect(
+            Memory.fitWarnings(
+                provider: settings(limit: 16), physicalGb: 256,
+                advertised: [model("fits", gb: widest - 0.1)]
+            ).isEmpty)
+        #expect(
+            !Memory.fitWarnings(
+                provider: settings(limit: 16), physicalGb: 256,
+                advertised: [model("just-over", gb: widest + 0.1)]
+            ).isEmpty)
     }
 
     @Test("a limit that fits nothing warns that base rewards go to zero")

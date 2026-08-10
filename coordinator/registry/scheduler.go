@@ -1319,9 +1319,10 @@ const coldLoadCatalogGBToMemGiB = 1.2 * (1e9 / float64(int64(1)<<30)) // ≈ 1.1
 // registers `hardware.memory_gb = 256` (raw hardware, which the base-reward
 // tier is priced from) but heartbeats `total_memory_gb = 150`. Sizing a fit
 // check from registration would plan loads the provider's own gate then
-// refuses. `snapshotProviderLocked` (scheduler.go:1213) has always applied this
-// precedence; this helper exists so the paths that bypass the snapshot —
-// cold-spill and the warm-pool load planner — cannot drift from it.
+// refuses. `snapshotProviderLocked` has always applied this precedence; this
+// helper exists so the hardware-fit gates that bypass the snapshot cannot drift
+// from it. `snapshotProviderLocked` itself still inlines the expression because
+// it reads several BackendCapacity fields under one nil check.
 //
 // Caller must hold the provider lock.
 func providerTotalMemoryGB(p *Provider) float64 {

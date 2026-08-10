@@ -26,7 +26,11 @@ struct Update: AsyncParsableCommand {
         do {
             let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
             config = snapshot.config
-        } catch {
+        } catch ConfigError.readFailed {
+            // Missing/unreadable config files legitimately fall back to
+            // defaults; a file that exists but doesn't parse must fail loudly
+            // instead of silently resetting (and quietly aiming an update
+            // check at the wrong coordinator).
             config = ConfigManager.loadDefault()
         }
 

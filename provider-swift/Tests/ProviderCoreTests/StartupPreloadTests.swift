@@ -461,9 +461,12 @@ struct StartupPreloadGateTests {
         let gateElapsed = clock.now - start
 
         // Availability beats perfection: the gate released at ~1s even though
-        // ~2s of loading remained.
+        // ~2s of loading remained. The wall-clock margin must absorb parallel-
+        // suite scheduling stalls on loaded machines (observed 3.5s); the
+        // semantic signal is the .timedOut outcome + background continuation,
+        // not the sub-second margin.
         #expect(outcome == .timedOut)
-        #expect(gateElapsed < .milliseconds(2800))
+        #expect(gateElapsed < .milliseconds(4500))
         #expect(recorder.loads.isEmpty)
 
         // The driver keeps warming in the background after the gate released.

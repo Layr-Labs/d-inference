@@ -103,6 +103,11 @@ struct DecodeBandwidthModelTests {
 @Suite("throughput sweep: row aggregation")
 struct ThroughputSweepRowAggregationTests {
 
+    @Test("decode sweep ignores EOS to preserve a fixed token budget")
+    func fixedDecodeBudget() {
+        #expect(ThroughputSweep.fixedBudgetStopTokens.isEmpty)
+    }
+
     @Test("clean rows aggregate tokens and the slowest row's elapsed")
     func cleanRowsAggregate() {
         let cell = ThroughputSweep.aggregateRows([

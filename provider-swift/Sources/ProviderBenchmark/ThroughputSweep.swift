@@ -31,6 +31,12 @@ public enum ThroughputSweep {
     public static let defaultDecodePromptTokens = 64
     public static let defaultDecodeIterations = 1
 
+    /// Throughput cells must generate the requested budget for every row.
+    /// Honoring model EOS would compare different token counts and lets one
+    /// early-stopping row corrupt a batch aggregate; arrival invariance uses
+    /// the same fixed-budget contract.
+    static let fixedBudgetStopTokens: Set<Int> = []
+
     /// Snapshot of model facts read once, off-actor, inside `perform`.
     private struct ModelFacts: Sendable {
         let weightBytes: Int
@@ -428,7 +434,6 @@ public enum ThroughputSweep {
             UInt64(Int.max)))
         struct EngineParts: @unchecked Sendable {
             let engine: any CBv2Engine
-            let eosTokenIds: Set<Int>
             /// The backend the factory resolved to, with any fallback reason.
             let resolvedBackend: String
         }
@@ -451,7 +456,6 @@ public enum ThroughputSweep {
                     kvBackend: kvBackend)
                 return EngineParts(
                     engine: build.engine,
-                    eosTokenIds: ctx.configuration.eosTokenIds,
                     resolvedBackend: build.resolvedKVBackendDescriptor)
             }
         } catch {
@@ -463,7 +467,6 @@ public enum ThroughputSweep {
             return (0, .zero, nil, "\(error)", nil)
         }
         let engine = parts.engine
-        let eosTokenIds = parts.eosTokenIds
 
         let result = await withTaskGroup(of: RowMeasure.self) {
             group -> (Int, Duration, String?) in
@@ -480,7 +483,7 @@ public enum ThroughputSweep {
                             promptTokens: prompt,
                             sampling: CBv2SamplingParams(temperature: 0.0),
                             maxTokens: decodeTokens + 1,
-                            stopTokens: eosTokenIds
+                            stopTokens: Self.fixedBudgetStopTokens
                         ))
                     } catch {
                         Self.log("  submit failed: \(error)")

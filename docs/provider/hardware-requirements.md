@@ -59,10 +59,28 @@ if the provider's stricter gate is not met.
 | Model weights | Use the size shown by `darkbloom models catalog` |
 | Load headroom | +2 GB per model |
 | OS reserve | `provider.memory_reserve_gb` (default 4 GB) |
+| Optional absolute cap | `provider.memory_limit_gb` — `darkbloom memory limit <GB>` |
 | Concurrent requests | Additional KV-cache usage; runtime-enforced |
 
 Example: a 12 GB weights model loads when roughly `12 + 2 + 4 = 18 GB` of usable
 memory is available.
+
+To dedicate only part of a machine to Darkbloom (say 150 GB of a 256 GB Mac),
+set an absolute cap with `darkbloom memory limit 150`. The limit is folded into
+one effective reserve — `max(memory_reserve_gb, physical − memory_limit_gb)` —
+consumed by every admission gate
+(`provider-swift/Sources/ProviderCore/Inference/MemoryLimit.swift`), so the
+provider never plans weights + KV + activations past
+`min(0.90 × physical, physical − reserve, limit)`. The capped total is what the
+coordinator sees (`total_memory_gb` in
+`provider-swift/Sources/ProviderCore/ProviderLoop+Capacity.swift`), and MLX's
+allocator ceiling is pinned underneath it
+(`provider-swift/Sources/ProviderCore/Inference/MLXMemoryGuard.swift`). The
+standard 90% cap and OS reserve still apply on top — the most conservative
+bound wins. Values below 8 GB are clamped up to 8
+(`MemoryLimit.minimumLimitGB`); the CLI rejects them outright. Clear the cap
+with `darkbloom memory limit none`; inspect the effective figure with
+`darkbloom memory`.
 
 ## Storage
 

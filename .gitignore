@@ -92,3 +92,6 @@ docs/RUNBOOK.md
 
 # also match a .build symlink (not just the dir)
 .build
+
+# Internal working reports — keep local, not in git
+docs/reports/

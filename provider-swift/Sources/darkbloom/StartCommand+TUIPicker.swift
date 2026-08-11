@@ -11,9 +11,10 @@ extension Start {
 
     /// Interactive multi-select model picker using raw terminal mode.
     /// Arrow keys navigate, Space toggles selection, Enter confirms, Esc/q cancels.
-    /// Enforces memory budget and shows two sections: downloaded and available.
-    internal func runModelPicker(entries: [PickerEntry], memoryGb: Double) throws -> [Int] {
-        let budget = memoryGb - Start.pickerOSReserveGb
+    /// Enforces the per-model weight budget (`Start.pickerFitBudgetGb`) and
+    /// shows two sections: downloaded and available.
+    internal func runModelPicker(entries: [PickerEntry], budgetGb: Double) throws -> [Int] {
+        let budget = budgetGb
 
         var cursorPos = 0
         var selected = [Bool](repeating: false, count: entries.count)
@@ -51,7 +52,7 @@ extension Start {
         }
 
         func canFitIndividually(_ entry: PickerEntry) -> Bool {
-            Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb)
+            Start.modelFitsBudget(sizeGb: entry.sizeGb, budgetGb: budget)
         }
 
         // Pre-select the largest downloaded model that can fit on this machine.
@@ -79,7 +80,7 @@ extension Start {
 
             var lines = 0
 
-            output += "  Select models (RAM: \(Int(memoryGb)) GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
+            output += "  Select models (budget: \(Int(budget)) GB)  \u{2191}\u{2193} navigate \u{00B7} Space toggle \u{00B7} Enter confirm\r\n"
             lines += 1
 
             if fitsSimultaneously {

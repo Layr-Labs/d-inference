@@ -22,17 +22,23 @@ public enum MLXMemoryGuard {
         public let cacheLimitBytes: Int
     }
 
-    /// Pure sizing policy. memoryLimit = max(floor, physical − reserve);
-    /// cacheLimit = memoryLimit × cacheFraction (bounds the reusable pool so
-    /// freed buffers return to the OS; 0.75 keeps reuse/perf while helping).
+    /// Pure sizing policy. memoryLimit = max(floor, physical − reserve),
+    /// clamped down to `limitBytes` (the operator's `memory_limit_gb`, already
+    /// normalized) when set — the floor still wins over a pathologically small
+    /// limit so MLX never gets a sub-2GiB ceiling. cacheLimit = memoryLimit ×
+    /// cacheFraction (bounds the reusable pool so freed buffers return to the
+    /// OS; 0.75 keeps reuse/perf while helping).
     static func recommendedLimits(
         physicalBytes: UInt64,
         reserveBytes: UInt64,
+        limitBytes: UInt64? = nil,
         cacheFraction: Double = 0.75
     ) -> Limits {
         let physical = Int(min(physicalBytes, UInt64(Int.max)))
         let reserve = Int(min(reserveBytes, UInt64(Int.max)))
-        let limit = max(minimumLimitBytes, physical > reserve ? physical - reserve : minimumLimitBytes)
+        let byReserve = physical > reserve ? physical - reserve : minimumLimitBytes
+        let byUser = limitBytes.map { Int(min($0, UInt64(Int.max))) } ?? Int.max
+        let limit = max(minimumLimitBytes, min(byReserve, byUser))
         let fraction = cacheFraction.isFinite ? min(1.0, max(0.0, cacheFraction)) : 0.75
         let cache = max(minimumLimitBytes / 2, Int(Double(limit) * fraction))
         return Limits(memoryLimitBytes: limit, cacheLimitBytes: min(cache, limit))
@@ -77,6 +83,8 @@ public enum MLXMemoryGuard {
     @discardableResult
     public static func configureOnce(
         reserveBytes: UInt64? = nil,
+        operatorReserveBytes: UInt64 = 0,
+        limitBytes: UInt64? = nil,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         apply: (Limits) -> Void = { limits in
             Memory.memoryLimit = limits.memoryLimitBytes
@@ -92,9 +100,15 @@ public enum MLXMemoryGuard {
         configured = true
         lock.unlock()
 
+        // The MLX reserve (explicit/env/6 GB default) can be RAISED by the
+        // operator's effective reserve (max of memory_reserve_gb and the
+        // limit-implied hold-back) but never lowered below it, so the
+        // allocator backstop can't sit above memory every serving gate
+        // already refuses to touch.
         let limits = recommendedLimits(
             physicalBytes: physicalBytes,
-            reserveBytes: resolvedReserveBytes(explicit: reserveBytes))
+            reserveBytes: max(resolvedReserveBytes(explicit: reserveBytes), operatorReserveBytes),
+            limitBytes: limitBytes)
         apply(limits)
         log?(limits)
         return limits

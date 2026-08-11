@@ -40,6 +40,19 @@ public enum LaunchAgent: Sendable {
         FileManager.default.fileExists(atPath: plistPath().path)
     }
 
+    /// The `--config` path pinned in the installed daemon plist, if any.
+    /// `nil` means no plist is installed OR the plist predates config
+    /// pinning — in the latter case the daemon child resolves
+    /// `ConfigManager.defaultConfigPath()` at startup. Lets `darkbloom
+    /// memory limit` tell the operator when an edit landed in a file the
+    /// installed daemon will not read.
+    public static func installedConfigPath() -> URL? {
+        guard let plist = NSDictionary(contentsOf: plistPath()) as? [String: Any],
+            let arguments = plist["ProgramArguments"] as? [String]
+        else { return nil }
+        return WatchdogAgent.configPathArgument(in: arguments)
+    }
+
     /// Whether the launchd service is currently loaded (registered with launchd).
     public static func isLoaded() -> Bool {
         isLoaded(label: label)
@@ -107,7 +120,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String] = [],
         idleTimeout: UInt64? = nil,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        configPath: URL? = nil
     ) throws {
         // Determine the binary path (current executable)
         let binaryPath = currentExecutablePath()
@@ -126,7 +140,8 @@ public enum LaunchAgent: Sendable {
             coordinatorURL: coordinatorURL,
             models: models,
             idleTimeout: idleTimeout,
-            localEndpoint: localEndpoint
+            localEndpoint: localEndpoint,
+            configPath: configPath
         )
         try loadService()
     }
@@ -303,7 +318,8 @@ public enum LaunchAgent: Sendable {
         coordinatorURL: String,
         models: [String],
         idleTimeout: UInt64?,
-        localEndpoint: LocalEndpointOptions = LocalEndpointOptions()
+        localEndpoint: LocalEndpointOptions = LocalEndpointOptions(),
+        configPath: URL? = nil
     ) throws {
         let plist = plistPath()
         let parentDir = plist.deletingLastPathComponent()
@@ -322,6 +338,16 @@ public enum LaunchAgent: Sendable {
             "--coordinator-url",
             coordinatorURL,
         ]
+        // Pin the daemon to the exact config file this CLI invocation resolved
+        // (same contract as WatchdogAgent, which already pins + parses
+        // `--config` from its ProgramArguments). Without this, `start --config
+        // <custom> --memory-limit N` persists the cap to the custom file while
+        // the launchd child silently re-resolves the canonical one and runs
+        // uncapped.
+        if let configPath {
+            programArguments.append("--config")
+            programArguments.append(configPath.path)
+        }
         for model in models {
             programArguments.append("--model")
             programArguments.append(model)

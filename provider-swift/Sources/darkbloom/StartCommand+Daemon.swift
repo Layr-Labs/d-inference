@@ -46,7 +46,11 @@ extension Start {
             idleTimeout: idleTimeout ?? (config.backend.idleTimeoutMins > 0 ? config.backend.idleTimeoutMins : nil),
             localEndpoint: LaunchAgent.LocalEndpointOptions(
                 enabled: localEndpoint, port: port, bind: bind, noAuth: noAuth
-            )
+            ),
+            // Pin the daemon to the config file this invocation resolved —
+            // the same contract WatchdogAgent uses — so a persisted
+            // --memory-limit is read by the daemon that actually starts.
+            configPath: snapshot.configPath
         )
 
         // Arm the crash-recovery watchdog (relaunches ~5 min after a crash;

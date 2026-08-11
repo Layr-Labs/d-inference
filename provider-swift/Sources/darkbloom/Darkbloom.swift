@@ -137,11 +137,27 @@ func loadRuntimeSnapshot(configPath rawPath: String?) throws -> RuntimeSnapshot 
     // Auto-migrate stale config values (idempotent, best-effort).
     config = migrateConfigIfNeeded(configPath: configPath, config: config)
 
+    // After a legacy→canonical migration copy, re-resolve and repoint the
+    // snapshot at the canonical file: every subsequent resolution (CLI
+    // commands, the daemon plist pin, the watchdog) prefers canonical once it
+    // exists, so saves against the legacy path would land where nothing reads
+    // them again. An explicit --config is honored verbatim; a failed
+    // best-effort copy re-resolves to the same legacy path and changes
+    // nothing.
+    var effectivePath = configPath
+    var effectiveExists = configFileExists
+    if rawPath == nil,
+        let reResolved = try? ConfigManager.defaultConfigPath(),
+        reResolved.standardizedFileURL != configPath.standardizedFileURL {
+        effectivePath = reResolved
+        effectiveExists = FileManager.default.fileExists(atPath: reResolved.path)
+    }
+
     let models = hardware.map { ModelScanner.scanModels(hardwareInfo: $0) } ?? []
 
     return RuntimeSnapshot(
-        configPath: configPath,
-        configFileExists: configFileExists,
+        configPath: effectivePath,
+        configFileExists: effectiveExists,
         config: config,
         hardware: hardware,
         hardwareError: hardwareError,

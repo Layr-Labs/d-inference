@@ -132,6 +132,9 @@ struct MemoryCommandTests {
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 0) == "256 GB")
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 256) == "256 GB")
         #expect(Status.memoryDescription(totalGb: 256, limitGB: 300) == "256 GB")
+        // A hand-edited sub-floor value is ENFORCED at the 8 GB floor, so
+        // status must render the normalized figure, not the raw one.
+        #expect(Status.memoryDescription(totalGb: 256, limitGB: 2) == "256 GB (limit: 8 GB)")
     }
 
     // MARK: - status "Inference memory" clamp
@@ -149,5 +152,38 @@ struct MemoryCommandTests {
         #expect(
             Status.inferenceMemoryGb(
                 availableGb: 252, provider: uncapped, physicalBytes: 256 * gib) == 252)
+    }
+
+    // MARK: - post-save apply hint (which daemon reads the edit)
+
+    @Test("apply hint claims a restart only when the daemon reads the saved file")
+    func applyHintHonesty() {
+        let canonical = URL(fileURLWithPath: "/Users/op/.config/darkbloom/provider.toml")
+        let custom = URL(fileURLWithPath: "/tmp/custom.toml")
+
+        // Saved where the pinned daemon reads → plain restart hint.
+        #expect(
+            Memory.applyHint(
+                savedPath: canonical, daemonInstalled: true,
+                daemonConfigPath: canonical, defaultConfigPath: canonical)
+                == "Restart the provider (darkbloom restart) to apply.")
+        // Unpinned plist resolves the default path — same file, same hint.
+        #expect(
+            Memory.applyHint(
+                savedPath: canonical, daemonInstalled: true,
+                daemonConfigPath: nil, defaultConfigPath: canonical)
+                == "Restart the provider (darkbloom restart) to apply.")
+        // Saved to a custom file while the installed daemon reads canonical:
+        // a bare restart would silently not apply — must name both paths.
+        let mismatch = Memory.applyHint(
+            savedPath: custom, daemonInstalled: true,
+            daemonConfigPath: canonical, defaultConfigPath: canonical)
+        #expect(mismatch.contains(custom.path) && mismatch.contains(canonical.path))
+        #expect(mismatch.contains("--config \(custom.path)"))
+        // No daemon installed and a non-default file → start --config hint.
+        let fresh = Memory.applyHint(
+            savedPath: custom, daemonInstalled: false,
+            daemonConfigPath: nil, defaultConfigPath: canonical)
+        #expect(fresh.contains("darkbloom start --config \(custom.path)"))
     }
 }

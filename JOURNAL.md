@@ -28,7 +28,7 @@ Finishing a wave is not finishing the job. Waves remaining are listed under
 | Integration worktree (provider, coordinator, e2e, docs) | `/Users/gaj/Documents/Builds/d-inference-paged-kv` on `paged-kv/integration` |
 | Engine worktree (submodule work) | `/Users/gaj/Documents/Builds/d-inference-paged-engine` on `paged-kv/engine`, submodule on `paged-kv/wave1` |
 | Master checkout — **DO NOT WORK HERE** | `/Users/gaj/Documents/Builds/d-inference` (carries the owner's own parallel work) |
-| Plan of record | `docs/reports/2026-07-25-paged-kv-migration-plan.md` (Rev 2, plus the Rev 2.1 correction in §10) |
+| Plan of record | paged-KV migration plan, Rev 2 (plus the Rev 2.1 correction in §10) — internal working report; `docs/reports/` is untracked |
 | Engine repo | `Layr-Labs/mlx-swift-lm`, base `main`, pinned `abd1985` + Wave 0 |
 | Provider repo | `Layr-Labs/d-inference`, base `master` |
 
@@ -376,7 +376,8 @@ did:      Bumped the engine submodule to abd1985 (#85, query-block prefill
           attention) and rewrote the migration plan as Rev 2 after verifying
           every claim against the current tree.
 files:    libs/mlx-swift-lm (gitlink),
-          docs/reports/2026-07-25-paged-kv-migration-plan.md (+2 companions)
+          the paged-KV migration plan Rev 2 (+2 companions; internal working
+          reports — docs/reports/ is untracked)
 evidence: provider `swift build` clean (33.1s); coordinator `go build ./... &&
           go test ./...` clean; provider `swift test` 1639 tests / 2 failures,
           both SelfUpdaterTests on a missing local mlx.metallib fixture

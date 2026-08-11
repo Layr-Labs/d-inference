@@ -433,6 +433,7 @@ extension ProviderLoop {
             // Pin MLX's memory ceiling below physical RAM (idempotent). MLX's
             // default (1.5× working set) otherwise allows a jetsam OOM.
             MLXMemoryGuard.configureOnce(
+                operatorReserveBytes: loopConfig.config.provider.effectiveReserveBytes(),
                 limitBytes: loopConfig.config.provider.memoryLimitBytes(),
                 log: { limits in
                     FileHandle.standardError.write(Data(

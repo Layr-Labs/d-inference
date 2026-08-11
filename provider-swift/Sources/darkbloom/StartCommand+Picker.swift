@@ -80,11 +80,27 @@ extension Start {
     /// "fits".
     static let pickerOSReserveGb = 4.0
 
-    /// Whether a single model of `sizeGb` can be served on a box with `memoryGb`
-    /// RAM. One model is warm at a time, so this is an individual-fit check with
-    /// the OS reserve held back.
-    static func modelFitsBudget(sizeGb: Double, memoryGb: Double) -> Bool {
-        sizeGb <= memoryGb - pickerOSReserveGb
+    /// Whether a single model of `sizeGb` fits the per-model weight budget.
+    /// One model is warm at a time, so this is an individual-fit check.
+    static func modelFitsBudget(sizeGb: Double, budgetGb: Double) -> Bool {
+        sizeGb <= budgetGb
+    }
+
+    /// The per-model weight budget (GB) the picker enforces.
+    ///
+    /// Uncapped: the historical `physical − 4 GB` OS hold-back. Under an
+    /// operator `memory_limit_gb`: the daemon's actual load bound — effective
+    /// cap minus load headroom (activations + minimum KV) — so a selectable
+    /// model is a loadable model; with a 150 GB limit, a 145 GB model must
+    /// not be offered when loading needs ~151.5 GB under the cap.
+    static func pickerFitBudgetGb(physicalGb: Double, provider: ProviderSettings) -> Double {
+        let physicalBytes = MemoryLimit.saturatingGiBToBytes(UInt64(max(0, physicalGb)))
+        guard provider.memoryLimitBytes(physicalBytes: physicalBytes) != nil else {
+            return physicalGb - pickerOSReserveGb
+        }
+        let cap = provider.effectiveCapBytes(physicalBytes: physicalBytes)
+        let headroom = UnifiedMemoryCap.loadHeadroomBytes()
+        return cap > headroom ? Double(cap - headroom) / 1_073_741_824.0 : 0
     }
 
     /// Outcome of resolving a non-TTY fallback-picker input line.
@@ -102,18 +118,17 @@ extension Start {
     static func resolveFallbackSelection(
         input rawInput: String,
         entries: [PickerEntry],
-        memoryGb: Double
+        budgetGb: Double
     ) -> FallbackSelection {
         let input = rawInput.trimmingCharacters(in: .whitespaces)
         guard !input.isEmpty else { return .cancelled }
-        let budget = memoryGb - pickerOSReserveGb
-        func fits(_ e: PickerEntry) -> Bool { modelFitsBudget(sizeGb: e.sizeGb, memoryGb: memoryGb) }
+        func fits(_ e: PickerEntry) -> Bool { modelFitsBudget(sizeGb: e.sizeGb, budgetGb: budgetGb) }
 
         if input.lowercased() == "all" {
             let fitting = entries.filter(fits)
             guard !fitting.isEmpty else {
                 return .rejected(
-                    "No model fits in \(Int(memoryGb)) GB RAM (need ≤ \(String(format: "%.1f", budget)) GB per model).")
+                    "No model fits this box's ~\(String(format: "%.1f", budgetGb)) GB per-model budget.")
             }
             return .selected(fitting.map(\.id))
         }
@@ -130,8 +145,8 @@ extension Start {
             let entry = entries[n - 1]
             guard fits(entry) else {
                 return .rejected(
-                    "\(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB) needs more memory than this Mac has "
-                        + "(\(Int(memoryGb)) GB RAM, ~\(String(format: "%.1f", budget)) GB usable). Choose a smaller model.")
+                    "\(entry.displayName) (\(String(format: "%.1f", entry.sizeGb)) GB) exceeds this box's "
+                        + "~\(String(format: "%.1f", budgetGb)) GB per-model budget. Choose a smaller model.")
             }
             picked.append(entry)
         }
@@ -220,16 +235,21 @@ extension Start {
             throw ExitCode.failure
         }
 
-        // Fit budget honors the operator's absolute cap: a 256 GB box limited
-        // to 150 GB must not offer models that only fit in 256 GB. Mirrors
-        // MemoryLimit normalization (0 / ≥ physical means "no limit").
+        // Two distinct figures under an operator cap:
+        // - effectiveTotalGb (min(physical, limit)) gates the catalog's
+        //   min-RAM availability filter and user-facing totals;
+        // - fitBudgetGb is the per-model weight bound selection enforces —
+        //   under a limit it is the daemon's real load bound (effective cap
+        //   minus load headroom), not a flat OS hold-back.
         let physicalGb: Double = Double(snapshot.hardware?.memoryGb ?? 16)
-        let memoryGb: Double = {
+        let effectiveTotalGb: Double = {
             guard let limit = config.provider.memoryLimitGB, limit > 0, Double(limit) < physicalGb else {
                 return physicalGb
             }
             return Double(limit)
         }()
+        let fitBudgetGb = Start.pickerFitBudgetGb(
+            physicalGb: physicalGb, provider: config.provider)
 
         // "Downloaded" must be computed from an UNFILTERED on-disk scan: the
         // memory-filtered `snapshot.models` drops models too large for available
@@ -251,21 +271,21 @@ extension Start {
             downloadedIDs: downloadedIDs,
             localMemoryByID: localMemoryByID,
             resumableIDs: resumableIDs,
-            memoryGb: memoryGb
+            memoryGb: effectiveTotalGb
         )
 
         guard !entries.isEmpty else {
-            printError("No supported models fit in \(Int(memoryGb)) GB RAM.")
+            printError("No supported models fit in \(Int(effectiveTotalGb)) GB RAM.")
             throw ExitCode.failure
         }
 
         // Fall back to simple numbered picker if stdin is not a TTY.
         guard isatty(STDIN_FILENO) != 0 else {
-            return try await fallbackPicker(entries: entries, memoryGb: memoryGb, client: client)
+            return try await fallbackPicker(entries: entries, budgetGb: fitBudgetGb, client: client)
         }
 
         // Run the interactive TUI picker.
-        let selectedIndices = try runModelPicker(entries: entries, memoryGb: memoryGb)
+        let selectedIndices = try runModelPicker(entries: entries, budgetGb: fitBudgetGb)
 
         guard !selectedIndices.isEmpty else {
             return []
@@ -308,7 +328,7 @@ extension Start {
     /// Simple numbered fallback picker for non-TTY environments.
     private func fallbackPicker(
         entries: [PickerEntry],
-        memoryGb: Double,
+        budgetGb: Double,
         client: ModelCatalogClient
     ) async throws -> [String] {
         print()
@@ -327,14 +347,14 @@ extension Start {
             let ramStr = entry.minRamGb.map { " (>= \($0) GB RAM)" } ?? ""
             // Parity with the TUI: a downloaded-but-too-big model is shown but
             // flagged so a non-interactive caller knows it can't be served here.
-            let fitStr = Start.modelFitsBudget(sizeGb: entry.sizeGb, memoryGb: memoryGb) ? "" : "  [won't fit]"
+            let fitStr = Start.modelFitsBudget(sizeGb: entry.sizeGb, budgetGb: budgetGb) ? "" : "  [won't fit]"
             print("    [\(i + 1)] \(entry.displayName)  \(sizeStr)\(ramStr)  [\(status)]\(fitStr)")
         }
         print()
         print("  Select models (comma-separated numbers, or 'all'): ", terminator: "")
 
         let selected: [PickerEntry]
-        switch Start.resolveFallbackSelection(input: readLine() ?? "", entries: entries, memoryGb: memoryGb) {
+        switch Start.resolveFallbackSelection(input: readLine() ?? "", entries: entries, budgetGb: budgetGb) {
         case .cancelled:
             return []
         case .rejected(let message):

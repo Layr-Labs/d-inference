@@ -66,7 +66,11 @@ struct Memory: AsyncParsableCommand {
             try writeLimit(gb, snapshot: snapshot)
             print("Memory limit set to \(gb) GB (of \(physicalGb) GB physical).")
         }
-        print("Restart the provider (darkbloom restart) to apply.")
+        print(Memory.applyHint(
+            savedPath: snapshot.configPath,
+            daemonInstalled: LaunchAgent.isInstalled(),
+            daemonConfigPath: LaunchAgent.installedConfigPath(),
+            defaultConfigPath: try? ConfigManager.defaultConfigPath()))
     }
 
     private func writeLimit(_ value: UInt64?, snapshot: RuntimeSnapshot) throws {
@@ -77,6 +81,32 @@ struct Memory: AsyncParsableCommand {
         }
         config.provider.memoryLimitGB = value
         try ConfigManager.save(config, to: snapshot.configPath)
+    }
+
+    /// The post-save instruction, honest about WHICH daemon will read the
+    /// edit. `darkbloom restart` reuses the installed plist, so when the
+    /// saved file is not the one that plist (or, for unpinned plists, the
+    /// default resolution) points at, claiming a restart applies the change
+    /// would be false — name both paths and the start command that does
+    /// apply it instead. Pure — testable without launchd or a filesystem.
+    static func applyHint(
+        savedPath: URL,
+        daemonInstalled: Bool,
+        daemonConfigPath: URL?,
+        defaultConfigPath: URL?
+    ) -> String {
+        let saved = savedPath.standardizedFileURL.path
+        // What the next daemon start reads: the plist's pinned --config, else
+        // the default resolution the child performs.
+        let daemonReads = (daemonConfigPath ?? defaultConfigPath)?.standardizedFileURL.path
+        guard let daemonReads, daemonReads != saved else {
+            return "Restart the provider (darkbloom restart) to apply."
+        }
+        if daemonInstalled {
+            return "Saved to \(saved), but the installed daemon reads \(daemonReads). "
+                + "Run `darkbloom start --config \(saved)` for this limit to take effect."
+        }
+        return "Start the provider with `darkbloom start --config \(saved)` to apply."
     }
 
     // MARK: - Pure helpers (unit-tested)

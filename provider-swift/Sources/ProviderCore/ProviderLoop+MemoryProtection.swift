@@ -26,6 +26,7 @@ extension ProviderLoop {
         // which runs after this). Idempotent; StandaloneServer invokes the same
         // guard directly before its first load. See MLXMemoryGuard.
         MLXMemoryGuard.configureOnce(
+            operatorReserveBytes: loopConfig.config.provider.effectiveReserveBytes(),
             limitBytes: loopConfig.config.provider.memoryLimitBytes(),
             log: { [logger] limits in
                 logger.info(

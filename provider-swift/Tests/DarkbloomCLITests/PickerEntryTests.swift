@@ -45,8 +45,8 @@ struct PickerEntryTests {
     func fallbackAllExcludesWontFit() {
         let small = entry("org/small", sizeGb: 8)
         let huge = entry("org/huge", sizeGb: 200)
-        // 18 GB box → 14 GB budget: small fits, huge does not.
-        let r = Start.resolveFallbackSelection(input: "all", entries: [small, huge], memoryGb: 18)
+        // 14 GB per-model budget (18 GB box − 4 GB reserve): small fits, huge does not.
+        let r = Start.resolveFallbackSelection(input: "all", entries: [small, huge], budgetGb: 14)
         #expect(r == .selected(["org/small"]))
     }
 
@@ -54,7 +54,7 @@ struct PickerEntryTests {
     func fallbackRejectsWontFitIndex() {
         let small = entry("org/small", sizeGb: 8)
         let huge = entry("org/huge", sizeGb: 200)
-        guard case .rejected = Start.resolveFallbackSelection(input: "2", entries: [small, huge], memoryGb: 18) else {
+        guard case .rejected = Start.resolveFallbackSelection(input: "2", entries: [small, huge], budgetGb: 14) else {
             Issue.record("expected a won't-fit explicit selection to be rejected")
             return
         }
@@ -65,14 +65,14 @@ struct PickerEntryTests {
         let small = entry("org/small", sizeGb: 8)
         let mid = entry("org/mid", sizeGb: 12)
         #expect(
-            Start.resolveFallbackSelection(input: "1,2", entries: [small, mid], memoryGb: 18)
+            Start.resolveFallbackSelection(input: "1,2", entries: [small, mid], budgetGb: 14)
                 == .selected(["org/small", "org/mid"]))
     }
 
     @Test("fallback rejects 'all' when nothing fits")
     func fallbackRejectsAllTooBig() {
         let huge = entry("org/huge", sizeGb: 200)
-        guard case .rejected = Start.resolveFallbackSelection(input: "all", entries: [huge], memoryGb: 18) else {
+        guard case .rejected = Start.resolveFallbackSelection(input: "all", entries: [huge], budgetGb: 14) else {
             Issue.record("expected rejection when no model fits")
             return
         }
@@ -81,16 +81,29 @@ struct PickerEntryTests {
     @Test("fallback empty input cancels, out-of-range and non-numeric are rejected")
     func fallbackEmptyAndRange() {
         let small = entry("org/small", sizeGb: 8)
-        #expect(Start.resolveFallbackSelection(input: "", entries: [small], memoryGb: 18) == .cancelled)
-        #expect(Start.resolveFallbackSelection(input: "   ", entries: [small], memoryGb: 18) == .cancelled)
-        guard case .rejected = Start.resolveFallbackSelection(input: "5", entries: [small], memoryGb: 18) else {
+        #expect(Start.resolveFallbackSelection(input: "", entries: [small], budgetGb: 14) == .cancelled)
+        #expect(Start.resolveFallbackSelection(input: "   ", entries: [small], budgetGb: 14) == .cancelled)
+        guard case .rejected = Start.resolveFallbackSelection(input: "5", entries: [small], budgetGb: 14) else {
             Issue.record("expected out-of-range rejection")
             return
         }
-        guard case .rejected = Start.resolveFallbackSelection(input: "x", entries: [small], memoryGb: 18) else {
+        guard case .rejected = Start.resolveFallbackSelection(input: "x", entries: [small], budgetGb: 14) else {
             Issue.record("expected non-numeric rejection")
             return
         }
+    }
+
+    @Test("picker budget under a limit is the load bound, not limit minus 4")
+    func pickerBudgetUnderLimitUsesLoadBound() {
+        let gib: UInt64 = 1_073_741_824
+        // 256 GB box, 150 GB limit: budget = cap − load headroom, NOT 146.
+        let capped = ProviderSettings(name: "t", memoryReserveGB: 4, memoryLimitGB: 150)
+        let expected = Double(150 * gib - UnifiedMemoryCap.loadHeadroomBytes()) / Double(gib)
+        #expect(Start.pickerFitBudgetGb(physicalGb: 256, provider: capped) == expected)
+        #expect(expected < 146)
+        // Uncapped: historical physical − 4.
+        let uncapped = ProviderSettings(name: "t", memoryReserveGB: 4)
+        #expect(Start.pickerFitBudgetGb(physicalGb: 256, provider: uncapped) == 252)
     }
 
     @Test("a downloaded-but-too-big model still shows downloaded (never hidden by RAM)")

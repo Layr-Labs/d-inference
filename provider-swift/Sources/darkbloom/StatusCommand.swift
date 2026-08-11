@@ -90,11 +90,16 @@ struct Status: AsyncParsableCommand {
     }
 
     /// Total-memory rendering with the operator cap appended when one is in
-    /// effect: "256 GB (limit: 150 GB)". Mirrors MemoryLimit normalization —
-    /// 0 or a value at/above physical means "no limit" and is not shown.
+    /// effect: "256 GB (limit: 150 GB)". Renders the NORMALIZED limit — a
+    /// hand-edited `memory_limit_gb = 2` is enforced as the 8 GB floor, so
+    /// status must say 8, not 2 (`MemoryLimit.limitBytes` is the one source
+    /// of that truth). 0 or a value at/above physical means "no limit" and
+    /// is not shown.
     static func memoryDescription(totalGb: UInt64, limitGB: UInt64?) -> String {
-        guard let limitGB, limitGB > 0, limitGB < totalGb else { return "\(totalGb) GB" }
-        return "\(totalGb) GB (limit: \(limitGB) GB)"
+        let physicalBytes = totalGb * 1_073_741_824
+        guard let limitBytes = MemoryLimit.limitBytes(limitGB: limitGB, physicalBytes: physicalBytes)
+        else { return "\(totalGb) GB" }
+        return "\(totalGb) GB (limit: \(limitBytes / 1_073_741_824) GB)"
     }
 
     /// The "Inference memory" figure: the hardware-derived available number,

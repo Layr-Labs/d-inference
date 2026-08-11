@@ -40,6 +40,19 @@ public enum LaunchAgent: Sendable {
         FileManager.default.fileExists(atPath: plistPath().path)
     }
 
+    /// The `--config` path pinned in the installed daemon plist, if any.
+    /// `nil` means no plist is installed OR the plist predates config
+    /// pinning — in the latter case the daemon child resolves
+    /// `ConfigManager.defaultConfigPath()` at startup. Lets `darkbloom
+    /// memory limit` tell the operator when an edit landed in a file the
+    /// installed daemon will not read.
+    public static func installedConfigPath() -> URL? {
+        guard let plist = NSDictionary(contentsOf: plistPath()) as? [String: Any],
+            let arguments = plist["ProgramArguments"] as? [String]
+        else { return nil }
+        return WatchdogAgent.configPathArgument(in: arguments)
+    }
+
     /// Whether the launchd service is currently loaded (registered with launchd).
     public static func isLoaded() -> Bool {
         isLoaded(label: label)

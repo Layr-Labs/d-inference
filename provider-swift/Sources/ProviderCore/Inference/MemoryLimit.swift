@@ -73,7 +73,7 @@ public enum MemoryLimit {
         return min(UnifiedMemoryCap.hardCapBytes(physicalBytes: physicalBytes), underReserve)
     }
 
-    static func saturatingGiBToBytes(_ gib: UInt64) -> UInt64 {
+    public static func saturatingGiBToBytes(_ gib: UInt64) -> UInt64 {
         let (bytes, overflow) = gib.multipliedReportingOverflow(by: 1_073_741_824)
         return overflow ? UInt64.max : bytes
     }

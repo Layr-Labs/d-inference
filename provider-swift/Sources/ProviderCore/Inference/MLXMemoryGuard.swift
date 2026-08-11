@@ -83,6 +83,7 @@ public enum MLXMemoryGuard {
     @discardableResult
     public static func configureOnce(
         reserveBytes: UInt64? = nil,
+        operatorReserveBytes: UInt64 = 0,
         limitBytes: UInt64? = nil,
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         apply: (Limits) -> Void = { limits in
@@ -99,9 +100,14 @@ public enum MLXMemoryGuard {
         configured = true
         lock.unlock()
 
+        // The MLX reserve (explicit/env/6 GB default) can be RAISED by the
+        // operator's effective reserve (max of memory_reserve_gb and the
+        // limit-implied hold-back) but never lowered below it, so the
+        // allocator backstop can't sit above memory every serving gate
+        // already refuses to touch.
         let limits = recommendedLimits(
             physicalBytes: physicalBytes,
-            reserveBytes: resolvedReserveBytes(explicit: reserveBytes),
+            reserveBytes: max(resolvedReserveBytes(explicit: reserveBytes), operatorReserveBytes),
             limitBytes: limitBytes)
         apply(limits)
         log?(limits)

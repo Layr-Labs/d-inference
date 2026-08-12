@@ -13,16 +13,21 @@ import (
 const metricInferenceError = "inference.error"
 
 const (
-	errorReasonJinjaChannelTags   = "jinja_channel_tags"
-	errorReasonJinjaNullBridge    = "jinja_null_bridge"
-	errorReasonJinjaTemplate      = "jinja_template"
-	errorReasonModelLoad          = "model_load"
-	errorReasonCapacityTimeout    = "capacity_timeout"
-	errorReasonQueueFull          = "queue_full"
-	errorReasonTokenBudgetExhaust = "token_budget_exhausted"
-	errorReasonCancelled          = "cancelled"
-	errorReasonProviderError      = "provider_error"
-	errorReasonClientError        = "client_error"
+	errorReasonJinjaChannelTags          = "jinja_channel_tags"
+	errorReasonJinjaNullBridge           = "jinja_null_bridge"
+	errorReasonJinjaTemplate             = "jinja_template"
+	errorReasonModelLoad                 = "model_load"
+	errorReasonCapacityTimeout           = "capacity_timeout"
+	errorReasonQueueFull                 = "queue_full"
+	errorReasonTokenBudgetExhaust        = "token_budget_exhausted"
+	errorReasonRequestExceedsContext     = "request_exceeds_context"
+	errorReasonRequestExceedsNode        = "request_exceeds_node"
+	errorReasonRequestExceedsNodeBudget  = "request_exceeds_node_budget"
+	errorReasonRequestExceedsBatchBudget = "request_exceeds_batch_token_budget"
+	errorReasonCapacityBusy              = "capacity_busy"
+	errorReasonCancelled                 = "cancelled"
+	errorReasonProviderError             = "provider_error"
+	errorReasonClientError               = "client_error"
 	// errorReasonToolNoncompliance (E5): the provider's typed 422 for a model
 	// that failed a forced tool_choice contract (did not emit the required
 	// call / emitted one outside the allowed set / exceeded the deferred
@@ -94,18 +99,23 @@ const (
 )
 
 var validInferenceErrorReasons = map[string]struct{}{
-	errorReasonJinjaChannelTags:   {},
-	errorReasonJinjaNullBridge:    {},
-	errorReasonJinjaTemplate:      {},
-	errorReasonModelLoad:          {},
-	errorReasonCapacityTimeout:    {},
-	errorReasonQueueFull:          {},
-	errorReasonTokenBudgetExhaust: {},
-	errorReasonCancelled:          {},
-	errorReasonProviderError:      {},
-	errorReasonClientError:        {},
-	errorReasonToolNoncompliance:  {},
-	errorReasonUnknown:            {},
+	errorReasonJinjaChannelTags:          {},
+	errorReasonJinjaNullBridge:           {},
+	errorReasonJinjaTemplate:             {},
+	errorReasonModelLoad:                 {},
+	errorReasonCapacityTimeout:           {},
+	errorReasonQueueFull:                 {},
+	errorReasonTokenBudgetExhaust:        {},
+	errorReasonRequestExceedsContext:     {},
+	errorReasonRequestExceedsNode:        {},
+	errorReasonRequestExceedsNodeBudget:  {},
+	errorReasonRequestExceedsBatchBudget: {},
+	errorReasonCapacityBusy:              {},
+	errorReasonCancelled:                 {},
+	errorReasonProviderError:             {},
+	errorReasonClientError:               {},
+	errorReasonToolNoncompliance:         {},
+	errorReasonUnknown:                   {},
 }
 
 func (s *Server) updateInferenceRouteOutcomeWithModel(requestID string, attempt int, model string, outcome *store.InferenceRouteOutcome) {
@@ -233,8 +243,8 @@ func dispatchFailedPendingRouteOutcome(pr *registry.PendingRequest, class string
 	return pendingRouteOutcome(pr, finalStatusError, class, code)
 }
 
-func providerDisconnectedError(errorText string, statusCode int) bool {
-	return statusCode == 502 && strings.EqualFold(strings.TrimSpace(errorText), "provider disconnected")
+func providerDisconnectedError(msg protocol.InferenceErrorMessage) bool {
+	return msg.CoordinatorCause == protocol.CoordinatorCauseProviderDisconnected
 }
 
 // applyAttemptUsage copies a typed error terminal's provider-reported partial
@@ -257,26 +267,29 @@ func applyAttemptUsage(out *store.InferenceRouteOutcome, usage *protocol.UsageIn
 }
 
 func postCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
+	msg = normalizeInferenceErrorForInternalUse(msg)
 	class := "provider_error_after_commit"
-	if providerDisconnectedError(msg.Error, msg.StatusCode) {
+	if providerDisconnectedError(msg) {
 		class = "provider_disconnect_after_commit"
 	}
-	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusPartialSuccess, class, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
 	applyAttemptUsage(out, msg.AttemptUsage)
 	return out
 }
 
 func preResponseProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
+	msg = normalizeInferenceErrorForInternalUse(msg)
 	class := "provider_error_before_response"
-	if providerDisconnectedError(msg.Error, msg.StatusCode) {
+	if providerDisconnectedError(msg) {
 		class = "provider_disconnect_before_response"
 	}
-	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
 	applyAttemptUsage(out, msg.AttemptUsage)
 	return out
 }
 
 func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.InferenceErrorMessage) *store.InferenceRouteOutcome {
+	msg = normalizeInferenceErrorForInternalUse(msg)
 	if isTerminalClientErrorCode(msg.StatusCode) || isNonProviderFaultErrorReason(msg.ErrorReason) {
 		// Deterministic non-provider fault: a 4xx status the provider maps for
 		// malformed bodies, OR a structured non-provider-fault reason — jinja_*
@@ -288,15 +301,15 @@ func preCommitProviderErrorOutcome(pr *registry.PendingRequest, msg protocol.Inf
 		// vocabulary as the reputation and breaker exemptions
 		// (isNonProviderFaultErrorReason) so the lists cannot drift.
 		// msg.ErrorReason is threaded through so rows keep their reason.
-		out := pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, msg.Error)
+		out := pendingRouteOutcomeWithReason(pr, finalStatusError, errorClassClientError, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
 		applyAttemptUsage(out, msg.AttemptUsage)
 		return out
 	}
 	class := "provider_error"
-	if providerDisconnectedError(msg.Error, msg.StatusCode) {
+	if providerDisconnectedError(msg) {
 		class = "provider_disconnect_pre_commit"
 	}
-	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, msg.Error)
+	out := providerFailedPendingRouteOutcomeWithReason(pr, finalStatusError, class, msg.StatusCode, msg.ErrorReason, clientSafeInferenceErrorMessage(msg))
 	applyAttemptUsage(out, msg.AttemptUsage)
 	return out
 }

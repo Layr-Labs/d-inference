@@ -521,11 +521,15 @@ type InferenceCompleteMessage struct {
 
 // InferenceErrorMessage signals an error during inference.
 type InferenceErrorMessage struct {
-	Type        string `json:"type"`
-	RequestID   string `json:"request_id"`
-	Error       string `json:"error"`
-	StatusCode  int    `json:"status_code"`
-	ErrorReason string `json:"error_reason,omitempty"`
+	Type        string               `json:"type"`
+	RequestID   string               `json:"request_id"`
+	Error       string               `json:"error"`
+	StatusCode  int                  `json:"status_code"`
+	ErrorReason string               `json:"error_reason,omitempty"`
+	FailureCode InferenceFailureCode `json:"failure_code,omitempty"`
+	// CoordinatorCause is set only on coordinator-synthetic channel messages.
+	// json:"-" prevents a provider from supplying or observing it on the wire.
+	CoordinatorCause CoordinatorInferenceErrorCause `json:"-"`
 	// TerminalCause is the provider's typed terminal cause for this error
 	// (closed vocabulary, mirrored by the Swift provider): admission_timeout,
 	// prefill_stall, decode_stall, safety_deadline, backpressure_timeout,
@@ -780,8 +784,7 @@ type RuntimeMismatch struct {
 }
 
 // TrustStatusMessage is sent by the coordinator to inform a provider of its
-// current trust level. Providers that learn they are "self_signed" or
-// "untrusted" can auto-report unified logs for troubleshooting.
+// current trust level for local operator diagnostics.
 type TrustStatusMessage struct {
 	Type       string `json:"type"`
 	TrustLevel string `json:"trust_level"` // "none", "self_signed", "hardware"

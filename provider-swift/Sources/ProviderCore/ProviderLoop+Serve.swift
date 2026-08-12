@@ -305,8 +305,6 @@ extension ProviderLoop {
         capacityRefreshTask = nil
         autoUpdateTask?.cancel()
         autoUpdateTask = nil
-        autoReportTask?.cancel()
-        autoReportTask = nil
         // Cancel any scheduled desired-build prefetch retries before tearing
         // the prefetch subsystem down.
         for task in desiredPrefetchRetryTasks.values { task.cancel() }

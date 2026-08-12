@@ -103,29 +103,13 @@ Unknown kinds coerce to `"custom"` (`telemetry_handlers.go:336-339`).
 
 ## Ingestion endpoint
 
-`POST /v1/telemetry/events` accepts a `TelemetryBatch` of up to 100 events with a 64 KB body limit (`telemetry_handlers.go:35-41`). Authentication is optional:
+`POST /v1/telemetry/events` is retained only for compatibility and returns HTTP
+410 without reading or forwarding the body. Provider and console clients also
+drop events before buffering, disk I/O, or network I/O. A field-name allowlist
+cannot make arbitrary messages, stacks, URLs, or field values privacy-safe.
 
-1. Provider token → machine-id bucket.
-2. Privy JWT or API key → account bucket.
-3. Anonymous → stricter rate limit.
-
-Rate limits (`telemetry_handlers.go:108-115`):
-
-| Auth | Burst | Refill |
-|---|---|---|
-| Authenticated | 200 | 100 events / minute |
-| Anonymous | 30 | 10 events / minute |
-
-The handler sanitizes each event (`telemetry_handlers.go:301-402`):
-
-* Mints/validates a UUIDv4 id.
-* Clamps timestamp to `[now-7d, now+5min]`.
-* Coerces source/severity/kind to known values.
-* Truncates message, stack, and string fields.
-* Filters `Fields` through the allowlist and caps the JSON size to 8 KB.
-* Stamps `machine_id` and `account_id` from auth context.
-
-Events are forwarded to Datadog Logs API asynchronously and are **not** persisted to the store (`telemetry_handlers.go:211-227`, `411-443`).
+The schema below is historical compatibility material. Re-enabling ingestion
+requires closed, per-kind value schemas and a new privacy review.
 
 ## Field allowlist
 
@@ -141,19 +125,15 @@ The producer for the paged-pool and MTP cohorts is `engine_v2_slot_posture`, an 
 
 **Prompt or response content must never appear in telemetry.** This is enforced by design (no such field exists) and by the allowlist.
 
-## Swift client
+## Swift client (disabled)
 
-`TelemetryClient` (`TelemetryClient.swift`) is a global singleton that batches events in memory and flushes them periodically.
-
-* Configuration: coordinator URL, auth token, version, machine id, account id, source (`TelemetryClient.swift:19-70`).
-* Defaults: max batch 50, flush interval 10 seconds, in-memory cap 1000 events.
-* `emit(_:)` is non-blocking. When the in-memory buffer is full, events spill to disk (`TelemetryClient.swift:140-175`).
-* `shutdown()` flushes pending events over the network; `shutdownSync()` writes them to disk for signal-handler safety.
-* URL normalization converts WebSocket coordinator URLs (`wss://.../ws/provider`) to the HTTPS telemetry endpoint (`TelemetryClient.swift:416-433`).
+`TelemetryClient` retains a source-compatible facade but drops every event. On
+configuration/shutdown it purges the exact legacy queue path.
 
 ### Overflow queue
 
-`TelemetryOverflowQueue` (`TelemetryOverflowQueue.swift`) is a disk-backed JSONL queue at `~/.darkbloom/telemetry-queue.jsonl` with a 5 MB cap. When the cap is exceeded, the oldest half of the file is discarded.
+The production shared overflow queue is disabled. Explicitly injected queue
+instances remain only for compatibility tests.
 
 ### Panic hook
 
@@ -164,6 +144,7 @@ The producer for the paged-pool and MTP cohorts is `engine_v2_slot_posture`, an 
 3. Calls `TelemetryClient.shared.shutdownSync()` to flush the in-memory buffer to disk.
 4. Re-raises the signal so the process exits with the real status and Apple's CrashReporter still writes its report.
 
-## Console UI telemetry
+## Console UI telemetry (disabled)
 
-The TypeScript mirror (`telemetry-types.ts`) defines the same event shape and allowlist. The console UI emits events through the same `POST /v1/telemetry/events` endpoint, authenticated via the user's API key or Privy JWT.
+The TypeScript facade drops events, and `/api/telemetry` returns HTTP 410 without
+reading or forwarding request bodies.

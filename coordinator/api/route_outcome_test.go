@@ -39,8 +39,9 @@ func TestCommittedRouteOutcomeIsNonTerminal(t *testing.T) {
 func TestPostCommitProviderDisconnectOutcome(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "req-disconnect"}
 	out := postCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
-		Error:      "provider disconnected",
-		StatusCode: 502,
+		Error:            "provider disconnected",
+		StatusCode:       502,
+		CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
 	})
 	if out.FinalStatus != "partial_success" {
 		t.Fatalf("FinalStatus = %q, want partial_success", out.FinalStatus)
@@ -56,8 +57,9 @@ func TestPostCommitProviderDisconnectOutcome(t *testing.T) {
 func TestPreCommitProviderDisconnectOutcome(t *testing.T) {
 	pr := &registry.PendingRequest{RequestID: "req-disconnect-pre"}
 	out := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
-		Error:      "provider disconnected",
-		StatusCode: 502,
+		Error:            "provider disconnected",
+		StatusCode:       502,
+		CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
 	})
 	if out.FinalStatus != "error" {
 		t.Fatalf("FinalStatus = %q, want error", out.FinalStatus)
@@ -80,8 +82,10 @@ func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
 	}
 
 	derivedTokenBudget := preCommitProviderErrorOutcome(pr, protocol.InferenceErrorMessage{
-		Error:      "token_budget_exhausted: request queue full",
-		StatusCode: http.StatusInternalServerError,
+		Error:       "token_budget_exhausted: request queue full",
+		StatusCode:  http.StatusServiceUnavailable,
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: errorReasonTokenBudgetExhaust,
 	})
 	if derivedTokenBudget.ErrorReason != "token_budget_exhausted" {
 		t.Fatalf("token-budget reason = %q, want token_budget_exhausted", derivedTokenBudget.ErrorReason)
@@ -107,8 +111,8 @@ func TestInferenceErrorReasonPrecedenceAndDerivation(t *testing.T) {
 		StatusCode:  http.StatusInternalServerError,
 		ErrorReason: "raw provider stack trace should not persist",
 	})
-	if invalidProviderReason.ErrorReason != "unknown" {
-		t.Fatalf("invalid provider reason = %q, want unknown", invalidProviderReason.ErrorReason)
+	if invalidProviderReason.ErrorReason != errorReasonProviderError {
+		t.Fatalf("invalid provider reason = %q, want bounded provider_error", invalidProviderReason.ErrorReason)
 	}
 }
 

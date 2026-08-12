@@ -24,6 +24,7 @@ func typedAdmissionTimeoutMsg() protocol.InferenceErrorMessage {
 		RequestID:     "req-1",
 		Error:         "admission_timeout: admission lease expired before engine work began",
 		StatusCode:    503,
+		FailureCode:   protocol.FailureCodeCapacity,
 		TerminalCause: terminalCauseAdmissionTimeout,
 	}
 }
@@ -35,10 +36,10 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
 	d.setLastInferenceError(nil, typedAdmissionTimeoutMsg())
 
-	// Sanity: the fixed text alone would NOT classify as capacity (this is the
-	// exact gap — remove the typed override and this test's premise breaks).
-	if kind := classifyRejection(d.lastErrReason, d.lastErr, 0, 0); kind != rejectionNotCapacity {
-		t.Fatalf("premise: bare admission_timeout text classified %v, want rejectionNotCapacity", kind)
+	// The sanitizer derives a bounded capacity reason. Raw provider prose is
+	// discarded and cannot participate in classification.
+	if kind := classifyRejection(d.lastErrReason, d.lastErr, 0, 0); kind != rejectionTransientCapacity {
+		t.Fatalf("typed admission timeout classified %v, want transient capacity", kind)
 	}
 
 	// Bounded transient-capacity failover: keep failing over below the cap…
@@ -62,21 +63,21 @@ func TestShouldStopFailover_TypedAdmissionTimeoutIsTransientCapacity(t *testing.
 	}
 }
 
-// TestShouldStopFailover_LegacyAdmissionTextStaysFault pins the mixed-version
-// contract: the SAME error text WITHOUT the typed cause (legacy provider)
-// keeps the historical fault-failover classification. The typed field is the
-// only thing that upgrades it.
-func TestShouldStopFailover_LegacyAdmissionTextStaysFault(t *testing.T) {
+// TestShouldStopFailover_Legacy503UsesBoundedCapacityCompatibility pins the
+// mixed-fleet contract: legacy prose is ignored, while bounded 503 status may
+// select the capacity class during rolling upgrade.
+func TestShouldStopFailover_Legacy503UsesBoundedCapacityCompatibility(t *testing.T) {
 	msg := typedAdmissionTimeoutMsg()
 	msg.TerminalCause = ""
+	msg.FailureCode = ""
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
 	d.setLastInferenceError(nil, msg)
 
 	if d.shouldStopFailover() {
-		t.Fatal("legacy (untyped) admission text must keep fault failover, not stop")
+		t.Fatal("legacy 503 capacity must keep bounded failover below the cap")
 	}
-	if d.capacityRetries != 0 {
-		t.Fatalf("capacityRetries = %d, want 0 for a legacy fault", d.capacityRetries)
+	if d.capacityRetries != 1 {
+		t.Fatalf("capacityRetries = %d, want 1 for legacy 503 capacity", d.capacityRetries)
 	}
 }
 
@@ -194,16 +195,16 @@ func TestTypedProvider504KeepsProviderErrorRouteClass(t *testing.T) {
 		t.Fatal("synthetic 504 must satisfy the synthetic-timeout discriminator")
 	}
 
-	// An UNKNOWN future cause on a 504 also stays on the legacy
-	// synthetic-timeout path — mirroring classifyTerminalCause's
-	// unknown→legacy rule — so mixed-version rollouts cannot corrupt the
-	// first_chunk/accepted timeout route telemetry.
+	// An unknown future cause is discarded and cannot preserve a provider-
+	// selected 504. Without a valid code/cause this fails closed as canonical
+	// generation_failure/500, distinct from coordinator-owned timeouts.
 	d.setLastInferenceError(nil, protocol.InferenceErrorMessage{
 		RequestID: "req-504", Error: "graceful_exit: node shutting down",
 		StatusCode: 504, TerminalCause: "graceful_exit",
 	})
-	if !(d.lastErrCode == 504 && !isTypedTimeout504Cause(d.lastErrTerminalCause)) {
-		t.Fatal("unknown-cause 504 must stay on the synthetic-timeout (legacy) path")
+	if d.lastErrCode != 500 || d.lastErrTerminalCause != "" {
+		t.Fatalf("unknown-cause 504 must fail closed as generation/500, got code=%d cause=%q",
+			d.lastErrCode, d.lastErrTerminalCause)
 	}
 	// And the two known typed 504 causes are exactly the exception set.
 	if !isTypedTimeout504Cause(terminalCauseSafetyDeadline) ||

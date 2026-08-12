@@ -37,12 +37,12 @@ type backendWedgeSignal struct {
 // freshly-idle slot that has never served) reports all zeros/false, so it
 // produces no signal — keeping the metric clean as the instrumented build rolls
 // out across the fleet.
-func backendWedgeSignals(hb *protocol.HeartbeatMessage) []backendWedgeSignal {
-	if hb == nil || hb.BackendCapacity == nil {
+func backendWedgeSignals(capacity *protocol.BackendCapacity) []backendWedgeSignal {
+	if capacity == nil || len(capacity.Slots) == 0 {
 		return nil
 	}
-	out := make([]backendWedgeSignal, 0, len(hb.BackendCapacity.Slots))
-	for _, slot := range hb.BackendCapacity.Slots {
+	out := make([]backendWedgeSignal, 0, len(capacity.Slots))
+	for _, slot := range capacity.Slots {
 		if slot.StepsExecuted == 0 && slot.Admits == 0 && !slot.WedgeSuspected &&
 			slot.EvalInFlightMs == 0 && slot.IdleClearInFlightMs == 0 {
 			continue
@@ -83,8 +83,8 @@ func providerWideEvalInFlightLong(sigs []backendWedgeSignal) bool {
 //   - provider.first_token_wedge_suspected: PER-MODEL (genuinely per-scheduler).
 //   - provider.eval_in_flight_long: PROVIDER-WIDE, at most once per heartbeat
 //     (the eval probe is process-global; see providerWideEvalInFlightLong).
-func (s *Server) recordBackendWedgeTelemetry(hb *protocol.HeartbeatMessage) {
-	sigs := backendWedgeSignals(hb)
+func (s *Server) recordBackendWedgeTelemetry(capacity *protocol.BackendCapacity) {
+	sigs := backendWedgeSignals(capacity)
 	for _, sig := range sigs {
 		if sig.WedgeSuspected {
 			s.ddIncr("provider.first_token_wedge_suspected", []string{"model:" + sig.Model})

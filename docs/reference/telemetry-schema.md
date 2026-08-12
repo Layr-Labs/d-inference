@@ -6,19 +6,13 @@ This document describes the telemetry wire format shared by the coordinator, pro
 
 ```
 POST /v1/telemetry/events
-Authorization: optional Bearer <token>
+HTTP/1.1 410 Gone
 ```
 
-Authentication modes (resolved inside the handler):
-
-| Token type | Identity used | Rate-limit bucket |
-|---|---|---|
-| Provider device token | `machine_id` derived from token hash | per machine |
-| Privy JWT | account id | per account |
-| API key | account id | per account |
-| Anonymous | none | stricter anonymous bucket |
-
-See [`resolveTelemetryAuth`](../../coordinator/api/telemetry_handlers.go).
+Ingestion is disabled. The coordinator and console proxy reject requests before
+reading or forwarding their bodies; production Swift and TypeScript clients
+drop events before disk or network I/O. The remaining wire definitions are
+historical compatibility types, not an active data path.
 
 ## Batch envelope
 

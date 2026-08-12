@@ -75,7 +75,7 @@ func TestHandleChunkOverflowFailsRequest(t *testing.T) {
 		if errMsg.StatusCode != 499 {
 			t.Fatalf("status code = %d, want 499", errMsg.StatusCode)
 		}
-		want := "request cancelled: consumer stream stalled (chunk buffer overflow)"
+		want := "request cancelled"
 		if errMsg.Error != want {
 			t.Fatalf("error = %q, want %q", errMsg.Error, want)
 		}

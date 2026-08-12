@@ -1,6 +1,5 @@
-/// PanicHook -- POSIX signal handler that captures fatal crashes,
-/// flushes any pending telemetry to disk, and emits a structured panic
-/// event before re-raising.
+/// PanicHook -- POSIX signal handler that leaves a fixed local crash marker
+/// before re-raising.
 ///
 /// macOS Swift has no built-in crash/`panic` hook. The closest equivalents:
 ///   * NSSetUncaughtExceptionHandler -- catches Objective-C exceptions
@@ -8,15 +7,9 @@
 ///   * `signal(2)` on SIGSEGV / SIGBUS / SIGILL / SIGABRT -- catches
 ///     hard crashes from misaligned memory, traps, and `fatalError`.
 ///
-/// Both paths converge on `recordPanic(...)` which:
-///   1. Builds a TelemetryEvent (kind = .panic, severity = .fatal)
-///      with `Thread.callStackSymbols` as the stack trace.
-///   2. Pushes it to the disk overflow queue synchronously so it
-///      survives the impending process exit.
-///   3. Calls `TelemetryClient.shared.shutdownSync()` to flush the
-///      in-memory buffer to disk too.
-///   4. Re-raises the signal with the default handler so launchd /
-///      CrashReporter sees the real exit status.
+/// Both paths converge on `recordPanic(...)`, whose production telemetry calls
+/// are privacy-disabled no-ops, then re-raise with the default handler so
+/// launchd / CrashReporter sees the real exit status.
 
 import Foundation
 #if canImport(Darwin)
@@ -44,7 +37,11 @@ public enum PanicHook {
             NSSetUncaughtExceptionHandler { exception in
                 recordPanic(
                     kind: "uncaught_exception",
-                    message: exception.reason ?? exception.name.rawValue,
+                    // Objective-C exception reasons can embed request values
+                    // (for example invalid media URLs or template arguments).
+                    // Keep only the fixed category; the call stack retains the
+                    // actionable code location without persisting plaintext.
+                    message: "uncaught Objective-C exception",
                     stack: exception.callStackSymbols.joined(separator: "\n")
                 )
             }
@@ -90,13 +87,12 @@ private func recordPanic(kind: String, message: String, stack: String) {
     )
     event.stack = truncatedStack
 
-    // 1. Push directly to disk -- shared.emit() may queue without flushing.
+    // Production client telemetry is disabled; both calls are no-ops except
+    // that shutdown removes an exact legacy queue left by an older build.
     TelemetryOverflowQueue.shared.push(event)
-
-    // 2. Flush the in-memory buffer (lands on disk if network is unavailable).
     TelemetryClient.shared.shutdownSync()
 
-    // 3. Best-effort marker on stderr so the launchd log captures it next to
+    // Best-effort fixed marker on stderr so the launchd log captures it next to
     //    any `darkbloom logs --watch` viewer.
     let line = "\(panicISO8601Now()) FATAL panic kind=\(kind) message=\(message)\n"
     if let data = line.data(using: .utf8) {

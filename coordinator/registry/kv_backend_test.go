@@ -71,9 +71,16 @@ func kvSlotDegraded(model, backend, reason string) protocol.BackendSlotCapacity 
 
 // registerKVProvider registers a provider under a deterministic id and returns
 // that id.
-func registerKVProvider(t *testing.T, r *Registry, id string) string {
+func registerKVProvider(t *testing.T, r *Registry, id string, models ...string) string {
 	t.Helper()
-	r.Register(id, nil, testRegisterMessage())
+	msg := testRegisterMessage()
+	if len(models) > 0 {
+		msg.Models = make([]protocol.ModelInfo, 0, len(models))
+		for _, modelID := range models {
+			msg.Models = append(msg.Models, protocol.ModelInfo{ID: modelID})
+		}
+	}
+	r.Register(id, nil, msg)
 	if r.GetProvider(id) == nil {
 		t.Fatalf("provider %q did not register", id)
 	}
@@ -90,9 +97,9 @@ func TestSlotKVBackendMixedFleetSeparatesThreePopulations(t *testing.T) {
 	r := New(testLogger())
 	const model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 
-	paged := registerKVProvider(t, r, "box-paged")
-	contiguous := registerKVProvider(t, r, "box-contiguous")
-	legacy := registerKVProvider(t, r, "box-pre-080")
+	paged := registerKVProvider(t, r, "box-paged", model)
+	contiguous := registerKVProvider(t, r, "box-contiguous", model)
+	legacy := registerKVProvider(t, r, "box-pre-080", model)
 
 	r.Heartbeat(paged, kvHeartbeat(kvSlot(model, kvStr(KVBackendPaged))))
 	r.Heartbeat(contiguous, kvHeartbeat(kvSlot(model, kvStr(KVBackendContiguous))))
@@ -135,9 +142,9 @@ func TestSlotKVBackendMixedFleetSeparatesThreePopulations(t *testing.T) {
 // populations the gate exists to separate.
 func TestSlotKVBackendIsPerSlotNotPerProvider(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-mixed-slots")
 	const pagedModel = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
 	const contiguousModel = "mlx-community/gpt-oss-20b"
+	id := registerKVProvider(t, r, "box-mixed-slots", pagedModel, contiguousModel)
 
 	r.Heartbeat(id, kvHeartbeat(
 		kvSlot(pagedModel, kvStr(KVBackendPaged)),
@@ -162,8 +169,8 @@ func TestSlotKVBackendIsPerSlotNotPerProvider(t *testing.T) {
 func TestSlotKVBackendExplicitEmptyStaysDistinctFromAbsent(t *testing.T) {
 	r := New(testLogger())
 	const model = "qwen"
-	explicit := registerKVProvider(t, r, "box-explicit-empty")
-	absent := registerKVProvider(t, r, "box-absent")
+	explicit := registerKVProvider(t, r, "box-explicit-empty", model)
+	absent := registerKVProvider(t, r, "box-absent", model)
 
 	r.Heartbeat(explicit, kvHeartbeat(kvSlot(model, kvStr(""))))
 	r.Heartbeat(absent, kvHeartbeat(kvSlot(model, nil)))
@@ -189,8 +196,8 @@ func TestSlotKVBackendExplicitEmptyStaysDistinctFromAbsent(t *testing.T) {
 // single most interesting sample in the rollout.
 func TestSlotKVBackendSurvivesSlotLeavingTheHeartbeat(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-evicting")
 	const model = "gemma"
+	id := registerKVProvider(t, r, "box-evicting", model)
 
 	r.Heartbeat(id, kvHeartbeat(kvSlot(model, kvStr(KVBackendPaged))))
 	// Slot gone: the model was evicted / the engine crashed.
@@ -219,8 +226,8 @@ func TestSlotKVBackendSurvivesSlotLeavingTheHeartbeat(t *testing.T) {
 // new tag value per request.
 func TestSlotKVBackendUnknownKindFencedToOther(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-future")
 	const model = "gemma"
+	id := registerKVProvider(t, r, "box-future", model)
 
 	r.Heartbeat(id, kvHeartbeat(kvSlot(model, kvStr("paged_quantized"))))
 	kind, observed := r.SlotKVBackend(id, model)
@@ -236,12 +243,14 @@ func TestSlotKVBackendUnknownKindFencedToOther(t *testing.T) {
 // not grow coordinator state without bound.
 func TestSlotKVBackendRecordIsBounded(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-flood")
-
 	slots := make([]protocol.BackendSlotCapacity, 0, maxTrackedKVBackendSlots*2)
+	models := make([]string, 0, maxTrackedKVBackendSlots*2)
 	for i := range maxTrackedKVBackendSlots * 2 {
-		slots = append(slots, kvSlot(fmt.Sprintf("model-%d", i), kvStr(KVBackendPaged)))
+		modelID := fmt.Sprintf("model-%d", i)
+		models = append(models, modelID)
+		slots = append(slots, kvSlot(modelID, kvStr(KVBackendPaged)))
 	}
+	id := registerKVProvider(t, r, "box-flood", models...)
 	r.Heartbeat(id, kvHeartbeat(slots...))
 
 	p := r.GetProvider(id)
@@ -348,9 +357,9 @@ func TestKVBackendTagsAreNeverEmpty(t *testing.T) {
 func TestSlotKVBackendFallbackSeparatesChoiceFromDegrade(t *testing.T) {
 	r := New(testLogger())
 	const model = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
-	chose := registerKVProvider(t, r, "box-chose-contiguous")
-	fell := registerKVProvider(t, r, "box-degraded-to-contiguous")
-	legacy := registerKVProvider(t, r, "box-pre-080")
+	chose := registerKVProvider(t, r, "box-chose-contiguous", model)
+	fell := registerKVProvider(t, r, "box-degraded-to-contiguous", model)
+	legacy := registerKVProvider(t, r, "box-pre-080", model)
 
 	r.Heartbeat(chose, kvHeartbeat(kvSlot(model, kvStr(KVBackendContiguous))))
 	r.Heartbeat(fell, kvHeartbeat(kvSlotDegraded(
@@ -400,8 +409,8 @@ func TestSlotKVBackendFallbackSeparatesChoiceFromDegrade(t *testing.T) {
 // only ever gets written is a permanent false positive on a healthy slot.
 func TestSlotKVBackendFallbackClearsOnACleanReload(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-reloading")
 	const model = "gemma"
+	id := registerKVProvider(t, r, "box-reloading", model)
 
 	r.Heartbeat(id, kvHeartbeat(kvSlotDegraded(model, KVBackendContiguous, "kill_switch")))
 	if _, fallback := r.SlotKVBackendTags(id, model); fallback != KVFallbackKillSwitch {
@@ -469,8 +478,8 @@ func TestKVBackendFallbackTagVocabulary(t *testing.T) {
 // state for the life of the session, but the class must still survive.
 func TestSlotKVBackendFallbackReasonIsClamped(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-verbose")
 	const model = "gemma"
+	id := registerKVProvider(t, r, "box-verbose", model)
 
 	long := "ineligible: " + strings.Repeat("x", maxKVFallbackReasonBytes*4)
 	r.Heartbeat(id, kvHeartbeat(kvSlotDegraded(model, KVBackendContiguous, long)))
@@ -494,8 +503,8 @@ func TestSlotKVBackendFallbackReasonIsClamped(t *testing.T) {
 // an observation out of a provider that reported no backend.
 func TestSlotKVBackendFallbackIgnoredWithoutAKind(t *testing.T) {
 	r := New(testLogger())
-	id := registerKVProvider(t, r, "box-reason-only")
 	const model = "gemma"
+	id := registerKVProvider(t, r, "box-reason-only", model)
 
 	reason := "kill_switch"
 	r.Heartbeat(id, kvHeartbeat(protocol.BackendSlotCapacity{

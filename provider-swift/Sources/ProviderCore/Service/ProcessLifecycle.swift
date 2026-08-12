@@ -65,6 +65,37 @@ public enum ProcessLifecycle {
         return pidFile
     }
 
+    /// Acquire the production media-serving lock, then remove plaintext video
+    /// files orphaned by pre-fix providers. Keeping both operations in one seam
+    /// makes the ordering non-optional for every serving launch path: cleanup
+    /// never races a provider instance that still owns a legacy file.
+    @discardableResult
+    public static func acquireMediaServingLock(
+        at pidFile: URL = ProcessLifecycle.defaultPIDFile(),
+        terminationGracePeriod: TimeInterval = 2.0
+    ) throws -> URL {
+        try acquireMediaServingLock(
+            acquireLock: {
+                try acquireSingleInstanceLock(
+                    at: pidFile,
+                    terminationGracePeriod: terminationGracePeriod)
+            },
+            purgeLegacyVideoFiles: {
+                MediaIngest.purgeLegacyVideoTempFiles()
+            })
+    }
+
+    /// Dependency seam for the ordering contract above.
+    @discardableResult
+    static func acquireMediaServingLock(
+        acquireLock: () throws -> URL,
+        purgeLegacyVideoFiles: () -> Void
+    ) rethrows -> URL {
+        let pidFile = try acquireLock()
+        purgeLegacyVideoFiles()
+        return pidFile
+    }
+
     /// Remove the PID file. Best-effort -- it's never an error if the file
     /// is gone.
     public static func releaseSingleInstanceLock(

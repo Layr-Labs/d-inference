@@ -59,4 +59,42 @@ struct ProcessLifecycleTests {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
     }
+
+    @Test("media-serving launch paths acquire the lock before one housekeeping pass")
+    func mediaServingLockOrdersHousekeeping() throws {
+        let expectedPIDFile = tempPIDFile()
+        var events: [String] = []
+        var cleanupCount = 0
+
+        let acquired = try ProcessLifecycle.acquireMediaServingLock(
+            acquireLock: {
+                events.append("lock")
+                return expectedPIDFile
+            },
+            purgeLegacyVideoFiles: {
+                events.append("housekeeping")
+                cleanupCount += 1
+            })
+
+        #expect(acquired == expectedPIDFile)
+        #expect(events == ["lock", "housekeeping"])
+        #expect(cleanupCount == 1)
+    }
+
+    @Test("failed media-serving lock acquisition cannot purge legacy files")
+    func mediaServingLockFailureSkipsHousekeeping() {
+        struct LockFailure: Error {}
+        var cleanupCount = 0
+
+        #expect(throws: LockFailure.self) {
+            try ProcessLifecycle.acquireMediaServingLock(
+                acquireLock: {
+                    throw LockFailure()
+                },
+                purgeLegacyVideoFiles: {
+                    cleanupCount += 1
+                })
+        }
+        #expect(cleanupCount == 0)
+    }
 }

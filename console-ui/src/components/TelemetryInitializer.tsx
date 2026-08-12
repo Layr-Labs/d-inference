@@ -4,13 +4,8 @@ import { useEffect } from "react";
 import { installGlobalHandlers, emit } from "@/lib/telemetry";
 
 /**
- * Mounts once at app start. Installs window.error /
- * unhandledrejection forwarders that send events to the
- * coordinator via /api/telemetry, and emits a session_start log.
- *
- * When Datadog RUM is active (NEXT_PUBLIC_DD_APPLICATION_ID set), browser
- * errors are captured natively by RUM. The coordinator pipeline remains as
- * a secondary path for operational telemetry from providers/app.
+ * Compatibility mount for the disabled client-telemetry facade. No browser
+ * error, URL, stack, or session data leaves the page through this component.
  */
 export function TelemetryInitializer() {
   useEffect(() => {

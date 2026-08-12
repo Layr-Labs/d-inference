@@ -25,7 +25,7 @@ extension CoordinatorClient {
         do {
             parsed = try CoordinatorClientCodec.decodeIncomingMessage(from: data)
         } catch {
-            logger.warning("Failed to parse coordinator message: \(error.localizedDescription)")
+            logger.warning("Failed to parse coordinator message")
             return
         }
 
@@ -38,8 +38,7 @@ extension CoordinatorClient {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    error: "coordinator text request missing encrypted body",
-                    statusCode: 400
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -53,8 +52,7 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    error: "ciphertext is not valid base64",
-                    statusCode: 400
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -64,8 +62,7 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    error: "invalid ephemeral_public_key",
-                    statusCode: 400
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return

@@ -341,15 +341,44 @@ func (fp *failoverProvider) sendContentChunk(ctx context.Context, req protocol.I
 }
 
 func (fp *failoverProvider) sendInferenceError(ctx context.Context, req protocol.InferenceRequestMessage, errMsg string, statusCode int) {
+	failureCode, errorReason := testFailureClassification(errMsg, statusCode)
 	msg := protocol.InferenceErrorMessage{
-		Type:       protocol.TypeInferenceError,
-		RequestID:  req.RequestID,
-		Error:      errMsg,
-		StatusCode: statusCode,
+		Type:        protocol.TypeInferenceError,
+		RequestID:   req.RequestID,
+		Error:       errMsg,
+		StatusCode:  statusCode,
+		FailureCode: failureCode,
+		ErrorReason: errorReason,
 	}
 	data, _ := json.Marshal(msg)
 	if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {
 		fp.t.Logf("provider %s: write inference_error: %v", fp.name, err)
+	}
+}
+
+// testFailureClassification migrates the shared fake provider to the typed
+// protocol. String inspection is intentionally confined to test fixture setup;
+// production classification never reads provider-authored Error prose.
+func testFailureClassification(errMsg string, statusCode int) (protocol.InferenceFailureCode, string) {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case statusCode == 499:
+		return protocol.FailureCodeCancelled, errorReasonCancelled
+	case strings.Contains(lower, "batch token budget"):
+		return protocol.FailureCodeCapacity, errorReasonRequestExceedsBatchBudget
+	case strings.Contains(lower, "active token budget"):
+		return protocol.FailureCodeCapacity, errorReasonRequestExceedsNodeBudget
+	case strings.Contains(lower, "context") && (strings.Contains(lower, "exceeds") || strings.Contains(lower, "exceeded")):
+		return protocol.FailureCodeCapacity, errorReasonRequestExceedsContext
+	case strings.Contains(lower, "queue full"):
+		return protocol.FailureCodeCapacity, errorReasonQueueFull
+	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
+		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+	default:
+		// Keep generic historical fixtures legacy-shaped. Their raw text is still
+		// discarded by the production sanitizer; bounded status supplies only the
+		// rolling-upgrade behavior under test.
+		return "", ""
 	}
 }
 

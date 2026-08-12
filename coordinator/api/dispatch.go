@@ -141,6 +141,9 @@ type dispatchState struct {
 	// TOLD us it was busy — instead of inferring from error-string substrings
 	// that the fixed "admission_timeout: …" text would never match.
 	lastErrTerminalCause string
+	// lastErrCoordinatorCause is a non-wire marker for coordinator-synthetic
+	// terminals such as a provider disconnect. A provider cannot set it.
+	lastErrCoordinatorCause protocol.CoordinatorInferenceErrorCause
 	// lastErrAttemptUsage is the typed partial usage from the last provider
 	// error (nil for legacy providers), applied to the failed attempt's route
 	// row by providerFailedRoutingOutcomeFor so pre-content typed failures on
@@ -596,6 +599,7 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	// its route row. An empty cause here is also what lets the wait loops'
 	// 504 branches tell a synthetic timeout from a typed provider 504.
 	d.lastErrTerminalCause = ""
+	d.lastErrCoordinatorCause = ""
 	d.lastErrAttemptUsage = nil
 }
 
@@ -642,11 +646,13 @@ func (d *dispatchState) latchProviderBodyTooLarge(errText string) {
 // DETERMINISTIC context overflow apart from THIS node's memory-pressured KV budget
 // (see classifyRejection). provider may be nil (budget 0 = unknown).
 func (d *dispatchState) setLastInferenceError(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
+	msg = normalizeInferenceErrorForInternalUse(msg)
 	d.lastErr = msg.Error
 	d.lastErrCode = msg.StatusCode
 	d.lastErrReason = msg.ErrorReason
 	d.lastErrProviderBudget = providerReportedBudget(provider, d.model)
 	d.lastErrTerminalCause = msg.TerminalCause
+	d.lastErrCoordinatorCause = msg.CoordinatorCause
 	d.lastErrAttemptUsage = msg.AttemptUsage
 }
 
@@ -688,7 +694,7 @@ func (d *dispatchState) providerFailedRoutingOutcomeFor(pr *registry.PendingRequ
 		return out
 	}
 	class := "provider_error"
-	if providerDisconnectedError(d.lastErr, d.lastErrCode) {
+	if d.lastErrCoordinatorCause == protocol.CoordinatorCauseProviderDisconnected {
 		class = "provider_disconnect_pre_commit"
 	}
 	out := d.errorRoutingOutcomeFor(pr, "error", class, d.lastErrCode)
@@ -1480,6 +1486,7 @@ func (d *dispatchState) latchJinjaTerminalReject(reason, src string) (latched bo
 // healthier provider still happens. Harmless if the survivor ultimately succeeds —
 // d.unservable is only consulted on the exhausted/retry path, never on a commit.
 func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg protocol.InferenceErrorMessage) {
+	msg = normalizeInferenceErrorForInternalUse(msg)
 	if d.unservable || d.terminalClientError {
 		return
 	}
@@ -1611,7 +1618,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 				"request_id", d.requestID,
 				"provider_id", provider.ID,
 				"attempt", d.attempt+1,
-				"error", errMsg.Error,
+				"failure_code", errMsg.FailureCode,
 			)
 			s.emitRequest(r.Context(), protocol.SeverityWarn, d.requestID,
 				"provider failed, retrying",
@@ -2439,7 +2446,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 						"request_id", d.requestID,
 						"provider_id", provider.ID,
 						"attempt", d.attempt+1,
-						"error", errMsg.Error,
+						"failure_code", errMsg.FailureCode,
 					)
 					s.emitRequest(r.Context(), protocol.SeverityWarn, d.requestID,
 						"provider failed after accepting request, retrying",
@@ -2471,7 +2478,7 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 				"request_id", d.requestID,
 				"provider_id", provider.ID,
 				"attempt", d.attempt+1,
-				"error", errMsg.Error,
+				"failure_code", errMsg.FailureCode,
 			)
 			s.emitRequest(r.Context(), protocol.SeverityWarn, d.requestID,
 				"provider failed after accepting request, retrying",

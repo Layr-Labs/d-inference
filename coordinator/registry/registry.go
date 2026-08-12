@@ -3013,33 +3013,41 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 		return
 	}
 
-	// Clamp heartbeat-reported capacity and metrics so a malicious provider
-	// can't skew routing by reporting absurd values (e.g. TotalMemoryGB=1e9
-	// would drive gpuUtil to 0 and sidestep health penalties).
-	clampBackendCapacity(r.logger, id, msg.BackendCapacity)
-	if v, changed := clampNonNeg(msg.SystemMetrics.MemoryPressure, 1.0); changed {
-		msg.SystemMetrics.MemoryPressure = v
+	// Work from registry-owned copies so clamping and retention never mutate the
+	// decoded provider message. Model-bearing fields are canonicalized after
+	// taking p.mu below, against the same p.Models snapshot that remains
+	// authoritative for the rest of this heartbeat.
+	systemMetrics := msg.SystemMetrics
+	if v, changed := clampNonNeg(systemMetrics.MemoryPressure, 1.0); changed {
+		systemMetrics.MemoryPressure = v
 	}
-	if v, changed := clampNonNeg(msg.SystemMetrics.CPUUsage, 1.0); changed {
-		msg.SystemMetrics.CPUUsage = v
+	if v, changed := clampNonNeg(systemMetrics.CPUUsage, 1.0); changed {
+		systemMetrics.CPUUsage = v
 	}
 
 	p.mu.Lock()
+	warmModels, currentModel, backendCapacity := canonicalHeartbeatModelState(
+		p.Models, msg.WarmModels, msg.ActiveModel, msg.BackendCapacity)
+	// Clamp only after unknown slot identifiers have been removed. Besides
+	// keeping them out of routing state, this prevents an unaccepted model ID
+	// from reaching clamp diagnostics or TPS/KV observations.
+	clampBackendCapacity(r.logger, id, backendCapacity)
 	now := time.Now()
 	prevHB := p.LastHeartbeat
 	p.LastHeartbeat = now
 	applyHeartbeatStatsDelta(&p.Stats, p.lastSessionStats, msg.Stats)
 	p.lastSessionStats = mergeHeartbeatSessionStats(p.lastSessionStats, msg.Stats)
-	p.SystemMetrics = msg.SystemMetrics
+	p.SystemMetrics = systemMetrics
 	// Update backend capacity from heartbeat. A nil report clears prior live
 	// capacity so stale slot state cannot keep influencing routing.
-	p.BackendCapacity = msg.BackendCapacity
-	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the raw report,
+	p.BackendCapacity = backendCapacity
+	// Per-slot KV backend (v0.8.0 paged rollout). Recorded from the canonical
+	// report after unaccepted model identifiers have been removed,
 	// BEFORE the nil-clearing semantics above take effect for it: the record is
 	// sticky across a slot vanishing from the heartbeat, because attribution of
 	// an in-flight request must survive its slot crashing. Measurement only —
 	// nothing below reads it. See kv_backend.go.
-	p.recordKVBackendsLocked(msg.BackendCapacity)
+	p.recordKVBackendsLocked(backendCapacity)
 	if p.BackendCapacity != nil {
 		chipFamily := p.Hardware.ChipFamily
 		// Solo samples are keyed by chip CLASS (family+tier, chipClassKey) so a
@@ -3093,14 +3101,11 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// Update warm models from heartbeat. Always overwrite -- an empty list
 	// means the provider has no models loaded, and stale entries must be
 	// cleared to prevent TriggerModelSwaps from suppressing needed swaps.
-	p.WarmModels = msg.WarmModels
-	if msg.ActiveModel != nil {
-		p.CurrentModel = *msg.ActiveModel
-	} else {
-		// nil active_model means no model is loaded — clear stale state
-		// so attestation challenges don't compare against an unloaded model.
-		p.CurrentModel = ""
-	}
+	p.WarmModels = warmModels
+	// A nil or unaccepted active_model means no coordinator-known model is
+	// loaded. Clear stale state so challenge checks never compare against a
+	// provider-injected identifier.
+	p.CurrentModel = currentModel
 	// Only update status from heartbeat if provider is not actively serving
 	// (serving status is managed by request lifecycle). Crucially, an
 	// untrusted provider must NOT transition back to StatusOnline here —
@@ -3125,7 +3130,7 @@ func (r *Registry) Heartbeat(id string, msg *protocol.HeartbeatMessage) {
 	// evaluates the heartbeat's OWN stamped time and report (not a re-read of
 	// the provider), so a racing disconnect cannot void the release proof.
 	// Cheap no-op probe when the provider has no clamp state.
-	r.releaseBudgetClampsOnHeartbeat(id, now, msg.BackendCapacity)
+	r.releaseBudgetClampsOnHeartbeat(id, now, backendCapacity)
 
 	r.PersistProviderThrottled(p)
 	// Persist accumulated uptime (throttled) so it survives restarts/reconnects;
@@ -3648,6 +3653,17 @@ func (r *Registry) PendingModelLoadDuration(providerID, modelID string) time.Dur
 	return time.Since(started)
 }
 
+// HasPendingModelLoad reports whether an unexpired coordinator-issued
+// load_model command exists for exactly this provider/model pair. It lets the
+// WebSocket boundary reject unsolicited load_model_status messages before
+// allowing them to mutate warm-model state.
+func (r *Registry) HasPendingModelLoad(providerID, modelID string) bool {
+	r.mu.RLock()
+	expiresAt, ok := r.pendingModelLoads[modelLoadKey(providerID, modelID)]
+	r.mu.RUnlock()
+	return ok && time.Now().Before(expiresAt)
+}
+
 // backoffPendingModelLoad re-stamps a pending load entry's expiry to
 // now+backoff, seeding pendingModelLoadStarted when this is the first time the
 // pair is seen (the coordinator may learn of a rejection for a load_model whose
@@ -3891,10 +3907,11 @@ func (r *Registry) Disconnect(id string) {
 			func() {
 				defer func() { recover() }()
 				pr.ErrorCh <- protocol.InferenceErrorMessage{
-					Type:       protocol.TypeInferenceError,
-					RequestID:  reqID,
-					Error:      "provider disconnected",
-					StatusCode: 502,
+					Type:             protocol.TypeInferenceError,
+					RequestID:        reqID,
+					Error:            "provider disconnected",
+					StatusCode:       502,
+					CoordinatorCause: protocol.CoordinatorCauseProviderDisconnected,
 				}
 			}()
 			func() {
@@ -4103,9 +4120,8 @@ func (r *Registry) SetTrustLevel(providerID string, level TrustLevel) {
 // provider.
 //
 // Returns true iff this call recovered a transiently-untrusted provider back to
-// online. The caller (verifyChallengeResponse) uses that to push a fresh
-// "online" trust_status so the provider clears its local untrusted state and
-// cancels the pending diagnostic auto-report it scheduled at deroute time.
+// online. The caller uses that to push a fresh "online" trust_status so the
+// provider's locally persisted operator state reflects recovery.
 func (r *Registry) RecordChallengeSuccess(providerID string) bool {
 	r.mu.RLock()
 	p, ok := r.providers[providerID]

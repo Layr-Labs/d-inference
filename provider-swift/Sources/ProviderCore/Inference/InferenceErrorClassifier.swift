@@ -27,13 +27,13 @@ import Foundation
 /// where haystack matching could misfire — e.g. the mid-stream generation
 /// catch, whose engine error text must never accidentally classify as a
 /// template failure (the coordinator terminally rejects jinja_* reasons, E4).
-func classifyTypedInferenceErrorReason(_ error: Error) -> String? {
+func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? {
     if let engineError = error as? MultiModelBatchSchedulerEngineError,
         case .toolChoiceViolation = engineError {
         // E5: the model failed the forced tool_choice contract (missing /
         // disallowed call, or over-limit deferred prose) — output-dependent,
         // never a provider fault.
-        return "tool_noncompliance"
+        return .toolNoncompliance
     }
     return nil
 }
@@ -43,7 +43,7 @@ func classifyTypedInferenceErrorReason(_ error: Error) -> String? {
 ///
 /// Pure + side-effect-free: inspects only the error's concrete type and
 /// textual descriptions, never any request/message content.
-func classifyInferenceErrorReason(_ error: Error) -> String? {
+func classifyInferenceErrorReason(_ error: Error) -> InferenceErrorReason? {
     // Typed classifications win before any string scan.
     if let typed = classifyTypedInferenceErrorReason(error) {
         return typed
@@ -66,17 +66,17 @@ func classifyInferenceErrorReason(_ error: Error) -> String? {
         || (haystack.contains("<|channel|>")
             && (haystack.contains("tags in the content")
                 || haystack.contains("tags in the thinking"))) {
-        return "jinja_channel_tags"
+        return .jinjaChannelTags
     }
 
     // DAR-329 — swift-jinja null-bridge crash.
     if haystack.contains("Cannot convert value of type") && haystack.contains("Jinja Value") {
-        return "jinja_null_bridge"
+        return .jinjaNullBridge
     }
 
     // Any other Jinja / template render failure.
     if haystack.contains("TemplateException") || haystack.contains("Jinja") {
-        return "jinja_template"
+        return .jinjaTemplate
     }
 
     return nil
@@ -84,9 +84,10 @@ func classifyInferenceErrorReason(_ error: Error) -> String? {
 
 /// Privacy-safe diagnostic helper: locate the FIRST chat message whose textual
 /// fields carry a raw Harmony `<|channel|>` tag, returning ONLY its index and
-/// role. The message content is deliberately never returned (or logged) — only
-/// the location, so a channel-tags template failure can be pinpointed without
-/// exposing any prompt text.
+/// closed role category. Both message content and arbitrary caller-authored
+/// role strings are deliberately never returned (or logged) — only the bounded
+/// location, so a channel-tags template failure can be pinpointed without
+/// exposing prompt text.
 ///
 /// `messages` is the chat-template dict shape (`["role": ..., "content": ...,
 /// "reasoning_content": ...]`) — the same representation handed to
@@ -100,7 +101,15 @@ func offendingHarmonyMessageLocation(
     for (index, message) in messages.enumerated() {
         for key in textKeys {
             if let text = message[key] as? String, text.contains(marker) {
-                let role = (message["role"] as? String) ?? "unknown"
+                let role: String
+                switch (message["role"] as? String)?.lowercased() {
+                case "system": role = "system"
+                case "developer": role = "developer"
+                case "user": role = "user"
+                case "assistant": role = "assistant"
+                case "tool": role = "tool"
+                default: role = "unknown"
+                }
                 return (index: index, role: role)
             }
         }

@@ -256,7 +256,7 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 	// deliverError registers a fresh pending request and routes a single
 	// inference error through handleInferenceError. Channels are buffered so
 	// the synchronous delivery never blocks.
-	deliverError := func(requestID, errText string, status int) {
+	deliverError := func(requestID, errText string, status int, failureCode protocol.InferenceFailureCode) {
 		pr := &registry.PendingRequest{
 			RequestID:  requestID,
 			ProviderID: p.ID,
@@ -267,10 +267,11 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 		}
 		p.AddPending(pr)
 		srv.handleInferenceError(p.ID, p, &protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  requestID,
-			Error:      errText,
-			StatusCode: status,
+			Type:        protocol.TypeInferenceError,
+			RequestID:   requestID,
+			Error:       errText,
+			StatusCode:  status,
+			FailureCode: failureCode,
 		})
 	}
 
@@ -279,10 +280,10 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 	//   - 429 too many requests
 	//   - token_budget_exhausted (carried in the error message, status 200)
 	//   - "insufficient memory" message even on a 500 (case-insensitive)
-	deliverError("req-503", "insufficient memory to load model 'cap-model'", http.StatusServiceUnavailable)
-	deliverError("req-429", "rate limited", http.StatusTooManyRequests)
-	deliverError("req-budget", "token_budget_exhausted", http.StatusOK)
-	deliverError("req-oom-500", "Insufficient memory (78.9 GB free, need 93.7 GB)", http.StatusInternalServerError)
+	deliverError("req-503", "insufficient memory to load model 'cap-model'", http.StatusServiceUnavailable, protocol.FailureCodeCapacity)
+	deliverError("req-429", "rate limited", http.StatusTooManyRequests, protocol.FailureCodeCapacity)
+	deliverError("req-budget", "token_budget_exhausted", http.StatusOK, protocol.FailureCodeCapacity)
+	deliverError("req-oom-500", "Insufficient memory (78.9 GB free, need 93.7 GB)", http.StatusInternalServerError, protocol.FailureCodeCapacity)
 
 	if got := p.Reputation.FailedJobs; got != 0 {
 		t.Fatalf("after capacity rejections: FailedJobs = %d, want 0 (no reputation penalty)", got)
@@ -292,7 +293,7 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 	}
 
 	// A genuine provider fault (500, no capacity keywords) still penalises.
-	deliverError("req-fault-500", "model crashed during generation", http.StatusInternalServerError)
+	deliverError("req-fault-500", "model crashed during generation", http.StatusInternalServerError, protocol.FailureCodeGenerationFailure)
 
 	if got := p.Reputation.FailedJobs; got != 1 {
 		t.Fatalf("after genuine fault: FailedJobs = %d, want 1", got)

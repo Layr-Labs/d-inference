@@ -131,9 +131,7 @@ struct OuterPrefixCacheReceiptTests {
             finalizer.sendTerminal(
                 .inferenceError(
                     requestId: "detached-order",
-                    error: "template/media/encryption failure",
-                    statusCode: 500,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .internalFailure, statusCode: 500)),
                 fallbackFailure: .policy,
                 send: send)
             // Detached-task defer fallback after the terminal must be a no-op.

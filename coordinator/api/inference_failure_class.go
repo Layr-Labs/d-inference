@@ -169,6 +169,11 @@ func classifyRejection(reason, errStr string, providerBudget int64, modelContext
 		return rejectionDeterministicUnservable
 	case "request_exceeds_node", "request_exceeds_node_budget", "capacity_busy":
 		return rejectionTransientCapacity
+	case "request_exceeds_batch_token_budget":
+		if modelContext > 0 && providerBudget > 0 && providerBudget < int64(modelContext) {
+			return rejectionTransientCapacity
+		}
+		return rejectionDeterministicUnservable
 	}
 	// Capacity-class is gated by isCapacityClassProviderError so fault strings
 	// (checked first there) can never be miscategorised as a capacity shed.

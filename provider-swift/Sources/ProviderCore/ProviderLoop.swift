@@ -419,13 +419,6 @@ public actor ProviderLoop {
     /// the FIRST load doesn't re-read weights already hashed at startup.
     internal var modelHashFingerprints: [String: String]
 
-    /// Whether we've already submitted an auto-report for this session.
-    /// Set to true after the first trust-triggered report to avoid spamming.
-    internal var didAutoReport = false
-
-    /// Task for the delayed auto-report (10 minutes after learning trust status).
-    internal var autoReportTask: Task<Void, Never>?
-
     /// Diagnostics: the most recent trust_status from the coordinator and the
     /// most recent model-load failure, plus the daemon start time. Persisted to
     /// the daemon state file so `darkbloom status`/`doctor` can show the
@@ -736,7 +729,7 @@ public actor ProviderLoop {
     //   - ProviderLoop+StartupPreload.swift      boot-time preload + registration readiness gate
     //   - ProviderLoop+Prefetch.swift            background prefetch + desired-models reconcile
     //   - ProviderLoop+Testing.swift             test-only seams (ProviderCoreTests)
-    //   - ProviderLoop+Trust.swift               trust status + one-time auto-report
+    //   - ProviderLoop+Trust.swift               trust status persistence
     //   - ProviderLoop+MemoryProtection.swift    OOM surfacing + memory-pressure
     //   - ProviderLoop+IdleTimeout.swift         idle-timeout model unload
     //   - ProviderLoop+Capacity.swift            capacity refresh + updateAggregateCapacity

@@ -1,12 +1,13 @@
 package api
 
-// Telemetry ingestion endpoint and Datadog forwarding.
+// Historical telemetry ingestion helpers and Datadog forwarding.
 //
-// Ingest:   POST /v1/telemetry/events    (provider token | Privy JWT | API key | anon)
+// Ingest:   POST /v1/telemetry/events    (disabled; returns HTTP 410)
 //
-// Events are stored in the in-memory ring buffer (for admin metrics) and
-// forwarded to Datadog Logs API for durable persistence and querying.
-// Admin read endpoints have been removed — use Datadog Log Explorer.
+// The public ingestion route is retained for rollout compatibility, but it
+// never reads or forwards the request body. Provider-controlled telemetry has
+// free-form message and stack fields, so accepting it would let inference-
+// derived plaintext cross the coordinator confidentiality boundary.
 //
 // Design rules:
 //   - Hard cap: 100 events/batch, 64KB body.
@@ -20,8 +21,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"sync"
 	"time"
@@ -262,81 +261,14 @@ func (l *telemetryLimiter) Allow(key string, n int, anon bool) bool {
 // Ingestion
 // ---------------------------------------------------------------------------
 
-// handleTelemetryIngest accepts a batch of telemetry events.
+// handleTelemetryIngest permanently rejects client-supplied telemetry without
+// reading, decoding, storing, logging, or forwarding the request body. Keeping
+// the route gives old providers an explicit terminal response during rollout.
 func (s *Server) handleTelemetryIngest(w http.ResponseWriter, r *http.Request) {
-	// Size cap before we allocate.
-	r.Body = http.MaxBytesReader(w, r.Body, telemetryMaxBodyBytes)
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		var mbe *http.MaxBytesError
-		if errors.As(err, &mbe) {
-			writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("payload_too_large", "telemetry body exceeds 64KB"))
-			return
-		}
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "failed to read body"))
-		return
-	}
-
-	var batch protocol.TelemetryBatch
-	if err := json.Unmarshal(raw, &batch); err != nil {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "malformed JSON batch"))
-		return
-	}
-	if len(batch.Events) == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{"accepted": 0, "rejected": 0})
-		return
-	}
-	if len(batch.Events) > telemetryMaxBatch {
-		writeJSON(w, http.StatusRequestEntityTooLarge, errorResponse("batch_too_large", "maximum 100 events per batch"))
-		return
-	}
-
-	// Resolve authentication. Three modes:
-	//   1. Provider token (device-linked) — identifies machine + account.
-	//   2. Privy JWT / API key — identifies account.
-	//   3. Anonymous — rate-limited harder, fields always stamped source=console|app.
-	authCtx := s.resolveTelemetryAuth(r)
-
-	limiterKey := authCtx.RateLimitKey()
-	if !s.telemetryLimiter.Allow(limiterKey, len(batch.Events), authCtx.Anon) {
-		writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limited", "telemetry rate limit exceeded"))
-		return
-	}
-
-	now := time.Now().UTC()
-	records := make([]store.TelemetryEventRecord, 0, len(batch.Events))
-	rejected := 0
-	for _, e := range batch.Events {
-		rec, ok := sanitizeTelemetryEvent(e, authCtx, now)
-		if !ok {
-			rejected++
-			continue
-		}
-		records = append(records, rec)
-	}
-
-	if len(records) > 0 {
-		// Telemetry is NOT written to any store. Datadog is the sole sink.
-
-		// Metrics: bump ingestion counters (in-memory, no DB).
-		if s.metrics != nil {
-			for _, rec := range records {
-				s.metrics.IncCounter("telemetry_events_total",
-					MetricLabel{"source", rec.Source},
-					MetricLabel{"severity", rec.Severity},
-					MetricLabel{"kind", rec.Kind},
-				)
-			}
-		}
-
-		// Forward to Datadog Logs API asynchronously.
-		s.forwardTelemetryToDatadog(records)
-	}
-
-	writeJSON(w, http.StatusAccepted, map[string]any{
-		"accepted": len(records),
-		"rejected": rejected,
-	})
+	writeJSON(w, http.StatusGone, errorResponse(
+		"telemetry_ingest_disabled",
+		"client telemetry ingestion is disabled",
+	))
 }
 
 // telemetryAuthContext holds the resolved identity of a telemetry submitter.

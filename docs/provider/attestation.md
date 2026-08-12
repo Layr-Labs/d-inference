@@ -231,5 +231,5 @@ MDA chain independently.
 | `ChallengeVerifiedSIP: false` | SIP disabled or challenge failing | Re-enable SIP in Recovery; check `darkbloom doctor` |
 | Binary hash drift warning | Running a build not in the coordinator's release record | Run `darkbloom update` |
 
-For detailed failure logs, run `darkbloom report` or inspect unified logs with
-`darkbloom logs --last 1h`.
+For local diagnostics, inspect `darkbloom doctor` and `darkbloom logs --last 1h`.
+Automatic and manual provider-log uploads are disabled for inference privacy.

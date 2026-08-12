@@ -43,9 +43,7 @@ extension ProviderLoop {
         lookupReceiptFinalizer.sendTerminal(
             .inferenceError(
                 requestId: requestId,
-                error: providerDrainingForUpdateReason,
-                statusCode: 503,
-                errorReason: nil),
+                failure: InferenceFailure(code: .capacity, statusCode: 503)),
             fallbackFailure: .capacity,
             send: send)
         return true
@@ -133,9 +131,7 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "provider is shutting down",
-                    statusCode: 503,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .capacity, statusCode: 503)),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -159,9 +155,7 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "missing or malformed ephemeral_public_key",
-                    statusCode: 400,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -174,13 +168,11 @@ extension ProviderLoop {
                 ciphertext: ciphertext
             )
         } catch {
-            logger.error("[\(requestId)] decryption failed: \(error)")
+            logger.error("[\(requestId)] request decryption failed")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "decryption failed",
-                    statusCode: 400,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -194,9 +186,7 @@ extension ProviderLoop {
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "invalid request body",
-                    statusCode: 400,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -221,13 +211,11 @@ extension ProviderLoop {
             // the coordinator in plaintext and is logged server-side, so interpolating
             // the raw error could resurface a prompt fragment in coordinator logs
             // (defense-in-depth for the "coordinator never sees plaintext" invariant).
-            logger.error("[\(requestId)] Failed to parse chat request (\(type(of: error)))")
+            logger.error("[\(requestId)] failed to parse chat request")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "invalid request body",
-                    statusCode: 400,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -263,13 +251,13 @@ extension ProviderLoop {
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
         if await fastAdmissionReject(modelId: modelId) {
-            logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
+            // modelId comes from decrypted request JSON. Never reflect it into
+            // persistent diagnostics, even though normal callers use catalog IDs.
+            logger.warning("[\(requestId)] Pre-accept reject: insufficient capacity to load requested model")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "insufficient memory to load model '\(modelId)'",
-                    statusCode: 503,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .capacity, statusCode: 503)),
                 fallbackFailure: .capacity,
                 send: send)
             return
@@ -314,14 +302,15 @@ extension ProviderLoop {
                 await updateAggregateCapacity()
             }
             await cancellationRegistry.finish(requestId: requestId)
-            logger.error("[\(requestId)] Failed to load model '\(modelId)': \(error)")
+            logger.error("[\(requestId)] model load failed")
             let statusCode = Self.loadErrorStatusCode(for: error)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "model load failed: \(error.localizedDescription)",
-                    statusCode: statusCode,
-                    errorReason: "model_load"),
+                    failure: InferenceFailure(
+                        code: statusCode == 503 ? .capacity : .modelUnavailable,
+                        statusCode: statusCode,
+                        errorReason: .modelLoad)),
                 fallbackFailure: statusCode == 503 ? .capacity : .policy,
                 send: send)
             return
@@ -340,13 +329,11 @@ extension ProviderLoop {
                 await updateAggregateCapacity()
             }
             await cancellationRegistry.finish(requestId: requestId)
-            logger.error("[\(requestId)] Model '\(modelId)' disappeared after load")
+            logger.error("[\(requestId)] requested model disappeared after load")
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    error: "model unavailable",
-                    statusCode: 500,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)),
                 fallbackFailure: .policy,
                 send: send)
             return
@@ -428,14 +415,13 @@ extension ProviderLoop {
                     recipientPublicKey: responsePublicKeyData
                 )
             } catch {
-                log.error("[\(requestId)] Shared key precomputation failed: \(error)")
+                log.error("[\(requestId)] response-key setup failed")
                 providerStats.incrementChunkEncryptionErrors()
                 lookupReceiptFinalizer.sendTerminal(
                     .inferenceError(
                         requestId: requestId,
-                        error: "response encryption failed",
-                        statusCode: 500,
-                        errorReason: nil),
+                        failure: InferenceFailure(
+                            code: .encryptionFailure, statusCode: 502)),
                     fallbackFailure: .policy,
                     send: send)
                 return
@@ -453,14 +439,13 @@ extension ProviderLoop {
                         plaintext: Data(sseData.utf8)
                     )
                 } catch {
-                    log.error("[\(requestId)] Chunk encryption failed: \(error)")
+                    log.error("[\(requestId)] response-chunk encryption failed")
                     providerStats.incrementChunkEncryptionErrors()
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            error: "response encryption failed",
-                            statusCode: 500,
-                            errorReason: nil),
+                            failure: InferenceFailure(
+                                code: .encryptionFailure, statusCode: 502)),
                         fallbackFailure: .policy,
                         send: send)
                     return false
@@ -573,21 +558,26 @@ extension ProviderLoop {
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            error: "request cancelled",
-                            statusCode: 499,
-                            errorReason: nil,
-                            // Pre-output client cancellation — tag it so the
-                            // coordinator classifies this health-neutral (never
-                            // a provider fault). Nothing was delivered, so no
-                            // attempt usage rides along (the coordinator refunds).
-                            terminalCause: .cancelled,
-                            attemptUsage: nil),
+                            failure: InferenceFailure(
+                                code: .cancelled,
+                                statusCode: 499,
+                                // Pre-output client cancellation — tag it so the
+                                // coordinator classifies this health-neutral (never
+                                // a provider fault). Nothing was delivered, so no
+                                // attempt usage rides along (the coordinator refunds).
+                                terminalCause: .cancelled)),
                         fallbackFailure: .policy,
                         send: send)
                     return
                 }
-                log.error("[\(requestId)] Failed to start stream: \(error)")
-                let statusCode = Self.mapInferenceErrorToStatus(error)
+                let reason = classifyInferenceErrorReason(error)
+                let failure = Self.sanitizedInferenceFailure(
+                    from: error,
+                    phase: .streamStart,
+                    errorReason: reason)
+                InferenceFailureLogger(logger: log).record(
+                    requestId: requestId,
+                    failure: failure)
                 // Classify HERE, where the real `Error` (and its rich
                 // `String(describing:)` text) is in scope. For a Harmony
                 // TemplateException `error.localizedDescription` collapses to the
@@ -596,8 +586,9 @@ extension ProviderLoop {
                 // failure is at this catch (DAR-341). We send ONLY the normalized
                 // reason on the wire — never the rich text, which can carry prompt
                 // content (E2E privacy).
-                let reason = classifyInferenceErrorReason(error)
-                if let reason, reason == "jinja_channel_tags" || reason == "jinja_null_bridge" {
+                if let reason,
+                    reason == .jinjaChannelTags || reason == .jinjaNullBridge
+                {
                     // Privacy-safe diagnostic: log the OFFENDING message's index +
                     // role only — never its content. `templateMessageDict()` yields
                     // the same dict shape handed to the chat template.
@@ -605,30 +596,22 @@ extension ProviderLoop {
                         in: streamingRequest.messages.map { $0.templateMessageDict() }
                     ) {
                         log.error(
-                            "[\(requestId)] Harmony template render failed reason=\(reason); "
+                            "[\(requestId)] Harmony template render failed reason=\(reason.rawValue); "
                             + "offending message index=\(location.index) role=\(location.role) "
                             + "(content omitted for privacy)"
                         )
                     } else {
                         log.error(
-                            "[\(requestId)] Harmony template render failed reason=\(reason); "
+                            "[\(requestId)] Harmony template render failed reason=\(reason.rawValue); "
                             + "offending message not located (content omitted for privacy)"
                         )
                     }
                 }
-                // Defense-in-depth: a typed platform terminal normally surfaces
-                // mid-stream, but if one is thrown synchronously at stream start
-                // carry its cause + usage too (non-terminal errors → nil, nil).
-                let terminal = Self.inferenceTerminalMetadata(from: error)
                 lookupReceiptFinalizer.sendTerminal(
                     .inferenceError(
                         requestId: requestId,
-                        error: error.localizedDescription,
-                        statusCode: statusCode,
-                        errorReason: reason,
-                        terminalCause: terminal.cause,
-                        attemptUsage: terminal.usage),
-                    fallbackFailure: statusCode == 503 ? .capacity : .policy,
+                        failure: failure),
+                    fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
                     send: send)
                 return
             }
@@ -808,7 +791,12 @@ extension ProviderLoop {
                     log.info("[\(requestId)] Cancelled while waiting on next frame")
                     cancelledMidStream = true
                 } else {
-                    log.error("[\(requestId)] Generation error: \(error)")
+                    let failure = Self.sanitizedInferenceFailure(
+                        from: error,
+                        phase: .generation)
+                    InferenceFailureLogger(logger: log).record(
+                        requestId: requestId,
+                        failure: failure)
                     if Self.hasVisibleStreamOutput(
                         contentFrameCount: contentFrameCount,
                         fullResponseText: fullResponseText
@@ -818,12 +806,6 @@ extension ProviderLoop {
                     if Self.isStreamClosedWithoutTerminal(error) {
                         providerStats.incrementStreamClosedWithoutTerminal()
                     }
-                    let statusCode = Self.mapInferenceErrorToStatus(error)
-                    // A CBv2 platform/engine terminal (deadline lease / step
-                    // watchdog) carries a typed cause + engine-reconciled usage;
-                    // every other error yields (nil, nil) and the wire message
-                    // stays byte-identical to the legacy shape.
-                    let terminal = Self.inferenceTerminalMetadata(from: error)
                     // Mid-stream generation errors use typed classification only:
                     // tool-choice violations are request/model-output faults, while
                     // string-based Jinja classification remains confined to stream
@@ -832,12 +814,8 @@ extension ProviderLoop {
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            error: error.localizedDescription,
-                            statusCode: statusCode,
-                            errorReason: classifyTypedInferenceErrorReason(error),
-                            terminalCause: terminal.cause,
-                            attemptUsage: terminal.usage),
-                        fallbackFailure: statusCode == 503 ? .capacity : .policy,
+                            failure: failure),
+                        fallbackFailure: failure.statusCode == 503 ? .capacity : .policy,
                         send: send)
                     return
                 }
@@ -890,15 +868,14 @@ extension ProviderLoop {
                     lookupReceiptFinalizer.sendTerminal(
                         .inferenceError(
                             requestId: requestId,
-                            error: "request cancelled",
-                            statusCode: 499,
-                            errorReason: nil,
-                            // Pre-output client cancellation — tag it so the
-                            // coordinator classifies this health-neutral (never
-                            // a provider fault). Nothing was delivered, so no
-                            // attempt usage rides along (the coordinator refunds).
-                            terminalCause: .cancelled,
-                            attemptUsage: nil),
+                            failure: InferenceFailure(
+                                code: .cancelled,
+                                statusCode: 499,
+                                // Pre-output client cancellation — tag it so the
+                                // coordinator classifies this health-neutral (never
+                                // a provider fault). Nothing was delivered, so no
+                                // attempt usage rides along (the coordinator refunds).
+                                terminalCause: .cancelled)),
                         fallbackFailure: .policy,
                         send: send)
                     return

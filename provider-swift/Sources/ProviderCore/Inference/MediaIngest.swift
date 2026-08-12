@@ -3,7 +3,7 @@
 // Media ingest for multimodal (image/video) requests.
 //
 // Everything between an OpenAI request's inline `data:` media parts and a
-// model-ready `UserInput`: decode (CIImage / AVFoundation temp files),
+// model-ready `UserInput`: decode (CIImage / memory-backed AVFoundation assets),
 // decompression-bomb caps (per-image + per-request pixels, byte/second/
 // count limits), up-front validation (`validateMedia` — throws the 4xx
 // before any stream starts), memory projections for the vision gate
@@ -23,25 +23,57 @@ import Foundation
 import ImageIO
 import MLXLMCommon
 import MLXLMServer
+import MLXVLM
 
 /// Namespace for media ingest: decode, caps, validation, projections.
-/// Pure functions; holds no state.
+/// Static helpers; holds no state.
 public enum MediaIngest {
+
+    /// Remove plaintext video files left by pre-fix providers that exited
+    /// before their `defer` cleanup ran. Production calls this after acquiring
+    /// the single-instance lock, so no live provider can still own a matching
+    /// file. The exact UUID-shaped legacy name avoids touching unrelated temp
+    /// files; non-regular files are left alone.
+    static func purgeLegacyVideoTempFiles(
+        in directory: URL = FileManager.default.temporaryDirectory
+    ) {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        guard
+            let entries = try? FileManager.default.contentsOfDirectory(
+                at: directory, includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles])
+        else { return }
+
+        for url in entries where isLegacyVideoTempFileName(url.lastPathComponent) {
+            guard let values = try? url.resourceValues(forKeys: keys),
+                values.isRegularFile == true, values.isSymbolicLink != true
+            else { continue }
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    private static func isLegacyVideoTempFileName(_ name: String) -> Bool {
+        let prefix = "vlm-"
+        let suffix = ".mp4"
+        guard name.hasPrefix(prefix), name.hasSuffix(suffix) else { return false }
+        let uuidStart = name.index(name.startIndex, offsetBy: prefix.count)
+        let uuidEnd = name.index(name.endIndex, offsetBy: -suffix.count)
+        return UUID(uuidString: String(name[uuidStart..<uuidEnd])) != nil
+    }
 
     /// Errors surfaced while decoding inline media from a request. These
     /// finish the stream via `continuation.finish(throwing:)` so the
     /// status mapper can turn them into a 4xx for the caller.
     ///
-    /// Conforms to `LocalizedError` so the human-readable `description`
-    /// reaches the client (via `error.localizedDescription`) instead of
-    /// the generic Cocoa "operation couldn't be completed" fallback.
+    /// Conforms to `LocalizedError` for in-process classification and tests.
+    /// Request-derived descriptions must never cross an outbound logging,
+    /// telemetry, or protocol boundary; those surfaces use `InferenceFailure`.
     public enum MediaError: Error, CustomStringConvertible, LocalizedError {
         case malformedDataURI(String)
         case base64DecodeFailed
         case percentDecodeFailed
         case imageDecodeFailed
         case invalidURL(String)
-        case videoWriteFailed(String)
         case mediaTooLarge(String)
 
         public var description: String {
@@ -60,8 +92,6 @@ public enum MediaIngest {
                 // URI — remote/file URLs are rejected for E2E + SSRF safety.
                 let shown = uri.count > 200 ? String(uri.prefix(200)) + "…" : uri
                 return "media must be sent as an inline base64 data: URI (e.g. \"data:image/jpeg;base64,…\") on this end-to-end-encrypted endpoint; remote http(s):// and file:// URLs are rejected. Got: \(shown)"
-            case .videoWriteFailed(let detail):
-                return "failed to write inline video to a temp file (\(detail))"
             case .mediaTooLarge(let detail):
                 return "inline media exceeds a decode limit (\(detail))"
             }
@@ -203,8 +233,9 @@ public enum MediaIngest {
     /// a 200 SSE body that only errors mid-iteration.
     ///
     /// This runs the decode path (`buildUserInput`) purely for its throwing
-    /// side-effects and discards the result; any inline-video temp file it
-    /// writes is removed before returning. The decode work is bounded by the
+    /// side-effects and discards the result. Inline-video bytes remain in the
+    /// returned input's owned memory-backed assets and are released with it;
+    /// they are never materialized on disk. The decode work is bounded by the
     /// very caps it enforces (≤ per-image / aggregate pixels, ≤ byte cap), so
     /// the up-front pass can't itself be a DoS, and the eventual rebuild in
     /// the v2 media prefill re-validates identically.
@@ -215,10 +246,8 @@ public enum MediaIngest {
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
         maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
     ) async throws {
-        var tempFiles: [URL] = []
-        defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
         _ = try await buildUserInput(
-            from: request, tempFiles: &tempFiles, maxImagePixels: maxImagePixels,
+            from: request, maxImagePixels: maxImagePixels,
             maxRequestImagePixels: maxRequestImagePixels,
             maxVideosPerRequest: maxVideosPerRequest,
             maxRequestVideoFramePixels: maxRequestVideoFramePixels)
@@ -226,13 +255,11 @@ public enum MediaIngest {
 
     // MARK: - UserInput construction
 
-    /// Build a model-agnostic `UserInput` from the OpenAI request,
-    /// decoding any inline image/video content parts. `tempFiles`
-    /// accumulates temp URLs created for inline videos so the caller can
-    /// remove them when the stream ends.
+    /// Build a model-agnostic `UserInput` from the OpenAI request, decoding any
+    /// inline image/video content parts. Inline MP4s are retained in memory by
+    /// their `UserInput.Video` values for the lifetime of the returned input.
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
-        tempFiles: inout [URL],
         reasoningEffort: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
@@ -245,7 +272,7 @@ public enum MediaIngest {
         var videoCount = 0
         for message in request.messages {
             let (text, images, videos) = try await parts(
-                from: message.content, tempFiles: &tempFiles, totalPixels: &totalPixels,
+                from: message.content, totalPixels: &totalPixels,
                 totalVideoPixels: &totalVideoPixels, videoCount: &videoCount,
                 maxImagePixels: maxImagePixels,
                 maxRequestImagePixels: maxRequestImagePixels,
@@ -268,24 +295,6 @@ public enum MediaIngest {
                 for: request, reasoningEffort: reasoningEffort))
     }
 
-    /// Convenience overload that discards temp-file tracking. Used by
-    /// tests that pass only base64/url images (no inline videos).
-    static func buildUserInput(
-        from request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil,
-        maxImagePixels: Int = Self.maxImagePixels,
-        maxRequestImagePixels: Int = Self.maxRequestImagePixels,
-        maxVideosPerRequest: Int = Self.maxVideosPerRequest,
-        maxRequestVideoFramePixels: Int = Self.maxRequestVideoFramePixels
-    ) async throws -> UserInput {
-        var sink: [URL] = []
-        return try await buildUserInput(
-            from: request, tempFiles: &sink, reasoningEffort: reasoningEffort,
-            maxImagePixels: maxImagePixels,
-            maxRequestImagePixels: maxRequestImagePixels,
-            maxVideosPerRequest: maxVideosPerRequest,
-            maxRequestVideoFramePixels: maxRequestVideoFramePixels)
-    }
 
     /// Split a message's content into the concatenated text plus decoded
     /// image/video media. Non-user roles drop media at the call site, but
@@ -293,7 +302,6 @@ public enum MediaIngest {
     /// rather than being silently ignored.
     private static func parts(
         from content: OpenAIMessageContent,
-        tempFiles: inout [URL],
         totalPixels: inout Int,
         totalVideoPixels: inout Int,
         videoCount: inout Int,
@@ -368,7 +376,7 @@ public enum MediaIngest {
                         throw MediaError.mediaTooLarge(
                             "request has \(videoCount) videos; cap is \(maxVideosPerRequest)")
                     }
-                    let decoded = try await decodeVideo(uri, tempFiles: &tempFiles)
+                    let decoded = try await decodeVideo(uri)
                     let (sum, overflow) =
                         totalVideoPixels.addingReportingOverflow(decoded.framePixels)
                     totalVideoPixels = overflow ? Int.max : sum
@@ -408,7 +416,7 @@ public enum MediaIngest {
         env: "DARKBLOOM_MAX_REQUEST_IMAGE_MEGAPIXELS", defaultMegapixels: 384)
 
     /// Per-part decoded-byte ceiling for a `data:` payload (image or video).
-    /// Bounds the inline-video temp file + in-RAM buffer too.
+    /// Bounds the inline-video in-memory asset and its decode buffers.
     public static let maxMediaDecodedBytes = resolveMaxBytes(
         env: "DARKBLOOM_MAX_MEDIA_MIB", defaultMiB: 25)
 
@@ -650,15 +658,16 @@ public enum MediaIngest {
         return .ciImage(image)
     }
 
-    /// Decode a video content part. Inline `data:` URIs are written to a
-    /// unique temp file (tracked for cleanup) because AVFoundation consumes
-    /// a URL. Anything else is REJECTED for the same reason as `decodeImage`:
+    /// Decode an inline MP4 or QuickTime video into an owned memory-backed `AVURLAsset`. The
+    /// asset's custom resource loader serves strict byte ranges directly from
+    /// the decoded `Data`; no plaintext file is created. Anything else is
+    /// REJECTED for the same reason as `decodeImage`:
     /// accepting an arbitrary `http(s)://`/`file://` URL would hand a crafted
     /// request an SSRF / local-file-read primitive via `AVAsset(url:)`. The
     /// only legitimate media transport on this E2E-encrypted provider is an
     /// inline `data:` URI, so a non-`data:` URI fails closed with `invalidURL`.
     static func decodeVideo(
-        _ uri: String, tempFiles: inout [URL],
+        _ uri: String,
         maxFramePixels: Int = Self.maxImagePixels,
         maxVideoDurationSeconds: Double = Self.maxVideoDurationSeconds,
         maxMediaDecodedBytes: Int = Self.maxMediaDecodedBytes
@@ -666,29 +675,40 @@ public enum MediaIngest {
         guard uri.hasPrefix("data:") else {
             throw MediaError.invalidURL(uri)
         }
+        guard let commaIndex = uri.firstIndex(of: ",") else {
+            throw MediaError.malformedDataURI("missing ','")
+        }
+        let header = String(uri[..<commaIndex])
+        let isMP4 = header.caseInsensitiveCompare("data:video/mp4;base64") == .orderedSame
+        let isQuickTime =
+            header.caseInsensitiveCompare("data:video/quicktime;base64") == .orderedSame
+        guard isMP4 || isQuickTime else {
+            throw MediaError.malformedDataURI(
+                "inline video must use data:video/mp4;base64 or data:video/quicktime;base64")
+        }
         let data = try dataFromDataURI(uri, maxMediaDecodedBytes: maxMediaDecodedBytes)
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("vlm-\(UUID().uuidString).mp4")
+        let memoryAsset: MemoryBackedVideoAsset
         do {
-            try data.write(to: tempURL)
+            memoryAsset = try MemoryBackedVideoAsset(videoData: data)
         } catch {
-            throw MediaError.videoWriteFailed(String(describing: error))
+            throw MediaError.malformedDataURI("inline video is not a valid MP4 or QuickTime file")
         }
         // Reject a video bomb (huge frames / very long clip) before the model
         // decodes frames — the byte cap alone doesn't bound the decoded raster.
-        // Read track metadata only; no frame decode. The temp file isn't tracked
-        // in `tempFiles` until it passes, so remove it on the reject path.
-        let framePixels: Int
+        // The metadata API retains the loader and bytes for the complete probe
+        // without exposing a bare AVURLAsset across the package boundary.
+        let metadata: VideoMetadata
         do {
-            framePixels = try await enforceVideoLimits(
-                tempURL, maxFramePixels: maxFramePixels,
-                maxDurationSeconds: maxVideoDurationSeconds)
+            metadata = try await MediaProcessing.metadata(for: memoryAsset)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            try? FileManager.default.removeItem(at: tempURL)
-            throw error
+            throw MediaError.mediaTooLarge("video metadata is unreadable")
         }
-        tempFiles.append(tempURL)
-        return (.url(tempURL), framePixels)
+        let framePixels = try enforceVideoLimits(
+            metadata, maxFramePixels: maxFramePixels,
+            maxDurationSeconds: maxVideoDurationSeconds)
+        return (.memoryBacked(memoryAsset), framePixels)
     }
 
     /// Reject a video bomb using track metadata only (no frame decode). Fails
@@ -699,26 +719,27 @@ public enum MediaIngest {
     /// probeable here — fail-closed never rejects a usable video.
     @discardableResult
     static func enforceVideoLimits(
-        _ url: URL, maxFramePixels: Int, maxDurationSeconds: Double
-    ) async throws -> Int {
-        let asset = AVURLAsset(url: url)
+        _ metadata: VideoMetadata, maxFramePixels: Int, maxDurationSeconds: Double
+    ) throws -> Int {
+        try Task.checkCancellation()
 
         // Duration bounds the sampled frame count (frames = duration × fps).
         // Unreadable / non-finite / over-cap → reject.
-        guard let duration = try? await asset.load(.duration), duration.seconds.isFinite else {
+        let durationSeconds = metadata.duration.seconds
+        guard durationSeconds.isFinite else {
             throw MediaError.mediaTooLarge("video duration is unreadable")
         }
-        guard duration.seconds <= maxDurationSeconds else {
+        try Task.checkCancellation()
+        guard durationSeconds <= maxDurationSeconds else {
             // Format as Double, not Int: this is untrusted metadata, and a
             // duration > Int.max seconds would trap on `Int(_:)` while building
             // the rejection message — turning a fail-closed 400 into a crash.
             throw MediaError.mediaTooLarge(
-                "video is \(secondsString(duration.seconds))s; duration cap is "
+                "video is \(secondsString(durationSeconds))s; duration cap is "
                     + "\(secondsString(maxDurationSeconds))s")
         }
 
-        guard let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty
-        else {
+        guard !metadata.tracks.isEmpty else {
             throw MediaError.mediaTooLarge("no readable video track")
         }
         // EVERY track's CODED frame dimensions (what the decoder allocates before
@@ -726,20 +747,19 @@ public enum MediaIngest {
         // A file can understate naturalSize while coding huge frames, so charge
         // the larger of naturalSize and the format-description dimensions.
         var maxTrackPixels = 0
-        for track in tracks {
-            guard let formats = try? await track.load(.formatDescriptions), !formats.isEmpty else {
+        for track in metadata.tracks {
+            try Task.checkCancellation()
+            guard !track.decodedFrameDimensions.isEmpty else {
                 throw MediaError.mediaTooLarge("video frame dimensions are unreadable")
             }
             var framePixels = 0
-            if let size = try? await track.load(.naturalSize) {
+            if let size = track.naturalSize {
                 framePixels = safeExtentPixels(CGRect(origin: .zero, size: size))
             }
-            for desc in formats {
-                let dims = CMVideoFormatDescriptionGetDimensions(desc)
+            for size in track.decodedFrameDimensions {
                 framePixels = max(
                     framePixels,
-                    safeExtentPixels(
-                        CGRect(x: 0, y: 0, width: Int(dims.width), height: Int(dims.height))))
+                    safeExtentPixels(CGRect(origin: .zero, size: size)))
             }
             if framePixels > maxFramePixels {
                 throw MediaError.mediaTooLarge(

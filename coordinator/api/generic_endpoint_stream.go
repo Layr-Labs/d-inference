@@ -87,7 +87,7 @@ func (s *Server) handleGenericEndpointStreamingResponse(
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			emitter.emitError("provider_error", errMsg.Error)
+			emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
 			return
 
 		case <-timer.C:

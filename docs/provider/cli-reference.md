@@ -387,20 +387,6 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
-## `darkbloom report`
-
-Collect the last 24 hours of Darkbloom provider unified logs and upload them to
-the coordinator for troubleshooting.
-
-```bash
-darkbloom report [--last <duration>] [--dry-run]
-```
-
-| Flag | Description |
-|------|-------------|
-| `--last <duration>` | Time window, e.g. `1h`, `6h`, `24h` |
-| `--dry-run` | Print the log content instead of uploading |
-
 ## `darkbloom watchdog`
 
 Internal command used by the launchd crash-recovery watchdog. Not intended for

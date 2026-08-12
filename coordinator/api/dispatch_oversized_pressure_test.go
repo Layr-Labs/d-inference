@@ -167,9 +167,10 @@ func newTestServerForDispatch(t *testing.T) *Server {
 // error is never written to d.lastErr (the surviving racer owns that).
 func TestLatchDeterministicLoser_Latches(t *testing.T) {
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
-	// Unknown budget + unknown context → a "batch token budget" string is deterministic.
+	// Unknown budget + unknown context → the bounded batch-budget reason is deterministic.
 	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{
-		Error: "token_budget_exhausted: request exceeds batch token budget",
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: errorReasonRequestExceedsBatchBudget,
 	})
 	if !d.unservable || d.unservableReason != rejectionReasonOversized {
 		t.Fatalf("deterministic loser must latch unservable; got unservable=%v reason=%q", d.unservable, d.unservableReason)
@@ -180,7 +181,10 @@ func TestLatchDeterministicLoser_Latches(t *testing.T) {
 // loser must NOT latch — failover to a healthier provider must still happen.
 func TestLatchDeterministicLoser_IgnoresTransient(t *testing.T) {
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m"}
-	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{Error: "request rejected: queue full"})
+	d.latchDeterministicLoser(nil, protocol.InferenceErrorMessage{
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: errorReasonQueueFull,
+	})
 	if d.unservable {
 		t.Fatalf("a transient loser must NOT latch unservable (it would block legitimate failover)")
 	}
@@ -196,7 +200,8 @@ func TestLatchDeterministicLoser_PressuredBatchBudgetNotLatched(t *testing.T) {
 	}}
 	d := &dispatchState{s: newTestServerForDispatch(t), model: "m", modelMaxContext: 131072}
 	d.latchDeterministicLoser(p, protocol.InferenceErrorMessage{
-		Error: "token_budget_exhausted: request exceeds batch token budget",
+		FailureCode: protocol.FailureCodeCapacity,
+		ErrorReason: errorReasonRequestExceedsBatchBudget,
 	})
 	if d.unservable {
 		t.Fatalf("a pressured (budget<context) batch-budget loser must NOT latch unservable")

@@ -187,6 +187,7 @@ func soloHeartbeat(slots []protocol.BackendSlotCapacity) *protocol.HeartbeatMess
 func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 	reg := New(testLogger())
 	makeSchedulerProvider(t, reg, "box", gemmaBuild, 93)
+	addAdvertisedModel(reg.GetProvider("box"), gptossBuild)
 
 	// Uncontended: gemma serving exactly the sample-generating request.
 	// Solo samples are keyed by chip CLASS ("M3|Max"), not family ("M3").
@@ -236,6 +237,7 @@ func TestSoloRecordingGatedOnUncontendedBox(t *testing.T) {
 func TestSoloRecordingOnlySamplesActiveSlot(t *testing.T) {
 	reg := New(testLogger())
 	makeSchedulerProvider(t, reg, "box", gemmaBuild, 93)
+	addAdvertisedModel(reg.GetProvider("box"), gptossBuild)
 
 	for i := 0; i < 5; i++ {
 		reg.Heartbeat("box", soloHeartbeat([]protocol.BackendSlotCapacity{

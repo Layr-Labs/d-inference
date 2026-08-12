@@ -1,8 +1,6 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,190 +8,63 @@ import (
 	"time"
 
 	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/store"
 )
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// telemetryTestServer uses the shared testServer helper from consumer_test.go
-// but also pins an admin key we can use for admin endpoints.
-func telemetryTestServer(t *testing.T) (*Server, *store.MemoryStore) {
-	t.Helper()
-	srv, st := testServer(t)
-	srv.SetAdminKey("admin-key")
-	return srv, st
-}
-
-func postJSON(t *testing.T, srv *Server, path string, body any, authHeader string) *httptest.ResponseRecorder {
-	t.Helper()
-	raw, err := json.Marshal(body)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-	return rr
-}
-
-func postRaw(t *testing.T, srv *Server, path string, raw []byte, authHeader string) *httptest.ResponseRecorder {
-	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
-	req.Header.Set("Content-Type", "application/json")
-	if authHeader != "" {
-		req.Header.Set("Authorization", authHeader)
-	}
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-	return rr
-}
-
-func mkProtocolEvent(msg string) protocol.TelemetryEvent {
-	return protocol.TelemetryEvent{
-		ID:        "00000000-0000-0000-0000-000000000001",
-		Timestamp: time.Now().UTC(),
-		Source:    protocol.TelemetrySourceApp,
-		Severity:  protocol.SeverityError,
-		Kind:      protocol.KindPanic,
-		Message:   msg,
-		Version:   "1.0",
-		Fields: map[string]any{
-			"component": "test",
-			// Unknown field — should be dropped by the allowlist.
-			"user_prompt": "SECRET_DO_NOT_STORE",
-		},
-		Stack: "at main\n",
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-func TestTelemetryIngest_Anonymous(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	batch := protocol.TelemetryBatch{Events: []protocol.TelemetryEvent{mkProtocolEvent("boom")}}
-	rr := postJSON(t, srv, "/v1/telemetry/events", batch, "")
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("code: got %d want 202 (body=%s)", rr.Code, rr.Body.String())
-	}
-
-	// Telemetry goes to Datadog, not the store. Assert on the HTTP response.
-	var resp struct {
-		Accepted int `json:"accepted"`
-		Rejected int `json:"rejected"`
-	}
-	_ = json.NewDecoder(rr.Body).Decode(&resp)
-	if resp.Accepted != 1 {
-		t.Fatalf("accepted: got %d want 1", resp.Accepted)
-	}
-	if resp.Rejected != 0 {
-		t.Fatalf("rejected: got %d want 0", resp.Rejected)
-	}
+type telemetryReadSpy struct {
+	reader *strings.Reader
+	reads  int
 }
 
-func TestTelemetryIngest_MalformedJSON(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	rr := postRaw(t, srv, "/v1/telemetry/events", []byte(`{not json`), "")
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("malformed: got %d want 400", rr.Code)
-	}
+func (b *telemetryReadSpy) Read(p []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(p)
 }
 
-func TestTelemetryIngest_BatchTooLarge(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	events := make([]protocol.TelemetryEvent, telemetryMaxBatch+1)
-	for i := range events {
-		events[i] = mkProtocolEvent("x")
-	}
-	batch := protocol.TelemetryBatch{Events: events}
-	rr := postJSON(t, srv, "/v1/telemetry/events", batch, "")
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("oversized: got %d want 413", rr.Code)
-	}
-}
+func (b *telemetryReadSpy) Close() error { return nil }
 
-func TestTelemetryIngest_BodyTooLarge(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	big := bytes.Repeat([]byte("A"), telemetryMaxBodyBytes+1024)
-	rr := postRaw(t, srv, "/v1/telemetry/events", big, "")
-	if rr.Code != http.StatusRequestEntityTooLarge {
-		t.Fatalf("body too large: got %d want 413", rr.Code)
-	}
-}
+func TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody(t *testing.T) {
+	const sentinel = "PROMPT_SECRET_DO_NOT_EXFILTRATE"
+	body := &telemetryReadSpy{reader: strings.NewReader(`{"events":[{"message":"` + sentinel + `"}]}`)}
 
-func TestTelemetryIngest_MessageRequired(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	ev := mkProtocolEvent("")
-	batch := protocol.TelemetryBatch{Events: []protocol.TelemetryEvent{ev}}
-	rr := postJSON(t, srv, "/v1/telemetry/events", batch, "")
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("code: %d", rr.Code)
-	}
-	var resp struct {
-		Accepted int `json:"accepted"`
-		Rejected int `json:"rejected"`
-	}
-	_ = json.NewDecoder(rr.Body).Decode(&resp)
-	if resp.Accepted != 0 || resp.Rejected != 1 {
-		t.Fatalf("got accepted=%d rejected=%d", resp.Accepted, resp.Rejected)
-	}
-}
+	srv, _ := testServer(t)
+	collector := newUDPCollector(t)
+	defer collector.Close()
+	dd := newTestDD(t, collector)
+	defer dd.Close()
+	srv.SetDatadog(dd)
 
-func TestTelemetryIngest_RateLimit(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	// Anon bucket capacity is 30 — push 50 in a single flood.
-	events := make([]protocol.TelemetryEvent, 50)
-	for i := range events {
-		events[i] = mkProtocolEvent("x")
-	}
-	batch := protocol.TelemetryBatch{Events: events}
-	rr := postJSON(t, srv, "/v1/telemetry/events", batch, "")
-	// 50 > 30 anon capacity → 429.
-	if rr.Code != http.StatusTooManyRequests {
-		t.Fatalf("rate limit: got %d want 429 (body=%s)", rr.Code, rr.Body.String())
-	}
-}
+	req := httptest.NewRequest(http.MethodPost, "/v1/telemetry/events", nil)
+	req.Body = body
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
 
-func TestTelemetryIngest_UnknownEnumsCoerced(t *testing.T) {
-	srv, _ := telemetryTestServer(t)
-	ev := mkProtocolEvent("bad-enums")
-	ev.Source = "made_up"
-	ev.Severity = "oops"
-	ev.Kind = "also_bad"
-	batch := protocol.TelemetryBatch{Events: []protocol.TelemetryEvent{ev}}
-	rr := postJSON(t, srv, "/v1/telemetry/events", batch, "")
-	if rr.Code != http.StatusAccepted {
-		t.Fatalf("code: %d", rr.Code)
+	if rr.Code != http.StatusGone {
+		t.Fatalf("status = %d, want %d (body=%s)", rr.Code, http.StatusGone, rr.Body.String())
+	}
+	if body.reads != 0 {
+		t.Fatalf("telemetry request body was read %d time(s)", body.reads)
+	}
+	if strings.Contains(rr.Body.String(), sentinel) {
+		t.Fatalf("request data reflected in response: %s", rr.Body.String())
 	}
 
-	// Telemetry goes to Datadog, not the store. Verify acceptance and that
-	// the metrics counters received the coerced values.
-	var resp struct {
-		Accepted int `json:"accepted"`
-		Rejected int `json:"rejected"`
+	if srv.metrics != nil {
+		for key, value := range srv.metrics.Snapshot().Counters {
+			if strings.HasPrefix(key, "telemetry_events_total") && value != 0 {
+				t.Fatalf("ingest counter changed despite disabled sink: %s=%d", key, value)
+			}
+		}
 	}
-	_ = json.NewDecoder(rr.Body).Decode(&resp)
-	if resp.Accepted != 1 {
-		t.Fatalf("accepted: got %d want 1", resp.Accepted)
-	}
-
-	// Verify coercion via the metrics counters — they record the
-	// sanitized source/severity/kind, not the raw input.
-	if srv.metrics == nil {
-		t.Skip("metrics not configured")
-	}
-	snap := srv.metrics.Snapshot()
-	// The counter key has labels sorted alphabetically.
-	key := "telemetry_events_total{kind=custom,severity=info,source=custom}"
-	if snap.Counters[key] < 1 {
-		t.Errorf("expected coerced counter %q >= 1, got counters: %v", key, snap.Counters)
+	_ = dd.Statsd.Flush()
+	for _, packet := range collector.drain() {
+		if strings.Contains(packet, "telemetry.events_ingested") {
+			t.Fatalf("telemetry forward metric emitted despite disabled sink: %q", packet)
+		}
 	}
 }
 

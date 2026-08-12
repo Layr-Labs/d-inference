@@ -24,6 +24,7 @@ func TestPrimaryFailureThenBackupErrorKeepsRecordedAttempts(t *testing.T) {
 		Error:       "backup failed",
 		ErrorReason: "backup_failure",
 		StatusCode:  http.StatusBadGateway,
+		FailureCode: protocol.FailureCodeEncryptionFailure,
 	}
 	if got := d.racePrimaryFailedWaitBackup(backup, backupPR, nil); got != outcomeRetry {
 		t.Fatalf("outcome = %v, want retry", got)

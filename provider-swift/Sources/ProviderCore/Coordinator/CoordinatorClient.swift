@@ -129,12 +129,11 @@ public actor CoordinatorClient {
             do {
                 return try CoordinatorClientCodec.encodeOutboundMessage(message)
             } catch {
-                chunkLogger.error("chunk encode failed: \(error.localizedDescription)")
+                chunkLogger.error("chunk encode failed")
                 TelemetryClient.shared.emit(
                     kind: .protocolError,
                     severity: .error,
-                    message: "outbound chunk encode failed",
-                    fields: ["error": .string(error.localizedDescription)]
+                    message: "outbound chunk encode failed"
                 )
                 return nil
             }

@@ -283,8 +283,8 @@ func TestIntegration_ReservationRefundedOnCommittedProviderError(t *testing.T) {
 	<-providerDone
 	time.Sleep(300 * time.Millisecond)
 
-	if resp.StatusCode != http.StatusBadGateway {
-		t.Fatalf("status = %d, want 502; body = %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want canonical generation-failure 500; body = %s", resp.StatusCode, body)
 	}
 	if got := ledger.Balance(consumerID); got != initialBalance {
 		t.Errorf("balance after provider error = %d, want %d (reservation should be refunded)", got, initialBalance)

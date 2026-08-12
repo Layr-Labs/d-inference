@@ -43,7 +43,7 @@ enum SEKeySelfTest {
             return Result(
                 level: .fail,
                 message: "Secure Enclave self-test failed: \(error.localizedDescription)",
-                fix: "run `darkbloom report` and include this output.")
+                fix: "run `darkbloom doctor` and review the local output.")
         }
     }
 }

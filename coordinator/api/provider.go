@@ -286,7 +286,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		var msg protocol.ProviderMessage
 		if err := json.Unmarshal(data, &msg); err != nil {
-			s.logger.Warn("invalid provider message", "provider_id", providerID, "error", err)
+			// Decoder errors may quote provider-controlled fields (notably an
+			// unknown message type). Never reflect the detail into logs.
+			s.logger.Warn("invalid provider message", "provider_id", providerID)
 			continue
 		}
 
@@ -294,8 +296,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 		case protocol.TypeRegister:
 			regMsg := msg.Payload.(*protocol.RegisterMessage)
 			if err := s.registry.ValidatePrefixCacheRegistration(regMsg); err != nil {
+				// Validation errors can quote provider-controlled model IDs.
 				s.logger.Warn("rejecting malformed provider cache capabilities",
-					"provider_id", providerID, "error", err)
+					"provider_id", providerID)
 				s.ddIncr("routing.cache_capability_rejected", []string{"source:register"})
 				_ = conn.Close(websocket.StatusPolicyViolation, "invalid prefix-cache capabilities")
 				return
@@ -382,15 +385,9 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 							s.ddIncr("provider.enqueue_failed", []string{"msg:runtime_status"})
 						}
 					}
-					mismatchDetails := make([]string, 0, len(mismatches))
-					for _, m := range mismatches {
-						mismatchDetails = append(mismatchDetails, m.Component+"="+m.Got)
-					}
 					s.logger.Warn("provider runtime integrity mismatch — excluded from routing",
 						"provider_id", providerID,
 						"mismatches", len(mismatches),
-						"details", mismatchDetails,
-						"backend", regMsg.Backend,
 					)
 				} else {
 					s.logger.Info("provider runtime integrity verified",
@@ -486,7 +483,7 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				)
 				if err != nil && replaceCacheCapabilities {
 					s.logger.Warn("rejecting malformed heartbeat cache capabilities",
-						"provider_id", providerID, "error", err)
+						"provider_id", providerID)
 					s.ddIncr("routing.cache_capability_rejected", []string{"source:heartbeat"})
 					// Malformed refreshes cannot leave stale v2 evidence live.
 					_, _ = s.registry.UpdatePrefixCacheSnapshot(
@@ -499,15 +496,16 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 					)
 				} else if err != nil {
 					s.logger.Warn("failed to apply heartbeat cache telemetry",
-						"provider_id", providerID, "error", err)
+						"provider_id", providerID)
 					s.ddIncr("routing.cache_telemetry_rejected", []string{"source:heartbeat"})
 				}
 			}
 			s.registry.Heartbeat(providerID, hbMsg)
 			// First-token-wedge observability (measurement only): surface the
-			// provider-reported engine-health signal as a Datadog counter so a
-			// wedged box is visible fleet-wide straight from heartbeats.
-			s.recordBackendWedgeTelemetry(hbMsg)
+			// accepted engine-health signal as a Datadog counter. Use the
+			// registry snapshot, never the raw heartbeat: its slot model IDs have
+			// been constrained to this connection's coordinator-known inventory.
+			s.recordBackendWedgeTelemetry(provider.BackendCapacitySnapshot())
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)
@@ -595,11 +593,25 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 
 		case protocol.TypeLoadModelStatus:
 			statusMsg := msg.Payload.(*protocol.LoadModelStatusMessage)
+			if !validLoadModelStatus(statusMsg.Status) {
+				// Both fields are provider-controlled until they pass the closed
+				// status vocabulary and pending-command match below.
+				s.logger.Warn("rejecting invalid load_model_status", "provider_id", providerID)
+				s.ddIncr("provider.load_model_status_rejected", []string{"reason:invalid_status"})
+				continue
+			}
+			if !s.registry.HasPendingModelLoad(providerID, statusMsg.ModelID) {
+				s.logger.Warn("rejecting unsolicited load_model_status", "provider_id", providerID)
+				s.ddIncr("provider.load_model_status_rejected", []string{"reason:no_pending_command"})
+				continue
+			}
+			// The exact provider/model pair now names a live coordinator-issued
+			// command, and Status is one of three fixed constants. Only canonical
+			// values may cross into logs, metrics, or registry state.
 			s.logger.Info("provider load_model_status",
 				"provider_id", providerID,
 				"model_id", statusMsg.ModelID,
 				"status", statusMsg.Status,
-				"error", statusMsg.Error,
 			)
 			switch statusMsg.Status {
 			case protocol.LoadModelStatusSucceeded:
@@ -670,15 +682,15 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			s.handleModelsUpdate(providerID, provider, updateMsg)
 
 		case protocol.TypePrefetchModelStatus:
-			statusMsg := msg.Payload.(*protocol.PrefetchModelStatusMessage)
-			// Observability only. The terminal "verified" state means the build
-			// is on disk and hash-checked but NOT loaded into GPU — the provider
-			// then emits an authoritative models_update (handleModelsUpdate) so
-			// the registry learns it can serve the build (and drops the old one).
-			s.handlePrefetchModelStatus(providerID, provider, statusMsg)
+			// This frame is advisory progress for a provider-autonomous download;
+			// it has no coordinator-issued pending-command identity and no state
+			// effect. Ignore it entirely. A later catalog-validated models_update
+			// remains the authoritative servability signal.
+			continue
 
 		default:
-			s.logger.Warn("unhandled provider message type", "provider_id", providerID, "type", msg.Type)
+			// Provider message types are untrusted strings until explicitly handled.
+			s.logger.Warn("unhandled provider message type", "provider_id", providerID)
 		}
 	}
 }
@@ -765,25 +777,14 @@ func (s *Server) emitCacheSelectionTTFT(pr *registry.PendingRequest, usage proto
 // push could still be delivered. It seeds codeAttestThrottle.challengeValidity.
 const CodeAttestResponseTimeout = 300 * time.Second
 
-// handlePrefetchModelStatus records a provider's background-prefetch progress.
-// Prefetch downloads + verifies a build on disk without loading it into GPU.
-// The authoritative "this build is now servable" signal is the separate
-// models_update message (handleModelsUpdate), which carries the weight hash;
-// the terminal "verified" status here is just observability/progress.
-func (s *Server) handlePrefetchModelStatus(providerID string, provider *registry.Provider, msg *protocol.PrefetchModelStatusMessage) {
-	s.logger.Info("provider prefetch_model_status",
-		"provider_id", providerID,
-		"model_id", msg.ModelID,
-		"status", msg.Status,
-		"bytes_done", msg.BytesDone,
-		"bytes_total", msg.BytesTotal,
-		"error", msg.Error,
-	)
-	s.ddIncr("provider.prefetch_status", []string{"model:" + msg.ModelID, "status:" + msg.Status})
-	if msg.BytesTotal > 0 {
-		s.ddGauge("provider.prefetch_progress_pct",
-			float64(msg.BytesDone)/float64(msg.BytesTotal)*100,
-			[]string{"provider_id:" + providerID, "model:" + msg.ModelID})
+func validLoadModelStatus(status string) bool {
+	switch status {
+	case protocol.LoadModelStatusStarted,
+		protocol.LoadModelStatusSucceeded,
+		protocol.LoadModelStatusFailed:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -960,7 +961,9 @@ func (s *Server) handleAttestationResponse(providerID string, provider *registry
 
 	pc := tracker.remove(msg.Nonce)
 	if pc == nil {
-		s.logger.Warn("attestation response for unknown challenge", "provider_id", providerID, "nonce", msg.Nonce[:8]+"...")
+		// The nonce is provider-controlled until it matches coordinator state.
+		// Omitting it also avoids a short-string slice panic on malformed frames.
+		s.logger.Warn("attestation response for unknown challenge", "provider_id", providerID)
 		return
 	}
 
@@ -1414,10 +1417,8 @@ func (s *Server) verifyChallengeResponse(providerID string, provider *registry.P
 
 	recovered := s.registry.RecordChallengeSuccess(providerID)
 	if recovered {
-		// The provider was transiently untrusted and is now back online. It was
-		// last told "untrusted" (handleChallengeFailure) and scheduled a 10-min
-		// diagnostic auto-report; push a fresh "online" trust_status so it clears
-		// that local state and cancels the report.
+		// The provider was transiently untrusted and is now back online. Push a
+		// fresh status so its locally persisted operator state reflects recovery.
 		provider.Mu().Lock()
 		trustLevel := provider.TrustLevel
 		provider.Mu().Unlock()
@@ -1570,7 +1571,9 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 	}
 	pr := provider.GetPending(msg.RequestID)
 	if pr == nil {
-		s.logger.Warn("chunk for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		// Until it matches pending state, request_id is provider-controlled and
+		// therefore an arbitrary log-exfiltration channel.
+		s.logger.Warn("chunk for unknown request", "provider_id", providerID)
 		// The provider is still generating into a stream we abandoned (consumer
 		// gone / already settled), burning its GPU and token-budget admission.
 		// Nudge it to stop — throttled so a chunk-per-token zombie doesn't flood
@@ -1590,10 +1593,11 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		)
 		s.registry.MarkUntrusted(providerID)
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  msg.RequestID,
-			Error:      "provider returned invalid encrypted chunk",
-			StatusCode: http.StatusBadGateway,
+			Type:        protocol.TypeInferenceError,
+			RequestID:   msg.RequestID,
+			Error:       "encrypted inference transport failed",
+			StatusCode:  http.StatusBadGateway,
+			FailureCode: protocol.FailureCodeEncryptionFailure,
 		})
 		return
 	}
@@ -1620,10 +1624,11 @@ func (s *Server) handleChunk(providerID string, provider *registry.Provider, msg
 		// 499 + "request cancelled" classifies as a consumer-side terminal in
 		// handleInferenceError: no provider reputation hit for our backpressure.
 		s.handleInferenceError(providerID, provider, &protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  msg.RequestID,
-			Error:      "request cancelled: consumer stream stalled (chunk buffer overflow)",
-			StatusCode: 499,
+			Type:        protocol.TypeInferenceError,
+			RequestID:   msg.RequestID,
+			Error:       "request cancelled",
+			StatusCode:  499,
+			FailureCode: protocol.FailureCodeCancelled,
 		})
 	}
 }
@@ -1742,7 +1747,9 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 		pr = parked
 	}
 	if pr == nil {
-		s.logger.Warn("complete for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		// Until it matches pending state, request_id is provider-controlled and
+		// therefore an arbitrary log-exfiltration channel.
+		s.logger.Warn("complete for unknown request", "provider_id", providerID)
 		return
 	}
 	// The request is terminal — drop its memoized chunk-decryption key.
@@ -2272,22 +2279,21 @@ func (s *Server) handleComplete(providerID string, provider *registry.Provider, 
 	)
 }
 
-// isModelLoadFailure reports whether a (lowercased) provider error terminal
-// indicates the provider could not LOAD the requested model — either a
-// capacity reject ("insufficient memory to load model …", provider-side
-// fastAdmissionReject/evictUntilAvailable) or a generic load failure ("model
-// load failed: …", InferenceError.modelLoadFailed). Both mean the
-// provider-model pair will fail identically on immediate retry and should
-// cool down in routing.
-func isModelLoadFailure(loweredErr string) bool {
-	return strings.Contains(loweredErr, "insufficient memory") ||
-		strings.Contains(loweredErr, "model load failed")
-}
-
 func (s *Server) handleInferenceError(providerID string, provider *registry.Provider, msg *protocol.InferenceErrorMessage) {
 	if provider == nil {
 		s.logger.Warn("error from unregistered provider", "provider_id", providerID)
 		return
+	}
+	safeMsg, invalidFailureCode, invalidTerminalCause := sanitizeProviderInferenceError(msg)
+	msg = &safeMsg
+	if invalidFailureCode {
+		s.ddIncr("inference.invalid_failure_code", nil)
+	}
+	if invalidTerminalCause {
+		// Never tag the counter with the untrusted value: the value itself may be
+		// an exfiltration payload and would also create unbounded cardinality.
+		s.ddIncr(metricUnknownTerminalCause, nil)
+		s.ddIncr(metricTypedTerminal, []string{"cause:unknown"})
 	}
 	pr := provider.RemovePending(msg.RequestID)
 	// Clear any parked settlement record (consumer disconnected mid-stream).
@@ -2297,9 +2303,14 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		pr = parked
 	}
 	if pr == nil {
-		s.logger.Warn("error for unknown request", "provider_id", providerID, "request_id", msg.RequestID)
+		// request_id is provider-controlled until it matches coordinator-owned
+		// pending state. Do not log it: an attacker could use unknown IDs as an
+		// arbitrary log exfiltration channel.
+		s.logger.Warn("error for unknown request", "provider_id", providerID)
 		return
 	}
+	// From this point onward use only the coordinator-owned identifier.
+	msg.RequestID = pr.RequestID
 	// The request is terminal — drop its memoized chunk-decryption key.
 	s.chunkKeys.forget(pr.SessionPrivKey)
 	consumerGone := parked != nil
@@ -2336,13 +2347,11 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	causeClass := s.noteTypedTerminalCause(msg.TerminalCause)
 	causeNeutralForHealth := causeClass == causeClassNeutral || causeClass == causeClassCapacity
 
-	loweredErr := strings.ToLower(msg.Error)
-	capacityRejection := msg.StatusCode == http.StatusServiceUnavailable ||
-		msg.StatusCode == http.StatusTooManyRequests ||
-		strings.Contains(loweredErr, "token_budget_exhausted") ||
-		strings.Contains(loweredErr, "insufficient memory")
-	cancelTerminal := msg.StatusCode == 499 ||
-		strings.Contains(loweredErr, "request cancelled")
+	capacityRejection := msg.FailureCode == protocol.FailureCodeCapacity ||
+		msg.FailureCode == protocol.FailureCodeModelUnavailable ||
+		causeClass == causeClassCapacity
+	cancelTerminal := msg.FailureCode == protocol.FailureCodeCancelled ||
+		msg.TerminalCause == terminalCauseCancelled
 	nonProviderFault := isNonProviderFaultErrorReason(msg.ErrorReason)
 	if !capacityRejection && !cancelTerminal && !nonProviderFault && !causeNeutralForHealth {
 		s.registry.RecordJobFailure(providerID)
@@ -2364,7 +2373,8 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// text never carries the load-failure vocabulary anyway; the explicit
 	// allowlist (legacy or fault only) makes both guarantees unconditional
 	// rather than dependent on provider error-string phrasing.
-	if (causeClass == causeClassLegacy || causeClass == causeClassFault) && isModelLoadFailure(loweredErr) {
+	if (causeClass == causeClassLegacy || causeClass == causeClassFault) &&
+		msg.FailureCode == protocol.FailureCodeModelUnavailable {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,
@@ -2381,8 +2391,6 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 		errorClass := "client_gone_after_commit_provider_error"
 		if cancelTerminal {
 			errorClass = "client_gone_after_commit_provider_cancelled"
-		} else if providerDisconnectedError(msg.Error, msg.StatusCode) {
-			errorClass = "client_gone_after_commit_provider_disconnected"
 		}
 		// After-commit client cancellation: the provider terminated (error /
 		// cancel / disconnect) after the consumer had already gone. Count it on
@@ -2425,7 +2433,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	s.logger.Error("inference error",
 		"request_id", msg.RequestID,
 		"provider_id", providerID,
-		"error", msg.Error,
+		"failure_code", msg.FailureCode,
 		"status_code", msg.StatusCode,
 		"terminal_cause", msg.TerminalCause,
 	)
@@ -3378,8 +3386,8 @@ func (s *Server) handleProviderAttestation(w http.ResponseWriter, r *http.Reques
 }
 
 // sendTrustStatus sends the provider its current trust level and status over
-// the WebSocket connection. This allows the provider to react — e.g. by
-// auto-reporting unified logs when it learns it is self_signed or untrusted.
+// the WebSocket connection and persist the coordinator's current decision for
+// local operator diagnostics. Provider log upload is retired.
 func (s *Server) sendTrustStatus(provider *registry.Provider, trustLevel registry.TrustLevel, status string, reason string) {
 	if provider == nil || provider.Conn == nil {
 		return

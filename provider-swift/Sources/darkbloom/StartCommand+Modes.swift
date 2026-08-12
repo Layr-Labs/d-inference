@@ -75,8 +75,9 @@ extension Start {
         print("  Shareable any time with: darkbloom local")
         print()
 
-        // Standalone mode still benefits from the PID lock + sleep prevention.
-        try ProcessLifecycle.acquireSingleInstanceLock()
+        // Lock acquisition and legacy plaintext-media housekeeping are one
+        // ordered operation shared with coordinator-connected foreground mode.
+        try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
@@ -178,8 +179,10 @@ extension Start {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
         }
 
-        // ----- Process-level lifecycle: PID lock + caffeinate. -----
-        try ProcessLifecycle.acquireSingleInstanceLock()
+        // ----- Process lifecycle: PID lock, legacy-media housekeeping, caffeinate. -----
+        // Housekeeping runs once here, outside any scheduled ProviderLoop
+        // reconstruction, and only after the old process has released the lock.
+        try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 

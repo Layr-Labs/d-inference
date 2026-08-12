@@ -143,7 +143,7 @@ enum DoctorRunner {
             if state.stats.usageGaps > 0 {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .warn,
                                       message: "\(state.stats.usageGaps) completed request(s) had a missing/zero usage chunk (under-counting risk).",
-                                      fix: "run `darkbloom report` and include this doctor output."))
+                                      fix: "run `darkbloom doctor` and review the local output."))
             } else {
                 out.append(Diagnostic(section: .billing, name: "usage reporting", level: .pass,
                                       message: "\(state.stats.requestsServed) requests / \(state.stats.tokensGenerated) tokens reported this session.",

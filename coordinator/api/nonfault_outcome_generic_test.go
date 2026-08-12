@@ -48,6 +48,9 @@ func TestPreCommitOutcome_NonProviderFaultReasons(t *testing.T) {
 		t.Fatalf("plain 422: class=%q admitted=%v, want provider_error/admitted",
 			ctrl.ErrorClass, ctrl.AdmittedButFailed)
 	}
+	if ctrl.ErrorCode != http.StatusInternalServerError {
+		t.Fatalf("plain legacy 422 must fail closed to canonical 500, got %d", ctrl.ErrorCode)
+	}
 }
 
 func TestProviderFailedRoutingOutcome_ToolNoncompliance(t *testing.T) {
@@ -110,25 +113,25 @@ func TestWriteGenericProviderError(t *testing.T) {
 	}{
 		{
 			name:       "jinja becomes curated 422",
-			msg:        protocol.InferenceErrorMessage{StatusCode: 500, Error: "Runtime error: upper filter requires string", ErrorReason: "jinja_template"},
+			msg:        protocol.InferenceErrorMessage{FailureCode: protocol.FailureCodeTemplateRender, Error: "Runtime error: upper filter requires string", ErrorReason: "jinja_template"},
 			wantStatus: 422, wantType: "invalid_request_error",
 			wantInBody: "model_capability", absentBody: "upper filter",
 		},
 		{
-			name:       "tool_noncompliance keeps typed message in curated envelope",
-			msg:        protocol.InferenceErrorMessage{StatusCode: 422, Error: "model did not emit the required tool call", ErrorReason: "tool_noncompliance"},
+			name:       "tool_noncompliance keeps safe typed envelope",
+			msg:        protocol.InferenceErrorMessage{FailureCode: protocol.FailureCodeInvalidRequest, Error: "model did not emit the required tool call", ErrorReason: "tool_noncompliance"},
 			wantStatus: 422, wantType: "invalid_request_error",
-			wantInBody: "required tool call",
+			wantInBody: "invalid inference request", absentBody: "required tool call",
 		},
 		{
-			name:       "plain 500 keeps raw passthrough",
+			name:       "plain 500 is fixed generation failure",
 			msg:        protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom"},
-			wantStatus: 500, wantType: "provider_error", wantInBody: "boom",
+			wantStatus: 500, wantType: "provider_error", wantInBody: "inference generation failed", absentBody: "boom",
 		},
 		{
-			name:       "zero status defaults to 502",
+			name:       "zero status fails closed to 500",
 			msg:        protocol.InferenceErrorMessage{Error: "gone"},
-			wantStatus: 502, wantType: "provider_error", wantInBody: "gone",
+			wantStatus: 500, wantType: "provider_error", wantInBody: "inference generation failed", absentBody: "gone",
 		},
 	}
 	for _, tc := range cases {
@@ -148,12 +151,12 @@ func TestWriteGenericProviderError(t *testing.T) {
 		})
 	}
 
-	// Kill switch: with the ladder's jinja terminal reject disabled, the
-	// generic path falls back to the legacy raw passthrough too.
+	// The rollout kill switch may change the envelope classification, but raw
+	// provider text is never restored.
 	t.Setenv("EIGENINFERENCE_JINJA_TERMINAL_REJECT", "false")
 	rec := httptest.NewRecorder()
-	srv.writeGenericProviderError(rec, protocol.InferenceErrorMessage{StatusCode: 500, Error: "Runtime error: upper filter requires string", ErrorReason: "jinja_template"})
-	if rec.Code != 500 || !strings.Contains(rec.Body.String(), "provider_error") {
-		t.Fatalf("kill switch off: status=%d body=%s, want raw provider_error 500", rec.Code, rec.Body.String())
+	srv.writeGenericProviderError(rec, protocol.InferenceErrorMessage{FailureCode: protocol.FailureCodeTemplateRender, Error: "Runtime error: upper filter requires string", ErrorReason: "jinja_template"})
+	if strings.Contains(rec.Body.String(), "upper filter") {
+		t.Fatalf("kill switch off restored raw provider text: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

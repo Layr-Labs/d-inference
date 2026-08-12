@@ -2,83 +2,61 @@ import { describe, it, expect } from "vitest";
 import { NextRequest } from "next/server";
 import { stubUpstreamFetch } from "./helpers/route-harness";
 
-// Tests for the browser telemetry client AND the /api/telemetry proxy.
-
+// Privacy regressions for the retired browser telemetry client and proxy.
 const upstream = stubUpstreamFetch();
 
 describe("/api/telemetry route", () => {
-  it("forwards a small batch to the coordinator", async () => {
-    upstream.fetch.mockResolvedValue(
-      new Response(JSON.stringify({ accepted: 1, rejected: 0 }), { status: 202 })
-    );
+  it("returns 410 without inspecting or forwarding the request", async () => {
     const { POST } = await import("@/app/api/telemetry/route");
-    const req = new NextRequest("http://localhost:3000/api/telemetry", {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer abc" },
-      body: JSON.stringify({
-        events: [
-          {
-            id: "00000000-0000-0000-0000-000000000001",
-            timestamp: new Date().toISOString(),
-            source: "console",
-            severity: "error",
-            kind: "http_error",
-            message: "test",
-          },
-        ],
-      }),
+    const poisonedRequest = new Proxy({} as NextRequest, {
+      get() {
+        throw new Error("disabled telemetry route inspected request data");
+      },
     });
-    const res = await POST(req);
-    expect(res.status).toBe(202);
-    expect(upstream.fetch).toHaveBeenCalledOnce();
-    const [calledUrl, init] = upstream.fetch.mock.calls[0];
-    expect(String(calledUrl)).toMatch(/\/v1\/telemetry\/events$/);
-    expect((init as RequestInit).headers).toMatchObject({
-      Authorization: "Bearer abc",
-    });
-  });
 
-  it("rejects oversized bodies", async () => {
-    const { POST } = await import("@/app/api/telemetry/route");
-    const huge = "A".repeat(70_000);
-    const req = new NextRequest("http://localhost:3000/api/telemetry", {
-      method: "POST",
-      body: huge,
-    });
-    const res = await POST(req);
-    expect(res.status).toBe(413);
+    const response = await POST(poisonedRequest);
+
+    expect(response.status).toBe(410);
     expect(upstream.fetch).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: "telemetry_ingest_disabled" },
+    });
   });
 
-  it("returns 502 when the coordinator is unreachable", async () => {
-    upstream.fetch.mockRejectedValue(new Error("network down"));
+  it("does not reflect an arbitrary request body", async () => {
     const { POST } = await import("@/app/api/telemetry/route");
-    const req = new NextRequest("http://localhost:3000/api/telemetry", {
+    const request = new NextRequest("http://localhost:3000/api/telemetry", {
       method: "POST",
-      body: JSON.stringify({ events: [] }),
+      body: "PROMPT_LEAK_SENTINEL",
     });
-    const res = await POST(req);
-    expect(res.status).toBe(502);
+
+    const response = await POST(request);
+    const body = await response.text();
+
+    expect(response.status).toBe(410);
+    expect(body).not.toContain("PROMPT_LEAK_SENTINEL");
+    expect(upstream.fetch).not.toHaveBeenCalled();
   });
 });
 
 describe("telemetry client", () => {
-  it("filters fields client-side per allowlist", async () => {
-    const tel = await import("@/lib/telemetry");
-    tel._resetForTest();
-    // Stub fetch so flush goes through.
-    upstream.fetch.mockResolvedValue(new Response("{}", { status: 202 }));
+  it("drops free-form events without buffering or sending", async () => {
+    const telemetry = await import("@/lib/telemetry");
+    telemetry._resetForTest();
 
-    tel.emit({
+    telemetry.emit({
       kind: "http_error",
       severity: "error",
-      message: "x",
+      message: "PROMPT_LEAK_SENTINEL",
       fields: {
-        component: "test",        // allowed
-        prompt: "SECRET",         // dropped
-        nested: { foo: "bar" },   // dropped
+        prompt: "SECRET",
+        url: "https://attacker.invalid/private",
       },
+      stack: "STACK_LEAK_SENTINEL",
+      requestId: "REQUEST_LEAK_SENTINEL",
     });
-    expect(tel._bufferSize()).toBe(1);
+
+    expect(telemetry._bufferSize()).toBe(0);
+    expect(upstream.fetch).not.toHaveBeenCalled();
   });
 });

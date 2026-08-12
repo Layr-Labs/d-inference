@@ -68,8 +68,8 @@ final class ChunkFrameWriter: @unchecked Sendable {
                     contentContext: context,
                     isComplete: true,
                     completion: .contentProcessed { error in
-                        if let error {
-                            logger.error("WS chunk send failed: \(error.localizedDescription)")
+                        if error != nil {
+                            logger.error("WS chunk send failed")
                             connection.cancel()
                         }
                     }

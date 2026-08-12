@@ -228,11 +228,6 @@ darkbloom status --config ~/.config/darkbloom/provider.toml > status.txt
 darkbloom logs --last 24h > logs.txt
 ```
 
-Or upload logs directly to the Darkbloom team:
-
-```bash
-darkbloom report --last 6h
-```
-
-The report includes only `dev.darkbloom.provider` unified logs and is indexed by
-your device's serial number.
+Provider-log upload is disabled because unified logs can contain request-derived
+data. Review local output before sharing any excerpt through an explicitly
+approved support channel.

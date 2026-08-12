@@ -260,9 +260,10 @@ struct QwenVLMTargetExtractionTests {
         let prepared = try EngineV2Factory.prepareProductionBackend(
             model: target,
             kvBytesCapacity: 1 << 20,
-            kvBackend: .contiguous)
+            maxConcurrentRequests: 2,
+            kvBackend: EngineV2KVBackendSelection.contiguous)
 
-        #expect(prepared.kind == .contiguous)
+        #expect(prepared.kind == EngineV2KVBackendKind.contiguous)
         #expect(prepared.layerKinds.count == 1)
         #expect(prepared.layerKinds.first?.modelLayerIndex == 1)
         #expect(prepared.modelCapabilities.supportsPrefixReuse == false)
@@ -272,7 +273,8 @@ struct QwenVLMTargetExtractionTests {
             _ = try EngineV2Factory.prepareProductionBackend(
                 model: Qwen35Model(config),
                 kvBytesCapacity: 1 << 20,
-                kvBackend: .contiguous)
+                maxConcurrentRequests: 2,
+                kvBackend: EngineV2KVBackendSelection.contiguous)
         }
     }
 
@@ -284,10 +286,11 @@ struct QwenVLMTargetExtractionTests {
         let prepared = try EngineV2Factory.prepareProductionBackend(
             model: Qwen35MoEModel(config),
             kvBytesCapacity: 1 << 20,
-            kvBackend: .paged,
+            maxConcurrentRequests: 2,
+            kvBackend: EngineV2KVBackendSelection.paged,
             pagedPreflightOverride: { _ in preflightCalled = true })
 
-        #expect(prepared.kind == .contiguous)
+        #expect(prepared.kind == EngineV2KVBackendKind.contiguous)
         #expect(prepared.fallbackReason == "model_capability")
         #expect(preflightCalled == false)
     }

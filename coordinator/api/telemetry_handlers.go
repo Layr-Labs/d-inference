@@ -18,14 +18,11 @@ package api
 //     nearest safe default — forward-compatible with newer clients.
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"sync"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/datadog"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/store"
 	"github.com/google/uuid"
@@ -292,51 +289,6 @@ func (a telemetryAuthContext) RateLimitKey() string {
 	}
 }
 
-// resolveTelemetryAuth inspects the request and returns what we know about
-// the submitter. Never blocks the request for lack of auth (anon is OK).
-func (s *Server) resolveTelemetryAuth(r *http.Request) telemetryAuthContext {
-	tok := extractBearerToken(r)
-	if tok == "" {
-		return telemetryAuthContext{Anon: true}
-	}
-
-	// Provider token? (device-linked machine credential)
-	if pt, err := s.store.GetProviderToken(tok); err == nil && pt != nil && pt.Active {
-		// machine_id derived deterministically from the token hash so the rate
-		// bucket is stable across reconnects without leaking the token itself.
-		return telemetryAuthContext{
-			Source:    protocol.TelemetrySourceProvider,
-			MachineID: machineIDFromToken(tok),
-			AccountID: pt.AccountID,
-		}
-	}
-
-	// Privy JWT?
-	if s.privyAuth != nil && len(tok) > 10 && tok[:3] == "eyJ" {
-		if privyID, err := s.privyAuth.VerifyToken(tok); err == nil {
-			if user, err := s.privyAuth.GetOrCreateUser(privyID); err == nil {
-				return telemetryAuthContext{AccountID: user.AccountID}
-			}
-		}
-	}
-
-	// API key?
-	if s.store.ValidateKey(tok) {
-		accountID := s.store.GetKeyAccount(tok)
-		if accountID == "" {
-			accountID = tok // legacy per-key account model
-		}
-		return telemetryAuthContext{AccountID: accountID}
-	}
-
-	return telemetryAuthContext{Anon: true}
-}
-
-func machineIDFromToken(tok string) string {
-	h := sha256.Sum256([]byte(tok))
-	return "tok:" + hex.EncodeToString(h[:8])
-}
-
 // sanitizeTelemetryEvent normalizes and validates an incoming event, returning
 // the persistent record and a boolean indicating whether to keep it.
 func sanitizeTelemetryEvent(
@@ -445,39 +397,4 @@ func truncField(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen]
-}
-
-// forwardTelemetryToDatadog asynchronously forwards ingested telemetry records
-// to the Datadog Logs API via the batching client. Each record becomes one log
-// entry. Fatal events also trigger a DD Event for alerting.
-func (s *Server) forwardTelemetryToDatadog(records []store.TelemetryEventRecord) {
-	if s.dd == nil {
-		return
-	}
-	for _, rec := range records {
-		var fields map[string]any
-		if len(rec.Fields) > 0 {
-			_ = json.Unmarshal(rec.Fields, &fields)
-		}
-		s.dd.ForwardLog(datadog.TelemetryLogEntry{
-			Source:    rec.Source,
-			Severity:  rec.Severity,
-			Kind:      rec.Kind,
-			Message:   rec.Message,
-			MachineID: rec.MachineID,
-			AccountID: rec.AccountID,
-			RequestID: rec.RequestID,
-			SessionID: rec.SessionID,
-			Version:   rec.Version,
-			Fields:    fields,
-			Stack:     rec.Stack,
-		})
-
-		// DogStatsD counter for ingested events.
-		s.dd.Incr("telemetry.events_ingested", []string{
-			"source:" + rec.Source,
-			"severity:" + rec.Severity,
-			"kind:" + rec.Kind,
-		})
-	}
 }

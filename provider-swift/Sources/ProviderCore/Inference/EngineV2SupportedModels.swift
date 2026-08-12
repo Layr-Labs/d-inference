@@ -13,8 +13,9 @@
 //   * `gemma4`       — Gemma 4 VLM wrapper, serving through its directly
 //                      owned text tower plus vision prefill
 //   * `gemma4_text`  — Gemma 4 text target
+//   * `qwen3_5_moe` — Qwen 3.5/3.6 MoE VLM target with recurrent state
 //
-// Everything else (gemma3, qwen*, llama, …) has no CBv2 adapter: it is
+// Everything else (gemma3, other qwen families, llama, …) is
 // dropped from the advertised set at startup and at prefetch-verify time
 // (WARN log), so the coordinator never routes to it. A load request for an
 // unsupported id (stale catalog) then fails the advertised-set guard in
@@ -40,6 +41,7 @@ public enum EngineV2SupportedModels {
     public static func isSupported(modelType: String?) -> Bool {
         guard let raw = normalized(modelType) else { return false }
         if raw == "gpt_oss" { return true }
+        if raw == "qwen3_5_moe" { return true }
         return gemma4TargetTypes.contains(raw)
     }
 

@@ -83,6 +83,9 @@ public enum EngineV2RefusalReason: String, Sendable {
     /// (`EngineV2ProductionError.unsupportedModel`) — should be unreachable
     /// behind the scan-time supported-set gate; kept as loud insurance.
     case unsupportedModel = "unsupported_model"
+    /// Qwen VLM target extraction failed (config decode, weight re-key,
+    /// strict parameter verification, or the forward-parity gate).
+    case vlmExtractionFailed = "vlm_extraction_failed"
     /// A load-time KV re-slice would push some co-resident slot below the
     /// minimum serviceable grant (`EngineV2KVSizing` floor).
     case resliceFloor = "reslice_floor"
@@ -114,6 +117,8 @@ public enum EngineV2RefusalReason: String, Sendable {
             return .noKVHeadroom
         case EngineV2ProductionError.unsupportedModel:
             return .unsupportedModel
+        case is EngineV2VLMTextExtractionError:
+            return .vlmExtractionFailed
         case EngineV2ProductionError.pagedUnavailable:
             return .pagedBackendUnavailable
         case EngineV2ProductionError.invalidPagedPoolDType:
@@ -150,6 +155,7 @@ public enum EngineV2Factory {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
+        fixedRequestBytes: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
@@ -172,6 +178,7 @@ public enum EngineV2Factory {
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
+                fixedRequestBytes: fixedRequestBytes,
                 kvBudget: kvBudget,
                 // SSD offload tier handle (v0.7.5): the bridge drives the
                 // pre-submit staging hook + release backstops + shutdown

@@ -4,7 +4,9 @@
 // in production. Gemma 4 VLM checkpoints expose their directly owned
 // `Gemma4TextModel`; no extraction, re-keying, or second module is involved.
 
+import Foundation
 import MLXLMCommon
+import MLXVLM
 
 extension EngineV2Factory {
 
@@ -13,8 +15,23 @@ extension EngineV2Factory {
     /// Gemma 4 VLM checkpoints.
     public static func benchmarkServingModel(
         model: any LanguageModel,
-        isVLM: Bool
+        isVLM: Bool,
+        modelDirectory: URL? = nil,
+        environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any LanguageModel {
-        try directServingModel(model: model, isVLM: isVLM)
+        guard isVLM else { return model }
+        if model is MLXVLM.Gemma4 {
+            return try directServingModel(model: model, isVLM: true)
+        }
+        guard model is MLXVLM.Qwen35MoE else {
+            throw EngineV2VLMTextExtractionError.unsupportedWrapper(
+                String(describing: type(of: model)))
+        }
+        guard let modelDirectory else {
+            throw EngineV2VLMTextExtractionError.missingModelDirectory
+        }
+        return try EngineV2VLMTextExtraction.extractTextModel(
+            from: model, modelDirectory: modelDirectory, environment: environment
+        ).servingModel
     }
 }

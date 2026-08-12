@@ -711,6 +711,7 @@ public actor StandaloneServer {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
+                modelDirectory: modelDirectory,
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: v2TestHooks?.assistantLoader
@@ -1177,7 +1178,7 @@ public actor StandaloneServer {
             throw StandaloneServerError.modelNotFound(modelId)
         }
         var mtpPreparation = await specDecPreparation(
-            modelId: modelId, modelInfo: modelInfo)
+            modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
 
         // Re-check residency and in-flight loads after the preparation await:
         // a concurrent request for the same cold model can pass the checks

@@ -1,4 +1,5 @@
 import Foundation
+import MLX
 import Testing
 @testable import ProviderCore
 
@@ -107,6 +108,31 @@ private func makeLocalAssistant() throws -> URL {
     return root
 }
 
+private func makeInlineQwenArtifact(includeMTP: Bool = true) throws -> URL {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("specdec-inline-qwen-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data(
+        """
+        {
+          "model_type": "qwen3_5_moe",
+          "mtplx_mtp": {"included": true, "prefix": "mtp.", "block_size": 3},
+          "mtplx_mtp_quantization": {}
+        }
+        """.utf8
+    ).write(to: root.appendingPathComponent("config.json"))
+    let shard = "model-00001-of-00001.safetensors"
+    let key = includeMTP ? "mtp.norm.weight" : "language_model.model.norm.weight"
+    try MLX.save(
+        arrays: [key: MLXArray([Float(1), Float(2), Float(3), Float(4)])],
+        url: root.appendingPathComponent(shard))
+    let index = try JSONSerialization.data(withJSONObject: [
+        "weight_map": [key: shard]
+    ])
+    try index.write(to: root.appendingPathComponent("model.safetensors.index.json"))
+    return root
+}
+
 @Suite("SpecDec production artifact funnel")
 struct SpecDecArtifactFunnelTests {
     private func funnel(catalog: FunnelCatalog, root: URL) -> SpecDecArtifactFunnel {
@@ -148,6 +174,53 @@ struct SpecDecArtifactFunnelTests {
                 localPath: "/definitely/missing", allowDownload: true, environment: [:]))
         #expect(prepared.artifact == nil)
         #expect(prepared.status.reason == .localArtifactInvalid)
+        #expect(await catalog.calls == 0)
+    }
+
+    @Test("Qwen combined checkpoint resolves its indexed MTP payload inline")
+    func qwenInlineArtifactResolvesWithoutCatalog() async throws {
+        let directory = try makeInlineQwenArtifact()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let catalog = FunnelCatalog(nil)
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                modelType: "qwen3_5_moe",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                allowDownload: true,
+                environment: [:]))
+
+        let artifact = try #require(prepared.artifact)
+        #expect(artifact.source == .inline)
+        #expect(artifact.artifactBytes == 16)
+        #expect(artifact.inlineIndexSHA256 != nil)
+        #expect(prepared.status == .candidate(artifact))
+        #expect(await catalog.calls == 0)
+    }
+
+    @Test("Qwen checkpoint without indexed MTP fails open before catalog")
+    func qwenInvalidInlineArtifactFallsBack() async throws {
+        let directory = try makeInlineQwenArtifact(includeMTP: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let catalog = FunnelCatalog(funnelModel())
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                modelType: "qwen3_5_moe",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: directory,
+                allowDownload: true,
+                environment: [:]))
+
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .inlineArtifactInvalid)
         #expect(await catalog.calls == 0)
     }
 

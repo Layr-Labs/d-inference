@@ -87,9 +87,8 @@ public enum EngineV2MediaKind: String, Sendable {
 /// field and the client-facing rejection message, and must never embed
 /// prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
-    /// The slot's loaded module is not the MLXVLM Gemma4 wrapper, the only
-    /// VLM whose directly owned text tower and media seam CBv2 supports.
-    case notGemmaVLM(String)
+    /// The slot's loaded module is not a supported Gemma 4 or Qwen wrapper.
+    case unsupportedVLM(String)
     /// The processor produced neither image nor video pixels for a media
     /// request — every media part sits on a non-user role, which
     /// `buildUserInput` drops (identically on the legacy path). This shape
@@ -125,7 +124,7 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .notGemmaVLM(let type):
+        case .unsupportedVLM(let type):
             return "engine_v2 media prefill: unsupported VLM wrapper \(type)"
         case .noProcessedMedia:
             return "engine_v2 media prefill: processor produced no image or video pixels"
@@ -192,8 +191,24 @@ public enum EngineV2VisionPrefill {
         public let promptTokens: [Int]
         public let spans: [CBv2ImageSpan]
         public let embeddings: [MLXArray]
+        public let attention: CBv2MultimodalAttention
+        public let positionState: CBv2PositionState?
         /// Coarse request shape (image / video / mixed) for telemetry.
         public let mediaKind: EngineV2MediaKind
+
+        public init(
+            promptTokens: [Int], spans: [CBv2ImageSpan], embeddings: [MLXArray],
+            attention: CBv2MultimodalAttention = .bidirectionalSpans,
+            positionState: CBv2PositionState? = nil,
+            mediaKind: EngineV2MediaKind
+        ) {
+            self.promptTokens = promptTokens
+            self.spans = spans
+            self.embeddings = embeddings
+            self.attention = attention
+            self.positionState = positionState
+            self.mediaKind = mediaKind
+        }
 
         /// The engine-facing input. The closure returns the precomputed
         /// arrays — the contract's "typically it returns precomputed
@@ -201,7 +216,10 @@ public enum EngineV2VisionPrefill {
         /// vision work.
         public func multimodalInput() -> CBv2MultimodalInput {
             let arrays = embeddings
-            return CBv2MultimodalInput(spans: spans) { arrays }
+            return CBv2MultimodalInput(
+                spans: spans, attention: attention,
+                positionState: positionState
+            ) { arrays }
         }
     }
 
@@ -219,21 +237,15 @@ public enum EngineV2VisionPrefill {
         container: ModelContainer,
         request: OpenAIChatCompletionRequest
     ) async throws -> PreparedSubmission {
-        try await container.perform { ctx in
-            guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
-                throw EngineV2VisionPrefillError.notGemmaVLM(
-                    String(describing: type(of: ctx.model)))
-            }
-            // Same decode path as the legacy stream (same caps, same
-            // MediaError surface). Inline videos are written to temp files
-            // for AVFoundation; `processor.prepare` consumes them fully
-            // (frame sampling, resize, and rasterization all happen inside
-            // it), so they are removed when this closure exits — on every
-            // path.
-            var tempFiles: [URL] = []
-            defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
-            let userInput = try await MediaIngest.buildUserInput(
-                from: request, tempFiles: &tempFiles)
+        // Same decode path as the legacy stream (same caps, same MediaError
+        // surface). Keep temporary video files alive through processor
+        // preparation; the processor fully consumes them under container
+        // isolation before this scope exits.
+        var tempFiles: [URL] = []
+        defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
+        let userInput = try await MediaIngest.buildUserInput(
+            from: request, tempFiles: &tempFiles)
+        return try await container.perform(nonSendable: userInput) { ctx, userInput in
             let lmInput = try await ctx.processor.prepare(input: userInput)
             guard lmInput.image != nil || lmInput.video != nil else {
                 throw EngineV2VisionPrefillError.noProcessedMedia
@@ -242,6 +254,49 @@ public enum EngineV2VisionPrefill {
             // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
             // token array only.
             let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+
+            if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
+                // Video remains fail-closed until a real processor/output
+                // representation canary pins temporal packing end-to-end.
+                guard lmInput.video == nil else {
+                    throw EngineV2VisionPrefillError.unsupportedVLM(
+                        "Qwen35MoE video media is not production-proven")
+                }
+                guard let image = lmInput.image else {
+                    throw EngineV2VisionPrefillError.noProcessedMedia
+                }
+                let features = try wrapper.visionFeatures(
+                    imagePixels: image.pixels, imageGrids: image.frames)
+                let imageFeatures = features.ordered.map(\.features)
+                guard !imageFeatures.isEmpty else {
+                    throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+                }
+                let carved = try carveSpans(
+                    tokens: promptTokens,
+                    imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+                    imageSpanLengths: imageFeatures.map { $0.dim(1) },
+                    videoPlaceholderId: nil,
+                    videoSpanLengths: [])
+                let position = try wrapper.positionResult(
+                    tokens: lmInput.text.tokens,
+                    imageGrids: image.frames,
+                    attentionMask: lmInput.text.mask)
+                eval(imageFeatures + [position.promptPositionIds])
+                return PreparedSubmission(
+                    promptTokens: promptTokens,
+                    spans: carved.map(\.span),
+                    embeddings: imageFeatures,
+                    attention: .causal,
+                    positionState: CBv2PositionState(
+                        promptPositionIds: position.promptPositionIds,
+                        decodeDeltas: position.decodeState.deltas),
+                    mediaKind: .image)
+            }
+
+            guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
+                throw EngineV2VisionPrefillError.unsupportedVLM(
+                    String(describing: type(of: ctx.model)))
+            }
 
             // Vision tower + multimodal projector — the SAME arrays the
             // wrapper's own `prepare` scatters: one per image, one per
@@ -313,6 +368,8 @@ public enum EngineV2VisionPrefill {
                 promptTokens: promptTokens,
                 spans: carved.map(\.span),
                 embeddings: embeddings,
+                attention: .bidirectionalSpans,
+                positionState: nil,
                 mediaKind: lmInput.video == nil
                     ? .image : (lmInput.image == nil ? .video : .mixed))
         }

@@ -279,6 +279,7 @@ extension ProviderLoop {
             prepared = try await EngineV2SlotFactory.prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
+                modelDirectory: modelDirectory,
                 container: newcomerBox.borrow(),
                 specDecPreparation: specDecPreparation,
                 assistantLoader: engineV2SlotHooks?.assistantLoader
@@ -485,10 +486,8 @@ extension ProviderLoop {
     /// factory emits the ERROR `engine_v2_refusal` event first) — the
     /// caller unloads and maps to 503. There is no legacy path.
     ///
-    /// VLM slots: every production Gemma 4 checkpoint ships a vision tower,
-    /// so the loaded MLXVLM wrapper directly exposes its owned MLXLLM text
-    /// tower to CBv2. Text, image, video, mixed, and MTP requests therefore
-    /// share one language-model identity; media prefills use
+    /// VLM slots: Gemma 4 serves its directly owned MLXLLM text tower; Qwen
+    /// serves the extracted weight-sharing target. Media prefills use
     /// `EngineV2VisionPrefill` (construction failures refuse loudly with 503;
     /// see `MultiModelBatchSchedulerEngine.streamChatCompletion`).
     ///

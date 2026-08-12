@@ -261,7 +261,10 @@ public enum MediaIngest {
                 chatMessages.append(.tool(text))
             }
         }
-        return UserInput(chat: chatMessages)
+        return UserInput(
+            chat: chatMessages,
+            additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
+                for: request, reasoningEffort: nil))
     }
 
     /// Convenience overload that discards temp-file tracking. Used by

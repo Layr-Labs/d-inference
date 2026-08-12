@@ -215,6 +215,9 @@ extension EngineV2Factory {
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gemma.cbv2LayerKinds)
         case let gptoss as GPTOSSModel:
             return PrefixCachePolicy.adoptionBoundTokens(layerKinds: gptoss.cbv2LayerKinds)
+        case let qwen as Qwen35MoEModel:
+            guard qwen.cbv2Capabilities.supportsPrefixReuse else { return 0 }
+            return PrefixCachePolicy.adoptionBoundTokens(layerKinds: qwen.cbv2LayerKinds)
         default:
             return 0
         }
@@ -231,6 +234,8 @@ extension EngineV2Factory {
             return gemma.cbv2LayerKinds
         case let gptoss as GPTOSSModel:
             return gptoss.cbv2LayerKinds
+        case let qwen as Qwen35MoEModel:
+            return qwen.cbv2LayerKinds
         default:
             return nil
         }
@@ -400,6 +405,7 @@ extension EngineV2Factory {
     /// so provider capability follows the backend that will actually serve.
     final class ProductionBackendPreparation {
         let layerKinds: [CBv2LayerKind]
+        let modelCapabilities: CBv2ModelCapabilities
         let kind: EngineV2KVBackendKind
         let fallbackReason: String?
         /// The ONE scheduler config of this build. Constructed in
@@ -423,6 +429,7 @@ extension EngineV2Factory {
             model: any LanguageModel,
             maxConcurrentRequests: Int,
             layerKinds: [CBv2LayerKind],
+            modelCapabilities: CBv2ModelCapabilities,
             backend: CBv2KVBackend,
             caches: [any CBv2AttendingLayerCache],
             kind: EngineV2KVBackendKind,
@@ -433,6 +440,7 @@ extension EngineV2Factory {
             self.modelIdentity = ObjectIdentifier(model)
             self.maxConcurrentRequests = max(1, maxConcurrentRequests)
             self.layerKinds = layerKinds
+            self.modelCapabilities = modelCapabilities
             self.backend = backend
             self.caches = caches
             self.kind = kind
@@ -545,16 +553,23 @@ extension EngineV2Factory {
         // sinks-activation probe inside it (one host readback per layer,
         // at build time — never on the step path).
         let layerKinds: [CBv2LayerKind]
+        let modelCapabilities: CBv2ModelCapabilities
         let newCaches:
             ((Int, CBv2LayerKind) -> any CBv2AttendingLayerCache)
                 throws -> [any CBv2AttendingLayerCache]
         switch model {
         case let gemma as Gemma4TextModel:
             layerKinds = gemma.cbv2LayerKinds
+            modelCapabilities = .attentionOnly
             newCaches = { make in try gemma.newCacheV2(makeLayerCache: make) }
         case let gptoss as GPTOSSModel:
             layerKinds = gptoss.cbv2LayerKinds
+            modelCapabilities = .attentionOnly
             newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
+        case let qwen as Qwen35MoEModel:
+            layerKinds = qwen.cbv2LayerKinds
+            modelCapabilities = qwen.cbv2Capabilities
+            newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
         default:
             throw EngineV2ProductionError.unsupportedModel(
                 String(describing: type(of: model)))
@@ -645,6 +660,10 @@ extension EngineV2Factory {
         case .auto: resolvedKind = .contiguous
         }
         var fallbackReason: String?
+        if resolvedKind == .paged, !modelCapabilities.supportsPagedKV {
+            resolvedKind = .contiguous
+            fallbackReason = "model_capability"
+        }
         // DEGRADE, not refuse — even on an explicit paged selection. This
         // is the branch that must never be collapsed into the failure
         // handling below: the kill switch says "DO NOT do what you asked",
@@ -774,6 +793,7 @@ extension EngineV2Factory {
                 model: model,
                 maxConcurrentRequests: maxConcurrentRequests,
                 layerKinds: layerKinds,
+                modelCapabilities: modelCapabilities,
                 backend: backend,
                 caches: caches,
                 kind: .contiguous,
@@ -853,6 +873,7 @@ extension EngineV2Factory {
                         model: model,
                         maxConcurrentRequests: maxConcurrentRequests,
                         layerKinds: layerKinds,
+                        modelCapabilities: modelCapabilities,
                         backend: paged,
                         caches: caches,
                         kind: .paged,
@@ -921,6 +942,8 @@ extension EngineV2Factory {
         let (backend, caches) = try preparedBackend.consume(
             model: model,
             maxConcurrentRequests: maxConcurrentRequests)
+        let effectivePrefixCache = preparedBackend.modelCapabilities.supportsPrefixReuse
+            ? prefixCache : nil
         // The ONE config, read back off the preparation. `consume` has
         // already refused a `maxConcurrentRequests` that differs from the
         // prepared one, so the only field this phase may decide is
@@ -930,7 +953,7 @@ extension EngineV2Factory {
         // `prefillChunkSize` above all, reaches the engine byte-identical
         // to what the paged pool's `maxPrefillChunk` was sized from.
         var schedulerConfig = preparedBackend.schedulerConfig
-        schedulerConfig.enablePrefixCache = prefixCache != nil
+        schedulerConfig.enablePrefixCache = effectivePrefixCache != nil
         return ProductionBuild(
             engine: makeEngineV2(
                 model: model,
@@ -939,7 +962,7 @@ extension EngineV2Factory {
                 backend: backend,
                 caches: caches,
                 schedulerConfig: schedulerConfig,
-                prefixCache: prefixCache,
+                prefixCache: effectivePrefixCache,
                 // New monotonic phase leases are on by default
                 // (`useLegacyRequestTimeout` defaults false). The ONLY override
                 // is the emergency rollback kill-switch below — production never

@@ -162,6 +162,9 @@ public actor EngineV2Bridge {
     /// paged slots remain fp16. Heartbeats and process-wide reservations use
     /// the same value so neither can overstate capacity.
     let kvBytesPerToken: Int
+    /// Fixed request-owned residency outside attention KV (Qwen recurrent
+    /// conv/SSM state). Zero preserves the historical attention-only charge.
+    let fixedRequestBytes: Int
     /// Process-wide KV reservation ledger shared by every EngineV2 slot.
     /// When set (production), each v2 submission must RESERVE its worst-case
     /// KV footprint here BEFORE it is handed to the engine — the reservation
@@ -309,6 +312,7 @@ public actor EngineV2Bridge {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
+        fixedRequestBytes: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
@@ -332,6 +336,7 @@ public actor EngineV2Bridge {
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.kvBytesPerToken = kvBytesPerToken
+        self.fixedRequestBytes = max(0, fixedRequestBytes)
         self.kvBudget = kvBudget
         self.ssdPrefixCache = ssdPrefixCache
         self.prefixCacheBaseStatus = prefixCacheStatus ?? PrefixCacheModelStatus(
@@ -422,6 +427,7 @@ public actor EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
+        positionState: CBv2PositionState? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) async -> AsyncStream<GenerationEvent> {
@@ -462,6 +468,7 @@ public actor EngineV2Bridge {
             multimodal: multimodal,
             tokenConstraint: tokenConstraint
         )
+        cbv2Request.positionState = positionState ?? multimodal?.positionState
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
         guard !tokenCountOverflow else {
@@ -585,20 +592,18 @@ public actor EngineV2Bridge {
         // headroom on every reserve, so the window closes the moment the
         // paged slot serves anything. Before D1 paged was stricter here and
         // paid for it by making the second model unloadable.
-        if kvBackendKind == .contiguous, let kvBudget, kvBytesPerToken > 0,
-            cbv2Request.maxTokens > 0
+        if kvBackendKind == .contiguous, let kvBudget,
+            (kvBytesPerToken > 0 || fixedRequestBytes > 0), cbv2Request.maxTokens > 0
         {
-            sharedKVReserved = await kvBudget.reserve(
-                requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
+            sharedKVReserved = await reserveSharedRequestBytes(
+                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
             if !sharedKVReserved, ssdStaged, let prefixCacheReceiptID {
                 // Optional adoption may be the only reason R no longer fits:
                 // retire S synchronously, then retry the full cold request R.
                 await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
                 ssdStaged = false
-                sharedKVReserved = await kvBudget.reserve(
-                    requestID: id,
-                    kvBytesPerToken: kvBytesPerToken,
-                    tokenCount: worstCaseTokens)
+                sharedKVReserved = await reserveSharedRequestBytes(
+                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
                 if sharedKVReserved {
                     emitPrefixCacheColdFallback(
                         requestId: id,
@@ -756,6 +761,23 @@ public actor EngineV2Bridge {
             }
         }
         return stream
+    }
+
+    private func reserveSharedRequestBytes(
+        budget: GlobalKVCacheBudget, requestID: String, tokenCount: Int
+    ) async -> Bool {
+        let tokenBytes: UInt64
+        if kvBytesPerToken > 0 {
+            let (product, overflow) = UInt64(kvBytesPerToken).multipliedReportingOverflow(
+                by: UInt64(tokenCount))
+            guard !overflow else { return false }
+            tokenBytes = product
+        } else {
+            tokenBytes = 0
+        }
+        let (total, overflow) = tokenBytes.addingReportingOverflow(UInt64(fixedRequestBytes))
+        guard !overflow, total > 0 else { return false }
+        return await budget.reserveBytes(requestID: requestID, bytes: total)
     }
 
     // MARK: - Cancel / shutdown

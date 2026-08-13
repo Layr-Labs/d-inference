@@ -1064,6 +1064,25 @@ private func stubActiveMTPSnapshot(
     return ProviderMTPStatusSnapshot(status: status, metrics: metrics)
 }
 
+/// Line-level Prometheus text-format shape check. Substring assertions alone
+/// cannot catch a malformed concat seam (an upstream sample glued to the
+/// first MTP header, `mlx_server_uptime_seconds 12# TYPE mtp_enabled gauge`),
+/// so every non-empty line must be a `# TYPE`/`# HELP` header or a complete
+/// `name{labels} value` sample.
+private func expectPrometheusShapedLines(
+    _ body: String, sourceLocation: SourceLocation = #_sourceLocation
+) {
+    let shape =
+        #/^(?:# (?:TYPE|HELP) .+|[a-zA-Z_:][a-zA-Z0-9_:]*(?:\{[^}]*\})? -?(?:[0-9][0-9eE+\-.]*|Inf|NaN))$/#
+    for line in body.split(separator: "\n", omittingEmptySubsequences: false)
+    where !line.isEmpty {
+        #expect(
+            line.wholeMatch(of: shape) != nil,
+            "malformed Prometheus line: \(line.debugDescription)",
+            sourceLocation: sourceLocation)
+    }
+}
+
 @Test func mtpPrometheusRendererEmitsPostureAndCounters() {
     let active = stubActiveMTPSnapshot(rounds: 7, proposed: 21, accepted: 14)
     let disabled = ProviderMTPStatusSnapshot(
@@ -1089,6 +1108,32 @@ private func stubActiveMTPSnapshot(
     #expect(!text.contains(#"mtp_inactive_reason{model="qwen3.6-35b-a3b-vl-mtp-mxfp8""#))
     // No slots -> no MTP lines at all: the upstream body stays byte-identical.
     #expect(MTPPrometheusRenderer.render([]).isEmpty)
+}
+
+@Test func metricsBodyJoinGuaranteesNewlineBetweenUpstreamAndMTPBlock() {
+    let snapshot = stubActiveMTPSnapshot(rounds: 1, proposed: 2, accepted: 1)
+    let mtp = MTPPrometheusRenderer.render([.init(model: "m", snapshot: snapshot)])
+    // REGRESSION: an upstream body WITHOUT a trailing newline plus a resident
+    // slot must never glue the final upstream sample and the first MTP
+    // `# TYPE` header into one line — the shape that makes Prometheus reject
+    // the entire scrape.
+    let joined = MTPPrometheusRenderer.joinedBody(
+        upstream: "mlx_server_uptime_seconds 12", mtp: mtp)
+    #expect(joined.firstMatch(of: #/[0-9]# TYPE/#) == nil)
+    #expect(joined.contains("mlx_server_uptime_seconds 12\n# TYPE mtp_enabled gauge\n"))
+    expectPrometheusShapedLines(joined)
+    // Exactly one separator: an already-terminated upstream body gains no
+    // blank line…
+    let terminated = MTPPrometheusRenderer.joinedBody(
+        upstream: "mlx_server_uptime_seconds 12\n", mtp: mtp)
+    #expect(terminated == joined)
+    #expect(!terminated.contains("\n\n"))
+    // …the body keeps the single trailing newline the text format expects…
+    #expect(joined.hasSuffix("\n") && !joined.hasSuffix("\n\n"))
+    // …an empty upstream body yields the MTP block alone…
+    #expect(MTPPrometheusRenderer.joinedBody(upstream: "", mtp: mtp) == mtp)
+    // …and no MTP block leaves the upstream body byte-identical.
+    #expect(MTPPrometheusRenderer.joinedBody(upstream: "up 1", mtp: "") == "up 1")
 }
 
 @Test func localMetricsEndpointAppendsMTPLinesToUpstreamBody() async throws {
@@ -1118,6 +1163,12 @@ private func stubActiveMTPSnapshot(
             #expect(body.contains(#"mtp_rounds_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 3"#))
             #expect(body.contains(#"mtp_tokens_proposed_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 9"#))
             #expect(body.contains(#"mtp_tokens_accepted_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 6"#))
+            // …with every line individually well-formed: the upstream/MTP
+            // seam must never fuse a sample and a `# TYPE` header (the
+            // substring checks above would not notice).
+            expectPrometheusShapedLines(body)
+            #expect(body.firstMatch(of: #/[0-9]# TYPE/#) == nil)
+            #expect(body.hasSuffix("\n") && !body.hasSuffix("\n\n"))
         }
     }
 }
@@ -1131,6 +1182,7 @@ private func stubActiveMTPSnapshot(
             let body = String(buffer: response.body)
             #expect(body.contains("mlx_server_requests_total"))
             #expect(!body.contains("mtp_"), "no resident slots -> no MTP lines")
+            expectPrometheusShapedLines(body)
         }
     }
     _ = server

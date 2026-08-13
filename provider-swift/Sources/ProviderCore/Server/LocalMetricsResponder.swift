@@ -93,6 +93,23 @@ enum MTPPrometheusRenderer {
         return out
     }
 
+    /// Joins the upstream exposition body and the rendered MTP block with
+    /// exactly one newline at the seam. The upstream body's trailing newline
+    /// is an implementation detail of `ServerMetrics.prometheusText()` (a
+    /// blank line before its closing delimiter); relying on it silently would
+    /// let a submodule bump glue the upstream's final sample and our first
+    /// `# TYPE` header into one invalid line (e.g.
+    /// `mlx_server_uptime_seconds 12# TYPE mtp_enabled gauge`), which makes
+    /// Prometheus reject the whole scrape. An empty MTP block leaves the
+    /// upstream body byte-identical; an empty upstream body yields the MTP
+    /// block alone. `render` already terminates every line, so the joined
+    /// body keeps the single trailing newline the text format expects.
+    static func joinedBody(upstream: String, mtp: String) -> String {
+        guard !mtp.isEmpty else { return upstream }
+        guard !upstream.isEmpty else { return mtp }
+        return upstream.hasSuffix("\n") ? upstream + mtp : upstream + "\n" + mtp
+    }
+
     /// Prometheus text-format label escaping: backslash, quote, newline.
     static func escapeLabel(_ value: String) -> String {
         var escaped = ""
@@ -135,8 +152,9 @@ where Inner.Context == BasicRequestContext {
         guard request.method == .get, request.uri.path == "/metrics" else {
             return try await inner.respond(to: request, context: context)
         }
-        let body = await service.prometheusMetrics()
-            + MTPPrometheusRenderer.render(await mtpSlots())
+        let body = MTPPrometheusRenderer.joinedBody(
+            upstream: await service.prometheusMetrics(),
+            mtp: MTPPrometheusRenderer.render(await mtpSlots()))
         return Response(
             status: .ok,
             headers: [.contentType: "text/plain; charset=utf-8"],

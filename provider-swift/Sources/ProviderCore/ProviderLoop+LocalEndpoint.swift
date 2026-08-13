@@ -44,6 +44,10 @@ extension ProviderLoop {
                 guard let self else { return [] }
                 return await self.advertisedLocalModelIds()
             },
+            mtpSlots: { [weak self] in
+                guard let self else { return [] }
+                return await self.mtpSlotMetricsSamplesForLocal()
+            },
             // Fires only once OUR server has actually bound the socket — the
             // authoritative bind signal. We publish discovery here (never from a
             // best-effort HTTP probe that a foreign process on the same port
@@ -173,5 +177,18 @@ extension ProviderLoop {
     /// this provider is configured to serve, not just the resident subset.
     func advertisedLocalModelIds() -> [String] {
         advertisedModels.keys.sorted()
+    }
+
+    /// Per-resident-slot MTP posture for the unified local endpoint's
+    /// `/metrics` — the same bridge snapshot the capacity tick feeds into
+    /// `DaemonSlotPostureBuilder`, keyed by model id.
+    func mtpSlotMetricsSamplesForLocal() async -> [MTPSlotMetricsSample] {
+        var samples: [MTPSlotMetricsSample] = []
+        samples.reserveCapacity(modelSlots.count)
+        for (modelId, slot) in modelSlots.sorted(by: { $0.key < $1.key }) {
+            samples.append(
+                .init(model: modelId, snapshot: await slot.engineV2.mtpStatusSnapshot()))
+        }
+        return samples
     }
 }

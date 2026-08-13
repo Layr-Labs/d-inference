@@ -1041,3 +1041,149 @@ private final class StandaloneAlivenessTrail: @unchecked Sendable {
     #expect(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit") == grantA0)
     #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == nil)
 }
+
+// MARK: - /metrics MTP posture (provider-local observability)
+//
+// The MTP acceptance counters exist in-engine (`CBv2MTPMetrics`) and in the
+// `engine_v2_slot_posture` telemetry event, but until now the local
+// `/metrics` endpoint carried none of them — a headless operator could not
+// observe acceptance, or that MTP silently never activated
+// (`inline_artifact_invalid`). These tests pin the provider-owned lines.
+
+private func stubActiveMTPSnapshot(
+    rounds: Int, proposed: Int, accepted: Int
+) -> ProviderMTPStatusSnapshot {
+    var metrics = CBv2MTPMetrics()
+    metrics.active = true
+    metrics.rounds = rounds
+    metrics.draftedTokens = proposed
+    metrics.acceptedTokens = accepted
+    let status = MTPActivationStatus(
+        configured: true, active: true, reason: nil, source: .inline,
+        revision: "inline-test", artifactBytes: 1024, assistantBytes: 512)
+    return ProviderMTPStatusSnapshot(status: status, metrics: metrics)
+}
+
+/// Line-level Prometheus text-format shape check. Substring assertions alone
+/// cannot catch a malformed concat seam (an upstream sample glued to the
+/// first MTP header, `mlx_server_uptime_seconds 12# TYPE mtp_enabled gauge`),
+/// so every non-empty line must be a `# TYPE`/`# HELP` header or a complete
+/// `name{labels} value` sample.
+private func expectPrometheusShapedLines(
+    _ body: String, sourceLocation: SourceLocation = #_sourceLocation
+) {
+    let shape =
+        #/^(?:# (?:TYPE|HELP) .+|[a-zA-Z_:][a-zA-Z0-9_:]*(?:\{[^}]*\})? -?(?:[0-9][0-9eE+\-.]*|Inf|NaN))$/#
+    for line in body.split(separator: "\n", omittingEmptySubsequences: false)
+    where !line.isEmpty {
+        #expect(
+            line.wholeMatch(of: shape) != nil,
+            "malformed Prometheus line: \(line.debugDescription)",
+            sourceLocation: sourceLocation)
+    }
+}
+
+@Test func mtpPrometheusRendererEmitsPostureAndCounters() {
+    let active = stubActiveMTPSnapshot(rounds: 7, proposed: 21, accepted: 14)
+    let disabled = ProviderMTPStatusSnapshot(
+        status: .disabled(.inlineArtifactInvalid, configured: true), metrics: nil)
+    let text = MTPPrometheusRenderer.render([
+        .init(model: "qwen3.6-35b-a3b-vl-mtp-mxfp8", snapshot: active),
+        .init(model: "gemma-4\"quoted\\name", snapshot: disabled),
+    ])
+    #expect(text.contains("# TYPE mtp_enabled gauge"))
+    #expect(text.contains(#"mtp_enabled{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 1"#))
+    #expect(text.contains(#"mtp_active{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 1"#))
+    #expect(text.contains(#"mtp_rounds_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 7"#))
+    #expect(text.contains(#"mtp_tokens_proposed_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 21"#))
+    #expect(text.contains(#"mtp_tokens_accepted_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 14"#))
+    // A silently-disabled drafter is visible with its concrete reason —
+    // the operational hole this endpoint change exists to close…
+    #expect(text.contains(#"reason="inline_artifact_invalid"} 1"#))
+    #expect(text.contains(#"mtp_active{model="gemma-4\"quoted\\name"} 0"#))
+    // …its label values are Prometheus-escaped…
+    #expect(text.contains(#"model="gemma-4\"quoted\\name""#))
+    // …and the healthy slot carries no inactive-reason line (omitted when
+    // productively running, matching the telemetry contract).
+    #expect(!text.contains(#"mtp_inactive_reason{model="qwen3.6-35b-a3b-vl-mtp-mxfp8""#))
+    // No slots -> no MTP lines at all: the upstream body stays byte-identical.
+    #expect(MTPPrometheusRenderer.render([]).isEmpty)
+}
+
+@Test func metricsBodyJoinGuaranteesNewlineBetweenUpstreamAndMTPBlock() {
+    let snapshot = stubActiveMTPSnapshot(rounds: 1, proposed: 2, accepted: 1)
+    let mtp = MTPPrometheusRenderer.render([.init(model: "m", snapshot: snapshot)])
+    // REGRESSION: an upstream body WITHOUT a trailing newline plus a resident
+    // slot must never glue the final upstream sample and the first MTP
+    // `# TYPE` header into one line — the shape that makes Prometheus reject
+    // the entire scrape.
+    let joined = MTPPrometheusRenderer.joinedBody(
+        upstream: "mlx_server_uptime_seconds 12", mtp: mtp)
+    #expect(joined.firstMatch(of: #/[0-9]# TYPE/#) == nil)
+    #expect(joined.contains("mlx_server_uptime_seconds 12\n# TYPE mtp_enabled gauge\n"))
+    expectPrometheusShapedLines(joined)
+    // Exactly one separator: an already-terminated upstream body gains no
+    // blank line…
+    let terminated = MTPPrometheusRenderer.joinedBody(
+        upstream: "mlx_server_uptime_seconds 12\n", mtp: mtp)
+    #expect(terminated == joined)
+    #expect(!terminated.contains("\n\n"))
+    // …the body keeps the single trailing newline the text format expects…
+    #expect(joined.hasSuffix("\n") && !joined.hasSuffix("\n\n"))
+    // …an empty upstream body yields the MTP block alone…
+    #expect(MTPPrometheusRenderer.joinedBody(upstream: "", mtp: mtp) == mtp)
+    // …and no MTP block leaves the upstream body byte-identical.
+    #expect(MTPPrometheusRenderer.joinedBody(upstream: "up 1", mtp: "") == "up 1")
+}
+
+@Test func localMetricsEndpointAppendsMTPLinesToUpstreamBody() async throws {
+    let snapshot = stubActiveMTPSnapshot(rounds: 3, proposed: 9, accepted: 6)
+    let app = makeLocalInferenceApplication(
+        config: .init(host: "127.0.0.1", port: 0, authToken: nil),
+        defaultMaxTokens: 128,
+        acquire: { modelId in
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        },
+        tokenizerProvider: { _ in
+            throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+        },
+        availableModels: { [] },
+        mtpSlots: { [.init(model: "qwen3.6-35b-a3b-vl-mtp-mxfp8", snapshot: snapshot)] }
+    )
+    try await app.test(.router) { client in
+        try await client.execute(uri: "/metrics", method: .get) { response in
+            #expect(response.status == .ok)
+            #expect(response.headers[.contentType] == "text/plain; charset=utf-8")
+            let body = String(buffer: response.body)
+            // The upstream ServerMetrics body is intact…
+            #expect(body.contains("mlx_server_requests_total"))
+            #expect(body.contains("mlx_server_uptime_seconds"))
+            // …and the provider MTP lines ride behind it.
+            #expect(body.contains(#"mtp_enabled{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 1"#))
+            #expect(body.contains(#"mtp_rounds_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 3"#))
+            #expect(body.contains(#"mtp_tokens_proposed_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 9"#))
+            #expect(body.contains(#"mtp_tokens_accepted_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 6"#))
+            // …with every line individually well-formed: the upstream/MTP
+            // seam must never fuse a sample and a `# TYPE` header (the
+            // substring checks above would not notice).
+            expectPrometheusShapedLines(body)
+            #expect(body.firstMatch(of: #/[0-9]# TYPE/#) == nil)
+            #expect(body.hasSuffix("\n") && !body.hasSuffix("\n\n"))
+        }
+    }
+}
+
+@Test func standaloneServerMetricsWithoutSlotsServesUpstreamBodyOnly() async throws {
+    let server = standaloneTestServer()
+    let app = server.makeApplication()
+    try await app.test(.router) { client in
+        try await client.execute(uri: "/metrics", method: .get) { response in
+            #expect(response.status == .ok)
+            let body = String(buffer: response.body)
+            #expect(body.contains("mlx_server_requests_total"))
+            #expect(!body.contains("mtp_"), "no resident slots -> no MTP lines")
+            expectPrometheusShapedLines(body)
+        }
+    }
+    _ = server
+}

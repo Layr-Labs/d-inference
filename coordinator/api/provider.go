@@ -669,6 +669,10 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			updateMsg := msg.Payload.(*protocol.ModelsUpdateMessage)
 			s.handleModelsUpdate(providerID, provider, updateMsg)
 
+		case protocol.TypeLMStudioModelsUpdate:
+			updateMsg := msg.Payload.(*protocol.LMStudioModelsUpdateMessage)
+			s.handleLMStudioModelsUpdate(providerID, updateMsg)
+
 		case protocol.TypePrefetchModelStatus:
 			statusMsg := msg.Payload.(*protocol.PrefetchModelStatusMessage)
 			// Observability only. The terminal "verified" state means the build
@@ -812,6 +816,21 @@ func (s *Server) handleModelsUpdate(providerID string, provider *registry.Provid
 		// Requests may have queued against the concrete previous build while it
 		// was still acceptable. Recheck immediately: drain to another provider if
 		// one exists, otherwise fail fast instead of waiting for queue timeout.
+		s.registry.DrainQueuedRequestsForModel(id)
+		s.registry.RejectUnservableQueuedRequests(id)
+	}
+}
+
+func (s *Server) handleLMStudioModelsUpdate(providerID string, msg *protocol.LMStudioModelsUpdateMessage) {
+	added, removed := s.registry.ReplaceLMStudioModels(providerID, msg.Models)
+	for _, id := range added {
+		s.logger.Info("linked provider now exposes loaded LM Studio model",
+			"provider_id", providerID, "model_id", id)
+		s.registry.DrainQueuedRequestsForModel(id)
+	}
+	for _, id := range removed {
+		s.logger.Info("linked provider no longer exposes LM Studio model",
+			"provider_id", providerID, "model_id", id)
 		s.registry.DrainQueuedRequestsForModel(id)
 		s.registry.RejectUnservableQueuedRequests(id)
 	}

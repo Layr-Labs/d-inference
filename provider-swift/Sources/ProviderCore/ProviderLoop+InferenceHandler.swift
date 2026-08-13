@@ -34,7 +34,7 @@ extension ProviderLoop {
 
     /// Coordinator admission: sends the 503 reroute and returns true if the
     /// request must be dropped because we're draining.
-    private func rejectIfDrainingForUpdate(
+    internal func rejectIfDrainingForUpdate(
         requestId: String,
         send: SendHandle,
         lookupReceiptFinalizer: PrefixCacheLookupReceiptFinalizer
@@ -262,6 +262,27 @@ extension ProviderLoop {
         // deliberately conservative: when in doubt it admits and lets the
         // post-accept load path below make the final call.
         let modelId = chatRequest.model
+        if let lmStudioModel = lmStudioModels[modelId] {
+            if rejectIfDrainingForUpdate(
+                requestId: requestId,
+                send: send,
+                lookupReceiptFinalizer: lookupReceiptFinalizer)
+            {
+                return
+            }
+            let token = await cancellationRegistry.register(requestId: requestId)
+            receiptTransferredToTask = true
+            await handleLMStudioInference(
+                requestId: requestId,
+                requestBody: decryptedData,
+                senderKey: senderKey,
+                model: lmStudioModel,
+                token: token,
+                lookupReceiptFinalizer: lookupReceiptFinalizer,
+                send: send
+            )
+            return
+        }
         if await fastAdmissionReject(modelId: modelId) {
             logger.warning("[\(requestId)] Pre-accept reject for '\(modelId)': insufficient capacity to load")
             lookupReceiptFinalizer.sendTerminal(

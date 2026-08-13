@@ -731,6 +731,24 @@ import Testing
     #expect(u.models[0].weightHash == "deadbeef")
 }
 
+@Test func lmStudioModelsUpdateRoundTrips() throws {
+    let info = ModelInfo(
+        id: "lmstudio/laguna-s-2.1-nvfp4-mlx",
+        modelType: "chat",
+        quantization: "4bit",
+        sizeBytes: 71_905_944_629,
+        estimatedMemoryGb: 67
+    )
+    let message: ProviderMessage = .lmStudioModelsUpdate(
+        ProviderMessage.LMStudioModelsUpdate(models: [info])
+    )
+
+    let encoded = try ProviderProtocolCodec.encodeProviderMessage(message)
+    let object = try jsonObject(encoded)
+    #expect(object["type"] as? String == "lmstudio_models_update")
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: encoded) == message)
+}
+
 @Test func modelInfoTemplateRenderOKTriState() throws {
     // Wire contract (shared with coordinator/protocol/messages.go):
     // `template_render_ok` is tri-state — absent (old provider / check

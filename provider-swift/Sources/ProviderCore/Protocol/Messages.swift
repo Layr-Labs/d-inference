@@ -166,6 +166,7 @@ public enum ProviderMessage: Sendable, Equatable {
     case loadModelStatus(LoadModelStatus)
     case prefetchModelStatus(PrefetchModelStatus)
     case modelsUpdate(ModelsUpdate)
+    case lmStudioModelsUpdate(LMStudioModelsUpdate)
     case prefixCacheLookup(PrefixCacheLookup)
     case prefixCacheReady(PrefixCacheReady)
     case prefixCacheLookupV2(PrefixCacheLookupV2)
@@ -624,6 +625,16 @@ public enum ProviderMessage: Sendable, Equatable {
         }
     }
 
+    /// The authoritative set of LM Studio text-model instances currently
+    /// loaded on this Mac. IDs use the reserved `lmstudio/` namespace.
+    public struct LMStudioModelsUpdate: Sendable, Equatable {
+        public var models: [ModelInfo]
+
+        public init(models: [ModelInfo]) {
+            self.models = models
+        }
+    }
+
     public struct AttestationResponse: Sendable, Equatable {
         public var nonce: String
         public var signature: String
@@ -701,6 +712,7 @@ extension ProviderMessage: Codable {
         case loadModelStatus = "load_model_status"
         case prefetchModelStatus = "prefetch_model_status"
         case modelsUpdate = "models_update"
+        case lmStudioModelsUpdate = "lmstudio_models_update"
         case prefixCacheLookup = "prefix_cache_lookup"
         case prefixCacheReady = "prefix_cache_ready"
         case prefixCacheLookupV2 = "prefix_cache_lookup_v2"
@@ -936,6 +948,10 @@ extension ProviderMessage: Codable {
             try container.encodeIfPresent(
                 u.toolConstraintModels, forKey: .toolConstraintModels)
 
+        case .lmStudioModelsUpdate(let u):
+            try container.encode(TypeValue.lmStudioModelsUpdate, forKey: .type)
+            try container.encode(u.models, forKey: .models)
+
         case .prefixCacheLookup(let receipt):
             try container.encode(TypeValue.prefixCacheLookup, forKey: .type)
             try container.encode(receipt.requestId, forKey: .requestId)
@@ -1153,6 +1169,11 @@ extension ProviderMessage: Codable {
                     Int.self, forKey: .toolConstraintProtocol),
                 toolConstraintModels: try container.decodeIfPresent(
                     [String].self, forKey: .toolConstraintModels)
+            ))
+
+        case .lmStudioModelsUpdate:
+            self = .lmStudioModelsUpdate(LMStudioModelsUpdate(
+                models: try container.decode([ModelInfo].self, forKey: .models)
             ))
 
         case .prefixCacheLookup:

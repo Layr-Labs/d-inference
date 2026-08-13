@@ -207,6 +207,9 @@ public enum CoordinatorClientCodec {
                 toolConstraintProtocol: 1,
                 toolConstraintModels: toolConstraintModelIDs(models)))
 
+        case .lmStudioModelsUpdate(let models):
+            return .lmStudioModelsUpdate(ProviderMessage.LMStudioModelsUpdate(models: models))
+
         case .prefixCacheLookup(
             let requestId, let nonce, let outcome, let tier,
             let cachedTokens, let prefillTokensSaved, let stageMs

@@ -6,7 +6,7 @@ The provider WebSocket is mounted at `GET /ws/provider`. All messages are JSON w
 
 | Direction | Types |
 |---|---|
-| Provider → Coordinator | `register`, `heartbeat`, `inference_accepted`, `inference_response_chunk`, `inference_complete`, `inference_error`, `attestation_response`, `code_attestation_response`, `load_model_status`, `prefetch_model_status`, `models_update` |
+| Provider → Coordinator | `register`, `heartbeat`, `inference_accepted`, `inference_response_chunk`, `inference_complete`, `inference_error`, `attestation_response`, `code_attestation_response`, `load_model_status`, `prefetch_model_status`, `models_update`, `lmstudio_models_update` |
 | Coordinator → Provider | `inference_request`, `cancel`, `attestation_challenge`, `runtime_status`, `load_model`, `prefetch_model`, `desired_models`, `trust_status` |
 
 Unknown provider→coordinator types are rejected by [`ProviderMessage.UnmarshalJSON`](../../coordinator/protocol/messages.go).

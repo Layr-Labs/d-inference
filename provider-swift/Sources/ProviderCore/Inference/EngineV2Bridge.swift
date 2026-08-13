@@ -162,8 +162,9 @@ public actor EngineV2Bridge {
     /// paged slots remain fp16. Heartbeats and process-wide reservations use
     /// the same value so neither can overstate capacity.
     let kvBytesPerToken: Int
-    /// Fixed request-owned residency outside attention KV (Qwen recurrent
-    /// conv/SSM state). Zero preserves the historical attention-only charge.
+    /// Peak request-owned residency outside attention KV (Qwen recurrent
+    /// committed + transactional conv/SSM generations). Zero preserves the
+    /// historical attention-only charge.
     let fixedRequestBytes: Int
     /// Assistant-cache allocation geometry. The per-token rate includes target
     /// KV and assistant logical rows; these fields account for the assistant's

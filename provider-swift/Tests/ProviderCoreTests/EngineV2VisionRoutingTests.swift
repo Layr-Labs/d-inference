@@ -682,7 +682,7 @@ struct Qwen35CBv2FixedRequestAccountingTests {
             })
         let bridge = makeBridge(
             engine: engine,
-            fixedRequestBytes: 64_389_120,
+            fixedRequestBytes: 193_167_360,
             kvBudget: budget)
         let stream = await bridge.submitTokenized(
             promptTokens: [1],
@@ -691,7 +691,7 @@ struct Qwen35CBv2FixedRequestAccountingTests {
                 messages: [ChatMessage(role: "user", content: "x")],
                 max_tokens: 1),
             requestId: "qwen-fixed-accounting")
-        #expect(await budget.outstandingReservedBytes() == 64_389_120)
+        #expect(await budget.outstandingReservedBytes() == 193_167_360)
         let consumer = Task {
             for await _ in stream {}
         }

@@ -393,6 +393,7 @@ struct QwenVLMTargetExtractionTests {
             SlotSizingSnapshot.fp16KVBytesPerToken(layerKinds: config.cbv2LayerKinds)
                 == 20_480)
         #expect(try config.cbv2RecurrentStateSpec().fixedBytesPerRequest() == 64_389_120)
+        #expect(try config.cbv2RecurrentStateSpec().peakBytesPerRequest() == 193_167_360)
     }
 
     @Test("Qwen is advertised after target, vision, MTP, and cleanup canaries pass")

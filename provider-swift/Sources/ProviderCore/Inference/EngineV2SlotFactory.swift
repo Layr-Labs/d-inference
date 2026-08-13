@@ -599,7 +599,7 @@ enum EngineV2SlotFactory {
             // Keep the process-wide admission gate aligned with EngineV2's
             // request-owned recurrent-state charge. Invalid geometry must
             // refuse the load rather than advertise capacity that cannot fit.
-            fixedRequestBytes = try recurrent.cbv2RecurrentStateSpec.fixedBytesPerRequest()
+            fixedRequestBytes = try recurrent.cbv2RecurrentStateSpec.peakBytesPerRequest()
         } else {
             fixedRequestBytes = 0
         }

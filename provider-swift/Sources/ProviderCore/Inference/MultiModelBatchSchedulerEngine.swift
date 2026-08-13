@@ -396,12 +396,25 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         multimodal: visionPrepared.multimodalInput(),
                         mediaKind: visionPrepared.mediaKind
                     )
+                    // Qwen3.6/DeepSeek-style templates pre-open a <think>
+                    // block at the prompt tail (output carries only the
+                    // close). Without a synthesized open, the downstream
+                    // streaming think parser buffers the whole block —
+                    // TTFT becomes the full thinking duration. Same probe
+                    // as the text path below.
+                    let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+                        reasoningParser: request.reasoningParser,
+                        stream: request.stream,
+                        promptTokens: visionPrepared.promptTokens,
+                        decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+                    )
                     return makeEventStream(
                         upstream: upstream,
                         cancelUpstream: { await bridge.cancel(requestId: visionRequestId) },
                         toolHandler: nil,
                         prepared: prepared,
-                        releaseBox: releaseBox
+                        releaseBox: releaseBox,
+                        synthesizeThinkOpen: synthesizeThinkOpen
                     )
                 } catch is CancellationError {
                     // The CALLER went away mid-construction — that is not a
@@ -508,6 +521,19 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             throw error
         }
 
+        // Qwen3.6/DeepSeek-style templates pre-open a <think> block at the
+        // prompt tail (the model's output carries only the close). Without a
+        // synthesized open, the downstream streaming think parser sits in its
+        // `undecided` state buffering the ENTIRE block — the consumer's first
+        // delta (TTFT) is delayed by the whole thinking duration. See
+        // `ReasoningPromptProbe`.
+        let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+            reasoningParser: request.reasoningParser,
+            stream: request.stream,
+            promptTokens: promptTokens,
+            decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+        )
+
         // Resolve tool call format before submitting so a bad
         // `tool_call_parser` value does not leave an orphaned request.
         let toolHandler: BatchedToolStreamHandler?
@@ -608,7 +634,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             cancelUpstream: cancelUpstream,
             toolHandler: toolHandler,
             prepared: prepared,
-            releaseBox: releaseBox
+            releaseBox: releaseBox,
+            synthesizeThinkOpen: synthesizeThinkOpen
         )
     }
 
@@ -623,7 +650,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         cancelUpstream: @escaping @Sendable () async -> Void,
         toolHandler: BatchedToolStreamHandler?,
         prepared: ToolChoicePromptPolicy.Prepared,
-        releaseBox: OneShotRelease
+        releaseBox: OneShotRelease,
+        synthesizeThinkOpen: Bool = false
     ) -> AsyncThrowingStream<MLXServerGenerationEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -639,6 +667,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 // throw instead of being flattened into a string by `failed`.
                 var failedTerminal: MultiModelBatchSchedulerEngineError?
                 startedAt = Date()
+
+                // Synthetic <think> open (see `ReasoningPromptProbe`): the
+                // rendered prompt already opened a think block, so hand the
+                // downstream streaming parser the marker it will never see
+                // in model output. The parser consumes it as a pure state
+                // transition — no SSE frame reaches the consumer — and then
+                // streams reasoning deltas incrementally instead of
+                // buffering until `</think>`. Deliberately BYPASSES the
+                // tool handler: the marker is not model output.
+                if synthesizeThinkOpen {
+                    continuation.yield(.content(ReasoningPromptProbe.thinkOpen))
+                }
 
                 for await event in upstream {
                     if Task.isCancelled {

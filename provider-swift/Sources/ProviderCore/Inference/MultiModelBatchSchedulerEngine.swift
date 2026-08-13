@@ -343,16 +343,18 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             // coordinator's pre-content failover reroutes invisibly. The
             // legacy wrapper path below is NOT reachable for media on a
             // v2-bridged slot anymore (the pre-release silent fallback is gone).
-            // Three throws are NOT refusals: `CancellationError` (the
+            // Four throws are NOT refusals: `CancellationError` (the
             // caller went away — propagate, 499), `MediaError`
             // (deterministic input fault — keeps its 4xx mapping), and
             // `noProcessedMedia` (media on non-user roles only — a
             // deterministic 400; rerouting would fail identically
-            // everywhere).
+            // everywhere), plus `unsupportedMedia` (the loaded family rejects
+            // this shape on every equivalent provider).
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 do {
-                    let visionPrepared = try await plumbing.prepare(container, request)
+                    let visionPrepared = try await plumbing.prepare(
+                        container, request, reasoningEffort)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -429,6 +431,24 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     throw MultiModelBatchSchedulerEngineError.multimodalRejected(
                         "multimodal_rejected: media parts must be attached to user "
                             + "messages; none of this request's media was consumable")
+                } catch let visionError as EngineV2VisionPrefillError {
+                    if case .unsupportedMedia(let detail) = visionError {
+                        await mediaGate.release(requestId: mediaReqId)
+                        await releaseBox.fire()
+                        throw MultiModelBatchSchedulerEngineError.multimodalRejected(
+                            "multimodal_rejected: \(detail)")
+                    }
+                    await mediaGate.release(requestId: mediaReqId)
+                    await releaseBox.fire()
+                    let mediaKind = EngineV2VisionPrefill.mediaKind(of: request)
+                    plumbing.emitTelemetry(
+                        EngineV2VisionPrefill.refusalTelemetryEvent(
+                            modelId: modelId, mediaKind: mediaKind, error: visionError))
+                    throw MultiModelBatchSchedulerEngineError.requestRejected(
+                        "engine_v2 media prefill construction failed "
+                            + "(media=\(mediaKind.rawValue)): "
+                            + EngineV2VisionPrefill.refusalDetail(for: visionError)
+                            + " — request not started; retry on another provider")
                 } catch {
                     // REFUSAL: v2 media-prefill construction failed on this
                     // provider. ERROR telemetry (media-kind tagged) + 503 —

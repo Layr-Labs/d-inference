@@ -156,6 +156,9 @@ public enum EngineV2Factory {
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
         fixedRequestBytes: Int = 0,
+        auxiliaryBytesPerToken: Int = 0,
+        auxiliaryTokenGranularity: Int = 1,
+        auxiliaryTokenAllocationPadding: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
@@ -179,6 +182,9 @@ public enum EngineV2Factory {
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
                 fixedRequestBytes: fixedRequestBytes,
+                auxiliaryBytesPerToken: auxiliaryBytesPerToken,
+                auxiliaryTokenGranularity: auxiliaryTokenGranularity,
+                auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
                 kvBudget: kvBudget,
                 // SSD offload tier handle (v0.7.5): the bridge drives the
                 // pre-submit staging hook + release backstops + shutdown

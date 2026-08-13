@@ -584,6 +584,10 @@ enum EngineV2SlotFactory {
             targetKVBytesPerToken = sizing.fp16KVBytesPerToken
         }
         let assistantStateBytesPerToken = assistantHandle?.drafter?.requestStateBytesPerToken ?? 0
+        let assistantStateTokenGranularity =
+            assistantHandle?.drafter?.requestStateTokenGranularity ?? 1
+        let assistantStateTokenAllocationPadding =
+            assistantHandle?.drafter?.requestStateTokenAllocationPadding ?? 0
         let (processKVBytesPerToken, processRateOverflow) = targetKVBytesPerToken
             .addingReportingOverflow(assistantStateBytesPerToken)
         guard !processRateOverflow else {
@@ -609,6 +613,9 @@ enum EngineV2SlotFactory {
             maxConcurrentRequests: maxConcurrentRequests,
             kvBytesPerToken: processKVBytesPerToken,
             fixedRequestBytes: fixedRequestBytes,
+            auxiliaryBytesPerToken: assistantStateBytesPerToken,
+            auxiliaryTokenGranularity: assistantStateTokenGranularity,
+            auxiliaryTokenAllocationPadding: assistantStateTokenAllocationPadding,
             // Shared KV ledger: v2 submissions RESERVE their worst-case
             // KV here before engine admission (process-wide gate) and the
             // reservation is what the model-LOAD gate subtracts.

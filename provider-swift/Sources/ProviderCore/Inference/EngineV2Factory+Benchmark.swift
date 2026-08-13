@@ -16,7 +16,7 @@ extension EngineV2Factory {
     public static func benchmarkServingModel(
         model: any LanguageModel,
         isVLM: Bool,
-        modelDirectory: URL? = nil,
+        modelDirectory: URL?,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> any LanguageModel {
         guard isVLM else { return model }

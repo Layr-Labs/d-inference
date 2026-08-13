@@ -56,8 +56,26 @@ extension EngineV2Bridge {
         // Worst-case potential is bridge bookkeeping (the snapshot has no
         // per-request max-token view); active tokens are engine truth.
         var maxTokensPotential: Int64 = 0
+        var committedBytes = 0
+        var committedBytesOverflow = false
         for state in active.values {
-            maxTokensPotential += Int64(state.promptTokens + state.maxTokens)
+            let (tokens, tokenOverflow) = state.promptTokens.addingReportingOverflow(
+                state.maxTokens)
+            if tokenOverflow {
+                maxTokensPotential = Int64.max
+                committedBytesOverflow = true
+                continue
+            }
+            let (nextPotential, potentialOverflow) = maxTokensPotential.addingReportingOverflow(
+                Int64(tokens))
+            maxTokensPotential = potentialOverflow ? Int64.max : nextPotential
+            if let bytes = requestReservationBytes(tokenCount: tokens) {
+                let (next, overflow) = committedBytes.addingReportingOverflow(bytes)
+                committedBytes = next
+                committedBytesOverflow = committedBytesOverflow || overflow
+            } else {
+                committedBytesOverflow = true
+            }
         }
 
         // Budget fields — SEMANTICS ALIGNED WITH THE LEGACY SCHEDULER
@@ -81,24 +99,29 @@ extension EngineV2Bridge {
         //   activeTokens          ← snapshot.activeTokens (ENGINE TRUTH: the
         //                           real KV-resident token count)
         //   maxTokensPotential    ← Σ(prompt + maxTokens)  (worst case)
-        //   activeTokenBudgetUsed ← Σ(prompt + maxTokens)  (the committed
-        //                           reservation the admission gate must see —
-        //                           conservative for sliding-window models,
-        //                           whose engine ledger plateaus per layer)
-        //   activeTokenBudgetMax  ← min(kvBytesCapacity, live fleet clamp) /
-        //                           resolved native rate (the engine's
-        //                           admission ceiling
-        //                           in tokens, clamped to the sizing
-        //                           function's CURRENT answer when the caller
-        //                           supplies fleet context — see the doc
-        //                           comment above; 0 when the rate is
-        //                           unknown ⇒ the coordinator's budget gate
-        //                           disengages rather than trusting an
-        //                           invented budget)
+        //   activeTokenBudgetUsed ← ceil(byte-exact active commitments /
+        //                           resolved native rate), including recurrent
+        //                           and assistant allocation overhead
+        //   activeTokenBudgetMax  ← (min(kvBytesCapacity, live fleet clamp) −
+        //                           worst-case fixed/block overhead for every
+        //                           still-available concurrency slot) / rate
+        //                           (0 when the rate or arithmetic is unknown)
         //   queuedTokenBudget     ← 0 (engine-WAITING requests are already
         //                           inside the committed sum above — the
         //                           bridge does not split running/waiting)
-        let budgetUsed = maxTokensPotential
+        // Coordinator requests are expressed in ordinary tokens. Convert the
+        // provider's byte-exact commitments back through the advertised rate;
+        // rounding up preserves fixed recurrent and assistant allocation blocks.
+        let budgetUsed: Int64
+        if kvBytesPerToken > 0 {
+            let (roundedBytes, roundingOverflow) = committedBytes.addingReportingOverflow(
+                kvBytesPerToken - 1)
+            budgetUsed = committedBytesOverflow || roundingOverflow
+                ? Int64.max
+                : Int64(roundedBytes / kvBytesPerToken)
+        } else {
+            budgetUsed = maxTokensPotential
+        }
         // Physical backend truth binds the advertised capacity from below
         // the admission ledger: on the PAGED backend a re-slice GROW moves
         // only the ledger — the construction-fixed pool is what actually
@@ -117,8 +140,23 @@ extension EngineV2Bridge {
         } else {
             reportedKVBytesCapacity = boundedKVBytesCapacity
         }
-        let budgetMax: Int64 =
-            kvBytesPerToken > 0 ? Int64(reportedKVBytesCapacity / kvBytesPerToken) : 0
+        let prospectiveRequests = max(0, maxConcurrentRequests - active.count)
+        let prospectiveOverheadBytes: Int?
+        if let perRequestOverhead = maximumRequestOverheadBytes() {
+            let (bytes, overflow) = perRequestOverhead.multipliedReportingOverflow(
+                by: prospectiveRequests)
+            prospectiveOverheadBytes = overflow ? nil : bytes
+        } else {
+            prospectiveOverheadBytes = nil
+        }
+        let budgetMax: Int64
+        if kvBytesPerToken > 0, let prospectiveOverheadBytes {
+            budgetMax = Int64(
+                max(0, reportedKVBytesCapacity - prospectiveOverheadBytes)
+                    / kvBytesPerToken)
+        } else {
+            budgetMax = 0
+        }
 
         let state: String
         if recoveryReloading {

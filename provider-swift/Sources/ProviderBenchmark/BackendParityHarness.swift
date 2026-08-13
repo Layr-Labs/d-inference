@@ -128,7 +128,7 @@ public enum BackendParityHarness {
             let seed = ctx.tokenizer.encode(
                 text: ThroughputSweep.seedText, addSpecialTokens: false)
             let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM)
+                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
 
             // Both halves of the packed-prefill gate are consulted by the
             // engine loop; only the model half is publicly readable, so read

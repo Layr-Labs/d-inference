@@ -117,6 +117,7 @@ public enum ThroughputSweep {
             iterations: decodeIterations,
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
+            modelDirectory: modelDirectory,
             kvBackend: kvBackend
         )
         let decode = decodeOutcome.samples
@@ -328,6 +329,7 @@ public enum ThroughputSweep {
         iterations: Int,
         weightBytes: Int,
         isVLM: Bool,
+        modelDirectory: URL,
         kvBackend: EngineV2KVBackendSelection
     ) async -> DecodeOutcome {
         let sizes = batchSizes.filter { $0 > 0 }.sorted()
@@ -345,7 +347,7 @@ public enum ThroughputSweep {
         let warmUp = await runDecodeBatch(
             container: container, modelID: modelID, baseTokens: baseTokens,
             batchSize: 1, decodeTokens: 4, promptLen: promptLen, weightBytes: weightBytes,
-            isVLM: isVLM, kvBackend: kvBackend)
+            isVLM: isVLM, modelDirectory: modelDirectory, kvBackend: kvBackend)
         // The warm-up is the FIRST cell to hit a refused paged selection, so
         // it carries the reason even when the sized cells below fail
         // identically. Keep it: an operator should not have to infer the
@@ -357,7 +359,8 @@ public enum ThroughputSweep {
                 let (totalTokens, maxElapsed, resolved, failure, submitFailure) = await runDecodeBatch(
                     container: container, modelID: modelID, baseTokens: baseTokens,
                     batchSize: batchSize, decodeTokens: genTokens, promptLen: promptLen,
-                    weightBytes: weightBytes, isVLM: isVLM, kvBackend: kvBackend)
+                    weightBytes: weightBytes, isVLM: isVLM,
+                    modelDirectory: modelDirectory, kvBackend: kvBackend)
                 if outcome.record(resolved), let resolved {
                     log("  engine resolved kv backend: \(resolved)")
                 }
@@ -418,6 +421,7 @@ public enum ThroughputSweep {
         promptLen: Int,
         weightBytes: Int,
         isVLM: Bool,
+        modelDirectory: URL,
         kvBackend: EngineV2KVBackendSelection
     ) async -> (
         totalTokens: Int, maxElapsed: Duration, resolvedBackend: String?,
@@ -443,7 +447,7 @@ public enum ThroughputSweep {
                 // Serving-model resolution matches production: VLM checkpoints
                 // use the exact text tower owned by the loaded wrapper.
                 let servingModel = try EngineV2Factory.benchmarkServingModel(
-                    model: ctx.model, isVLM: isVLM)
+                    model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
                 // `makeProductionBuild` is the construction
                 // `makeProductionEngine` wraps, and additionally hands back the
                 // backend kind the engine actually resolved to — the fact a

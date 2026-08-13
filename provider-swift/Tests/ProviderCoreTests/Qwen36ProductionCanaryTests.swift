@@ -57,10 +57,11 @@ struct Qwen36ProductionCanaryTests {
             let visionScheduler = fixture.scheduler(
                 bundle: targetBundle,
                 vision: EngineV2VisionPlumbing(
-                    prepare: { container, request in
+                    prepare: { container, request, reasoningEffort in
                         let prepared = try await EngineV2VisionPrefill.prepare(
                             container: container,
-                            request: request)
+                            request: request,
+                            reasoningEffort: reasoningEffort)
                         visionProbe.recordPrepared(spanCount: prepared.spans.count)
                         return prepared
                     },

@@ -228,6 +228,10 @@ private func makeBridge(
     extraEOSTokens: [String] = [],
     defaultMaxTokens: Int = 4096,
     kvBytesPerToken: Int = 0,
+    fixedRequestBytes: Int = 0,
+    auxiliaryBytesPerToken: Int = 0,
+    auxiliaryTokenGranularity: Int = 1,
+    auxiliaryTokenAllocationPadding: Int = 0,
     kvBudget: GlobalKVCacheBudget? = nil,
     ssdPrefixCache: SSDPrefixCache? = nil,
     kvBackendKind: EngineV2KVBackendKind = .contiguous,
@@ -242,6 +246,10 @@ private func makeBridge(
         defaultMaxTokens: defaultMaxTokens,
         maxConcurrentRequests: 4,
         kvBytesPerToken: kvBytesPerToken,
+        fixedRequestBytes: fixedRequestBytes,
+        auxiliaryBytesPerToken: auxiliaryBytesPerToken,
+        auxiliaryTokenGranularity: auxiliaryTokenGranularity,
+        auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,
         kvBudget: kvBudget,
         ssdPrefixCache: ssdPrefixCache,
         kvBackendKind: kvBackendKind,
@@ -1147,6 +1155,31 @@ struct EngineV2CapacityTests {
         #expect(slot.activeTokens == 17)
         #expect(slot.activeTokenBudgetUsed == 0)
         #expect(slot.activeTokenBudgetMax == 0)
+    }
+
+    @Test("fixed and block-rounded request bytes are reflected in heartbeat tokens")
+    func fixedAndAuxiliaryHeartbeatAccounting() async {
+        let engine = ScriptedCBv2Engine(
+            script: .manual,
+            capacity: CBv2CapacitySnapshot(
+                activeRequests: 1, waitingRequests: 0, kvBytesInUse: 0,
+                kvBytesCapacity: 40_000, activeTokens: 1))
+        let bridge = makeBridge(
+            engine: engine,
+            kvBytesPerToken: 100,
+            fixedRequestBytes: 250,
+            auxiliaryBytesPerToken: 20,
+            auxiliaryTokenGranularity: 4,
+            auxiliaryTokenAllocationPadding: 1)
+        _ = await bridge.submitTokenized(
+            promptTokens: [1], request: makeRequest(maxTokens: 4),
+            requestId: "req-fixed-aux")
+
+        #expect(await bridge.requestReservationBytes(tokenCount: 5) == 810)
+        let slot = await bridge.backendSlotCapacity()
+        #expect(slot.maxTokensPotential == 5)
+        #expect(slot.activeTokenBudgetUsed == 9)
+        #expect(slot.activeTokenBudgetMax == 390)
     }
 
     @Test("finished requests release their committed budget from the heartbeat")

@@ -70,12 +70,17 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		}
 
 		reg, hasReg := registryByID[id]
+		var capabilities []string
+		if hasReg {
+			capabilities = reg.Capabilities
+		}
+		inputModalities, outputModalities := deriveModalities(modelType, capabilities)
 		entry := types.OpenRouterModel{
 			ID:                id,
 			HuggingFaceID:     id, // our model IDs are HuggingFace paths
 			Name:              openRouterModelName(cm, reg, hasReg, id),
-			InputModalities:   []string{"text"},
-			OutputModalities:  []string{"text"},
+			InputModalities:   inputModalities,
+			OutputModalities:  outputModalities,
 			SupportedFeatures: []string{},
 			IsReady:           true,
 		}
@@ -161,6 +166,11 @@ func (s *Server) openRouterAliasEntries(
 		}
 
 		reg, hasReg := registryByID[primary]
+		var capabilities []string
+		if hasReg {
+			capabilities = reg.Capabilities
+		}
+		inputModalities, outputModalities := deriveModalities(modelType, capabilities)
 		displayName := a.DisplayName
 		if displayName == "" {
 			displayName = openRouterModelName(cm, reg, hasReg, a.AliasID)
@@ -169,8 +179,8 @@ func (s *Server) openRouterAliasEntries(
 			ID:                a.AliasID,
 			HuggingFaceID:     primary,
 			Name:              displayName,
-			InputModalities:   []string{"text"},
-			OutputModalities:  []string{"text"},
+			InputModalities:   inputModalities,
+			OutputModalities:  outputModalities,
 			SupportedFeatures: []string{},
 			IsReady:           true,
 		}

@@ -210,5 +210,9 @@ public enum ProviderCore {
     // 0.8.3 adds Qwen3.6-35B-A3B text, image, and tool serving with request-owned
     // recurrent/mRoPE state and exact serial verification of its inline MTP.
     // Unsupported Qwen paths remain fail-closed pending dedicated canaries.
-    public static let version = "0.8.3"
+    // 0.8.4 streams Qwen3.6 reasoning deltas immediately: the engine
+    // synthesizes the template's pre-opened <think> so the streaming parser
+    // stops buffering the whole block (TTFT was 755ms + 12.5ms per
+    // reasoning token; now first-token latency).
+    public static let version = "0.8.4"
 }

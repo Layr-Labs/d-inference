@@ -116,6 +116,7 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         struct ModuleFacts: @unchecked Sendable {
             let bytes: Int
             let moduleKVRate: Int?
+            let isQwenVLMWrapper: Bool
         }
         let facts = await container.perform { ctx -> ModuleFacts in
             let bytes = ctx.model.parameters().flattened().reduce(0) { $0 + $1.1.nbytes }
@@ -133,10 +134,20 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
                 // Direct ownership makes the loaded tower engine truth with
                 // no config re-decode or second topology that can drift.
                 rate = fp16KVBytesPerToken(layerKinds: gemma.textModel.cbv2LayerKinds)
+            case let qwen as Qwen35MoEModel:
+                rate = fp16KVBytesPerToken(layerKinds: qwen.cbv2LayerKinds)
+            case is MLXVLM.Qwen35MoE:
+                return ModuleFacts(
+                    bytes: bytes,
+                    moduleKVRate: nil,
+                    isQwenVLMWrapper: true)
             default:
                 rate = nil
             }
-            return ModuleFacts(bytes: bytes, moduleKVRate: rate)
+            return ModuleFacts(
+                bytes: bytes,
+                moduleKVRate: rate,
+                isQwenVLMWrapper: false)
         }
 
         // Architecture metadata (context window + non-CBv2 fallback rate)
@@ -150,6 +161,9 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         }
 
         var kvRate = facts.moduleKVRate ?? 0
+        if kvRate <= 0, facts.isQwenVLMWrapper, let modelPath {
+            kvRate = qwenVLMTextKVRate(modelDirectory: modelPath) ?? 0
+        }
         if kvRate <= 0 {
             // Non-CBv2 module: fall back to the config-parse figure so
             // callers that only need a rough rate still get one. Such a
@@ -207,4 +221,14 @@ public struct SlotSizingSnapshot: Sendable, Equatable {
         return total
     }
 
+    static func qwenVLMTextKVRate(modelDirectory: URL) -> Int? {
+        let configURL = modelDirectory.appendingPathComponent("config.json")
+        guard let configData = try? Data(contentsOf: configURL) else { return nil }
+        guard let textConfig = try? EngineV2VLMTextExtraction.decodeQwenTextConfiguration(
+            configData: configData)
+        else { return nil }
+        // Config-only sizing must not instantiate a target module: that would
+        // allocate a second skeleton before extraction.
+        return fp16KVBytesPerToken(layerKinds: textConfig.cbv2LayerKinds)
+    }
 }

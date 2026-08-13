@@ -316,6 +316,7 @@ enum EngineV2SlotFactory {
             prepared = try await prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
+                modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: SpecDecPreparation(
                     artifact: nil, status: specDecPreparation.status),
@@ -327,6 +328,7 @@ enum EngineV2SlotFactory {
             prepared = try await prepareProductionModel(
                 modelId: modelId,
                 isVLM: isVLM,
+                modelDirectory: modelDirectory,
                 container: container,
                 specDecPreparation: specDecPreparation,
                 assistantLoader: assistantLoader,
@@ -340,11 +342,14 @@ enum EngineV2SlotFactory {
         let mtpStatus = prepared.mtpStatus
         let automaticRectangularTokens = MTPAutomaticVerificationPolicy.maxRectangularTokens(
             environment: environment)
+        let mtpVerification = providerMTPVerificationPolicy(
+            for: assistantHandle?.drafter,
+            automaticRectangularTokens: automaticRectangularTokens)
         let mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
             fixedDraftTokens: MTPAutomaticVerificationPolicy.initialDraftTokens,
-            verificationMode: .automatic,
-            maxAutomaticRectangularTokens: automaticRectangularTokens)
+            verificationMode: mtpVerification.mode,
+            maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens)
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
         // adds its generation-config action stops) — from the
         // scheduler-free policy home.
@@ -407,6 +412,14 @@ enum EngineV2SlotFactory {
         if makeEngineOverride != nil {
             cacheConstructionStatus = PrefixCacheConstructionStatus(
                 state: .disabled, reason: .unsupportedBackend)
+        } else if let preparedBackend,
+            !preparedBackend.modelCapabilities.supportsPrefixReuse
+        {
+            // Recurrent targets require more than attention KV to restore a
+            // request. Do not construct a cache the engine will later strip:
+            // the bridge must never retain or stage an incomplete snapshot.
+            cacheConstructionStatus = PrefixCacheConstructionStatus(
+                state: .disabled, reason: .unsupportedLayout)
         } else if PrefixCachePolicy.isEnabled(environment: environment) {
             if let preparedBackend,
                 !PrefixCachePolicy.adoptionIsExact(
@@ -559,16 +572,36 @@ enum EngineV2SlotFactory {
             }
         }
 
-        let processKVBytesPerToken: Int
+        let targetKVBytesPerToken: Int
         if let preparedBackend {
-            processKVBytesPerToken = slotKVBytesPerToken(
+            targetKVBytesPerToken = slotKVBytesPerToken(
                 resolvedKind: preparedBackend.kind,
                 pagedPoolDType: preparedBackend.pagedPoolDType,
                 layerKinds: preparedBackend.layerKinds,
                 nominalFP16BytesPerToken: sizing.fp16KVBytesPerToken,
                 servingModelIsGPTOSS: servingModel is GPTOSSModel)
         } else {
-            processKVBytesPerToken = sizing.fp16KVBytesPerToken
+            targetKVBytesPerToken = sizing.fp16KVBytesPerToken
+        }
+        let assistantStateBytesPerToken = assistantHandle?.drafter?.requestStateBytesPerToken ?? 0
+        let assistantStateTokenGranularity =
+            assistantHandle?.drafter?.requestStateTokenGranularity ?? 1
+        let assistantStateTokenAllocationPadding =
+            assistantHandle?.drafter?.requestStateTokenAllocationPadding ?? 0
+        let (processKVBytesPerToken, processRateOverflow) = targetKVBytesPerToken
+            .addingReportingOverflow(assistantStateBytesPerToken)
+        guard !processRateOverflow else {
+            throw EngineV2ProductionError.noKVHeadroom
+        }
+
+        let fixedRequestBytes: Int
+        if let recurrent = servingModel as? any CBv2RecurrentLanguageModelForwardable {
+            // Keep the process-wide admission gate aligned with EngineV2's
+            // request-owned recurrent-state charge. Invalid geometry must
+            // refuse the load rather than advertise capacity that cannot fit.
+            fixedRequestBytes = try recurrent.cbv2RecurrentStateSpec.peakBytesPerRequest()
+        } else {
+            fixedRequestBytes = 0
         }
 
         let bridge = try EngineV2Factory.makeBridge(
@@ -579,6 +612,10 @@ enum EngineV2SlotFactory {
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBytesPerToken: processKVBytesPerToken,
+            fixedRequestBytes: fixedRequestBytes,
+            auxiliaryBytesPerToken: assistantStateBytesPerToken,
+            auxiliaryTokenGranularity: assistantStateTokenGranularity,
+            auxiliaryTokenAllocationPadding: assistantStateTokenAllocationPadding,
             // Shared KV ledger: v2 submissions RESERVE their worst-case
             // KV here before engine admission (process-wide gate) and the
             // reservation is what the model-LOAD gate subtracts.

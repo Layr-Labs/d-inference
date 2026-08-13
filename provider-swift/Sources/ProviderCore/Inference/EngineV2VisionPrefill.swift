@@ -47,7 +47,8 @@
 // failover reroutes the request invisibly. There is NO legacy fallback for
 // media on a v2-bridged slot (the pre-release `engine_v2_vision_fallback` WARN
 // is gone with it). Deterministic input faults (`MediaError` — malformed/
-// oversized media) keep their 4xx mapping and are not refusals.
+// oversized media, or an intentionally unsupported family/media pairing) keep
+// their 4xx mapping and are not refusals.
 //
 // BACKEND NOTE: CBv2 multimodal prefill requires a KV backend whose layer
 // caches AFFIRM `CBv2MultimodalSpanCapableCache.honorsSpanMaskContexts`;
@@ -81,15 +82,15 @@ public enum EngineV2MediaKind: String, Sendable {
 
 /// Construction failures of the v2 media-prefill submission. Every case is
 /// caught by the scheduler engine and REFUSED loudly (ERROR telemetry + a
-/// retriable 503; the coordinator reroutes) — except `noProcessedMedia`,
-/// which is a deterministic request shape mapped to a 400 client fault (see
-/// its doc). Messages are operator-facing — they ride the telemetry `error`
-/// field and the client-facing rejection message, and must never embed
-/// prompt or media content.
+/// retriable 503; the coordinator reroutes) except deterministic request
+/// shapes (`noProcessedMedia` and `unsupportedMedia`), which map to 400.
+/// Messages are operator-facing and must never embed prompt or media content.
 enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
-    /// The slot's loaded module is not the MLXVLM Gemma4 wrapper, the only
-    /// VLM whose directly owned text tower and media seam CBv2 supports.
-    case notGemmaVLM(String)
+    /// The slot's loaded module is not a supported Gemma 4 or Qwen wrapper.
+    case unsupportedVLM(String)
+    /// The loaded family intentionally rejects this media shape on every
+    /// provider, so rerouting cannot make the request serveable.
+    case unsupportedMedia(String)
     /// The processor produced neither image nor video pixels for a media
     /// request — every media part sits on a non-user role, which
     /// `buildUserInput` drops (identically on the legacy path). This shape
@@ -125,8 +126,10 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .notGemmaVLM(let type):
+        case .unsupportedVLM(let type):
             return "engine_v2 media prefill: unsupported VLM wrapper \(type)"
+        case .unsupportedMedia(let detail):
+            return "engine_v2 media prefill: unsupported media \(detail)"
         case .noProcessedMedia:
             return "engine_v2 media prefill: processor produced no image or video pixels"
         case .emptyVisionFeatures(let kind):
@@ -192,8 +195,24 @@ public enum EngineV2VisionPrefill {
         public let promptTokens: [Int]
         public let spans: [CBv2ImageSpan]
         public let embeddings: [MLXArray]
+        public let attention: CBv2MultimodalAttention
+        public let positionState: CBv2PositionState?
         /// Coarse request shape (image / video / mixed) for telemetry.
         public let mediaKind: EngineV2MediaKind
+
+        public init(
+            promptTokens: [Int], spans: [CBv2ImageSpan], embeddings: [MLXArray],
+            attention: CBv2MultimodalAttention = .bidirectionalSpans,
+            positionState: CBv2PositionState? = nil,
+            mediaKind: EngineV2MediaKind
+        ) {
+            self.promptTokens = promptTokens
+            self.spans = spans
+            self.embeddings = embeddings
+            self.attention = attention
+            self.positionState = positionState
+            self.mediaKind = mediaKind
+        }
 
         /// The engine-facing input. The closure returns the precomputed
         /// arrays — the contract's "typically it returns precomputed
@@ -201,7 +220,10 @@ public enum EngineV2VisionPrefill {
         /// vision work.
         public func multimodalInput() -> CBv2MultimodalInput {
             let arrays = embeddings
-            return CBv2MultimodalInput(spans: spans) { arrays }
+            return CBv2MultimodalInput(
+                spans: spans, attention: attention,
+                positionState: positionState
+            ) { arrays }
         }
     }
 
@@ -217,23 +239,18 @@ public enum EngineV2VisionPrefill {
     /// its 4xx mapping) and `CancellationError` (the caller went away).
     static func prepare(
         container: ModelContainer,
-        request: OpenAIChatCompletionRequest
+        request: OpenAIChatCompletionRequest,
+        reasoningEffort: String? = nil
     ) async throws -> PreparedSubmission {
-        try await container.perform { ctx in
-            guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
-                throw EngineV2VisionPrefillError.notGemmaVLM(
-                    String(describing: type(of: ctx.model)))
-            }
-            // Same decode path as the legacy stream (same caps, same
-            // MediaError surface). Inline videos are written to temp files
-            // for AVFoundation; `processor.prepare` consumes them fully
-            // (frame sampling, resize, and rasterization all happen inside
-            // it), so they are removed when this closure exits — on every
-            // path.
-            var tempFiles: [URL] = []
-            defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
-            let userInput = try await MediaIngest.buildUserInput(
-                from: request, tempFiles: &tempFiles)
+        // Same decode path as the legacy stream (same caps, same MediaError
+        // surface). Keep temporary video files alive through processor
+        // preparation; the processor fully consumes them under container
+        // isolation before this scope exits.
+        var tempFiles: [URL] = []
+        defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
+        let userInput = try await MediaIngest.buildUserInput(
+            from: request, tempFiles: &tempFiles, reasoningEffort: reasoningEffort)
+        return try await container.perform(nonSendable: userInput) { ctx, userInput in
             let lmInput = try await ctx.processor.prepare(input: userInput)
             guard lmInput.image != nil || lmInput.video != nil else {
                 throw EngineV2VisionPrefillError.noProcessedMedia
@@ -242,6 +259,49 @@ public enum EngineV2VisionPrefill {
             // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
             // token array only.
             let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+
+            if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
+                // Video remains fail-closed until a real processor/output
+                // representation canary pins temporal packing end-to-end.
+                guard lmInput.video == nil else {
+                    throw EngineV2VisionPrefillError.unsupportedMedia(
+                        "Qwen35MoE video media is not production-proven")
+                }
+                guard let image = lmInput.image else {
+                    throw EngineV2VisionPrefillError.noProcessedMedia
+                }
+                let features = try wrapper.visionFeatures(
+                    imagePixels: image.pixels, imageGrids: image.frames)
+                let imageFeatures = features.ordered.map(\.features)
+                guard !imageFeatures.isEmpty else {
+                    throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+                }
+                let carved = try carveSpans(
+                    tokens: promptTokens,
+                    imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+                    imageSpanLengths: imageFeatures.map { $0.dim(1) },
+                    videoPlaceholderId: nil,
+                    videoSpanLengths: [])
+                let position = try wrapper.positionResult(
+                    tokens: lmInput.text.tokens,
+                    imageGrids: image.frames,
+                    attentionMask: lmInput.text.mask)
+                eval(imageFeatures + [position.promptPositionIds])
+                return PreparedSubmission(
+                    promptTokens: promptTokens,
+                    spans: carved.map(\.span),
+                    embeddings: imageFeatures,
+                    attention: .causal,
+                    positionState: CBv2PositionState(
+                        promptPositionIds: position.promptPositionIds,
+                        decodeDeltas: position.decodeState.deltas),
+                    mediaKind: .image)
+            }
+
+            guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
+                throw EngineV2VisionPrefillError.unsupportedVLM(
+                    String(describing: type(of: ctx.model)))
+            }
 
             // Vision tower + multimodal projector — the SAME arrays the
             // wrapper's own `prepare` scatters: one per image, one per
@@ -313,6 +373,8 @@ public enum EngineV2VisionPrefill {
                 promptTokens: promptTokens,
                 spans: carved.map(\.span),
                 embeddings: embeddings,
+                attention: .bidirectionalSpans,
+                positionState: nil,
                 mediaKind: lmInput.video == nil
                     ? .image : (lmInput.image == nil ? .video : .mixed))
         }
@@ -502,12 +564,12 @@ public enum EngineV2VisionPrefill {
 /// preparer so the full routing seam is exercisable without model weights.
 public struct EngineV2VisionPlumbing: Sendable {
     let prepare:
-        @Sendable (ModelContainer, OpenAIChatCompletionRequest) async throws
+        @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?) async throws
             -> EngineV2VisionPrefill.PreparedSubmission
     let emitTelemetry: @Sendable (TelemetryEvent) -> Void
 
     init(
-        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest)
+        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?)
             async throws -> EngineV2VisionPrefill.PreparedSubmission,
         emitTelemetry: @escaping @Sendable (TelemetryEvent) -> Void
     ) {
@@ -516,8 +578,9 @@ public struct EngineV2VisionPlumbing: Sendable {
     }
 
     static let production = EngineV2VisionPlumbing(
-        prepare: { container, request in
-            try await EngineV2VisionPrefill.prepare(container: container, request: request)
+        prepare: { container, request, reasoningEffort in
+            try await EngineV2VisionPrefill.prepare(
+                container: container, request: request, reasoningEffort: reasoningEffort)
         },
         emitTelemetry: { TelemetryClient.shared.emit($0) }
     )

@@ -31,6 +31,7 @@ public enum MTPFallbackReason: String, Sendable, Equatable {
     case assistantResliceFloor = "assistant_reslice_floor"
     case assistantPostBuildHeadroom = "assistant_post_build_headroom"
     case engineInactive = "engine_inactive"
+    case inlineArtifactInvalid = "inline_artifact_invalid"
     /// ENABLED BUT INERT — the one reason that is not a load failure. The
     /// drafter loaded, the engine reports MTP active, and yet not one round
     /// has run because every planned row was skipped as `kv_unsupported`
@@ -46,6 +47,7 @@ public enum MTPFallbackReason: String, Sendable, Equatable {
 public enum SpecDecArtifactSource: String, Sendable, Equatable {
     case local
     case catalog
+    case inline
 }
 
 /// A verified assistant directory and the facts used before model admission.
@@ -62,6 +64,10 @@ struct SpecDecArtifact: Sendable, Equatable {
     /// Full local config digest retained separately from the display revision;
     /// the revision intentionally contains only a short, non-secret prefix.
     let localConfigSHA256: String?
+    /// Digest of the combined checkpoint's safetensors index for an inline
+    /// assistant. The target artifact's ordinary integrity verification owns
+    /// the shard bytes; this pins the exact MTP tensor-to-shard selection.
+    let inlineIndexSHA256: String?
     /// Catalog artifacts retain the complete immutable trust reference used to
     /// verify them. Local operator overrides intentionally have no catalog trust.
     let catalogReference: SpecDecArtifactReference?
@@ -75,6 +81,7 @@ struct SpecDecArtifact: Sendable, Equatable {
         manifestSHA256: String?,
         localWeightSHA256: [String: String]? = nil,
         localConfigSHA256: String? = nil,
+        inlineIndexSHA256: String? = nil,
         catalogReference: SpecDecArtifactReference? = nil
     ) {
         self.directory = directory
@@ -85,6 +92,7 @@ struct SpecDecArtifact: Sendable, Equatable {
         self.manifestSHA256 = manifestSHA256
         self.localWeightSHA256 = localWeightSHA256
         self.localConfigSHA256 = localConfigSHA256
+        self.inlineIndexSHA256 = inlineIndexSHA256
         self.catalogReference = catalogReference
     }
 }

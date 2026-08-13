@@ -171,8 +171,9 @@ struct GemmaVLMVisionEngineV2LiveTests {
     ) async throws -> String {
         let recorder = VisionLiveRefusalRecorder()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { container, request in
-                try await EngineV2VisionPrefill.prepare(container: container, request: request)
+            prepare: { container, request, reasoningEffort in
+                try await EngineV2VisionPrefill.prepare(
+                    container: container, request: request, reasoningEffort: reasoningEffort)
             },
             emitTelemetry: { recorder.append($0) }
         )

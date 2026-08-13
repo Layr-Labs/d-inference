@@ -233,6 +233,7 @@ public enum MediaIngest {
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
         tempFiles: inout [URL],
+        reasoningEffort: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
@@ -261,13 +262,17 @@ public enum MediaIngest {
                 chatMessages.append(.tool(text))
             }
         }
-        return UserInput(chat: chatMessages)
+        return UserInput(
+            chat: chatMessages,
+            additionalContext: MultiModelBatchSchedulerEngine.templateAdditionalContext(
+                for: request, reasoningEffort: reasoningEffort))
     }
 
     /// Convenience overload that discards temp-file tracking. Used by
     /// tests that pass only base64/url images (no inline videos).
     static func buildUserInput(
         from request: OpenAIChatCompletionRequest,
+        reasoningEffort: String? = nil,
         maxImagePixels: Int = Self.maxImagePixels,
         maxRequestImagePixels: Int = Self.maxRequestImagePixels,
         maxVideosPerRequest: Int = Self.maxVideosPerRequest,
@@ -275,7 +280,8 @@ public enum MediaIngest {
     ) async throws -> UserInput {
         var sink: [URL] = []
         return try await buildUserInput(
-            from: request, tempFiles: &sink, maxImagePixels: maxImagePixels,
+            from: request, tempFiles: &sink, reasoningEffort: reasoningEffort,
+            maxImagePixels: maxImagePixels,
             maxRequestImagePixels: maxRequestImagePixels,
             maxVideosPerRequest: maxVideosPerRequest,
             maxRequestVideoFramePixels: maxRequestVideoFramePixels)

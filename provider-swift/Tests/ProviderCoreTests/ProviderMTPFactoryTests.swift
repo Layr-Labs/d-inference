@@ -160,7 +160,7 @@ private func mtpCatalogArtifact() throws -> SpecDecArtifact {
 }
 
 private final class MTPFactoryPrepared: CBv2MTPPreparedCapture {}
-private final class MTPFactoryDrafter: CBv2MTPDrafter, @unchecked Sendable {
+private class MTPFactoryDrafter: CBv2MTPDrafter, @unchecked Sendable {
     func prepare(rows: [CBv2MTPRowCapture]) -> CBv2MTPPreparedCapture {
         MTPFactoryPrepared()
     }
@@ -350,6 +350,30 @@ struct ProviderMTPFactoryTests {
             #expect(prepared.assistantBytes == 0)
             #expect(prepared.mtpStatus.reason == failure.reason)
         }
+    }
+
+    @Test("drafter-required verification policy disables rectangular scoring")
+    func requiredVerificationPolicy() {
+        final class SerialDrafter: CBv2MTPDrafter {
+            var requiredVerificationMode: CBv2MTPVerificationMode? { .serialTarget }
+            func prepare(rows: [CBv2MTPRowCapture]) -> CBv2MTPPreparedCapture {
+                MTPFactoryPrepared()
+            }
+            func draftStep(
+                tokens: MLXArray, hidden: MLXArray, prepared: CBv2MTPPreparedCapture
+            ) -> (tokens: MLXArray, hidden: MLXArray) {
+                (tokens, hidden)
+            }
+        }
+        let policy = providerMTPVerificationPolicy(
+            for: SerialDrafter(), automaticRectangularTokens: 8)
+        #expect(policy.mode == .serialTarget)
+        #expect(policy.automaticRectangularTokens == 0)
+
+        let automatic = providerMTPVerificationPolicy(
+            for: MTPFactoryDrafter(), automaticRectangularTokens: 8)
+        #expect(automatic.mode == .automatic)
+        #expect(automatic.automaticRectangularTokens == 8)
     }
 
     @Test("cached catalog bytes are revalidated on every load and rebuild")

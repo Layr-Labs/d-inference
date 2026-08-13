@@ -113,6 +113,7 @@ public enum SchedulerPrefillBenchmark {
             iteration: 0,
             weightBytes: facts.weightBytes,
             isVLM: isVLM,
+            modelDirectory: modelDirectory,
             kvBackend: kvBackend
         )
 
@@ -127,6 +128,7 @@ public enum SchedulerPrefillBenchmark {
                     iteration: iteration,
                     weightBytes: facts.weightBytes,
                     isVLM: isVLM,
+                    modelDirectory: modelDirectory,
                     kvBackend: kvBackend
                 )
                 if !resolved.contains(sample.resolvedKVBackend) {
@@ -160,6 +162,7 @@ public enum SchedulerPrefillBenchmark {
         iteration: Int,
         weightBytes: Int,
         isVLM: Bool,
+        modelDirectory: URL,
         kvBackend: EngineV2KVBackendSelection
     ) async throws -> SchedulerPrefillBenchmarkReport.Sample {
         // Same KV-ceiling derivation as a single-model serving slot; far
@@ -181,7 +184,7 @@ public enum SchedulerPrefillBenchmark {
         // to have been honoured.
         let parts = try await container.perform { ctx -> EngineParts in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM)
+                model: ctx.model, isVLM: isVLM, modelDirectory: modelDirectory)
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,
                 tokenizer: ctx.tokenizer,

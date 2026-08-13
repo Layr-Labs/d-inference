@@ -63,15 +63,20 @@ private final class VisionScriptedEngine: CBv2Engine, @unchecked Sendable {
     enum Script {
         case throwOnSubmit(any Error)
         case stream([CBv2Event])
+        case manual
     }
 
     private let lock = NSLock()
     private let script: Script
     private var _submitted: [CBv2Request] = []
+    private var _manualContinuation: AsyncStream<CBv2Event>.Continuation?
 
     init(script: Script) { self.script = script }
 
     var submitted: [CBv2Request] { lock.withLock { _submitted } }
+    var manualContinuation: AsyncStream<CBv2Event>.Continuation? {
+        lock.withLock { _manualContinuation }
+    }
 
     func submit(_ request: CBv2Request) throws -> AsyncStream<CBv2Event> {
         lock.withLock { _submitted.append(request) }
@@ -82,6 +87,10 @@ private final class VisionScriptedEngine: CBv2Engine, @unchecked Sendable {
             let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
             for event in events { continuation.yield(event) }
             continuation.finish()
+            return stream
+        case .manual:
+            let (stream, continuation) = AsyncStream<CBv2Event>.makeStream()
+            lock.withLock { _manualContinuation = continuation }
             return stream
         }
     }
@@ -177,19 +186,25 @@ private func makePreparedSubmission(
         promptTokens: [7, 7, 990, 990, 990, 8],
         spans: [CBv2ImageSpan(tokenOffset: 2, length: 3)],
         embeddings: [embedding],
+        attention: .bidirectionalSpans,
+        positionState: nil,
         mediaKind: mediaKind
     )
     return (submission, embedding)
 }
 
 private func makeBridge(
-    engine: VisionScriptedEngine, telemetry: VisionTelemetrySink? = nil
+    engine: VisionScriptedEngine, fixedRequestBytes: Int = 0,
+    kvBudget: GlobalKVCacheBudget? = nil, telemetry: VisionTelemetrySink? = nil
 ) -> EngineV2Bridge {
     EngineV2Bridge(
         engine: engine,
         modelId: "test/vlm-stub",
         tokenizer: TokenizerHandle(VisionStubTokenizer()),
         eosTokenIds: [2],
+        kvBytesPerToken: 0,
+        fixedRequestBytes: fixedRequestBytes,
+        kvBudget: kvBudget,
         emitTelemetry: telemetry?.callback()
     )
 }
@@ -202,7 +217,8 @@ private func makeRoutingEngine(
     container: ModelContainer?,
     bridge: EngineV2Bridge?,
     plumbing: EngineV2VisionPlumbing?,
-    visionGate: VisionMemoryGate? = nil
+    visionGate: VisionMemoryGate? = nil,
+    reasoningEffort: String? = nil
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
@@ -217,6 +233,7 @@ private func makeRoutingEngine(
             ]
         },
         defaultMaxTokens: 64,
+        reasoningEffort: reasoningEffort,
         engineV2Vision: plumbing
     )
 }
@@ -468,6 +485,24 @@ struct EngineV2VisionSpanCarvingTests {
 
 @Suite("MediaIngest.hasVideo + EngineV2VisionPrefill.mediaKind")
 struct MediaKindClassificationTests {
+    @Test("media processor receives the request's reasoning template switch")
+    func reasoningTemplateContext() async throws {
+        for enabled in [false, true] {
+            var request = imageRequest()
+            request.reasoning = OpenAIReasoningConfig(enabled: enabled)
+            let input = try await MediaIngest.buildUserInput(from: request)
+            #expect(input.additionalContext?["enable_thinking"] as? Bool == enabled)
+        }
+    }
+
+    @Test("media processor preserves out-of-band reasoning effort")
+    func reasoningEffortTemplateContext() async throws {
+        let request = imageRequest()
+        let input = try await MediaIngest.buildUserInput(
+            from: request, reasoningEffort: "high")
+        #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
+    }
+
     @Test("image-only request has no video and classifies as .image")
     func imageOnly() {
         #expect(!MediaIngest.hasVideo(imageRequest()))
@@ -570,6 +605,45 @@ struct EngineV2BridgeMultimodalTests {
         #expect(visionEvents.first?.requestId == "req-vision-1")
     }
 
+    @Test("Qwen position state rides the multimodal input into CBv2Request")
+    func qwenPositionStatePassthrough() async throws {
+        let engine = VisionScriptedEngine(
+            script: .stream([
+                .finished(
+                    reason: .stop,
+                    usage: CBv2Usage(promptTokens: 3, completionTokens: 0))
+            ]))
+        let bridge = makeBridge(engine: engine)
+        let positions = CBv2PositionState(
+            promptPositionIds: MLXArray([
+                Int32(0), 1, 2,
+                0, 4, 5,
+                0, 7, 8,
+            ]).reshaped([3, 1, 3]),
+            decodeDeltas: [-2])
+        let input = CBv2MultimodalInput(
+            spans: [CBv2ImageSpan(tokenOffset: 1, length: 1)],
+            attention: .causal,
+            positionState: positions
+        ) { [MLXArray.ones([1, 1, 4])] }
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1, 990, 2],
+            request: ChatCompletionRequest(
+                model: "test/vlm-stub",
+                messages: [ChatMessage(role: "user", content: "x")],
+                max_tokens: 1),
+            requestId: "qwen-position-passthrough",
+            multimodal: input,
+            mediaKind: .image)
+        for await _ in stream {}
+
+        let submitted = try #require(engine.submitted.first)
+        let submittedPositions = try #require(submitted.positionState)
+        #expect(submitted.multimodal?.attention == .causal)
+        #expect(submittedPositions.decodeDeltas == [-2])
+        #expect(submittedPositions.promptLength == 3)
+    }
+
     @Test("text submit keeps multimodal nil and emits no vision telemetry")
     func textSubmitUnchanged() async throws {
         let engine = VisionScriptedEngine(
@@ -591,6 +665,44 @@ struct EngineV2BridgeMultimodalTests {
             telemetry.events.allSatisfy {
                 $0.fields?["operation"]?.description != "engine_v2_vision"
             })
+    }
+}
+
+@Suite("Qwen35 CBv2 fixed request accounting")
+struct Qwen35CBv2FixedRequestAccountingTests {
+    @Test("fixed recurrent bytes reserve exactly and release at terminal")
+    func exactReservationAndRelease() async {
+        let engine = VisionScriptedEngine(script: .manual)
+        let budget = GlobalKVCacheBudget(
+            capFraction: 0.9, activationReserveBytes: 0,
+            memorySnapshot: {
+                .init(
+                    total: 64 * 1024 * 1024 * 1024,
+                    active: 0, cache: 0, systemAvailable: .max)
+            })
+        let bridge = makeBridge(
+            engine: engine,
+            fixedRequestBytes: 193_167_360,
+            kvBudget: budget)
+        let stream = await bridge.submitTokenized(
+            promptTokens: [1],
+            request: ChatCompletionRequest(
+                model: "test/vlm-stub",
+                messages: [ChatMessage(role: "user", content: "x")],
+                max_tokens: 1),
+            requestId: "qwen-fixed-accounting")
+        #expect(await budget.outstandingReservedBytes() == 193_167_360)
+        let consumer = Task {
+            for await _ in stream {}
+        }
+        engine.manualContinuation?.yield(
+            .finished(
+                reason: .stop,
+                usage: CBv2Usage(promptTokens: 1, completionTokens: 0)))
+        engine.manualContinuation?.finish()
+        _ = await consumer.value
+        #expect(await budget.outstandingReservedBytes() == 0)
+        #expect(engine.submitted.count == 1)
     }
 }
 
@@ -616,7 +728,7 @@ struct EngineV2VisionRoutingTests {
         let (prepared, _) = makePreparedSubmission()
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in
+            prepare: { _, _, _ in
                 counter.increment()
                 return prepared
             },
@@ -653,7 +765,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let (prepared, _) = makePreparedSubmission()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in prepared },
+            prepare: { _, _, _ in prepared },
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
@@ -724,7 +836,7 @@ struct EngineV2VisionRoutingTests {
             kvBudget: budget
         )
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in prepared },
+            prepare: { _, _, _ in prepared },
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(
@@ -758,7 +870,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in throw PrepFailure() },
+            prepare: { _, _, _ in throw PrepFailure() },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -809,7 +921,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in
+            prepare: { _, _, _ in
                 throw MediaIngest.MediaError.mediaTooLarge("test-cap")
             },
             emitTelemetry: telemetry.callback()
@@ -845,7 +957,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in throw EngineV2VisionPrefillError.noProcessedMedia },
+            prepare: { _, _, _ in throw EngineV2VisionPrefillError.noProcessedMedia },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -874,6 +986,67 @@ struct EngineV2VisionRoutingTests {
             })
     }
 
+    @Test("unsupported Qwen video maps to deterministic 400 without refusal telemetry")
+    func unsupportedVideoMapsTo400() async throws {
+        let engine = VisionScriptedEngine(script: .stream([]))
+        let bridge = makeBridge(engine: engine)
+        let telemetry = VisionTelemetrySink()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in
+                throw EngineV2VisionPrefillError.unsupportedMedia(
+                    "Qwen35MoE video media is not production-proven")
+            },
+            emitTelemetry: telemetry.callback())
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: bridge, plumbing: plumbing)
+
+        do {
+            _ = try await collectContent(
+                try await router.streamChatCompletion(request: imageRequest()))
+            Issue.record("expected multimodalRejected throw")
+        } catch let error as MultiModelBatchSchedulerEngineError {
+            guard case .multimodalRejected(let message) = error else {
+                Issue.record("expected .multimodalRejected, got \(error)")
+                return
+            }
+            #expect(message.contains("video media is not production-proven"))
+            #expect(ProviderLoop.mapInferenceErrorToStatus(error) == 400)
+        }
+        #expect(engine.submitted.isEmpty)
+        #expect(
+            telemetry.events.allSatisfy {
+                $0.fields?["operation"]?.description != "engine_v2_vision_refusal"
+            })
+    }
+
+    @Test("vision plumbing receives out-of-band reasoning effort")
+    func visionPlumbingReceivesReasoningEffort() async throws {
+        let engine = VisionScriptedEngine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 6, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (prepared, _) = makePreparedSubmission()
+        final class EffortBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: String?
+            func set(_ newValue: String?) { lock.withLock { value = newValue } }
+            func get() -> String? { lock.withLock { value } }
+        }
+        let effort = EffortBox()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, reasoningEffort in
+                effort.set(reasoningEffort)
+                return prepared
+            }, emitTelemetry: { _ in })
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: bridge, plumbing: plumbing,
+            reasoningEffort: "medium")
+
+        _ = try await collectContent(
+            try await router.streamChatCompletion(request: imageRequest()))
+        #expect(effort.get() == "medium")
+    }
+
     @Test("refusal on a video request tags media_kind video")
     func refusalTagsVideoKind() async throws {
         struct PrepFailure: Error {}
@@ -881,7 +1054,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in throw PrepFailure() },
+            prepare: { _, _, _ in throw PrepFailure() },
             emitTelemetry: telemetry.callback()
         )
         let router = makeRoutingEngine(
@@ -921,7 +1094,7 @@ struct EngineV2VisionRoutingTests {
         // preparer must not be consulted on the way to the backstop.
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in
+            prepare: { _, _, _ in
                 counter.increment()
                 throw VisionStubProcessorError()
             },
@@ -956,7 +1129,7 @@ struct EngineV2VisionRoutingTests {
         let (prepared, _) = makePreparedSubmission(mediaKind: .video)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in
+            prepare: { _, _, _ in
                 counter.increment()
                 return prepared
             },
@@ -996,7 +1169,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in
+            prepare: { _, _, _ in
                 counter.increment()
                 throw VisionStubProcessorError()
             },
@@ -1034,7 +1207,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let counter = PrepareCallCounter()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in
+            prepare: { _, _, _ in
                 counter.increment()
                 throw VisionStubProcessorError()
             },
@@ -1073,7 +1246,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let telemetry = VisionTelemetrySink()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in throw CancellationError() },
+            prepare: { _, _, _ in throw CancellationError() },
             emitTelemetry: telemetry.callback()
         )
         let releaseCount = PrepareCallCounter()
@@ -1127,7 +1300,7 @@ struct EngineV2VisionRoutingTests {
         let bridge = makeBridge(engine: engine)
         let (prepared, _) = makePreparedSubmission()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _ in prepared },
+            prepare: { _, _, _ in prepared },
             emitTelemetry: { _ in }
         )
         let router = makeRoutingEngine(

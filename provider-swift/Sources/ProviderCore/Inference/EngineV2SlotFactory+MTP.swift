@@ -1,4 +1,6 @@
+import Foundation
 import MLXLMCommon
+import MLXVLM
 
 /// Model handle + EOS config snapshot pulled out of `ModelContainer.perform`.
 /// The module crosses container isolation once and is then engine-thread owned.
@@ -8,7 +10,7 @@ struct EngineV2ModelSnapshot: @unchecked Sendable {
     let extraEOSTokens: [String]
 }
 
-/// Direct serving-target resolution plus fail-open assistant preparation,
+/// Serving-target resolution plus fail-open assistant preparation,
 /// completed before KV re-slicing so sizing uses retained assistant bytes.
 struct EngineV2PreparedModel: @unchecked Sendable {
     let snapshot: EngineV2ModelSnapshot
@@ -44,22 +46,57 @@ extension EngineV2SlotFactory {
     private static func servingModel(
         modelId: String,
         isVLM: Bool,
+        modelDirectory: URL?,
         snapshot: EngineV2ModelSnapshot,
         emitTelemetry: (@Sendable (TelemetryEvent) -> Void)?,
         logInfo: @escaping @Sendable (String) -> Void
     ) throws -> any LanguageModel {
         guard isVLM else { return snapshot.model }
+        if snapshot.model is MLXVLM.Gemma4 {
+            do {
+                let target = try EngineV2Factory.directServingModel(
+                    model: snapshot.model, isVLM: true)
+                logInfo(
+                    "engine_v2: \(modelId) using the Gemma 4 VLM-owned text tower "
+                        + "directly (shared identity and residency)")
+                return target
+            } catch {
+                EngineV2Factory.emitRefusalTelemetry(
+                    modelId: modelId,
+                    reason: EngineV2RefusalReason.classify(error),
+                    error: error,
+                    emitTelemetry: emitTelemetry)
+                throw error
+            }
+        }
+        guard snapshot.model is MLXVLM.Qwen35MoE else {
+            let error = EngineV2VLMTextExtractionError.unsupportedWrapper(
+                String(describing: type(of: snapshot.model)))
+            EngineV2Factory.emitRefusalTelemetry(
+                modelId: modelId, reason: .vlmExtractionFailed,
+                error: error, emitTelemetry: emitTelemetry)
+            throw error
+        }
+        guard let modelDirectory else {
+            let error = EngineV2VLMTextExtractionError.missingModelDirectory
+            EngineV2Factory.emitRefusalTelemetry(
+                modelId: modelId, reason: .vlmExtractionFailed,
+                error: error, emitTelemetry: emitTelemetry)
+            throw error
+        }
         do {
-            let target = try EngineV2Factory.directServingModel(
-                model: snapshot.model, isVLM: true)
-            logInfo(
-                "engine_v2: \(modelId) using the Gemma 4 VLM-owned text tower "
-                    + "directly (shared identity and residency)")
-            return target
+            let extraction = try EngineV2VLMTextExtraction.extractTextModel(
+                from: snapshot.model, modelDirectory: modelDirectory)
+            if let parityDiff = extraction.parityMaxAbsLogitDiff {
+                logInfo(
+                    "engine_v2: \(modelId) Qwen VLM extraction passed the "
+                        + "load-time parity gate (max |Δlogit| \(parityDiff))")
+            }
+            return extraction.servingModel
         } catch {
             EngineV2Factory.emitRefusalTelemetry(
                 modelId: modelId,
-                reason: EngineV2RefusalReason.classify(error),
+                reason: .vlmExtractionFailed,
                 error: error,
                 emitTelemetry: emitTelemetry)
             throw error
@@ -69,6 +106,7 @@ extension EngineV2SlotFactory {
     static func prepareProductionModel(
         modelId: String,
         isVLM: Bool,
+        modelDirectory: URL? = nil,
         container: ModelContainer,
         specDecPreparation: SpecDecPreparation,
         assistantLoader: any ProviderMTPAssistantLoading = Gemma4ProviderMTPAssistantLoader(),
@@ -80,6 +118,7 @@ extension EngineV2SlotFactory {
         let servingModel = try servingModel(
             modelId: modelId,
             isVLM: isVLM,
+            modelDirectory: modelDirectory,
             snapshot: snapshot,
             emitTelemetry: emitTelemetry,
             logInfo: logInfo)
@@ -137,6 +176,7 @@ extension EngineV2SlotFactory {
     static func prepareRecoveryModel(
         modelId: String,
         isVLM: Bool,
+        modelDirectory: URL? = nil,
         container: ModelContainer,
         previousArtifact: SpecDecArtifact?,
         previousStatus: MTPActivationStatus,
@@ -175,6 +215,7 @@ extension EngineV2SlotFactory {
             let target = try servingModel(
                 modelId: modelId,
                 isVLM: isVLM,
+                modelDirectory: modelDirectory,
                 snapshot: snapshot,
                 emitTelemetry: emitTelemetry,
                 logInfo: logInfo)
@@ -190,6 +231,7 @@ extension EngineV2SlotFactory {
         let target = try servingModel(
             modelId: modelId,
             isVLM: isVLM,
+            modelDirectory: modelDirectory,
             snapshot: snapshot,
             emitTelemetry: emitTelemetry,
             logInfo: logInfo)

@@ -238,7 +238,7 @@ extension ProviderLoop {
             )
         }
         var mtpPreparation = await specDecPreparation(
-            modelId: modelId, modelInfo: modelInfo)
+            modelId: modelId, modelInfo: modelInfo, modelDirectory: modelPath)
 
         // Re-check residency and in-flight loads after the preparation await:
         // a concurrent request for the same cold model can pass the checks
@@ -557,9 +557,9 @@ extension ProviderLoop {
 
             // Post-BRIDGE measured-headroom re-guard (v0.7.3, kept): engine
             // construction can retain additional load-time memory beyond the
-            // weights the check above measured. VLM slots reuse the wrapper's
-            // directly owned text tower; no extraction copy is built. Re-measure
-            // so a box whose full load-time footprint leaves no serveable KV
+            // weights the check above measured. Gemma VLM slots reuse their
+            // directly owned text tower; Qwen adds only a weight-sharing target
+            // module. Re-measure so a box whose full load-time footprint leaves no serveable KV
             // unloads and 503s instead of advertising a model whose every
             // request the shared KV gate rejects — the v0.7.2 black-hole shape.
             // BACKEND-AWARE: a PAGED slot's slabs are committed lazily at

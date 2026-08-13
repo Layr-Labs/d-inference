@@ -293,7 +293,7 @@ struct PagedDivergenceProbeTests {
         }
         let box = try await container.perform { ctx -> Box in
             let serving = try EngineV2Factory.benchmarkServingModel(
-                model: ctx.model, isVLM: isVLM)
+                model: ctx.model, isVLM: isVLM, modelDirectory: directory)
             guard let kinds = EngineV2Factory.cbv2LayerKinds(model: serving) else {
                 throw LiveFixtureSkip.modelNotInCache("no cbv2 layer kinds for \(modelID)")
             }

@@ -162,6 +162,16 @@ public actor EngineV2Bridge {
     /// paged slots remain fp16. Heartbeats and process-wide reservations use
     /// the same value so neither can overstate capacity.
     let kvBytesPerToken: Int
+    /// Peak request-owned residency outside attention KV (Qwen recurrent
+    /// committed + transactional conv/SSM generations). Zero preserves the
+    /// historical attention-only charge.
+    let fixedRequestBytes: Int
+    /// Assistant-cache allocation geometry. The per-token rate includes target
+    /// KV and assistant logical rows; these fields account for the assistant's
+    /// block-rounded physical allocation and staged proposal high-water mark.
+    let auxiliaryBytesPerToken: Int
+    let auxiliaryTokenGranularity: Int
+    let auxiliaryTokenAllocationPadding: Int
     /// Process-wide KV reservation ledger shared by every EngineV2 slot.
     /// When set (production), each v2 submission must RESERVE its worst-case
     /// KV footprint here BEFORE it is handed to the engine — the reservation
@@ -309,6 +319,10 @@ public actor EngineV2Bridge {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
+        fixedRequestBytes: Int = 0,
+        auxiliaryBytesPerToken: Int = 0,
+        auxiliaryTokenGranularity: Int = 1,
+        auxiliaryTokenAllocationPadding: Int = 0,
         kvBudget: GlobalKVCacheBudget? = nil,
         ssdPrefixCache: SSDPrefixCache? = nil,
         prefixCacheStatus: PrefixCacheModelStatus? = nil,
@@ -332,6 +346,11 @@ public actor EngineV2Bridge {
         self.defaultMaxTokens = defaultMaxTokens
         self.maxConcurrentRequests = maxConcurrentRequests
         self.kvBytesPerToken = kvBytesPerToken
+        self.fixedRequestBytes = max(0, fixedRequestBytes)
+        self.auxiliaryBytesPerToken = max(0, auxiliaryBytesPerToken)
+        self.auxiliaryTokenGranularity = max(1, auxiliaryTokenGranularity)
+        self.auxiliaryTokenAllocationPadding = max(
+            0, auxiliaryTokenAllocationPadding)
         self.kvBudget = kvBudget
         self.ssdPrefixCache = ssdPrefixCache
         self.prefixCacheBaseStatus = prefixCacheStatus ?? PrefixCacheModelStatus(
@@ -422,6 +441,7 @@ public actor EngineV2Bridge {
         logprobsChannel: EngineV2LogprobsChannel? = nil,
         usageSignal: EngineV2RequestUsageSignal? = nil,
         multimodal: CBv2MultimodalInput? = nil,
+        positionState: CBv2PositionState? = nil,
         mediaKind: EngineV2MediaKind? = nil,
         tokenConstraint: (any CBv2TokenConstraint)? = nil
     ) async -> AsyncStream<GenerationEvent> {
@@ -462,6 +482,7 @@ public actor EngineV2Bridge {
             multimodal: multimodal,
             tokenConstraint: tokenConstraint
         )
+        cbv2Request.positionState = positionState ?? multimodal?.positionState
         let (worstCaseTokens, tokenCountOverflow) = promptTokens.count.addingReportingOverflow(
             cbv2Request.maxTokens)
         guard !tokenCountOverflow else {
@@ -542,7 +563,8 @@ public actor EngineV2Bridge {
         cbv2Request.prefixCacheReceiptID = prefixCacheReceiptID
 
         // SHARED-BUDGET ADMISSION GATE: reserve this request's worst-case KV
-        // footprint (prompt + maxTokens at the resolved native serving rate)
+        // footprint (target KV plus fixed recurrent and block-rounded assistant
+        // state for prompt + maxTokens)
         // in the process-wide ledger BEFORE handing the
         // request to the engine. The engine's private byte ledger
         // (`AdmissionV2`, sized to its own `kvBytesCapacity`) only knows its
@@ -585,20 +607,18 @@ public actor EngineV2Bridge {
         // headroom on every reserve, so the window closes the moment the
         // paged slot serves anything. Before D1 paged was stricter here and
         // paid for it by making the second model unloadable.
-        if kvBackendKind == .contiguous, let kvBudget, kvBytesPerToken > 0,
-            cbv2Request.maxTokens > 0
+        if kvBackendKind == .contiguous, let kvBudget,
+            (kvBytesPerToken > 0 || fixedRequestBytes > 0), cbv2Request.maxTokens > 0
         {
-            sharedKVReserved = await kvBudget.reserve(
-                requestID: id, kvBytesPerToken: kvBytesPerToken, tokenCount: worstCaseTokens)
+            sharedKVReserved = await reserveSharedRequestBytes(
+                budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
             if !sharedKVReserved, ssdStaged, let prefixCacheReceiptID {
                 // Optional adoption may be the only reason R no longer fits:
                 // retire S synchronously, then retry the full cold request R.
                 await ssdPrefixCache?.abandonStaging(requestID: prefixCacheReceiptID)
                 ssdStaged = false
-                sharedKVReserved = await kvBudget.reserve(
-                    requestID: id,
-                    kvBytesPerToken: kvBytesPerToken,
-                    tokenCount: worstCaseTokens)
+                sharedKVReserved = await reserveSharedRequestBytes(
+                    budget: kvBudget, requestID: id, tokenCount: worstCaseTokens)
                 if sharedKVReserved {
                     emitPrefixCacheColdFallback(
                         requestId: id,
@@ -756,6 +776,53 @@ public actor EngineV2Bridge {
             }
         }
         return stream
+    }
+
+    private func reserveSharedRequestBytes(
+        budget: GlobalKVCacheBudget, requestID: String, tokenCount: Int
+    ) async -> Bool {
+        guard let total = requestReservationBytes(tokenCount: tokenCount), total > 0 else {
+            return false
+        }
+        return await budget.reserveBytes(requestID: requestID, bytes: UInt64(total))
+    }
+
+    func requestReservationBytes(tokenCount: Int) -> Int? {
+        guard tokenCount >= 0 else { return nil }
+        let targetRate = max(0, kvBytesPerToken - auxiliaryBytesPerToken)
+        let (targetBytes, targetOverflow) = targetRate.multipliedReportingOverflow(
+            by: tokenCount)
+        let (paddedTokens, paddingOverflow) = tokenCount.addingReportingOverflow(
+            auxiliaryTokenAllocationPadding)
+        guard !targetOverflow, !paddingOverflow else { return nil }
+        let auxiliaryTokens: Int
+        if auxiliaryBytesPerToken == 0 || paddedTokens == 0 {
+            auxiliaryTokens = 0
+        } else {
+            let (bumped, bumpOverflow) = paddedTokens.addingReportingOverflow(
+                auxiliaryTokenGranularity - 1)
+            guard !bumpOverflow else { return nil }
+            auxiliaryTokens = (bumped / auxiliaryTokenGranularity)
+                * auxiliaryTokenGranularity
+        }
+        let (auxiliaryBytes, auxiliaryOverflow) = auxiliaryBytesPerToken
+            .multipliedReportingOverflow(by: auxiliaryTokens)
+        guard !auxiliaryOverflow else { return nil }
+        let (variableBytes, variableOverflow) = targetBytes.addingReportingOverflow(
+            auxiliaryBytes)
+        let (total, totalOverflow) = variableBytes.addingReportingOverflow(fixedRequestBytes)
+        return variableOverflow || totalOverflow ? nil : total
+    }
+
+    func maximumRequestOverheadBytes() -> Int? {
+        let (extraAuxiliaryTokens, tokenOverflow) = (auxiliaryTokenGranularity - 1)
+            .addingReportingOverflow(auxiliaryTokenAllocationPadding)
+        guard !tokenOverflow else { return nil }
+        let (auxiliaryOverhead, auxiliaryOverflow) = auxiliaryBytesPerToken
+            .multipliedReportingOverflow(by: max(0, extraAuxiliaryTokens))
+        let (total, totalOverflow) = fixedRequestBytes.addingReportingOverflow(
+            auxiliaryOverhead)
+        return auxiliaryOverflow || totalOverflow ? nil : total
     }
 
     // MARK: - Cancel / shutdown

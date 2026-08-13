@@ -55,8 +55,30 @@ actor SpecDecArtifactFunnel {
         let modelType: String?
         let enabled: Bool
         let localPath: String?
+        /// Already-verified target checkpoint directory. Qwen combined
+        /// artifacts may carry their assistant inline in the same indexed
+        /// shards; nil preserves the external Gemma assistant flow.
+        let modelDirectory: URL?
         let allowDownload: Bool
         let environment: [String: String]
+
+        init(
+            modelId: String,
+            modelType: String?,
+            enabled: Bool,
+            localPath: String?,
+            modelDirectory: URL? = nil,
+            allowDownload: Bool,
+            environment: [String: String]
+        ) {
+            self.modelId = modelId
+            self.modelType = modelType
+            self.enabled = enabled
+            self.localPath = localPath
+            self.modelDirectory = modelDirectory
+            self.allowDownload = allowDownload
+            self.environment = environment
+        }
     }
 
     private let resolver: SpecDecResolver
@@ -127,6 +149,16 @@ actor SpecDecArtifactFunnel {
         }
         guard Self.killSwitchEnabled(environment: request.environment) else {
             return .init(artifact: nil, status: .disabled(.killSwitchDisabled, configured: true))
+        }
+        if Self.isQwen35Target(modelType: request.modelType),
+            let directory = request.modelDirectory
+        {
+            guard let artifact = SpecDecStore.inspectInlineArtifact(directory: directory) else {
+                return .init(
+                    artifact: nil,
+                    status: .disabled(.inlineArtifactInvalid, configured: true))
+            }
+            return .init(artifact: artifact, status: .candidate(artifact))
         }
         guard Self.isGemma4Target(modelType: request.modelType) else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))
@@ -316,6 +348,11 @@ actor SpecDecArtifactFunnel {
 
     static func isGemma4Target(modelType: String?) -> Bool {
         EngineV2SupportedModels.isGemma4Target(modelType: modelType)
+    }
+
+    static func isQwen35Target(modelType: String?) -> Bool {
+        modelType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            == "qwen3_5_moe"
     }
 
     static func killSwitchEnabled(environment: [String: String]) -> Bool {

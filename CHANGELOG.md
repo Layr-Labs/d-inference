@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased (v0.8.2 candidate — provider)
+## Unreleased (v0.8.3 candidate - provider)
+
+### Provider (Swift)
+
+#### Features
+
+- **Qwen3.6-35B-A3B VLM with inline MTP** - Adds production-path text, image, and tool inference for the combined Qwen artifact. The runtime preserves request-owned recurrent and three-axis mRoPE state, causal vision attention, exact rollback, and source-matched target/assistant memory accounting. MTP remains depth-one, serial, and exact-target-verified; video, prefix reuse, paged KV, compiled decode, packed prefill, and rectangular MTP remain fail-closed.
+
+#### Release Safety
+
+- The model is registered as beta/ready without an alias or active-version promotion. Provider rollout and model promotion remain separate reviewed operations after the signed `v0.8.3` bundle passes a controlled fleet canary.
+
+---
+
+## v0.8.2 (2026-08-10)
 
 ### Provider (Swift)
 

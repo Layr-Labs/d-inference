@@ -187,6 +187,7 @@ extension ProviderLoop {
             var prepared = try await EngineV2SlotFactory.prepareRecoveryModel(
                 modelId: modelId,
                 isVLM: slot.isVLM,
+                modelDirectory: modelDirectory,
                 container: slot.container,
                 previousArtifact: slot.engineBundle.mtpArtifact,
                 previousStatus: slot.engineBundle.mtpStatus,

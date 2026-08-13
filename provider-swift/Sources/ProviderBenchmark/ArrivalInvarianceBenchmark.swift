@@ -208,6 +208,7 @@ public enum ArrivalInvarianceBenchmark {
         let engineParts = try await makeEngine(
             container: container,
             isVLM: isVLM,
+            modelDirectory: modelDirectory,
             weightBytes: facts.weightBytes,
             maxConcurrentRequests: patterns.map(\.delaysMs.count).max() ?? 1,
             kvBackend: kvBackend
@@ -510,6 +511,7 @@ public enum ArrivalInvarianceBenchmark {
     private static func makeEngine(
         container: ModelContainer,
         isVLM: Bool,
+        modelDirectory: URL,
         weightBytes: Int,
         maxConcurrentRequests: Int,
         kvBackend: EngineV2KVBackendSelection
@@ -529,7 +531,8 @@ public enum ArrivalInvarianceBenchmark {
         return try await container.perform { context -> EngineParts in
             let servingModel = try EngineV2Factory.benchmarkServingModel(
                 model: context.model,
-                isVLM: isVLM
+                isVLM: isVLM,
+                modelDirectory: modelDirectory
             )
             let build = try EngineV2Factory.makeProductionBuild(
                 model: servingModel,

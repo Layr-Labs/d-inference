@@ -207,5 +207,8 @@ public enum ProviderCore {
     // both default-on and durably rollbackable through provider config. VLM,
     // CBv2, media prefill, and MTP share the canonical Gemma text tower, and
     // serve/benchmark startup projects config before the first MLX access.
-    public static let version = "0.8.2"
+    // 0.8.3 adds Qwen3.6-35B-A3B text, image, and tool serving with request-owned
+    // recurrent/mRoPE state and exact serial verification of its inline MTP.
+    // Unsupported Qwen paths remain fail-closed pending dedicated canaries.
+    public static let version = "0.8.3"
 }

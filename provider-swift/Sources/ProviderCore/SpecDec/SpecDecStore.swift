@@ -5,6 +5,16 @@ import ProviderCoreFoundation
 enum SpecDecStore {
     static let manifestFileName = "manifest.json"
 
+    private struct InlineWeightIndex: Decodable {
+        let metadata: [String: Int64]?
+        let weightMap: [String: String]
+
+        enum CodingKeys: String, CodingKey {
+            case metadata = "metadata"
+            case weightMap = "weight_map"
+        }
+    }
+
     struct Verification: Sendable {
         let manifest: ModelManifest
         let manifestSHA256: String
@@ -254,6 +264,117 @@ enum SpecDecStore {
             localConfigSHA256: configDigest)
     }
 
+    /// Inspect an inline Qwen MTP payload without copying or re-hashing the
+    /// combined target shards. The target model manifest/weight hash already
+    /// authenticates those files; this inspection pins the config + index,
+    /// validates every selected key/path, and charges the index's declared
+    /// MTP payload bytes rather than the whole 20 GiB checkpoint.
+    static func inspectInlineArtifact(directory: URL) -> SpecDecArtifact? {
+        let directory = directory.standardizedFileURL
+        guard isDirectoryWithoutSymlink(directory) else { return nil }
+        let configURL = directory.appendingPathComponent("config.json")
+        let indexURL = directory.appendingPathComponent("model.safetensors.index.json")
+        guard let configSize = regularFileSize(configURL), configSize > 0,
+            configSize <= SpecDecLimits.maximumConfigBytes,
+            let indexSize = regularFileSize(indexURL), indexSize > 0,
+            indexSize <= UInt64(SpecDecLimits.maximumManifestBytes),
+            let configData = try? Data(contentsOf: configURL),
+            let indexData = try? Data(contentsOf: indexURL),
+            let root = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+            let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true,
+            root["mtplx_mtp_quantization"] as? [String: Any] != nil,
+            let index = try? JSONDecoder().decode(InlineWeightIndex.self, from: indexData)
+        else { return nil }
+
+        let prefix = (inline["prefix"] as? String) ?? "mtp."
+        guard !prefix.isEmpty, prefix.utf8.count <= 128,
+            prefix.utf8.allSatisfy({
+                (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
+                    || $0 == 46 || $0 == 95
+            })
+        else { return nil }
+
+        var shardNames = Set<String>()
+        var inlineCount = 0
+        for (key, shard) in index.weightMap where key.hasPrefix(prefix) {
+            guard key.utf8.count <= 1024, shard == URL(fileURLWithPath: shard).lastPathComponent,
+                shard.hasSuffix(".safetensors"), shard.utf8.count <= SpecDecLimits.maximumFileNameBytes,
+                regularFileSize(directory.appendingPathComponent(shard)) != nil
+            else { return nil }
+            inlineCount += 1
+            shardNames.insert(shard)
+        }
+        guard inlineCount > 0, inlineCount <= 512, !shardNames.isEmpty else { return nil }
+
+        guard let declaredBytes = inlineTensorBytes(
+            directory: directory,
+            prefix: prefix,
+            weightMap: index.weightMap),
+            declaredBytes > 0,
+            declaredBytes <= SpecDecLimits.maximumArtifactBytes
+        else { return nil }
+
+        let configDigest = sha256Hex(configData)
+        let indexDigest = sha256Hex(indexData)
+        return SpecDecArtifact(
+            directory: directory,
+            source: .inline,
+            revision: "inline-\(configDigest.prefix(8))-\(indexDigest.prefix(8))",
+            artifactBytes: declaredBytes,
+            residentBytes: SpecDecLimits.residentEstimate(artifactBytes: declaredBytes),
+            manifestSHA256: nil,
+            localConfigSHA256: configDigest,
+            inlineIndexSHA256: indexDigest)
+    }
+
+    /// Sum only selected tensor payload ranges from safetensors headers. This
+    /// reads at most 16 MiB of metadata per shard and never maps/evaluates the
+    /// multi-GiB target arrays merely to size the inline assistant.
+    private static func inlineTensorBytes(
+        directory: URL,
+        prefix: String,
+        weightMap: [String: String]
+    ) -> UInt64? {
+        let selected = weightMap.filter { $0.key.hasPrefix(prefix) }
+        var headers: [String: [String: Any]] = [:]
+        var total: UInt64 = 0
+        for (key, shard) in selected {
+            let header: [String: Any]
+            if let cached = headers[shard] {
+                header = cached
+            } else {
+                let url = directory.appendingPathComponent(shard)
+                guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+                defer { try? handle.close() }
+                guard let lengthData = try? handle.read(upToCount: 8),
+                    lengthData.count == 8
+                else { return nil }
+                let headerLength = lengthData.withUnsafeBytes { raw -> UInt64 in
+                    raw.loadUnaligned(as: UInt64.self).littleEndian
+                }
+                guard headerLength > 0, headerLength <= 16 * 1024 * 1024,
+                    let data = try? handle.read(upToCount: Int(headerLength)),
+                    data.count == Int(headerLength),
+                    let object = try? JSONSerialization.jsonObject(with: data)
+                        as? [String: Any]
+                else { return nil }
+                headers[shard] = object
+                header = object
+            }
+            guard let entry = header[key] as? [String: Any],
+                let offsets = entry["data_offsets"] as? [NSNumber], offsets.count == 2
+            else { return nil }
+            let start = offsets[0].uint64Value
+            let end = offsets[1].uint64Value
+            guard end > start else { return nil }
+            let (sum, overflow) = total.addingReportingOverflow(end - start)
+            guard !overflow else { return nil }
+            total = sum
+        }
+        return total
+    }
+
     /// Re-inspect the exact bytes immediately before assistant construction.
     /// Catalog artifacts are verified against their retained immutable trust
     /// reference; mutable local overrides must still match the inspected size
@@ -302,6 +423,20 @@ enum SpecDecStore {
                 return .fallback(
                     .localArtifactInvalid,
                     detail: "local assistant changed after admission")
+            }
+            return .resolved(refreshed)
+        case .inline:
+            guard let refreshed = inspectInlineArtifact(directory: artifact.directory),
+                refreshed.directory == artifact.directory,
+                refreshed.artifactBytes == artifact.artifactBytes,
+                refreshed.residentBytes == artifact.residentBytes,
+                refreshed.revision == artifact.revision,
+                refreshed.localConfigSHA256 == artifact.localConfigSHA256,
+                refreshed.inlineIndexSHA256 == artifact.inlineIndexSHA256
+            else {
+                return .fallback(
+                    .inlineArtifactInvalid,
+                    detail: "inline assistant metadata changed after admission")
             }
             return .resolved(refreshed)
         }

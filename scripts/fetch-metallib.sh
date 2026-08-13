@@ -28,9 +28,11 @@ JIT_MODE="OFF"
 NAX_SYMBOL="_nax"
 GEMV_SYMBOL="gemv"
 R1_BUILDER_SYMBOL="build_gemma4_sorted_expert_tiles_bm32"
+R1_BUILDER_E256_SYMBOL="build_sorted_expert_tiles_bm32_e256"
 R1_KERNEL_SYMBOL="affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32"
 COMPLETENESS_CONTRACT="$(
-    printf '%s\n' "$NAX_SYMBOL" "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" "$R1_KERNEL_SYMBOL" \
+    printf '%s\n' "$NAX_SYMBOL" "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" \
+        "$R1_BUILDER_E256_SYMBOL" "$R1_KERNEL_SYMBOL" \
         | shasum -a 256 | cut -d' ' -f1
 )"
 TARGET_ARG="${1:-debug}"
@@ -151,6 +153,7 @@ verify_metallib() {
         "$NAX_SYMBOL" \
         "$GEMV_SYMBOL" \
         "$R1_BUILDER_SYMBOL" \
+        "$R1_BUILDER_E256_SYMBOL" \
         "$R1_KERNEL_SYMBOL"
     do
         # Use grep -c rather than grep -q: grep -q closes the pipe after its

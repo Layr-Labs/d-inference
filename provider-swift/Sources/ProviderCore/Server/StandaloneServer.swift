@@ -1112,6 +1112,20 @@ public actor StandaloneServer {
         slots.keys.filter { !evictingModels.contains($0) }.sorted()
     }
 
+    /// Per-resident-slot MTP posture for the local `/metrics` endpoint —
+    /// the same bridge snapshot the capacity tick feeds into
+    /// `DaemonSlotPostureBuilder`, keyed by the registry's model id.
+    func mtpSlotMetricsSamples() async -> [MTPSlotMetricsSample] {
+        var samples: [MTPSlotMetricsSample] = []
+        samples.reserveCapacity(slots.count)
+        for (modelId, slot) in slots.sorted(by: { $0.key < $1.key })
+        where !evictingModels.contains(modelId) {
+            samples.append(
+                .init(model: modelId, snapshot: await slot.bridge.mtpStatusSnapshot()))
+        }
+        return samples
+    }
+
     /// Sorted list of model ids the provider advertises in
     /// `/v1/models`. This is the catalog the operator configured the
     /// provider to serve (passed at init or via ``setModels(_:)``),

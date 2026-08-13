@@ -33,13 +33,15 @@ public struct LocalInferenceHTTPConfig: Sendable {
 }
 
 /// The concrete responder stack the local endpoint always uses:
-/// auth (outermost) → CORS → chat-upload interception (32 MiB body
-/// ceiling for the media-bearing chat routes, see
+/// auth (outermost) → CORS → MTP-augmented /metrics → chat-upload
+/// interception (32 MiB body ceiling for the media-bearing chat routes, see
 /// `LocalChatUploadResponder`) → upstream MLXLMServer router.
 public typealias LocalInferenceApplication =
     Application<
         LocalAuthResponder<
-            CORSResponder<LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>
+            CORSResponder<
+                LocalMetricsResponder<
+                    LocalChatUploadResponder<RouterResponder<BasicRequestContext>>>>>>
 
 /// Builds the local OpenAI-compatible Hummingbird application from a model
 /// registry expressed as three closures. Shared by `StandaloneServer` and the
@@ -53,6 +55,9 @@ public typealias LocalInferenceApplication =
 ///   - tokenizerProvider: resolve a tokenizer for the token-utility endpoints.
 ///   - availableModels: the advertised `/v1/models` catalog (not just the
 ///     currently-resident subset — discovery clients call it before loading).
+///   - mtpSlots: per-slot MTP posture samples for the `/metrics` MTP lines
+///     (see `LocalMetricsResponder`) — the resident slots' bridge snapshots,
+///     empty when nothing is loaded.
 /// - Parameter onServerRunning: invoked by Hummingbird ONCE the socket is
 ///   actually bound and listening. This is the authoritative "we bound the port"
 ///   signal — used to write the discovery record only after a confirmed bind
@@ -64,6 +69,7 @@ func makeLocalInferenceApplication(
     acquire: @escaping @Sendable (String) async throws -> MultiModelBatchSchedulerEngine.AcquiredModel,
     tokenizerProvider: @escaping @Sendable (String?) async throws -> TokenizerHandle,
     availableModels: @escaping @Sendable () async -> [String],
+    mtpSlots: @escaping @Sendable () async -> [MTPSlotMetricsSample],
     onServerRunning: @escaping @Sendable (any Channel) async -> Void = { _ in }
 ) -> LocalInferenceApplication {
     let engine = MultiModelBatchSchedulerEngine(
@@ -81,7 +87,12 @@ func makeLocalInferenceApplication(
     // upstream router unchanged.
     let uploadResponder = LocalChatUploadResponder(
         inner: router.buildResponder(), service: service)
-    let corsResponder = CORSResponder(inner: uploadResponder)
+    // GET /metrics is served by the metrics responder: the upstream
+    // ServerMetrics body plus the provider-owned MTP posture lines (see
+    // LocalMetricsResponder for why the upstream route cannot be extended).
+    let metricsResponder = LocalMetricsResponder(
+        inner: uploadResponder, service: service, mtpSlots: mtpSlots)
+    let corsResponder = CORSResponder(inner: metricsResponder)
     // Auth is the outermost layer so an unauthenticated request is rejected
     // before reaching the engine. Pass-through when no token is configured.
     let authedResponder = LocalAuthResponder(inner: corsResponder, token: config.authToken)

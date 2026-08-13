@@ -72,6 +72,10 @@ extension StandaloneServer {
                 guard let self else { return [] }
                 return await self.advertisedModelIds()
             },
+            mtpSlots: { [weak self] in
+                guard let self else { return [] }
+                return await self.mtpSlotMetricsSamples()
+            },
             onServerRunning: { [weak self] _ in
                 await self?.markBound()
             }

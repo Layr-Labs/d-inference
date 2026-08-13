@@ -1041,3 +1041,97 @@ private final class StandaloneAlivenessTrail: @unchecked Sendable {
     #expect(await server.debugEngineKVGrant(modelId: "gemma-4-26b-qat-4bit") == grantA0)
     #expect(await server.debugEngineKVGrant(modelId: "gpt-oss-20b") == nil)
 }
+
+// MARK: - /metrics MTP posture (provider-local observability)
+//
+// The MTP acceptance counters exist in-engine (`CBv2MTPMetrics`) and in the
+// `engine_v2_slot_posture` telemetry event, but until now the local
+// `/metrics` endpoint carried none of them — a headless operator could not
+// observe acceptance, or that MTP silently never activated
+// (`inline_artifact_invalid`). These tests pin the provider-owned lines.
+
+private func stubActiveMTPSnapshot(
+    rounds: Int, proposed: Int, accepted: Int
+) -> ProviderMTPStatusSnapshot {
+    var metrics = CBv2MTPMetrics()
+    metrics.active = true
+    metrics.rounds = rounds
+    metrics.draftedTokens = proposed
+    metrics.acceptedTokens = accepted
+    let status = MTPActivationStatus(
+        configured: true, active: true, reason: nil, source: .inline,
+        revision: "inline-test", artifactBytes: 1024, assistantBytes: 512)
+    return ProviderMTPStatusSnapshot(status: status, metrics: metrics)
+}
+
+@Test func mtpPrometheusRendererEmitsPostureAndCounters() {
+    let active = stubActiveMTPSnapshot(rounds: 7, proposed: 21, accepted: 14)
+    let disabled = ProviderMTPStatusSnapshot(
+        status: .disabled(.inlineArtifactInvalid, configured: true), metrics: nil)
+    let text = MTPPrometheusRenderer.render([
+        .init(model: "qwen3.6-35b-a3b-vl-mtp-mxfp8", snapshot: active),
+        .init(model: "gemma-4\"quoted\\name", snapshot: disabled),
+    ])
+    #expect(text.contains("# TYPE mtp_enabled gauge"))
+    #expect(text.contains(#"mtp_enabled{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 1"#))
+    #expect(text.contains(#"mtp_active{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 1"#))
+    #expect(text.contains(#"mtp_rounds_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 7"#))
+    #expect(text.contains(#"mtp_tokens_proposed_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 21"#))
+    #expect(text.contains(#"mtp_tokens_accepted_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 14"#))
+    // A silently-disabled drafter is visible with its concrete reason —
+    // the operational hole this endpoint change exists to close…
+    #expect(text.contains(#"reason="inline_artifact_invalid"} 1"#))
+    #expect(text.contains(#"mtp_active{model="gemma-4\"quoted\\name"} 0"#))
+    // …its label values are Prometheus-escaped…
+    #expect(text.contains(#"model="gemma-4\"quoted\\name""#))
+    // …and the healthy slot carries no inactive-reason line (omitted when
+    // productively running, matching the telemetry contract).
+    #expect(!text.contains(#"mtp_inactive_reason{model="qwen3.6-35b-a3b-vl-mtp-mxfp8""#))
+    // No slots -> no MTP lines at all: the upstream body stays byte-identical.
+    #expect(MTPPrometheusRenderer.render([]).isEmpty)
+}
+
+@Test func localMetricsEndpointAppendsMTPLinesToUpstreamBody() async throws {
+    let snapshot = stubActiveMTPSnapshot(rounds: 3, proposed: 9, accepted: 6)
+    let app = makeLocalInferenceApplication(
+        config: .init(host: "127.0.0.1", port: 0, authToken: nil),
+        defaultMaxTokens: 128,
+        acquire: { modelId in
+            throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+        },
+        tokenizerProvider: { _ in
+            throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
+        },
+        availableModels: { [] },
+        mtpSlots: { [.init(model: "qwen3.6-35b-a3b-vl-mtp-mxfp8", snapshot: snapshot)] }
+    )
+    try await app.test(.router) { client in
+        try await client.execute(uri: "/metrics", method: .get) { response in
+            #expect(response.status == .ok)
+            #expect(response.headers[.contentType] == "text/plain; charset=utf-8")
+            let body = String(buffer: response.body)
+            // The upstream ServerMetrics body is intact…
+            #expect(body.contains("mlx_server_requests_total"))
+            #expect(body.contains("mlx_server_uptime_seconds"))
+            // …and the provider MTP lines ride behind it.
+            #expect(body.contains(#"mtp_enabled{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 1"#))
+            #expect(body.contains(#"mtp_rounds_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 3"#))
+            #expect(body.contains(#"mtp_tokens_proposed_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 9"#))
+            #expect(body.contains(#"mtp_tokens_accepted_total{model="qwen3.6-35b-a3b-vl-mtp-mxfp8"} 6"#))
+        }
+    }
+}
+
+@Test func standaloneServerMetricsWithoutSlotsServesUpstreamBodyOnly() async throws {
+    let server = standaloneTestServer()
+    let app = server.makeApplication()
+    try await app.test(.router) { client in
+        try await client.execute(uri: "/metrics", method: .get) { response in
+            #expect(response.status == .ok)
+            let body = String(buffer: response.body)
+            #expect(body.contains("mlx_server_requests_total"))
+            #expect(!body.contains("mtp_"), "no resident slots -> no MTP lines")
+        }
+    }
+    _ = server
+}

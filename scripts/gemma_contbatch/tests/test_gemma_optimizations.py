@@ -71,6 +71,43 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "projection does not match"):
             resolve_gemma_optimizations(outputs)
 
+    def test_trust_refinement_is_accepted_and_preserved(self):
+        # The serving projection preserves an operator-exported
+        # MLX_GATHER_QMM_EXPERT_SLICES=trust when the route is on; the
+        # recorded posture must resolve, keeping the trust value visible in
+        # the report instead of collapsing it to "1".
+        outputs = raw_outputs()
+        for payload in outputs.values():
+            payload["gemmaOptimizations"]["environment"][
+                "MLX_GATHER_QMM_EXPERT_SLICES"
+            ] = "trust"
+        resolved = resolve_gemma_optimizations(outputs)
+        self.assertEqual(
+            resolved["environment"]["MLX_GATHER_QMM_EXPERT_SLICES"], "trust"
+        )
+
+    def test_trust_with_disabled_route_is_refused(self):
+        # trust only refines HOW an enabled route runs; it never turns a
+        # config-OFF route on.
+        outputs = raw_outputs()
+        for payload in outputs.values():
+            settings = payload["gemmaOptimizations"]
+            settings["weightedR1"] = False
+            settings["environment"]["MLX_GEMMA4_FUSED_WEIGHTED_UNSORT"] = "0"
+            settings["environment"]["MLX_GATHER_QMM_EXPERT_SLICES"] = "trust"
+        with self.assertRaisesRegex(RuntimeError, "projection does not match"):
+            resolve_gemma_optimizations(outputs)
+
+    def test_mixed_trust_and_plain_phases_are_refused(self):
+        # A run where only some phases saw trust measured two different
+        # synchronization postures; that is not one comparable experiment.
+        outputs = raw_outputs()
+        outputs["throughputSweep"]["gemmaOptimizations"]["environment"][
+            "MLX_GATHER_QMM_EXPERT_SLICES"
+        ] = "trust"
+        with self.assertRaisesRegex(RuntimeError, "different Gemma optimizations"):
+            resolve_gemma_optimizations(outputs)
+
     def test_stale_raw_schema_is_refused(self):
         outputs = raw_outputs()
         outputs["throughputSweep"]["schemaVersion"] = 4

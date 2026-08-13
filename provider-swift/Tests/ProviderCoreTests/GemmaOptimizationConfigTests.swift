@@ -123,6 +123,75 @@ struct GemmaOptimizationEnvironmentTests {
         }
     }
 
+    @Test("serving projection preserves the operator trust refinement")
+    func servingProjectionPreservesTrust() {
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(weightedR1: true),
+            getenv: { key in
+                key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+            }
+        )
+        #expect(projection[GemmaOptimizationEnvironment.safeR1Key] == "trust")
+        // Only safe R1 is refined; the coupled weighted key stays config-exact.
+        #expect(projection[GemmaOptimizationEnvironment.weightedUnsortKey] == "1")
+    }
+
+    @Test("trust never overrides a config-OFF route")
+    func trustCannotEnableDisabledRoute() {
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(weightedR1: false),
+            getenv: { _ in "trust" }
+        )
+        #expect(projection[GemmaOptimizationEnvironment.safeR1Key] == "0")
+    }
+
+    @Test("only the exact trust value survives; others collapse to config")
+    func nonTrustOperatorValuesCollapse() {
+        for shellValue in ["0", "1", "2", "TRUST", "trust ", ""] {
+            let projection = GemmaOptimizationEnvironment.projection(
+                for: GemmaOptimizationSettings(weightedR1: true),
+                getenv: { _ in shellValue }
+            )
+            #expect(
+                projection[GemmaOptimizationEnvironment.safeR1Key] == "1",
+                "shell value \(shellValue.debugDescription) must collapse to 1"
+            )
+        }
+    }
+
+    @Test("retained-validation projection never consults the environment")
+    func retainedValidationIsHermetic() {
+        var consulted = false
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: GemmaOptimizationSettings(weightedR1: true),
+            context: .retainedValidation,
+            getenv: { _ in
+                consulted = true
+                return "trust"
+            }
+        )
+        #expect(projection[GemmaOptimizationEnvironment.safeR1Key] == "1")
+        #expect(!consulted, "hermetic context must not read ambient environment")
+    }
+
+    @Test("daemon passthrough persists exactly the trust refinement")
+    func daemonTrustPassthroughIsExact() {
+        let key = GemmaOptimizationEnvironment.safeR1Key
+        #expect(
+            GemmaOptimizationEnvironment.daemonTrustPassthrough(
+                from: [key: "trust", "PATH": "/usr/bin"])
+                == [key: "trust"]
+        )
+        // Config-backed and malformed values never reach the daemon plist.
+        for value in ["0", "1", "poison", "TRUST", ""] {
+            #expect(
+                GemmaOptimizationEnvironment.daemonTrustPassthrough(
+                    from: [key: value]).isEmpty
+            )
+        }
+        #expect(GemmaOptimizationEnvironment.daemonTrustPassthrough(from: [:]).isEmpty)
+    }
+
     @Test("apply overwrites every projected value")
     func applyUsesOverwrite() throws {
         var values: [String: String] = [:]

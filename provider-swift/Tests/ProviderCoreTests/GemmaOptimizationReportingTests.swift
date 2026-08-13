@@ -77,8 +77,11 @@ struct PackagedRetainedGemmaSmokeTests {
     @Test("synthetic retained config has an exact three-key projection")
     func exactProjectionAndNoRejectedKeys() throws {
         let config = try PackagedRuntimeSmoke.retainedConfiguration()
+        // Mirror verifyGemmaOptimizations: the smoke validates the retained
+        // config hermetically, never the launching environment.
         let decodedProjection = GemmaOptimizationEnvironment.projection(
-            for: config.gemmaOptimizations)
+            for: config.gemmaOptimizations,
+            context: .retainedValidation)
         #expect(decodedProjection == expectedProjection)
         try PackagedRuntimeSmoke.validateRetainedProjection(decodedProjection)
         #expect(
@@ -93,6 +96,38 @@ struct PackagedRetainedGemmaSmokeTests {
                 projection: expectedProjection,
                 environment: poisoned)
                 == [GemmaOptimizationEnvironment.safeR1Key])
+    }
+
+    @Test("retained validation is immune to an inherited trust override")
+    func retainedValidationIgnoresInheritedTrust() throws {
+        // BoundedProcess merges the parent environment into the smoke child,
+        // so a foreground/local trust-mode provider (or installer shell) may
+        // hand this process MLX_GATHER_QMM_EXPERT_SLICES=trust. The retained
+        // projection must still be the exact safe-R1 posture, or SelfUpdater
+        // artifact verification and paged-kernel preflight fail spuriously.
+        let config = try PackagedRuntimeSmoke.retainedConfiguration()
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: config.gemmaOptimizations,
+            context: .retainedValidation,
+            getenv: { key in
+                key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+            }
+        )
+        #expect(projection == expectedProjection)
+        try PackagedRuntimeSmoke.validateRetainedProjection(projection)
+
+        // The serving projection of the same settings WOULD keep trust —
+        // proving the two contexts diverge exactly on this one refinement.
+        let serving = GemmaOptimizationEnvironment.projection(
+            for: config.gemmaOptimizations,
+            getenv: { key in
+                key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+            }
+        )
+        #expect(serving[GemmaOptimizationEnvironment.safeR1Key] == "trust")
+        #expect(throws: PackagedRuntimeSmoke.VerificationError.self) {
+            try PackagedRuntimeSmoke.validateRetainedProjection(serving)
+        }
     }
 
     @Test("safe R1 gate requires requested packaged AOT and unarmed counters")

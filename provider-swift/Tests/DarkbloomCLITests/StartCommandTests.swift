@@ -166,6 +166,38 @@ struct StartCommandTests {
         #expect(unset == nil)
     }
 
+    @Test("benchmark env guard: a trust shell export is not a conflict when the route is on")
+    func conflictingEnvironmentOverrideAcceptsTrust() {
+        // The serving projection preserves the operator trust refinement, so
+        // the guard's expectation and the shell agree — the trust-mode
+        // benchmark experiment must be allowed to run.
+        let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: GemmaOptimizationSettings(
+                prefillLayer18: true,
+                weightedR1: true
+            )
+        ) { key in
+            key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+        }
+        #expect(conflict == nil)
+    }
+
+    @Test("benchmark env guard: trust against a config-OFF route is a conflict")
+    func conflictingEnvironmentOverrideRejectsTrustWhenRouteOff() throws {
+        let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: GemmaOptimizationSettings(
+                prefillLayer18: true,
+                weightedR1: false
+            )
+        ) { key in
+            key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+        }
+        let found = try #require(conflict)
+        #expect(found.key == GemmaOptimizationEnvironment.safeR1Key)
+        #expect(found.shellValue == "trust")
+        #expect(found.configValue == "0")
+    }
+
     @Test("start accepts an explicit custom config")
     func customConfigParses() throws {
         let parsed = try Darkbloom.parseAsRoot([

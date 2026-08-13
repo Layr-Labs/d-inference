@@ -290,8 +290,17 @@ public enum LaunchAgent: Sendable {
     /// Build the daemon `EnvironmentVariables` map from a source environment,
     /// keeping only the allowlisted, non-empty keys. Pure (environment injected)
     /// so it is unit-testable without touching the real process environment.
+    ///
+    /// One value-conditional entry rides along: the operator `trust`
+    /// refinement of the expert-slice route
+    /// (`GemmaOptimizationEnvironment.daemonTrustPassthrough`). launchd does
+    /// not inherit the installing shell, so without persisting it into the
+    /// plist the background daemon would collapse `trust` back to `1`. The
+    /// config-backed `0`/`1` values remain excluded — `provider.toml` stays
+    /// authoritative for whether the route runs at all.
     static func passthroughEnvironment(from environment: [String: String]) -> [String: String] {
-        var out: [String: String] = [:]
+        var out = GemmaOptimizationEnvironment.daemonTrustPassthrough(
+            from: environment)
         for key in passthroughEnvKeys {
             if let value = environment[key], !value.isEmpty {
                 out[key] = value

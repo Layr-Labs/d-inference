@@ -49,10 +49,18 @@ public enum PackagedRuntimeSmoke {
     /// GPU access. Deliberately poison all three low-level keys first so this
     /// signed-child gate proves config authority and overwrite precedence,
     /// rather than merely observing a cooperative parent environment.
+    ///
+    /// The retained projection is computed in `.retainedValidation` context:
+    /// `BoundedProcess` merges the parent's environment into this child, so a
+    /// foreground/local trust-mode provider (or installer shell) exporting
+    /// `MLX_GATHER_QMM_EXPERT_SLICES=trust` must not leak into the expected
+    /// safe-R1 value and fail the smoke — the gate validates the retained
+    /// config, not the launching environment.
     public static func verifyGemmaOptimizations() throws {
         let config = try retainedConfiguration()
         let projection = GemmaOptimizationEnvironment.projection(
-            for: config.gemmaOptimizations)
+            for: config.gemmaOptimizations,
+            context: .retainedValidation)
         try validateRetainedProjection(projection)
 
         for key in projection.keys {

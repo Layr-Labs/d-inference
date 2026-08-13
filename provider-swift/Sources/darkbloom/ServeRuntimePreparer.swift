@@ -61,7 +61,8 @@ enum ServeRuntimePreparer {
             $0.withCString { Darwin.getenv($0) }.map { String(cString: $0) }
         }
     ) -> EnvironmentConflict? {
-        let projection = GemmaOptimizationEnvironment.projection(for: settings)
+        let projection = GemmaOptimizationEnvironment.projection(
+            for: settings, getenv: getenv)
         for key in [
             GemmaOptimizationEnvironment.prefillLayer18Key,
             GemmaOptimizationEnvironment.weightedUnsortKey,

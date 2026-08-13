@@ -117,6 +117,11 @@ private final class WiringScriptedEngine: CBv2Engine, @unchecked Sendable {
 
 private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
     var templateTokens: [Int] = [1, 2, 3, 4, 5]
+    /// When set, `decode` returns this verbatim — lets the think-open
+    /// injection tests simulate a Qwen3.6-style rendered prompt tail
+    /// (`…assistant\n<think>\n`) without touching the default per-id
+    /// behavior the logprob assertions rely on.
+    var decodeOverride: String?
 
     func encode(text: String, addSpecialTokens: Bool) -> [Int] {
         Array(repeating: 0, count: text.count)
@@ -124,7 +129,8 @@ private struct WiringStubTokenizer: MLXLMCommon.Tokenizer {
     /// Deterministic per-id text ("t<id>") so logprob-entry conversion is
     /// assertable (mirrors the EngineV2BridgeTests stub).
     func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
-        tokenIds.map { "t\($0)" }.joined()
+        if let decodeOverride { return decodeOverride }
+        return tokenIds.map { "t\($0)" }.joined()
     }
     func convertTokenToId(_ token: String) -> Int? { ["</s>": 2][token] }
     func convertIdToToken(_ id: Int) -> String? {
@@ -1246,6 +1252,80 @@ struct EngineV2RequestRoutingTests {
         #expect(events.last == .info(prompt: 5, completion: 2))
         #expect(engine.submitted.count == 1)
         #expect(engine.submitted[0].promptTokens == [1, 2, 3, 4, 5])
+    }
+
+    /// Builds a provider engine whose stub tokenizer "renders" the given
+    /// prompt tail, backed by a scripted close-only (Qwen3.6-style)
+    /// thinking stream.
+    private func makeThinkProbeEngine(
+        decodedTail: String
+    ) -> (WiringScriptedEngine, MultiModelBatchSchedulerEngine) {
+        let engine = WiringScriptedEngine(script: .stream([
+            .delta(text: "step one ", tokens: [10], logprobs: nil),
+            .delta(text: "step two</think>Answer", tokens: [11], logprobs: nil),
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
+        ]))
+        let bridge = makeBridge(engine: engine, modelId: "qwen3.6-test")
+        let providerEngine = MultiModelBatchSchedulerEngine(
+            registryProvider: { @Sendable in
+                [
+                    "qwen3.6-test": .init(
+                        tokenizer: TokenizerHandle(
+                            WiringStubTokenizer(decodeOverride: decodedTail)),
+                        modelType: "qwen3_next",
+                        engineV2Bridge: bridge)
+                ]
+            })
+        return (engine, providerEngine)
+    }
+
+    @Test("a pre-opened think prompt injects a synthetic <think> ahead of close-only output")
+    func preOpenedThinkPromptInjectsSyntheticOpen() async throws {
+        let (engine, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n<think>\n")
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        // The marker precedes the model's output; the downstream streaming
+        // think parser consumes it as a state transition and then streams
+        // each reasoning delta the moment it arrives (the TTFT fix).
+        #expect(events == [
+            .content("<think>"),
+            .content("step one "),
+            .content("step two</think>Answer"),
+            .info(prompt: 5, completion: 2),
+        ])
+        // The marker is synthetic — it must never reach the engine/prompt.
+        #expect(engine.submitted.count == 1)
+    }
+
+    @Test("no injection without a pre-opened think tail")
+    func plainPromptTailDoesNotInject() async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n")
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .qwen3
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("step one "))
+    }
+
+    @Test("no injection for a non-think reasoning parser even with a pre-opened tail")
+    func nonThinkParserDoesNotInject() async throws {
+        let (_, providerEngine) = makeThinkProbeEngine(
+            decodedTail: "<|im_start|>assistant\n<think>\n")
+        var request = makeOpenAIRequest(model: "qwen3.6-test")
+        request.stream = true
+        request.reasoningParser = .gemma4
+
+        let stream = try await providerEngine.streamChatCompletion(request: request)
+        let events = try await recordServerStream(stream)
+        #expect(events.first == .content("step one "))
     }
 
     @Test("required tool choice installs a CBv2 grammar before submission")

@@ -1,9 +1,11 @@
 import CryptoKit
 import Foundation
+import Logging
 import ProviderCoreFoundation
 
 enum SpecDecStore {
     static let manifestFileName = "manifest.json"
+    private static let logger = Logger(label: "darkbloom.SpecDecStore")
 
     private struct InlineWeightIndex: Decodable {
         let metadata: [String: Int64]?
@@ -23,6 +25,14 @@ enum SpecDecStore {
 
     struct VerificationError: Error, Sendable, CustomStringConvertible {
         let reason: MTPFallbackReason
+        let description: String
+    }
+
+    /// Inline-artifact inspection failure carrying the concrete reason and
+    /// file path. Inline MTP going missing silently poisons measurement and
+    /// serving sessions (the drafter simply never activates), so every
+    /// rejection is BOTH returned to the caller and logged at warning level.
+    struct InlineArtifactRejection: Error, Sendable, CustomStringConvertible {
         let description: String
     }
 
@@ -269,23 +279,66 @@ enum SpecDecStore {
     /// authenticates those files; this inspection pins the config + index,
     /// validates every selected key/path, and charges the index's declared
     /// MTP payload bytes rather than the whole 20 GiB checkpoint.
-    static func inspectInlineArtifact(directory: URL) -> SpecDecArtifact? {
+    ///
+    /// Symlinked members are RESOLVED, not rejected: HF-cache snapshots store
+    /// every shard as a symlink into `blobs/`, and that is the layout the
+    /// already-verified target checkpoint normally arrives in. (Operator
+    /// -provided local overrides — `inspectLocalArtifact` — still reject
+    /// symlinks: there the directory itself is untrusted input.) Every
+    /// rejection names its concrete reason and file path; nothing here fails
+    /// status-only.
+    static func inspectInlineArtifact(
+        directory: URL
+    ) -> Result<SpecDecArtifact, InlineArtifactRejection> {
         let directory = directory.standardizedFileURL
-        guard isDirectoryWithoutSymlink(directory) else { return nil }
+        guard isDirectoryResolvingSymlinks(directory) else {
+            return rejectInline(
+                "checkpoint directory is missing or not a directory: \(directory.path)")
+        }
         let configURL = directory.appendingPathComponent("config.json")
         let indexURL = directory.appendingPathComponent("model.safetensors.index.json")
-        guard let configSize = regularFileSize(configURL), configSize > 0,
-            configSize <= SpecDecLimits.maximumConfigBytes,
-            let indexSize = regularFileSize(indexURL), indexSize > 0,
-            indexSize <= UInt64(SpecDecLimits.maximumManifestBytes),
-            let configData = try? Data(contentsOf: configURL),
-            let indexData = try? Data(contentsOf: indexURL),
-            let root = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
-            let inline = root["mtplx_mtp"] as? [String: Any],
-            inline["included"] as? Bool == true,
-            root["mtplx_mtp_quantization"] as? [String: Any] != nil,
-            let index = try? JSONDecoder().decode(InlineWeightIndex.self, from: indexData)
-        else { return nil }
+        guard let configSize = resolvedRegularFileSize(configURL), configSize > 0 else {
+            return rejectInline(
+                "config.json is missing, empty, not a regular file, or a broken symlink: \(configURL.path)")
+        }
+        guard configSize <= SpecDecLimits.maximumConfigBytes else {
+            return rejectInline(
+                "config.json exceeds the \(SpecDecLimits.maximumConfigBytes)-byte cap: \(configURL.path)")
+        }
+        guard let indexSize = resolvedRegularFileSize(indexURL), indexSize > 0 else {
+            return rejectInline(
+                "model.safetensors.index.json is missing, empty, not a regular file, or a broken symlink: \(indexURL.path)")
+        }
+        guard indexSize <= UInt64(SpecDecLimits.maximumManifestBytes) else {
+            return rejectInline(
+                "model.safetensors.index.json exceeds the \(SpecDecLimits.maximumManifestBytes)-byte cap: \(indexURL.path)")
+        }
+        guard let configData = try? Data(contentsOf: configURL) else {
+            return rejectInline("config.json is unreadable: \(configURL.path)")
+        }
+        guard let indexData = try? Data(contentsOf: indexURL) else {
+            return rejectInline(
+                "model.safetensors.index.json is unreadable: \(indexURL.path)")
+        }
+        guard let root = try? JSONSerialization.jsonObject(with: configData) as? [String: Any]
+        else {
+            return rejectInline("config.json is not a JSON object: \(configURL.path)")
+        }
+        guard let inline = root["mtplx_mtp"] as? [String: Any],
+            inline["included"] as? Bool == true
+        else {
+            return rejectInline(
+                "config.json does not declare mtplx_mtp.included=true — not an inline-MTP checkpoint: \(configURL.path)")
+        }
+        guard root["mtplx_mtp_quantization"] as? [String: Any] != nil else {
+            return rejectInline(
+                "config.json is missing the mtplx_mtp_quantization object: \(configURL.path)")
+        }
+        guard let index = try? JSONDecoder().decode(InlineWeightIndex.self, from: indexData)
+        else {
+            return rejectInline(
+                "model.safetensors.index.json does not decode (weight_map): \(indexURL.path)")
+        }
 
         let prefix = (inline["prefix"] as? String) ?? "mtp."
         guard !prefix.isEmpty, prefix.utf8.count <= 128,
@@ -293,19 +346,40 @@ enum SpecDecStore {
                 (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0)
                     || $0 == 46 || $0 == 95
             })
-        else { return nil }
+        else {
+            return rejectInline(
+                "mtplx_mtp.prefix is empty, oversized, or carries disallowed characters: \(configURL.path)")
+        }
 
         var shardNames = Set<String>()
         var inlineCount = 0
         for (key, shard) in index.weightMap where key.hasPrefix(prefix) {
-            guard key.utf8.count <= 1024, shard == URL(fileURLWithPath: shard).lastPathComponent,
-                shard.hasSuffix(".safetensors"), shard.utf8.count <= SpecDecLimits.maximumFileNameBytes,
-                regularFileSize(directory.appendingPathComponent(shard)) != nil
-            else { return nil }
+            guard key.utf8.count <= 1024 else {
+                return rejectInline("inline tensor key exceeds 1024 bytes in \(indexURL.path)")
+            }
+            guard shard == URL(fileURLWithPath: shard).lastPathComponent,
+                shard.hasSuffix(".safetensors"),
+                shard.utf8.count <= SpecDecLimits.maximumFileNameBytes
+            else {
+                return rejectInline(
+                    "weight_map entry '\(key)' names an invalid shard '\(shard)' in \(indexURL.path)")
+            }
+            guard resolvedRegularFileSize(directory.appendingPathComponent(shard)) != nil
+            else {
+                return rejectInline(
+                    "inline shard is missing, not a regular file, or a broken symlink: \(directory.appendingPathComponent(shard).path)")
+            }
             inlineCount += 1
             shardNames.insert(shard)
         }
-        guard inlineCount > 0, inlineCount <= 512, !shardNames.isEmpty else { return nil }
+        guard inlineCount > 0 else {
+            return rejectInline(
+                "weight_map declares no tensors with prefix '\(prefix)': \(indexURL.path)")
+        }
+        guard inlineCount <= 512 else {
+            return rejectInline(
+                "weight_map declares \(inlineCount) inline tensors — above the 512 cap: \(indexURL.path)")
+        }
 
         guard let declaredBytes = inlineTensorBytes(
             directory: directory,
@@ -313,19 +387,30 @@ enum SpecDecStore {
             weightMap: index.weightMap),
             declaredBytes > 0,
             declaredBytes <= SpecDecLimits.maximumArtifactBytes
-        else { return nil }
+        else {
+            return rejectInline(
+                "inline tensor payload is unreadable or outside (0, \(SpecDecLimits.maximumArtifactBytes)] bytes (safetensors headers): \(directory.path)")
+        }
 
         let configDigest = sha256Hex(configData)
         let indexDigest = sha256Hex(indexData)
-        return SpecDecArtifact(
-            directory: directory,
-            source: .inline,
-            revision: "inline-\(configDigest.prefix(8))-\(indexDigest.prefix(8))",
-            artifactBytes: declaredBytes,
-            residentBytes: SpecDecLimits.residentEstimate(artifactBytes: declaredBytes),
-            manifestSHA256: nil,
-            localConfigSHA256: configDigest,
-            inlineIndexSHA256: indexDigest)
+        return .success(
+            SpecDecArtifact(
+                directory: directory,
+                source: .inline,
+                revision: "inline-\(configDigest.prefix(8))-\(indexDigest.prefix(8))",
+                artifactBytes: declaredBytes,
+                residentBytes: SpecDecLimits.residentEstimate(artifactBytes: declaredBytes),
+                manifestSHA256: nil,
+                localConfigSHA256: configDigest,
+                inlineIndexSHA256: indexDigest))
+    }
+
+    private static func rejectInline(
+        _ reason: String
+    ) -> Result<SpecDecArtifact, InlineArtifactRejection> {
+        logger.warning("inline MTP artifact rejected: \(reason)")
+        return .failure(InlineArtifactRejection(description: reason))
     }
 
     /// Sum only selected tensor payload ranges from safetensors headers. This
@@ -426,8 +511,14 @@ enum SpecDecStore {
             }
             return .resolved(refreshed)
         case .inline:
-            guard let refreshed = inspectInlineArtifact(directory: artifact.directory),
-                refreshed.directory == artifact.directory,
+            let refreshed: SpecDecArtifact
+            switch inspectInlineArtifact(directory: artifact.directory) {
+            case .failure(let rejection):
+                return .fallback(.inlineArtifactInvalid, detail: rejection.description)
+            case .success(let inspected):
+                refreshed = inspected
+            }
+            guard refreshed.directory == artifact.directory,
                 refreshed.artifactBytes == artifact.artifactBytes,
                 refreshed.residentBytes == artifact.residentBytes,
                 refreshed.revision == artifact.revision,
@@ -478,6 +569,29 @@ enum SpecDecStore {
             let number = attrs[.size] as? NSNumber
         else { return nil }
         return number.uint64Value
+    }
+
+    /// Size of a regular file, RESOLVING symlinks — `attributesOfItem` does
+    /// not follow a symlink in the last path component, so resolve first. A
+    /// broken link keeps its unresolvable component and the attribute read
+    /// then reports `.typeSymbolicLink` → nil. Used only by the inline
+    /// inspection path; local-override inspection stays symlink-rejecting.
+    private static func resolvedRegularFileSize(_ url: URL) -> UInt64? {
+        let resolved = url.resolvingSymlinksInPath()
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: resolved.path),
+            let type = attrs[.type] as? FileAttributeType, type == .typeRegular,
+            let number = attrs[.size] as? NSNumber
+        else { return nil }
+        return number.uint64Value
+    }
+
+    /// Directory check that FOLLOWS symlinks (inline inspection only).
+    private static func isDirectoryResolvingSymlinks(_ url: URL) -> Bool {
+        let resolved = url.resolvingSymlinksInPath()
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: resolved.path),
+            let type = attrs[.type] as? FileAttributeType
+        else { return false }
+        return type == .typeDirectory
     }
 
     private static func isSymbolicLink(_ url: URL) -> Bool {

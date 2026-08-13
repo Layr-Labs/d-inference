@@ -133,6 +133,29 @@ private func makeInlineQwenArtifact(includeMTP: Bool = true) throws -> URL {
     return root
 }
 
+/// HF-cache-style copy of an inline Qwen artifact: the snapshot directory
+/// holds only RELATIVE symlinks into a sibling `blobs/` directory — the
+/// layout `hf download` materializes and the layout production checkpoints
+/// actually load from. Returns (cacheRoot, snapshotDirectory).
+private func makeSymlinkedSnapshot(of real: URL) throws -> (root: URL, snapshot: URL) {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("specdec-hf-cache-\(UUID().uuidString)", isDirectory: true)
+    let blobs = root.appendingPathComponent("blobs", isDirectory: true)
+    let snapshot = root.appendingPathComponent("snapshots", isDirectory: true)
+        .appendingPathComponent("0123abcd", isDirectory: true)
+    try FileManager.default.createDirectory(at: blobs, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: snapshot, withIntermediateDirectories: true)
+    for name in try FileManager.default.contentsOfDirectory(atPath: real.path) {
+        try FileManager.default.copyItem(
+            at: real.appendingPathComponent(name),
+            to: blobs.appendingPathComponent("blob-\(name)"))
+        try FileManager.default.createSymbolicLink(
+            atPath: snapshot.appendingPathComponent(name).path,
+            withDestinationPath: "../../blobs/blob-\(name)")
+    }
+    return (root, snapshot)
+}
+
 @Suite("SpecDec production artifact funnel")
 struct SpecDecArtifactFunnelTests {
     private func funnel(catalog: FunnelCatalog, root: URL) -> SpecDecArtifactFunnel {
@@ -222,6 +245,114 @@ struct SpecDecArtifactFunnelTests {
         #expect(prepared.artifact == nil)
         #expect(prepared.status.reason == .inlineArtifactInvalid)
         #expect(await catalog.calls == 0)
+    }
+
+    @Test("HF-cache symlinked snapshot passes inspection and admits inline MTP")
+    func qwenSymlinkedSnapshotActivates() async throws {
+        let real = try makeInlineQwenArtifact()
+        defer { try? FileManager.default.removeItem(at: real) }
+        let (cacheRoot, snapshot) = try makeSymlinkedSnapshot(of: real)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+
+        // Regular-file baseline and symlinked snapshot must produce the SAME
+        // artifact facts — symlinks change the layout, not the payload.
+        let baseline = try SpecDecStore.inspectInlineArtifact(directory: real).get()
+        let inspected = try SpecDecStore.inspectInlineArtifact(directory: snapshot).get()
+        #expect(inspected.source == .inline)
+        #expect(inspected.artifactBytes == baseline.artifactBytes)
+        #expect(inspected.residentBytes == baseline.residentBytes)
+        #expect(inspected.revision == baseline.revision)
+        #expect(inspected.localConfigSHA256 == baseline.localConfigSHA256)
+        #expect(inspected.inlineIndexSHA256 == baseline.inlineIndexSHA256)
+
+        // The funnel admits the snapshot as a candidate — the admission gate
+        // the slot factory consumes…
+        let catalog = FunnelCatalog(nil)
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                modelType: "qwen3_5_moe",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: snapshot,
+                allowDownload: true,
+                environment: [:]))
+        let artifact = try #require(prepared.artifact)
+        #expect(prepared.status == .candidate(artifact))
+        #expect(await catalog.calls == 0)
+
+        // …and the pre-load revalidation gate (`EngineV2SlotFactory+MTP` runs
+        // `revalidateForLoad` immediately before assistant construction) also
+        // resolves, so nothing between admission and drafter build rejects
+        // the symlinked layout.
+        let revalidation = SpecDecStore.revalidateForLoad(artifact)
+        #expect(revalidation.artifact == artifact,
+            "revalidation must resolve the admitted artifact; got reason=\(String(describing: revalidation.reason)) detail=\(String(describing: revalidation.detail))")
+    }
+
+    @Test("broken symlinked shard is rejected with the concrete reason and path")
+    func qwenBrokenSymlinkRejectedLoudly() async throws {
+        let real = try makeInlineQwenArtifact()
+        defer { try? FileManager.default.removeItem(at: real) }
+        let (cacheRoot, snapshot) = try makeSymlinkedSnapshot(of: real)
+        defer { try? FileManager.default.removeItem(at: cacheRoot) }
+
+        // Break the shard link: point it at a blob that does not exist.
+        let shard = "model-00001-of-00001.safetensors"
+        let shardLink = snapshot.appendingPathComponent(shard)
+        try FileManager.default.removeItem(at: shardLink)
+        try FileManager.default.createSymbolicLink(
+            atPath: shardLink.path,
+            withDestinationPath: "../../blobs/deleted-blob")
+
+        // The inspection result names the failing file, not just a status.
+        switch SpecDecStore.inspectInlineArtifact(directory: snapshot) {
+        case .success:
+            Issue.record("broken symlinked shard must not pass inspection")
+        case .failure(let rejection):
+            #expect(rejection.description.contains("broken symlink"))
+            #expect(rejection.description.contains(shard))
+        }
+
+        // The funnel maps it to the existing fail-open status.
+        let catalog = FunnelCatalog(nil)
+        let prepared = await funnel(
+            catalog: catalog, root: FileManager.default.temporaryDirectory
+        ).prepare(
+            .init(
+                modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                modelType: "qwen3_5_moe",
+                enabled: true,
+                localPath: nil,
+                modelDirectory: snapshot,
+                allowDownload: true,
+                environment: [:]))
+        #expect(prepared.artifact == nil)
+        #expect(prepared.status.reason == .inlineArtifactInvalid)
+    }
+
+    @Test("regular-file inline inspection facts and revalidation are unchanged")
+    func qwenRegularFileInlineBehaviorUnchanged() throws {
+        let real = try makeInlineQwenArtifact()
+        defer { try? FileManager.default.removeItem(at: real) }
+        let artifact = try SpecDecStore.inspectInlineArtifact(directory: real).get()
+        #expect(artifact.source == .inline)
+        #expect(artifact.artifactBytes == 16)
+        #expect(artifact.inlineIndexSHA256 != nil)
+        #expect(SpecDecStore.revalidateForLoad(artifact).artifact == artifact)
+
+        // A checkpoint that does not carry inline MTP still reports the
+        // concrete reason instead of a bare nil.
+        let plain = try makeInlineQwenArtifact(includeMTP: false)
+        defer { try? FileManager.default.removeItem(at: plain) }
+        switch SpecDecStore.inspectInlineArtifact(directory: plain) {
+        case .success:
+            Issue.record("checkpoint without inline MTP tensors must not pass")
+        case .failure(let rejection):
+            #expect(rejection.description.contains("no tensors with prefix"))
+        }
     }
 
     @Test("non-Gemma target never resolves or loads an assistant")

@@ -17,7 +17,7 @@ import (
 )
 
 // TestOpenRouterModelsEndpoint verifies the dedicated /v1/models/openrouter feed
-// emits the pure OpenRouter schema: text modalities, slug, staging-based
+// emits the pure OpenRouter schema: catalog-derived modalities, slug, staging-based
 // is_ready, populated features, and no Darkbloom metadata block.
 func TestOpenRouterModelsEndpoint(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -39,7 +39,7 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 		MaxContextLength: 262144,
 		MaxOutputLength:  16384,
 		MinRAMGB:         16,
-		Capabilities:     []string{"tools", "reasoning"},
+		Capabilities:     []string{"tools", "reasoning", "vision"},
 		Status:           "active",
 		Description:      "Balanced general-purpose model.",
 		Metadata:         map[string]any{"openrouter_slug": "darkbloom/qwen3.5-9b"},
@@ -91,8 +91,8 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 	if m.Created != entry.CreatedAt.Unix() {
 		t.Errorf("created = %d, want %d", m.Created, entry.CreatedAt.Unix())
 	}
-	if len(m.InputModalities) != 1 || m.InputModalities[0] != "text" {
-		t.Errorf("input_modalities = %v, want [text]", m.InputModalities)
+	if len(m.InputModalities) != 2 || m.InputModalities[0] != "text" || m.InputModalities[1] != "image" {
+		t.Errorf("input_modalities = %v, want [text image]", m.InputModalities)
 	}
 	if len(m.OutputModalities) != 1 || m.OutputModalities[0] != "text" {
 		t.Errorf("output_modalities = %v, want [text]", m.OutputModalities)
@@ -248,6 +248,15 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B fp8")
 	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B qat")
 	seedActiveModel(t, st, "mlx-community/unrelated-9b", "Unrelated 9B")
+	primary, err := st.GetModelRegistryRecord(aliasQAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryEntry := registryEntryFromRecord(primary)
+	primaryEntry.Capabilities = []string{"chat", "vision"}
+	if err := st.UpsertModelRegistryEntry(primaryEntry); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
 		DesiredBuild: aliasQAT, PreviousBuild: aliasFP8,
@@ -284,6 +293,9 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 	}
 	if alias.HuggingFaceID != aliasQAT {
 		t.Fatalf("alias hugging_face_id = %q, want primary build", alias.HuggingFaceID)
+	}
+	if len(alias.InputModalities) != 2 || alias.InputModalities[0] != "text" || alias.InputModalities[1] != "image" {
+		t.Fatalf("alias input_modalities = %v, want [text image]", alias.InputModalities)
 	}
 	// Member builds are hidden from the raw listing.
 	if _, leaked := byID[aliasFP8]; leaked {

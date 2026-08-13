@@ -113,11 +113,12 @@ func (s *Server) aliasModelEntries(
 			CanAccept:         canAccept,
 		}
 		entry := types.ModelEntry{
-			ID:       a.AliasID,
-			Object:   "model",
-			OwnedBy:  "eigeninference",
-			Name:     displayName,
-			Metadata: metadata,
+			ID:            a.AliasID,
+			Object:        "model",
+			OwnedBy:       "eigeninference",
+			Name:          displayName,
+			HuggingFaceID: huggingFaceIDForModel(primary, reg.Metadata),
+			Metadata:      metadata,
 		}
 		// Pricing / context / features come from the primary build's registry
 		// entry. Quantization is intentionally left blank on the alias.
@@ -200,20 +201,20 @@ func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error
 			metadata.DisplayName = cm.DisplayName
 		}
 
+		reg, hasReg := registryByID[m.ID]
 		entry := types.ModelEntry{
 			ID:            m.ID,
 			Object:        "model",
 			Created:       0,
 			OwnedBy:       "eigeninference",
 			Name:          metadata.DisplayName,
-			HuggingFaceID: m.ID, // model IDs are HuggingFace paths
+			HuggingFaceID: huggingFaceIDForModel(m.ID, reg.Metadata),
 			Metadata:      metadata,
 		}
 
 		// OpenRouter provider fields (quantization, per-token pricing, sampling
 		// params, and registry-sourced metadata), shared with the dedicated
 		// /v1/models/openrouter feed.
-		reg, hasReg := registryByID[m.ID]
 		s.openRouterModelFieldsFor(m.ID, m.Quantization, reg, hasReg).applyToModelEntry(&entry)
 
 		// Modalities are derived from the model's capabilities (text by default).

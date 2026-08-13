@@ -2,6 +2,12 @@
 
 ## Unreleased (v0.8.4 candidate - provider)
 
+### Coordinator
+
+#### Fixes
+
+- **Expose exact Hugging Face repositories in model feeds** - Registry metadata can now override `hugging_face_id` independently of the internal routing ID. Both `/v1/models` and `/v1/models/openrouter` honor the override for concrete and aliased models, with an authenticated `hugging-face-id` admin action for existing registry rows.
+
 ### Provider (Swift)
 
 #### Fixes

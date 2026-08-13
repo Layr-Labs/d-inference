@@ -71,7 +71,7 @@ The publish script performs steps 1–3 and prints a sample `gh workflow run reg
 | `capabilities` | array | no | Capability strings |
 | `description` | string | no | |
 | `runtime_parameters` | object | no | Merged into provider request at dispatch |
-| `metadata` | object | no | Opaque metadata (deprecation date, OpenRouter slug, etc.) |
+| `metadata` | object | no | Opaque metadata (Hugging Face ID, deprecation date, OpenRouter slug, etc.) |
 | `promote` | bool | no | Immediately activate this version |
 | `input_price` | integer | yes | micro-USD per 1M tokens, > 0 |
 | `output_price` | integer | yes | micro-USD per 1M tokens, > 0 |
@@ -106,6 +106,12 @@ Stored as `ModelRegistryEntry` + `ModelVersion` + `ModelVersionFile` rows.
 | `description` | string | |
 | `runtime_parameters` | object | |
 | `metadata` | object | |
+
+When a concrete `model_id` is an internal routing identifier rather than a
+Hugging Face repository path, set `metadata.hugging_face_id` to the exact
+`owner/repository` identifier. `/v1/models` and `/v1/models/openrouter` emit
+that override as `hugging_face_id`; models without one continue to use
+`model_id`.
 
 Active versions are selected by `model_active_versions.model_version_id`. A model is routable when `model_registry.status IN ('active','beta')` AND `model_versions.status = 'ready'`.
 
@@ -155,6 +161,16 @@ The concrete build id is what is used for routing, billing, and serving; the pub
 | `capabilities` | `{ "capabilities": [...] }` | Replace capabilities wholesale |
 | `deprecation` | `{ "deprecation_date": "YYYY-MM-DD" }` | Set/clear deprecation metadata |
 | `openrouter-slug` | `{ "slug": "..." }` | Set/clear OpenRouter marketplace slug |
+| `hugging-face-id` | `{ "hugging_face_id": "owner/repository" }` | Set/clear the Hugging Face repository exposed by model feeds |
+
+For example, the Qwen3.6 internal build can be associated with its exact public
+artifact without changing the routing identifier:
+
+```json
+{
+  "hugging_face_id": "EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8"
+}
+```
 
 ## Authentication for registry operations
 

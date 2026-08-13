@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased (v0.8.3 candidate - provider)
+## Unreleased (v0.8.4 candidate - provider)
+
+### Provider (Swift)
+
+#### Fixes
+
+- **Stream Qwen3.6 reasoning deltas immediately (TTFT fix)** - Qwen3.6-style chat templates pre-open the `<think>` block at the prompt tail, so model output carries only the closing tag and the streaming think parser buffered the entire block before emitting anything: measured prod TTFT was `755ms + 12.51ms x reasoning_tokens` (r = 0.9878) while the first byte arrived in ~76ms. The engine now probes the rendered prompt tail (`ReasoningPromptProbe`) and injects one synthetic `<think>` open ahead of model output — gated on an active think-format parser and streaming — so `reasoning_content` streams per chunk and TTFT reflects real first-token latency. Text and VLM paths; the marker never reaches the prompt, the consumer, or the TB-007 hash domain. (#614)
+
+---
+
+## v0.8.3 (2026-08-12)
 
 ### Provider (Swift)
 

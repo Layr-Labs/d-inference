@@ -152,6 +152,9 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("expected one alias entry, got %+v", entries)
 	}
+	if entries[0].HuggingFaceID != aliasQAT {
+		t.Fatalf("alias hugging_face_id = %q, want primary build %q", entries[0].HuggingFaceID, aliasQAT)
+	}
 	// Capacity aggregates across desired + previous only (2 + 1 = 3 routable);
 	// retired builds are hide-only and must not count as active alias capacity.
 	if entries[0].Metadata.RoutableProviders != 3 || entries[0].Metadata.WarmProviders != 1 || !entries[0].Metadata.CanAccept {

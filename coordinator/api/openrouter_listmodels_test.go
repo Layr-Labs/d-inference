@@ -31,23 +31,29 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	const modelID = "mlx-community/Qwen3.5-9B-MLX-4bit"
+	const (
+		modelID       = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+		huggingFaceID = "EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8"
+	)
 
 	// Seed a rich registry entry + active version, then sync the routing catalog.
 	entry := &store.ModelRegistryEntry{
 		ID:               modelID,
-		DisplayName:      "Qwen3.5 9B",
+		DisplayName:      "Qwen3.6 35B A3B",
 		Family:           "qwen",
-		Architecture:     "9B dense",
+		Architecture:     "35B-A3B MoE",
 		Quantization:     "4bit",
 		MaxContextLength: 262144,
 		MaxOutputLength:  16384,
-		MinRAMGB:         16,
+		MinRAMGB:         32,
 		Capabilities:     []string{"tools", "reasoning"},
 		Status:           "active",
 		Description:      "Balanced general-purpose model.",
-		Metadata:         map[string]any{"deprecation_date": "2026-12-31"},
-		CreatedAt:        time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Metadata: map[string]any{
+			"deprecation_date":       "2026-12-31",
+			huggingFaceIDMetadataKey: huggingFaceID,
+		},
+		CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
@@ -92,11 +98,11 @@ func TestListModelsOpenRouterFields(t *testing.T) {
 		t.Fatalf("model %q not in response: %s", modelID, rec.Body.String())
 	}
 
-	if entryOut.Name != "Qwen3.5 9B" {
-		t.Errorf("name = %q, want %q", entryOut.Name, "Qwen3.5 9B")
+	if entryOut.Name != "Qwen3.6 35B A3B" {
+		t.Errorf("name = %q, want %q", entryOut.Name, "Qwen3.6 35B A3B")
 	}
-	if entryOut.HuggingFaceID != modelID {
-		t.Errorf("hugging_face_id = %q, want %q", entryOut.HuggingFaceID, modelID)
+	if entryOut.HuggingFaceID != huggingFaceID {
+		t.Errorf("hugging_face_id = %q, want %q", entryOut.HuggingFaceID, huggingFaceID)
 	}
 	if entryOut.Created != entry.CreatedAt.Unix() {
 		t.Errorf("created = %d, want %d", entryOut.Created, entry.CreatedAt.Unix())

@@ -331,13 +331,28 @@ func openRouterIsReady(meta map[string]any) bool {
 	return true
 }
 
+const huggingFaceIDMetadataKey = "hugging_face_id"
+
+// huggingFaceIDForModel returns the exact Hugging Face repository OpenRouter
+// should inspect. Most concrete model ids are already Hugging Face paths; an
+// explicit metadata value supports internal routing ids without conflating the
+// two identities.
+func huggingFaceIDForModel(modelID string, meta map[string]any) string {
+	if id, ok := meta[huggingFaceIDMetadataKey].(string); ok {
+		if id = strings.TrimSpace(id); id != "" {
+			return id
+		}
+	}
+	return modelID
+}
+
 // openRouterSlug returns the OpenRouter marketplace slug for a model: an
 // operator override from registry metadata ("openrouter_slug") if present,
 // otherwise the model id itself.
 //
 // OpenRouter's provider spec leaves the slug underspecified and its own example
-// sets slug == id, so the id (a globally-unique HuggingFace path) is a safe,
-// collision-free default. Operators map a model onto an existing marketplace
+// sets slug == id, so the globally unique model id is a safe, collision-free
+// default. Operators map a model onto an existing marketplace
 // slug (e.g. "qwen/qwen3.5-9b") explicitly via the openrouter_slug metadata
 // override / the admin openrouter-slug action.
 func openRouterSlug(modelID string, meta map[string]any) string {

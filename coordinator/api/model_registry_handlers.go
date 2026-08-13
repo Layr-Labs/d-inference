@@ -382,6 +382,46 @@ func (s *Server) handleAdminModelRegistryAction(w http.ResponseWriter, r *http.R
 			resp["openrouter_slug"] = slug
 		}
 		writeJSON(w, http.StatusOK, resp)
+	case "hugging-face-id":
+		// Sets (or clears) the exact Hugging Face repository exposed in model
+		// feeds. Internal routing ids need not be valid Hugging Face paths.
+		var req struct {
+			HuggingFaceID string `json:"hugging_face_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid JSON: "+err.Error()))
+			return
+		}
+		huggingFaceID := strings.TrimSpace(req.HuggingFaceID)
+		rec, err := s.store.GetModelRegistryRecord(modelID)
+		if err != nil {
+			s.writeModelRegistryStoreError(w, "get model for hugging-face-id update", err)
+			return
+		}
+		entry := registryEntryFromRecord(rec)
+		meta := make(map[string]any, len(entry.Metadata))
+		for k, v := range entry.Metadata {
+			meta[k] = v
+		}
+		if huggingFaceID == "" {
+			delete(meta, huggingFaceIDMetadataKey)
+		} else {
+			meta[huggingFaceIDMetadataKey] = huggingFaceID
+		}
+		entry.Metadata = meta
+		if err := s.store.UpsertModelRegistryEntry(entry); err != nil {
+			s.writeModelRegistryStoreError(w, "update hugging-face-id", err)
+			return
+		}
+		s.SyncModelCatalog()
+		resp := map[string]any{"status": "updated", "model_id": modelID}
+		if huggingFaceID == "" {
+			resp["hugging_face_id"] = nil
+			resp["note"] = "Hugging Face ID cleared — feed falls back to the model id"
+		} else {
+			resp["hugging_face_id"] = huggingFaceID
+		}
+		writeJSON(w, http.StatusOK, resp)
 	default:
 		writeJSON(w, http.StatusNotFound, errorResponse("not_found", "model action not found"))
 	}
@@ -514,7 +554,7 @@ func parseAdminModelActionPath(p string) (string, string, bool) {
 	if rest == p || rest == "" {
 		return "", "", false
 	}
-	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug"} {
+	for _, action := range []string{"/promote", "/status", "/runtime-parameters", "/capabilities", "/deprecation", "/openrouter-slug", "/hugging-face-id"} {
 		if strings.HasSuffix(rest, action) {
 			modelID, err := url.PathUnescape(strings.TrimSuffix(rest, action))
 			if err != nil {
@@ -797,7 +837,7 @@ func catalogModelFromRegistryRecord(rec *store.ModelRegistryRecord) map[string]a
 
 		// OpenRouter-shaped fields (mirrors /v1/models) for UI consistency.
 		"name":                          supported.DisplayName,
-		"hugging_face_id":               supported.ID,
+		"hugging_face_id":               huggingFaceIDForModel(supported.ID, rec.Metadata),
 		"input_modalities":              inputModalities,
 		"output_modalities":             outputModalities,
 		"supported_features":            supportedFeaturesFromCapabilities(rec.Capabilities),

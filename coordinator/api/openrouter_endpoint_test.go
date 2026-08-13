@@ -31,19 +31,25 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	const modelID = "mlx-community/Qwen3.5-9B-MLX-4bit"
+	const (
+		modelID       = "qwen3.6-35b-a3b-vl-mtp-mxfp8"
+		huggingFaceID = "EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8"
+	)
 	entry := &store.ModelRegistryEntry{
 		ID:               modelID,
-		DisplayName:      "Qwen3.5 9B",
+		DisplayName:      "Qwen3.6 35B A3B",
 		Quantization:     "4bit",
 		MaxContextLength: 262144,
 		MaxOutputLength:  16384,
-		MinRAMGB:         16,
+		MinRAMGB:         32,
 		Capabilities:     []string{"tools", "reasoning"},
 		Status:           "active",
 		Description:      "Balanced general-purpose model.",
-		Metadata:         map[string]any{"openrouter_slug": "darkbloom/qwen3.5-9b"},
-		CreatedAt:        time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		Metadata: map[string]any{
+			"openrouter_slug":        "darkbloom/qwen3.6-35b-a3b",
+			huggingFaceIDMetadataKey: huggingFaceID,
+		},
+		CreatedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	version := &store.ModelVersion{ModelID: modelID, Version: "v1", R2Prefix: modelR2Prefix(modelID, "v1"), AggregateSHA256: testHash, TotalSizeBytes: 9_000_000_000, FileCount: 1, Status: "ready"}
 	files := []store.ModelVersionFile{{Path: "config.json", SizeBytes: 1, SHA256: testHash, Role: "config"}}
@@ -82,11 +88,11 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 		t.Fatalf("model not in feed: %s", rec.Body.String())
 	}
 
-	if m.Name != "Qwen3.5 9B" {
+	if m.Name != "Qwen3.6 35B A3B" {
 		t.Errorf("name = %q", m.Name)
 	}
-	if m.HuggingFaceID != modelID {
-		t.Errorf("hugging_face_id = %q", m.HuggingFaceID)
+	if m.HuggingFaceID != huggingFaceID {
+		t.Errorf("hugging_face_id = %q, want %q", m.HuggingFaceID, huggingFaceID)
 	}
 	if m.Created != entry.CreatedAt.Unix() {
 		t.Errorf("created = %d, want %d", m.Created, entry.CreatedAt.Unix())
@@ -115,8 +121,8 @@ func TestOpenRouterModelsEndpoint(t *testing.T) {
 	if !m.IsReady {
 		t.Error("is_ready should be true for an active model")
 	}
-	if m.OpenRouter == nil || m.OpenRouter.Slug != "darkbloom/qwen3.5-9b" {
-		t.Errorf("slug = %+v, want darkbloom/qwen3.5-9b", m.OpenRouter)
+	if m.OpenRouter == nil || m.OpenRouter.Slug != "darkbloom/qwen3.6-35b-a3b" {
+		t.Errorf("slug = %+v, want darkbloom/qwen3.6-35b-a3b", m.OpenRouter)
 	}
 
 	// The pure feed must NOT carry the Darkbloom metadata block.
@@ -247,6 +253,16 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 
 	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B fp8")
 	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B qat")
+	const aliasHuggingFaceID = "google/gemma-4-26b-it"
+	primaryRecord, err := st.GetModelRegistryRecord(aliasQAT)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryEntry := registryEntryFromRecord(primaryRecord)
+	primaryEntry.Metadata = map[string]any{huggingFaceIDMetadataKey: aliasHuggingFaceID}
+	if err := st.UpsertModelRegistryEntry(primaryEntry); err != nil {
+		t.Fatal(err)
+	}
 	seedActiveModel(t, st, "mlx-community/unrelated-9b", "Unrelated 9B")
 	if err := st.UpsertModelAlias(&store.ModelAlias{
 		AliasID: "gemma-4-26b", DisplayName: "Gemma 4 26B", Active: true,
@@ -282,8 +298,8 @@ func TestOpenRouterModelsAliasEntriesHideBuilds(t *testing.T) {
 	if alias.OpenRouter == nil || alias.OpenRouter.Slug != "gemma-4-26b" {
 		t.Fatalf("alias slug = %+v, want gemma-4-26b", alias.OpenRouter)
 	}
-	if alias.HuggingFaceID != aliasQAT {
-		t.Fatalf("alias hugging_face_id = %q, want primary build", alias.HuggingFaceID)
+	if alias.HuggingFaceID != aliasHuggingFaceID {
+		t.Fatalf("alias hugging_face_id = %q, want %q", alias.HuggingFaceID, aliasHuggingFaceID)
 	}
 	// Member builds are hidden from the raw listing.
 	if _, leaked := byID[aliasFP8]; leaked {

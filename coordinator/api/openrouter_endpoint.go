@@ -72,7 +72,7 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		reg, hasReg := registryByID[id]
 		entry := types.OpenRouterModel{
 			ID:                id,
-			HuggingFaceID:     id, // our model IDs are HuggingFace paths
+			HuggingFaceID:     huggingFaceIDForModel(id, reg.Metadata),
 			Name:              openRouterModelName(cm, reg, hasReg, id),
 			InputModalities:   []string{"text"},
 			OutputModalities:  []string{"text"},
@@ -105,9 +105,9 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 // is the ALIAS so the marketplace listing is stable across build migrations;
 // per-build fields (pricing, context, readiness) come from the alias's primary
 // build (the desired build when in catalog, else the previous build).
-// HuggingFaceID stays the primary build's real HF path — OpenRouter ingests it
-// for model metadata, and a fabricated path would break that; the routing name
-// consumers send/receive is still only ever the alias.
+// HuggingFaceID stays the primary build's configured HF path — OpenRouter
+// ingests it for model metadata, and a fabricated path would break that; the
+// routing name consumers send/receive is still only ever the alias.
 func (s *Server) openRouterAliasEntries(
 	catalogByID map[string]store.SupportedModel,
 	registryByID map[string]store.ModelRegistryEntry,
@@ -167,7 +167,7 @@ func (s *Server) openRouterAliasEntries(
 		}
 		entry := types.OpenRouterModel{
 			ID:                a.AliasID,
-			HuggingFaceID:     primary,
+			HuggingFaceID:     huggingFaceIDForModel(primary, reg.Metadata),
 			Name:              displayName,
 			InputModalities:   []string{"text"},
 			OutputModalities:  []string{"text"},

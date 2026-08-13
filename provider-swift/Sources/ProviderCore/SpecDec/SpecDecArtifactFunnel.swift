@@ -153,12 +153,15 @@ actor SpecDecArtifactFunnel {
         if Self.isQwen35Target(modelType: request.modelType),
             let directory = request.modelDirectory
         {
-            guard let artifact = SpecDecStore.inspectInlineArtifact(directory: directory) else {
+            switch SpecDecStore.inspectInlineArtifact(directory: directory) {
+            case .failure:
+                // The store already logged the concrete reason and file path.
                 return .init(
                     artifact: nil,
                     status: .disabled(.inlineArtifactInvalid, configured: true))
+            case .success(let artifact):
+                return .init(artifact: artifact, status: .candidate(artifact))
             }
-            return .init(artifact: artifact, status: .candidate(artifact))
         }
         guard Self.isGemma4Target(modelType: request.modelType) else {
             return .init(artifact: nil, status: .disabled(.targetUnsupported, configured: true))

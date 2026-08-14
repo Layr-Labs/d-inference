@@ -23,7 +23,7 @@ extension ProviderLoop {
         // the serving-mode split — see `RetiredKnobWarnings`. Doing it here
         // reached only the coordinator-serving modes.
 
-        logger.info("darkbloom \(ProviderCore.version) starting")
+        logger.info(.providerStarting)
         logger.info("Hardware: \(loopConfig.hardware.chipName), \(loopConfig.hardware.memoryGb) GB RAM, \(loopConfig.hardware.gpuCores) GPU cores")
         logger.info("Models: \(loopConfig.models.count) advertised")
         logger.info("Coordinator: \(loopConfig.coordinatorURL)")
@@ -217,7 +217,7 @@ extension ProviderLoop {
         startCapacityRefreshMonitor()
         startAutoUpdateMonitor()
 
-        logger.info("Coordinator client started, entering event loop")
+        logger.info(.coordinatorClientStarted)
 
         // 5. Process events. Cancellation is used by schedule enforcement
         // and service shutdown; explicitly close the WebSocket so the stream
@@ -226,10 +226,10 @@ extension ProviderLoop {
             for await event in events {
                 switch event {
                 case .connected:
-                    logger.info("Connected to coordinator")
+                    logger.info(.coordinatorConnected)
 
                 case .disconnected:
-                    logger.warning("Disconnected from coordinator")
+                    logger.warning(.coordinatorDisconnected)
                     // Cancel all in-flight requests on disconnect -- the coordinator
                     // will not route responses for a dead connection.
                     await cancelAllInflight()
@@ -297,7 +297,7 @@ extension ProviderLoop {
             Task { await coordinator.shutdown() }
         }
 
-        logger.info("Event stream ended, shutting down")
+        logger.info(.coordinatorEventStreamEnded)
         isShuttingDown = true
         idleMonitorTask?.cancel()
         idleMonitorTask = nil

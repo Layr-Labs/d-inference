@@ -1,8 +1,5 @@
 import Foundation
 import Network
-#if canImport(os)
-import os
-#endif
 
 
 // MARK: - Coordinator Client Actor
@@ -129,7 +126,7 @@ public actor CoordinatorClient {
             do {
                 return try CoordinatorClientCodec.encodeOutboundMessage(message)
             } catch {
-                chunkLogger.error("chunk encode failed")
+                chunkLogger.error(.coordinatorChunkEncodeFailed)
                 TelemetryClient.shared.emit(
                     kind: .protocolError,
                     severity: .error,
@@ -285,21 +282,8 @@ enum SecurityChecks {
 }
 
 
-// MARK: - Logger (os.Logger on macOS, stderr fallback)
-//
-// Named uniquely (not `Logger`) and `internal` so the actor's `logger` property
-// can be internal for the in-module split without shadowing `Logging.Logger` /
-// `os.Logger` elsewhere in the module.
+// MARK: - Logger
 
-#if canImport(os)
-internal typealias CoordinatorWSLogger = os.Logger
-#else
-internal struct CoordinatorWSLogger {
-    let subsystem: String
-    let category: String
-
-    func info(_ msg: String) { print("[\(category)] INFO: \(msg)") }
-    func warning(_ msg: String) { print("[\(category)] WARN: \(msg)") }
-    func error(_ msg: String) { print("[\(category)] ERROR: \(msg)") }
-}
-#endif
+// Keep the historical coordinator-specific name while sharing ProviderLogger's
+// closed public vocabulary and private-by-default String overloads.
+internal typealias CoordinatorWSLogger = ProviderLogger

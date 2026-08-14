@@ -281,7 +281,7 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 			// The terminal is still delivered to the consumer channel either way.
 			select {
 			case delivered := <-pr.ErrorCh:
-				wantStatus := safeInferenceFailureStatus(tc.msg.FailureCode, tc.msg.ErrorReason, tc.msg.TerminalCause)
+				wantStatus := safeInferenceFailureStatus(tc.msg.FailureCode, tc.msg.ErrorReason, tc.msg.TerminalCause, tc.msg.StatusCode)
 				if delivered.StatusCode != wantStatus {
 					t.Errorf("delivered status = %d, want canonical %d", delivered.StatusCode, wantStatus)
 				}

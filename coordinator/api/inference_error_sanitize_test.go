@@ -84,9 +84,9 @@ func TestSanitizeProviderInferenceErrorPreservesTypedToolNoncompliance422(t *tes
 	safe, invalidCode, invalidCause := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
 		RequestID:   "req-tool-contract",
 		Error:       "TOOL_OUTPUT_LEAK_SENTINEL",
-		StatusCode:  599,
+		StatusCode:  http.StatusUnprocessableEntity,
 		ErrorReason: errorReasonToolNoncompliance,
-		FailureCode: protocol.FailureCodeInvalidRequest,
+		FailureCode: protocol.FailureCodeGenerationFailure,
 	})
 	if invalidCode || invalidCause {
 		t.Fatalf("typed failure rejected: invalidCode=%v invalidCause=%v", invalidCode, invalidCause)
@@ -94,7 +94,7 @@ func TestSanitizeProviderInferenceErrorPreservesTypedToolNoncompliance422(t *tes
 	if safe.StatusCode != http.StatusUnprocessableEntity || safe.ErrorReason != errorReasonToolNoncompliance {
 		t.Fatalf("typed tool contract semantics lost: %+v", safe)
 	}
-	if safe.Error != "invalid inference request" || strings.Contains(safe.Error, "LEAK_SENTINEL") {
+	if safe.Error != "inference generation failed" || strings.Contains(safe.Error, "LEAK_SENTINEL") {
 		t.Fatalf("unsafe client text: %q", safe.Error)
 	}
 }
@@ -105,15 +105,19 @@ func TestSanitizeProviderInferenceErrorDerivesStatusFromClosedFields(t *testing.
 		code   protocol.InferenceFailureCode
 		reason string
 		cause  string
+		status int
 		want   int
 	}{
-		{"invalid request", protocol.FailureCodeInvalidRequest, "", "", 400},
-		{"tool noncompliance", protocol.FailureCodeInvalidRequest, errorReasonToolNoncompliance, "", 422},
-		{"template", protocol.FailureCodeTemplateRender, "", "", 422},
-		{"queue full", protocol.FailureCodeCapacity, errorReasonQueueFull, "", 429},
-		{"capacity", protocol.FailureCodeCapacity, errorReasonCapacityBusy, "", 503},
-		{"safety deadline", protocol.FailureCodeGenerationFailure, "", terminalCauseSafetyDeadline, 504},
-		{"cancelled", protocol.FailureCodeGenerationFailure, "", terminalCauseCancelled, 499},
+		{"invalid request", protocol.FailureCodeInvalidRequest, "", "", 299, 400},
+		{"tool noncompliance", protocol.FailureCodeGenerationFailure, errorReasonToolNoncompliance, "", 299, 422},
+		{"template", protocol.FailureCodeTemplateRender, "", "", 299, 422},
+		{"queue full", protocol.FailureCodeCapacity, errorReasonQueueFull, "", 299, 429},
+		{"capacity", protocol.FailureCodeCapacity, errorReasonCapacityBusy, "", 299, 503},
+		{"missing model load", protocol.FailureCodeModelUnavailable, errorReasonModelLoad, "", 404, 404},
+		{"transient model load", protocol.FailureCodeCapacity, errorReasonModelLoad, "", 503, 503},
+		{"faulted model load", protocol.FailureCodeInternalFailure, errorReasonModelLoad, "", 500, 500},
+		{"safety deadline", protocol.FailureCodeGenerationFailure, "", terminalCauseSafetyDeadline, 299, 504},
+		{"cancelled", protocol.FailureCodeGenerationFailure, "", terminalCauseCancelled, 299, 499},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,11 +125,151 @@ func TestSanitizeProviderInferenceErrorDerivesStatusFromClosedFields(t *testing.
 				FailureCode:   tc.code,
 				ErrorReason:   tc.reason,
 				TerminalCause: tc.cause,
-				// The provider cannot override the status selected by closed fields.
-				StatusCode: 299,
+				// The provider cannot override status except where the closed
+				// model-load contract explicitly distinguishes 404 from 503.
+				StatusCode: tc.status,
 			})
 			if safe.StatusCode != tc.want {
 				t.Fatalf("status = %d, want %d; safe=%+v", safe.StatusCode, tc.want, safe)
+			}
+		})
+	}
+}
+
+func TestSanitizeProviderInferenceErrorLegacyModelLoadCategories(t *testing.T) {
+	cases := []struct {
+		status int
+		code   protocol.InferenceFailureCode
+	}{
+		{http.StatusNotFound, protocol.FailureCodeModelUnavailable},
+		{http.StatusServiceUnavailable, protocol.FailureCodeCapacity},
+		{http.StatusInternalServerError, protocol.FailureCodeInternalFailure},
+	}
+	for _, tc := range cases {
+		safe, invalidCode, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
+			StatusCode:  tc.status,
+			ErrorReason: errorReasonModelLoad,
+		})
+		if !invalidCode {
+			t.Fatal("legacy frame without failure_code was not reported as drift")
+		}
+		if safe.FailureCode != tc.code ||
+			safe.StatusCode != tc.status ||
+			safe.ErrorReason != errorReasonModelLoad {
+			t.Fatalf("legacy status %d normalized to %+v, want code=%q reason=%q",
+				tc.status, safe, tc.code, errorReasonModelLoad)
+		}
+	}
+}
+
+func TestSanitizeProviderInferenceErrorPreservesLegacyBare429(t *testing.T) {
+	input := protocol.InferenceErrorMessage{
+		RequestID:  "req-legacy-429",
+		Error:      "PROVIDER_QUEUE_DETAIL_LEAK_SENTINEL",
+		StatusCode: http.StatusTooManyRequests,
+	}
+	safe, invalidCode, invalidCause := sanitizeProviderInferenceError(&input)
+	if !invalidCode || invalidCause {
+		t.Fatalf("legacy drift flags = (%v, %v), want (true, false)", invalidCode, invalidCause)
+	}
+	if safe.FailureCode != protocol.FailureCodeCapacity ||
+		safe.ErrorReason != errorReasonQueueFull ||
+		safe.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("bare legacy 429 lost queue-full semantics: %+v", safe)
+	}
+	if safe.Error != "request rejected: provider capacity unavailable" ||
+		strings.Contains(safe.Error, "LEAK_SENTINEL") {
+		t.Fatalf("legacy 429 did not receive fixed capacity message: %q", safe.Error)
+	}
+
+	second, _, _ := sanitizeProviderInferenceError(&safe)
+	if !reflect.DeepEqual(safe, second) {
+		t.Fatalf("legacy 429 sanitizer result is not idempotent:\nfirst:  %+v\nsecond: %+v", safe, second)
+	}
+}
+
+func TestSanitizeProviderInferenceErrorTypedCapacityReasonControls429Versus503(t *testing.T) {
+	cases := []struct {
+		name           string
+		suppliedStatus int
+		reason         string
+		wantStatus     int
+	}{
+		{"queue full remains 429", http.StatusServiceUnavailable, errorReasonQueueFull, http.StatusTooManyRequests},
+		{"capacity timeout remains 503", http.StatusTooManyRequests, errorReasonCapacityTimeout, http.StatusServiceUnavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			safe, invalidCode, invalidCause := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
+				FailureCode: protocol.FailureCodeCapacity,
+				StatusCode:  tc.suppliedStatus,
+				ErrorReason: tc.reason,
+			})
+			if invalidCode || invalidCause {
+				t.Fatalf("valid typed capacity frame rejected: invalidCode=%v invalidCause=%v", invalidCode, invalidCause)
+			}
+			if safe.FailureCode != protocol.FailureCodeCapacity ||
+				safe.ErrorReason != tc.reason ||
+				safe.StatusCode != tc.wantStatus {
+				t.Fatalf("typed capacity frame normalized to %+v, want reason=%q status=%d",
+					safe, tc.reason, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func TestLegacyBare429RemainsTransientAndHealthNeutral(t *testing.T) {
+	safe, _, _ := sanitizeProviderInferenceError(&protocol.InferenceErrorMessage{
+		StatusCode: http.StatusTooManyRequests,
+	})
+
+	dispatch := &dispatchState{s: newTestServerForDispatch(t), model: "test-model"}
+	dispatch.setLastInferenceError(nil, safe)
+	if dispatch.shouldStopFailover() {
+		t.Fatal("legacy bare 429 must remain transient below the bounded capacity retry limit")
+	}
+	if dispatch.capacityRetries != 1 || dispatch.terminalClientError {
+		t.Fatalf("legacy bare 429 failover state = retries:%d terminalClientError:%v",
+			dispatch.capacityRetries, dispatch.terminalClientError)
+	}
+
+	srv, reg, provider, pr := newBreakerExemptionHarness(t, "legacy-bare-429")
+	dispatch = &dispatchState{s: srv, model: pr.Model}
+	for range breakerStrikeRounds {
+		dispatch.noteProviderError(provider, pr,
+			safe.StatusCode, safe.Error, safe.ErrorReason, safe.TerminalCause, nil)
+	}
+	assertBreakerStates(t, reg, provider, pr, false)
+	if !reg.CapacityCooldownActive(provider.ID, pr.Model) {
+		t.Fatal("repeated legacy queue-full sheds must feed only the capacity cooldown")
+	}
+}
+
+func TestTypedMediaFailuresUseFixedClientMessages(t *testing.T) {
+	srv := &Server{logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	cases := []struct {
+		name       string
+		code       protocol.InferenceFailureCode
+		wantStatus int
+		wantText   string
+	}{
+		{"invalid media", protocol.FailureCodeInvalidMedia, http.StatusBadRequest, "invalid media input"},
+		{"unsupported media", protocol.FailureCodeUnsupportedMedia, http.StatusUnsupportedMediaType, "unsupported media input"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			srv.writeGenericProviderError(recorder, protocol.InferenceErrorMessage{
+				Error:       "PROVIDER_MEDIA_DETAIL_LEAK_SENTINEL",
+				StatusCode:  http.StatusInternalServerError,
+				FailureCode: tc.code,
+			})
+			if recorder.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d; body=%s", recorder.Code, tc.wantStatus, recorder.Body.String())
+			}
+			if !strings.Contains(recorder.Body.String(), tc.wantText) ||
+				strings.Contains(recorder.Body.String(), "LEAK_SENTINEL") {
+				t.Fatalf("client body did not use fixed %q message: %s", tc.code, recorder.Body.String())
 			}
 		})
 	}
@@ -143,6 +287,10 @@ func TestSanitizeProviderInferenceErrorIsIdempotent(t *testing.T) {
 		{StatusCode: 503},
 		{StatusCode: 504},
 		{FailureCode: "unknown_code", StatusCode: 299},
+		{FailureCode: protocol.FailureCodeCapacity, StatusCode: 503, ErrorReason: errorReasonQueueFull},
+		{FailureCode: protocol.FailureCodeCapacity, StatusCode: 429, ErrorReason: errorReasonCapacityTimeout},
+		{FailureCode: protocol.FailureCodeInvalidMedia, StatusCode: 500},
+		{FailureCode: protocol.FailureCodeUnsupportedMedia, StatusCode: 500},
 	}
 	for _, input := range cases {
 		input.RequestID = "coordinator-request-id"

@@ -8,10 +8,10 @@ import (
 
 // sanitizeProviderInferenceError is the provider-frame confidentiality
 // boundary. It returns a copy containing only closed-vocabulary strings and
-// code-derived status/message values. In particular, msg.Error is never read:
-// provider-authored prose can contain prompts, paths, URLs, tool arguments, or
-// arbitrary byte-encoding schemes and must not influence control flow or leave
-// this function.
+// status/message values derived from mutually validated closed fields. In
+// particular, msg.Error is never read: provider-authored prose can contain
+// prompts, paths, URLs, tool arguments, or arbitrary byte-encoding schemes and
+// must not influence control flow or leave this function.
 //
 // Missing/unknown failure codes are accepted for mixed-fleet wire compatibility
 // but fail closed as generation_failure. The booleans let the caller emit
@@ -42,8 +42,18 @@ func sanitizeProviderInferenceError(msg *protocol.InferenceErrorMessage) (safe p
 	}
 
 	safe.TerminalCause, invalidCause = sanitizeProviderTerminalCause(msg.TerminalCause)
-	safe.ErrorReason = safeInferenceErrorReason(safe.FailureCode, msg.ErrorReason)
-	safe.StatusCode = safeInferenceFailureStatus(safe.FailureCode, safe.ErrorReason, safe.TerminalCause)
+	suppliedReason := msg.ErrorReason
+	// Older providers used a bare 429 to mean queue saturation. Preserve that
+	// bounded distinction during rolling upgrades; typed capacity frames remain
+	// reason-driven, so capacity_timeout continues to canonicalize to 503.
+	if legacyFrame &&
+		msg.StatusCode == http.StatusTooManyRequests &&
+		msg.ErrorReason == "" &&
+		msg.TerminalCause == "" {
+		suppliedReason = errorReasonQueueFull
+	}
+	safe.ErrorReason = safeInferenceErrorReason(safe.FailureCode, suppliedReason)
+	safe.StatusCode = safeInferenceFailureStatus(safe.FailureCode, safe.ErrorReason, safe.TerminalCause, msg.StatusCode)
 	safe.Error = safeInferenceFailureMessage(safe.FailureCode)
 	return safe, invalidCode, invalidCause
 }
@@ -64,7 +74,14 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 	}
 	switch normalizedReason {
 	case errorReasonModelLoad:
-		return protocol.FailureCodeModelUnavailable
+		switch status {
+		case http.StatusNotFound:
+			return protocol.FailureCodeModelUnavailable
+		case http.StatusServiceUnavailable:
+			return protocol.FailureCodeCapacity
+		default:
+			return protocol.FailureCodeInternalFailure
+		}
 	case errorReasonCapacityTimeout,
 		errorReasonQueueFull,
 		errorReasonTokenBudgetExhaust,
@@ -76,8 +93,10 @@ func legacyInferenceFailureCode(status int, reason, terminalCause string) protoc
 		return protocol.FailureCodeCapacity
 	case errorReasonCancelled:
 		return protocol.FailureCodeCancelled
-	case errorReasonClientError, errorReasonToolNoncompliance:
+	case errorReasonClientError:
 		return protocol.FailureCodeInvalidRequest
+	case errorReasonToolNoncompliance:
+		return protocol.FailureCodeGenerationFailure
 	}
 	switch status {
 	case http.StatusBadRequest:
@@ -133,7 +152,10 @@ func safeInferenceFailureMessage(code protocol.InferenceFailureCode) string {
 	}
 }
 
-func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason, terminalCause string) int {
+// safeInferenceFailureStatus canonicalizes status from code/reason/cause. The
+// only preserved supplied-status distinction is model_unavailable 404 versus
+// 503; all other combinations remain code-derived.
+func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason, terminalCause string, suppliedStatus int) int {
 	switch terminalCause {
 	case terminalCauseAdmissionTimeout:
 		return http.StatusServiceUnavailable
@@ -162,13 +184,21 @@ func safeInferenceFailureStatus(code protocol.InferenceFailureCode, errorReason,
 		}
 		return http.StatusServiceUnavailable
 	case protocol.FailureCodeModelUnavailable:
+		if suppliedStatus == http.StatusNotFound {
+			return http.StatusNotFound
+		}
 		return http.StatusServiceUnavailable
 	case protocol.FailureCodeCancelled:
 		return 499
 	case protocol.FailureCodeEncryptionFailure:
 		return http.StatusBadGateway
-	case protocol.FailureCodeGenerationFailure, protocol.FailureCodeInternalFailure:
-		fallthrough
+	case protocol.FailureCodeGenerationFailure:
+		if errorReason == errorReasonToolNoncompliance {
+			return http.StatusUnprocessableEntity
+		}
+		return http.StatusInternalServerError
+	case protocol.FailureCodeInternalFailure:
+		return http.StatusInternalServerError
 	default:
 		return http.StatusInternalServerError
 	}
@@ -202,6 +232,8 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 		return errorReasonModelLoad
 	case protocol.FailureCodeCapacity:
 		switch reason {
+		case errorReasonModelLoad:
+			return reason
 		case errorReasonCapacityTimeout,
 			errorReasonQueueFull,
 			errorReasonTokenBudgetExhaust,
@@ -216,6 +248,16 @@ func safeInferenceErrorReason(code protocol.InferenceFailureCode, supplied strin
 		}
 	case protocol.FailureCodeCancelled:
 		return errorReasonCancelled
+	case protocol.FailureCodeGenerationFailure:
+		if reason == errorReasonToolNoncompliance {
+			return reason
+		}
+		return errorReasonProviderError
+	case protocol.FailureCodeInternalFailure:
+		if reason == errorReasonModelLoad {
+			return reason
+		}
+		return errorReasonProviderError
 	default:
 		return errorReasonProviderError
 	}

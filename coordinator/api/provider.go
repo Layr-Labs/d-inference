@@ -463,6 +463,14 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			}
 
 		case protocol.TypeHeartbeat:
+			if provider == nil {
+				// Heartbeats are meaningful only after this connection has
+				// registered. Reject the protocol violation before touching any
+				// provider snapshot or other per-registration state.
+				s.logger.Warn("heartbeat from unregistered provider", "provider_id", providerID)
+				_ = conn.Close(websocket.StatusPolicyViolation, "register before heartbeat")
+				return
+			}
 			hbMsg := msg.Payload.(*protocol.HeartbeatMessage)
 			replaceCacheCapabilities :=
 				hbMsg.PrefixCacheProtocol != 0 || hbMsg.PrefixCacheV2Models != nil
@@ -2374,7 +2382,7 @@ func (s *Server) handleInferenceError(providerID string, provider *registry.Prov
 	// allowlist (legacy or fault only) makes both guarantees unconditional
 	// rather than dependent on provider error-string phrasing.
 	if (causeClass == causeClassLegacy || causeClass == causeClassFault) &&
-		msg.FailureCode == protocol.FailureCodeModelUnavailable {
+		msg.ErrorReason == errorReasonModelLoad {
 		if s.registry.RecordDispatchLoadFailure(providerID, pr.Model) {
 			s.logger.Warn("load-failure cool-down started",
 				"provider_id", providerID,

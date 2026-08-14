@@ -1006,6 +1006,26 @@ extension ProviderLoop {
         }
     }
 
+    /// Preserve the three coordinator-visible model-load outcomes without
+    /// exposing the underlying load error: missing model (404), transient load
+    /// pressure (503), and a genuine provider fault (500).
+    static func loadInferenceFailure(for error: any Error) -> InferenceFailure {
+        let statusCode = loadErrorStatusCode(for: error)
+        let code: InferenceFailureCode
+        switch statusCode {
+        case 404:
+            code = .modelUnavailable
+        case 503:
+            code = .capacity
+        default:
+            code = .internalFailure
+        }
+        return InferenceFailure(
+            code: code,
+            statusCode: statusCode,
+            errorReason: .modelLoad)
+    }
+
     private func loadModelContainer(from directory: URL) async throws -> MLXLMCommon.ModelContainer {
         // Vision-language models (config declares `vision_config`) load via
         // VLMModelFactory so image/video requests can run the container's

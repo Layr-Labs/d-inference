@@ -36,11 +36,25 @@ public final class TelemetryOverflowQueue: @unchecked Sendable {
     }
 
     /// Removes data persisted by an older build without creating a directory,
-    /// lock file, or replacement artifact when nothing exists.
+    /// lock file, or replacement artifact when nothing exists. Only regular
+    /// files at the two exact historical paths are eligible: symlinks,
+    /// directories, devices, and other non-regular entries are left untouched.
+    /// Removal remains best-effort so housekeeping cannot prevent serving.
     public func purge() {
         lock.lock()
         defer { lock.unlock() }
-        try? FileManager.default.removeItem(at: path)
-        try? FileManager.default.removeItem(at: path.appendingPathExtension("tmp"))
+
+        removeLegacyArtifactIfRegular(at: path)
+        removeLegacyArtifactIfRegular(at: path.appendingPathExtension("tmp"))
+    }
+
+    private func removeLegacyArtifactIfRegular(at artifact: URL) {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        guard
+            let values = try? artifact.resourceValues(forKeys: keys),
+            values.isRegularFile == true,
+            values.isSymbolicLink != true
+        else { return }
+        try? FileManager.default.removeItem(at: artifact)
     }
 }

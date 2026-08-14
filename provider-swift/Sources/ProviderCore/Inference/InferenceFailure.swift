@@ -101,21 +101,29 @@ enum InferenceFailurePhase: Sendable, Equatable {
     case generation
 }
 
-/// A narrow logger for inference failures. The production initializer accepts
-/// a `ProviderLogger`; tests inject a recording sink. There is deliberately no
-/// overload accepting `Error` or a free-form detail string.
+/// A narrow logger for inference failures. The production initializer emits a
+/// fixed public category plus a private diagnostic line containing the request
+/// ID and bounded wire classifications. Tests may inject the private sink.
+/// There is deliberately no overload accepting `Error` or a free-form detail.
 struct InferenceFailureLogger: Sendable {
-    private let sink: @Sendable (String) -> Void
+    private let privateSink: @Sendable (String) -> Void
+    private let publicSink: @Sendable (InferenceFailureCode) -> Void
 
     init(logger: ProviderLogger) {
-        self.sink = { logger.error($0) }
+        self.privateSink = { logger.error($0) }
+        self.publicSink = { code in
+            logger.error(ProviderOperationalMessage(failureCode: code))
+        }
     }
 
     init(sink: @escaping @Sendable (String) -> Void) {
-        self.sink = sink
+        self.privateSink = sink
+        self.publicSink = { _ in }
     }
 
     func record(requestId: String, failure: InferenceFailure) {
+        publicSink(failure.code)
+
         var line = "[\(requestId)] inference failure code=\(failure.code.rawValue)"
             + " status=\(failure.statusCode)"
         if let reason = failure.errorReason {
@@ -124,6 +132,24 @@ struct InferenceFailureLogger: Sendable {
         if let cause = failure.terminalCause {
             line += " terminal_cause=\(cause.rawValue)"
         }
-        sink(line)
+        privateSink(line)
+    }
+}
+
+private extension ProviderOperationalMessage {
+    init(failureCode: InferenceFailureCode) {
+        self = switch failureCode {
+        case .invalidRequest: .inferenceFailureInvalidRequest
+        case .invalidMedia: .inferenceFailureInvalidMedia
+        case .mediaTooLarge: .inferenceFailureMediaTooLarge
+        case .unsupportedMedia: .inferenceFailureUnsupportedMedia
+        case .templateRender: .inferenceFailureTemplateRender
+        case .modelUnavailable: .inferenceFailureModelUnavailable
+        case .capacity: .inferenceFailureCapacity
+        case .cancelled: .inferenceFailureCancelled
+        case .encryptionFailure: .inferenceFailureEncryption
+        case .generationFailure: .inferenceFailureGeneration
+        case .internalFailure: .inferenceFailureInternal
+        }
     }
 }

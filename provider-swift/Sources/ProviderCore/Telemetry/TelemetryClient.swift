@@ -55,11 +55,10 @@ public final class TelemetryClient: @unchecked Sendable {
     private init() {}
 
     /// Retains source compatibility while permanently disabling the sink.
-    /// Purging the exact legacy queue removes request-derived events left by an
-    /// older provider build; no other provider state is touched.
+    /// Legacy disk cleanup belongs to the common locked media-serving startup
+    /// seam, not configuration, so connected mode cannot purge twice.
     public func configure(_ config: TelemetryClientConfig) {
         _ = config
-        TelemetryOverflowQueue.shared.purge()
         logger.info("Client telemetry is disabled for inference privacy")
     }
 
@@ -81,13 +80,9 @@ public final class TelemetryClient: @unchecked Sendable {
         _ = (kind, severity, message, fields, stack, requestId)
     }
 
-    public func shutdown() async {
-        TelemetryOverflowQueue.shared.purge()
-    }
+    public func shutdown() async {}
 
-    public func shutdownSync() {
-        TelemetryOverflowQueue.shared.purge()
-    }
+    public func shutdownSync() {}
 
     /// Kept for compatibility tests and callers that display the historical
     /// endpoint. No production code sends to the returned URL.

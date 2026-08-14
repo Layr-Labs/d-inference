@@ -3,9 +3,6 @@
 
 import Foundation
 import Network
-#if canImport(os)
-import os
-#endif
 
 extension CoordinatorClient {
     /// Send a pre-encoded JSON frame on the current connection, if any. The
@@ -84,7 +81,7 @@ extension CoordinatorClient {
             eventContinuation?.yield(.cancel(requestId: requestId))
 
         case .attestationChallenge(let challenge):
-            logger.info("Received attestation challenge")
+            logger.info(.attestationChallengeReceived)
             eventContinuation?.yield(.attestationChallenge(
                 nonce: challenge.nonce,
                 timestamp: challenge.timestamp
@@ -92,8 +89,9 @@ extension CoordinatorClient {
 
         case .runtimeStatus(let status):
             if status.verified {
-                logger.info("Runtime integrity verified by coordinator")
+                logger.info(.runtimeIntegrityVerified)
             } else {
+                logger.warning(.runtimeIntegrityFailed)
                 logger.warning("Runtime integrity check FAILED -- \(status.mismatches.count) mismatch(es)")
                 for m in status.mismatches {
                     logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")

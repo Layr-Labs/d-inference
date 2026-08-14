@@ -24,9 +24,6 @@
 
 import Foundation
 import Network
-#if canImport(os)
-import os
-#endif
 
 /// Per-session WebSocket text-frame writer with reused send contexts.
 ///
@@ -69,7 +66,7 @@ final class ChunkFrameWriter: @unchecked Sendable {
                     isComplete: true,
                     completion: .contentProcessed { error in
                         if error != nil {
-                            logger.error("WS chunk send failed")
+                            logger.error(.coordinatorChunkSendFailed)
                             connection.cancel()
                         }
                     }

@@ -87,8 +87,8 @@ private func recordPanic(kind: String, message: String, stack: String) {
     )
     event.stack = truncatedStack
 
-    // Production client telemetry is disabled; both calls are no-ops except
-    // that shutdown removes an exact legacy queue left by an older build.
+    // Production client telemetry is disabled; both compatibility calls are
+    // no-ops. Legacy disk cleanup already ran under the media-serving lock.
     TelemetryOverflowQueue.shared.push(event)
     TelemetryClient.shared.shutdownSync()
 

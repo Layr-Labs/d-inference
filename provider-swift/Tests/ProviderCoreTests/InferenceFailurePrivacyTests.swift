@@ -45,3 +45,52 @@ private struct SecretInferenceError: Error, LocalizedError, CustomStringConverti
     #expect(!failure.message.contains("424242"))
     #expect(!failure.message.contains("PROMPT_SECRET"))
 }
+
+@Test func typedMediaFailuresPreserveSpecificClosedCodesOnWire() throws {
+    let cases: [(error: any Error, code: InferenceFailureCode, message: String)] = [
+        (
+            MultiModelBatchSchedulerEngineError.mediaUnsupportedByModel(
+                "PROVIDER_MEDIA_DETAIL_LEAK_SENTINEL"),
+            .unsupportedMedia,
+            "Media input is not supported."
+        ),
+        (
+            MultiModelBatchSchedulerEngineError.multimodalRejected(
+                "CALLER_MEDIA_DETAIL_LEAK_SENTINEL"),
+            .invalidMedia,
+            "Invalid media input."
+        ),
+    ]
+
+    for testCase in cases {
+        let failure = ProviderLoop.sanitizedInferenceFailure(
+            from: testCase.error,
+            phase: .streamStart)
+        let message = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+            requestId: "request-id",
+            failure: failure))
+        let wire = try ProviderProtocolCodec.encodeProviderMessage(message)
+        let wireText = try #require(String(data: wire, encoding: .utf8))
+
+        #expect(failure.code == testCase.code)
+        #expect(failure.statusCode == 400)
+        #expect(failure.errorReason == .clientError)
+        #expect(failure.message == testCase.message)
+        #expect(wireText.contains(#""failure_code":"\#(testCase.code.rawValue)""#))
+        #expect(!wireText.contains("MEDIA_DETAIL_LEAK_SENTINEL"))
+    }
+}
+
+@Test func malformedCallerMediaKeepsClosedInvalidMediaClassification() {
+    let failure = ProviderLoop.sanitizedInferenceFailure(
+        from: MediaIngest.MediaError.malformedDataURI(
+            "CALLER_MEDIA_DETAIL_LEAK_SENTINEL"),
+        phase: .streamStart,
+        errorReason: .clientError)
+
+    #expect(failure.code == .invalidMedia)
+    #expect(failure.statusCode == 400)
+    #expect(failure.errorReason == .clientError)
+    #expect(failure.message == "Invalid media input.")
+    #expect(!failure.message.contains("MEDIA_DETAIL_LEAK_SENTINEL"))
+}

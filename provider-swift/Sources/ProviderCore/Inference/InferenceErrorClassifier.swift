@@ -1,4 +1,5 @@
 import Foundation
+import MLXLMServer
 
 // MARK: - Normalized inference-error classification (DAR-341)
 //
@@ -29,11 +30,23 @@ import Foundation
 /// template failure (the coordinator terminally rejects jinja_* reasons, E4).
 func classifyTypedInferenceErrorReason(_ error: Error) -> InferenceErrorReason? {
     if let engineError = error as? MultiModelBatchSchedulerEngineError,
-        case .toolChoiceViolation = engineError {
+        case .toolChoiceViolation = engineError
+    {
         // E5: the model failed the forced tool_choice contract (missing /
         // disallowed call, or over-limit deferred prose) — output-dependent,
         // never a provider fault.
         return .toolNoncompliance
+    }
+    if let serviceError = error as? MLXOpenAIServiceError {
+        switch serviceError {
+        case .invalidResponseFormatOutput, .multipleToolCallsNotAllowed:
+            // Response-format validation and parallel-tool enforcement inspect
+            // sampled model output. Another sample/provider can comply, so
+            // these share the retryable non-provider-fault reason above.
+            return .toolNoncompliance
+        case .embeddingsNotConfigured, .responseNotFound:
+            break
+        }
     }
     return nil
 }

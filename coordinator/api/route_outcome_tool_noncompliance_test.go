@@ -135,7 +135,7 @@ func TestHandleInferenceError_ToolNoncomplianceSkipsRecordJobFailure(t *testing.
 			select {
 			case delivered := <-pr.ErrorCh:
 				wantStatus := safeInferenceFailureStatus(
-					delivered.FailureCode, delivered.ErrorReason, delivered.TerminalCause)
+					delivered.FailureCode, delivered.ErrorReason, delivered.TerminalCause, delivered.StatusCode)
 				if delivered.StatusCode != wantStatus {
 					t.Errorf("delivered status = %d, want canonical %d", delivered.StatusCode, wantStatus)
 				}

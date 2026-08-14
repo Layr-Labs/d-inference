@@ -119,9 +119,9 @@ func TestWriteGenericProviderError(t *testing.T) {
 		},
 		{
 			name:       "tool_noncompliance keeps safe typed envelope",
-			msg:        protocol.InferenceErrorMessage{FailureCode: protocol.FailureCodeInvalidRequest, Error: "model did not emit the required tool call", ErrorReason: "tool_noncompliance"},
+			msg:        protocol.InferenceErrorMessage{FailureCode: protocol.FailureCodeGenerationFailure, Error: "model did not emit the required tool call", ErrorReason: "tool_noncompliance"},
 			wantStatus: 422, wantType: "invalid_request_error",
-			wantInBody: "invalid inference request", absentBody: "required tool call",
+			wantInBody: "inference generation failed", absentBody: "required tool call",
 		},
 		{
 			name:       "plain 500 is fixed generation failure",

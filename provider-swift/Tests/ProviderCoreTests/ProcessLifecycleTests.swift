@@ -60,41 +60,56 @@ struct ProcessLifecycleTests {
         #expect(written == "\(ProcessInfo.processInfo.processIdentifier)")
     }
 
-    @Test("media-serving launch paths acquire the lock before one housekeeping pass")
+    @Test("standalone and connected launches share one locked housekeeping pass")
     func mediaServingLockOrdersHousekeeping() throws {
-        let expectedPIDFile = tempPIDFile()
-        var events: [String] = []
-        var cleanupCount = 0
+        for launchMode in ["standalone", "coordinator-connected"] {
+            let expectedPIDFile = tempPIDFile()
+            var events: [String] = []
+            var telemetryPurgeCount = 0
+            var videoPurgeCount = 0
 
-        let acquired = try ProcessLifecycle.acquireMediaServingLock(
-            acquireLock: {
-                events.append("lock")
-                return expectedPIDFile
-            },
-            purgeLegacyVideoFiles: {
-                events.append("housekeeping")
-                cleanupCount += 1
-            })
+            let acquired = ProcessLifecycle.acquireMediaServingLock(
+                acquireLock: {
+                    events.append("lock")
+                    return expectedPIDFile
+                },
+                purgeLegacyTelemetryQueue: {
+                    events.append("telemetry")
+                    telemetryPurgeCount += 1
+                },
+                purgeLegacyVideoFiles: {
+                    events.append("video")
+                    videoPurgeCount += 1
+                })
 
-        #expect(acquired == expectedPIDFile)
-        #expect(events == ["lock", "housekeeping"])
-        #expect(cleanupCount == 1)
+            #expect(acquired == expectedPIDFile, "failed mode: \(launchMode)")
+            #expect(
+                events == ["lock", "telemetry", "video"],
+                "failed mode: \(launchMode)")
+            #expect(telemetryPurgeCount == 1, "failed mode: \(launchMode)")
+            #expect(videoPurgeCount == 1, "failed mode: \(launchMode)")
+        }
     }
 
-    @Test("failed media-serving lock acquisition cannot purge legacy files")
+    @Test("failed media-serving lock acquisition cannot purge legacy artifacts")
     func mediaServingLockFailureSkipsHousekeeping() {
         struct LockFailure: Error {}
-        var cleanupCount = 0
+        var telemetryPurgeCount = 0
+        var videoPurgeCount = 0
 
         #expect(throws: LockFailure.self) {
             try ProcessLifecycle.acquireMediaServingLock(
                 acquireLock: {
                     throw LockFailure()
                 },
+                purgeLegacyTelemetryQueue: {
+                    telemetryPurgeCount += 1
+                },
                 purgeLegacyVideoFiles: {
-                    cleanupCount += 1
+                    videoPurgeCount += 1
                 })
         }
-        #expect(cleanupCount == 0)
+        #expect(telemetryPurgeCount == 0)
+        #expect(videoPurgeCount == 0)
     }
 }

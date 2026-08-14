@@ -303,15 +303,12 @@ extension ProviderLoop {
             }
             await cancellationRegistry.finish(requestId: requestId)
             logger.error("[\(requestId)] model load failed")
-            let statusCode = Self.loadErrorStatusCode(for: error)
+            let failure = Self.loadInferenceFailure(for: error)
             lookupReceiptFinalizer.sendTerminal(
                 .inferenceError(
                     requestId: requestId,
-                    failure: InferenceFailure(
-                        code: statusCode == 503 ? .capacity : .modelUnavailable,
-                        statusCode: statusCode,
-                        errorReason: .modelLoad)),
-                fallbackFailure: statusCode == 503 ? .capacity : .policy,
+                    failure: failure),
+                fallbackFailure: failure.code == .capacity ? .capacity : .policy,
                 send: send)
             return
         }

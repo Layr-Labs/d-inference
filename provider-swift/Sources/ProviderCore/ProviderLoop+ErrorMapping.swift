@@ -119,8 +119,8 @@ extension ProviderLoop {
         if error is CancellationError { return .cancelled }
         if errorReason == .cancelled { return .cancelled }
         if errorReason == .modelLoad { return .modelUnavailable }
-        if errorReason == .clientError || errorReason == .toolNoncompliance {
-            return .invalidRequest
+        if errorReason == .toolNoncompliance {
+            return .generationFailure
         }
         if errorReason == .capacityTimeout
             || errorReason == .queueFull
@@ -180,6 +180,12 @@ extension ProviderLoop {
             }
         }
 
+        // `.clientError` is also used as the diagnostic reason for typed media
+        // failures. Keep its generic fallback after the concrete media switches
+        // so it cannot erase their distinct wire codes.
+        if errorReason == .clientError {
+            return .invalidRequest
+        }
         if phase == .modelLoad { return .modelUnavailable }
         switch statusCode {
         case 400, 422:

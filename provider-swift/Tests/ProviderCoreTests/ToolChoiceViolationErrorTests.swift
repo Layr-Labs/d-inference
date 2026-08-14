@@ -39,6 +39,23 @@ struct ToolChoiceViolationErrorTests {
         }
     }
 
+    @Test func serviceOutputFailuresUseRetryableWireVocabulary() {
+        let failures = [
+            ProviderLoop.sanitizedInferenceFailure(
+                from: MLXOpenAIServiceError.invalidResponseFormatOutput(
+                    "model output was not valid JSON"),
+                phase: .generation),
+            ProviderLoop.sanitizedInferenceFailure(
+                from: MLXOpenAIServiceError.multipleToolCallsNotAllowed,
+                phase: .generation),
+        ]
+        for failure in failures {
+            #expect(failure.code == .generationFailure)
+            #expect(failure.statusCode == 422)
+            #expect(failure.errorReason == .toolNoncompliance)
+        }
+    }
+
     @Test func errorDescriptionCarriesTheMessage() {
         let error = MultiModelBatchSchedulerEngineError.toolChoiceViolation(
             "model did not emit the required tool call")

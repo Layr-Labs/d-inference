@@ -48,6 +48,7 @@ import {
 } from "./traffic-series";
 
 const COORDINATOR_URL = process.env.NEXT_PUBLIC_COORDINATOR_URL || "https://api.darkbloom.dev";
+const REQUEST_GEOGRAPHY_TOOLTIP_FLIP_Y_PCT = 32;
 
 interface ModelStats {
   id: string;
@@ -1242,6 +1243,7 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
             mapBuckets.map((bucket, index) => {
               const point = projectedPoint(bucket);
               const size = 10 + Math.sqrt(bucket.requests / maxMapRequests) * 28;
+              const tooltipBelow = point.y < REQUEST_GEOGRAPHY_TOOLTIP_FLIP_Y_PCT;
               return (
                 <div
                   key={bucket.key}
@@ -1263,7 +1265,11 @@ function RequestGeography({ stats }: { stats: PlatformStats }) {
                       </span>
                     )}
                   </div>
-                  <div className="absolute left-1/2 bottom-full mb-3 hidden -translate-x-1/2 group-hover:block z-20">
+                  <div
+                    className={`absolute left-1/2 hidden -translate-x-1/2 group-hover:block z-20 ${
+                      tooltipBelow ? "top-full mt-3" : "bottom-full mb-3"
+                    }`}
+                  >
                     <div className="min-w-[190px] rounded-lg bg-text-primary px-3 py-2 text-bg-primary shadow-lg">
                       <p className="text-xs font-semibold">{formatPlace(bucket)}</p>
                       <p className="text-[11px] font-mono opacity-80 mt-1">

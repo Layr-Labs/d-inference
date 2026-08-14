@@ -175,6 +175,14 @@ func TestNormalizeCompleteChatResponse(t *testing.T) {
 	if !strings.Contains(reasoning, "existing reasoning") || !strings.Contains(reasoning, "work through it") {
 		t.Fatalf("reasoning was not merged correctly: %q", reasoning)
 	}
+
+	stripReasoningFromCompleteResponse(resp)
+	if _, ok := message["reasoning"]; ok {
+		t.Fatalf("suppressed reasoning should be deleted: %#v", message)
+	}
+	if message["content"] != "4" {
+		t.Fatalf("content after suppress = %q, want 4", message["content"])
+	}
 }
 
 func TestNormalizeCompleteChatResponseNullContent(t *testing.T) {

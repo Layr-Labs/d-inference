@@ -89,6 +89,41 @@ struct ReasoningPromptProbeTests {
         #expect(!shouldInject(parser: .qwen3, tail: "<think>\n\n</think>\n\n"))
     }
 
+    @Test("thinking-disabled never injects even with an open think tail")
+    func disabledNeverInjects() {
+        #expect(!ReasoningPromptProbe.shouldSynthesizeThinkOpen(
+            reasoningParser: .qwen3,
+            stream: true,
+            promptTokens: [1, 2, 3],
+            decodeTail: { _ in Self.openThinkTail },
+            thinkingDisabled: true))
+    }
+
+    @Test("closeOpenThinkBlock appends the official close on an open tail")
+    func closeOpenThinkBlock() {
+        let open = Array(10..<18)
+        let closed = ReasoningPromptProbe.closeOpenThinkBlock(
+            promptTokens: open,
+            encode: { text in
+                #expect(text == ReasoningPromptProbe.thinkClose)
+                return [99, 100]
+            },
+            decodeTail: { _ in Self.openThinkTail }
+        )
+        #expect(closed == open + [99, 100])
+    }
+
+    @Test("closeOpenThinkBlock is a no-op on a pre-closed tail")
+    func closeAlreadyClosed() {
+        let tokens = [1, 2, 3]
+        let out = ReasoningPromptProbe.closeOpenThinkBlock(
+            promptTokens: tokens,
+            encode: { _ in [99] },
+            decodeTail: { _ in "<|im_start|>assistant\n<think>\n\n</think>\n\n" }
+        )
+        #expect(out == tokens)
+    }
+
     @Test("the probe decodes only a bounded prompt tail")
     func boundedTailDecode() {
         let tokens = Array(0..<4096)

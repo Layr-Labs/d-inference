@@ -26,6 +26,13 @@ enum ReasoningPromptProbe {
     /// The synthetic opening marker injected into the event stream.
     static let thinkOpen = "<think>"
 
+    /// Tokens appended when thinking is disabled but the rendered prompt
+    /// still ends inside an open `<think>` (Jinja ignored `enable_thinking`,
+    /// or the disable shape never reached the template). Official Qwen3.6
+    /// thinking-off form is `<think>\n\n</think>\n\n`; prompts that already
+    /// end with `<think>\n` become that after this suffix.
+    static let thinkClose = "\n</think>\n\n"
+
     /// Prompt-tail tokens to decode for the probe. The open tag sits in
     /// the last few tokens of the rendered template
     /// (`<|im_start|>assistant\n<think>\n`), so 8 is generous while
@@ -50,12 +57,34 @@ enum ReasoningPromptProbe {
         reasoningParser: ReasoningParserFormat?,
         stream: Bool?,
         promptTokens: [Int],
-        decodeTail: ([Int]) -> String
+        decodeTail: ([Int]) -> String,
+        thinkingDisabled: Bool = false
     ) -> Bool {
+        guard !thinkingDisabled else { return false }
         guard reasoningParser == .qwen3 || reasoningParser == .deepseekR1 else { return false }
         guard stream == true else { return false }
         guard !promptTokens.isEmpty else { return false }
         return promptEndsInsideThinkBlock(decodeTail(Array(promptTokens.suffix(tailTokenCount))))
+    }
+
+    /// If thinking is disabled and the prompt tail is still inside an open
+    /// think block, append the official close so the model continues in
+    /// the answer channel instead of generating a reasoning trace.
+    ///
+    /// Text path only. Qwen VL freezes `CBv2PositionState` to the
+    /// processor token count — appending here would desync position IDs.
+    /// VL disable is rendered by the chat template (`enable_thinking=false`).
+    static func closeOpenThinkBlock(
+        promptTokens: [Int],
+        encode: (String) -> [Int],
+        decodeTail: ([Int]) -> String
+    ) -> [Int] {
+        guard !promptTokens.isEmpty else { return promptTokens }
+        let tail = decodeTail(Array(promptTokens.suffix(tailTokenCount)))
+        guard promptEndsInsideThinkBlock(tail) else { return promptTokens }
+        let closeTokens = encode(thinkClose)
+        guard !closeTokens.isEmpty else { return promptTokens }
+        return promptTokens + closeTokens
     }
 
     /// True when the tail ends with an unclosed `<think>` (ignoring

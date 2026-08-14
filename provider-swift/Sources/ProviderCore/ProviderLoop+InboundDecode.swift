@@ -68,17 +68,20 @@ extension ProviderLoop {
     ///
     /// This lives outside `OpenAIChatCompletionRequest` (the upstream type
     /// doesn't model it), so we decode it directly. Returns a trimmed,
-    /// non-empty string or `nil`. The value is passed through verbatim —
-    /// the valid set (`low`/`medium`/`high` for gpt-oss; other models
-    /// differ) is enforced by each model's chat template, not here, so we
-    /// stay format-agnostic rather than hardcoding a per-model allowlist.
+    /// non-empty string or `nil`. `"none"` is omitted — that disable
+    /// signal is expressed via `enable_thinking=false` instead, and
+    /// Harmony templates do not define a `none` effort level.
+    /// Other values pass through verbatim so each model's chat template
+    /// can enforce its own allowlist.
     internal static func extractReasoningEffort(from data: Data) -> String? {
-        struct Probe: Decodable { let reasoning_effort: String? }
-        guard let probe = try? JSONDecoder().decode(Probe.self, from: data),
-              let raw = probe.reasoning_effort
-        else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+        extractReasoningControls(from: data).effortForTemplate
+    }
+
+    /// Full OpenRouter reasoning decode: `enabled`, `effort`, `max_tokens`,
+    /// `exclude`, top-level `enable_thinking` / `reasoning_effort`, and
+    /// `chat_template_kwargs.enable_thinking`.
+    internal static func extractReasoningControls(from data: Data) -> ReasoningControls {
+        ReasoningControls.parse(from: data)
     }
 
     /// OpenAI `logprobs` / `top_logprobs` for this request. Like
@@ -131,13 +134,14 @@ extension ProviderLoop {
     internal static func promptTokenFloor(
         request: OpenAIChatCompletionRequest,
         tokenizer: TokenizerHandle,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        controls: ReasoningControls = .unspecified
     ) -> Int {
         guard let prepared = try? ToolChoicePromptPolicy.prepare(request) else { return 0 }
         let messages = prepared.messages.map { $0.templateMessageDict() }
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
         let additionalContext = MultiModelBatchSchedulerEngine.templateAdditionalContext(
-            for: request, reasoningEffort: reasoningEffort)
+            for: request, reasoningEffort: reasoningEffort, controls: controls)
         // Must mirror the production tokenize path (sanitize JSON
         // null / Optional leaves) so this recount matches what was prefilled
         // and doesn't itself throw on a null-bearing request.

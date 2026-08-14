@@ -77,6 +77,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
     /// allowed set is model-specific and lives in each model's Jinja
     /// template, so passing through is the format-agnostic choice.
     private let reasoningEffort: String?
+    /// Full OpenRouter reasoning decode (enabled / effort=none / max_tokens=0
+    /// / exclude). Drives `enable_thinking` and the thinking-off prompt closer.
+    private let reasoningControls: ReasoningControls
     /// Authenticated remote or configured local prefix-cache scope. Maps to
     /// `CBv2Request.cacheSalt` for both cache tiers.
     private let cacheScope: String
@@ -118,6 +121,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         releaseModel: @escaping @Sendable (String) async -> Void = { _ in },
         defaultMaxTokens: Int = 4096,
         reasoningEffort: String? = nil,
+        reasoningControls: ReasoningControls = .unspecified,
         cacheScope: String = "",
         cacheEnabled: Bool = true,
         engineV2Logprobs: EngineV2LogprobsPlumbing? = nil,
@@ -131,6 +135,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = releaseModel
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = reasoningEffort
+        self.reasoningControls = reasoningControls
         self.cacheScope = cacheScope
         self.cacheEnabled = cacheEnabled
         self.engineV2Logprobs = engineV2Logprobs
@@ -170,6 +175,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.releaseModel = { _ in }
         self.defaultMaxTokens = defaultMaxTokens
         self.reasoningEffort = nil
+        self.reasoningControls = .unspecified
         self.cacheScope = ""
         self.cacheEnabled = true
         // The --local path serves SSE frames inside the upstream router, so
@@ -189,6 +195,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         // cached_tokens — same scoping as `engineV2Logprobs`.
         self.engineV2Usage = nil
         self.allowInternalToolSchemaMetadata = false
+    }
+
+    /// Merge sealed-body controls with the typed request so VL prepare and
+    /// the text-path closer see the same disable signal (`enabled=false`,
+    /// `effort=none`, out-of-band `reasoningEffort`).
+    private func resolvedReasoningControls(
+        for request: OpenAIChatCompletionRequest
+    ) -> ReasoningControls {
+        reasoningControls.merging(
+            requestEnabled: request.reasoning?.enabled,
+            effort: reasoningEffort)
     }
 
     // MARK: - MLXServerEngine
@@ -353,8 +370,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 do {
+                    // Disable must be rendered by the VL chat template
+                    // (Qwen3.6: `enable_thinking=false` → closed think
+                    // block). Do not append think-close tokens after
+                    // prepare: Qwen VL freezes position IDs to that
+                    // tokenized length.
+                    let visionControls = resolvedReasoningControls(for: request)
                     let visionPrepared = try await plumbing.prepare(
-                        container, request, reasoningEffort)
+                        container, request, visionControls)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -376,8 +399,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // chat templating never renders tool specs, so the model
                     // is never prompted into tool-call syntax on either
                     // vision path.
+                    let visionPromptTokens = visionPrepared.promptTokens
                     let upstream = await bridge.submitTokenized(
-                        promptTokens: visionPrepared.promptTokens,
+                        promptTokens: visionPromptTokens,
                         request: Self.translate(
                             openAIRequest: request, defaultMaxTokens: defaultMaxTokens,
                             logprobs: engineV2Logprobs != nil ? true : nil,
@@ -405,8 +429,9 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     let synthesizeThinkOpen = ReasoningPromptProbe.shouldSynthesizeThinkOpen(
                         reasoningParser: request.reasoningParser,
                         stream: request.stream,
-                        promptTokens: visionPrepared.promptTokens,
-                        decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+                        promptTokens: visionPromptTokens,
+                        decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) },
+                        thinkingDisabled: visionControls.thinkingDisabled
                     )
                     return makeEventStream(
                         upstream: upstream,
@@ -504,14 +529,23 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
-        let promptTokens: [Int]
+        let effectiveControls = resolvedReasoningControls(for: request)
+        var promptTokens: [Int]
         do {
             promptTokens = try ProviderPromptContractPipeline.tokenize(
                 prepared: prepared,
                 request: request,
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
-                reasoningEffort: reasoningEffort)
+                reasoningEffort: reasoningEffort,
+                controls: effectiveControls)
+            if effectiveControls.thinkingDisabled {
+                promptTokens = ReasoningPromptProbe.closeOpenThinkBlock(
+                    promptTokens: promptTokens,
+                    encode: { tokenizer.inner.encode(text: $0, addSpecialTokens: false) },
+                    decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+                )
+            }
         } catch {
             emitToolConstraintTelemetry(
                 operation: "tool_constraint_compile_rejection",
@@ -531,7 +565,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             reasoningParser: request.reasoningParser,
             stream: request.stream,
             promptTokens: promptTokens,
-            decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
+            decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) },
+            thinkingDisabled: effectiveControls.thinkingDisabled
         )
 
         // Resolve tool call format before submitting so a bad

@@ -155,6 +155,12 @@ type PendingRequest struct {
 	// RequestedMaxTokens is the consumer's requested output budget (or a
 	// sensible default when omitted). It is used for backlog estimation.
 	RequestedMaxTokens int
+	// SuppressReasoningOutput is true when the caller disabled reasoning
+	// (enabled=false, effort=none, max_tokens=0) or asked to exclude the
+	// trace (exclude=true / include_reasoning=false). Response writers then
+	// drop reasoning / reasoning_content so a Qwen3.6 think-default cannot
+	// leak a non-empty reasoning field.
+	SuppressReasoningOutput bool
 	// MaxTTFTMs is an optional per-request TTFT ceiling in milliseconds.
 	// When > 0, the scheduler only selects providers whose estimated TTFT is
 	// <= MaxTTFTMs. Used by public inference routes to honor the public

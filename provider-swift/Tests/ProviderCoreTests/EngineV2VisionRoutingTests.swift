@@ -218,13 +218,15 @@ private func makeRoutingEngine(
     bridge: EngineV2Bridge?,
     plumbing: EngineV2VisionPlumbing?,
     visionGate: VisionMemoryGate? = nil,
-    reasoningEffort: String? = nil
+    reasoningEffort: String? = nil,
+    reasoningControls: ReasoningControls = .unspecified,
+    tokenizer: TokenizerHandle = TokenizerHandle(VisionStubTokenizer())
 ) -> MultiModelBatchSchedulerEngine {
     MultiModelBatchSchedulerEngine(
         registryProvider: { @Sendable in
             [
                 "test/vlm-stub": .init(
-                    tokenizer: TokenizerHandle(VisionStubTokenizer()),
+                    tokenizer: tokenizer,
                     modelType: "gemma4",
                     container: container,
                     isVLM: true,
@@ -234,6 +236,7 @@ private func makeRoutingEngine(
         },
         defaultMaxTokens: 64,
         reasoningEffort: reasoningEffort,
+        reasoningControls: reasoningControls,
         engineV2Vision: plumbing
     )
 }
@@ -501,6 +504,15 @@ struct MediaKindClassificationTests {
         let input = try await MediaIngest.buildUserInput(
             from: request, reasoningEffort: "high")
         #expect(input.additionalContext?["reasoning_effort"] as? String == "high")
+    }
+
+    @Test("media processor honors sealed-body thinking disable")
+    func thinkingDisableTemplateContext() async throws {
+        let request = imageRequest()
+        let input = try await MediaIngest.buildUserInput(
+            from: request, controls: ReasoningControls(thinkingEnabled: false))
+        #expect(input.additionalContext?["enable_thinking"] as? Bool == false)
+        #expect(input.additionalContext?["reasoning_effort"] == nil)
     }
 
     @Test("image-only request has no video and classifies as .image")
@@ -1026,16 +1038,16 @@ struct EngineV2VisionRoutingTests {
         ]))
         let bridge = makeBridge(engine: engine)
         let (prepared, _) = makePreparedSubmission()
-        final class EffortBox: @unchecked Sendable {
+        final class ControlsBox: @unchecked Sendable {
             private let lock = NSLock()
-            private var value: String?
-            func set(_ newValue: String?) { lock.withLock { value = newValue } }
-            func get() -> String? { lock.withLock { value } }
+            private var value: ReasoningControls?
+            func set(_ newValue: ReasoningControls) { lock.withLock { value = newValue } }
+            func get() -> ReasoningControls? { lock.withLock { value } }
         }
-        let effort = EffortBox()
+        let box = ControlsBox()
         let plumbing = EngineV2VisionPlumbing(
-            prepare: { _, _, reasoningEffort in
-                effort.set(reasoningEffort)
+            prepare: { _, _, controls in
+                box.set(controls)
                 return prepared
             }, emitTelemetry: { _ in })
         let router = makeRoutingEngine(
@@ -1044,7 +1056,75 @@ struct EngineV2VisionRoutingTests {
 
         _ = try await collectContent(
             try await router.streamChatCompletion(request: imageRequest()))
-        #expect(effort.get() == "medium")
+        #expect(box.get()?.effortForTemplate == "medium")
+        #expect(box.get()?.thinkingDisabled == false)
+    }
+
+    @Test("vision plumbing receives thinking-disabled controls")
+    func visionPlumbingReceivesThinkingDisabled() async throws {
+        let engine = VisionScriptedEngine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 6, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (prepared, _) = makePreparedSubmission()
+        final class ControlsBox: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value: ReasoningControls?
+            func set(_ newValue: ReasoningControls) { lock.withLock { value = newValue } }
+            func get() -> ReasoningControls? { lock.withLock { value } }
+        }
+        let box = ControlsBox()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, controls in
+                box.set(controls)
+                return prepared
+            }, emitTelemetry: { _ in })
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: bridge, plumbing: plumbing,
+            reasoningControls: ReasoningControls(thinkingEnabled: false))
+
+        _ = try await collectContent(
+            try await router.streamChatCompletion(request: imageRequest()))
+        #expect(box.get()?.thinkingDisabled == true)
+    }
+
+    @Test("thinking-disabled vision submit keeps prepared token count")
+    func thinkingDisabledDoesNotAppendAfterVisionPrepare() async throws {
+        let engine = VisionScriptedEngine(script: .stream([
+            .finished(reason: .stop, usage: CBv2Usage(promptTokens: 6, completionTokens: 0))
+        ]))
+        let bridge = makeBridge(engine: engine)
+        let (prepared, _) = makePreparedSubmission()
+        let plumbing = EngineV2VisionPlumbing(
+            prepare: { _, _, _ in prepared },
+            emitTelemetry: { _ in })
+        // Tokenizer that would make closeOpenThinkBlock append tokens if
+        // the VL path still ran it after position freeze.
+        struct OpenThinkTokenizer: MLXLMCommon.Tokenizer {
+            func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+                text.contains("</think>") ? [42, 43] : Array(repeating: 0, count: text.count)
+            }
+            func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "<think>\n" }
+            func convertTokenToId(_ token: String) -> Int? { nil }
+            func convertIdToToken(_ id: Int) -> String? { nil }
+            var bosToken: String? { nil }
+            var eosToken: String? { nil }
+            var unknownToken: String? { nil }
+            func applyChatTemplate(
+                messages: [[String: any Sendable]],
+                tools: [[String: any Sendable]]?,
+                additionalContext: [String: any Sendable]?
+            ) throws -> [Int] { [1, 2, 3] }
+        }
+        let router = makeRoutingEngine(
+            container: makeStubContainer(), bridge: bridge, plumbing: plumbing,
+            reasoningControls: ReasoningControls(thinkingEnabled: false),
+            tokenizer: TokenizerHandle(OpenThinkTokenizer()))
+
+        _ = try await collectContent(
+            try await router.streamChatCompletion(request: imageRequest()))
+        let submitted = try #require(engine.submitted.first)
+        #expect(submitted.promptTokens == prepared.promptTokens)
     }
 
     @Test("refusal on a video request tags media_kind video")

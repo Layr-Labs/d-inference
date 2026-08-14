@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -52,6 +53,12 @@ func intFromRequestValue(v any) (int, bool) {
 			return 0, false
 		}
 		return int(n), true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		if err != nil {
+			return 0, false
+		}
+		return n, true
 	default:
 		return 0, false
 	}

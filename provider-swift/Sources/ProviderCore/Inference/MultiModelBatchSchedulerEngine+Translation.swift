@@ -16,14 +16,18 @@ extension MultiModelBatchSchedulerEngine {
 
     static func templateAdditionalContext(
         for request: OpenAIChatCompletionRequest,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        controls: ReasoningControls? = nil
     ) -> [String: any Sendable]? {
+        let resolved = (controls ?? .unspecified).merging(
+            requestEnabled: request.reasoning?.enabled,
+            effort: reasoningEffort)
         var context: [String: any Sendable] = [:]
-        if let reasoningEffort {
-            context["reasoning_effort"] = reasoningEffort
+        if let effort = resolved.effortForTemplate {
+            context["reasoning_effort"] = effort
         }
-        if let reasoningEnabled = request.reasoning?.enabled {
-            context["enable_thinking"] = reasoningEnabled
+        if let thinkingEnabled = resolved.thinkingEnabled {
+            context["enable_thinking"] = thinkingEnabled
         }
         return context.isEmpty ? nil : context
     }

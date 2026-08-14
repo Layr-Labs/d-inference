@@ -1051,6 +1051,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 			Timing:                 d.timing,
 		}
+		stampReasoningPolicy(queuePR, d.rawBody)
 		queuedReq := &registry.QueuedRequest{
 			RequestID:  d.requestID,
 			Model:      d.model,

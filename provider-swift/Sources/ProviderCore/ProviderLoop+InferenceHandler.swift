@@ -221,13 +221,12 @@ extension ProviderLoop {
             return
         }
 
-        // `reasoning_effort` is not part of the upstream
-        // `OpenAIChatCompletionRequest` shape, so decode it directly from
-        // the request body and thread it into the chat template's render
-        // context below (see `MultiModelBatchSchedulerEngine`). gpt-oss /
-        // Harmony reads it to set the reasoning budget; other models
-        // ignore the extra template variable.
-        let reasoningEffort = Self.extractReasoningEffort(from: decryptedData)
+        // OpenRouter reasoning controls are not fully modeled on the
+        // upstream `OpenAIChatCompletionRequest` (only `enabled` is).
+        // Decode every disable/exclude shape from the sealed body and
+        // thread it into the chat template + thinking-off closer.
+        let reasoningControls = Self.extractReasoningControls(from: decryptedData)
+        let reasoningEffort = reasoningControls.effortForTemplate
         // Cache identity is coordinator-authored and authenticated outside the
         // sealed OpenAI body. Never trust caller-controlled prompt_cache_key/user
         // for remote cache partitioning. Legacy coordinators omit the outer
@@ -491,6 +490,7 @@ extension ProviderLoop {
                 releaseModel: { _ in },
                 defaultMaxTokens: Self.schedulerDefaultMaxTokens,
                 reasoningEffort: reasoningEffort,
+                reasoningControls: reasoningControls,
                 cacheScope: cacheScope,
                 cacheEnabled: remoteCache.cacheEnabled,
                 engineV2Logprobs: logprobsChannel.map {
@@ -695,9 +695,13 @@ extension ProviderLoop {
                             }
                         }
                         if let reasoning = parsed.reasoningDelta, !reasoning.isEmpty {
-                            fullResponseText += reasoning
-                            frameHadContent = true
-                            reasoningText += reasoning
+                            if reasoningControls.suppressOutput {
+                                frameToEmit = Self.stripReasoningFromStreamFrame(frameToEmit)
+                            } else {
+                                fullResponseText += reasoning
+                                frameHadContent = true
+                                reasoningText += reasoning
+                            }
                         }
                         if let toolCalls = parsed.toolCallsDelta, !toolCalls.isEmpty {
                             fullResponseText += Self.encodeToolCallsForHash(toolCalls)
@@ -857,7 +861,8 @@ extension ProviderLoop {
                 let terminal = partialUsage.cancelledTerminal(promptTokenFloor: Self.promptTokenFloor(
                     request: streamingRequest,
                     tokenizer: tokenizer,
-                    reasoningEffort: reasoningEffort
+                    reasoningEffort: reasoningEffort,
+                    controls: reasoningControls
                 ))
                 guard case .complete(let settledUsage) = terminal else {
                     // Cancelled with nothing delivered: 499 so the coordinator refunds.
@@ -912,7 +917,8 @@ extension ProviderLoop {
                     promptTokens = Self.promptTokenFloor(
                         request: streamingRequest,
                         tokenizer: tokenizer,
-                        reasoningEffort: reasoningEffort
+                        reasoningEffort: reasoningEffort,
+                        controls: reasoningControls
                     )
                     if promptTokens > 0 {
                         log.warning(

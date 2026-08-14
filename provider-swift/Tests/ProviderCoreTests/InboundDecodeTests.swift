@@ -275,6 +275,13 @@ struct InboundDecodeTests {
         #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":3}"#) == nil)
     }
 
+    @Test("reasoning.effort is extracted and none is omitted")
+    func nestedReasoningEffort() {
+        #expect(effort(#"{"model":"m","messages":[],"reasoning":{"effort":"high"}}"#) == "high")
+        #expect(effort(#"{"model":"m","messages":[],"reasoning":{"effort":"none"}}"#) == nil)
+        #expect(effort(#"{"model":"m","messages":[],"reasoning_effort":"none"}"#) == nil)
+    }
+
     // MARK: - logprobs / top_logprobs extraction
 
     private func logprobsSpec(_ json: String) -> (topLogprobs: Int?, requested: Bool)? {

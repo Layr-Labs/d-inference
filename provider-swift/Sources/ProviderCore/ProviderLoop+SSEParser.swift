@@ -198,6 +198,38 @@ extension ProviderLoop {
         return "data: \(json)\n\n"
     }
 
+    /// Drop `reasoning` / `reasoning_content` from an SSE frame when the
+    /// caller disabled or excluded reasoning. The hash domain then matches
+    /// the consumer-visible body.
+    internal static func stripReasoningFromStreamFrame(_ frame: String) -> String {
+        guard let payload = joinedDataPayload(frame),
+              let bytes = payload.data(using: .utf8),
+              var obj = (try? JSONSerialization.jsonObject(with: bytes)) as? [String: Any],
+              var choices = obj["choices"] as? [[String: Any]]
+        else {
+            return frame
+        }
+        var changed = false
+        for index in choices.indices {
+            for field in ["delta", "message"] {
+                guard var nested = choices[index][field] as? [String: Any] else { continue }
+                if nested.removeValue(forKey: "reasoning") != nil { changed = true }
+                if nested.removeValue(forKey: "reasoning_content") != nil { changed = true }
+                choices[index][field] = nested
+            }
+        }
+        guard changed else { return frame }
+        obj["choices"] = choices
+        guard let out = try? JSONSerialization.data(
+                withJSONObject: obj, options: [.sortedKeys, .withoutEscapingSlashes]
+              ),
+              let json = String(data: out, encoding: .utf8)
+        else {
+            return frame
+        }
+        return "data: \(json)\n\n"
+    }
+
     /// Inject `usage.prompt_tokens_details.cached_tokens` into a final SSE
     /// chunk that already carries a `usage` block — the OpenAI-standard
     /// surface for prompt-cache accounting, fed by the v2 engine's

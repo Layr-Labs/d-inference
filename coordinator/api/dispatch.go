@@ -603,6 +603,18 @@ func (d *dispatchState) setLastError(errText string, statusCode int) {
 	d.lastErrAttemptUsage = nil
 }
 
+// classifyExhaustedStatus preserves provider-attempt telemetry while mapping a
+// coordinator-synthesized pre-content timeout to the retryable status exposed to
+// the caller. A typed provider 504 (safety deadline / backpressure timeout) is a
+// real provider terminal and must remain 504; an untyped 504 is the dispatch
+// loop's existing discriminator for its own first-content timeout.
+func classifyExhaustedStatus(statusCode int, terminalCause string) (code int, reason string, reclassified bool) {
+	if statusCode == http.StatusGatewayTimeout && !isTypedTimeout504Cause(terminalCause) {
+		return http.StatusTooManyRequests, "first_chunk_timeout", true
+	}
+	return statusCode, "dispatch_exhausted", false
+}
+
 func (d *dispatchState) noteProviderBodyTooLarge(errText string, bodyBytes int) {
 	d.providerBodyTooLargeErr = errText
 	d.providerBodyTooLargeBytes = bodyBytes
@@ -2647,8 +2659,11 @@ exhausted:
 			d.lastErrCode == http.StatusRequestEntityTooLarge {
 			d.latchProviderBodyTooLarge(d.providerBodyTooLargeErr)
 		}
-		statusCode := d.lastErrCode
-		reason := "dispatch_exhausted"
+		statusCode, reason, timeoutReclassified := classifyExhaustedStatus(
+			d.lastErrCode, d.lastErrTerminalCause)
+		if timeoutReclassified {
+			s.ddIncr("routing.first_chunk_timeout_reclassified", []string{"model:" + d.model})
+		}
 		if d.terminalClientError {
 			// Deterministic provider client 4xx (identical fleet-wide): pass the real
 			// code through ONCE. Checked BEFORE d.unservable / statusCode==0 so it can

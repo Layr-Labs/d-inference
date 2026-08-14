@@ -93,6 +93,29 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
+    @Test func persistsOperatorTrustRefinementIntoDaemonEnvironment() {
+        // launchd does not inherit the installing shell, so the one legal
+        // operator refinement (safe R1 = trust) must be persisted into the
+        // plist or the background daemon silently collapses it to "1".
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            GemmaOptimizationEnvironment.safeR1Key: "trust",
+            GemmaOptimizationEnvironment.weightedUnsortKey: "trust",
+            "PATH": "/usr/bin",
+        ])
+        // Only safe R1 carries the refinement; the coupled weighted-unsort
+        // key stays config-backed and excluded.
+        #expect(out == [GemmaOptimizationEnvironment.safeR1Key: "trust"])
+    }
+
+    @Test func excludesConfigExactGemmaValuesEvenWhenSet() {
+        // "1"/"0" are config territory: forwarding them would freeze a past
+        // config decision into the plist and fight later TOML edits.
+        for value in ["0", "1"] {
+            #expect(LaunchAgent.passthroughEnvironment(
+                from: [GemmaOptimizationEnvironment.safeR1Key: value]).isEmpty)
+        }
+    }
+
     @Test func forwardsKVBackendGuardPathToDaemonAndWatchdog() {
         // The crash-loop guard record has one writer (the launchd watchdog)
         // and several readers (the launchd daemon's engine factory, a
@@ -127,6 +150,20 @@ struct LaunchAgentServicePlistTests {
         #expect(plist["RunAtLoad"] as? Bool == true)
         #expect(plist["KeepAlive"] as? Bool == false)
         #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
+    }
+
+    @Test func persistsTrustRefinementIntoServicePlist() {
+        let plist = LaunchAgent.makeServicePlist(
+            label: "io.darkbloom.provider",
+            programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
+            logPath: "/tmp/p.log",
+            environment: [
+                GemmaOptimizationEnvironment.safeR1Key: "trust",
+                "PATH": "/usr/bin",
+            ]
+        )
+        #expect((plist["EnvironmentVariables"] as? [String: String])
+            == [GemmaOptimizationEnvironment.safeR1Key: "trust"])
     }
 
     @Test func omitsEnvironmentWhenNoAllowlistedVarsSet() {

@@ -100,6 +100,13 @@ type PendingRequest struct {
 	// the provider's chat-completions wire shape. Response writers translate
 	// chat output back to this endpoint's native JSON/SSE schema.
 	ConsumerEndpoint string
+	// SuppressReasoning marks a request whose consumer-facing response must
+	// not carry reasoning text: the consumer disabled reasoning (any spelling
+	// of reasoning.enabled=false / effort "none") or excluded it
+	// (reasoning.exclude=true / include_reasoning=false). Usage token counts
+	// are unaffected. Written by the consumer handler before the response
+	// writers run and read only on that same goroutine.
+	SuppressReasoning bool
 	// RequestedStopSequences is the caller-authored Anthropic stop allowlist.
 	// MatchedStopSequence is accepted from the provider only when it is a member
 	// of this list, then translated back into native /v1/messages responses.

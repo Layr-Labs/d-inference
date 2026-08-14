@@ -78,6 +78,10 @@ type inferencePrelude struct {
 	originalRawBody []byte
 	parsed          map[string]any
 	model           string
+	// suppressReasoning is true when the consumer disabled or excluded
+	// reasoning (see normalizeReasoningControls): the response writers must
+	// not return reasoning text for this request.
+	suppressReasoning bool
 }
 
 // parseInferencePrelude runs the request prelude shared verbatim by
@@ -123,6 +127,17 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 		rawBody, _ = marshalForwardBody(parsed)
 	}
 
+	// Canonicalize every "reasoning off" spelling (reasoning.effort:"none",
+	// reasoning_effort:"none", thinking.type:"disabled", …) into the ONE
+	// shape providers decode — reasoning.enabled=false — before the body is
+	// sealed, so hybrid-thinking models (Qwen3.6) actually pre-close their
+	// think block instead of reasoning by default. Also flags requests whose
+	// responses must carry no reasoning text (disable + exclude semantics).
+	reasoningMutated, suppressReasoning := normalizeReasoningControls(parsed)
+	if reasoningMutated {
+		rawBody, _ = marshalForwardBody(parsed)
+	}
+
 	model, _ := parsed["model"].(string)
 	if model == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "model is required", withParam("model")))
@@ -140,6 +155,7 @@ func (s *Server) parseInferencePrelude(w http.ResponseWriter, r *http.Request) (
 	return inferencePrelude{
 		rawBody: rawBody, originalRawBody: originalRawBody,
 		parsed: parsed, model: model,
+		suppressReasoning: suppressReasoning,
 	}, true
 }
 

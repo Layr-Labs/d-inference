@@ -104,6 +104,7 @@ type dispatchState struct {
 	toolChoiceName         string
 	parallelToolCalls      bool
 	isResponsesAPI         bool
+	suppressReasoning      bool
 	stream                 bool
 	policy                 selfRoutePolicy
 	allowedProviderSerials []string
@@ -917,7 +918,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 		r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
 		d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 		d.traits(),
-		d.allowedProviderSerials, d.isResponsesAPI, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
+		d.allowedProviderSerials, d.isResponsesAPI, d.suppressReasoning, d.policy, d.timing, d.serviceReservation, d.cachePlan, d.excludeProviders,
 		d.attempt,
 		func(provider *registry.Provider, pr *registry.PendingRequest, decision registry.RoutingDecision) {
 			routeProvider = provider
@@ -1028,6 +1029,7 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 			ConsumerLocation:       d.consumerLocation,
 			IsResponsesAPI:         d.isResponsesAPI,
+			SuppressReasoning:      d.suppressReasoning,
 			EstimatedPromptTokens:  d.estimatedPromptTokens,
 			RequiresVision:         d.requiresVision,
 			Traits:                 d.traits(),
@@ -1733,7 +1735,7 @@ func (d *dispatchState) runSpeculative() dispatchOutcome {
 			r, d.model, d.publicModel, d.rawBody, d.consumerKey, d.consumerLocation, d.reservedMicroUSD,
 			d.estimatedPromptTokens, d.requestedMaxTokens, d.tokenAdmission, d.requiresVision,
 			d.traits(),
-			d.allowedProviderSerials, d.isResponsesAPI, d.policy,
+			d.allowedProviderSerials, d.isResponsesAPI, d.suppressReasoning, d.policy,
 			&registry.RequestTiming{ReceivedAt: d.timing.ReceivedAt},
 			d.serviceReservation,
 			d.cachePlan,

@@ -784,6 +784,7 @@ func (s *Server) dispatchOneProvider(
 	traits registry.RequestTraits,
 	allowedProviderSerials []string,
 	isResponsesAPI bool,
+	suppressReasoning bool,
 	policy selfRoutePolicy,
 	timing *registry.RequestTiming,
 	serviceReservation bool,
@@ -815,6 +816,7 @@ func (s *Server) dispatchOneProvider(
 		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
 		IsResponsesAPI:         isResponsesAPI,
+		SuppressReasoning:      suppressReasoning,
 		EstimatedPromptTokens:  estimatedPromptTokens,
 		RequiresVision:         requiresVision,
 		Traits:                 traits,
@@ -1927,6 +1929,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		toolChoiceName:         toolChoiceName,
 		parallelToolCalls:      parallelToolCalls,
 		isResponsesAPI:         isResponsesAPI,
+		suppressReasoning:      prelude.suppressReasoning,
 		stream:                 stream,
 		policy:                 policy,
 		allowedProviderSerials: allowedProviderSerials,
@@ -2009,6 +2012,12 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		} else {
 			if !sawResponsesAPI {
 				firstChunk = normalizeSSEChunk(firstChunk)
+				if pr.SuppressReasoning {
+					var drop bool
+					if firstChunk, drop = stripReasoningFromStreamChunk(firstChunk); drop {
+						continue
+					}
+				}
 			}
 			firstChunk = rewriteChunkModel(firstChunk, pr)
 			fmt.Fprintf(w, "%s\n\n", firstChunk)
@@ -2163,6 +2172,15 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 				if obj, isFinish := parseFinishStreamChunk(chunk); isFinish {
 					pendingFinish = obj
 					continue
+				}
+				// Reasoning was disabled or excluded: reasoning deltas never
+				// reach the consumer (a reasoning-only chunk is skipped
+				// outright, a mixed chunk keeps its other fields).
+				if pr.SuppressReasoning {
+					var drop bool
+					if chunk, drop = stripReasoningFromStreamChunk(chunk); drop {
+						continue
+					}
 				}
 			}
 			chunk = rewriteChunkModel(chunk, pr)
@@ -2350,6 +2368,14 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, consumerModel(pr))
+								// Reasoning was disabled or excluded: strip the
+								// reasoning text (normalizeCompleteChatResponse
+								// already folded any raw <think> blocks into the
+								// reasoning field, so content stays clean). Usage
+								// token accounting is untouched.
+								if pr.SuppressReasoning {
+									stripReasoningFromCompleteResponse(obj)
+								}
 								// The provider engine reports "stop" even when generation
 								// hit the max-tokens bound — correct it from the
 								// authoritative token counts.
@@ -2415,6 +2441,12 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 
 				// Fallback: SSE delta chunks — reconstruct into response.
 				msg := extractMessage(chunks)
+				// Reasoning was disabled or excluded: the reconstructed message
+				// (extractMessage already folded streamed reasoning deltas and
+				// raw <think> blocks into msg.Reasoning) must not return it.
+				if pr.SuppressReasoning {
+					msg.Reasoning = ""
+				}
 				select {
 				case usage, ok := <-pr.CompleteCh:
 					if !ok {
@@ -3987,6 +4019,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		KeyLimitReset:          keyLimitResetFromContext(r.Context()),
 		ConsumerLocation:       consumerLocation,
 		ConsumerEndpoint:       consumerEndpoint,
+		SuppressReasoning:      prelude.suppressReasoning,
 		RequestedStopSequences: requestedStopSequences,
 		AllowedProviderSerials: allowedProviderSerials,
 		SelfRouteOnly:          policy.enabled,

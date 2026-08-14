@@ -1,12 +1,32 @@
 # Changelog
 
-## Unreleased (v0.8.4 candidate - provider)
+## Unreleased (v0.8.5 candidate - provider)
+
+### Provider (Swift)
+
+#### Performance
+
+- **Qwen3.6 E=256 expert-tile prefill route + fused gate_up** - Instantiates the Gemma4 descriptor/tile kernel family for Qwen's 256-expert shapes (mlx `d3c82db`), fuses the routed gate/up projection into one gather (`SwitchGLU(fuseGateUp: true)`, per-layer and per-load with heterogeneous-quantization split fallback across every checkpoint key space), and adds the opt-in `trust` refinement that skips the per-chunk retract drain. Measured on M4 Max, prod artifact: routed MoE block -26.3% at T=512; end-to-end prefill 1243→1364 tok/s default, 1433 with `trust` (+15.2%) at 8k; 2k +7.4%, 32k +6.6%. (#617, mlx-swift-lm#107)
+- **Qwen3.6 MTP: GDN capture-verify, target_prefix acceptance, single-forward drafts** *(behind the `mtp` beta flag, default off)* - Replaces the serial target verify (measured 0.70x vs MTP-off) with one `[1,1+k]` forward capturing per-position recurrent states (1.08x), lifts the `temperature == 0` eligibility gate via pre-sampled target-token acceptance (exact at any temperature; temp-0.7 speculates at 0.70-0.77 acceptance), and defers the draft pair to eliminate the second MTP-head forward + 286 MB lm_head re-read per round: **116.5 tok/s vs 104.8 MTP-off (1.11-1.13x) at 0.78 acceptance**, B=1 greedy, release, paired sessions. (#616, mlx-swift-lm#106/#108)
+- **mlx gpu::eval use-after-free fix** - A stale `MTL::CommandBuffer` captured across `eval_gpu` could crash any primitive that syncs mid-eval (deterministic SIGSEGV on the E=256 route; previously survived on allocator luck). (mlx#5/#7)
+
+#### Fixes
+
+- **Inline-MTP inspection resolves HF-cache symlinks and rejects loudly** - Symlinked snapshots (the standard HF `blobs/` layout) silently disabled inline MTP: `inspectInlineArtifact` required regular files and reported nothing. Inspection now resolves links and validates targets; every genuine rejection logs a concrete reason and path. Untrusted operator-path inspection stays symlink-rejecting. (#618)
+
+#### Observability
+
+- **MTP posture and acceptance on the local `/metrics` endpoint** - `mtp_enabled`, `mtp_active`, `mtp_rounds_total`, `mtp_tokens_proposed_total`, `mtp_tokens_accepted_total`, and `mtp_inactive_reason{model,reason}` (including `inline_artifact_invalid`) in both `--local` and unified serving modes - acceptance was previously observable only in Datadog Logs. (#619)
 
 ### Coordinator
 
 #### Fixes
 
-- **Expose exact Hugging Face repositories in model feeds** - Registry metadata can now override `hugging_face_id` independently of the internal routing ID. Both `/v1/models` and `/v1/models/openrouter` honor the override for concrete and aliased models, with an authenticated `hugging-face-id` admin action for existing registry rows.
+- **Expose exact Hugging Face repositories in model feeds** - Registry metadata can now override `hugging_face_id` independently of the internal routing ID. Both `/v1/models` and `/v1/models/openrouter` honor the override for concrete and aliased models, with an authenticated `hugging-face-id` admin action for existing registry rows. (#620)
+
+---
+
+## v0.8.4 (2026-08-13)
 
 ### Provider (Swift)
 

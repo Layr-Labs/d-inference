@@ -1,4 +1,4 @@
-export type ModelMaker = "openai" | "google" | "unknown";
+export type ModelMaker = "openai" | "google" | "qwen" | "unknown";
 
 export interface ModelBrand {
   maker: ModelMaker;
@@ -23,6 +23,14 @@ export function modelBrand(modelId: string, family?: string): ModelBrand {
       makerLabel: "Google",
       logoSrc: "/brand/gemma-logo.png",
       logoAlt: "Gemma by Google",
+    };
+  }
+  if (identity.includes("qwen")) {
+    return {
+      maker: "qwen",
+      makerLabel: "Qwen",
+      logoSrc: "/brand/qwen-logo.png",
+      logoAlt: "Qwen logo",
     };
   }
   return { maker: "unknown", makerLabel: "Model" };

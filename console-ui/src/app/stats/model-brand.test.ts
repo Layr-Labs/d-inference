@@ -16,6 +16,21 @@ describe("modelBrand", () => {
     });
   });
 
+  it("uses the official Qwen mark for Qwen model IDs", () => {
+    expect(modelBrand("qwen3.5-9b")).toMatchObject({
+      maker: "qwen",
+      makerLabel: "Qwen",
+      logoSrc: "/brand/qwen-logo.png",
+    });
+  });
+
+  it("uses the official Qwen mark when the family identifies Qwen", () => {
+    expect(modelBrand("custom-build", "qwen3")).toMatchObject({
+      maker: "qwen",
+      logoSrc: "/brand/qwen-logo.png",
+    });
+  });
+
   it("falls back safely for unknown model families", () => {
     expect(modelBrand("custom-model")).toEqual({ maker: "unknown", makerLabel: "Model" });
   });

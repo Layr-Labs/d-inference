@@ -10,9 +10,6 @@ import MLXLLM
 import MLXLMCommon
 import MLXLMServer
 import MLXVLM
-#if canImport(os)
-import os
-#endif
 
 extension ProviderLoop {
     // MARK: - Attestation Challenge
@@ -22,10 +19,10 @@ extension ProviderLoop {
         timestamp: String,
         send: SendHandle
     ) async {
-        logger.info("Handling attestation challenge (timestamp: \(timestamp))")
+        logger.info(.attestationChallengeReceived)
 
         guard let builder = attestationBuilder else {
-            logger.warning("No Secure Enclave identity -- cannot respond to attestation challenge")
+            logger.warning(.attestationIdentityUnavailable)
             return
         }
 
@@ -76,8 +73,9 @@ extension ProviderLoop {
                 modelHashes: response.modelHashes
             )))
 
-            logger.info("Attestation challenge response sent")
+            logger.info(.attestationResponseSent)
         } catch {
+            logger.error(.attestationSigningFailed)
             logger.error("Failed to sign attestation challenge: \(error)")
         }
     }
@@ -119,14 +117,15 @@ extension ProviderLoop {
     /// which is what binds the Apple-gated push proof onto this connection.
     func handleCodeChallenge(_ challenge: EncryptedPayload, send: SendHandle) {
         guard let signer = self.signer else {
-            logger.warning("code-identity challenge received but no Secure Enclave signer is available")
+            logger.warning(.codeAttestationSignerUnavailable)
             return
         }
         do {
             let answer = try Self.answerCodeChallenge(challenge: challenge, keyPair: keyPair, signer: signer)
             send.send(.codeAttestationResponse(nonce: answer.nonce, signature: answer.signature))
-            logger.info("code-identity challenge answered over WebSocket")
+            logger.info(.codeAttestationResponseSent)
         } catch {
+            logger.error(.codeAttestationSigningFailed)
             logger.error("failed to answer code-identity challenge: \(error)")
         }
     }

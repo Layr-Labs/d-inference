@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreImage
 import Foundation
 import ImageIO
@@ -152,55 +153,145 @@ func vlmDecodeImageGarbageThrows() {
 
 // MARK: - decodeVideo
 
-@Test("decodeVideo writes an inline data: URI to a tracked temp file")
-func vlmDecodeVideoDataURIWritesTempFile() async throws {
-    var tempFiles: [URL] = []
-    // A real, probeable 64x64 video passes the limits and is written + tracked.
-    let (video, _) = try await MediaIngest.decodeVideo(
-        tinyMP4DataURI, tempFiles: &tempFiles)
-    guard case .url(let url) = video else {
-        Issue.record("expected .url, got \(video)")
+@Test("decodeVideo retains inline MP4 bytes in memory without creating a temp file")
+func vlmDecodeVideoDataURIStaysInMemory() async throws {
+    let fileManager = FileManager.default
+    let tempDirectory = fileManager.temporaryDirectory
+    let oldTempFiles = try Set(
+        fileManager.contentsOfDirectory(atPath: tempDirectory.path)
+            .filter { $0.hasPrefix("vlm-") && $0.hasSuffix(".mp4") })
+
+    // A real, probeable 64x64 video passes the limits and stays owned by the
+    // memory-backed resource loader. The before/after assertion locks out the
+    // exact plaintext temp-file path this replaced.
+    let (video, framePixels) = try await MediaIngest.decodeVideo(tinyMP4DataURI)
+    guard case .memoryBacked(let memoryAsset) = video else {
+        Issue.record("expected .memoryBacked, got \(video)")
         return
     }
-    #expect(tempFiles == [url])
-    #expect(FileManager.default.fileExists(atPath: url.path))
-    #expect(url.pathExtension == "mp4")
-    #expect((try Data(contentsOf: url)).count > 0)
-    // cleanup (production code removes these when the stream ends)
-    try? FileManager.default.removeItem(at: url)
+    #expect(memoryAsset.byteCount == Data(base64Encoded: tinyMP4Base64)!.count)
+    #expect(framePixels == 64 * 64)
+
+    let newTempFiles = try Set(
+        fileManager.contentsOfDirectory(atPath: tempDirectory.path)
+            .filter { $0.hasPrefix("vlm-") && $0.hasSuffix(".mp4") })
+    #expect(newTempFiles == oldTempFiles)
+}
+
+@Test("decodeVideo accepts the coordinator's video/quicktime data URI contract")
+func vlmDecodeVideoQuickTimeDataURI() async throws {
+    let uri = "data:video/quicktime;base64,\(tinyMP4Base64)"
+    let (video, framePixels) = try await MediaIngest.decodeVideo(uri)
+    guard case .memoryBacked = video else {
+        Issue.record("expected .memoryBacked, got \(video)")
+        return
+    }
+    #expect(framePixels == 64 * 64)
+}
+
+@Test("startup purge removes only exact legacy plaintext-video temp files")
+func vlmLegacyVideoTempPurgeIsNarrow() throws {
+    let fileManager = FileManager.default
+    let directory = fileManager.temporaryDirectory
+        .appendingPathComponent("media-purge-\(UUID().uuidString)", isDirectory: true)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? fileManager.removeItem(at: directory) }
+
+    let legacy = directory.appendingPathComponent("vlm-\(UUID().uuidString).mp4")
+    let unrelated = directory.appendingPathComponent("vlm-not-a-uuid.mp4")
+    let directoryCollision = directory.appendingPathComponent(
+        "vlm-\(UUID().uuidString).mp4", isDirectory: true)
+    try Data("legacy plaintext".utf8).write(to: legacy)
+    try Data("keep".utf8).write(to: unrelated)
+    try fileManager.createDirectory(at: directoryCollision, withIntermediateDirectories: false)
+
+    MediaIngest.purgeLegacyVideoTempFiles(in: directory)
+
+    #expect(!fileManager.fileExists(atPath: legacy.path))
+    #expect(fileManager.fileExists(atPath: unrelated.path))
+    #expect(fileManager.fileExists(atPath: directoryCollision.path))
+}
+
+@Test("ProviderLoop construction does not mutate the temporary directory")
+func vlmProviderLoopConstructionDoesNotRunMediaHousekeeping() throws {
+    let fileManager = FileManager.default
+    let legacy = fileManager.temporaryDirectory
+        .appendingPathComponent("vlm-\(UUID().uuidString).mp4")
+    try Data("legacy plaintext".utf8).write(to: legacy)
+    defer { try? fileManager.removeItem(at: legacy) }
+
+    let config = ProviderLoopConfig(
+        coordinatorURL: "ws://127.0.0.1:0/unused",
+        hardware: HardwareInfo(
+            machineModel: "Mac16,5",
+            chipName: "Apple M4 Max",
+            chipFamily: .m4,
+            chipTier: .max,
+            memoryGb: 128,
+            memoryAvailableGb: 124,
+            cpuCores: CpuCores(total: 16, performance: 12, efficiency: 4),
+            gpuCores: 40,
+            memoryBandwidthGbs: 546),
+        models: [],
+        config: ProviderConfig(
+            provider: ProviderSettings(name: "media-housekeeping-test", memoryReserveGB: 1),
+            backend: BackendSettings(idleTimeoutMins: 0, maxModelSlots: 1),
+            coordinator: CoordinatorSettings(heartbeatIntervalSecs: 60)))
+
+    _ = try ProviderLoop(
+        config: config,
+        purgeLegacyFiles: true,
+        attestationSigner: nil)
+
+    #expect(fileManager.fileExists(atPath: legacy.path))
 }
 
 @Test("decodeVideo fails closed when video metadata is unprobeable")
 func vlmDecodeVideoUnreadableMetadataRejected() async {
-    // Bytes that aren't a real video: duration/tracks can't be proven within
-    // cap, so it's rejected — the byte cap doesn't bound decoded frames.
-    var tempFiles: [URL] = []
+    // Bytes that aren't an ISO BMFF/MP4 are rejected before AVFoundation sees
+    // them and never trigger a disk fallback.
     let uri = "data:video/mp4;base64,\(Data("not a real video".utf8).base64EncodedString())"
-    await expectMediaTooLarge {
-        _ = try await MediaIngest.decodeVideo(uri, tempFiles: &tempFiles)
+    do {
+        _ = try await MediaIngest.decodeVideo(uri)
+        Issue.record("expected malformedDataURI")
+    } catch let error as MediaIngest.MediaError {
+        guard case .malformedDataURI = error else {
+            Issue.record("expected malformedDataURI, got \(error)")
+            return
+        }
+    } catch {
+        Issue.record("expected MediaError, got \(error)")
     }
-    #expect(tempFiles.isEmpty)  // rejected -> temp file cleaned up, not tracked
+}
+
+@Test("decodeVideo fails closed on a non-MP4 data URI")
+func vlmDecodeVideoRejectsOtherContainerMIME() async {
+    let uri = "data:video/webm;base64,\(tinyMP4Base64)"
+    do {
+        _ = try await MediaIngest.decodeVideo(uri)
+        Issue.record("expected malformedDataURI")
+    } catch let error as MediaIngest.MediaError {
+        guard case .malformedDataURI = error else {
+            Issue.record("expected malformedDataURI, got \(error)")
+            return
+        }
+    } catch {
+        Issue.record("expected MediaError, got \(error)")
+    }
 }
 
 @Test("decodeVideo rejects an http:// URI with invalidURL (no SSRF)")
 func vlmDecodeVideoHTTPRejected() async {
-    var tempFiles: [URL] = []
     await expectInvalidURLAsync("https://example.com/clip.mp4") {
-        _ = try await MediaIngest.decodeVideo(
-            "https://example.com/clip.mp4", tempFiles: &tempFiles)
+        _ = try await MediaIngest.decodeVideo("https://example.com/clip.mp4")
     }
-    // A rejected URI must not have spawned a temp file.
-    #expect(tempFiles.isEmpty)
 }
 
 @Test("decodeVideo rejects a file:// URI with invalidURL (no local-file read)")
 func vlmDecodeVideoFileRejected() async {
-    var tempFiles: [URL] = []
     await expectInvalidURLAsync("file:///etc/passwd") {
-        _ = try await MediaIngest.decodeVideo(
-            "file:///etc/passwd", tempFiles: &tempFiles)
+        _ = try await MediaIngest.decodeVideo("file:///etc/passwd")
     }
-    #expect(tempFiles.isEmpty)
 }
 
 // MARK: - hasMedia
@@ -310,7 +401,6 @@ func vlmBuildUserInputTextOnly() async throws {
 // These lock the status contract for the VLM-side errors:
 //   - client-fault MediaError cases (bad/oversized/non-`data:` payloads the
 //     caller controls) → 400
-//   - the provider-side temp-file write failure → 500
 //   - media sent to a non-VLM model → 400
 // They also guard the propagation premise behind FIX F: these exact error
 // values are what `MediaIngest.stream` / the engine throw upward, and
@@ -331,12 +421,6 @@ func vlmMediaErrorMapsTo400() {
             ProviderLoop.mapInferenceErrorToStatus(err) == 400,
             "expected 400 for \(err)")
     }
-}
-
-@Test("videoWriteFailed (provider IO fault) maps to HTTP 500")
-func vlmVideoWriteFailedMapsTo500() {
-    let err = MediaIngest.MediaError.videoWriteFailed("disk full")
-    #expect(ProviderLoop.mapInferenceErrorToStatus(err) == 500)
 }
 
 @Test("media-to-non-VLM-model error maps to HTTP 400")
@@ -579,39 +663,34 @@ func vlmDataFromDataURIRejectsOverByteCapPercentEncoded() async {
     }
 }
 
-@Test("decodeVideo applies the byte cap before writing a temp file")
+@Test("decodeVideo applies the byte cap before constructing an in-memory asset")
 func vlmDecodeVideoRejectsOverByteCap() async {
-    var tempFiles: [URL] = []
     await expectMediaTooLarge {
         _ = try await MediaIngest.decodeVideo(
-            tinyMP4DataURI, tempFiles: &tempFiles, maxMediaDecodedBytes: 0)
+            tinyMP4DataURI, maxMediaDecodedBytes: 0)
     }
-    #expect(tempFiles.isEmpty)  // rejected before any temp file is written
 }
 
 @Test("decodeVideo rejects a video whose frame exceeds the per-frame pixel cap")
 func vlmDecodeVideoRejectsOverFrameCap() async {
     // The 64x64 fixture = 4096 px; a 1000-px per-frame cap rejects it, probed
     // from track metadata (naturalSize) without decoding frames.
-    var tempFiles: [URL] = []
     await expectMediaTooLarge {
         _ = try await MediaIngest.decodeVideo(
-            tinyMP4DataURI, tempFiles: &tempFiles, maxFramePixels: 1000)
+            tinyMP4DataURI, maxFramePixels: 1000)
     }
-    #expect(tempFiles.isEmpty)  // rejected -> temp file cleaned up, not tracked
 }
 
 @Test("decodeVideo accepts a video within the per-frame cap (no regression)")
 func vlmDecodeVideoWithinFrameCapPasses() async throws {
-    var tempFiles: [URL] = []
-    let (video, _) = try await MediaIngest.decodeVideo(
-        tinyMP4DataURI, tempFiles: &tempFiles, maxFramePixels: 10_000)
-    guard case .url(let url) = video else {
-        Issue.record("expected .url, got \(video)")
+    let (video, framePixels) = try await MediaIngest.decodeVideo(
+        tinyMP4DataURI, maxFramePixels: 10_000)
+    guard case .memoryBacked(let memoryAsset) = video else {
+        Issue.record("expected .memoryBacked, got \(video)")
         return
     }
-    #expect(tempFiles == [url])
-    try? FileManager.default.removeItem(at: url)
+    #expect(memoryAsset.byteCount > 0)
+    #expect(framePixels == 64 * 64)
 }
 
 @Test("imagePixelCount + decodeImage reject a real multi-pixel image over the cap")
@@ -628,7 +707,6 @@ func vlmDecodeImageRealMultiPixelRejected() async throws {
 func vlmBuildUserInputRejectsVideoCount() async {
     // Three tiny valid videos with a 2-video cap -> rejected on the third,
     // bounding the "many tiny MP4s" aggregate-frame amplification.
-    var tempFiles: [URL] = []
     let request = OpenAIChatCompletionRequest(
         model: "vlm",
         messages: [
@@ -642,21 +720,18 @@ func vlmBuildUserInputRejectsVideoCount() async {
         ])
     await expectMediaTooLarge {
         _ = try await MediaIngest.buildUserInput(
-            from: request, tempFiles: &tempFiles, maxVideosPerRequest: 2)
+            from: request, maxVideosPerRequest: 2)
     }
-    for u in tempFiles { try? FileManager.default.removeItem(at: u) }
 }
 
 @Test("buildUserInput rejects videos whose aggregate frame pixels exceed the cap")
 func vlmBuildUserInputRejectsVideoFramePixels() async {
     // One 64x64 video = 4096 frame px; a 1-px aggregate cap trips it.
-    var tempFiles: [URL] = []
     let request = OpenAIChatCompletionRequest(
         model: "vlm",
         messages: [.init(role: .user, content: .parts([.videoURL(tinyMP4DataURI)]))])
     await expectMediaTooLarge {
         _ = try await MediaIngest.buildUserInput(
-            from: request, tempFiles: &tempFiles, maxRequestVideoFramePixels: 1)
+            from: request, maxRequestVideoFramePixels: 1)
     }
-    for u in tempFiles { try? FileManager.default.removeItem(at: u) }
 }

@@ -341,15 +341,65 @@ func (fp *failoverProvider) sendContentChunk(ctx context.Context, req protocol.I
 }
 
 func (fp *failoverProvider) sendInferenceError(ctx context.Context, req protocol.InferenceRequestMessage, errMsg string, statusCode int) {
+	failureCode, errorReason := testFailureClassification(errMsg, statusCode)
 	msg := protocol.InferenceErrorMessage{
-		Type:       protocol.TypeInferenceError,
-		RequestID:  req.RequestID,
-		Error:      errMsg,
-		StatusCode: statusCode,
+		Type:        protocol.TypeInferenceError,
+		RequestID:   req.RequestID,
+		Error:       errMsg,
+		StatusCode:  statusCode,
+		FailureCode: failureCode,
+		ErrorReason: errorReason,
 	}
 	data, _ := json.Marshal(msg)
 	if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {
 		fp.t.Logf("provider %s: write inference_error: %v", fp.name, err)
+	}
+}
+
+func (fp *failoverProvider) sendTypedInferenceError(
+	ctx context.Context,
+	req protocol.InferenceRequestMessage,
+	failureCode protocol.InferenceFailureCode,
+	errorReason string,
+	statusCode int,
+) {
+	msg := protocol.InferenceErrorMessage{
+		Type:        protocol.TypeInferenceError,
+		RequestID:   req.RequestID,
+		Error:       "untrusted provider detail",
+		StatusCode:  statusCode,
+		FailureCode: failureCode,
+		ErrorReason: errorReason,
+	}
+	data, _ := json.Marshal(msg)
+	if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {
+		fp.t.Logf("provider %s: write typed inference_error: %v", fp.name, err)
+	}
+}
+
+// testFailureClassification migrates the shared fake provider to the typed
+// protocol. String inspection is intentionally confined to test fixture setup;
+// production classification never reads provider-authored Error prose.
+func testFailureClassification(errMsg string, statusCode int) (protocol.InferenceFailureCode, string) {
+	lower := strings.ToLower(errMsg)
+	switch {
+	case statusCode == 499:
+		return protocol.FailureCodeCancelled, errorReasonCancelled
+	case strings.Contains(lower, "batch token budget"):
+		return protocol.FailureCodeCapacity, errorReasonRequestExceedsBatchBudget
+	case strings.Contains(lower, "active token budget"):
+		return protocol.FailureCodeCapacity, errorReasonRequestExceedsNodeBudget
+	case strings.Contains(lower, "context") && (strings.Contains(lower, "exceeds") || strings.Contains(lower, "exceeded")):
+		return protocol.FailureCodeCapacity, errorReasonRequestExceedsContext
+	case strings.Contains(lower, "queue full"):
+		return protocol.FailureCodeCapacity, errorReasonQueueFull
+	case statusCode == http.StatusTooManyRequests || statusCode == http.StatusServiceUnavailable:
+		return protocol.FailureCodeCapacity, errorReasonCapacityBusy
+	default:
+		// Keep generic historical fixtures legacy-shaped. Their raw text is still
+		// discarded by the production sanitizer; bounded status supplies only the
+		// rolling-upgrade behavior under test.
+		return "", ""
 	}
 }
 
@@ -547,6 +597,55 @@ func TestPreContentFailover_ErrorAfterRoleChunk(t *testing.T) {
 	if strings.Contains(body, markerFor(seq[0])) {
 		t.Errorf("stream contains content from the failed provider %q; body = %s", seq[0], body)
 	}
+	if got := pA.dispatchCount() + pB.dispatchCount(); got != 2 {
+		t.Errorf("total dispatches = %d, want 2", got)
+	}
+}
+
+// Output-validation 422s use generation_failure + tool_noncompliance: the
+// coordinator must preserve the typed 422 while treating it as retryable, so a
+// second provider can produce a successful sample.
+func TestPreContentFailover_TypedOutputValidation422(t *testing.T) {
+	reg, _, ts := setupFailoverServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	model := "failover-output-validation-model"
+	rec := &dispatchRecorder{}
+	script := func(ctx context.Context, fp *failoverProvider, req protocol.InferenceRequestMessage, body []byte) {
+		if rec.record(fp.name) == 1 {
+			fp.sendRoleChunk(ctx, req, model)
+			time.Sleep(40 * time.Millisecond)
+			fp.sendTypedInferenceError(
+				ctx,
+				req,
+				protocol.FailureCodeGenerationFailure,
+				errorReasonToolNoncompliance,
+				http.StatusUnprocessableEntity,
+			)
+			return
+		}
+		fp.serveFull(ctx, req, model, markerFor(fp.name))
+	}
+
+	pA := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-a", Version: "0.6.4", DecodeTPS: 200,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+	pB := startFailoverProvider(t, ctx, ts, reg, failoverProviderConfig{
+		Name: "provider-b", Version: "0.6.4", DecodeTPS: 1,
+		Models: []failoverModelSpec{{ID: model}}, Script: script,
+	})
+
+	status, body, err := postChat(ctx, ts.URL, "test-key", buildChatBody(t, model, true, nil))
+	if err != nil {
+		t.Fatalf("chat request: %v", err)
+	}
+	seq := rec.sequence()
+	if len(seq) != 2 || seq[0] == seq[1] {
+		t.Fatalf("dispatch sequence = %v, want failed provider then distinct failover winner; status=%d body=%s", seq, status, body)
+	}
+	assertCleanFailoverStream(t, status, body, markerFor(seq[1]))
 	if got := pA.dispatchCount() + pB.dispatchCount(); got != 2 {
 		t.Errorf("total dispatches = %d, want 2", got)
 	}

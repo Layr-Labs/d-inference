@@ -18,7 +18,7 @@ private struct DescribedError: Error, CustomStringConvertible {
     let error = DescribedError(
         description: #"TemplateException(message: "You have passed a message containing <|channel|> tags in the content field. ...")"#
     )
-    #expect(classifyInferenceErrorReason(error) == "jinja_channel_tags")
+    #expect(classifyInferenceErrorReason(error) == .jinjaChannelTags)
 }
 
 @Test func classifyChannelTagsFromContentSignaturePair() {
@@ -27,14 +27,14 @@ private struct DescribedError: Error, CustomStringConvertible {
     let error = DescribedError(
         description: "render error: a raw <|channel|> appeared; tags in the content field are rejected"
     )
-    #expect(classifyInferenceErrorReason(error) == "jinja_channel_tags")
+    #expect(classifyInferenceErrorReason(error) == .jinjaChannelTags)
 }
 
 @Test func classifyChannelTagsFromThinkingSignaturePair() {
     let error = DescribedError(
         description: "raw <|channel|> token present; tags in the thinking field are not allowed"
     )
-    #expect(classifyInferenceErrorReason(error) == "jinja_channel_tags")
+    #expect(classifyInferenceErrorReason(error) == .jinjaChannelTags)
 }
 
 @Test func classifyNullBridgeBeatsGenericJinja() {
@@ -43,17 +43,17 @@ private struct DescribedError: Error, CustomStringConvertible {
     let error = DescribedError(
         description: "Cannot convert value of type 'Optional<Any>' to Jinja Value"
     )
-    #expect(classifyInferenceErrorReason(error) == "jinja_null_bridge")
+    #expect(classifyInferenceErrorReason(error) == .jinjaNullBridge)
 }
 
 @Test func classifyGenericTemplateException() {
     let error = DescribedError(description: "Jinja.TemplateException: unexpected '}' in template")
-    #expect(classifyInferenceErrorReason(error) == "jinja_template")
+    #expect(classifyInferenceErrorReason(error) == .jinjaTemplate)
 }
 
 @Test func classifyGenericJinjaMentionOnly() {
     let error = DescribedError(description: "Jinja render failed for an unknown reason")
-    #expect(classifyInferenceErrorReason(error) == "jinja_template")
+    #expect(classifyInferenceErrorReason(error) == .jinjaTemplate)
 }
 
 @Test func classifyTemplateExceptionFromNSErrorLossyForm() {
@@ -64,7 +64,7 @@ private struct DescribedError: Error, CustomStringConvertible {
         code: 1,
         userInfo: [NSLocalizedDescriptionKey: "The operation couldn’t be completed. (Jinja.TemplateException error 1.)"]
     )
-    #expect(classifyInferenceErrorReason(error) == "jinja_template")
+    #expect(classifyInferenceErrorReason(error) == .jinjaTemplate)
 }
 
 @Test func classifyReturnsNilForUnclassifiableError() {
@@ -139,4 +139,15 @@ private struct DescribedError: Error, CustomStringConvertible {
     #expect(location?.role == "assistant")
     #expect(location?.role.contains(secret) == false)
     #expect(location.map { "\($0.index)\($0.role)" }?.contains(secret) == false)
+}
+
+@Test func offendingLocationCanonicalizesUntrustedRole() {
+    let role = "PROMPT-SECRET-ROLE-LEAK-SENTINEL"
+    let messages: [[String: any Sendable]] = [
+        ["role": role, "content": "<|channel|>trigger"],
+    ]
+    let location = offendingHarmonyMessageLocation(in: messages)
+    #expect(location?.index == 0)
+    #expect(location?.role == "unknown")
+    #expect(location?.role.contains(role) == false)
 }

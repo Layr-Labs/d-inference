@@ -1,169 +1,159 @@
 # Telemetry
 
-Darkbloom's telemetry system carries operational events from the coordinator, provider CLI, macOS app, and console UI to a central sink (Datadog). The wire types are defined canonically in Go and mirrored in Swift and TypeScript. The three implementations must agree on JSON shape, enum values, and field names.
+Client-supplied telemetry is disabled. Provider and browser events are dropped
+locally, and both compatibility HTTP endpoints return `410 Gone` before reading
+a request body. The retained event types, allowlists, queue methods, and facade
+APIs are compatibility surfaces; they are not an active provider/browser data
+path.
 
-Canonical code:
+Coordinator-generated operational telemetry is separate and remains active. It
+is created inside the coordinator, mirrored to the process logger and metrics,
+and may be forwarded to Datadog. It does not accept provider or browser event
+payloads ([`coordinator/telemetry/emitter.go`, `Emitter.Emit`](../../../coordinator/telemetry/emitter.go#L61-L119)).
 
-* Go wire types: `coordinator/protocol/telemetry.go`
-* Swift mirror: `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`
-* TypeScript mirror: `console-ui/src/lib/telemetry-types.ts`
-* Ingestion: `coordinator/api/telemetry_handlers.go`
-* Swift client: `provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift`
-* Swift overflow queue: `provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift`
-* Swift panic hook: `provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift`
+## Canonical code
 
-## Symmetry requirement
+### Disabled client-ingestion path
 
-The telemetry contract has three mirrors that must stay aligned:
+- Coordinator route wiring: [`coordinator/api/server.go`](../../../coordinator/api/server.go#L1919-L1922)
+- Coordinator `410` handler: [`handleTelemetryIngest`](../../../coordinator/api/telemetry_handlers.go#L261-L269)
+- Swift disabled client: [`TelemetryClient`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L50-L103)
+- Swift disabled compatibility queue: [`TelemetryOverflowQueue`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L11-L59)
+- Common locked startup cleanup: [`ProcessLifecycle.acquireMediaServingLock`](../../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104)
+- Swift crash hook: [`PanicHook`](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L19-L101)
+- TypeScript disabled facade: [`console-ui/src/lib/telemetry.ts`](../../../console-ui/src/lib/telemetry.ts#L1-L26)
+- TypeScript `410` route: [`console-ui/src/app/api/telemetry/route.ts`](../../../console-ui/src/app/api/telemetry/route.ts#L1-L17)
 
-| Language | File | What must match |
-|---|---|---|
-| Go | `coordinator/protocol/telemetry.go` | Canonical enum constants, struct tags, batch shape |
-| Swift | `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift` | Raw enum values, snake_case `CodingKeys`, optional-field omission |
-| TypeScript | `console-ui/src/lib/telemetry-types.ts` | Literal string unions, optional fields, allowlist |
+### Retained compatibility schema
 
-The coordinator coerces unknown source/severity/kind values to safe defaults (`custom`, `info`, `custom`) on ingest (`telemetry_handlers.go:327-339`), so a mismatch does not crash the server — but it breaks filtering, dashboard grouping, and alerting. Symmetry tests in each language pin enum casing and optional-field omission.
+- Canonical Go wire types: [`coordinator/protocol/telemetry.go`](../../../coordinator/protocol/telemetry.go#L15-L146)
+- Swift mirror: [`provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift#L14-L317)
+- TypeScript mirror: [`console-ui/src/lib/telemetry-types.ts`](../../../console-ui/src/lib/telemetry-types.ts#L1-L172)
+- Historical Go parser and field allowlist: [`coordinator/api/telemetry_handlers.go`](../../../coordinator/api/telemetry_handlers.go#L31-L190)
 
-All three field allowlists (Go server, Swift client, TypeScript client) must also stay in sync:
+The Go, Swift, and TypeScript event definitions remain aligned because old
+binaries and source call sites still compile against them. Their parity tests
+protect that compatibility contract. They do **not** imply that client event
+ingestion is enabled.
 
-* Go: `telemetryFieldAllowlist` (`telemetry_handlers.go:48-171`)
-* Swift: `TelemetryFieldFilter.allowed` (`TelemetryEvent.swift:238-294`)
-* TypeScript: `TELEMETRY_ALLOWED_FIELDS` (`telemetry-types.ts:58-160`)
+## Disabled flow
 
-This is enforced, not merely asked for: `coordinator/api/telemetry_allowlist_parity_test.go`
-scrapes both client mirrors at test time and diffs them against the Go map in both
-directions. Adding a field to one mirror alone fails `TestTelemetryAllowlistThreeWayParity`.
-
-## Wire event shape
-
-`TelemetryEvent` (`coordinator/protocol/telemetry.go:105-119`):
-
-```go
-type TelemetryEvent struct {
-    ID        string            `json:"id"`
-    Timestamp time.Time         `json:"timestamp"`
-    Source    TelemetrySource   `json:"source"`
-    Severity  TelemetrySeverity `json:"severity"`
-    Kind      TelemetryKind     `json:"kind"`
-    Version   string            `json:"version,omitempty"`
-    MachineID string            `json:"machine_id,omitempty"`
-    AccountID string            `json:"account_id,omitempty"`
-    RequestID string            `json:"request_id,omitempty"`
-    SessionID string            `json:"session_id,omitempty"`
-    Message   string            `json:"message"`
-    Fields    map[string]any    `json:"fields,omitempty"`
-    Stack     string            `json:"stack,omitempty"`
-}
+```mermaid
+flowchart LR
+    P[Swift provider call site] --> PC[TelemetryClient.emit]
+    PC --> PD[Drop in process]
+    B[Browser call site] --> BF[telemetry.ts emit]
+    BF --> BD[Drop in process]
+    OP[Old provider or browser bundle] --> E[Compatibility HTTP endpoint]
+    E --> G[410 Gone before body read]
 ```
 
-The Swift struct uses identical snake_case `CodingKeys` and omits empty optionals (`TelemetryEvent.swift:78-86`). The TypeScript interface uses the same optional fields (`telemetry-types.ts:38-54`).
+The coordinator registers `POST /v1/telemetry/events` directly to
+`handleTelemetryIngest` ([route wiring](../../../coordinator/api/server.go#L1919-L1922)).
+That handler writes only the fixed `telemetry_ingest_disabled` error response;
+it does not read, decode, store, log, or forward the body
+([handler](../../../coordinator/api/telemetry_handlers.go#L261-L269)).
 
-## Enums
+The browser compatibility route behaves the same way. Its `POST` function does
+not access the `NextRequest`; it returns the fixed error with status 410
+([route](../../../console-ui/src/app/api/telemetry/route.ts#L5-L16)). The browser
+facade's `emit`, global-handler installation, and test reset methods are no-ops,
+and its reported buffer size is always zero
+([facade](../../../console-ui/src/lib/telemetry.ts#L17-L26)).
 
-### Source
+## Swift client and legacy queue
 
-| Go constant | Raw value | Swift case | TS literal |
-|---|---|---|---|
-| `TelemetrySourceCoordinator` | `"coordinator"` | `.coordinator` | `"coordinator"` |
-| `TelemetrySourceProvider` | `"provider"` | `.provider` | `"provider"` |
-| `TelemetrySourceApp` | `"app"` | `.app` | `"app"` |
-| `TelemetrySourceConsole` | `"console"` | `.console` | `"console"` |
-| `TelemetrySourceBridge` | `"bridge"` | `.bridge` | `"bridge"` |
+`TelemetryClient` retains configuration and emission signatures so existing
+call sites keep compiling, but both `emit` overloads discard their arguments.
+`setAuthToken`, `setMachineId`, and `setAccountId` also retain compatibility
+signatures without storing their values
+([`TelemetryClient`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L57-L82)).
+No event is encoded, buffered, written to disk, or sent over the network.
 
-Unknown sources coerce to `"custom"` (`telemetry.go:57`, `telemetry_handlers.go:327-329`).
+Legacy cleanup is intentionally narrow and shared by both serving modes:
 
-### Severity
+- `ProcessLifecycle.acquireMediaServingLock` acquires the single-instance lock,
+  then purges the legacy telemetry queue and legacy video files in that order.
+  Both standalone and coordinator-connected startup call this common seam
+  ([locked housekeeping](../../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104),
+  [standalone call](../../../provider-swift/Sources/darkbloom/StartCommand+Modes.swift#L78-L82),
+  [connected call](../../../provider-swift/Sources/darkbloom/StartCommand+Modes.swift#L182-L187)).
+- `TelemetryClient.configure`, `shutdown`, and `shutdownSync` are compatibility
+  no-ops; they cannot create a second cleanup path or revive persistence
+  ([disabled client](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L57-L85)).
+- `push` drops its event and `drain` always returns an empty array
+  ([queue no-ops](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L27-L36)).
+- `purge` removes only the historical `telemetry-queue.jsonl` path and its exact
+  `.tmp` companion when each is a regular, non-symlink file. It does not create
+  a directory, lock file, or replacement artifact when neither exists
+  ([queue purge](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L38-L59)).
 
-| Go constant | Raw value | Swift case | TS literal |
-|---|---|---|---|
-| `SeverityDebug` | `"debug"` | `.debug` | `"debug"` |
-| `SeverityInfo` | `"info"` | `.info` | `"info"` |
-| `SeverityWarn` | `"warn"` | `.warn` | `"warn"` |
-| `SeverityError` | `"error"` | `.error` | `"error"` |
-| `SeverityFatal` | `"fatal"` | `.fatal` | `"fatal"` |
+`TelemetryClient.ingestEndpoint` remains only for compatibility tests and UI
+that displays the historical URL; production code does not send to the returned
+endpoint ([`ingestEndpoint`](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L87-L102)).
 
-Unknown severities coerce to `"info"` (`telemetry_handlers.go:331-334`).
+## Panic hook
 
-### Kind
+`PanicHook.install` registers handlers for `SIGSEGV`, `SIGBUS`, `SIGILL`,
+`SIGABRT`, and `SIGFPE`, plus an uncaught Objective-C exception handler
+([installation](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L24-L48)).
+The recording path constructs a compatibility `TelemetryEvent`, but
+`TelemetryOverflowQueue.push` is a no-op and
+`TelemetryClient.shutdownSync` is also a no-op. The common locked startup seam
+has already removed eligible legacy queue artifacts. No crash event or stack is
+persisted or transmitted
+([recording calls](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L79-L99),
+[disabled queue](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryOverflowQueue.swift#L27-L35),
+[disabled shutdown](../../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L83-L85),
+[startup cleanup](../../../provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift#L68-L104)).
 
-| Go constant | Raw value | Swift case | TS literal |
-|---|---|---|---|
-| `KindPanic` | `"panic"` | `.panic` | `"panic"` |
-| `KindHTTPError` | `"http_error"` | `.httpError` (raw `"http_error"`) | `"http_error"` |
-| `KindProtocolError` | `"protocol_error"` | `.protocolError` | `"protocol_error"` |
-| `KindBackendCrash` | `"backend_crash"` | `.backendCrash` | `"backend_crash"` |
-| `KindAttestationFailure` | `"attestation_failure"` | `.attestationFailure` | `"attestation_failure"` |
-| `KindInferenceError` | `"inference_error"` | `.inferenceError` | `"inference_error"` |
-| `KindRuntimeMismatch` | `"runtime_mismatch"` | `.runtimeMismatch` | `"runtime_mismatch"` |
-| `KindConnectivity` | `"connectivity"` | `.connectivity` | `"connectivity"` |
-| `KindLog` | `"log"` | `.log` | `"log"` |
-| `KindCustom` | `"custom"` | `.custom` | `"custom"` |
+The remaining local output is one bounded stderr marker with a fixed format:
+`FATAL panic kind=<closed category> message=<closed signal/exception label>`.
+It includes a local timestamp but never an Objective-C exception reason, request
+value, URL, model identifier, or stack
+([marker](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L95-L100),
+[exception redaction](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L37-L46)).
 
-Unknown kinds coerce to `"custom"` (`telemetry_handlers.go:336-339`).
+For POSIX signals, the handler then restores the default disposition and
+re-raises the same signal. The process therefore retains its real signal exit
+status and Apple's CrashReporter can write the authoritative crash report
+([re-raise](../../../provider-swift/Sources/ProviderCore/Telemetry/PanicHook.swift#L68-L75)).
+The Objective-C exception callback records the same bounded marker; the signal
+re-raise sequence applies specifically to the POSIX handler.
 
-## Ingestion endpoint
+## Explicit provider support reports
 
-`POST /v1/telemetry/events` accepts a `TelemetryBatch` of up to 100 events with a 64 KB body limit (`telemetry_handlers.go:35-41`). Authentication is optional:
+`darkbloom report` is a separate, operator-initiated support path; it is not
+client telemetry. The command runs `/usr/bin/log show` only for the
+`dev.darkbloom.provider` subsystem, includes info-level output without debug
+events, and preserves macOS unified-log privacy redaction. `--dry-run` prints the
+exact report without uploading it. There is no trust-triggered or background
+auto-report path
+([command scope](../../../provider-swift/Sources/darkbloom/ReportCommand.swift#L5-L44),
+[review and upload flow](../../../provider-swift/Sources/darkbloom/ReportCommand.swift#L78-L159),
+[provider logging privacy contract](../../../provider-swift/Sources/ProviderCore/ProviderLogger.swift#L6-L95),
+[trust-status runtime](../../../provider-swift/Sources/ProviderCore/ProviderLoop+Trust.swift#L1-L24)).
 
-1. Provider token → machine-id bucket.
-2. Privy JWT or API key → account bucket.
-3. Anonymous → stricter rate limit.
+An authenticated provider upload is capped at 10 MiB and stored for explicit
+admin-only list/retrieval. The coordinator does not ingest these reports into
+the telemetry event pipeline or forward them to Datadog. This is an intentional
+support action controlled by the provider operator, while routine client
+telemetry remains disabled
+([route wiring](../../../coordinator/api/server.go#L1924-L1927),
+[upload and retrieval handlers](../../../coordinator/api/log_report_handlers.go#L16-L112)).
 
-Rate limits (`telemetry_handlers.go:108-115`):
+## Historical schema and allowlists
 
-| Auth | Burst | Refill |
-|---|---|---|
-| Authenticated | 200 | 100 events / minute |
-| Anonymous | 30 | 10 events / minute |
+`TelemetryEvent`, `TelemetryBatch`, enum mirrors, parser caps, rate limiter, and
+field allowlists remain in source for compatibility. Because active endpoints
+return 410 before body access, those parser limits and filters are not an active
+confidentiality control. Phrases such as "accepted field," "server cap," or
+"coerced enum" in the schema reference describe how the retired parser would
+process an event if ingestion were deliberately re-enabled after a new privacy
+review.
 
-The handler sanitizes each event (`telemetry_handlers.go:301-402`):
-
-* Mints/validates a UUIDv4 id.
-* Clamps timestamp to `[now-7d, now+5min]`.
-* Coerces source/severity/kind to known values.
-* Truncates message, stack, and string fields.
-* Filters `Fields` through the allowlist and caps the JSON size to 8 KB.
-* Stamps `machine_id` and `account_id` from auth context.
-
-Events are forwarded to Datadog Logs API asynchronously and are **not** persisted to the store (`telemetry_handlers.go:211-227`, `411-443`).
-
-## Field allowlist
-
-Only non-sensitive operational fields may be attached to events. The current allowlist (`telemetry_handlers.go:48-171`) includes generic metadata (`component`, `operation`, `duration_ms`), provider/backend context (`model`, `backend`, `hardware_chip`, `memory_gb`), coordinator context (`provider_id`, `trust_level`, `queue_depth`), connectivity (`reconnect_count`, `ws_state`), billing booleans (`billing_method`, `payment_failed`), UI context (`url`, `route`), and the OOM, engine-health, KV-budget-audit, media, and exact-prefix-replay diagnostic cohorts.
-
-v0.8.0 added three more cohorts, all bounded enums and counters:
-
-* **KV-backend discriminator** — `kv_backend` (`paged` | `contiguous`, the same key and vocabulary as `BackendSlotCapacity.kv_backend` on the heartbeat wire) and `prefix_reuse_backend`. These exist because `backend` was overloaded across three unrelated value vocabularies; see [the ruling in the schema reference](../../reference/telemetry-schema.md#backend-key-semantics). All producer sites now emit the split keys.
-* **Paged KV pool** — `pages_pinned`, `cow_events`, `pool_utilization`. Only `pool_utilization` has a producer; the other two are blocked on engine mechanisms that do not exist yet (no pin concept, no copy-on-write page splitting) and are deliberately left unproduced rather than emitted as a hardcoded zero.
-* **MTP / speculative decode** — `mtp_enabled`, `mtp_active`, `mtp_inactive_reason`, `mtp_acceptance_rate`. MTP was previously invisible to the coordinator while silently inflating `observed_decode_tps`, so a partially-MTP fleet biased routing on a metric assumed homogeneous.
-
-The producer for the paged-pool and MTP cohorts is `engine_v2_slot_posture`, an INFO `engine_health` event sampled per slot every 60 s by `EngineV2Bridge+MTP.swift` — recurring and traffic-independent, because a rollout dashboard needs a fleet inventory rather than a once-per-load notification.
-
-**Prompt or response content must never appear in telemetry.** This is enforced by design (no such field exists) and by the allowlist.
-
-## Swift client
-
-`TelemetryClient` (`TelemetryClient.swift`) is a global singleton that batches events in memory and flushes them periodically.
-
-* Configuration: coordinator URL, auth token, version, machine id, account id, source (`TelemetryClient.swift:19-70`).
-* Defaults: max batch 50, flush interval 10 seconds, in-memory cap 1000 events.
-* `emit(_:)` is non-blocking. When the in-memory buffer is full, events spill to disk (`TelemetryClient.swift:140-175`).
-* `shutdown()` flushes pending events over the network; `shutdownSync()` writes them to disk for signal-handler safety.
-* URL normalization converts WebSocket coordinator URLs (`wss://.../ws/provider`) to the HTTPS telemetry endpoint (`TelemetryClient.swift:416-433`).
-
-### Overflow queue
-
-`TelemetryOverflowQueue` (`TelemetryOverflowQueue.swift`) is a disk-backed JSONL queue at `~/.darkbloom/telemetry-queue.jsonl` with a 5 MB cap. When the cap is exceeded, the oldest half of the file is discarded.
-
-### Panic hook
-
-`PanicHook` (`PanicHook.swift`) installs signal handlers for `SIGSEGV`, `SIGBUS`, `SIGILL`, `SIGABRT`, and `SIGFPE`, plus an uncaught Objective-C exception handler. On a crash it:
-
-1. Builds a `TelemetryEvent` with `kind = .panic`, `severity = .fatal`, and `Thread.callStackSymbols` as the stack.
-2. Pushes the event directly to the disk overflow queue.
-3. Calls `TelemetryClient.shared.shutdownSync()` to flush the in-memory buffer to disk.
-4. Re-raises the signal so the process exits with the real status and Apple's CrashReporter still writes its report.
-
-## Console UI telemetry
-
-The TypeScript mirror (`telemetry-types.ts`) defines the same event shape and allowlist. The console UI emits events through the same `POST /v1/telemetry/events` endpoint, authenticated via the user's API key or Privy JWT.
+The historical schema includes free-form `message` and `stack` fields plus
+arbitrary field values. A field-name allowlist cannot prove those values are
+safe. Re-enabling client ingestion requires closed, per-kind value schemas and a
+new confidentiality review; changing only the retained allowlists is
+insufficient.

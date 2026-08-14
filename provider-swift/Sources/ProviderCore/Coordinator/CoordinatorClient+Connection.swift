@@ -3,9 +3,6 @@
 
 import Foundation
 import Network
-#if canImport(os)
-import os
-#endif
 
 extension CoordinatorClient {
     // MARK: - Connection Loop
@@ -15,11 +12,12 @@ extension CoordinatorClient {
         var reconnectCount: UInt64 = 0
 
         while !shutdownRequested {
-            logger.info("Connecting to coordinator: \(self.config.url)")
+            logger.info(.connectingToCoordinator)
+            logger.info("Coordinator URL: \(self.config.url)")
 
             do {
                 try await connectAndRun()
-                logger.info("Coordinator connection closed, reconnecting...")
+                logger.info(.coordinatorConnectionClosed)
                 backoff.reset()
                 continue
             } catch {
@@ -28,6 +26,7 @@ extension CoordinatorClient {
                 eventContinuation?.yield(.disconnected)
                 let delay = backoff.nextDelay()
                 let reachable = reachability.isReachable
+                logger.warning(.coordinatorConnectionFailed)
                 logger.warning("Coordinator connection error: \(error.localizedDescription). network_reachable=\(reachable). Reconnecting in \(delay)s")
 
                 reconnectCount += 1
@@ -44,7 +43,7 @@ extension CoordinatorClient {
             }
         }
 
-        logger.info("Coordinator client shut down")
+        logger.info(.coordinatorClientShutdown)
         eventContinuation?.finish()
     }
 
@@ -156,10 +155,10 @@ extension CoordinatorClient {
             connection.start(queue: self.connectionQueue)
         }
 
-        logger.info("NWConnection ready; sending registration to coordinator")
+        logger.info(.coordinatorTransportReady)
 
         try await sendRegistration(connection: connection)
-        logger.info("Sent registration to coordinator")
+        logger.info(.coordinatorRegistrationSent)
 
         // Fresh outbound stream for THIS connection. AsyncStream is single-shot:
         // its iterator is terminated when the previous session's consumer task is
@@ -339,6 +338,7 @@ extension CoordinatorClient {
             isComplete: true,
             completion: .contentProcessed { error in
                 if let error {
+                    logger.error(.coordinatorSendFailed)
                     logger.error("WS send failed (\(identifier)): \(error.localizedDescription)")
                     // Cancel the connection immediately so the stateUpdateHandler
                     // (Task 0) fires a failure and tears down the session. Without

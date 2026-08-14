@@ -14,7 +14,7 @@ func TestBackendWedgeSignalsExtraction(t *testing.T) {
 	if got := backendWedgeSignals(nil); got != nil {
 		t.Fatalf("nil heartbeat should yield no signals, got %+v", got)
 	}
-	if got := backendWedgeSignals(&protocol.HeartbeatMessage{}); got != nil {
+	if got := backendWedgeSignals(&protocol.BackendCapacity{}); got != nil {
 		t.Fatalf("heartbeat without backend capacity should yield no signals, got %+v", got)
 	}
 
@@ -54,7 +54,7 @@ func TestBackendWedgeSignalsExtraction(t *testing.T) {
 		},
 	}
 
-	got := backendWedgeSignals(hb)
+	got := backendWedgeSignals(hb.BackendCapacity)
 	if len(got) != 3 {
 		t.Fatalf("expected 3 instrumented slots (legacy skipped), got %d: %+v", len(got), got)
 	}
@@ -131,7 +131,7 @@ func TestEvalInFlightLongEmittedOnceProviderWide(t *testing.T) {
 			},
 		},
 	}
-	s.recordBackendWedgeTelemetry(hb)
+	s.recordBackendWedgeTelemetry(hb.BackendCapacity)
 	_ = ddClient.Statsd.Flush()
 	packets := collector.drain()
 
@@ -155,11 +155,9 @@ func TestEvalInFlightLongEmittedOnceProviderWide(t *testing.T) {
 func TestRecordBackendWedgeTelemetryNilSafe(t *testing.T) {
 	s := &Server{}
 	// Must not panic with nil dd and a wedged slot.
-	s.recordBackendWedgeTelemetry(&protocol.HeartbeatMessage{
-		BackendCapacity: &protocol.BackendCapacity{
-			Slots: []protocol.BackendSlotCapacity{
-				{Model: "m", State: "idle", Admits: 3, WedgeSuspected: true},
-			},
+	s.recordBackendWedgeTelemetry(&protocol.BackendCapacity{
+		Slots: []protocol.BackendSlotCapacity{
+			{Model: "m", State: "idle", Admits: 3, WedgeSuspected: true},
 		},
 	})
 }

@@ -238,9 +238,7 @@ struct PrefixCacheReceiptTests {
             stageMs: 1))
         send.send(.inferenceError(
             requestId: "ordered-request",
-            error: "terminal",
-            statusCode: 500,
-            errorReason: nil))
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
 
         #expect(sequence.lock.withLock { sequence.values } == ["lookup", "ready", "error"])
     }
@@ -292,9 +290,7 @@ struct PrefixCacheReceiptTests {
             finalizer.sendTerminal(
                 .inferenceError(
                     requestId: "concurrent-request",
-                    error: "terminal",
-                    statusCode: 500,
-                    errorReason: nil),
+                    failure: InferenceFailure(code: .internalFailure, statusCode: 500)),
                 fallbackFailure: .policy,
                 tier: .ssd,
                 send: send)
@@ -339,9 +335,7 @@ struct PrefixCacheReceiptTests {
             promptAnchor: prompt))
         callbacks.terminal(.inferenceError(
             requestId: "request",
-            error: "terminal",
-            statusCode: 500,
-            errorReason: nil))
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
 
         await waitForMessages(messages, count: 3)
         let values = messages.lock.withLock { messages.values }
@@ -425,9 +419,7 @@ struct PrefixCacheReceiptTests {
             requiredRecomputeTokens: 0))
         callbacks.terminal(.inferenceError(
             requestId: "request",
-            error: "terminal",
-            statusCode: 500,
-            errorReason: nil))
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
 
         await waitForMessages(messages, count: 1)
         let values = messages.lock.withLock { messages.values }

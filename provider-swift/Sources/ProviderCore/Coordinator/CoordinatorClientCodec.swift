@@ -149,17 +149,10 @@ public enum CoordinatorClientCodec {
                 responseHash: responseHash
             ))
 
-        case .inferenceError(
-            let requestId, let error, let statusCode, let errorReason,
-            let terminalCause, let attemptUsage
-        ):
+        case .inferenceError(let requestId, let failure):
             return .inferenceError(ProviderMessage.InferenceError(
                 requestId: requestId,
-                error: error,
-                statusCode: statusCode,
-                errorReason: errorReason,
-                terminalCause: terminalCause,
-                attemptUsage: attemptUsage
+                failure: failure
             ))
 
         case .attestationResponse(let payload):

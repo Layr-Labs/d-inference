@@ -9,6 +9,198 @@ import MLXLMServer
 
 extension ProviderLoop {
 
+    /// Convert any thrown error into the closed provider/coordinator contract.
+    /// Raw descriptions are used only by the existing in-process classifier;
+    /// neither the returned value nor any downstream sink can carry them.
+    static func sanitizedInferenceFailure(
+        from error: Error,
+        phase: InferenceFailurePhase,
+        errorReason: InferenceErrorReason? = nil
+    ) -> InferenceFailure {
+        let statusCode = mapInferenceErrorToStatus(error)
+        let terminal = inferenceTerminalMetadata(from: error)
+        let reason = errorReason ?? boundedInferenceErrorReason(
+            from: error, terminalCause: terminal.cause)
+        return InferenceFailure(
+            code: inferenceFailureCode(
+                from: error,
+                statusCode: statusCode,
+                phase: phase,
+                errorReason: reason),
+            statusCode: statusCode,
+            errorReason: reason,
+            terminalCause: terminal.cause,
+            attemptUsage: terminal.usage)
+    }
+
+    /// Map rich in-process errors onto the bounded diagnostic vocabulary. The
+    /// associated strings are inspected only to recognize engine-authored
+    /// markers; no source string is returned, logged, or serialized.
+    private static func boundedInferenceErrorReason(
+        from error: Error,
+        terminalCause: InferenceTerminalCause?
+    ) -> InferenceErrorReason? {
+        if error is CancellationError { return .cancelled }
+        if let typed = classifyTypedInferenceErrorReason(error) { return typed }
+        if let cause = terminalCause {
+            switch cause {
+            case .admissionTimeout:
+                return .capacityTimeout
+            case .cancelled:
+                return .cancelled
+            case .prefillStall, .decodeStall, .safetyDeadline,
+                .backpressureTimeout, .watchdog, .engineError:
+                return nil
+            }
+        }
+        guard let engineError = error as? MultiModelBatchSchedulerEngineError else {
+            return nil
+        }
+        switch engineError {
+        case .modelNotLoaded, .noModelLoadedForTokenization:
+            return .modelLoad
+        case .invalidRole, .invalidToolPayload, .mediaUnsupportedByModel,
+            .multimodalRejected:
+            return .clientError
+        case .toolChoiceViolation:
+            return .toolNoncompliance
+        case .queueFull:
+            return .queueFull
+        case .tokenBudgetExhausted(let message):
+            return boundedCapacityReason(from: message, fallback: .tokenBudgetExhausted)
+        case .requestRejected(let message):
+            let lower = message.lowercased()
+            if lower.contains("invalid token count") || lower.contains("duplicate request id") {
+                return .clientError
+            }
+            return boundedCapacityReason(from: message, fallback: .capacityBusy)
+        case .generationFailed, .platformTerminal:
+            return nil
+        }
+    }
+
+    private static func boundedCapacityReason(
+        from engineMessage: String,
+        fallback: InferenceErrorReason
+    ) -> InferenceErrorReason {
+        let message = engineMessage.lowercased()
+        if message.contains("exceeds batch token budget") {
+            return .requestExceedsBatchTokenBudget
+        }
+        if message.contains("context length") || message.contains("context window") {
+            return .requestExceedsContext
+        }
+        if message.contains("active token budget")
+            || message.contains("shared kv budget")
+            || (message.contains("request requires") && message.contains("available"))
+        {
+            return .requestExceedsNodeBudget
+        }
+        if message.contains("timed out waiting for capacity") {
+            return .capacityTimeout
+        }
+        if message.contains("queue full") {
+            return .queueFull
+        }
+        if message.contains("capacity exhausted")
+            || message.contains("insufficient global kv cache headroom")
+        {
+            return .capacityBusy
+        }
+        return fallback
+    }
+
+    private static func inferenceFailureCode(
+        from error: Error,
+        statusCode: UInt16,
+        phase: InferenceFailurePhase,
+        errorReason: InferenceErrorReason?
+    ) -> InferenceFailureCode {
+        if error is CancellationError { return .cancelled }
+        if errorReason == .cancelled { return .cancelled }
+        if errorReason == .modelLoad { return .modelUnavailable }
+        if errorReason == .toolNoncompliance {
+            return .generationFailure
+        }
+        if errorReason == .capacityTimeout
+            || errorReason == .queueFull
+            || errorReason == .tokenBudgetExhausted
+            || errorReason == .requestExceedsContext
+            || errorReason == .requestExceedsNode
+            || errorReason == .requestExceedsNodeBudget
+            || errorReason == .requestExceedsBatchTokenBudget
+            || errorReason == .capacityBusy
+        {
+            return .capacity
+        }
+        if errorReason == .jinjaChannelTags
+            || errorReason == .jinjaNullBridge
+            || errorReason == .jinjaTemplate
+        {
+            return .templateRender
+        }
+
+        if let mediaError = error as? MediaIngest.MediaError {
+            switch mediaError {
+            case .mediaTooLarge:
+                return .mediaTooLarge
+            case .malformedDataURI,
+                .base64DecodeFailed,
+                .percentDecodeFailed,
+                .imageDecodeFailed,
+                .invalidURL:
+                return .invalidMedia
+            }
+        }
+
+        if let engineError = error as? MultiModelBatchSchedulerEngineError {
+            switch engineError {
+            case .modelNotLoaded, .noModelLoadedForTokenization:
+                return .modelUnavailable
+            case .invalidRole, .invalidToolPayload:
+                return .invalidRequest
+            case .toolChoiceViolation, .generationFailed:
+                return .generationFailure
+            case .queueFull, .tokenBudgetExhausted, .requestRejected:
+                return .capacity
+            case .mediaUnsupportedByModel:
+                return .unsupportedMedia
+            case .multimodalRejected:
+                return .invalidMedia
+            case .platformTerminal(let cause, _, _):
+                switch cause {
+                case .admissionTimeout:
+                    return .capacity
+                case .cancelled:
+                    return .cancelled
+                case .safetyDeadline, .backpressureTimeout, .prefillStall,
+                    .decodeStall, .watchdog, .engineError:
+                    return .generationFailure
+                }
+            }
+        }
+
+        // `.clientError` is also used as the diagnostic reason for typed media
+        // failures. Keep its generic fallback after the concrete media switches
+        // so it cannot erase their distinct wire codes.
+        if errorReason == .clientError {
+            return .invalidRequest
+        }
+        if phase == .modelLoad { return .modelUnavailable }
+        switch statusCode {
+        case 400, 422:
+            return .invalidRequest
+        case 404:
+            return .modelUnavailable
+        case 429, 503:
+            return .capacity
+        default:
+            return phase == .streamStart || phase == .generation
+                ? .generationFailure
+                : .internalFailure
+        }
+    }
+
     /// Map an error thrown by `MLXOpenAIService` /
     /// `MultiModelBatchSchedulerEngine` to an HTTP-style status code
     /// the coordinator can forward to the consumer. Unmapped errors
@@ -115,10 +307,9 @@ extension ProviderLoop {
                 }
             }
         }
-        // VLM inline-media decode errors. All but the temp-file write are
-        // client faults (a malformed/oversized/non-`data:` payload the caller
-        // controls) → 400. `videoWriteFailed` is a provider-side IO failure
-        // → 500. These propagate up from `MediaIngest.stream`'s
+        // VLM inline-media decode errors are client faults (a malformed,
+        // oversized, or non-`data:` payload the caller controls) → 400.
+        // These propagate up from `MediaIngest.stream`'s
         // `continuation.finish(throwing:)` through the engine wrapper.
         if let mediaErr = error as? MediaIngest.MediaError {
             switch mediaErr {
@@ -129,8 +320,6 @@ extension ProviderLoop {
                 .invalidURL,
                 .mediaTooLarge:
                 return 400
-            case .videoWriteFailed:
-                return 500
             }
         }
         return 500
@@ -158,6 +347,6 @@ extension ProviderLoop {
         {
             return message == "request stream closed by engine teardown"
         }
-        return error.localizedDescription == "request stream closed by engine teardown"
+        return false
     }
 }

@@ -349,38 +349,58 @@ public enum ProviderMessage: Sendable, Equatable {
     }
 
     public struct InferenceError: Sendable, Equatable {
-        public var requestId: String
-        public var error: String
-        public var statusCode: UInt16
+        public let requestId: String
+        /// Closed privacy-safe category. Present on all new-provider messages;
+        /// nil only when decoding a legacy or future-unknown wire value.
+        public let failureCode: InferenceFailureCode?
+        /// Fixed compatibility text derived from `failureCode`. Raw error
+        /// descriptions are never stored or accepted by the outbound initializer.
+        public var error: String { (failureCode ?? .internalFailure).message }
+        public let statusCode: UInt16
         /// Normalized, privacy-safe failure reason (DAR-341). One of the shared
         /// `error_reason` vocabulary values — "jinja_channel_tags",
         /// "jinja_null_bridge", "jinja_template", "model_load" — or nil when the
         /// provider cannot confidently classify the failure (the coordinator then
         /// derives a reason from status/class). Omitted on the wire when nil.
-        public var errorReason: String?
+        public let errorReason: InferenceErrorReason?
         /// Typed terminal cause for this error (closed vocabulary, mirrored by
         /// the coordinator's Go `terminal_cause` field). Present for CBv2
         /// platform/engine terminals (deadline leases, step watchdog) and the
         /// provider's own pre-output cancellation; nil for every legacy string
         /// error. Omitted on the wire when nil so the legacy shape stays
         /// byte-identical.
-        public var terminalCause: InferenceTerminalCause?
+        public let terminalCause: InferenceTerminalCause?
         /// Engine-reconciled token usage of the failed attempt at its terminal
         /// (partial generation included). OBSERVABILITY ONLY — the coordinator
         /// persists/telemeters it but never bills from it. Omitted on the wire
         /// when nil (legacy providers, or a terminal with no usage).
-        public var attemptUsage: UsageInfo?
+        public let attemptUsage: UsageInfo?
 
         public init(
             requestId: String,
-            error: String,
-            statusCode: UInt16,
-            errorReason: String? = nil,
-            terminalCause: InferenceTerminalCause? = nil,
-            attemptUsage: UsageInfo? = nil
+            failure: InferenceFailure
         ) {
             self.requestId = requestId
-            self.error = error
+            self.failureCode = failure.code
+            self.statusCode = failure.statusCode
+            self.errorReason = failure.errorReason
+            self.terminalCause = failure.terminalCause
+            self.attemptUsage = failure.attemptUsage
+        }
+
+        /// Decoder-only compatibility path. Discards the legacy free-form
+        /// `error` value even when present, so decoding and re-encoding an old
+        /// provider frame cannot revive request-derived text.
+        fileprivate init(
+            decodedRequestId: String,
+            failureCode: InferenceFailureCode?,
+            statusCode: UInt16,
+            errorReason: InferenceErrorReason?,
+            terminalCause: InferenceTerminalCause?,
+            attemptUsage: UsageInfo?
+        ) {
+            self.requestId = decodedRequestId
+            self.failureCode = failureCode
             self.statusCode = statusCode
             self.errorReason = errorReason
             self.terminalCause = terminalCause
@@ -750,6 +770,7 @@ extension ProviderMessage: Codable {
         case responseHash = "response_hash"
         // InferenceError
         case error
+        case failureCode = "failure_code"
         case statusCode = "status_code"
         case errorReason = "error_reason"
         case terminalCause = "terminal_cause"
@@ -874,8 +895,9 @@ extension ProviderMessage: Codable {
             try container.encode(TypeValue.inferenceError, forKey: .type)
             try container.encode(e.requestId, forKey: .requestId)
             try container.encode(e.error, forKey: .error)
+            try container.encodeIfPresent(e.failureCode?.rawValue, forKey: .failureCode)
             try container.encode(e.statusCode, forKey: .statusCode)
-            try container.encodeIfPresent(e.errorReason, forKey: .errorReason)
+            try container.encodeIfPresent(e.errorReason?.rawValue, forKey: .errorReason)
             // Optional typed-terminal additions; omitted when nil so the legacy
             // wire shape is byte-identical (mirrors Go `omitempty`).
             try container.encodeIfPresent(e.terminalCause?.rawValue, forKey: .terminalCause)
@@ -1077,16 +1099,24 @@ extension ProviderMessage: Codable {
             ))
 
         case .inferenceError:
+            // The legacy free-form `error` key is deliberately decoded and
+            // discarded. It may contain prompt fragments, media URIs, template
+            // source, tool IDs, or generated output.
+            _ = try container.decodeIfPresent(String.self, forKey: .error)
+            let failureCode = (try container.decodeIfPresent(String.self, forKey: .failureCode))
+                .flatMap(InferenceFailureCode.init(rawValue:))
+            let errorReason = (try container.decodeIfPresent(String.self, forKey: .errorReason))
+                .flatMap(InferenceErrorReason.init(rawValue:))
             // Unknown terminal_cause strings decode to nil (tolerant): a newer
             // provider value must never crash an older decoder — it falls back to
             // the legacy string/status heuristics, exactly like an absent field.
             let terminalCause = (try container.decodeIfPresent(String.self, forKey: .terminalCause))
                 .flatMap(InferenceTerminalCause.init(rawValue:))
             self = .inferenceError(InferenceError(
-                requestId: try container.decode(String.self, forKey: .requestId),
-                error: try container.decode(String.self, forKey: .error),
+                decodedRequestId: try container.decode(String.self, forKey: .requestId),
+                failureCode: failureCode,
                 statusCode: try container.decode(UInt16.self, forKey: .statusCode),
-                errorReason: try container.decodeIfPresent(String.self, forKey: .errorReason),
+                errorReason: errorReason,
                 terminalCause: terminalCause,
                 attemptUsage: try container.decodeIfPresent(UsageInfo.self, forKey: .attemptUsage)
             ))
@@ -1337,9 +1367,8 @@ public enum CoordinatorMessage: Sendable, Equatable {
         public init(models: [DesiredModelEntry]) { self.models = models }
     }
 
-    /// Coordinator informs the provider of its current trust level and status.
-    /// Providers that learn they are "self_signed" or "untrusted" can
-    /// auto-report unified logs for troubleshooting.
+    /// Coordinator informs the provider of its current trust level and status
+    /// for local operator diagnostics.
     public struct TrustStatus: Sendable, Equatable {
         public var trustLevel: String
         public var status: String

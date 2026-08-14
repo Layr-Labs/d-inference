@@ -139,11 +139,7 @@ public enum OutboundMessage: Sendable {
     )
     case inferenceError(
         requestId: String,
-        error: String,
-        statusCode: UInt16,
-        errorReason: String?,
-        terminalCause: InferenceTerminalCause?,
-        attemptUsage: UsageInfo?
+        failure: InferenceFailure
     )
     case attestationResponse(AttestationResponsePayload)
     case codeAttestationResponse(nonce: String, signature: String)
@@ -180,26 +176,20 @@ public enum OutboundMessage: Sendable {
     case prefixCacheLookupV2(ProviderMessage.PrefixCacheLookupV2)
     case prefixCacheReadyV2(ProviderMessage.PrefixCacheReadyV2)
 
-    /// Legacy-signature convenience for the many call sites that emit an
-    /// inference error with no typed terminal cause or attempt usage (model
-    /// not loaded, encryption failure, template/jinja faults, …). Forwards to
-    /// the full case with the typed fields nil so those sites — and their
-    /// byte-identical legacy wire shape — stay untouched. Resolves to this
-    /// static member (4 labels), never the 6-label case, because the labels
-    /// differ.
+    /// Convenience for bounded failures without terminal metadata. There is
+    /// intentionally no overload accepting an arbitrary error string.
     public static func inferenceError(
         requestId: String,
-        error: String,
+        failureCode: InferenceFailureCode,
         statusCode: UInt16,
-        errorReason: String?
+        errorReason: InferenceErrorReason? = nil
     ) -> OutboundMessage {
         .inferenceError(
             requestId: requestId,
-            error: error,
-            statusCode: statusCode,
-            errorReason: errorReason,
-            terminalCause: nil,
-            attemptUsage: nil)
+            failure: InferenceFailure(
+                code: failureCode,
+                statusCode: statusCode,
+                errorReason: errorReason))
     }
 }
 

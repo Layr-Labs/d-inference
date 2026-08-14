@@ -1,132 +1,62 @@
 package api
 
-// End-to-end style test: drives the coordinator's HTTP server with realistic
-// ingestion traffic to validate the entire pipeline including Datadog forwarding
-// (which is a no-op in tests since DD_API_KEY is unset).
+// End-to-end route test for the fail-closed client telemetry sink.
 
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
-
-	"github.com/eigeninference/d-inference/coordinator/protocol"
-	"github.com/eigeninference/d-inference/coordinator/telemetry"
 )
 
-// TestTelemetryE2E_FullPipeline drives the full coordinator-side telemetry
-// pipeline: ingestion → in-memory store → metrics.
-func TestTelemetryE2E_FullPipeline(t *testing.T) {
+func TestTelemetryE2E_IngestionDisabled(t *testing.T) {
+	const sentinel = "PROMPT_SECRET_E2E_DO_NOT_EXFILTRATE"
+
 	srv, _ := testServer(t)
 	srv.SetAdminKey("admin-key")
-	srv.SetEmitter(telemetry.NewEmitter(srv.logger, srv.metrics, "e2e-test"))
-
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 
-	// 1. Ingest a representative batch through the public endpoint.
-	now := time.Now().UTC()
-	ingest := protocol.TelemetryBatch{
-		Events: []protocol.TelemetryEvent{
-			{
-				ID:        "00000000-0000-0000-0000-000000000010",
-				Timestamp: now,
-				Source:    protocol.TelemetrySourceProvider,
-				Severity:  protocol.SeverityError,
-				Kind:      protocol.KindBackendCrash,
-				Version:   "0.3.10",
-				MachineID: "m-e2e",
-				Message:   "vllm-mlx died",
-				Fields: map[string]any{
-					"backend":   "vllm-mlx",
-					"exit_code": 134,
-					// Rejected — not on allowlist:
-					"prompt": "ATTACKER_LEAK",
-				},
-				Stack: "at vllm_mlx::serve\n  at main",
-			},
-			{
-				ID:        "00000000-0000-0000-0000-000000000011",
-				Timestamp: now,
-				Source:    protocol.TelemetrySourceConsole,
-				Severity:  protocol.SeverityWarn,
-				Kind:      protocol.KindHTTPError,
-				Message:   "fetch failed",
-				Fields: map[string]any{
-					"url":         "https://api.darkbloom.dev/v1/models",
-					"status_code": 500,
-				},
-			},
-		},
-	}
-	body, _ := json.Marshal(ingest)
-	resp, err := http.Post(ts.URL+"/v1/telemetry/events", "application/json", bytes.NewReader(body))
+	resp, err := http.Post(
+		ts.URL+"/v1/telemetry/events",
+		"application/json",
+		bytes.NewBufferString(`{"events":[{"message":"`+sentinel+`"}]}`),
+	)
 	if err != nil {
 		t.Fatalf("ingest POST: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusAccepted {
-		t.Fatalf("ingest status: got %d want 202", resp.StatusCode)
+	if resp.StatusCode != http.StatusGone {
+		t.Fatalf("ingest status = %d, want %d", resp.StatusCode, http.StatusGone)
+	}
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if strings.Contains(string(responseBody), sentinel) {
+		t.Fatalf("request data reflected in response: %s", responseBody)
 	}
 
-	// 2. Telemetry goes to Datadog, not the store. Verify the HTTP response
-	//    accepted both events (PII field was stripped by the allowlist, but
-	//    the event itself is accepted — just without the forbidden field).
-	var ingestResp struct {
-		Accepted int `json:"accepted"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&ingestResp)
-	if ingestResp.Accepted < 2 {
-		t.Fatalf("accepted events: got %d want >=2", ingestResp.Accepted)
-	}
-
-	// 3. Metrics endpoint — JSON.
-	req3, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/admin/metrics", nil)
-	req3.Header.Set("Authorization", "Bearer admin-key")
-	r3, err := http.DefaultClient.Do(req3)
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/admin/metrics", nil)
+	req.Header.Set("Authorization", "Bearer admin-key")
+	metricsResp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("metrics: %v", err)
 	}
-	defer r3.Body.Close()
-	if r3.StatusCode != http.StatusOK {
-		t.Fatalf("metrics status: %d", r3.StatusCode)
+	defer metricsResp.Body.Close()
+	if metricsResp.StatusCode != http.StatusOK {
+		t.Fatalf("metrics status: %d", metricsResp.StatusCode)
 	}
 	var snap MetricsSnapshot
-	if err := json.NewDecoder(r3.Body).Decode(&snap); err != nil {
+	if err := json.NewDecoder(metricsResp.Body).Decode(&snap); err != nil {
 		t.Fatalf("decode metrics: %v", err)
 	}
-	// The ingestion handler bumps telemetry_events_total per event. Two
-	// events posted so we expect a count of >= 2 across all label sets.
-	var total int64
-	for k, v := range snap.Counters {
-		if strings.HasPrefix(k, "telemetry_events_total") {
-			total += v
+	for key, value := range snap.Counters {
+		if strings.HasPrefix(key, "telemetry_events_total") && value != 0 {
+			t.Fatalf("ingest counter changed despite disabled sink: %s=%d", key, value)
 		}
-	}
-	if total < 2 {
-		t.Errorf("telemetry_events_total: got %d want >=2 (snapshot=%+v)", total, snap.Counters)
-	}
-
-	// 4. Metrics endpoint — Prometheus text format.
-	req4, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/admin/metrics?format=prom", nil)
-	req4.Header.Set("Authorization", "Bearer admin-key")
-	r4, err := http.DefaultClient.Do(req4)
-	if err != nil {
-		t.Fatalf("metrics prom: %v", err)
-	}
-	defer r4.Body.Close()
-	if r4.StatusCode != http.StatusOK {
-		t.Fatalf("metrics prom status: %d", r4.StatusCode)
-	}
-	buf := new(bytes.Buffer)
-	_, _ = buf.ReadFrom(r4.Body)
-	if !strings.Contains(buf.String(), "# TYPE telemetry_events_total counter") {
-		t.Errorf("missing TYPE line for telemetry_events_total in:\n%s", buf.String())
-	}
-	if !strings.Contains(buf.String(), "providers_online") {
-		t.Errorf("missing providers_online gauge in:\n%s", buf.String())
 	}
 }

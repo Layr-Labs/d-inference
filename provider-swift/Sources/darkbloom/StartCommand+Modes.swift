@@ -75,8 +75,9 @@ extension Start {
         print("  Shareable any time with: darkbloom local")
         print()
 
-        // Standalone mode still benefits from the PID lock + sleep prevention.
-        try ProcessLifecycle.acquireSingleInstanceLock()
+        // Lock acquisition and exact legacy-artifact housekeeping are one
+        // ordered operation shared with coordinator-connected foreground mode.
+        try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
@@ -178,13 +179,16 @@ extension Start {
             try await runStartupAutoUpdate(coordinatorURL: coordinatorURL)
         }
 
-        // ----- Process-level lifecycle: PID lock + caffeinate. -----
-        try ProcessLifecycle.acquireSingleInstanceLock()
+        // ----- Process lifecycle: PID lock, legacy-artifact housekeeping, caffeinate. -----
+        // Housekeeping runs once here, outside telemetry configuration and any
+        // scheduled ProviderLoop reconstruction, after the old process releases the lock.
+        try ProcessLifecycle.acquireMediaServingLock()
         ProcessLifecycle.preventSystemSleep()
         defer { ProcessLifecycle.releaseSingleInstanceLock() }
 
-        // Install panic hook BEFORE telemetry so a crash during telemetry
-        // setup is itself captured.
+        // Housekeeping has removed the legacy telemetry queue. Install the
+        // panic hook now; its compatibility queue calls are no-ops and its only
+        // provider-owned output is a bounded local stderr marker.
         PanicHook.install()
 
         // Arm crash recovery for the running daemon however it was launched

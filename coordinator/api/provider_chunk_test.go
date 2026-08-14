@@ -125,7 +125,7 @@ func TestHandleChunkRejectsPlaintextTextChunk(t *testing.T) {
 		if errMsg.StatusCode != http.StatusBadGateway {
 			t.Fatalf("status code = %d, want %d", errMsg.StatusCode, http.StatusBadGateway)
 		}
-		if errMsg.Error != "provider returned invalid encrypted chunk" {
+		if errMsg.Error != "encrypted inference transport failed" {
 			t.Fatalf("error = %q", errMsg.Error)
 		}
 	case <-time.After(2 * time.Second):
@@ -199,7 +199,7 @@ func TestHandleChunkRejectsMixedPlaintextAndEncryptedTextChunk(t *testing.T) {
 		if errMsg.StatusCode != http.StatusBadGateway {
 			t.Fatalf("status code = %d, want %d", errMsg.StatusCode, http.StatusBadGateway)
 		}
-		if errMsg.Error != "provider returned invalid encrypted chunk" {
+		if errMsg.Error != "encrypted inference transport failed" {
 			t.Fatalf("error = %q", errMsg.Error)
 		}
 	case <-time.After(2 * time.Second):

@@ -228,11 +228,18 @@ darkbloom status --config ~/.config/darkbloom/provider.toml > status.txt
 darkbloom logs --last 24h > logs.txt
 ```
 
-Or upload logs directly to the Darkbloom team:
+To review the exact support report without sending it:
+
+```bash
+darkbloom report --last 6h --dry-run
+```
+
+To upload that provider-scoped report to the Darkbloom team:
 
 ```bash
 darkbloom report --last 6h
 ```
 
-The report includes only `dev.darkbloom.provider` unified logs and is indexed by
-your device's serial number.
+Reports are sent only by this explicit command; automatic reporting is disabled.
+The collector includes only `dev.darkbloom.provider` unified logs, preserves
+macOS privacy redaction, and indexes the upload by the device serial number.

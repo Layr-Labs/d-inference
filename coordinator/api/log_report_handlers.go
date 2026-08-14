@@ -1,9 +1,11 @@
 package api
 
-// HTTP handlers for provider log report upload and admin retrieval.
+// HTTP handlers for explicit provider log-report upload and admin retrieval.
 //
-// Providers upload their 24h unified logs via POST /v1/provider/log-report.
-// Admins list and retrieve reports via GET /v1/admin/log-reports.
+// A report is sent only when a provider operator invokes `darkbloom report`.
+// Automatic provider reporting remains disabled. The Swift collector preserves
+// macOS unified-log privacy redaction and limits collection to the Darkbloom
+// provider subsystem.
 
 import (
 	"io"
@@ -14,8 +16,7 @@ import (
 const maxLogReportBodySize = 10 << 20 // 10 MB
 
 // handleUploadLogReport handles POST /v1/provider/log-report?serial=XXX.
-// The provider identifies itself via API key auth (requireAuth). The serial
-// number is sent as a query param since the provider knows its own serial.
+// The provider authenticates through requireAuth before this handler runs.
 func (s *Server) handleUploadLogReport(w http.ResponseWriter, r *http.Request) {
 	serial := r.URL.Query().Get("serial")
 	if serial == "" {
@@ -38,7 +39,6 @@ func (s *Server) handleUploadLogReport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	accountID := s.resolveAccountID(r)
-
 	if err := s.store.StoreLogReport(serial, "", accountID, body); err != nil {
 		s.logger.Error("log report: store failed", "serial", serial, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to store log report"))
@@ -54,7 +54,7 @@ func (s *Server) handleUploadLogReport(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListLogReports handles GET /v1/admin/log-reports?serial=XXX&limit=10.
-// Admin-only. Returns log report metadata without the log data blobs.
+// It returns report metadata without log-data blobs.
 func (s *Server) handleListLogReports(w http.ResponseWriter, r *http.Request) {
 	if !s.isAdminAuthorized(w, r) {
 		return
@@ -67,8 +67,8 @@ func (s *Server) handleListLogReports(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := 10
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
 			limit = parsed
 		}
 	}
@@ -88,14 +88,12 @@ func (s *Server) handleListLogReports(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetLogReport handles GET /v1/admin/log-reports/{id}.
-// Admin-only. Returns the full log data as text/plain.
 func (s *Server) handleGetLogReport(w http.ResponseWriter, r *http.Request) {
 	if !s.isAdminAuthorized(w, r) {
 		return
 	}
 
-	idStr := r.PathValue("id")
-	id, err := strconv.ParseInt(idStr, 10, 64)
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "invalid report id"))
 		return

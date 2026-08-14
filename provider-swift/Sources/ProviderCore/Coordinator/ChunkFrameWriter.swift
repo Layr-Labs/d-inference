@@ -24,9 +24,6 @@
 
 import Foundation
 import Network
-#if canImport(os)
-import os
-#endif
 
 /// Per-session WebSocket text-frame writer with reused send contexts.
 ///
@@ -68,8 +65,8 @@ final class ChunkFrameWriter: @unchecked Sendable {
                     contentContext: context,
                     isComplete: true,
                     completion: .contentProcessed { error in
-                        if let error {
-                            logger.error("WS chunk send failed: \(error.localizedDescription)")
+                        if error != nil {
+                            logger.error(.coordinatorChunkSendFailed)
                             connection.cancel()
                         }
                     }

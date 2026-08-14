@@ -3,9 +3,6 @@
 
 import Foundation
 import Network
-#if canImport(os)
-import os
-#endif
 
 extension CoordinatorClient {
     /// Send a pre-encoded JSON frame on the current connection, if any. The
@@ -25,7 +22,7 @@ extension CoordinatorClient {
         do {
             parsed = try CoordinatorClientCodec.decodeIncomingMessage(from: data)
         } catch {
-            logger.warning("Failed to parse coordinator message: \(error.localizedDescription)")
+            logger.warning("Failed to parse coordinator message")
             return
         }
 
@@ -38,8 +35,7 @@ extension CoordinatorClient {
                 logger.error("Rejecting plaintext inference request: \(requestId)")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    error: "coordinator text request missing encrypted body",
-                    statusCode: 400
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -53,8 +49,7 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): ciphertext is not valid base64")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    error: "ciphertext is not valid base64",
-                    statusCode: 400
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -64,8 +59,7 @@ extension CoordinatorClient {
                 logger.error("Rejecting inference request \(requestId): invalid ephemeral public key")
                 let errorResponse = encodeInferenceError(
                     requestId: requestId,
-                    error: "invalid ephemeral_public_key",
-                    statusCode: 400
+                    failure: InferenceFailure(code: .invalidRequest, statusCode: 400)
                 )
                 sendOnCurrentConnection(errorResponse, identifier: "inference_error")
                 return
@@ -87,7 +81,7 @@ extension CoordinatorClient {
             eventContinuation?.yield(.cancel(requestId: requestId))
 
         case .attestationChallenge(let challenge):
-            logger.info("Received attestation challenge")
+            logger.info(.attestationChallengeReceived)
             eventContinuation?.yield(.attestationChallenge(
                 nonce: challenge.nonce,
                 timestamp: challenge.timestamp
@@ -95,8 +89,9 @@ extension CoordinatorClient {
 
         case .runtimeStatus(let status):
             if status.verified {
-                logger.info("Runtime integrity verified by coordinator")
+                logger.info(.runtimeIntegrityVerified)
             } else {
+                logger.warning(.runtimeIntegrityFailed)
                 logger.warning("Runtime integrity check FAILED -- \(status.mismatches.count) mismatch(es)")
                 for m in status.mismatches {
                     logger.warning("  \(m.component): expected=\(m.expected), got=\(m.got)")

@@ -54,6 +54,7 @@ func (fp *failoverProvider) sendInferenceErrorWithReason(ctx context.Context, re
 		Error:       errMsg,
 		StatusCode:  statusCode,
 		ErrorReason: errReason,
+		FailureCode: protocol.FailureCodeTemplateRender,
 	}
 	data, _ := json.Marshal(msg)
 	if err := fp.conn.Write(ctx, websocket.MessageText, data); err != nil {

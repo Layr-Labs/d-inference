@@ -2597,3 +2597,69 @@ threats:
       balance reservation, skips the post-inline reservation top-up, forwards a
       body to a provider that was captured before inlining, or fetches for sealed
       requests must be treated as high severity.
+
+  # ── TB-003: Provider inline-video plaintext lifetime ─────────
+
+  - id: T-050
+    trust_boundary: TB-003
+    stride: Information_Disclosure
+    title: Inline video plaintext exposed through provider temporary files
+    description: >
+      The provider decrypts each inline video before inference. The pre-fix path
+      wrote those bytes to FileManager.default.temporaryDirectory as
+      vlm-<UUID>.mp4 because AVFoundation consumed a URL, then removed the file
+      only when EngineV2VisionPrefill.prepare returned. A provider operator could
+      watch and copy the live file despite the process-memory protections, and a
+      crash, SIGKILL, or power loss could bypass the defer cleanup and leave the
+      consumer's video on disk. Coordinator-to-provider transport encryption does
+      not protect such an at-rest artifact.
+    adversaries: [ADV-001]
+    affected_assets: [A-001]
+    affected_files:
+      - provider-swift/Sources/ProviderCore/Inference/MediaIngest.swift
+      - provider-swift/Sources/ProviderCore/Inference/EngineV2VisionPrefill.swift
+      - provider-swift/Sources/ProviderCore/Service/ProcessLifecycle.swift
+      - provider-swift/Sources/darkbloom/StartCommand+Modes.swift
+      - libs/mlx-swift-lm/Libraries/MLXLMCommon/MemoryBackedVideoAsset.swift
+      - libs/mlx-swift-lm/Libraries/MLXLMCommon/UserInput.swift
+      - libs/mlx-swift-lm/Libraries/MLXVLM/MediaProcessing.swift
+    mitigations:
+      - description: >
+          Inline MP4 and QuickTime bytes are retained by MemoryBackedVideoAsset.
+          Its AVAssetResourceLoader delegate serves bounded byte ranges from Data
+          over a private custom URL scheme, and UserInput.Video.memoryBacked owns
+          the asset, loader, bytes, and serial delegate queue through frame
+          sampling. No file or network URL is involved.
+        status: implemented
+      - description: >
+          AVURLAssetReferenceRestrictions.forbidAll prevents the container from
+          following external references. Provider media ingestion still accepts
+          only base64 data:video/mp4 or data:video/quicktime payloads, applies the
+          existing decoded-byte, duration, frame-pixel, video-count, and aggregate
+          caps, and rejects http(s), file, and unsupported container MIME types.
+        status: implemented
+      - description: >
+          Coordinator-connected foreground and standalone local startup each
+          call ProcessLifecycle.acquireMediaServingLock exactly once. The shared
+          seam first acquires the production single-instance lock, then removes
+          regular files matching the exact legacy vlm-<UUID>.mp4 name. It runs
+          outside ProviderLoop construction and scheduled-loop reconstruction,
+          clearing crash-orphaned plaintext without touching unrelated or
+          non-regular temporary-directory entries.
+        status: implemented
+      - description: >
+          Provider and mlx-swift-lm tests force AVFoundation metadata and frame
+          processing through the memory-backed asset, pin random-access range and
+          cancellation behavior, verify MP4/QuickTime wire compatibility, assert
+          that no vlm-*.mp4 file appears, lock the startup purge allowlist, and
+          verify that the shared media-serving seam orders one housekeeping pass
+          after successful lock acquisition and none after lock failure.
+        status: implemented
+    open_findings: []
+    severity: high
+    detection_hint: >
+      Any inline-video path that calls Data.write, FileManager.createFile, or
+      AVAsset(url:) with a file/http URL reopens this finding. Changes to
+      MemoryBackedVideoAsset ownership, resource-loader ranges, reference
+      restrictions, MIME support, cancellation, or startup cleanup require the
+      focused provider and mlx-swift-lm media suites.

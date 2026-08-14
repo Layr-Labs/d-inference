@@ -190,9 +190,10 @@ struct CoordinatorIntegrationTests {
                     stateBox.markCanceled()
                     send.send(.inferenceError(
                         requestId: rid,
-                        error: "request cancelled",
-                        statusCode: 499,
-                        errorReason: nil
+                        failure: InferenceFailure(
+                            code: .cancelled,
+                            statusCode: 499,
+                            terminalCause: .cancelled)
                     ))
                     return
 
@@ -514,17 +515,14 @@ struct CoordinatorIntegrationTests {
         #expect(m.weightHash == model.weightHash)
     }
 
-    // MARK: 6. TelemetryClient flush
+    // MARK: 6. TelemetryClient privacy boundary
 
-    @Test("TelemetryClient flushes events to /v1/telemetry/events on the mock")
-    func telemetryClientFlushesToMockEndpoint() async throws {
+    @Test("TelemetryClient never transmits free-form events")
+    func telemetryClientDoesNotTransmitToMockEndpoint() async throws {
         let mock = MockCoordinator()
         let baseURL = try await mock.start()
         defer { Task { await mock.shutdown() } }
 
-        // Configure a fresh in-memory telemetry pipeline pointing at the mock.
-        // maxBatch:1 makes each emit() trigger an immediate POST so the test
-        // doesn't have to wait for the periodic flush timer.
         TelemetryClient.shared.configure(TelemetryClientConfig(
             coordinatorURL: baseURL.absoluteString,
             source: .provider,
@@ -544,26 +542,9 @@ struct CoordinatorIntegrationTests {
             )
         }
 
-        // Ensure the buffered events get flushed -- shutdown drains everything
-        // synchronously and waits for in-flight HTTP sends to complete.
         await TelemetryClient.shared.shutdown()
-
-        // The mock should have received at least one batch covering all three
-        // messages. With maxBatch:1, we'd expect three batches; on slower
-        // hosts a couple may coalesce, so check by total event count instead.
-        let s = try await mock.waitForSnapshot(timeout: .seconds(5)) { snap in
-            let total = snap.telemetryBatches.reduce(into: 0) { $0 += $1.events.count }
-            return total >= messages.count
-        }
-        let snap = try #require(s)
-        let allEvents = snap.telemetryBatches.flatMap(\.events)
-        let received = Set(allEvents.map(\.message))
-        for m in messages {
-            #expect(received.contains(m), "expected event '\(m)' in \(received)")
-        }
-        // Stamping is applied: machine_id and version come through.
-        #expect(allEvents.allSatisfy { $0.machineId == "test-machine" })
-        #expect(allEvents.allSatisfy { $0.version == "0.0.0-test" })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(mock.snapshot().telemetryBatches.isEmpty)
     }
 
     // MARK: 7. UpdateBanner -- silent on same version

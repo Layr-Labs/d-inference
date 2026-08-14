@@ -27,12 +27,10 @@ extension CoordinatorClient {
         }
     }
 
-    internal func encodeInferenceError(requestId: String, error: String, statusCode: UInt16, errorReason: String? = nil) -> String {
+    internal func encodeInferenceError(requestId: String, failure: InferenceFailure) -> String {
         let message = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
             requestId: requestId,
-            error: error,
-            statusCode: statusCode,
-            errorReason: errorReason
+            failure: failure
         ))
         do {
             let data = try ProviderProtocolCodec.encodeProviderMessage(message)
@@ -47,10 +45,13 @@ extension CoordinatorClient {
             var fallback: [String: Any] = [
                 "type": "inference_error",
                 "request_id": requestId,
-                "error": error,
-                "status_code": Int(statusCode),
+                "failure_code": failure.code.rawValue,
+                "error": failure.message,
+                "status_code": Int(failure.statusCode),
             ]
-            if let errorReason { fallback["error_reason"] = errorReason }
+            if let errorReason = failure.errorReason {
+                fallback["error_reason"] = errorReason.rawValue
+            }
             if let data = try? JSONSerialization.data(withJSONObject: fallback),
                let json = String(data: data, encoding: .utf8) {
                 return json
@@ -62,15 +63,14 @@ extension CoordinatorClient {
     /// A never-should-happen outbound-encode failure must not silently ship a
     /// corrupt/empty payload: record it at error severity and via protocol
     /// telemetry so the drift is observable instead of invisible.
-    nonisolated internal func recordEncodeFailure(_ operation: String, _ error: Error) {
-        logger.error("Outbound encode failed (\(operation)): \(error.localizedDescription)")
+    nonisolated internal func recordEncodeFailure(_ operation: String, _: Error) {
+        logger.error("Outbound encode failed operation=\(operation)")
         TelemetryClient.shared.emit(
             kind: .protocolError,
             severity: .error,
             message: "outbound encode failed",
             fields: [
                 "operation": .string(operation),
-                "error": .string(error.localizedDescription),
             ]
         )
     }

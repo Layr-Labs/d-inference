@@ -33,9 +33,26 @@ struct ToolChoiceViolationErrorTests {
     @Test func classifiesAsToolNoncompliance() {
         for message in violations {
             let error = MultiModelBatchSchedulerEngineError.toolChoiceViolation(message)
-            #expect(classifyTypedInferenceErrorReason(error) == "tool_noncompliance")
+            #expect(classifyTypedInferenceErrorReason(error) == .toolNoncompliance)
             // The full classifier routes through the typed check first.
-            #expect(classifyInferenceErrorReason(error) == "tool_noncompliance")
+            #expect(classifyInferenceErrorReason(error) == .toolNoncompliance)
+        }
+    }
+
+    @Test func serviceOutputFailuresUseRetryableWireVocabulary() {
+        let failures = [
+            ProviderLoop.sanitizedInferenceFailure(
+                from: MLXOpenAIServiceError.invalidResponseFormatOutput(
+                    "model output was not valid JSON"),
+                phase: .generation),
+            ProviderLoop.sanitizedInferenceFailure(
+                from: MLXOpenAIServiceError.multipleToolCallsNotAllowed,
+                phase: .generation),
+        ]
+        for failure in failures {
+            #expect(failure.code == .generationFailure)
+            #expect(failure.statusCode == 422)
+            #expect(failure.errorReason == .toolNoncompliance)
         }
     }
 
@@ -65,7 +82,7 @@ struct ToolChoiceViolationErrorTests {
         struct FakeTemplateError: Error, CustomStringConvertible {
             let description = "Jinja.TemplateException: upper filter requires string"
         }
-        #expect(classifyInferenceErrorReason(FakeTemplateError()) == "jinja_template")
+        #expect(classifyInferenceErrorReason(FakeTemplateError()) == .jinjaTemplate)
     }
 
     /// A generationFailed still maps to 500 — the typed case is what moved.

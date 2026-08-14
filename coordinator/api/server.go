@@ -1916,13 +1916,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/admin/credit", s.requireAuth(s.handleAdminCredit))
 	s.mux.HandleFunc("POST /v1/admin/reward", s.requireAuth(s.handleAdminReward))
 
-	// Telemetry ingestion — authentication is resolved inside the handler
-	// because providers, consumers, and anonymous clients all hit this path.
-	// Events are forwarded to Datadog; admin read/summary endpoints have been
-	// removed (use Datadog Log Explorer).
+	// Retain the client-telemetry route for mixed-version compatibility. The
+	// handler returns 410 before reading a request body; coordinator-owned
+	// operational telemetry remains separate.
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
-	// Provider log reports
+	// Explicit provider log reports
 	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
 	s.mux.HandleFunc("GET /v1/admin/log-reports", s.requireAuth(s.handleListLogReports))
 	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))

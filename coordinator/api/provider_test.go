@@ -84,6 +84,49 @@ func TestProviderWebSocketConnect(t *testing.T) {
 	}
 }
 
+func TestProviderHeartbeatBeforeRegistrationIsRejected(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	reg := registry.New(logger)
+	srv := NewServer(
+		reg,
+		store.NewMemory(store.Config{AdminKey: "test-key"}),
+		ServerConfig{},
+		logger,
+	)
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/ws/provider"
+	conn, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	heartbeat, err := json.Marshal(protocol.HeartbeatMessage{
+		Type:   protocol.TypeHeartbeat,
+		Status: "idle",
+	})
+	if err != nil {
+		t.Fatalf("marshal heartbeat: %v", err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, heartbeat); err != nil {
+		t.Fatalf("write heartbeat: %v", err)
+	}
+
+	_, _, err = conn.Read(ctx)
+	if status := websocket.CloseStatus(err); status != websocket.StatusPolicyViolation {
+		t.Fatalf("close status = %v, want %v; error=%v", status, websocket.StatusPolicyViolation, err)
+	}
+	if reg.ProviderCount() != 0 {
+		t.Fatalf("provider count = %d, want 0", reg.ProviderCount())
+	}
+}
+
 func TestProviderWebSocketMultiple(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 	st := store.NewMemory(store.Config{AdminKey: "test-key"})
@@ -256,7 +299,7 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 	// deliverError registers a fresh pending request and routes a single
 	// inference error through handleInferenceError. Channels are buffered so
 	// the synchronous delivery never blocks.
-	deliverError := func(requestID, errText string, status int) {
+	deliverError := func(requestID, errText string, status int, failureCode protocol.InferenceFailureCode) {
 		pr := &registry.PendingRequest{
 			RequestID:  requestID,
 			ProviderID: p.ID,
@@ -267,10 +310,11 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 		}
 		p.AddPending(pr)
 		srv.handleInferenceError(p.ID, p, &protocol.InferenceErrorMessage{
-			Type:       protocol.TypeInferenceError,
-			RequestID:  requestID,
-			Error:      errText,
-			StatusCode: status,
+			Type:        protocol.TypeInferenceError,
+			RequestID:   requestID,
+			Error:       errText,
+			StatusCode:  status,
+			FailureCode: failureCode,
 		})
 	}
 
@@ -279,10 +323,10 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 	//   - 429 too many requests
 	//   - token_budget_exhausted (carried in the error message, status 200)
 	//   - "insufficient memory" message even on a 500 (case-insensitive)
-	deliverError("req-503", "insufficient memory to load model 'cap-model'", http.StatusServiceUnavailable)
-	deliverError("req-429", "rate limited", http.StatusTooManyRequests)
-	deliverError("req-budget", "token_budget_exhausted", http.StatusOK)
-	deliverError("req-oom-500", "Insufficient memory (78.9 GB free, need 93.7 GB)", http.StatusInternalServerError)
+	deliverError("req-503", "insufficient memory to load model 'cap-model'", http.StatusServiceUnavailable, protocol.FailureCodeCapacity)
+	deliverError("req-429", "rate limited", http.StatusTooManyRequests, protocol.FailureCodeCapacity)
+	deliverError("req-budget", "token_budget_exhausted", http.StatusOK, protocol.FailureCodeCapacity)
+	deliverError("req-oom-500", "Insufficient memory (78.9 GB free, need 93.7 GB)", http.StatusInternalServerError, protocol.FailureCodeCapacity)
 
 	if got := p.Reputation.FailedJobs; got != 0 {
 		t.Fatalf("after capacity rejections: FailedJobs = %d, want 0 (no reputation penalty)", got)
@@ -292,13 +336,93 @@ func TestHandleInferenceErrorReputationCarveout(t *testing.T) {
 	}
 
 	// A genuine provider fault (500, no capacity keywords) still penalises.
-	deliverError("req-fault-500", "model crashed during generation", http.StatusInternalServerError)
+	deliverError("req-fault-500", "model crashed during generation", http.StatusInternalServerError, protocol.FailureCodeGenerationFailure)
 
 	if got := p.Reputation.FailedJobs; got != 1 {
 		t.Fatalf("after genuine fault: FailedJobs = %d, want 1", got)
 	}
 	if got := p.Reputation.TotalJobs; got != 1 {
 		t.Fatalf("after genuine fault: TotalJobs = %d, want 1", got)
+	}
+}
+
+func TestHandleInferenceErrorPreservesModelLoadCategories(t *testing.T) {
+	cases := []struct {
+		name         string
+		failureCode  protocol.InferenceFailureCode
+		statusCode   int
+		wantFailures int
+	}{
+		{"missing model", protocol.FailureCodeModelUnavailable, http.StatusNotFound, 0},
+		{"transient load pressure", protocol.FailureCodeCapacity, http.StatusServiceUnavailable, 0},
+		{"genuine provider load fault", protocol.FailureCodeInternalFailure, http.StatusInternalServerError, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
+			reg := registry.New(logger)
+			srv := NewServer(reg, store.NewMemory(store.Config{AdminKey: "test-key"}), ServerConfig{}, logger)
+			model := "load-category-model"
+			provider := registerBuildsProvider(srv, "provider-"+tc.name, model)
+
+			pending := &registry.PendingRequest{
+				RequestID:          "req-load-category",
+				Model:              model,
+				RequestedMaxTokens: 128,
+				ChunkCh:            make(chan string, 1),
+				CompleteCh:         make(chan protocol.UsageInfo, 1),
+				ErrorCh:            make(chan protocol.InferenceErrorMessage, 1),
+			}
+			selected, _ := reg.ReserveProviderEx(model, pending)
+			if selected == nil || selected.ID != provider.ID {
+				t.Fatal("routable provider fixture was not selected before the load failure")
+			}
+
+			srv.handleInferenceError(provider.ID, provider, &protocol.InferenceErrorMessage{
+				Type:        protocol.TypeInferenceError,
+				RequestID:   pending.RequestID,
+				Error:       "UNTRUSTED_LOAD_DETAIL",
+				StatusCode:  tc.statusCode,
+				ErrorReason: errorReasonModelLoad,
+				FailureCode: tc.failureCode,
+			})
+
+			select {
+			case delivered := <-pending.ErrorCh:
+				if delivered.FailureCode != tc.failureCode ||
+					delivered.StatusCode != tc.statusCode ||
+					delivered.ErrorReason != errorReasonModelLoad {
+					t.Fatalf("delivered load failure = %+v, want code=%q status=%d reason=%q",
+						delivered, tc.failureCode, tc.statusCode, errorReasonModelLoad)
+				}
+			default:
+				t.Fatal("model-load terminal was not delivered")
+			}
+			if got := provider.Reputation.FailedJobs; got != tc.wantFailures {
+				t.Fatalf("FailedJobs = %d, want %d", got, tc.wantFailures)
+			}
+			if got := provider.Reputation.TotalJobs; got != tc.wantFailures {
+				t.Fatalf("TotalJobs = %d, want %d", got, tc.wantFailures)
+			}
+
+			coolingRequest := &registry.PendingRequest{
+				RequestID: "req-load-category-cooling",
+				Model:     model, RequestedMaxTokens: 128,
+			}
+			if selected, _ := reg.ReserveProviderEx(model, coolingRequest); selected != nil {
+				t.Fatal("provider/model pair remained routable during its load-failure cooldown")
+			}
+			reg.ClearDispatchLoadCooldown(provider.ID, model)
+			recoveredRequest := &registry.PendingRequest{
+				RequestID: "req-load-category-recovered",
+				Model:     model, RequestedMaxTokens: 128,
+			}
+			if selected, _ := reg.ReserveProviderEx(model, recoveredRequest); selected == nil {
+				t.Fatal("provider did not become routable after clearing the load-failure cooldown")
+			} else {
+				selected.RemovePending(recoveredRequest.RequestID)
+			}
+		})
 	}
 }
 

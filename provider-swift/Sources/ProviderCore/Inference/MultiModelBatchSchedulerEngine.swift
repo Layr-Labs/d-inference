@@ -427,8 +427,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // Deterministic input fault (malformed/oversized media —
                     // the same class `validateMedia` rejects above). Fails
                     // identically on any provider, so it keeps its existing
-                    // 4xx mapping (500 for the temp-file write case) instead
-                    // of becoming a misleading retriable refusal.
+                    // 4xx mapping instead of becoming a misleading retriable
+                    // refusal.
                     await mediaGate.release(requestId: mediaReqId)
                     await releaseBox.fire()
                     throw mediaError

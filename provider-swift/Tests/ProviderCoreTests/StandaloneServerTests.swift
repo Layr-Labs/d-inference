@@ -107,8 +107,10 @@ import Testing
             let body = String(buffer: response.body)
             #expect(body.contains(#""error""#),
                 "404 body must be the OpenAI error envelope, got \(body)")
-            #expect(body.contains("mlx-test"),
-                "error envelope must include the offending model id, got \(body)")
+            #expect(!body.contains("mlx-test"),
+                "fixed error envelope must not reflect request-derived model ids, got \(body)")
+            #expect(body.contains(InferenceFailureCode.modelUnavailable.message),
+                "error envelope must use the fixed model-unavailable message, got \(body)")
             #expect(response.headers[.accessControlAllowOrigin] == "*",
                 "CORS allow-origin header must be present on engine-error responses (P2 #7)")
         }
@@ -407,12 +409,6 @@ private struct ThrowingResponder<E: Error>: HTTPResponder {
         "oversized inline media on the local path must map to 400, not a generic 500")
     #expect(response.headers[.accessControlAllowOrigin] == "*",
         "CORS allow-origin must be set on the rendered error response")
-    // Client-fault video write IO failure stays a 500.
-    let writeFail = CORSResponder(
-        inner: ThrowingResponder(error: MediaIngest.MediaError.videoWriteFailed("disk full")))
-    let writeResp = try await writeFail.respond(to: request, context: context)
-    #expect(writeResp.status == .internalServerError,
-        "provider-side videoWriteFailed must stay a 500")
 }
 
 private func standaloneTestServer(models: [ModelInfo] = []) -> StandaloneServer {

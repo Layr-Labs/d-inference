@@ -2,17 +2,22 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
+/// Explicit, operator-initiated support report.
+///
+/// Automatic log upload is intentionally not part of this command's lifecycle.
+/// The collector scopes `log show` to Darkbloom's provider subsystem and does
+/// not request private fields, so macOS unified-log redaction is preserved.
 struct Report: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Upload recent unified logs to the coordinator for troubleshooting.",
+        abstract: "Upload recent provider unified logs for troubleshooting.",
         discussion: """
-        Collects the last 24 hours of macOS unified logs for the
-        dev.darkbloom.provider subsystem and uploads them to the coordinator.
-        The uploaded report can be retrieved by the Darkbloom team using
-        your device's serial number.
+        Collects recent macOS unified logs for the dev.darkbloom.provider
+        subsystem and uploads them to the coordinator only when you invoke this
+        command. macOS privacy redactions are preserved. Use --dry-run to review
+        the exact report locally before uploading it.
 
-        This command does NOT upload any logs from other apps or the
-        operating system — only Darkbloom provider logs are included.
+        Logs from other applications and operating-system subsystems are not
+        included.
         """
     )
 
@@ -21,15 +26,25 @@ struct Report: AsyncParsableCommand {
     @Option(name: .long, help: "Time window to collect (e.g. 1h, 6h, 24h).")
     var last: String = "24h"
 
-    @Flag(name: .long, help: "Print the log content instead of uploading.")
+    @Flag(name: .long, help: "Print the exact report instead of uploading it.")
     var dryRun = false
+
+    static let subsystem = Logs.subsystem
+
+    /// Pure argv builder kept separate from Process execution so scope and
+    /// verbosity remain pinned by tests.
+    static func logShowArguments(last: String) -> [String] {
+        Array(
+            Logs.showArgv(predicate: Logs.predicate, duration: last, debug: false)
+                .dropFirst()
+        )
+    }
 
     mutating func run() async throws {
         await runUpdateBannerIfEnabled()
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
-        let coordinatorURL = snapshot.config.coordinator.url
-        let httpBase = coordinatorHTTPBase(coordinatorURL)
+        let httpBase = coordinatorHTTPBase(snapshot.config.coordinator.url)
 
         guard let serial = macHardwareSerialNumber(), !serial.isEmpty else {
             printError("Could not detect serial number. Run 'darkbloom doctor' for details.")
@@ -39,23 +54,22 @@ struct Report: AsyncParsableCommand {
         print("Darkbloom Log Report")
         print("  Serial:  \(serial)")
         print("  Window:  \(last)")
+        print("  Scope:   \(Self.subsystem) unified logs")
         print()
 
-        // Collect unified logs
         print("Collecting unified logs...")
         let logData: Data
         do {
             logData = try collectUnifiedLogs(last: last)
         } catch {
-            printError("Failed to collect logs: \(error)")
+            printError("Failed to collect logs: \(error.localizedDescription)")
             throw ExitCode.failure
         }
 
-        let sizeKB = Double(logData.count) / 1024.0
-        let sizeMB = sizeKB / 1024.0
+        let sizeMB = Double(logData.count) / 1_048_576.0
         print("  Collected \(logData.count) bytes (\(String(format: "%.1f", sizeMB)) MB)")
 
-        if logData.isEmpty {
+        guard !logData.isEmpty else {
             print("  No logs found for the given time window.")
             print("  Is the provider running? Try: darkbloom start")
             return
@@ -63,38 +77,31 @@ struct Report: AsyncParsableCommand {
 
         if dryRun {
             print()
-            if let text = String(data: logData, encoding: .utf8) {
-                print(text)
-            } else {
+            guard let text = String(data: logData, encoding: .utf8) else {
                 printError("Log data is not valid UTF-8")
+                throw ExitCode.failure
             }
+            print(text)
             return
         }
 
-        // Cap at 10 MB
         guard logData.count <= 10 * 1024 * 1024 else {
             printError("Log data exceeds 10 MB limit (\(String(format: "%.1f", sizeMB)) MB).")
             printError("Try a shorter time window: --last 6h or --last 1h")
             throw ExitCode.failure
         }
 
-        // Upload to coordinator
         print("Uploading to coordinator...")
         do {
-            let reportID = try await uploadReport(
-                httpBase: httpBase,
-                serial: serial,
-                logData: logData
-            )
+            try await uploadReport(httpBase: httpBase, serial: serial, logData: logData)
             print()
             print("  Report uploaded successfully!")
-            print("  Report ID: \(reportID)")
-            print("  Serial:    \(serial)")
+            print("  Serial: \(serial)")
             print()
             print("  Share your serial number with the Darkbloom team so they")
-            print("  can retrieve your logs for troubleshooting.")
+            print("  can retrieve the report for troubleshooting.")
         } catch {
-            printError("Upload failed: \(error)")
+            printError("Upload failed: \(error.localizedDescription)")
             throw ExitCode.failure
         }
     }
@@ -102,13 +109,7 @@ struct Report: AsyncParsableCommand {
     private func collectUnifiedLogs(last: String) throws -> Data {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/log")
-        process.arguments = [
-            "show",
-            "--predicate", "subsystem == \"dev.darkbloom.provider\"",
-            "--style", "ndjson",
-            "--last", last,
-            "--info",
-        ]
+        process.arguments = Self.logShowArguments(last: last)
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -118,49 +119,43 @@ struct Report: AsyncParsableCommand {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
+        guard process.terminationStatus == 0 else {
+            throw NSError(
+                domain: "darkbloom.report",
+                code: Int(process.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "log show exited with status \(process.terminationStatus)"]
+            )
+        }
         return data
     }
 
-    private func uploadReport(httpBase: String, serial: String, logData: Data) async throws -> Int64 {
-        let urlString = "\(httpBase)/v1/provider/log-report?serial=\(serial)"
-        guard let url = URL(string: urlString) else {
+    private func uploadReport(httpBase: String, serial: String, logData: Data) async throws {
+        guard let url = URL(string: "\(httpBase)/v1/provider/log-report?serial=\(serial)") else {
             throw URLError(.badURL)
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/x-ndjson", forHTTPHeaderField: "Content-Type")
         request.httpBody = logData
         request.timeoutInterval = 60
 
-        // Use saved auth token if available
         if let token = AuthTokenStore.load() {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
 
         let (data, response) = try await URLSession.shared.data(for: request)
-
         guard let httpResponse = response as? HTTPURLResponse else {
             throw URLError(.badServerResponse)
         }
-
         guard httpResponse.statusCode == 201 else {
             let body = String(data: data, encoding: .utf8) ?? "(no body)"
             throw NSError(
-                domain: "darkbloom",
+                domain: "darkbloom.report",
                 code: httpResponse.statusCode,
                 userInfo: [NSLocalizedDescriptionKey: "HTTP \(httpResponse.statusCode): \(body)"]
             )
         }
-
-        // Parse response for report ID
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let id = json["id"] as? Int64 {
-            return id
-        }
-        // Fallback: return 0 if we can't parse the ID
-        return 0
     }
+
 }
-
-

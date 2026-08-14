@@ -15,9 +15,8 @@
 // file builds that submission on the provider side:
 //
 //   1. decode media EXACTLY as the legacy path does
-//      (`MediaIngest.buildUserInput` — same caps, same errors;
-//      inline videos materialize to temp files for AVFoundation and are
-//      removed before this construction returns);
+//      (`MediaIngest.buildUserInput` — same caps, same errors; inline videos
+//      remain in owned memory-backed AVFoundation assets);
 //   2. run the SAME `Gemma4Processor.prepare` the legacy path runs (same
 //      resize/normalization, same chat templating, same per-image
 //      `boi + <|image|> × imageSeqLength + eoi` expansion, same per-video
@@ -243,13 +242,11 @@ public enum EngineV2VisionPrefill {
         reasoningEffort: String? = nil
     ) async throws -> PreparedSubmission {
         // Same decode path as the legacy stream (same caps, same MediaError
-        // surface). Keep temporary video files alive through processor
-        // preparation; the processor fully consumes them under container
-        // isolation before this scope exits.
-        var tempFiles: [URL] = []
-        defer { for url in tempFiles { try? FileManager.default.removeItem(at: url) } }
+        // surface). Inline video bytes stay in the UserInput's owned
+        // memory-backed asset while processor preparation samples and
+        // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, tempFiles: &tempFiles, reasoningEffort: reasoningEffort)
+            from: request, reasoningEffort: reasoningEffort)
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             let lmInput = try await ctx.processor.prepare(input: userInput)
             guard lmInput.image != nil || lmInput.video != nil else {

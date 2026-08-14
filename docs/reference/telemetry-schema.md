@@ -1,24 +1,43 @@
-# Telemetry Schema
+# Retired Client Telemetry Compatibility Schema
 
-This document describes the telemetry wire format shared by the coordinator, provider, macOS app, and console UI. The canonical Go definitions are in [`coordinator/protocol/telemetry.go`](../../coordinator/protocol/telemetry.go). Ingestion is handled by [`coordinator/api/telemetry_handlers.go`](../../coordinator/api/telemetry_handlers.go). Mirrors: Swift [`provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift) and TypeScript [`console-ui/src/lib/telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts).
+This document records the inactive client-telemetry wire format retained for
+source and mixed-version compatibility. The coordinator and console endpoints
+return `410 Gone` before reading a body, while the production Swift and
+TypeScript facades drop events in process. Nothing on this page authorizes
+provider, app, or browser telemetry transmission.
+
+Canonical compatibility definitions are in
+[`coordinator/protocol/telemetry.go`](../../coordinator/protocol/telemetry.go),
+with Swift and TypeScript mirrors in
+[`TelemetryEvent.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift)
+and [`telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts).
+The disabled coordinator route and handler are
+[`server.go`](../../coordinator/api/server.go#L1919-L1922) and
+[`handleTelemetryIngest`](../../coordinator/api/telemetry_handlers.go#L261-L269);
+the disabled clients are
+[`TelemetryClient.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L50-L103)
+and [`telemetry.ts`](../../console-ui/src/lib/telemetry.ts#L1-L26).
 
 ## Ingestion endpoint
 
 ```
 POST /v1/telemetry/events
-Authorization: optional Bearer <token>
+HTTP/1.1 410 Gone
 ```
 
-Authentication modes (resolved inside the handler):
+Ingestion is disabled. The coordinator and console proxy reject requests before
+reading or forwarding their bodies; production Swift and TypeScript clients
+drop events before disk or network I/O. The remaining wire definitions are
+historical compatibility types, not an active data path.
 
-| Token type | Identity used | Rate-limit bucket |
-|---|---|---|
-| Provider device token | `machine_id` derived from token hash | per machine |
-| Privy JWT | account id | per account |
-| API key | account id | per account |
-| Anonymous | none | stricter anonymous bucket |
+## Historical compatibility material
 
-See [`resolveTelemetryAuth`](../../coordinator/api/telemetry_handlers.go).
+Everything below this heading describes retained, unreachable client-ingestion
+machinery. Terms such as “emits,” “accepted,” “server-enforced,” “coerced,” and
+“allowed” mean “would be processed this way by the retired parser if ingestion
+were deliberately re-enabled.” Producer call sites may still construct values
+and pass them to a no-op facade; they do not persist or transmit them. The
+allowlists and parser limits are not active confidentiality controls.
 
 ## Batch envelope
 
@@ -28,7 +47,7 @@ Go: [`TelemetryBatch`](../../coordinator/protocol/telemetry.go); Swift: `Telemet
 |---|---|---|
 | `events` | array | [`TelemetryEvent`](#telemetryevent) records |
 
-Server-enforced caps:
+Historical parser caps (inactive because the 410 handler never reads a body):
 
 | Limit | Value |
 |---|---|
@@ -40,7 +59,9 @@ Server-enforced caps:
 | Authenticated rate | 200 burst, 100 events/min refill |
 | Anonymous rate | 30 burst, 10 events/min refill |
 
-See [`telemetry_handlers.go:35-41`](../../coordinator/api/telemetry_handlers.go) and [`telemetry_handlers.go:108-116`](../../coordinator/api/telemetry_handlers.go).
+See the retained
+[`telemetryMax*` constants](../../coordinator/api/telemetry_handlers.go#L31-L36)
+and [`newTelemetryLimiter`](../../coordinator/api/telemetry_handlers.go#L211-L218).
 
 ## `TelemetryEvent`
 
@@ -60,11 +81,16 @@ See [`telemetry_handlers.go:35-41`](../../coordinator/api/telemetry_handlers.go)
 | `fields` | object | no | Allowlisted structured fields |
 | `stack` | string | no | Backtrace / formatted stack |
 
-Unknown `source`, `severity`, and `kind` values are coerced server-side to `custom` / `info` / `custom`. Timestamps are clamped to `[now-7d, now+5min]`. See [`sanitizeTelemetryEvent`](../../coordinator/api/telemetry_handlers.go).
+The retained sanitizer would coerce unknown `source`, `severity`, and `kind`
+values to `custom` / `info` / `custom` and clamp timestamps to
+`[now-7d, now+5min]`. It is unreachable from the active 410 route. See
+[`sanitizeTelemetryEvent`](../../coordinator/api/telemetry_handlers.go).
 
-## Field allowlist
+## Historical field allowlist
 
-The coordinator silently drops any `fields` key not in this set. Keys must be kept in sync across Go, Swift, and TypeScript.
+If the retired parser were re-enabled, it would silently drop any `fields` key
+not in this set. The mirrors remain synchronized for compatibility tests, not
+because production clients send these events.
 
 | Field | Allowed in |
 |---|---|
@@ -121,9 +147,16 @@ allowlisted in all three mirrors but have never been transcribed here. Absence f
 this table does **not** mean a key is rejected — the Go map is the authority, and
 `TestTelemetryAllowlistThreeWayParity` is what keeps the three mirrors honest.
 
-**Important:** No prompt or response content is ever placed in telemetry. The allowlist contains only non-sensitive operational metadata.
+**Important:** the retained schema still contains free-form `message`, `stack`,
+and field values. A field-name allowlist does not make those values
+confidentiality-safe; this is why ingestion is disabled before body read.
 
-Canonical server allowlist: [`telemetry_handlers.go:48-194`](../../coordinator/api/telemetry_handlers.go). Swift client-side filter: [`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift) (`TelemetryEvent.swift:238-307`). TS client-side set: [`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts) (`telemetry-types.ts:58-172`).
+Historical server allowlist:
+[`telemetry_handlers.go:44-190`](../../coordinator/api/telemetry_handlers.go#L44-L190).
+Swift compatibility filter:
+[`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift).
+TypeScript compatibility set:
+[`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts).
 
 ## Discrepancies
 

@@ -134,8 +134,10 @@ func TestHandleInferenceError_ToolNoncomplianceSkipsRecordJobFailure(t *testing.
 			// The terminal is still delivered to the consumer channel either way.
 			select {
 			case delivered := <-pr.ErrorCh:
-				if delivered.StatusCode != tc.msg.StatusCode {
-					t.Errorf("delivered status = %d, want %d", delivered.StatusCode, tc.msg.StatusCode)
+				wantStatus := safeInferenceFailureStatus(
+					delivered.FailureCode, delivered.ErrorReason, delivered.TerminalCause, delivered.StatusCode)
+				if delivered.StatusCode != wantStatus {
+					t.Errorf("delivered status = %d, want canonical %d", delivered.StatusCode, wantStatus)
 				}
 			default:
 				t.Error("terminal error was not delivered to ErrorCh")

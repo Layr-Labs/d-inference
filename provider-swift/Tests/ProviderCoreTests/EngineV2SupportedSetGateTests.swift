@@ -104,6 +104,35 @@ struct EngineV2SupportedSetGateTests {
                 "loading 'x' would re-slice some model's KV grant below the floor")) == 503)
     }
 
+    @Test("model load failures preserve missing, pressure, and provider-fault wire semantics")
+    func loadFailureWireClassification() {
+        let cases: [(any Error, InferenceFailureCode, UInt16)] = [
+            (
+                InferenceError.invalidModelDirectory(
+                    "Model 'x' not found in local HuggingFace cache"),
+                .modelUnavailable,
+                404
+            ),
+            (
+                InferenceError.modelLoadFailed(
+                    "Insufficient memory to load model"),
+                .capacity,
+                503
+            ),
+            (
+                NSError(domain: "provider-load-fault", code: 1),
+                .internalFailure,
+                500
+            ),
+        ]
+        for (error, expectedCode, expectedStatus) in cases {
+            let failure = ProviderLoop.loadInferenceFailure(for: error)
+            #expect(failure.code == expectedCode)
+            #expect(failure.statusCode == expectedStatus)
+            #expect(failure.errorReason == .modelLoad)
+        }
+    }
+
     @Test("coordinator load_model push for an unsupported id → load_model_status failed")
     func loadModelPushFailsLoudly() async throws {
         let loop = try makeGateLoop(models: [

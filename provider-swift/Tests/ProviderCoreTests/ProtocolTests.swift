@@ -399,8 +399,7 @@ import Testing
         )),
         .inferenceError(ProviderMessage.InferenceError(
             requestId: "req-error",
-            error: "model not loaded",
-            statusCode: 503
+            failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)
         )),
         .attestationResponse(ProviderMessage.AttestationResponse(
             nonce: "bm9uY2U=",
@@ -430,9 +429,10 @@ import Testing
     // Present → snake_case key on the wire + round-trips back to the value.
     let withReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
         requestId: "req-error",
-        error: "(Jinja.TemplateException error 1.)",
-        statusCode: 500,
-        errorReason: "jinja_channel_tags"
+        failure: InferenceFailure(
+            code: .templateRender,
+            statusCode: 422,
+            errorReason: .jinjaChannelTags)
     ))
     let withData = try ProviderProtocolCodec.encodeProviderMessage(withReason)
     let withObject = try jsonObject(withData)
@@ -441,14 +441,13 @@ import Testing
     let decodedWith = try ProviderProtocolCodec.decodeProviderMessage(from: withData)
     #expect(decodedWith == withReason)
     guard case .inferenceError(let e) = decodedWith else { throw TestFailure.unexpectedMessage }
-    #expect(e.errorReason == "jinja_channel_tags")
+    #expect(e.errorReason == .jinjaChannelTags)
 
     // Absent (nil) → the key is OMITTED on the wire (mirrors Go `omitempty`) and
     // round-trips back to nil.
     let withoutReason = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
         requestId: "req-error",
-        error: "model not loaded",
-        statusCode: 503
+        failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)
     ))
     let withoutData = try ProviderProtocolCodec.encodeProviderMessage(withoutReason)
     let withoutObject = try jsonObject(withoutData)
@@ -468,10 +467,11 @@ import Testing
     // Present → snake_case keys on the wire, round-trip back to the values.
     let withTerminal = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
         requestId: "req-term",
-        error: "decode_stall: decode made no confirmed token progress",
-        statusCode: 500,
-        terminalCause: .decodeStall,
-        attemptUsage: UsageInfo(promptTokens: 7, completionTokens: 42)
+        failure: InferenceFailure(
+            code: .generationFailure,
+            statusCode: 500,
+            terminalCause: .decodeStall,
+            attemptUsage: UsageInfo(promptTokens: 7, completionTokens: 42))
     ))
     let withData = try ProviderProtocolCodec.encodeProviderMessage(withTerminal)
     let withObject = try jsonObject(withData)
@@ -489,23 +489,21 @@ import Testing
     #expect(e.attemptUsage?.promptTokens == 7)
     #expect(e.attemptUsage?.completionTokens == 42)
 
-    // Absent (legacy) → BOTH keys omitted AND the full serialized shape is
-    // byte-identical to the pre-fix message (the Go side asserts the same
-    // legacy bytes). Encoder uses sorted keys, so the string is deterministic.
-    let legacy = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
+    // New outbound failures always contain a closed code and fixed text while
+    // optional terminal metadata remains omitted. Encoder uses sorted keys.
+    let bounded = ProviderMessage.inferenceError(ProviderMessage.InferenceError(
         requestId: "req-error",
-        error: "model not loaded",
-        statusCode: 503
+        failure: InferenceFailure(code: .modelUnavailable, statusCode: 503)
     ))
-    let legacyData = try ProviderProtocolCodec.encodeProviderMessage(legacy)
-    let legacyString = String(data: legacyData, encoding: .utf8)
+    let boundedData = try ProviderProtocolCodec.encodeProviderMessage(bounded)
+    let boundedString = String(data: boundedData, encoding: .utf8)
     #expect(
-        legacyString
-            == #"{"error":"model not loaded","request_id":"req-error","status_code":503,"type":"inference_error"}"#)
-    let legacyObject = try jsonObject(legacyData)
-    #expect(legacyObject["terminal_cause"] == nil)
-    #expect(legacyObject["attempt_usage"] == nil)
-    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: legacyData) == legacy)
+        boundedString
+            == #"{"error":"Requested model is unavailable.","failure_code":"model_unavailable","request_id":"req-error","status_code":503,"type":"inference_error"}"#)
+    let boundedObject = try jsonObject(boundedData)
+    #expect(boundedObject["terminal_cause"] == nil)
+    #expect(boundedObject["attempt_usage"] == nil)
+    #expect(try ProviderProtocolCodec.decodeProviderMessage(from: boundedData) == bounded)
 
     // Unknown terminal_cause string → tolerant decode (nil), never a throw; a
     // newer provider value must not crash an older decoder.
@@ -516,6 +514,19 @@ import Testing
     }
     #expect(unknown.terminalCause == nil)
     #expect(unknown.statusCode == 500)
+    #expect(unknown.failureCode == nil)
+    #expect(unknown.error == InferenceFailureCode.internalFailure.message)
+}
+
+@Test func inferenceErrorNeverEncodesLegacySecretText() throws {
+    let secret = "PROMPT_SECRET https://private.invalid/path?token=raw"
+    let legacyJSON = #"{"type":"inference_error","request_id":"r","error":"PROMPT_SECRET https://private.invalid/path?token=raw","status_code":500}"#
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: legacyJSON)
+    let reencoded = try ProviderProtocolCodec.encodeProviderMessage(decoded)
+    let text = try #require(String(data: reencoded, encoding: .utf8))
+
+    #expect(!text.contains(secret))
+    #expect(text.contains(InferenceFailureCode.internalFailure.message))
 }
 
 @Test func loadModelMessagesRoundTripWithCoordinator() throws {

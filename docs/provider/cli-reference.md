@@ -389,8 +389,8 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 
 ## `darkbloom report`
 
-Collect the last 24 hours of Darkbloom provider unified logs and upload them to
-the coordinator for troubleshooting.
+Collect recent Darkbloom provider unified logs and explicitly upload them to the
+coordinator for troubleshooting.
 
 ```bash
 darkbloom report [--last <duration>] [--dry-run]
@@ -399,7 +399,12 @@ darkbloom report [--last <duration>] [--dry-run]
 | Flag | Description |
 |------|-------------|
 | `--last <duration>` | Time window, e.g. `1h`, `6h`, `24h` |
-| `--dry-run` | Print the log content instead of uploading |
+| `--dry-run` | Print the exact report locally without uploading |
+
+The command runs only when invoked by the provider operator. It collects the
+`dev.darkbloom.provider` subsystem, preserves macOS unified-log privacy
+redaction, and does not include debug-level messages. Automatic report upload is
+disabled.
 
 ## `darkbloom watchdog`
 

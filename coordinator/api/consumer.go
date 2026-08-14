@@ -258,8 +258,10 @@ func (s *Server) refundProviderExtra(pr *registry.PendingRequest) {
 // EIGENINFERENCE_JINJA_TERMINAL_REJECT kill switch; tool_noncompliance keeps
 // its provider-typed 422 message (already curated and content-free) but in the
 // invalid_request_error/model_capability envelope instead of provider_error.
-// Every other error keeps the legacy raw passthrough byte-for-byte.
+// Every other error is mapped from the closed failure_code vocabulary. Raw
+// provider prose is never passed through.
 func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protocol.InferenceErrorMessage) {
+	errMsg = normalizeInferenceErrorForInternalUse(errMsg)
 	if jinjaTerminalRejectEnabled() && isJinjaTemplateErrorReason(errMsg.ErrorReason) {
 		writeJSON(w, http.StatusUnprocessableEntity,
 			errorResponse("invalid_request_error", jinjaTerminalRejectMessage, withCode("model_capability")))
@@ -267,14 +269,14 @@ func (s *Server) writeGenericProviderError(w http.ResponseWriter, errMsg protoco
 	}
 	if normalizeInferenceErrorReason(errMsg.ErrorReason) == errorReasonToolNoncompliance {
 		writeJSON(w, http.StatusUnprocessableEntity,
-			errorResponse("invalid_request_error", errMsg.Error, withCode("model_capability")))
+			errorResponse("invalid_request_error", clientSafeInferenceErrorMessage(errMsg), withCode("model_capability")))
 		return
 	}
 	statusCode := errMsg.StatusCode
 	if statusCode == 0 {
 		statusCode = http.StatusBadGateway
 	}
-	writeJSON(w, statusCode, errorResponse("provider_error", errMsg.Error))
+	writeJSON(w, statusCode, errorResponse("provider_error", clientSafeInferenceErrorMessage(errMsg)))
 }
 
 // noteInferenceError feeds the circuit breakers for a provider-side error
@@ -412,7 +414,6 @@ func (s *Server) noteInferenceError(providerID string, pr *registry.PendingReque
 				"provider_id", providerID,
 				"model", pr.Model,
 				"status_code", statusCode,
-				"error", errStr,
 			)
 		}
 	}
@@ -2033,7 +2034,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 						s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 						errData, _ := json.Marshal(map[string]any{
 							"error": map[string]any{
-								"message": errMsg.Error,
+								"message": clientSafeInferenceErrorMessage(errMsg),
 								"type":    "provider_error",
 							},
 						})
@@ -2178,7 +2179,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
 			errData, _ := json.Marshal(map[string]any{
 				"error": map[string]any{
-					"message": errMsg.Error,
+					"message": clientSafeInferenceErrorMessage(errMsg),
 					"type":    "provider_error",
 				},
 			})
@@ -2267,7 +2268,7 @@ func (s *Server) handleResponsesStreamingResponseWithFirstChunk(w http.ResponseW
 			s.noteInferenceError(pr.ProviderID, pr, errMsg.StatusCode, errMsg.Error, errMsg.ErrorReason, errMsg.TerminalCause)
 			s.ddIncr("inference.in_band_error", []string{"model:" + pr.Model, "reason:provider_error"})
 			s.updateInferenceRouteOutcomeForPending(pr, postCommitProviderErrorOutcome(pr, errMsg))
-			emitter.emitError("provider_error", errMsg.Error)
+			emitter.emitError("provider_error", clientSafeInferenceErrorMessage(errMsg))
 			return
 
 		case <-timer.C:

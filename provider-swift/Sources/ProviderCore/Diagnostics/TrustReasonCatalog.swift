@@ -26,7 +26,7 @@ public enum TrustReasonCatalog {
         if reason.hasPrefix("status signature verification failed") {
             return DiagnosticAdvice(
                 message: "the coordinator rejected your signed security-status payload (signature/canonical mismatch).",
-                fix: "update to the latest build with `darkbloom update`; if it persists, run `darkbloom report`.")
+                fix: "update to the latest build with `darkbloom update`; if it persists, review `darkbloom doctor` locally.")
         }
 
         switch reason {

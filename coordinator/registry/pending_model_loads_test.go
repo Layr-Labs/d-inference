@@ -45,6 +45,28 @@ func TestPendingModelLoadReserveAndExpiry(t *testing.T) {
 	}
 }
 
+func TestHasPendingModelLoadMatchesExactUnexpiredCommand(t *testing.T) {
+	r := New(testLogger())
+	if r.HasPendingModelLoad("p1", "m1") {
+		t.Fatal("missing command reported as pending")
+	}
+
+	r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m1"}}, time.Now())
+	if !r.HasPendingModelLoad("p1", "m1") {
+		t.Fatal("coordinator-issued command was not reported pending")
+	}
+	if r.HasPendingModelLoad("p1", "m2") || r.HasPendingModelLoad("p2", "m1") {
+		t.Fatal("pending command matched a different provider/model pair")
+	}
+
+	r.mu.Lock()
+	r.pendingModelLoads[modelLoadKey("p1", "m1")] = time.Now().Add(-time.Second)
+	r.mu.Unlock()
+	if r.HasPendingModelLoad("p1", "m1") {
+		t.Fatal("expired command reported as pending")
+	}
+}
+
 func TestDrainBackoffShortensPendingLoadCooldown(t *testing.T) {
 	r := New(testLogger())
 	r.reservePendingModelLoads([]modelLoadAction{{providerID: "p1", modelID: "m1"}}, time.Now())

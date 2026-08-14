@@ -209,40 +209,40 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 		wantFailure bool
 	}{
 		{
-			name: "jinja_template 500 is exempt",
+			name: "typed jinja_template is exempt",
 			msg: protocol.InferenceErrorMessage{
-				StatusCode: 500, Error: "Runtime error: upper filter requires string",
-				ErrorReason: "jinja_template",
+				StatusCode: 422, Error: "Runtime error: upper filter requires string",
+				ErrorReason: "jinja_template", FailureCode: protocol.FailureCodeTemplateRender,
 			},
 			wantFailure: false,
 		},
 		{
-			name: "jinja_channel_tags 500 is exempt",
+			name: "typed jinja_channel_tags is exempt",
 			msg: protocol.InferenceErrorMessage{
-				StatusCode: 500, Error: "template raised", ErrorReason: "jinja_channel_tags",
+				StatusCode: 422, Error: "template raised", ErrorReason: "jinja_channel_tags", FailureCode: protocol.FailureCodeTemplateRender,
 			},
 			wantFailure: false,
 		},
 		{
-			name: "jinja_null_bridge 500 is exempt",
+			name: "typed jinja_null_bridge is exempt",
 			msg: protocol.InferenceErrorMessage{
-				StatusCode: 500, Error: "Cannot convert value", ErrorReason: "jinja_null_bridge",
+				StatusCode: 422, Error: "Cannot convert value", ErrorReason: "jinja_null_bridge", FailureCode: protocol.FailureCodeTemplateRender,
 			},
 			wantFailure: false,
 		},
 		{
 			name:        "plain 500 still records a failure",
-			msg:         protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom"},
+			msg:         protocol.InferenceErrorMessage{StatusCode: 500, Error: "boom", FailureCode: protocol.FailureCodeGenerationFailure},
 			wantFailure: true,
 		},
 		{
 			name:        "capacity 503 stays exempt",
-			msg:         protocol.InferenceErrorMessage{StatusCode: 503, Error: "token_budget_exhausted: full"},
+			msg:         protocol.InferenceErrorMessage{StatusCode: 503, Error: "token_budget_exhausted: full", FailureCode: protocol.FailureCodeCapacity},
 			wantFailure: false,
 		},
 		{
 			name:        "cancel 499 stays exempt",
-			msg:         protocol.InferenceErrorMessage{StatusCode: 499, Error: "request cancelled"},
+			msg:         protocol.InferenceErrorMessage{StatusCode: 499, Error: "request cancelled", FailureCode: protocol.FailureCodeCancelled},
 			wantFailure: false,
 		},
 	}
@@ -281,8 +281,9 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 			// The terminal is still delivered to the consumer channel either way.
 			select {
 			case delivered := <-pr.ErrorCh:
-				if delivered.StatusCode != tc.msg.StatusCode {
-					t.Errorf("delivered status = %d, want %d", delivered.StatusCode, tc.msg.StatusCode)
+				wantStatus := safeInferenceFailureStatus(tc.msg.FailureCode, tc.msg.ErrorReason, tc.msg.TerminalCause, tc.msg.StatusCode)
+				if delivered.StatusCode != wantStatus {
+					t.Errorf("delivered status = %d, want canonical %d", delivered.StatusCode, wantStatus)
 				}
 			default:
 				t.Error("terminal error was not delivered to ErrorCh")

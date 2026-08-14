@@ -46,7 +46,7 @@ public enum OSStatusCatalog {
         default:
             return DiagnosticAdvice(
                 message: "Secure Enclave signing failed with OSStatus \(osStatus).",
-                fix: "run `darkbloom report` and include this code.")
+                fix: "run `darkbloom doctor` and review this code locally.")
         }
     }
 }

@@ -214,5 +214,10 @@ public enum ProviderCore {
     // synthesizes the template's pre-opened <think> so the streaming parser
     // stops buffering the whole block (TTFT was 755ms + 12.5ms per
     // reasoning token; now first-token latency).
-    public static let version = "0.8.4"
+    // 0.8.5 ships the Qwen3.6 speed stack: E=256 expert-tile prefill route
+    // (+15% at 8k with trust) with fused gate_up, MTP GDN capture-verify +
+    // target_prefix + single-forward drafts (1.13x, behind the mtp beta
+    // flag), symlink-proof inline-MTP inspection, MTP /metrics counters,
+    // and hardened plaintext egress paths.
+    public static let version = "0.8.5"
 }

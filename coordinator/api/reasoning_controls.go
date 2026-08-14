@@ -65,10 +65,17 @@ func normalizeReasoningControls(parsed map[string]any) (mutated, suppress bool) 
 
 	disabled := hasExplicit && !explicitEnabled
 
+	// A concrete (non-"none") effort inside the reasoning object takes
+	// precedence over the legacy top-level shorthand per OpenRouter's
+	// parameter hierarchy, so a contradictory top-level "none" must not
+	// disable. Read before the deletes below can drop the key.
+	objectEffort, hasObjectEffort := reasoning["effort"].(string)
+	objectHasConcreteEffort := hasObjectEffort && !isNoneEffort(objectEffort)
+
 	// reasoning.effort: "none" — OpenRouter's OpenAI-style disable. The value
 	// is removed either way: no chat template accepts "none" as an effort
 	// level, and the canonical enabled=false below carries the semantics.
-	if effort, ok := reasoning["effort"].(string); ok && isNoneEffort(effort) {
+	if hasObjectEffort && isNoneEffort(objectEffort) {
 		if !hasExplicit {
 			disabled = true
 		}
@@ -79,7 +86,7 @@ func normalizeReasoningControls(parsed map[string]any) (mutated, suppress bool) 
 	// no template ever renders a literal "none" effort (gpt-oss renders the
 	// field verbatim into its system header).
 	if effort, ok := parsed["reasoning_effort"].(string); ok && isNoneEffort(effort) {
-		if !hasExplicit {
+		if !hasExplicit && !objectHasConcreteEffort {
 			disabled = true
 		}
 		delete(parsed, "reasoning_effort")
@@ -175,6 +182,21 @@ func stripReasoningFromStreamChunk(chunk string) (string, bool) {
 	for i, choice := range choices {
 		if fr, ok := choice["finish_reason"]; ok && string(fr) != "null" {
 			reasoningOnly = false
+		}
+		// Some backends emit message-shaped choices mid-stream; those carry
+		// a full assistant message and are never dropped, only stripped.
+		if messageRaw, ok := choice["message"]; ok {
+			reasoningOnly = false
+			var message map[string]json.RawMessage
+			if err := json.Unmarshal(messageRaw, &message); err == nil {
+				for _, field := range reasoningDeltaFields {
+					if _, ok := message[field]; ok {
+						delete(message, field)
+						changed = true
+					}
+				}
+				choices[i]["message"], _ = json.Marshal(message)
+			}
 		}
 		deltaRaw, ok := choice["delta"]
 		if !ok {

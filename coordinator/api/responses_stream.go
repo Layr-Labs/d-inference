@@ -206,7 +206,16 @@ func (e *responsesStreamEmitter) handleChunk(chunk string) {
 			reasoning = c.Delta.ReasoningContent
 		}
 		if reasoning != "" {
-			e.appendReasoning(reasoning)
+			if e.pr.SuppressReasoning {
+				// Reasoning was disabled or excluded: no reasoning item or
+				// summary event ever reaches the consumer. The text is still
+				// buffered so finish()'s resolveReasoningTokens keeps its
+				// legacy text-based fallback — exclude hides reasoning, it
+				// doesn't unbill it.
+				e.reasoningBuf.WriteString(reasoning)
+			} else {
+				e.appendReasoning(reasoning)
+			}
 		}
 		if c.Delta.Content != "" {
 			e.appendContent(c.Delta.Content)

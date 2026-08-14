@@ -2441,12 +2441,6 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 
 				// Fallback: SSE delta chunks — reconstruct into response.
 				msg := extractMessage(chunks)
-				// Reasoning was disabled or excluded: the reconstructed message
-				// (extractMessage already folded streamed reasoning deltas and
-				// raw <think> blocks into msg.Reasoning) must not return it.
-				if pr.SuppressReasoning {
-					msg.Reasoning = ""
-				}
 				select {
 				case usage, ok := <-pr.CompleteCh:
 					if !ok {
@@ -2454,6 +2448,17 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 						s.updateInferenceRouteOutcomeForPending(pr, preResponseProviderIncompleteOutcome(pr))
 						writeJSON(w, http.StatusBadGateway, errorResponse("provider_error", "provider ended without completion"))
 						return
+					}
+					// Reasoning was disabled or excluded: the reconstructed
+					// message (extractMessage folded streamed reasoning deltas
+					// and raw <think> blocks into msg.Reasoning) must not
+					// return the text — but the token count is resolved FIRST
+					// so a legacy provider without a tokenizer-accurate
+					// ReasoningTokens keeps its text-based usage fallback.
+					// Exclude hides reasoning, it doesn't unbill it.
+					if pr.SuppressReasoning {
+						usage.ReasoningTokens = int(resolveReasoningTokens(usage, msg.Reasoning))
+						msg.Reasoning = ""
 					}
 					var resp any
 					if pr.IsResponsesAPI {

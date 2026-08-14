@@ -168,6 +168,25 @@ func TestNormalizeReasoningControls(t *testing.T) {
 			wantSuppress: false,
 		},
 		{
+			// OpenRouter parameter hierarchy: the reasoning object's concrete
+			// effort wins over a contradictory legacy top-level "none".
+			name:         "concrete object effort wins over top-level effort none",
+			body:         `{"model":"m","reasoning":{"effort":"high"},"reasoning_effort":"none"}`,
+			wantMutated:  true, // the unusable top-level "none" is still removed
+			wantSuppress: false,
+			check: func(t *testing.T, parsed map[string]any) {
+				if _, ok := parsed["reasoning_effort"]; ok {
+					t.Error("top-level reasoning_effort \"none\" must be removed")
+				}
+				if effort := parsed["reasoning"].(map[string]any)["effort"]; effort != "high" {
+					t.Errorf("reasoning.effort = %v, want high", effort)
+				}
+				if _, ok := parsed["reasoning"].(map[string]any)["enabled"]; ok {
+					t.Error("a concrete object effort must not be rewritten into a disable")
+				}
+			},
+		},
+		{
 			name:         "non-boolean and null reasoning shapes are tolerated",
 			body:         `{"model":"m","reasoning":{"enabled":null,"effort":7,"exclude":"yes"},"reasoning_effort":3,"include_reasoning":null}`,
 			wantMutated:  false,
@@ -266,6 +285,10 @@ func TestStripReasoningFromStreamChunk(t *testing.T) {
 			want:  `data: {"choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}`,
 		},
 		{
+			name:  "message-shaped choice is stripped but never dropped",
+			chunk: `data: {"choices":[{"index":0,"message":{"role":"assistant","content":"hi","reasoning":"deep thought","reasoning_content":"deep thought"},"finish_reason":null}]}`,
+		},
+		{
 			name:  "done terminator passes through untouched",
 			chunk: "data: [DONE]",
 			want:  "data: [DONE]",
@@ -293,10 +316,12 @@ func TestStripReasoningFromStreamChunk(t *testing.T) {
 				t.Fatalf("stripped chunk is not valid JSON: %v\n%s", err, got)
 			}
 			for _, choice := range obj["choices"].([]any) {
-				delta, _ := choice.(map[string]any)["delta"].(map[string]any)
-				for _, field := range reasoningDeltaFields {
-					if _, ok := delta[field]; ok {
-						t.Errorf("delta still carries %q: %s", field, got)
+				for _, key := range []string{"delta", "message"} {
+					member, _ := choice.(map[string]any)[key].(map[string]any)
+					for _, field := range reasoningDeltaFields {
+						if _, ok := member[field]; ok {
+							t.Errorf("%s still carries %q: %s", key, field, got)
+						}
 					}
 				}
 			}
@@ -449,6 +474,78 @@ func TestNonStreamingSuppressReasoning(t *testing.T) {
 		t.Errorf("message.reasoning present in suppressed response: %v", message)
 	}
 }
+
+// The Responses-API streaming emitter must not emit reasoning items or
+// summary events for a suppressed request, while finish() keeps the buffered
+// text so legacy providers (no tokenizer-accurate ReasoningTokens) still
+// report accurate usage.
+func TestResponsesStreamingSuppressReasoning(t *testing.T) {
+	pr := &registry.PendingRequest{
+		RequestID:         "suppress-reasoning-responses",
+		Model:             "m",
+		IsResponsesAPI:    true,
+		SuppressReasoning: true,
+	}
+	rec := httptest.NewRecorder()
+	emitter := newResponsesStreamEmitter(rec, noopFlusher{}, pr, "resp_x", 1)
+	emitter.start()
+	emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"reasoning_content":"hidden thought"},"finish_reason":null}]}`)
+	emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{"content":"Visible"},"finish_reason":null}]}`)
+	emitter.handleChunk(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`)
+	// Legacy usage: no provider-side reasoning count — finish() must fall
+	// back to the buffered (suppressed) text for the usage breakdown.
+	emitter.finish(protocol.UsageInfo{PromptTokens: 2, CompletionTokens: 6})
+
+	body := rec.Body.String()
+	if strings.Contains(body, "hidden thought") {
+		t.Errorf("reasoning text leaked into a suppressed Responses stream:\n%s", body)
+	}
+	if strings.Contains(body, "reasoning_summary") || strings.Contains(body, `"type":"reasoning"`) {
+		t.Errorf("reasoning events/items emitted on a suppressed Responses stream:\n%s", body)
+	}
+	if !strings.Contains(body, `"delta":"Visible"`) {
+		t.Errorf("content delta missing from suppressed Responses stream:\n%s", body)
+	}
+	if !strings.Contains(body, `"reasoning_tokens":6`) {
+		t.Errorf("legacy usage fallback lost under suppression:\n%s", body)
+	}
+}
+
+// The non-streaming SSE-reconstruction path must keep the legacy text-based
+// usage fallback: suppression hides the text, it does not unbill it.
+func TestNonStreamingSuppressReasoningKeepsLegacyUsageFallback(t *testing.T) {
+	srv := newDeferredCommitTestServer(t)
+
+	pr := &registry.PendingRequest{
+		RequestID:         "suppress-reasoning-legacy-usage",
+		Model:             "m",
+		SuppressReasoning: true,
+		ChunkCh:           make(chan string, 4),
+		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh:        make(chan protocol.UsageInfo, 1),
+	}
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"quiet"},"finish_reason":null}]}`
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":"stop"}]}`
+	close(pr.ChunkCh)
+	// Legacy provider: reasoning happened but ReasoningTokens is unreported.
+	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 3, CompletionTokens: 5}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleNonStreamingResponseWithFirstChunk(rec, req, pr, nil)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "quiet") {
+		t.Errorf("reasoning text leaked:\n%s", body)
+	}
+	if !strings.Contains(body, `"reasoning_tokens":5`) {
+		t.Errorf("legacy text-based reasoning_tokens fallback lost under suppression:\n%s", body)
+	}
+}
+
+type noopFlusher struct{}
+
+func (noopFlusher) Flush() {}
 
 // The raw complete-object passthrough (provider returns one chat.completion
 // object instead of SSE deltas) must strip reasoning the same way.

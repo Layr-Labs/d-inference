@@ -4,8 +4,9 @@ import Jinja
 @testable import ProviderCoreFoundation
 
 /// Pins the Qwen3.6 generation-prompt tail against the same Jinja engine
-/// the runtime tokenizer uses. The published EigenLabs artifact thinks
-/// unless `enable_thinking` is defined AND boolean false.
+/// the runtime tokenizer uses. Published artifact
+/// https://huggingface.co/EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8
+/// thinks unless `enable_thinking` is defined AND boolean false.
 final class Qwen36ThinkingTemplateTests: XCTestCase {
 
     private let generationTail = """

@@ -191,6 +191,44 @@ func TestResponsesStreamEmptyOutputSynthesizesMessage(t *testing.T) {
 	}
 }
 
+func TestResponsesStreamSuppressesReasoning(t *testing.T) {
+	rec := httptest.NewRecorder()
+	pr := &registry.PendingRequest{
+		RequestID:               "req-test",
+		RequestedMaxTokens:      100,
+		SuppressReasoningOutput: true,
+	}
+	e := newResponsesStreamEmitter(rec, rec, pr, "resp_test", 1700000000)
+	e.start()
+	e.handleChunk(`data: {"choices":[{"delta":{"reasoning":"secret think","content":"hi"}}]}`)
+	e.handleChunk(`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`)
+	e.finish(protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 2})
+
+	events := parseSSEEvents(t, rec.Body.String())
+	for _, ev := range events {
+		if strings.Contains(ev.Type, "reasoning") {
+			t.Fatalf("suppressed stream leaked %s", ev.Type)
+		}
+	}
+	var completed map[string]any
+	for _, ev := range events {
+		if ev.Type == "response.completed" {
+			completed = ev.Data
+		}
+	}
+	if completed == nil {
+		t.Fatal("no response.completed event")
+	}
+	output := completed["response"].(map[string]any)["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output items = %d, want 1 message: %#v", len(output), output)
+	}
+	item := output[0].(map[string]any)
+	if item["type"] != "message" {
+		t.Fatalf("item type = %v, want message", item["type"])
+	}
+}
+
 func TestEffectiveFinishReasonTruncatedToolCalls(t *testing.T) {
 	usage := protocol.UsageInfo{PromptTokens: 5, CompletionTokens: 100}
 	if got := effectiveFinishReason("stop", true, usage, 100); got != "length" {

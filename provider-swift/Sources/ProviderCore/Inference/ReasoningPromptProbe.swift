@@ -70,6 +70,10 @@ enum ReasoningPromptProbe {
     /// If thinking is disabled and the prompt tail is still inside an open
     /// think block, append the official close so the model continues in
     /// the answer channel instead of generating a reasoning trace.
+    ///
+    /// Text path only. Qwen VL freezes `CBv2PositionState` to the
+    /// processor token count — appending here would desync position IDs.
+    /// VL disable is rendered by the chat template (`enable_thinking=false`).
     static func closeOpenThinkBlock(
         promptTokens: [Int],
         encode: (String) -> [Int],

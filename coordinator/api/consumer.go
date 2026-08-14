@@ -2403,6 +2403,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 								// Native passthrough (object=="response"): the provider
 								// echoed the concrete build id; rewrite it to the public
 								// alias so the consumer never sees the quant/build.
+								if pr.SuppressReasoningOutput {
+									stripReasoningFromCompleteResponse(obj)
+								}
 								sanitizeCacheDetailIntoRawResponsesUsage(obj, completeUsage)
 								if pr.PublicModel != "" {
 									obj["model"] = consumerModel(pr)

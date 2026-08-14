@@ -197,6 +197,17 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         self.allowInternalToolSchemaMetadata = false
     }
 
+    /// Merge sealed-body controls with the typed request so VL prepare and
+    /// the text-path closer see the same disable signal (`enabled=false`,
+    /// `effort=none`, out-of-band `reasoningEffort`).
+    private func resolvedReasoningControls(
+        for request: OpenAIChatCompletionRequest
+    ) -> ReasoningControls {
+        reasoningControls.merging(
+            requestEnabled: request.reasoning?.enabled,
+            effort: reasoningEffort)
+    }
+
     // MARK: - MLXServerEngine
 
     public func availableModels() async throws -> [MLXServerModel] {
@@ -359,8 +370,14 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             if let bridge = engineV2Bridge {
                 let plumbing = engineV2Vision ?? .production
                 do {
+                    // Disable must be rendered by the VL chat template
+                    // (Qwen3.6: `enable_thinking=false` → closed think
+                    // block). Do not append think-close tokens after
+                    // prepare: Qwen VL freezes position IDs to that
+                    // tokenized length.
+                    let visionControls = resolvedReasoningControls(for: request)
                     let visionPrepared = try await plumbing.prepare(
-                        container, request, reasoningEffort)
+                        container, request, visionControls)
                     let visionRequestId = "req-\(UUID().uuidString.prefix(12))"
                     // Hand off memory accounting to the bridge BEFORE
                     // submit: the decode-phase peak this vision reservation
@@ -382,14 +399,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                     // chat templating never renders tool specs, so the model
                     // is never prompted into tool-call syntax on either
                     // vision path.
-                    var visionPromptTokens = visionPrepared.promptTokens
-                    if reasoningControls.thinkingDisabled {
-                        visionPromptTokens = ReasoningPromptProbe.closeOpenThinkBlock(
-                            promptTokens: visionPromptTokens,
-                            encode: { tokenizer.inner.encode(text: $0, addSpecialTokens: false) },
-                            decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) }
-                        )
-                    }
+                    let visionPromptTokens = visionPrepared.promptTokens
                     let upstream = await bridge.submitTokenized(
                         promptTokens: visionPromptTokens,
                         request: Self.translate(
@@ -421,7 +431,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                         stream: request.stream,
                         promptTokens: visionPromptTokens,
                         decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) },
-                        thinkingDisabled: reasoningControls.thinkingDisabled
+                        thinkingDisabled: visionControls.thinkingDisabled
                     )
                     return makeEventStream(
                         upstream: upstream,
@@ -519,7 +529,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
         }
 
         let toolSpecs = prepared.tools?.map { $0.toolSpec() }
-        let promptTokens: [Int]
+        let effectiveControls = resolvedReasoningControls(for: request)
+        var promptTokens: [Int]
         do {
             promptTokens = try ProviderPromptContractPipeline.tokenize(
                 prepared: prepared,
@@ -527,8 +538,8 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
                 tokenizer: tokenizer.inner,
                 modelType: modelType,
                 reasoningEffort: reasoningEffort,
-                controls: reasoningControls)
-            if reasoningControls.thinkingDisabled {
+                controls: effectiveControls)
+            if effectiveControls.thinkingDisabled {
                 promptTokens = ReasoningPromptProbe.closeOpenThinkBlock(
                     promptTokens: promptTokens,
                     encode: { tokenizer.inner.encode(text: $0, addSpecialTokens: false) },
@@ -555,7 +566,7 @@ public struct MultiModelBatchSchedulerEngine: MLXServerEngine, Sendable {
             stream: request.stream,
             promptTokens: promptTokens,
             decodeTail: { tokenizer.inner.decode(tokenIds: $0, skipSpecialTokens: false) },
-            thinkingDisabled: reasoningControls.thinkingDisabled
+            thinkingDisabled: effectiveControls.thinkingDisabled
         )
 
         // Resolve tool call format before submitting so a bad

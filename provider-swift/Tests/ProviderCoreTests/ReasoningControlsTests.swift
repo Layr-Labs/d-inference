@@ -40,8 +40,11 @@ struct ReasoningControlsTests {
     func maxTokensZero() {
         let controls = ReasoningControls.parse(
             from: Data(#"{"reasoning":{"max_tokens":0}}"#.utf8))
+        let asString = ReasoningControls.parse(
+            from: Data(#"{"reasoning":{"max_tokens":"0"}}"#.utf8))
         #expect(controls.thinkingDisabled)
         #expect(controls.suppressOutput)
+        #expect(asString.thinkingDisabled)
     }
 
     @Test("exclude hides the trace without disabling thinking")

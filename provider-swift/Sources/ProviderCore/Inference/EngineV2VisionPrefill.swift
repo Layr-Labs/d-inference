@@ -239,14 +239,23 @@ public enum EngineV2VisionPrefill {
     static func prepare(
         container: ModelContainer,
         request: OpenAIChatCompletionRequest,
-        reasoningEffort: String? = nil
+        reasoningControls: ReasoningControls = .unspecified
     ) async throws -> PreparedSubmission {
         // Same decode path as the legacy stream (same caps, same MediaError
         // surface). Inline video bytes stay in the UserInput's owned
         // memory-backed asset while processor preparation samples and
         // rasterizes its frames; no plaintext file exists to clean up.
+        //
+        // ReasoningControls MUST reach the processor template here.
+        // EigenLabs/Qwen3.6-35B-A3B-MLX-VL-4bit-g64-router8 thinks by
+        // default (`<think>\n`) unless `enable_thinking` is boolean false
+        // (official closed tail `<think>\n\n</think>\n\n`). Qwen VL freezes
+        // `CBv2PositionState` to this tokenized length — do not append a
+        // think-close after prepare.
         let userInput = try await MediaIngest.buildUserInput(
-            from: request, reasoningEffort: reasoningEffort)
+            from: request,
+            reasoningEffort: reasoningControls.effortForTemplate,
+            controls: reasoningControls)
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             let lmInput = try await ctx.processor.prepare(input: userInput)
             guard lmInput.image != nil || lmInput.video != nil else {
@@ -561,12 +570,13 @@ public enum EngineV2VisionPrefill {
 /// preparer so the full routing seam is exercisable without model weights.
 public struct EngineV2VisionPlumbing: Sendable {
     let prepare:
-        @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?) async throws
+        @Sendable (ModelContainer, OpenAIChatCompletionRequest, ReasoningControls) async throws
             -> EngineV2VisionPrefill.PreparedSubmission
     let emitTelemetry: @Sendable (TelemetryEvent) -> Void
 
     init(
-        prepare: @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, String?)
+        prepare:
+            @escaping @Sendable (ModelContainer, OpenAIChatCompletionRequest, ReasoningControls)
             async throws -> EngineV2VisionPrefill.PreparedSubmission,
         emitTelemetry: @escaping @Sendable (TelemetryEvent) -> Void
     ) {
@@ -575,9 +585,9 @@ public struct EngineV2VisionPlumbing: Sendable {
     }
 
     static let production = EngineV2VisionPlumbing(
-        prepare: { container, request, reasoningEffort in
+        prepare: { container, request, controls in
             try await EngineV2VisionPrefill.prepare(
-                container: container, request: request, reasoningEffort: reasoningEffort)
+                container: container, request: request, reasoningControls: controls)
         },
         emitTelemetry: { TelemetryClient.shared.emit($0) }
     )

@@ -23,6 +23,7 @@ func TestParseReasoningRequestDisableShapes(t *testing.T) {
 		{name: "effort NONE", body: `{"reasoning":{"effort":"NONE"}}`, disabled: true, suppress: true},
 		{name: "reasoning_effort none", body: `{"reasoning_effort":"none"}`, disabled: true, suppress: true},
 		{name: "max_tokens 0", body: `{"reasoning":{"max_tokens":0}}`, disabled: true, suppress: true},
+		{name: "max_tokens string 0", body: `{"reasoning":{"max_tokens":"0"}}`, disabled: true, suppress: true},
 		{name: "exclude true", body: `{"reasoning":{"exclude":true}}`, disabled: false, suppress: true},
 		{name: "include_reasoning false", body: `{"include_reasoning":false}`, disabled: false, suppress: true},
 		{name: "enable_thinking false", body: `{"enable_thinking":false}`, disabled: true, suppress: true},
@@ -104,6 +105,32 @@ func TestNormalizeThenSuppressDropsAliasedReasoning(t *testing.T) {
 	stripped := maybeStripReasoningSSE(normalized, true)
 	if strings.Contains(stripped, `"reasoning"`) || strings.Contains(stripped, `"reasoning_content"`) {
 		t.Fatalf("suppressed chunk still has reasoning: %s", stripped)
+	}
+}
+
+func TestStripReasoningFromNativeResponse(t *testing.T) {
+	t.Parallel()
+	obj := map[string]any{
+		"object": "response",
+		"output": []any{
+			map[string]any{"type": "reasoning", "id": "rs_1", "summary": []any{"think"}},
+			map[string]any{"type": "message", "content": "4", "reasoning": "2+2"},
+		},
+	}
+	stripReasoningFromCompleteResponse(obj)
+	output := obj["output"].([]any)
+	if len(output) != 1 {
+		t.Fatalf("output items = %d, want 1 message: %#v", len(output), output)
+	}
+	msg := output[0].(map[string]any)
+	if msg["type"] != "message" {
+		t.Fatalf("remaining item type = %v", msg["type"])
+	}
+	if _, ok := msg["reasoning"]; ok {
+		t.Fatal("message.reasoning should be deleted")
+	}
+	if msg["content"] != "4" {
+		t.Fatalf("content = %v", msg["content"])
 	}
 }
 

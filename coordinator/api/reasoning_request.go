@@ -172,24 +172,48 @@ func stripReasoningFromSSEChunk(chunk string) string {
 }
 
 func stripReasoningFromCompleteResponse(obj map[string]any) {
-	choices, ok := obj["choices"].([]any)
+	if choices, ok := obj["choices"].([]any); ok {
+		for _, rawChoice := range choices {
+			choice, ok := rawChoice.(map[string]any)
+			if !ok {
+				continue
+			}
+			if message, ok := choice["message"].(map[string]any); ok {
+				delete(message, "reasoning")
+				delete(message, "reasoning_content")
+			}
+			if delta, ok := choice["delta"].(map[string]any); ok {
+				delete(delta, "reasoning")
+				delete(delta, "reasoning_content")
+			}
+		}
+	}
+	stripReasoningItemsFromOutput(obj)
+}
+
+// stripReasoningItemsFromOutput drops Responses-API reasoning items so a
+// native object=="response" passthrough cannot leak a think trace when
+// the caller disabled or excluded reasoning.
+func stripReasoningItemsFromOutput(obj map[string]any) {
+	output, ok := obj["output"].([]any)
 	if !ok {
 		return
 	}
-	for _, rawChoice := range choices {
-		choice, ok := rawChoice.(map[string]any)
+	filtered := make([]any, 0, len(output))
+	for _, raw := range output {
+		item, ok := raw.(map[string]any)
 		if !ok {
+			filtered = append(filtered, raw)
 			continue
 		}
-		if message, ok := choice["message"].(map[string]any); ok {
-			delete(message, "reasoning")
-			delete(message, "reasoning_content")
+		if typ, _ := item["type"].(string); typ == "reasoning" {
+			continue
 		}
-		if delta, ok := choice["delta"].(map[string]any); ok {
-			delete(delta, "reasoning")
-			delete(delta, "reasoning_content")
-		}
+		delete(item, "reasoning")
+		delete(item, "reasoning_content")
+		filtered = append(filtered, item)
 	}
+	obj["output"] = filtered
 }
 
 func stripReasoningFields(fields map[string]json.RawMessage) bool {

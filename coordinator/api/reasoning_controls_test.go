@@ -379,6 +379,38 @@ func TestStreamingSuppressReasoning(t *testing.T) {
 	}
 }
 
+// A terminal chunk carrying BOTH finish_reason and a trailing reasoning delta
+// is held by the relay loop before suppression runs and re-emitted at stream
+// end — finalizeFinishChunk must strip it there.
+func TestStreamingSuppressReasoningOnHeldFinishChunk(t *testing.T) {
+	srv := newDeferredCommitTestServer(t)
+
+	pr := &registry.PendingRequest{
+		RequestID:         "suppress-reasoning-finish",
+		Model:             "m",
+		SuppressReasoning: true,
+		ChunkCh:           make(chan string, 4),
+		ErrorCh:           make(chan protocol.InferenceErrorMessage, 1),
+		CompleteCh:        make(chan protocol.UsageInfo, 1),
+	}
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":null}]}`
+	pr.ChunkCh <- `data: {"id":"c1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"terminal tail"},"finish_reason":"stop"}]}`
+	close(pr.ChunkCh)
+	pr.CompleteCh <- protocol.UsageInfo{PromptTokens: 1, CompletionTokens: 1}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	rec := httptest.NewRecorder()
+	srv.handleStreamingResponseWithFirstChunk(rec, req, pr, nil, false)
+
+	body := rec.Body.String()
+	if strings.Contains(body, "terminal tail") {
+		t.Errorf("reasoning text on the held finish chunk leaked:\n%s", body)
+	}
+	if !strings.Contains(body, `"finish_reason":"stop"`) {
+		t.Errorf("finish_reason missing from suppressed stream:\n%s", body)
+	}
+}
+
 // End-to-end through the non-streaming writer: the reconstructed message must
 // carry no reasoning field when suppression is on.
 func TestNonStreamingSuppressReasoning(t *testing.T) {

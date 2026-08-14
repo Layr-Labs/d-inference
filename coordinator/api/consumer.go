@@ -3170,6 +3170,12 @@ func parseFinishStreamChunk(chunk string) (map[string]any, bool) {
 // doesn't distinguish natural stop from truncation). Also rewrites the build
 // id to the public alias. Returns "" if it can't be marshalled.
 func finalizeFinishChunk(obj map[string]any, usage protocol.UsageInfo, pr *registry.PendingRequest) string {
+	// The finish chunk is held BEFORE the relay loop's reasoning suppression
+	// runs, so a terminal chunk that carries both finish_reason and a trailing
+	// reasoning delta would otherwise leak that text at stream end.
+	if pr.SuppressReasoning {
+		stripReasoningFromCompleteResponse(obj)
+	}
 	if truncatedByMaxTokens(usage, pr.RequestedMaxTokens) {
 		if choices, ok := obj["choices"].([]any); ok {
 			for _, c := range choices {

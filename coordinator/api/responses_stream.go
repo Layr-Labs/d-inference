@@ -205,7 +205,7 @@ func (e *responsesStreamEmitter) handleChunk(chunk string) {
 		if reasoning == "" {
 			reasoning = c.Delta.ReasoningContent
 		}
-		if reasoning != "" {
+		if reasoning != "" && (e.pr == nil || !e.pr.SuppressReasoningOutput) {
 			e.appendReasoning(reasoning)
 		}
 		if c.Delta.Content != "" {

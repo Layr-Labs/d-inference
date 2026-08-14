@@ -221,6 +221,19 @@ func templateContextComposesReasoningControls() {
     #expect(context?["reasoning_effort"] as? String == "high")
 }
 
+@Test("template context treats effort none as thinking off")
+func templateContextEffortNoneDisablesThinking() {
+    let request = OpenAIChatCompletionRequest(
+        model: "qwen3.6",
+        messages: [.init(role: .user, content: .text("hi"))])
+    let controls = ReasoningControls.parse(
+        from: Data(#"{"reasoning":{"effort":"none"}}"#.utf8))
+    let context = MultiModelBatchSchedulerEngine.templateAdditionalContext(
+        for: request, reasoningEffort: "none", controls: controls)
+    #expect(context?["enable_thinking"] as? Bool == false)
+    #expect(context?["reasoning_effort"] == nil)
+}
+
 // MARK: - Engine error mapping (P2 #6)
 //
 // Pins the `MultiModelBatchSchedulerEngineError.fromSchedulerMessage`

@@ -835,6 +835,7 @@ func (s *Server) dispatchOneProvider(
 		ErrorCh:                make(chan protocol.InferenceErrorMessage, 1),
 		Timing:                 timing,
 	}
+	stampReasoningPolicy(pr, rawBody)
 
 	// Public inference routes (not self-route / prefer-owner) enforce the
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
@@ -2009,6 +2010,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		} else {
 			if !sawResponsesAPI {
 				firstChunk = normalizeSSEChunk(firstChunk)
+				firstChunk = maybeStripReasoningSSE(firstChunk, pr.SuppressReasoningOutput)
 			}
 			firstChunk = rewriteChunkModel(firstChunk, pr)
 			fmt.Fprintf(w, "%s\n\n", firstChunk)
@@ -2157,6 +2159,7 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 			}
 			if !sawResponsesAPI {
 				chunk = normalizeSSEChunk(chunk)
+				chunk = maybeStripReasoningSSE(chunk, pr.SuppressReasoningOutput)
 				// Hold the chunk carrying the terminal finish_reason so it can be
 				// corrected to "length" against the authoritative token counts at
 				// stream end (the provider engine always reports "stop").
@@ -2350,6 +2353,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 							}
 							if objType == "chat.completion" {
 								normalizeCompleteChatResponse(obj, consumerModel(pr))
+								if pr.SuppressReasoningOutput {
+									stripReasoningFromCompleteResponse(obj)
+								}
 								// The provider engine reports "stop" even when generation
 								// hit the max-tokens bound — correct it from the
 								// authoritative token counts.
@@ -2415,6 +2421,9 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 
 				// Fallback: SSE delta chunks — reconstruct into response.
 				msg := extractMessage(chunks)
+				if pr.SuppressReasoningOutput {
+					msg.Reasoning = ""
+				}
 				select {
 				case usage, ok := <-pr.CompleteCh:
 					if !ok {
@@ -3151,6 +3160,9 @@ func finalizeFinishChunk(obj map[string]any, usage protocol.UsageInfo, pr *regis
 	}
 	if pr.PublicModel != "" && pr.PublicModel != pr.Model {
 		obj["model"] = pr.PublicModel
+	}
+	if pr.SuppressReasoningOutput {
+		stripReasoningFromCompleteResponse(obj)
 	}
 	b, err := json.Marshal(obj)
 	if err != nil {
@@ -4009,6 +4021,7 @@ func (s *Server) handleGenericInference(w http.ResponseWriter, r *http.Request, 
 		ErrorCh:              make(chan protocol.InferenceErrorMessage, 1),
 		Timing:               timing,
 	}
+	pr.SuppressReasoningOutput = parseReasoningRequest(parsed).SuppressOutput
 	// Public inference routes (not self-route / prefer-owner) enforce the
 	// OpenRouter TTFT ceiling inside the scheduler. This makes the preflight
 	// check authoritative: the router cannot select a provider whose estimated

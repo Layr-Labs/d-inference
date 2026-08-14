@@ -143,6 +143,19 @@ func parseStreamChunkExtractsBothDeltas() throws {
     #expect(parsed.reasoningDelta == "let me think...")
 }
 
+@Test("stripReasoningFromStreamFrame drops reasoning and keeps content")
+func stripReasoningFromStreamFrameKeepsContent() throws {
+    let frame = try encodeChunk(
+        content: "4",
+        reasoningContent: "2+2"
+    )
+    let stripped = ProviderLoop.stripReasoningFromStreamFrame(frame)
+    let parsed = try #require(ProviderLoop.parseStreamChunk(stripped))
+    #expect(parsed.contentDelta == "4")
+    #expect(parsed.reasoningDelta == nil)
+    #expect(!stripped.contains("reasoning"))
+}
+
 @Test("parseStreamChunk extracts finish_reason on terminal choice frame")
 func parseStreamChunkExtractsFinishReason() throws {
     let frame = try encodeChunk(finishReason: "stop")

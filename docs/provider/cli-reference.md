@@ -387,6 +387,25 @@ darkbloom logs [--file] [--follow] [--last <duration>] [--debug] [--lines <n>]
 | `--debug` | Include debug-level messages |
 | `--lines <n>` | Number of lines (only with `--file`) |
 
+## `darkbloom report`
+
+Collect recent Darkbloom provider unified logs and explicitly upload them to the
+coordinator for troubleshooting.
+
+```bash
+darkbloom report [--last <duration>] [--dry-run]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--last <duration>` | Time window, e.g. `1h`, `6h`, `24h` |
+| `--dry-run` | Print the exact report locally without uploading |
+
+The command runs only when invoked by the provider operator. It collects the
+`dev.darkbloom.provider` subsystem, preserves macOS unified-log privacy
+redaction, and does not include debug-level messages. Automatic report upload is
+disabled.
+
 ## `darkbloom watchdog`
 
 Internal command used by the launchd crash-recovery watchdog. Not intended for

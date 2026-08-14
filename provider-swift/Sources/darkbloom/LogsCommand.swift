@@ -33,8 +33,8 @@ struct Logs: AsyncParsableCommand {
     @Option(name: [.short, .long], help: "Number of lines to show (only applies with --file).")
     var lines: Int = 50
 
-    private static let subsystem = "dev.darkbloom.provider"
-    private static let predicate = #"subsystem == "\#(subsystem)""#
+    static let subsystem = "dev.darkbloom.provider"
+    static let predicate = #"subsystem == "\#(subsystem)""#
 
     mutating func run() async throws {
         await runUpdateBannerIfEnabled()

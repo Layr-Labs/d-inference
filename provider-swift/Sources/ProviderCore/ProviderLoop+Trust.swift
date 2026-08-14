@@ -1,9 +1,8 @@
 /// ProviderLoop -- trust status persistence.
 ///
-/// Persists daemon state and reacts to coordinator `trust_status`. Unified logs
-/// are intentionally never collected or uploaded: inference failures may occur
-/// while request plaintext is in memory, so a bulk log export is not an
-/// acceptable diagnostics boundary.
+/// Persists daemon state and reacts to coordinator `trust_status`. This runtime
+/// path never collects or uploads unified logs. Support reports remain an
+/// explicit operator action through the separate `darkbloom report` command.
 
 import CryptoKit
 import Foundation

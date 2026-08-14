@@ -1921,7 +1921,7 @@ func (s *Server) routes() {
 	// operational telemetry remains separate.
 	s.mux.HandleFunc("POST /v1/telemetry/events", s.handleTelemetryIngest)
 
-	// Provider log reports
+	// Explicit provider log reports
 	s.mux.HandleFunc("POST /v1/provider/log-report", s.requireAuth(s.handleUploadLogReport))
 	s.mux.HandleFunc("GET /v1/admin/log-reports", s.requireAuth(s.handleListLogReports))
 	s.mux.HandleFunc("GET /v1/admin/log-reports/{id}", s.requireAuth(s.handleGetLogReport))

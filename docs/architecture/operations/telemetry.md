@@ -121,6 +121,27 @@ status and Apple's CrashReporter can write the authoritative crash report
 The Objective-C exception callback records the same bounded marker; the signal
 re-raise sequence applies specifically to the POSIX handler.
 
+## Explicit provider support reports
+
+`darkbloom report` is a separate, operator-initiated support path; it is not
+client telemetry. The command runs `/usr/bin/log show` only for the
+`dev.darkbloom.provider` subsystem, includes info-level output without debug
+events, and preserves macOS unified-log privacy redaction. `--dry-run` prints the
+exact report without uploading it. There is no trust-triggered or background
+auto-report path
+([command scope](../../../provider-swift/Sources/darkbloom/ReportCommand.swift#L5-L44),
+[review and upload flow](../../../provider-swift/Sources/darkbloom/ReportCommand.swift#L78-L159),
+[provider logging privacy contract](../../../provider-swift/Sources/ProviderCore/ProviderLogger.swift#L6-L95),
+[trust-status runtime](../../../provider-swift/Sources/ProviderCore/ProviderLoop+Trust.swift#L1-L24)).
+
+An authenticated provider upload is capped at 10 MiB and stored for explicit
+admin-only list/retrieval. The coordinator does not ingest these reports into
+the telemetry event pipeline or forward them to Datadog. This is an intentional
+support action controlled by the provider operator, while routine client
+telemetry remains disabled
+([route wiring](../../../coordinator/api/server.go#L1924-L1927),
+[upload and retrieval handlers](../../../coordinator/api/log_report_handlers.go#L16-L112)).
+
 ## Historical schema and allowlists
 
 `TelemetryEvent`, `TelemetryBatch`, enum mirrors, parser caps, rate limiter, and

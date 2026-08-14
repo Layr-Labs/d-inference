@@ -42,6 +42,7 @@ struct Darkbloom: AsyncParsableCommand {
             Enroll.self,
             Unenroll.self,
             Logs.self,
+            Report.self,
             AutoUpdate.self,
             Beta.self,
             Fan.self,

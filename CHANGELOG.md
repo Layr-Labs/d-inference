@@ -41,7 +41,7 @@
 #### Security
 
 - **Keep inline video plaintext off disk** — The provider decodes coordinator-inlined MP4/QuickTime bytes through a bounded, memory-backed AVFoundation asset, retains the byte owner through metadata probing and frame sampling, and rejects external asset references. Exact-name legacy `vlm-<UUID>.mp4` files are purged once after single-instance lock acquisition on both coordinator-connected and standalone launch paths.
-- **Close provider-derived plaintext egress paths** — Provider inference failures cross process, WebSocket, telemetry, persistence, and client boundaries only as closed-vocabulary codes/reasons. Browser/provider free-form telemetry and provider log-report upload/read endpoints are retired.
+- **Close unintended provider-derived plaintext egress paths** — Provider inference failures cross the WebSocket and client boundary only as closed-vocabulary codes/reasons, while browser/provider free-form telemetry and automatic provider log reporting are retired. The explicit `darkbloom report` support command remains operator-initiated, preserves macOS unified-log privacy redaction, supports local `--dry-run` review, and uses authenticated upload plus admin-only retrieval.
 
 ---
 

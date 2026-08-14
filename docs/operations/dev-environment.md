@@ -213,9 +213,9 @@ gcloud sql instances delete d-inference-dev-db --quiet
 
 ## What dev does *not* cover
 
-- **Production's manually managed container swap.** Dev uses a systemd restart;
-  production uses a human-controlled drain, fallback-container swap, and host
-  Caddy maintenance marker.
+- **Production's approval-gated container swap.** Dev uses a systemd restart;
+  production uses an explicitly human-approved drain, fallback-container swap,
+  and host Caddy maintenance marker.
 - **External user traffic.** Dev is team-only; admin emails are gated to `gajesh@eigenlabs.org` by default.
 - **In-memory mode data loss.** If `EIGENINFERENCE_DATABASE_URL` is unset, the coordinator resets state on every deploy. To re-register the current release and grant test credits after a redeploy, run `scripts/admin.sh EIGENINFERENCE_COORDINATOR_URL=https://api.dev.darkbloom.xyz releases latest`.
 

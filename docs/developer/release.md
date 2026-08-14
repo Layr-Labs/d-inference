@@ -31,9 +31,9 @@ verifier layout or be privileged-installed by CI/the ordinary installer.
 ## Coordinator release
 
 Production and dev both run on GCP in separate projects. Production is the
-human-operated `darkbloom-mainnet` GCE deployment; dev is `sepolia-ai`.
+approval-gated `darkbloom-mainnet` GCE deployment; dev is `sepolia-ai`.
 
-### Prod (GCP, human-only)
+### Prod (GCP, human approval required)
 
 ```bash
 git push origin master
@@ -43,8 +43,9 @@ gcloud builds list --project=darkbloom-mainnet --limit=5
 The repository trigger uses `deploy/gcp/cloudbuild-prod.yaml` and binds the
 uploaded source, OCI revision label, and image tag to `COMMIT_SHA` /
 `SHORT_SHA`. Direct `gcloud builds submit` from a local tree is rejected. The
-trigger builds and pushes only; a human performs the container swap from
-[`operations/coordinator-deploy.md`](../operations/coordinator-deploy.md).
+trigger builds and pushes only; a human operator or explicitly human-approved
+agent performs the container swap from
+[operations/coordinator-deploy.md](../operations/coordinator-deploy.md).
 
 ### Dev (GCP)
 

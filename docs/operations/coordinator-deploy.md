@@ -342,11 +342,12 @@ sudo sh -c 'umask 077
 ### 3. Env changes (if any)
 
 The current host was observed with `/etc/d-inference` mounted as tmpfs, so most
-backups and the live file would disappear on reboot. A human must migrate it to
-the boot disk once before using the refresh script:
+backups and the live file would disappear on reboot. An operator with explicit
+human approval must migrate it to the boot disk once before using the refresh
+script:
 
 ```bash
-# Human-only on the production VM. Preserve ownership and mode.
+# Human operator or explicitly human-approved agent only. Preserve ownership and mode.
 sudo install -d -m 0700 /var/lib/darkbloom-env
 sudo cp -p /etc/d-inference/env /var/lib/darkbloom-env/env
 sudo umount /etc/d-inference

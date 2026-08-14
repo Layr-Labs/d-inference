@@ -2,7 +2,7 @@
 
 How the admin-gated `/v1/admin/state-export` endpoint works end-to-end, and the exact operator flow to extract the TEE-sealed coordinator state and rehydrate it on a target machine (e.g. a GCP Confidential VM).
 
-> **AI agents must NOT run this against prod.** Enabling the endpoint, deploying the export build, and running the extraction are **human-only** actions. This doc prepares the commands; a human executes them.
+> **Production execution requires explicit human approval for the specific operation.** A human operator or human-approved agent may enable the endpoint, deploy the export build, and run the extraction. Without approval, this document is command preparation only.
 
 ## What this solves
 
@@ -43,7 +43,7 @@ age-keygen -o dar70-export-identity.txt
 
 Keep `dar70-export-identity.txt` (the private identity) offline. Only the `age1...` **public** recipient goes to the coordinator.
 
-### 1. Enable the endpoint on the source coordinator (human-only)
+### 1. Enable the endpoint on the source coordinator (human approval required)
 
 Set via the source coordinator's KMS/env and redeploy the build that contains the endpoint:
 
@@ -96,7 +96,7 @@ sudo chmod 600 /mnt/disks/userdata/micromdm/push.key
 
 Inject `MNEMONIC` (byte-identical) and the rest of the secret set into the target KMS/Secret Manager, then start the coordinator. **Do not start the coordinator before the tree is in place** — `start.sh` would generate fresh MicroMDM state and you would have to re-export.
 
-### 5. Disable the endpoint (human-only)
+### 5. Disable the endpoint (human approval required)
 
 Immediately after a successful extraction:
 

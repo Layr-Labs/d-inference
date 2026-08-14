@@ -16,15 +16,17 @@ Runbooks are written for operators. For architecture and security context, see t
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Build and deploy the coordinator (Go) and provider CLI (Swift) | Infra / release engineer |
 | [`dev-environment.md`](dev-environment.md) | Stand up and operate the GCP dev environment | Infra engineer |
 | [`model-migration.md`](model-migration.md) | Zero-downtime model alias / build cutover | Model ops / on-call |
-| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer (human-only) |
-| [`eigencloud-to-gcp-migration.md`](eigencloud-to-gcp-migration.md) | Move prod from EigenCloud to a GCP Confidential VM | Infra engineer (human-only) |
+| [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer / human-approved agent |
+| [`eigencloud-to-gcp-migration.md`](eigencloud-to-gcp-migration.md) | Move prod from EigenCloud to a GCP Confidential VM | Infra engineer / human-approved agent |
 | [`m5-stress-runbook.md`](m5-stress-runbook.md) | Archived pre-v0.7.5 SSD soak; do not use for EngineV2 | Historical reference |
 
 ## Safety rules that apply to every runbook
 
 1. **Production GCP deploys, Secret Manager, VM/container/service/config,
-   database, DNS, traffic, and release registration are human-only.** AI agents
-   may prepare commands; a human executes anything that mutates prod.
+   database, DNS, traffic, and release registration require explicit human
+   approval for the specific operation.** A human operator or human-approved
+   agent may execute them. Without that approval, AI agents may only prepare
+   commands and perform read-only production inspection.
 2. **The code is the source of truth.** Claims cite canonical file paths and line ranges where possible.
 3. **Privacy model** (from [`docs/AGENTS.md`](../AGENTS.md)):
    - Consumer → coordinator: TLS by default; optional NaCl Box.

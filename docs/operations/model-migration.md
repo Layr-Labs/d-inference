@@ -2,7 +2,7 @@
 
 How to move a public model name from one build (quant) to another with **no downtime** and **without consumers ever seeing the quant** — using the model alias desired-build pointer and the provider's declarative self-reconcile.
 
-> **AI agents: do not run any of these against prod.** Publishing to R2, registering on the prod coordinator, and flipping a prod alias are human-only actions. Validate on a throwaway/dev coordinator first. This runbook is the hand-off.
+> **Production execution requires explicit human approval for the specific operation.** A human operator or human-approved agent may publish to R2, register on the prod coordinator, and flip a prod alias. Validate on a throwaway/dev coordinator first.
 
 ## How it works
 

@@ -232,6 +232,39 @@ func (d *dispatchState) traits() registry.RequestTraits {
 	}
 }
 
+// firstTokenRemaining is the leftover request-absolute first-CONTENT budget.
+// ok is false when ReceivedAt was never stamped; callers then keep the
+// historical relative timer (d.deadline / d.deadline-speculativeAt).
+func (d *dispatchState) firstTokenRemaining() (remaining time.Duration, ok bool) {
+	if d == nil || d.timing == nil || d.timing.ReceivedAt.IsZero() {
+		return 0, false
+	}
+	return firstTokenRemainingSince(d.timing.ReceivedAt, d.deadline), true
+}
+
+// firstTokenWait returns how long we may still wait for first CONTENT.
+// When the request clock is set this is leftover SLA from ReceivedAt,
+// never a fresh relative window. relativeFallback is the pre-clock
+// behavior (full deadline, leftover after speculative, or inferenceTimeout).
+func (d *dispatchState) firstTokenWait(relativeFallback time.Duration) time.Duration {
+	if remaining, ok := d.firstTokenRemaining(); ok {
+		return remaining
+	}
+	if relativeFallback < 0 {
+		return 0
+	}
+	return relativeFallback
+}
+
+func (d *dispatchState) firstTokenExpired() bool {
+	remaining, ok := d.firstTokenRemaining()
+	return ok && remaining == 0
+}
+
+func (d *dispatchState) canExtendPreambleLiveness() bool {
+	return d.firstTokenWait(preambleContentTimeout) > 0
+}
+
 func (d *dispatchState) excludedProviderIDs() []string {
 	ids := make([]string, 0, len(d.excludeProviders))
 	for id := range d.excludeProviders {
@@ -1533,7 +1566,8 @@ func (d *dispatchState) latchDeterministicLoser(provider *registry.Provider, msg
 
 // waitFirstChunk runs the speculative TTFT-aware first-chunk wait (the former
 // `firstChunkWait` labeled loop). It holds preamble chunks, commits on first
-// content, extends on AcceptedCh / preamble liveness, retries invisibly on
+// content, proceeds to waitAccepted on AcceptedCh / preamble liveness without
+// resetting the request-absolute first-token clock, retries invisibly on
 // provider error/timeout, and launches the speculative backup race when the
 // primary is slow. Returns outcomeCommitted (content / clean close), outcomeAccepted
 // (cold-load or preamble liveness — proceed to waitAccepted), outcomeRetry
@@ -1571,14 +1605,22 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 		}
 	}()
 
-	speculativeTimer := time.NewTimer(d.speculativeAt)
-	deadlineTimer := time.NewTimer(d.deadline)
+	deadlineWait := d.firstTokenWait(d.deadline)
+	specWait := d.speculativeAt
+	if _, ok := d.firstTokenRemaining(); ok {
+		if specWait <= 0 || specWait >= deadlineWait {
+			specWait = deadlineWait / 2
+		}
+	}
+	speculativeTimer := time.NewTimer(specWait)
+	deadlineTimer := time.NewTimer(deadlineWait)
 	d.accepted = false
 	// preambleLiveness distinguishes WHY the extended first-content wait was
-	// entered: a genuine AcceptedCh (cold model load — keeps the full
-	// inferenceTimeout) vs a held-boilerplate liveness extension past an
-	// expired TTFT deadline (zero bytes written to the client — bounded by
-	// preambleContentTimeout so a role-then-stall zombie fails over).
+	// entered: a genuine AcceptedCh (cold model load) vs a held-boilerplate
+	// liveness extension. Neither path may outrun the request-absolute
+	// first-token clock — OpenRouter 504s if no real token arrives in time.
+	// A preamble-then-stall with leftover budget is still bounded by
+	// preambleContentTimeout so a role-then-stall zombie fails over.
 	d.preambleLiveness = false
 
 	for {
@@ -1654,10 +1696,10 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 
 		case <-deadlineTimer.C:
 			speculativeTimer.Stop()
-			if len(d.heldChunks) > 0 {
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
 				// Preamble liveness — the provider is alive but still in its
-				// pre-content phase. Fall through to the extended
-				// (preambleContentTimeout) wait instead of failing the attempt.
+				// pre-content phase. Fall through to waitAccepted, still
+				// bounded by leftover request-absolute first-token budget.
 				d.accepted = true
 				d.preambleLiveness = true
 				return outcomeAccepted
@@ -1801,7 +1843,7 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	remainingDeadline := time.NewTimer(d.deadline - d.speculativeAt)
+	remainingDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -1848,12 +1890,10 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			d.pr = nil
 			return outcomeRetry
 		case <-remainingDeadline.C:
-			if len(d.heldChunks) > 0 {
-				// Liveness: the provider already produced its preamble —
-				// vision prefill / template render may legitimately
-				// exceed the TTFT deadline. Fall through to the
-				// extended (preambleContentTimeout) wait for first
-				// content, with ErrorCh still armed for retry.
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+				// Liveness: the provider already produced its preamble.
+				// Fall through to waitAccepted, still bounded by leftover
+				// request-absolute first-token budget.
 				d.accepted = true
 				d.preambleLiveness = true
 				return outcomeAccepted
@@ -1900,10 +1940,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 	r := d.r
 	provider, pr := d.provider, d.pr
 
-	raceDeadline := time.NewTimer(d.deadline - d.speculativeAt)
+	raceDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	// One-shot extension: when the race deadline expires but a racer
-	// has shown liveness (preamble received), the race continues for
-	// the full inference window instead of failing the request.
+	// has shown liveness (preamble received), the race continues up to
+	// leftover first-token budget (capped by preambleContentTimeout).
 	raceExtended := false
 	// Preamble chunks from the backup are buffered separately —
 	// held chunks must never mix providers.
@@ -2000,7 +2040,8 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			return outcomeCommitted
 
 		case <-pr.AcceptedCh:
-			// Primary accepted (model reload). Cancel backup, extend deadline.
+			// Primary accepted (model reload). Cancel backup; first-token
+			// budget stays request-absolute in waitAccepted.
 			raceDeadline.Stop()
 			s.cancelDispatch(backupProvider, backupPR)
 			d.markSpeculativeLoser(backupPR)
@@ -2008,7 +2049,8 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			return outcomeAccepted
 
 		case <-backupPR.AcceptedCh:
-			// Backup accepted (model reload). Cancel primary, extend deadline.
+			// Backup accepted (model reload). Cancel primary; first-token
+			// budget stays request-absolute in waitAccepted.
 			raceDeadline.Stop()
 			s.cancelDispatch(provider, pr)
 			d.markSpeculativeLoser(pr)
@@ -2056,14 +2098,20 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 		case <-raceDeadline.C:
 			if !raceExtended && (len(d.heldChunks) > 0 || len(backupHeld) > 0) {
 				// Liveness from at least one racer: don't fail at the
-				// TTFT deadline — extend once by the preamble-to-content
-				// budget (zero bytes have reached the client; a genuine
-				// cold load would have signalled AcceptedCh) and keep both
-				// racing for first content, with both error channels still
-				// armed for retry.
-				raceExtended = true
-				raceDeadline = time.NewTimer(preambleContentTimeout)
-				continue
+				// relative TTFT slice — extend once by leftover
+				// request-absolute first-token budget, capped by
+				// preambleContentTimeout (zero bytes have reached the
+				// client; a genuine cold load would have signalled
+				// AcceptedCh).
+				ext := d.firstTokenWait(preambleContentTimeout)
+				if ext > preambleContentTimeout {
+					ext = preambleContentTimeout
+				}
+				if ext > 0 {
+					raceExtended = true
+					raceDeadline = time.NewTimer(ext)
+					continue
+				}
 			}
 			// Both missed deadline. A racer that held preamble (role
 			// then stall) is a 504-shaped sickness — feed the breaker
@@ -2109,7 +2157,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	remainingPrimary := time.NewTimer(d.deadline - d.speculativeAt)
+	remainingPrimary := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -2161,9 +2209,9 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.requestID = ""
 			return outcomeRetry
 		case <-remainingPrimary.C:
-			if len(d.heldChunks) > 0 {
-				// Primary preamble liveness — extend to the
-				// preamble-to-content budget instead of failing.
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+				// Primary preamble liveness — continue in waitAccepted
+				// on leftover request-absolute first-token budget.
 				d.accepted = true
 				d.preambleLiveness = true
 				return outcomeAccepted
@@ -2210,7 +2258,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 	// primary's 4xx/422/429, so the primary keeps the attribution even
 	// though the backup keeps racing (noteServingSlotFor's freeze rule).
 	d.noteServingSlotFor(backupPR)
-	backupDeadline := time.NewTimer(d.deadline - d.speculativeAt)
+	backupDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-backupPR.ChunkCh:
@@ -2271,9 +2319,9 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.pr = nil
 			return outcomeRetry
 		case <-backupDeadline.C:
-			if len(backupHeld) > 0 {
-				// Backup preamble liveness — promote it and extend
-				// by the preamble-to-content budget for first content.
+			if len(backupHeld) > 0 && d.canExtendPreambleLiveness() {
+				// Backup preamble liveness — promote it and continue
+				// in waitAccepted on leftover first-token budget.
 				backupPR.BackupWon = true
 				d.provider = backupProvider
 				d.pr = backupPR
@@ -2311,7 +2359,7 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr *registry.PendingRequest) dispatchOutcome {
 	s := d.s
 	r := d.r
-	primaryDeadline := time.NewTimer(d.deadline - d.speculativeAt)
+	primaryDeadline := time.NewTimer(d.firstTokenWait(d.deadline - d.speculativeAt))
 	for {
 		select {
 		case chunk, ok := <-pr.ChunkCh:
@@ -2357,9 +2405,9 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.requestID = ""
 			return outcomeRetry
 		case <-primaryDeadline.C:
-			if len(d.heldChunks) > 0 {
-				// Primary preamble liveness — extend by the
-				// preamble-to-content budget instead of failing.
+			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
+				// Primary preamble liveness — continue in waitAccepted
+				// on leftover request-absolute first-token budget.
 				d.accepted = true
 				d.preambleLiveness = true
 				return outcomeAccepted
@@ -2389,11 +2437,10 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 
 // waitAccepted runs the post-accept wait for first content (the former
 // `acceptedWait` loop). It is entered when the committed provider accepted or held
-// preamble but hasn't produced content yet. The budget depends on WHY we're here:
-// a genuine AcceptedCh (model reload — legitimately minutes) keeps the full
-// inferenceTimeout; a boilerplate-liveness extension past an expired TTFT deadline
-// gets only preambleContentTimeout (zero bytes written to the client, so a
-// preamble-then-stall provider must fail over instead of pinning for 10 minutes).
+// preamble but hasn't produced content yet. Accept is not a completion token:
+// the request-absolute first-token clock keeps running. preambleLiveness still
+// caps the wait at preambleContentTimeout so a role-then-stall zombie fails
+// over instead of pinning, but that cap cannot exceed leftover SLA.
 func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 	s := d.s
 	r := d.r
@@ -2428,6 +2475,9 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 	firstContentBudget := inferenceTimeout
 	if d.preambleLiveness {
 		firstContentBudget = preambleContentTimeout
+	}
+	if remaining, ok := d.firstTokenRemaining(); ok && remaining < firstContentBudget {
+		firstContentBudget = remaining
 	}
 	chunkTimer := time.NewTimer(firstContentBudget)
 	for {
@@ -2575,7 +2625,7 @@ func (d *dispatchState) run() {
 		// (it returns outcomeFailFast as soon as no eligible provider remains), so
 		// in practice the loop ends at exhaustion or success; maxDispatchAttempts
 		// is only a hot-loop ceiling and this is the wall-clock bound.
-		if attempt > 0 && r.Context().Err() != nil {
+		if attempt > 0 && (r.Context().Err() != nil || d.firstTokenExpired()) {
 			goto exhausted
 		}
 		// Each attempt holds preamble chunks from its own provider only.
@@ -2617,6 +2667,13 @@ func (d *dispatchState) run() {
 			"ttft_deadline_ms", d.deadline.Milliseconds(),
 			"speculative_at_ms", d.speculativeAt.Milliseconds(),
 		)
+
+		if d.firstTokenExpired() {
+			if d.lastErrCode == 0 {
+				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
+			}
+			goto exhausted
+		}
 
 		// ---- Speculative TTFT-aware first-chunk wait ----
 		switch d.waitFirstChunk() {

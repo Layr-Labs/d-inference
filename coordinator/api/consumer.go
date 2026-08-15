@@ -47,14 +47,14 @@ const (
 	// 10 minutes allows 32k tokens at ~55 tok/s on slower hardware.
 	inferenceTimeout = 600 * time.Second
 
-	// preambleContentTimeout is the budget from the first boilerplate chunk to
-	// the first CONTENT chunk when the TTFT deadline has already expired. A
-	// provider that produced only preamble (role delta / Responses lifecycle)
-	// has written ZERO bytes to the client, so a role-then-stall zombie must
-	// fail over instead of pinning the request for the full inferenceTimeout.
-	// 90s comfortably covers the measured pre-content tail (vision prefill is
-	// 6-30s); genuine cold model loads signal via AcceptedCh and keep the full
-	// inferenceTimeout.
+	// preambleContentTimeout is the relative cap from the first boilerplate
+	// chunk to the first CONTENT chunk. A provider that produced only preamble
+	// (role delta / Responses lifecycle) has written ZERO bytes to the client,
+	// so a role-then-stall zombie must fail over instead of pinning the request
+	// for the full inferenceTimeout. 90s covers the measured pre-content tail
+	// (vision prefill is 6-30s). When ReceivedAt is stamped this cap cannot
+	// exceed leftover request-absolute first-token budget: AcceptedCh is not a
+	// completion token and must not reset that clock.
 	preambleContentTimeout = 90 * time.Second
 
 	// chunkBufferSize is the channel buffer size for SSE chunks flowing from
@@ -135,6 +135,25 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	base := time.Duration(ttftLiveDeadlineBaseMs) * time.Millisecond
 	perToken := time.Duration(estimatedPromptTokens) * time.Millisecond
 	return base + perToken
+}
+
+// firstTokenRemainingSince is the leftover request-absolute first-CONTENT
+// budget. OpenRouter cancels at ~10000ms + 1ms*tokens from request start; our
+// live deadline (prod 9s + 1ms*tokens) is the slack vs that clock. A zero
+// receivedAt falls back to the full deadline so unit tests that never stamp
+// RequestTiming keep the historical relative timers.
+func firstTokenRemainingSince(receivedAt time.Time, deadline time.Duration) time.Duration {
+	if deadline <= 0 {
+		return 0
+	}
+	if receivedAt.IsZero() {
+		return deadline
+	}
+	remaining := deadline - time.Since(receivedAt)
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 // shedIfModelRejected answers a public/prefer-owner request with 429 +
@@ -4541,7 +4560,7 @@ reserveProvider:
 	// before committing. This mirrors the chat completions path but without
 	// speculative dispatch (single attempt). If the provider misses the
 	// TTFT deadline, the request fails instead of streaming forever.
-	ttftTimer := time.NewTimer(genericDeadline)
+	ttftTimer := time.NewTimer(firstTokenRemainingSince(timing.ReceivedAt, genericDeadline))
 	var firstChunk string
 	committed := false
 	accepted := false
@@ -4613,7 +4632,8 @@ reserveProvider:
 		refundReservation()
 		s.ddIncr("inference.dispatches", []string{"status:timeout"})
 		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
-		writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider did not respond within TTFT deadline"))
+		statusCode, reason, _ := classifyExhaustedStatus(http.StatusGatewayTimeout, "")
+		writeJSON(w, statusCode, errorResponse(reason, "provider did not respond within TTFT deadline"))
 		return
 	case <-r.Context().Done():
 		ttftTimer.Stop()
@@ -4627,9 +4647,12 @@ reserveProvider:
 		return
 	}
 
-	// If provider accepted (model reload), wait for first chunk with extended deadline.
+	// If provider accepted (model reload), keep waiting for first CONTENT
+	// on the same request-absolute first-token clock. Accept is not a token
+	// and must not reset the budget to inferenceTimeout (10 minutes) —
+	// OpenRouter will 504 at ~10s+1ms/token if no real token arrives.
 	if accepted && !committed {
-		chunkTimer := time.NewTimer(inferenceTimeout)
+		chunkTimer := time.NewTimer(firstTokenRemainingSince(timing.ReceivedAt, genericDeadline))
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			chunkTimer.Stop()
@@ -4685,7 +4708,8 @@ reserveProvider:
 			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
-			writeJSON(w, http.StatusGatewayTimeout, errorResponse("timeout", "provider accepted but timed out before first chunk"))
+			statusCode, reason, _ := classifyExhaustedStatus(http.StatusGatewayTimeout, "")
+			writeJSON(w, statusCode, errorResponse(reason, "provider accepted but timed out before first chunk"))
 			return
 		case <-r.Context().Done():
 			chunkTimer.Stop()

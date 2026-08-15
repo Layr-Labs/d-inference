@@ -15,6 +15,7 @@ package api
 //   WebSocket. Providers are attested via Secure Enclave challenge-response.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2004,15 +2005,17 @@ func (s *Server) handleStreamingResponseWithFirstChunk(w http.ResponseWriter, r 
 		// at stream end instead of being emitted raw without reasoning_tokens.
 		if obj, isUsage := parseUsageOnlyStreamChunk(firstChunk); !sawResponsesAPI && isUsage {
 			pendingUsage = obj
-		} else if obj, isFinish := parseFinishStreamChunk(normalizeSSEChunk(firstChunk)); !sawResponsesAPI && isFinish {
-			pendingFinish = obj
 		} else {
 			if !sawResponsesAPI {
 				firstChunk = normalizeSSEChunk(firstChunk)
 			}
-			firstChunk = rewriteChunkModel(firstChunk, pr)
-			fmt.Fprintf(w, "%s\n\n", firstChunk)
-			flusher.Flush()
+			if obj, isFinish := parseFinishStreamChunk(firstChunk); !sawResponsesAPI && isFinish {
+				pendingFinish = obj
+			} else {
+				firstChunk = rewriteChunkModel(firstChunk, pr)
+				fmt.Fprintf(w, "%s\n\n", firstChunk)
+				flusher.Flush()
+			}
 		}
 	}
 
@@ -2413,8 +2416,13 @@ func (s *Server) handleNonStreamingResponseWithFirstChunk(w http.ResponseWriter,
 					}
 				}
 
-				// Fallback: SSE delta chunks — reconstruct into response.
-				msg := extractMessage(chunks)
+				// Only reconstructed chat-completions use provider-canonical
+				// reasoning_content precedence. Responses and generic endpoints keep
+				// the historical reasoning-first extraction contract.
+				preferReasoningContent := !pr.IsResponsesAPI &&
+					pr.ConsumerEndpoint != completionsEndpoint &&
+					pr.ConsumerEndpoint != messagesEndpoint
+				msg := extractMessageWithReasoningPolicy(chunks, preferReasoningContent)
 				select {
 				case usage, ok := <-pr.CompleteCh:
 					if !ok {
@@ -2508,21 +2516,57 @@ func normalizeCompleteChatResponse(obj map[string]any, requestedModel string) {
 	if !ok {
 		return
 	}
-	for _, rawChoice := range choices {
+	for choicePosition, rawChoice := range choices {
 		choice, ok := rawChoice.(map[string]any)
 		if !ok {
 			continue
 		}
+		choiceIndex := normalizedChoiceIndex(choice["index"], choicePosition)
 		if message, ok := choice["message"].(map[string]any); ok {
-			normalizeCompleteMessage(message)
+			normalizeCompleteMessage(message, choiceIndex)
 		}
 		if delta, ok := choice["delta"].(map[string]any); ok {
-			normalizeCompleteMessage(delta)
+			normalizeCompleteMessage(delta, choiceIndex)
 		}
 	}
 }
 
-func normalizeCompleteMessage(message map[string]any) {
+func canonicalReasoningDetails(reasoning string, choiceIndex int) []types.ReasoningDetail {
+	return []types.ReasoningDetail{{
+		Type:   "reasoning.text",
+		Text:   reasoning,
+		ID:     "reasoning-text-" + strconv.Itoa(choiceIndex),
+		Format: "unknown",
+		Index:  0,
+	}}
+}
+
+func normalizedChoiceIndex(raw any, fallback int) int {
+	switch index := raw.(type) {
+	case int:
+		if index >= 0 {
+			return index
+		}
+	case int64:
+		converted := int(index)
+		if index >= 0 && int64(converted) == index {
+			return converted
+		}
+	case float64:
+		intLimit := math.Ldexp(1, strconv.IntSize-1)
+		if math.IsNaN(index) || math.IsInf(index, 0) || index < 0 || index >= intLimit || math.Trunc(index) != index {
+			break
+		}
+		return int(index)
+	case json.Number:
+		if parsed, err := strconv.ParseInt(index.String(), 10, strconv.IntSize); err == nil && parsed >= 0 {
+			return int(parsed)
+		}
+	}
+	return fallback
+}
+
+func normalizeCompleteMessage(message map[string]any, choiceIndex int) {
 	var extractedReasoning string
 	if content, ok := message["content"]; !ok || content == nil {
 		message["content"] = ""
@@ -2543,6 +2587,12 @@ func normalizeCompleteMessage(message map[string]any) {
 	}
 	if extractedReasoning != "" {
 		mergeReasoningField(message, extractedReasoning)
+	}
+	if reasoning, ok := message["reasoning"].(string); ok && reasoning != "" {
+		message["reasoning_content"] = reasoning
+		if _, hasDetails := message["reasoning_details"]; !hasDetails {
+			message["reasoning_details"] = canonicalReasoningDetails(reasoning, choiceIndex)
+		}
 	}
 	for _, key := range []string{"tool_calls", "refusal"} {
 		if v, ok := message[key]; ok && v == nil {
@@ -2607,8 +2657,9 @@ func normalizeSSEChunk(chunk string) string {
 		strings.Contains(line, `"reasoning_content":null`) ||
 		strings.Contains(line, `"refusal":null`) ||
 		strings.Contains(line, `"system_fingerprint":null`)
-	needsReasoningDedup := strings.Contains(line, `"reasoning_content"`)
-	if !needsNullFix && !needsReasoningDedup {
+	needsReasoningNormalization := strings.Contains(line, `"reasoning"`) ||
+		strings.Contains(line, `"reasoning_content"`)
+	if !needsNullFix && !needsReasoningNormalization {
 		return chunk
 	}
 
@@ -2636,32 +2687,53 @@ func normalizeSSEChunk(chunk string) string {
 				if deltaRaw, ok := choice["delta"]; ok {
 					var delta map[string]json.RawMessage
 					if err := json.Unmarshal(deltaRaw, &delta); err == nil {
+						deltaChanged := false
 						for _, field := range []string{"content", "reasoning_content", "reasoning", "refusal"} {
 							if v, ok := delta[field]; ok && string(v) == "null" {
 								delta[field] = json.RawMessage(`""`)
-								changed = true
+								deltaChanged = true
 							}
 						}
 						if v, ok := delta["tool_calls"]; ok && string(v) == "null" {
 							delta["tool_calls"] = json.RawMessage(`[]`)
-							changed = true
+							deltaChanged = true
 						}
-						// Emit BOTH "reasoning" and "reasoning_content" so both
-						// AI SDK (reads reasoning_content) and ForgeCode/other
-						// clients (reads reasoning) see reasoning tokens.
-						if _, hasR := delta["reasoning"]; hasR {
-							if _, hasRC := delta["reasoning_content"]; !hasRC {
-								// Only reasoning exists — copy to reasoning_content for AI SDK.
-								delta["reasoning_content"] = delta["reasoning"]
-								changed = true
+						// reasoning_content is provider-canonical for streaming deltas.
+						// If either alias is present, emit both with the same value, even
+						// when that value is empty; empty values never produce details.
+						reasoningRaw, hasReasoning := delta["reasoning"]
+						reasoningContentRaw, hasReasoningContent := delta["reasoning_content"]
+						reasoning := nonEmptyRawString(reasoningRaw)
+						reasoningContent := nonEmptyRawString(reasoningContentRaw)
+						chosenReasoning := reasoningContent
+						chosenRaw := reasoningContentRaw
+						if chosenReasoning == "" && reasoning != "" {
+							chosenReasoning = reasoning
+							chosenRaw = reasoningRaw
+						} else if chosenReasoning == "" && !hasReasoningContent {
+							chosenRaw = reasoningRaw
+						}
+						if hasReasoning || hasReasoningContent {
+							if !hasReasoning || !bytes.Equal(reasoningRaw, chosenRaw) {
+								delta["reasoning"] = chosenRaw
+								deltaChanged = true
 							}
-						} else if rc, hasRC := delta["reasoning_content"]; hasRC {
-							// Only reasoning_content exists — add reasoning alias.
-							delta["reasoning"] = rc
-							changed = true
+							if !hasReasoningContent || !bytes.Equal(reasoningContentRaw, chosenRaw) {
+								delta["reasoning_content"] = chosenRaw
+								deltaChanged = true
+							}
 						}
-						if changed {
+						if _, hasDetails := delta["reasoning_details"]; !hasDetails && chosenReasoning != "" {
+							choiceIndex := normalizedRawChoiceIndex(choice["index"], i)
+							details, err := json.Marshal(canonicalReasoningDetails(chosenReasoning, choiceIndex))
+							if err == nil {
+								delta["reasoning_details"] = details
+								deltaChanged = true
+							}
+						}
+						if deltaChanged {
 							choices[i]["delta"], _ = json.Marshal(delta)
+							changed = true
 						}
 					}
 				}
@@ -2681,6 +2753,26 @@ func normalizeSSEChunk(chunk string) string {
 		return chunk
 	}
 	return "data: " + string(out)
+}
+
+func nonEmptyRawString(raw json.RawMessage) string {
+	var value string
+	if len(raw) == 0 || json.Unmarshal(raw, &value) != nil {
+		return ""
+	}
+	return value
+}
+
+func normalizedRawChoiceIndex(raw json.RawMessage, fallback int) int {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] == '"' {
+		return fallback
+	}
+	var index json.Number
+	if json.Unmarshal(raw, &index) == nil {
+		return normalizedChoiceIndex(index, fallback)
+	}
+	return fallback
 }
 
 // maxLogicalToolCalls caps how many logical tool calls a single stream may
@@ -2812,18 +2904,27 @@ func (a *toolCallAccumulator) finalize() []map[string]any {
 // extractedMessage holds the reconstructed assistant message from SSE chunks,
 // including text content, reasoning, and any tool calls.
 type extractedMessage struct {
-	Content      string           `json:"content"`
-	Reasoning    string           `json:"reasoning,omitempty"`
-	ToolCalls    []map[string]any `json:"tool_calls,omitempty"`
-	FinishReason string           `json:"-"`
+	Content                 string           `json:"content"`
+	Reasoning               string           `json:"reasoning,omitempty"`
+	ReasoningDetails        any              `json:"reasoning_details,omitempty"`
+	ReasoningDetailsPresent bool             `json:"-"`
+	ToolCalls               []map[string]any `json:"tool_calls,omitempty"`
+	FinishReason            string           `json:"-"`
 }
 
-// extractMessage parses SSE data lines and reconstructs the full assistant
-// message from streaming chunks, including content, reasoning, and tool_calls.
+// extractMessage retains the historical reasoning-first behavior used by
+// Responses and generic endpoint fallbacks.
 func extractMessage(chunks []string) extractedMessage {
+	return extractMessageWithReasoningPolicy(chunks, false)
+}
+
+func extractMessageWithReasoningPolicy(chunks []string, preferReasoningContent bool) extractedMessage {
 	var contentBuilder strings.Builder
 	var reasoningBuilder strings.Builder
 	finishReason := ""
+	var reasoningDetails any
+	reasoningDetailsPresent := false
+	reasoningDetailsNull := false
 	// See toolCallAccumulator for the logical-call model (arrival order,
 	// non-unique wire indices, the maxLogicalToolCalls cap).
 	acc := newToolCallAccumulator()
@@ -2849,12 +2950,14 @@ func extractMessage(chunks []string) extractedMessage {
 				Content          string                `json:"content"`
 				Reasoning        string                `json:"reasoning"`
 				ReasoningContent string                `json:"reasoning_content"`
+				ReasoningDetails json.RawMessage       `json:"reasoning_details"`
 				ToolCalls        []streamToolCallDelta `json:"tool_calls,omitempty"`
 			} `json:"delta"`
 			Message struct {
 				Content          string                `json:"content"`
 				Reasoning        string                `json:"reasoning"`
 				ReasoningContent string                `json:"reasoning_content"`
+				ReasoningDetails json.RawMessage       `json:"reasoning_details"`
 				ToolCalls        []streamToolCallDelta `json:"tool_calls,omitempty"`
 			} `json:"message"`
 			FinishReason *string `json:"finish_reason"`
@@ -2872,7 +2975,17 @@ func extractMessage(chunks []string) extractedMessage {
 			} else if c.Message.Content != "" {
 				contentBuilder.WriteString(c.Message.Content)
 			}
-			if c.Delta.Reasoning != "" {
+			if preferReasoningContent {
+				if c.Delta.ReasoningContent != "" {
+					reasoningBuilder.WriteString(c.Delta.ReasoningContent)
+				} else if c.Delta.Reasoning != "" {
+					reasoningBuilder.WriteString(c.Delta.Reasoning)
+				} else if c.Message.ReasoningContent != "" {
+					reasoningBuilder.WriteString(c.Message.ReasoningContent)
+				} else if c.Message.Reasoning != "" {
+					reasoningBuilder.WriteString(c.Message.Reasoning)
+				}
+			} else if c.Delta.Reasoning != "" {
 				reasoningBuilder.WriteString(c.Delta.Reasoning)
 			} else if c.Delta.ReasoningContent != "" {
 				reasoningBuilder.WriteString(c.Delta.ReasoningContent)
@@ -2880,6 +2993,30 @@ func extractMessage(chunks []string) extractedMessage {
 				reasoningBuilder.WriteString(c.Message.Reasoning)
 			} else if c.Message.ReasoningContent != "" {
 				reasoningBuilder.WriteString(c.Message.ReasoningContent)
+			}
+			for _, rawDetails := range []json.RawMessage{c.Delta.ReasoningDetails, c.Message.ReasoningDetails} {
+				trimmed := bytes.TrimSpace(rawDetails)
+				if len(trimmed) == 0 {
+					continue
+				}
+				if trimmed[0] == '[' {
+					var details []json.RawMessage
+					if json.Unmarshal(rawDetails, &details) != nil {
+						continue
+					}
+					if !reasoningDetailsPresent || reasoningDetailsNull {
+						reasoningDetails = make([]json.RawMessage, 0, len(details))
+						reasoningDetailsPresent = true
+						reasoningDetailsNull = false
+					}
+					if accumulated, ok := reasoningDetails.([]json.RawMessage); ok {
+						reasoningDetails = append(accumulated, details...)
+					}
+				} else if !reasoningDetailsPresent || reasoningDetailsNull {
+					reasoningDetails = json.RawMessage(append([]byte(nil), rawDetails...))
+					reasoningDetailsPresent = true
+					reasoningDetailsNull = bytes.Equal(trimmed, []byte("null"))
+				}
 			}
 			toolCalls := c.Delta.ToolCalls
 			if len(toolCalls) == 0 {
@@ -2901,7 +3038,13 @@ func extractMessage(chunks []string) extractedMessage {
 			reasoning = extractedReasoning
 		}
 	}
-	msg := extractedMessage{Content: content, Reasoning: reasoning, FinishReason: finishReason}
+	msg := extractedMessage{
+		Content:                 content,
+		Reasoning:               reasoning,
+		ReasoningDetails:        reasoningDetails,
+		ReasoningDetailsPresent: reasoningDetailsPresent,
+		FinishReason:            finishReason,
+	}
 	if acc.droppedDeltas > 0 {
 		log.Printf("WARN: extractMessage: logical tool-call cap (%d) reached; dropped %d tool-call delta(s) from excess calls", maxLogicalToolCalls, acc.droppedDeltas)
 	}
@@ -3380,6 +3523,12 @@ func buildNonStreamingResponse(requestID, model string, msg extractedMessage, us
 	}
 	if msg.Reasoning != "" {
 		message.Reasoning = msg.Reasoning
+		message.ReasoningContent = msg.Reasoning
+	}
+	if msg.ReasoningDetailsPresent {
+		message.ReasoningDetails = msg.ReasoningDetails
+	} else if msg.Reasoning != "" {
+		message.ReasoningDetails = canonicalReasoningDetails(msg.Reasoning, 0)
 	}
 
 	if len(msg.ToolCalls) > 0 {

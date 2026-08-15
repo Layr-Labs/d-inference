@@ -2924,6 +2924,7 @@ func extractMessageWithReasoningPolicy(chunks []string, preferReasoningContent b
 	finishReason := ""
 	var reasoningDetails any
 	reasoningDetailsPresent := false
+	reasoningDetailsNull := false
 	// See toolCallAccumulator for the logical-call model (arrival order,
 	// non-unique wire indices, the maxLogicalToolCalls cap).
 	acc := newToolCallAccumulator()
@@ -3003,16 +3004,18 @@ func extractMessageWithReasoningPolicy(chunks []string, preferReasoningContent b
 					if json.Unmarshal(rawDetails, &details) != nil {
 						continue
 					}
-					if !reasoningDetailsPresent {
+					if !reasoningDetailsPresent || reasoningDetailsNull {
 						reasoningDetails = make([]json.RawMessage, 0, len(details))
 						reasoningDetailsPresent = true
+						reasoningDetailsNull = false
 					}
 					if accumulated, ok := reasoningDetails.([]json.RawMessage); ok {
 						reasoningDetails = append(accumulated, details...)
 					}
-				} else if !reasoningDetailsPresent {
+				} else if !reasoningDetailsPresent || reasoningDetailsNull {
 					reasoningDetails = json.RawMessage(append([]byte(nil), rawDetails...))
 					reasoningDetailsPresent = true
+					reasoningDetailsNull = bytes.Equal(trimmed, []byte("null"))
 				}
 			}
 			toolCalls := c.Delta.ToolCalls

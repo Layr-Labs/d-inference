@@ -477,6 +477,55 @@ func TestBuildNonStreamingResponsePreservesUpstreamReasoningDetails(t *testing.T
 	}
 }
 
+func TestExtractMessageReasoningDetailsNullPlaceholder(t *testing.T) {
+	t.Run("later arrays supersede null and accumulate", func(t *testing.T) {
+		msg := extractMessageWithReasoningPolicy([]string{
+			`data: {"choices":[{"delta":{"reasoning":"a","reasoning_details":null}}]}`,
+			`data: {"choices":[{"delta":{"reasoning":"b","reasoning_details":[{"type":"first"}]}}]}`,
+			`data: {"choices":[{"delta":{"reasoning":"c","reasoning_details":[{"type":"second"}]}}]}`,
+		}, true)
+		details, ok := msg.ReasoningDetails.([]json.RawMessage)
+		if !ok || len(details) != 2 {
+			t.Fatalf("accumulated reasoning_details = %#v, want two array items", msg.ReasoningDetails)
+		}
+		var first, second map[string]any
+		if err := json.Unmarshal(details[0], &first); err != nil {
+			t.Fatalf("decode first reasoning detail: %v", err)
+		}
+		if err := json.Unmarshal(details[1], &second); err != nil {
+			t.Fatalf("decode second reasoning detail: %v", err)
+		}
+		if first["type"] != "first" || second["type"] != "second" {
+			t.Fatalf("reasoning detail order changed: %#v %#v", first, second)
+		}
+	})
+
+	t.Run("lone null survives malformed later chunk", func(t *testing.T) {
+		msg := extractMessage([]string{
+			`data: {"choices":[{"delta":{"reasoning":"a","reasoning_details":null}}]}`,
+			`data: {"choices":[{"delta":{"reasoning":"b","reasoning_details":[}}]}`,
+		})
+		raw, ok := msg.ReasoningDetails.(json.RawMessage)
+		if !ok || string(raw) != "null" {
+			t.Fatalf("lone null reasoning_details = %#v", msg.ReasoningDetails)
+		}
+		chat := buildNonStreamingResponse("req-null", "test-model", msg, protocol.UsageInfo{}, 16, "", "")
+		wire, err := json.Marshal(chat)
+		if err != nil {
+			t.Fatalf("marshal null reasoning_details: %v", err)
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(wire, &decoded); err != nil {
+			t.Fatalf("decode null reasoning_details response: %v", err)
+		}
+		message := decoded["choices"].([]any)[0].(map[string]any)["message"].(map[string]any)
+		value, exists := message["reasoning_details"]
+		if !exists || value != nil {
+			t.Fatalf("null reasoning_details not preserved: %#v", message)
+		}
+	})
+}
+
 func TestExtractMessageReasoningPolicyByEndpoint(t *testing.T) {
 	chunks := []string{`data: {"choices":[{"delta":{"content":"answer","reasoning":"legacy","reasoning_content":"canonical"}}]}`}
 	responsesMessage := extractMessage(chunks)

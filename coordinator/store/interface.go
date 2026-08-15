@@ -657,19 +657,22 @@ type ModelRegistryRecord struct {
 	Files         []ModelVersionFile `json:"files,omitempty"`
 }
 
-// ModelAlias is a stable, consumer-facing model name (e.g. "gemma-4-26b") that
-// resolves to a single DESIRED concrete registry build (a raw HuggingFace id
-// such as "mlx-community/gemma-4-26B-A4B-it-qat-4bit"), with an optional
-// PreviousBuild that stays acceptable while providers converge on the desired
-// one. Consumers only ever see the alias; the coordinator resolves it to a
-// concrete build for routing/billing. This is what makes a quant swap
-// (fp8 → qat-4bit) invisible to clients: a rollout is just setting DesiredBuild,
-// a revert is setting it back. There are no weights, ramps, or migrations.
+// ModelAlias has two forms. A standard alias is a stable consumer-facing name
+// resolving to one desired concrete build plus an optional previous build while
+// providers converge. An OpenRouter-only alias clones a standard SourceModel in
+// the provider feed and request router, but is hidden from the public catalog
+// and provider desired-state fanout. The split keeps marketplace identities
+// independent without duplicating pricing, capacity, or rollout configuration.
 type ModelAlias struct {
-	AliasID       string `json:"alias_id"`
-	DisplayName   string `json:"display_name"`
-	DesiredBuild  string `json:"desired_build"`            // the single build providers should converge to
-	PreviousBuild string `json:"previous_build,omitempty"` // still-acceptable during rollout; "" when none
+	AliasID        string `json:"alias_id"`
+	DisplayName    string `json:"display_name"`
+	OpenRouterOnly bool   `json:"openrouter_only,omitempty"` // feed-only clone; hidden from the public catalog and provider convergence
+	SourceModel    string `json:"source_model,omitempty"`    // standard alias cloned by an OpenRouter-only entry
+	OpenRouterSlug string `json:"openrouter_slug,omitempty"` // marketplace identity for an OpenRouter-only entry
+	HuggingFaceID  string `json:"hugging_face_id,omitempty"` // metadata repository for an OpenRouter-only entry
+	DesiredBuild   string `json:"desired_build"`             // the single build providers should converge to
+	PreviousBuild  string `json:"previous_build,omitempty"`  // still-acceptable during rollout; "" when none
+
 	// RetiredBuilds is the alias's lineage: former desired/previous builds
 	// rotated out by later upserts. Kept so a provider that was offline through
 	// a retirement (still advertising only a retired build) is recognized as

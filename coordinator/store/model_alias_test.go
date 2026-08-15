@@ -6,12 +6,17 @@ func TestMemoryModelAliasRoundTrip(t *testing.T) {
 	st := NewMemory(Config{})
 
 	alias := &ModelAlias{
-		AliasID:       "gemma-4-26b",
-		DisplayName:   "Gemma 4 26B",
-		DesiredBuild:  "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
-		PreviousBuild: "mlx-community/gemma-4-26b-a4b-it-fp8",
-		Active:        true,
+		AliasID:        "gemma-4-26b",
+		DisplayName:    "Gemma 4 26B",
+		OpenRouterOnly: true,
+		SourceModel:    "gemma-4-26b-source",
+		OpenRouterSlug: "google/gemma-4-26b-it",
+		HuggingFaceID:  "google/gemma-4-26b-it",
+		DesiredBuild:   "mlx-community/gemma-4-26B-A4B-it-qat-4bit",
+		PreviousBuild:  "mlx-community/gemma-4-26b-a4b-it-fp8",
+		Active:         true,
 	}
+
 	if err := st.UpsertModelAlias(alias); err != nil {
 		t.Fatal(err)
 	}
@@ -29,6 +34,10 @@ func TestMemoryModelAliasRoundTrip(t *testing.T) {
 	if got.PreviousBuild != "mlx-community/gemma-4-26b-a4b-it-fp8" {
 		t.Fatalf("previous_build mismatch: %q", got.PreviousBuild)
 	}
+	if !got.OpenRouterOnly || got.SourceModel != "gemma-4-26b-source" || got.OpenRouterSlug != "google/gemma-4-26b-it" || got.HuggingFaceID != "google/gemma-4-26b-it" {
+		t.Fatalf("OpenRouter identity mismatch: %+v", got)
+	}
+
 	if got.CreatedAt.IsZero() || got.UpdatedAt.IsZero() {
 		t.Fatalf("timestamps not set: %+v", got)
 	}

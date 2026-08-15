@@ -19,6 +19,7 @@ type aliasUpsertRequest struct {
 	DesiredBuild  string `json:"desired_build"`
 	PreviousBuild string `json:"previous_build"`
 	Active        *bool  `json:"active"` // pointer so omission defaults to true
+
 	// Takeover lets a public alias adopt the name of an EXISTING concrete model,
 	// absorbing that same-named build as its previous_build (fallback). This is the
 	// only way to migrate a live public name (e.g. "gemma-4-26b") onto a new
@@ -49,8 +50,10 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 	}
 
 	req.AliasID = strings.TrimSpace(req.AliasID)
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
 	req.DesiredBuild = strings.TrimSpace(req.DesiredBuild)
 	req.PreviousBuild = strings.TrimSpace(req.PreviousBuild)
+
 	if req.AliasID == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "alias_id is required", withParam("alias_id")))
 		return
@@ -75,6 +78,11 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 	// model and absorbs that same-named build as its previous_build (fallback).
 	collidingRec, _ := s.store.GetModelRegistryRecord(req.AliasID)
 	idCollision := collidingRec != nil
+	prior := s.priorAlias(req.AliasID)
+	if prior != nil && prior.OpenRouterOnly {
+		writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", "alias_id belongs to the dedicated OpenRouter alias endpoint", withParam("alias_id")))
+		return
+	}
 
 	// desired_build can NEVER equal the alias name (that would alias to itself).
 	if req.DesiredBuild == req.AliasID {
@@ -128,9 +136,11 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		DisplayName:   req.DisplayName,
 		DesiredBuild:  req.DesiredBuild,
 		PreviousBuild: req.PreviousBuild,
-		RetiredBuilds: retiredBuildsAfterUpsert(s.priorAlias(req.AliasID), req.DesiredBuild, req.PreviousBuild),
-		Active:        active,
+		RetiredBuilds: retiredBuildsAfterUpsert(prior, req.DesiredBuild, req.PreviousBuild),
+
+		Active: active,
 	}
+
 	if err := s.store.UpsertModelAlias(alias); err != nil {
 		s.logger.Error("upsert model alias failed", "alias_id", req.AliasID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to save alias"))
@@ -201,7 +211,8 @@ func retiredBuildsAfterUpsert(prior *store.ModelAlias, newDesired, newPrevious s
 	return retired
 }
 
-// handleModelAliasList returns every configured alias. GET /v1/admin/models/aliases.
+// handleModelAliasList returns standard rollout aliases. OpenRouter-only feed
+// aliases have a dedicated management endpoint.
 func (s *Server) handleModelAliasList(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.requirePublishingAPIKey(w, r); !ok {
 		return
@@ -211,7 +222,14 @@ func (s *Server) handleModelAliasList(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to list aliases"))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"aliases": aliases})
+	standard := aliases[:0]
+	for _, alias := range aliases {
+		if !alias.OpenRouterOnly {
+			standard = append(standard, alias)
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"aliases": standard})
+
 }
 
 // handleModelAliasDelete removes an alias. DELETE /v1/admin/models/aliases/{aliasID}.
@@ -222,6 +240,13 @@ func (s *Server) handleModelAliasDelete(w http.ResponseWriter, r *http.Request) 
 	aliasID := strings.TrimSpace(r.PathValue("aliasID"))
 	if aliasID == "" {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "alias id is required"))
+		return
+	}
+	if alias, found, err := s.store.GetModelAlias(aliasID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get alias"))
+		return
+	} else if found && alias.OpenRouterOnly {
+		writeJSON(w, http.StatusNotFound, errorResponse("invalid_request_error", "OpenRouter-only alias must be deleted through its dedicated endpoint"))
 		return
 	}
 	if err := s.store.DeleteModelAlias(aliasID); err != nil {

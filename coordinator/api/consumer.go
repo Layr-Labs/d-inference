@@ -712,6 +712,18 @@ func (s *Server) estimateTTFTRetryAfter(model string, bestTTFT, threshold time.D
 	return seconds
 }
 
+// writeFirstTokenTimeout writes the OpenRouter-compatible retryable 429 used
+// when a request-absolute first-token clock expires after dispatch. Chat
+// exhausted already uses this shape (Retry-After + rate_limit_exceeded);
+// /v1/completions and /v1/messages must match so aggregators retry instead
+// of treating the timeout as a provider 504.
+func (s *Server) writeFirstTokenTimeout(w http.ResponseWriter, model, message string) {
+	retryAfter := s.estimateRetryAfter(model)
+	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	writeJSON(w, http.StatusTooManyRequests, errorResponse("rate_limit_exceeded",
+		message, withCode("rate_limit_exceeded")))
+}
+
 func (s *Server) writeTTFTTooSlow(w http.ResponseWriter, model, publicModel string, bestTTFT, threshold time.Duration) {
 	retryAfter := s.estimateTTFTRetryAfter(model, bestTTFT, threshold)
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
@@ -4781,8 +4793,7 @@ reserveProvider:
 		refundReservation()
 		s.ddIncr("inference.dispatches", []string{"status:timeout"})
 		s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout))
-		statusCode, reason, _ := classifyExhaustedStatus(http.StatusGatewayTimeout, "")
-		writeJSON(w, statusCode, errorResponse(reason, "provider did not respond within TTFT deadline"))
+		s.writeFirstTokenTimeout(w, model, "provider did not respond within TTFT deadline")
 		return
 	case <-r.Context().Done():
 		ttftTimer.Stop()
@@ -4857,8 +4868,7 @@ reserveProvider:
 			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
-			statusCode, reason, _ := classifyExhaustedStatus(http.StatusGatewayTimeout, "")
-			writeJSON(w, statusCode, errorResponse(reason, "provider accepted but timed out before first chunk"))
+			s.writeFirstTokenTimeout(w, model, "provider accepted but timed out before first chunk")
 			return
 		case <-r.Context().Done():
 			chunkTimer.Stop()

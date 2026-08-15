@@ -265,6 +265,65 @@ func (d *dispatchState) canExtendPreambleLiveness() bool {
 	return d.firstTokenWait(preambleContentTimeout) > 0
 }
 
+// firstTokenSpeculativeWait is how long to wait before launching a backup.
+// With a request clock this is the leftover time until the absolute
+// speculative point (ReceivedAt + speculativeAt), not a fresh relative
+// delay. Past that point it is 0 so the backup starts immediately.
+func (d *dispatchState) firstTokenSpeculativeWait() time.Duration {
+	remaining, ok := d.firstTokenRemaining()
+	if !ok {
+		if d.speculativeAt < 0 {
+			return 0
+		}
+		return d.speculativeAt
+	}
+	if remaining <= 0 {
+		return 0
+	}
+	elapsed := d.deadline - remaining
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	specWait := d.speculativeAt - elapsed
+	if specWait < 0 {
+		specWait = 0
+	}
+	if specWait > remaining {
+		specWait = remaining
+	}
+	return specWait
+}
+
+// abandonInflightForFirstTokenTimeout cancels a request already on the
+// wire when the request-absolute first-token clock is gone. Without this
+// the exhausted ladder refunds the client while the provider keeps
+// generating and can later settle an already-rejected request.
+func (d *dispatchState) abandonInflightForFirstTokenTimeout() {
+	if d == nil || d.provider == nil || d.pr == nil {
+		if d != nil && d.lastErrCode == 0 {
+			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
+		}
+		return
+	}
+	provider, pr := d.provider, d.pr
+	d.excludeProviders[provider.ID] = struct{}{}
+	d.s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
+	d.s.cancelDispatch(provider, pr)
+	if d.lastErrCode == 0 {
+		d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
+	}
+	d.updateRoutingOutcomeForAttempt(
+		routingAttempt(provider, pr, d.requestID, d.attempt),
+		d.errorRoutingOutcomeFor(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout),
+	)
+	if d.s.metrics != nil {
+		d.s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
+	}
+	d.s.ddIncr("inference.dispatches", []string{"status:timeout"})
+	d.provider = nil
+	d.pr = nil
+}
+
 func (d *dispatchState) excludedProviderIDs() []string {
 	ids := make([]string, 0, len(d.excludeProviders))
 	for id := range d.excludeProviders {
@@ -1606,13 +1665,7 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 	}()
 
 	deadlineWait := d.firstTokenWait(d.deadline)
-	specWait := d.speculativeAt
-	if _, ok := d.firstTokenRemaining(); ok {
-		if specWait <= 0 || specWait >= deadlineWait {
-			specWait = deadlineWait / 2
-		}
-	}
-	speculativeTimer := time.NewTimer(specWait)
+	speculativeTimer := time.NewTimer(d.firstTokenSpeculativeWait())
 	deadlineTimer := time.NewTimer(deadlineWait)
 	d.accepted = false
 	// preambleLiveness distinguishes WHY the extended first-content wait was
@@ -2669,9 +2722,7 @@ func (d *dispatchState) run() {
 		)
 
 		if d.firstTokenExpired() {
-			if d.lastErrCode == 0 {
-				d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
-			}
+			d.abandonInflightForFirstTokenTimeout()
 			goto exhausted
 		}
 

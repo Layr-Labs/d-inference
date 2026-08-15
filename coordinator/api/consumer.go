@@ -138,25 +138,6 @@ func ttftDeadline(estimatedPromptTokens int) time.Duration {
 	return base + perToken
 }
 
-// firstTokenRemainingSince is the leftover request-absolute first-CONTENT
-// budget. OpenRouter cancels at ~10000ms + 1ms*tokens from request start; our
-// live deadline (prod 9s + 1ms*tokens) is the slack vs that clock. A zero
-// receivedAt falls back to the full deadline so unit tests that never stamp
-// RequestTiming keep the historical relative timers.
-func firstTokenRemainingSince(receivedAt time.Time, deadline time.Duration) time.Duration {
-	if deadline <= 0 {
-		return 0
-	}
-	if receivedAt.IsZero() {
-		return deadline
-	}
-	remaining := deadline - time.Since(receivedAt)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
 // shedIfModelRejected answers a public/prefer-owner request with 429 +
 // Retry-After when its requested alias or resolved build is in the operator
 // reject set (EIGENINFERENCE_REJECT_MODELS). This is a deterministic
@@ -1039,7 +1020,14 @@ func (s *Server) dispatchOneProvider(
 	if pr.Timing != nil {
 		pr.Timing.DispatchedAt = time.Now()
 	}
-	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
+	// Bound the provider write by the request-absolute first-token clock (see
+	// firstTokenWriteContext): a congested write lane must not silently eat
+	// the budget while the aggregator's cancel clock keeps running.
+	writeCtx, cancelWrite := firstTokenWriteContext(
+		r.Context(), timingReceivedAt(timing), ttftDeadline(estimatedPromptTokens))
+	writeErr := writeProviderInferenceRequest(writeCtx, provider, data)
+	cancelWrite()
+	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		refundExtra()
 		cleanupPending()
@@ -4698,7 +4686,10 @@ reserveProvider:
 		return
 	}
 	timing.DispatchedAt = time.Now()
-	if err := writeProviderInferenceRequest(r.Context(), provider, data); err != nil {
+	writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timing.ReceivedAt, genericDeadline)
+	writeErr := writeProviderInferenceRequest(writeCtx, provider, data)
+	cancelWrite()
+	if writeErr != nil {
 		s.registry.ForgetCacheAttempt(pr)
 		cleanupPending()
 		refundExtra()
@@ -4725,6 +4716,21 @@ reserveProvider:
 	var firstChunk string
 	committed := false
 	accepted := false
+
+	// commitGenericChunk mirrors the ChunkCh arms' first-chunk bookkeeping
+	// (stamp actual_ttft_ms anchor, mark committed, record the capacity
+	// ACCEPT). Used when a buffered chunk is recovered from a timer arm — an
+	// on-time token and a zero-duration timer race in Go's select.
+	commitGenericChunk := func(chunk string) {
+		firstChunk = chunk
+		pr.MarkFirstChunkArrived()
+		pr.MarkFirstContentArrived()
+		pr.MarkContentCommitted()
+		if s.registry.RecordCapacityAccept(provider.ID, pr.Model) {
+			pr.MarkRateOutcomeCounted()
+		}
+		committed = true
+	}
 
 	select {
 	case <-pr.AcceptedCh:
@@ -4786,6 +4792,10 @@ reserveProvider:
 		s.writeGenericProviderError(w, errMsg)
 		return
 	case <-ttftTimer.C:
+		if chunk, ok := takeBufferedGenericChunk(pr); ok {
+			commitGenericChunk(chunk)
+			break
+		}
 		provider.RemovePending(requestID)
 		s.registry.SetProviderIdle(provider.ID)
 		s.sendProviderCancel(provider, requestID)
@@ -4812,7 +4822,8 @@ reserveProvider:
 	// and must not reset the budget to inferenceTimeout (10 minutes) —
 	// OpenRouter will 504 at ~10s+1ms/token if no real token arrives.
 	if accepted && !committed {
-		chunkTimer := time.NewTimer(firstTokenRemainingSince(timing.ReceivedAt, genericDeadline))
+		acceptedBudget := firstTokenRemainingSince(timing.ReceivedAt, genericDeadline)
+		chunkTimer := time.NewTimer(acceptedBudget)
 		select {
 		case chunk, ok := <-pr.ChunkCh:
 			chunkTimer.Stop()
@@ -4856,16 +4867,24 @@ reserveProvider:
 			s.writeGenericProviderError(w, errMsg)
 			return
 		case <-chunkTimer.C:
+			if chunk, ok := takeBufferedGenericChunk(pr); ok {
+				commitGenericChunk(chunk)
+				break
+			}
 			provider.RemovePending(requestID)
 			s.registry.SetProviderIdle(provider.ID)
 			s.sendProviderCancel(provider, requestID)
 			refundExtra()
 			refundReservation()
-			// Accepted-then-silent is a provider-at-fault 504 — feed the
-			// breaker (single-attempt path: no retry here, but repeated
-			// stalls must still accumulate into the routing cooldown). No
-			// provider message on this synthetic timeout, so errStr is "".
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+			// Accepted-then-silent feeds the provider breaker ONLY when the
+			// provider was actually granted a provider-attributable window.
+			// A budget capped short by the request-absolute first-token clock
+			// is OUR deadline (queueing/admission before dispatch), not
+			// provider sickness — feeding it would quarantine a healthy cold
+			// provider (two 504 feeds in 60s cool the pair for 5 minutes).
+			if providerAttributableStall(acceptedBudget) {
+				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+			}
 			s.ddIncr("inference.dispatches", []string{"status:timeout"})
 			s.updateInferenceRouteOutcomeForPending(pr, pendingRouteOutcome(pr, "timeout", "accepted_timeout", http.StatusGatewayTimeout))
 			s.writeFirstTokenTimeout(w, model, "provider accepted but timed out before first chunk")

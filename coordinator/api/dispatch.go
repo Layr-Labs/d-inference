@@ -232,98 +232,6 @@ func (d *dispatchState) traits() registry.RequestTraits {
 	}
 }
 
-// firstTokenRemaining is the leftover request-absolute first-CONTENT budget.
-// ok is false when ReceivedAt was never stamped; callers then keep the
-// historical relative timer (d.deadline / d.deadline-speculativeAt).
-func (d *dispatchState) firstTokenRemaining() (remaining time.Duration, ok bool) {
-	if d == nil || d.timing == nil || d.timing.ReceivedAt.IsZero() {
-		return 0, false
-	}
-	return firstTokenRemainingSince(d.timing.ReceivedAt, d.deadline), true
-}
-
-// firstTokenWait returns how long we may still wait for first CONTENT.
-// When the request clock is set this is leftover SLA from ReceivedAt,
-// never a fresh relative window. relativeFallback is the pre-clock
-// behavior (full deadline, leftover after speculative, or inferenceTimeout).
-func (d *dispatchState) firstTokenWait(relativeFallback time.Duration) time.Duration {
-	if remaining, ok := d.firstTokenRemaining(); ok {
-		return remaining
-	}
-	if relativeFallback < 0 {
-		return 0
-	}
-	return relativeFallback
-}
-
-func (d *dispatchState) firstTokenExpired() bool {
-	remaining, ok := d.firstTokenRemaining()
-	return ok && remaining == 0
-}
-
-func (d *dispatchState) canExtendPreambleLiveness() bool {
-	return d.firstTokenWait(preambleContentTimeout) > 0
-}
-
-// firstTokenSpeculativeWait is how long to wait before launching a backup.
-// With a request clock this is the leftover time until the absolute
-// speculative point (ReceivedAt + speculativeAt), not a fresh relative
-// delay. Past that point it is 0 so the backup starts immediately.
-func (d *dispatchState) firstTokenSpeculativeWait() time.Duration {
-	remaining, ok := d.firstTokenRemaining()
-	if !ok {
-		if d.speculativeAt < 0 {
-			return 0
-		}
-		return d.speculativeAt
-	}
-	if remaining <= 0 {
-		return 0
-	}
-	elapsed := d.deadline - remaining
-	if elapsed < 0 {
-		elapsed = 0
-	}
-	specWait := d.speculativeAt - elapsed
-	if specWait < 0 {
-		specWait = 0
-	}
-	if specWait > remaining {
-		specWait = remaining
-	}
-	return specWait
-}
-
-// abandonInflightForFirstTokenTimeout cancels a request already on the
-// wire when the request-absolute first-token clock is gone. Without this
-// the exhausted ladder refunds the client while the provider keeps
-// generating and can later settle an already-rejected request.
-func (d *dispatchState) abandonInflightForFirstTokenTimeout() {
-	if d == nil || d.provider == nil || d.pr == nil {
-		if d != nil && d.lastErrCode == 0 {
-			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
-		}
-		return
-	}
-	provider, pr := d.provider, d.pr
-	d.excludeProviders[provider.ID] = struct{}{}
-	d.s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
-	d.s.cancelDispatch(provider, pr)
-	if d.lastErrCode == 0 {
-		d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
-	}
-	d.updateRoutingOutcomeForAttempt(
-		routingAttempt(provider, pr, d.requestID, d.attempt),
-		d.errorRoutingOutcomeFor(pr, "timeout", "first_chunk_timeout", http.StatusGatewayTimeout),
-	)
-	if d.s.metrics != nil {
-		d.s.metrics.IncCounter("inference_dispatches_total", MetricLabel{"result", "timeout"})
-	}
-	d.s.ddIncr("inference.dispatches", []string{"status:timeout"})
-	d.provider = nil
-	d.pr = nil
-}
-
 func (d *dispatchState) excludedProviderIDs() []string {
 	ids := make([]string, 0, len(d.excludeProviders))
 	for id := range d.excludeProviders {
@@ -1395,7 +1303,14 @@ func (d *dispatchState) dispatchPrimary() dispatchOutcome {
 			return outcomeRetry
 		}
 		d.pr.Timing.DispatchedAt = time.Now()
-		if err := writeProviderInferenceRequest(r.Context(), d.provider, data); err != nil {
+		// Bound the provider write by the request-absolute first-token clock:
+		// WriteText blocks until the frame is on the wire (write watchdog
+		// allows 5-30s per frame), so an unbounded write could eat the budget
+		// while the aggregator's cancel clock keeps running.
+		writeCtx, cancelWrite := firstTokenWriteContext(r.Context(), timingReceivedAt(d.timing), d.deadline)
+		writeErr := writeProviderInferenceRequest(writeCtx, d.provider, data)
+		cancelWrite()
+		if writeErr != nil {
 			s.registry.ForgetCacheAttempt(d.pr)
 			d.provider.RemovePending(d.requestID)
 			s.registry.SetProviderIdle(d.provider.ID)
@@ -1749,6 +1664,11 @@ func (d *dispatchState) waitFirstChunk() (outcome dispatchOutcome) {
 
 		case <-deadlineTimer.C:
 			speculativeTimer.Stop()
+			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
+				d.commitFirstContent(pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
 				// Preamble liveness — the provider is alive but still in its
 				// pre-content phase. Fall through to waitAccepted, still
@@ -1943,6 +1863,11 @@ func (d *dispatchState) waitNoBackup() dispatchOutcome {
 			d.pr = nil
 			return outcomeRetry
 		case <-remainingDeadline.C:
+			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
+				d.commitFirstContent(pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
 				// Liveness: the provider already produced its preamble.
 				// Fall through to waitAccepted, still bounded by leftover
@@ -1998,6 +1923,10 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 	// has shown liveness (preamble received), the race continues up to
 	// leftover first-token budget (capped by preambleContentTimeout).
 	raceExtended := false
+	// extWindow is the wait actually granted by the one-shot liveness
+	// extension; the final-timeout breaker feeds are gated on it being a
+	// provider-attributable window (see providerAttributableStall).
+	var extWindow time.Duration
 	// Preamble chunks from the backup are buffered separately —
 	// held chunks must never mix providers.
 	var backupHeld []string
@@ -2149,6 +2078,31 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			return d.raceBackupErrWaitPrimary(provider, pr)
 
 		case <-raceDeadline.C:
+			// A token that is already buffered beats the timer: the backup is
+			// dispatched synchronously in runSpeculative, so an on-time primary
+			// token can be sitting in ChunkCh when a zero-leftover timer fires.
+			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
+				s.cancelDispatch(backupProvider, backupPR)
+				d.markSpeculativeLoser(backupPR)
+				d.commitFirstContent(pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
+			if chunk, ok := drainReadyFirstContent(backupPR, &backupHeld); ok {
+				s.cancelDispatch(provider, pr)
+				s.ddIncr("inference.speculative_win", []string{"model:" + d.model})
+				s.registry.RecordWarmPoolSpeculativeWon(d.model)
+				d.markSpeculativeLoser(pr)
+				backupPR.BackupWon = true
+				d.provider = backupProvider
+				d.pr = backupPR
+				d.requestID = d.pr.RequestID
+				d.heldChunks = backupHeld
+				d.noteServingSlot()
+				d.commitFirstContent(d.pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			if !raceExtended && (len(d.heldChunks) > 0 || len(backupHeld) > 0) {
 				// Liveness from at least one racer: don't fail at the
 				// relative TTFT slice — extend once by leftover
@@ -2162,6 +2116,7 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 				}
 				if ext > 0 {
 					raceExtended = true
+					extWindow = ext
 					raceDeadline = time.NewTimer(ext)
 					continue
 				}
@@ -2171,11 +2126,16 @@ func (d *dispatchState) runRace(backupProvider *registry.Provider, backupPR *reg
 			// before cancelling, mirroring the single-provider
 			// acceptedWait timeout path so a stalling provider/model
 			// (shape-keyed) trips its cooldown.
-			if len(d.heldChunks) > 0 {
-				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
-			}
-			if len(backupHeld) > 0 {
-				s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
+			// ... but ONLY when the extension actually granted the full
+			// provider-attributable window: an extension capped short by the
+			// request-absolute clock is OUR deadline, not provider sickness.
+			if providerAttributableStall(extWindow) {
+				if len(d.heldChunks) > 0 {
+					s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+				}
+				if len(backupHeld) > 0 {
+					s.noteInferenceError(backupProvider.ID, backupPR, http.StatusGatewayTimeout, "", "", "")
+				}
 			}
 			s.cancelDispatch(provider, pr)
 			s.registry.RecordWarmPoolTTFTMiss(d.model, d.deadline)
@@ -2262,6 +2222,11 @@ func (d *dispatchState) raceBackupChunkClosedWaitPrimary(provider *registry.Prov
 			d.requestID = ""
 			return outcomeRetry
 		case <-remainingPrimary.C:
+			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
+				d.commitFirstContent(pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
 				// Primary preamble liveness — continue in waitAccepted
 				// on leftover request-absolute first-token budget.
@@ -2372,6 +2337,16 @@ func (d *dispatchState) racePrimaryFailedWaitBackup(backupProvider *registry.Pro
 			d.pr = nil
 			return outcomeRetry
 		case <-backupDeadline.C:
+			if chunk, ok := drainReadyFirstContent(backupPR, &backupHeld); ok {
+				backupPR.BackupWon = true
+				d.provider = backupProvider
+				d.pr = backupPR
+				d.requestID = d.pr.RequestID
+				d.heldChunks = backupHeld
+				d.commitFirstContent(d.pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			if len(backupHeld) > 0 && d.canExtendPreambleLiveness() {
 				// Backup preamble liveness — promote it and continue
 				// in waitAccepted on leftover first-token budget.
@@ -2458,6 +2433,11 @@ func (d *dispatchState) raceBackupErrWaitPrimary(provider *registry.Provider, pr
 			d.requestID = ""
 			return outcomeRetry
 		case <-primaryDeadline.C:
+			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
+				d.commitFirstContent(pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			if len(d.heldChunks) > 0 && d.canExtendPreambleLiveness() {
 				// Primary preamble liveness — continue in waitAccepted
 				// on leftover request-absolute first-token budget.
@@ -2611,15 +2591,23 @@ func (d *dispatchState) waitAccepted() (outcome dispatchOutcome) {
 			d.pr = nil
 			return outcomeRetry
 		case <-chunkTimer.C:
+			if chunk, ok := drainReadyFirstContent(pr, &d.heldChunks); ok {
+				d.commitFirstContent(pr, chunk)
+				d.committed = true
+				return outcomeCommitted
+			}
 			d.excludeProviders[provider.ID] = struct{}{}
 			s.registry.RecordWarmPoolTTFTMiss(d.model, firstContentBudget)
 			s.cancelDispatch(provider, pr)
-			// Accepted-then-silent (or preamble-then-stall) is a
-			// provider-at-fault 504 — feed the breaker so a provider
-			// that repeatedly acks and stalls enters cooldown instead
-			// of soaking retries forever. (504 is one of the breaker's
-			// counted codes; this arm is where those 504s originate.)
-			s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+			// Accepted-then-silent (or preamble-then-stall) feeds the
+			// breaker so a provider that repeatedly acks and stalls enters
+			// cooldown — but ONLY when the provider was actually granted a
+			// provider-attributable window. A budget capped short by the
+			// request-absolute first-token clock is OUR deadline (queueing,
+			// admission), not provider sickness.
+			if providerAttributableStall(firstContentBudget) {
+				s.noteInferenceError(provider.ID, pr, http.StatusGatewayTimeout, "", "", "")
+			}
 			d.setLastError("provider accepted but timed out before first chunk", http.StatusGatewayTimeout)
 			if d.preambleLiveness {
 				d.setLastError("provider sent preamble but stalled before first content", http.StatusGatewayTimeout)
@@ -2678,7 +2666,14 @@ func (d *dispatchState) run() {
 		// (it returns outcomeFailFast as soon as no eligible provider remains), so
 		// in practice the loop ends at exhaustion or success; maxDispatchAttempts
 		// is only a hot-loop ceiling and this is the wall-clock bound.
-		if attempt > 0 && (r.Context().Err() != nil || d.firstTokenExpired()) {
+		if attempt > 0 && r.Context().Err() != nil {
+			goto exhausted
+		}
+		if attempt > 0 && d.firstTokenExpired() {
+			// The request-absolute first-token budget is gone: the client must
+			// see the retryable 429 (synthetic 504 -> first_chunk_timeout), not
+			// whatever the last provider attempt happened to fail with.
+			d.setLastError("timeout waiting for first response", http.StatusGatewayTimeout)
 			goto exhausted
 		}
 		// Each attempt holds preamble chunks from its own provider only.
@@ -2722,6 +2717,13 @@ func (d *dispatchState) run() {
 		)
 
 		if d.firstTokenExpired() {
+			// A token that is already buffered beats the clock: deliver it
+			// instead of 429ing a request the provider answered on time.
+			if chunk, ok := drainReadyFirstContent(d.pr, &d.heldChunks); ok {
+				d.commitFirstContent(d.pr, chunk)
+				d.committed = true
+				break
+			}
 			d.abandonInflightForFirstTokenTimeout()
 			goto exhausted
 		}

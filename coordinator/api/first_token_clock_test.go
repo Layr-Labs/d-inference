@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -212,5 +213,87 @@ func TestWriteFirstTokenTimeoutUsesOpenRouter429Contract(t *testing.T) {
 	}
 	if strings.Contains(body, "first_chunk_timeout") {
 		t.Fatalf("client body must not use first_chunk_timeout: %s", body)
+	}
+}
+
+func TestProviderAttributableStall(t *testing.T) {
+	t.Parallel()
+	if providerAttributableStall(preambleContentTimeout - time.Second) {
+		t.Fatal("a wait capped below the preamble-content window is OUR clock, not provider fault")
+	}
+	if !providerAttributableStall(preambleContentTimeout) {
+		t.Fatal("a full preamble-content window of silence is provider-attributable")
+	}
+	if !providerAttributableStall(inferenceTimeout) {
+		t.Fatal("the historical uncapped accepted budget must stay provider-attributable")
+	}
+}
+
+func TestFirstTokenWriteContext(t *testing.T) {
+	t.Parallel()
+	base := context.Background()
+
+	ctx, cancel := firstTokenWriteContext(base, time.Time{}, 9*time.Second)
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("zero receivedAt must pass the context through unbounded")
+	}
+	cancel()
+
+	receivedAt := time.Now().Add(-8 * time.Second)
+	ctx, cancel = firstTokenWriteContext(base, receivedAt, 9*time.Second)
+	defer cancel()
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("request clock set: write context must carry the first-token deadline")
+	}
+	if want := receivedAt.Add(9 * time.Second); !dl.Equal(want) {
+		t.Fatalf("deadline=%s want %s", dl, want)
+	}
+
+	expired, cancelExpired := firstTokenWriteContext(base, time.Now().Add(-15*time.Second), 9*time.Second)
+	defer cancelExpired()
+	select {
+	case <-expired.Done():
+	case <-time.After(time.Second):
+		t.Fatal("an already-expired clock must yield an already-done write context")
+	}
+}
+
+func TestDrainReadyFirstContentPrefersBufferedToken(t *testing.T) {
+	t.Parallel()
+	pr := &registry.PendingRequest{ChunkCh: make(chan string, 2)}
+	var held []string
+	if _, ok := drainReadyFirstContent(pr, &held); ok {
+		t.Fatal("empty channel must not produce content")
+	}
+	pr.ChunkCh <- "hello-token"
+	chunk, ok := drainReadyFirstContent(pr, &held)
+	if !ok || chunk != "hello-token" {
+		t.Fatalf("drain=%q ok=%v want buffered token", chunk, ok)
+	}
+	closed := &registry.PendingRequest{ChunkCh: make(chan string)}
+	close(closed.ChunkCh)
+	if _, ok := drainReadyFirstContent(closed, &held); ok {
+		t.Fatal("closed channel must fall through to the timeout path")
+	}
+}
+
+func TestWaitFirstChunkDeliversBufferedTokenOnExpiredClock(t *testing.T) {
+	d, pr := firstTokenWaitState(t, 15*time.Second, 9*time.Second)
+	pr.ChunkCh <- "hello-token"
+	if got := d.waitFirstChunk(); got != outcomeCommitted {
+		t.Fatalf("waitFirstChunk=%v want outcomeCommitted — an on-time buffered token must beat the expired clock", got)
+	}
+	if !d.committed || d.firstChunk != "hello-token" {
+		t.Fatalf("committed=%v firstChunk=%q", d.committed, d.firstChunk)
+	}
+}
+
+func TestAbandonInflightOverridesStaleError(t *testing.T) {
+	d, _ := firstTokenWaitState(t, 15*time.Second, 9*time.Second)
+	d.setLastError("failed to send request to provider", http.StatusBadGateway)
+	d.abandonInflightForFirstTokenTimeout()
+	if d.lastErrCode != http.StatusGatewayTimeout {
+		t.Fatalf("lastErrCode=%d want the synthetic 504 (exhausted ladder remaps to 429), not a leaked 502", d.lastErrCode)
 	}
 }

@@ -29,7 +29,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
@@ -1421,7 +1420,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	originalRawBody := prelude.originalRawBody
 	parsed := prelude.parsed
 	model := prelude.model
-	_, reasoningProvided := parsed["reasoning"]
 
 	// Accept either chat completions format (messages) or Responses API format
 	// (input). Responses requests are lowered before the provider body is sealed.
@@ -1552,16 +1550,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model, rawBody = buildModel, resolvedBody
-	user := auth.UserFromContext(r.Context())
-	serviceChatConsumer := r.URL.Path == "/v1/chat/completions" &&
-		user != nil && user.Role == store.RoleService
-	rawBody, _, err = applyResolvedModelReasoningPolicy(
-		parsed, rawBody, model, serviceChatConsumer, reasoningProvided)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse(
-			"server_error", "failed to prepare inference request"))
-		return
-	}
 
 	// Shared media/tools fail-fast. Chat completions additionally rejects media
 	// sent via the Responses API surface (input-without-messages), because the
@@ -1658,10 +1646,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		candidateParsed["model"] = candidateModel
 		candidateBody, marshalErr := marshalForwardBody(candidateParsed)
-		if marshalErr == nil {
-			candidateBody, _, marshalErr = applyResolvedModelReasoningPolicy(
-				candidateParsed, candidateBody, candidateModel, serviceChatConsumer, reasoningProvided)
-		}
 		if marshalErr == nil && isResponsesAPI {
 			candidateBody, marshalErr = promptcontract.LowerProviderBody(
 				promptcontract.EndpointResponses, candidateBody)
@@ -1868,8 +1852,6 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// pre-extraction behavior.
 	onModelFallback := func(newModel string) bool {
 		body, _ := marshalForwardBody(parsed)
-		body, _, _ = applyResolvedModelReasoningPolicy(
-			parsed, body, newModel, serviceChatConsumer, reasoningProvided)
 		return refreshForwardBody(body, newModel)
 	}
 	var preflightHandled bool

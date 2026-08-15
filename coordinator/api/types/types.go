@@ -15,12 +15,24 @@ import (
 
 // ── Chat completions ────────────────────────────────────────────────
 
+// ReasoningDetail is an OpenRouter-compatible reasoning item on a chat message.
+type ReasoningDetail struct {
+	Type      string `json:"type"`
+	Text      string `json:"text"`
+	ID        string `json:"id"`
+	Format    string `json:"format"`
+	Index     int    `json:"index"`
+	Signature any    `json:"signature"`
+}
+
 // ChatCompletionMessage is the assistant message in a chat completion choice.
 type ChatCompletionMessage struct {
-	Role      string           `json:"role"`
-	Content   string           `json:"content"`
-	Reasoning string           `json:"reasoning,omitempty"`
-	ToolCalls []map[string]any `json:"tool_calls,omitempty"`
+	Role             string           `json:"role"`
+	Content          string           `json:"content"`
+	Reasoning        string           `json:"reasoning,omitempty"`
+	ReasoningContent string           `json:"reasoning_content,omitempty"`
+	ReasoningDetails any              `json:"reasoning_details,omitempty"`
+	ToolCalls        []map[string]any `json:"tool_calls,omitempty"`
 }
 
 // ChatCompletionChoice is a single choice in a chat completion response.

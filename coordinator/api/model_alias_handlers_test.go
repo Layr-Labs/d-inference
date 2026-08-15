@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
+
 	"strconv"
 	"strings"
 	"testing"
@@ -15,6 +17,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/eigeninference/d-inference/coordinator/api/types"
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 	"github.com/eigeninference/d-inference/coordinator/registry"
 	"github.com/eigeninference/d-inference/coordinator/store"
@@ -1040,5 +1043,177 @@ func TestModelAliasTakeoverOfConcreteID(t *testing.T) {
 	// fleet already serving the legacy build is NOT untrusted by the takeover.
 	if after := reg.CatalogWeightHash(legacyID); after != hashBefore {
 		t.Fatalf("takeover changed catalog hash for %s (%q -> %q) — would untrust the live fleet", legacyID, hashBefore, after)
+	}
+}
+
+// An OpenRouter-only alias clones every feed detail from a standard source
+// alias while overriding only id, marketplace slug, and Hugging Face identity.
+
+func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B")
+	srv.SyncModelCatalog()
+
+	const (
+		baseAlias = "gemma-4-26b"
+		paidAlias = "gemma-4-26b-a4b-it"
+		paidSlug  = "google/gemma-4-26b-it"
+		paidHFID  = "google/gemma-4-26b-it"
+	)
+	post := func(path string, payload map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post("/v1/admin/models/aliases", map[string]any{
+		"alias_id": baseAlias, "display_name": "Gemma 4 26B", "desired_build": aliasQAT,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("create source alias: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := post("/v1/admin/models/openrouter-aliases", map[string]any{
+		"id": paidAlias, "source_model": baseAlias,
+		"openrouter_slug": paidSlug, "hugging_face_id": paidHFID,
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("create OpenRouter alias: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	saved, found, err := st.GetModelAlias(paidAlias)
+	if err != nil || !found || !saved.OpenRouterOnly || saved.SourceModel != baseAlias || saved.OpenRouterSlug != paidSlug || saved.HuggingFaceID != paidHFID {
+		t.Fatalf("stored OpenRouter alias = %+v found=%v err=%v", saved, found, err)
+	}
+	listAliasesReq := httptest.NewRequest(http.MethodGet, "/v1/admin/models/openrouter-aliases", nil)
+	listAliasesReq.Header.Set("Authorization", "Bearer publish-secret")
+	listAliasesRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(listAliasesRec, listAliasesReq)
+	if listAliasesRec.Code != http.StatusOK {
+		t.Fatalf("list OpenRouter aliases: status=%d body=%s", listAliasesRec.Code, listAliasesRec.Body.String())
+	}
+	var aliasList struct {
+		Aliases []store.ModelAlias `json:"aliases"`
+	}
+	if err := json.Unmarshal(listAliasesRec.Body.Bytes(), &aliasList); err != nil || len(aliasList.Aliases) != 1 || aliasList.Aliases[0].AliasID != paidAlias {
+		t.Fatalf("OpenRouter alias list = %+v err=%v", aliasList.Aliases, err)
+	}
+
+	// OpenRouter can call either id; both resolve to the source alias's live build.
+	for _, alias := range []string{baseAlias, paidAlias} {
+		build, isAlias, ok := reg.ResolveModel(alias)
+		if !isAlias || !ok || build != aliasQAT {
+			t.Fatalf("resolve(%s) = %q isAlias=%v ok=%v, want %q", alias, build, isAlias, ok, aliasQAT)
+		}
+	}
+	if got := reg.PublicNameForBuild(aliasQAT); got != baseAlias {
+		t.Fatalf("PublicNameForBuild = %q, want source alias %s", got, baseAlias)
+	}
+
+	// The OpenRouter-only alias is intentionally absent from the normal catalog.
+	listRec := httptest.NewRecorder()
+	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d", listRec.Code)
+	}
+	var listResp types.ModelListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	listByID := make(map[string]types.ModelEntry, len(listResp.Data))
+	for _, m := range listResp.Data {
+		listByID[m.ID] = m
+	}
+	if _, ok := listByID[baseAlias]; !ok {
+		t.Fatalf("source alias missing from /v1/models: %+v", listResp.Data)
+	}
+	if _, leaked := listByID[paidAlias]; leaked {
+		t.Fatalf("OpenRouter-only alias leaked into /v1/models: %+v", listResp.Data)
+	}
+	if _, leaked := listByID[aliasQAT]; leaked {
+		t.Fatalf("shared build leaked into /v1/models: %+v", listResp.Data)
+	}
+
+	// The dedicated feed clone differs from its source only in the three public
+	// identities configured by the dedicated endpoint.
+	orRec := httptest.NewRecorder()
+	srv.handleListModelsOpenRouter(orRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	if orRec.Code != http.StatusOK {
+		t.Fatalf("openrouter feed status = %d body = %s", orRec.Code, orRec.Body.String())
+	}
+	var orResp types.OpenRouterModelsResponse
+	if err := json.Unmarshal(orRec.Body.Bytes(), &orResp); err != nil {
+		t.Fatal(err)
+	}
+	orByID := make(map[string]types.OpenRouterModel, len(orResp.Data))
+	for _, m := range orResp.Data {
+		orByID[m.ID] = m
+	}
+	baseFeed, baseOK := orByID[baseAlias]
+	paidFeed, paidOK := orByID[paidAlias]
+	if !baseOK || !paidOK {
+		t.Fatalf("aliases missing from OpenRouter feed: %+v", orResp.Data)
+	}
+	if paidFeed.OpenRouter == nil || paidFeed.OpenRouter.Slug != paidSlug || paidFeed.HuggingFaceID != paidHFID {
+		t.Fatalf("paid feed identities: slug=%+v hugging_face_id=%q", paidFeed.OpenRouter, paidFeed.HuggingFaceID)
+	}
+	paidFeed.ID = baseFeed.ID
+	paidFeed.HuggingFaceID = baseFeed.HuggingFaceID
+	paidFeed.OpenRouter = baseFeed.OpenRouter
+	if !reflect.DeepEqual(paidFeed, baseFeed) {
+		t.Fatalf("OpenRouter clone differs beyond identities: source=%+v clone=%+v", baseFeed, paidFeed)
+	}
+	if _, leaked := orByID[aliasQAT]; leaked {
+		t.Fatalf("shared build leaked into the OpenRouter feed: %+v", orResp.Data)
+	}
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/v1/admin/models/openrouter-aliases/"+paidAlias, nil)
+	deleteReq.Header.Set("Authorization", "Bearer publish-secret")
+	deleteRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(deleteRec, deleteReq)
+	if deleteRec.Code != http.StatusOK || reg.IsAlias(paidAlias) {
+		t.Fatalf("delete OpenRouter alias: status=%d still_registered=%v body=%s", deleteRec.Code, reg.IsAlias(paidAlias), deleteRec.Body.String())
+	}
+}
+
+func TestOpenRouterAliasFollowsSourceAliasBuildUpdate(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	seedActiveModel(t, st, aliasQAT, "Gemma 4 26B QAT")
+	seedActiveModel(t, st, aliasFP8, "Gemma 4 26B FP8")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DesiredBuild: aliasQAT, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b-paid", OpenRouterOnly: true,
+		SourceModel: "gemma-4-26b", OpenRouterSlug: "google/gemma-4-26b-it",
+		HuggingFaceID: "google/gemma-4-26b-it", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+	if build, _, ok := reg.ResolveModel("gemma-4-26b-paid"); !ok || build != aliasQAT {
+		t.Fatalf("initial OpenRouter alias resolve = %q ok=%v", build, ok)
+	}
+
+	// Move only the source alias. The OpenRouter clone follows without its own
+	// rollout update because sync resolves its route through SourceModel.
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gemma-4-26b", DesiredBuild: aliasFP8, PreviousBuild: aliasQAT, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+	if build, _, ok := reg.ResolveModel("gemma-4-26b-paid"); !ok || build != aliasFP8 {
+		t.Fatalf("updated OpenRouter alias resolve = %q ok=%v, want source desired %q", build, ok, aliasFP8)
 	}
 }

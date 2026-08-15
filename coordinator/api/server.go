@@ -1029,10 +1029,9 @@ func (s *Server) SyncModelCatalog() {
 	s.invalidateCatalogCache()
 }
 
-// syncModelAliases loads public-alias → {desired, previous} build pointers from
-// the store into the registry so consumer requests for an alias (e.g.
-// "gemma-4-26b") resolve to a concrete build. Only active aliases with a
-// non-empty desired build are installed.
+// syncModelAliases loads standard rollout aliases first, then resolves
+// OpenRouter-only aliases through their source alias. The latter route requests
+// but do not participate in provider convergence or canonical public naming.
 func (s *Server) syncModelAliases() {
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
@@ -1041,7 +1040,7 @@ func (s *Server) syncModelAliases() {
 	}
 	resolved := make(map[string]registry.AliasTarget, len(aliases))
 	for _, a := range aliases {
-		if !a.Active || a.DesiredBuild == "" {
+		if !a.Active || a.OpenRouterOnly || a.DesiredBuild == "" {
 			continue
 		}
 		resolved[a.AliasID] = registry.AliasTarget{
@@ -1049,6 +1048,18 @@ func (s *Server) syncModelAliases() {
 			Previous: a.PreviousBuild,
 			Retired:  a.RetiredBuilds,
 		}
+	}
+	for _, a := range aliases {
+		if !a.Active || !a.OpenRouterOnly {
+			continue
+		}
+		target, ok := resolved[a.SourceModel]
+		if !ok {
+			s.logger.Warn("OpenRouter alias source is not an active standard alias", "alias_id", a.AliasID, "source_model", a.SourceModel)
+			continue
+		}
+		target.OpenRouterOnly = true
+		resolved[a.AliasID] = target
 	}
 	s.registry.SetModelAliases(resolved)
 	s.logger.Info("model aliases synced to registry", "active_aliases", len(resolved))
@@ -1861,6 +1872,11 @@ func (s *Server) routes() {
 	// (bare GET/POST/DELETE /v1/admin/models) was removed; the model_registry is
 	// the single source of truth. Use register + the per-model action endpoints.
 	s.mux.HandleFunc("POST /v1/admin/models/register", s.handleRegisterModel)
+	// OpenRouter-only feed aliases clone a standard alias while exposing custom
+	// provider id, marketplace slug, and Hugging Face identity.
+	s.mux.HandleFunc("GET /v1/admin/models/openrouter-aliases", s.handleOpenRouterAliasList)
+	s.mux.HandleFunc("POST /v1/admin/models/openrouter-aliases", s.handleOpenRouterAliasUpsert)
+	s.mux.HandleFunc("DELETE /v1/admin/models/openrouter-aliases/{aliasID}", s.handleOpenRouterAliasDelete)
 	// Public model aliases (stable names → concrete builds). More-specific
 	// patterns take precedence over the POST /v1/admin/models/ subtree below.
 	s.mux.HandleFunc("GET /v1/admin/models/aliases", s.handleModelAliasList)

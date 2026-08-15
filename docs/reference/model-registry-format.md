@@ -149,6 +149,31 @@ At request time, [`resolveRequestedModel`](../../coordinator/api/consumer.go) re
 
 The concrete build id is what is used for routing, billing, and serving; the public alias is echoed back to the consumer.
 
+## OpenRouter-only aliases
+
+OpenRouter feed clones are managed separately from rollout aliases:
+
+- `GET /v1/admin/models/openrouter-aliases`
+- `POST /v1/admin/models/openrouter-aliases`
+- `DELETE /v1/admin/models/openrouter-aliases/{id}`
+
+```json
+{
+  "id": "gemma-4-26b-a4b-it",
+  "source_model": "gemma-4-26b",
+  "openrouter_slug": "google/gemma-4-26b-it",
+  "hugging_face_id": "google/gemma-4-26b-it"
+}
+```
+
+`source_model` must be an active standard alias. The clone appears only in
+`GET /v1/models/openrouter`; it is omitted from the normal `GET /v1/models`
+catalog. OpenRouter can send the clone's `id` to the inference API, where it
+resolves through the source alias's current desired/previous build pointers.
+The source supplies pricing, context limits, features, readiness, datacenters,
+and every other feed field. Future source build migrations therefore update the
+clone automatically; only `id`, `openrouter.slug`, and `hugging_face_id` differ.
+
 ## Admin model actions
 
 `POST /v1/admin/models/{model_id}/{action}`

@@ -416,11 +416,12 @@ func (s *PostgresStore) UpsertModelAlias(alias *ModelAlias) error {
 		return fmt.Errorf("store: marshal retired builds: %w", err)
 	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO model_aliases (alias_id, display_name, desired_build, previous_build, retired_builds, active, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, COALESCE(NULLIF($7::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
+		INSERT INTO model_aliases (alias_id, display_name, openrouter_only, source_model, openrouter_slug, hugging_face_id, desired_build, previous_build, retired_builds, active, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE(NULLIF($11::timestamptz, '0001-01-01 00:00:00+00'::timestamptz), NOW()), NOW())
 		ON CONFLICT (alias_id) DO UPDATE SET
-		  display_name = $2, desired_build = $3, previous_build = $4, retired_builds = $5, active = $6, updated_at = NOW()`,
-		alias.AliasID, alias.DisplayName, alias.DesiredBuild, alias.PreviousBuild, retiredJSON, alias.Active, alias.CreatedAt)
+		  display_name = $2, openrouter_only = $3, source_model = $4, openrouter_slug = $5, hugging_face_id = $6, desired_build = $7, previous_build = $8, retired_builds = $9, active = $10, updated_at = NOW()`,
+		alias.AliasID, alias.DisplayName, alias.OpenRouterOnly, alias.SourceModel, alias.OpenRouterSlug, alias.HuggingFaceID, alias.DesiredBuild, alias.PreviousBuild, retiredJSON, alias.Active, alias.CreatedAt)
+
 	if err != nil {
 		return fmt.Errorf("store: upsert model alias: %w", err)
 	}
@@ -434,9 +435,10 @@ func (s *PostgresStore) GetModelAlias(aliasID string) (*ModelAlias, bool, error)
 	var a ModelAlias
 	var retiredJSON []byte
 	err := s.pool.QueryRow(ctx, `
-		SELECT alias_id, display_name, desired_build, previous_build, retired_builds, active, created_at, updated_at
+		SELECT alias_id, display_name, openrouter_only, source_model, openrouter_slug, hugging_face_id, desired_build, previous_build, retired_builds, active, created_at, updated_at
 		FROM model_aliases WHERE alias_id = $1`, aliasID).
-		Scan(&a.AliasID, &a.DisplayName, &a.DesiredBuild, &a.PreviousBuild, &retiredJSON, &a.Active, &a.CreatedAt, &a.UpdatedAt)
+		Scan(&a.AliasID, &a.DisplayName, &a.OpenRouterOnly, &a.SourceModel, &a.OpenRouterSlug, &a.HuggingFaceID, &a.DesiredBuild, &a.PreviousBuild, &retiredJSON, &a.Active, &a.CreatedAt, &a.UpdatedAt)
+
 	if err == pgx.ErrNoRows {
 		return nil, false, nil
 	}
@@ -468,8 +470,9 @@ func (s *PostgresStore) ListModelAliases() ([]ModelAlias, error) {
 	defer cancel()
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT alias_id, display_name, desired_build, previous_build, retired_builds, active, created_at, updated_at
+		SELECT alias_id, display_name, openrouter_only, source_model, openrouter_slug, hugging_face_id, desired_build, previous_build, retired_builds, active, created_at, updated_at
 		FROM model_aliases ORDER BY alias_id`)
+
 	if err != nil {
 		return nil, fmt.Errorf("store: list model aliases: %w", err)
 	}
@@ -479,7 +482,8 @@ func (s *PostgresStore) ListModelAliases() ([]ModelAlias, error) {
 	for rows.Next() {
 		var a ModelAlias
 		var retiredJSON []byte
-		if err := rows.Scan(&a.AliasID, &a.DisplayName, &a.DesiredBuild, &a.PreviousBuild, &retiredJSON, &a.Active, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.AliasID, &a.DisplayName, &a.OpenRouterOnly, &a.SourceModel, &a.OpenRouterSlug, &a.HuggingFaceID, &a.DesiredBuild, &a.PreviousBuild, &retiredJSON, &a.Active, &a.CreatedAt, &a.UpdatedAt); err != nil {
+
 			return nil, fmt.Errorf("store: scan model alias: %w", err)
 		}
 		a.RetiredBuilds = unmarshalRetiredBuilds(retiredJSON)

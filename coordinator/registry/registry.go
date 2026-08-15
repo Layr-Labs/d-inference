@@ -1740,11 +1740,14 @@ func (r *Registry) SetModelCatalog(entries []CatalogEntry) {
 // Previous build during a staggered rollout. No weights, no ramp. Retired holds
 // former members (rotated out by later upserts) — never routed, but used to
 // recognize a returning provider that was offline through a retirement as part
-// of this alias's fleet so it still receives desired_models.
+// of this alias's fleet so it still receives desired_models. OpenRouterOnly
+// targets resolve requests but never drive provider convergence or canonical
+// build-to-public-name mapping.
 type AliasTarget struct {
-	Desired  string
-	Previous string
-	Retired  []string
+	Desired        string
+	Previous       string
+	Retired        []string
+	OpenRouterOnly bool
 }
 
 // SetModelAliases installs the public-alias → {desired, previous} mapping. Pass
@@ -1779,7 +1782,11 @@ func (r *Registry) PublicNameForBuild(buildID string) string {
 	defer r.mu.RUnlock()
 	best := ""
 	for alias, t := range r.modelAliases {
+		if t.OpenRouterOnly {
+			continue
+		}
 		if t.Desired == buildID || t.Previous == buildID {
+
 			if best == "" || alias < best {
 				best = alias
 			}
@@ -2160,8 +2167,11 @@ func (r *Registry) mergeProviderModels(
 	// the builds that actually PASS validation below, not from the raw message.
 	aliasTargets := make([]AliasTarget, 0, len(r.modelAliases))
 	for _, t := range r.modelAliases {
-		aliasTargets = append(aliasTargets, t)
+		if !t.OpenRouterOnly {
+			aliasTargets = append(aliasTargets, t)
+		}
 	}
+
 	r.mu.RUnlock()
 	if !ok {
 		return nil, nil
@@ -3303,9 +3313,10 @@ func (r *Registry) DesiredModelsForProvider(providerID string) []protocol.Desire
 
 	var entries []protocol.DesiredModelEntry
 	for alias, t := range r.modelAliases {
-		if t.Desired == "" {
+		if t.OpenRouterOnly || t.Desired == "" {
 			continue
 		}
+
 		_, hasDesired := advertised[t.Desired]
 		_, hasPrevious := advertised[t.Previous]
 		// A provider advertising only a RETIRED member (offline through a

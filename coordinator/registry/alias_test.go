@@ -228,8 +228,10 @@ func TestResolveModelConstrainedNoFallbackWhenUnsatisfiable(t *testing.T) {
 func TestPublicNameForBuild(t *testing.T) {
 	reg := New(testLogger())
 	reg.SetModelAliases(map[string]AliasTarget{
-		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+		"aaa-openrouter-clone": {Desired: aliasQAT, Previous: aliasFP8, OpenRouterOnly: true},
+		"gemma-4-26b":          {Desired: aliasQAT, Previous: aliasFP8},
 	})
+
 	if got := reg.PublicNameForBuild(aliasFP8); got != "gemma-4-26b" {
 		t.Fatalf("previous build should map to alias, got %q", got)
 	}
@@ -467,7 +469,8 @@ func TestDesiredModelsForProviderConservative(t *testing.T) {
 	registerProviderWithModel(reg, "p-fp8", aliasFP8) // advertises the previous build
 	registerProviderWithModel(reg, "p-none", "mlx-community/unrelated")
 	reg.SetModelAliases(map[string]AliasTarget{
-		"gemma-4-26b": {Desired: aliasQAT, Previous: aliasFP8},
+		"gemma-4-26b":      {Desired: aliasQAT, Previous: aliasFP8},
+		"gemma-4-26b-paid": {Desired: aliasQAT, Previous: aliasFP8, OpenRouterOnly: true},
 	})
 
 	// p-fp8 advertises the previous build → it is told the desired build.

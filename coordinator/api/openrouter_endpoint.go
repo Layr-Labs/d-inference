@@ -122,15 +122,22 @@ func (s *Server) openRouterAliasEntries(
 	sort.Slice(aliases, func(i, j int) bool { return aliases[i].AliasID < aliases[j].AliasID })
 
 	entries := make([]types.OpenRouterModel, 0, len(aliases))
+	standardEntries := make(map[string]types.OpenRouterModel, len(aliases))
+	openRouterAliases := make([]store.ModelAlias, 0)
 	for _, a := range aliases {
-		if !a.Active || a.DesiredBuild == "" {
+		if !a.Active {
+			continue
+		}
+		if a.OpenRouterOnly {
+			openRouterAliases = append(openRouterAliases, a)
+			continue
+		}
+		if a.DesiredBuild == "" {
 			continue
 		}
 		// Never sell a raw build behind a public alias: hide EVERY build the
 		// alias references — desired, previous, AND the retired lineage — from
-		// the marketplace feed, even if the alias itself isn't listable right now
-		// (a retired build left registered would otherwise reappear as a sellable
-		// entry with no providers — a marketplace black-hole).
+		// the marketplace feed, even if the alias itself isn't listable right now.
 		hideAliasBuild(hidden, catalogByID, a.DesiredBuild)
 		hideAliasBuild(hidden, catalogByID, a.PreviousBuild)
 		for _, b := range a.RetiredBuilds {
@@ -146,7 +153,6 @@ func (s *Server) openRouterAliasEntries(
 			}
 		}
 		if len(members) == 0 {
-			// No in-catalog build backs this alias — nothing servable to list.
 			continue
 		}
 		primary := members[0]
@@ -174,8 +180,6 @@ func (s *Server) openRouterAliasEntries(
 			SupportedFeatures: []string{},
 			IsReady:           true,
 		}
-		// Per-build feed fields from the primary build's registry entry; the
-		// quantization is intentionally blank — an alias spans quants.
 		s.openRouterModelFieldsFor(primary, "", reg, hasReg).applyToFeed(&entry)
 		if hasReg {
 			entry.IsReady = openRouterIsReady(reg.Metadata)
@@ -184,9 +188,26 @@ func (s *Server) openRouterAliasEntries(
 			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(a.AliasID, nil)}
 		}
 		entry.Datacenters = s.aliasDatacenters(members)
-
 		entries = append(entries, entry)
+		standardEntries[a.AliasID] = entry
 	}
+
+	// OpenRouter-only aliases clone the complete source entry, then replace only
+	// the three configured identities. This keeps pricing, limits, features,
+	// readiness, and datacenters exactly synchronized with the source alias.
+	for _, a := range openRouterAliases {
+		source, ok := standardEntries[a.SourceModel]
+		if !ok || a.OpenRouterSlug == "" || a.HuggingFaceID == "" {
+			s.logger.Warn("OpenRouter alias source or identities unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
+			continue
+		}
+		clone := source
+		clone.ID = a.AliasID
+		clone.HuggingFaceID = a.HuggingFaceID
+		clone.OpenRouter = &types.OpenRouterSlug{Slug: a.OpenRouterSlug}
+		entries = append(entries, clone)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].ID < entries[j].ID })
 	return entries, hidden
 }
 

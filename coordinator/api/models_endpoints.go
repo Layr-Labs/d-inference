@@ -47,7 +47,8 @@ func (s *Server) aliasModelEntries(
 
 	entries := make([]types.ModelEntry, 0, len(aliases))
 	for _, a := range aliases {
-		if !a.Active || a.DesiredBuild == "" {
+		if !a.Active || a.OpenRouterOnly || a.DesiredBuild == "" {
+
 			continue
 		}
 		// A consumer must only ever see the alias, never a concrete build behind

@@ -73,7 +73,7 @@ func TestServiceReasoningPolicyProviderBody(t *testing.T) {
 		body []byte
 		err  error
 	}
-	results := make(chan providerResult, 7)
+	results := make(chan providerResult, 11)
 	go func() {
 		for {
 			_, data, readErr := conn.Read(ctx)
@@ -147,6 +147,10 @@ func TestServiceReasoningPolicyProviderBody(t *testing.T) {
 		{name: "service other model omission is unchanged", key: serviceKey, model: otherModel, wantModel: otherModel},
 		{name: "service alias resolved to Qwen disables reasoning", key: serviceKey, model: qwenAlias, wantReasoning: `{"enabled":false}`, wantModel: serviceReasoningOptInModel},
 		{name: "service Responses route remains unchanged", key: serviceKey, path: "/v1/responses", model: serviceReasoningOptInModel, responsesBody: true, wantModel: serviceReasoningOptInModel},
+		{name: "service Qwen effort high enables reasoning", key: serviceKey, model: serviceReasoningOptInModel, reasoning: `,"reasoning_effort":"high"`, wantReasoning: `{"enabled":true}`, wantModel: serviceReasoningOptInModel},
+		{name: "service Qwen effort none keeps reasoning disabled", key: serviceKey, model: serviceReasoningOptInModel, reasoning: `,"reasoning_effort":"none"`, wantReasoning: `{"enabled":false}`, wantModel: serviceReasoningOptInModel},
+		{name: "service Qwen explicit reasoning object wins over effort", key: serviceKey, model: serviceReasoningOptInModel, reasoning: `,"reasoning_effort":"high","reasoning":{"enabled":false}`, wantReasoning: `{"enabled":false}`, wantModel: serviceReasoningOptInModel},
+		{name: "non-service Qwen effort high is unchanged", key: "test-key", model: serviceReasoningOptInModel, reasoning: `,"reasoning_effort":"high"`, wantModel: serviceReasoningOptInModel},
 	}
 
 	for _, test := range tests {
@@ -332,10 +336,13 @@ func TestApplyResolvedModelReasoningPolicyPreservesExplicitValuesAndUntouchedByt
 		model    string
 		service  bool
 		provided bool
+		effort   string
 	}{
 		{name: "explicit null", body: `{"model":"qwen","reasoning":null}`, model: serviceReasoningOptInModel, service: true, provided: true},
 		{name: "explicit scalar", body: `{"model":"qwen","reasoning":"malformed"}`, model: serviceReasoningOptInModel, service: true, provided: true},
+		{name: "explicit object beats effort", body: `{"model":"qwen","reasoning":{"enabled":false},"reasoning_effort":"high"}`, model: serviceReasoningOptInModel, service: true, provided: true, effort: "high"},
 		{name: "non-service target", body: `{ "model" : "qwen" }`, model: serviceReasoningOptInModel},
+		{name: "non-service effort high", body: `{ "model" : "qwen" , "reasoning_effort" : "high" }`, model: serviceReasoningOptInModel, effort: "high"},
 		{name: "service other model", body: `{ "model" : "other" }`, model: "other", service: true},
 	}
 	for _, test := range tests {
@@ -345,7 +352,7 @@ func TestApplyResolvedModelReasoningPolicyPreservesExplicitValuesAndUntouchedByt
 				t.Fatal(err)
 			}
 			got, changed, err := applyResolvedModelReasoningPolicy(
-				parsed, []byte(test.body), test.model, test.service, test.provided)
+				parsed, []byte(test.body), test.model, test.service, test.provided, test.effort)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -354,6 +361,105 @@ func TestApplyResolvedModelReasoningPolicyPreservesExplicitValuesAndUntouchedByt
 			}
 			if string(got) != test.body {
 				t.Fatalf("body changed: got %q, want original %q", got, test.body)
+			}
+		})
+	}
+}
+
+func TestApplyResolvedModelReasoningPolicyEffortIntent(t *testing.T) {
+	tests := []struct {
+		effort      string
+		wantEnabled bool
+	}{
+		{effort: "", wantEnabled: false},
+		{effort: "none", wantEnabled: false},
+		{effort: " NONE ", wantEnabled: false},
+		{effort: "high", wantEnabled: true},
+		{effort: " Medium ", wantEnabled: true},
+		{effort: "unrecognized", wantEnabled: true},
+	}
+	for _, test := range tests {
+		t.Run(fmt.Sprintf("effort=%q", test.effort), func(t *testing.T) {
+			parsed := map[string]any{"model": "qwen"}
+			body, changed, err := applyResolvedModelReasoningPolicy(
+				parsed, []byte(`{"model":"qwen"}`), serviceReasoningOptInModel, true, false, test.effort)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !changed {
+				t.Fatal("policy did not inject reasoning")
+			}
+			var fields struct {
+				Reasoning struct {
+					Enabled *bool `json:"enabled"`
+				} `json:"reasoning"`
+			}
+			if err := json.Unmarshal(body, &fields); err != nil {
+				t.Fatalf("decode injected body: %v\n%s", err, body)
+			}
+			if fields.Reasoning.Enabled == nil || *fields.Reasoning.Enabled != test.wantEnabled {
+				t.Fatalf("injected reasoning = %s, want enabled=%v", body, test.wantEnabled)
+			}
+		})
+	}
+}
+
+func TestLogServiceReasoningShapeClosedSet(t *testing.T) {
+	tests := []struct {
+		name   string
+		parsed map[string]any
+		want   []string
+	}{
+		{
+			name:   "absent shapes inject false",
+			parsed: map[string]any{"model": "qwen"},
+			want:   []string{"reasoning_present=false", "reasoning_enabled=absent", "reasoning_effort=absent", "injected=false"},
+		},
+		{
+			name:   "effort high injects true",
+			parsed: map[string]any{"model": "qwen", "reasoning_effort": " High "},
+			want:   []string{"reasoning_present=false", "reasoning_effort=high", "injected=true"},
+		},
+		{
+			name:   "free-form effort collapses to other",
+			parsed: map[string]any{"model": "qwen", "reasoning_effort": "secret-user-string"},
+			want:   []string{"reasoning_effort=other", "injected=true"},
+		},
+		{
+			name:   "non-string effort collapses to other and injects false",
+			parsed: map[string]any{"model": "qwen", "reasoning_effort": float64(3)},
+			want:   []string{"reasoning_effort=other", "injected=false"},
+		},
+		{
+			name:   "reasoning bool passes through and blocks injection",
+			parsed: map[string]any{"model": "qwen", "reasoning": map[string]any{"enabled": true}},
+			want:   []string{"reasoning_present=true", "reasoning_enabled=true", "injected=none"},
+		},
+		{
+			name:   "non-bool reasoning collapses to non_bool",
+			parsed: map[string]any{"model": "qwen", "reasoning": "malformed"},
+			want:   []string{"reasoning_present=true", "reasoning_enabled=non_bool", "injected=none"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var buf strings.Builder
+			logger := slog.New(slog.NewTextHandler(&buf, nil))
+			logServiceReasoningShape(logger, test.parsed, serviceReasoningOptInModel)
+			line := buf.String()
+			if !strings.Contains(line, `msg="service reasoning shape"`) {
+				t.Fatalf("missing log message: %s", line)
+			}
+			if !strings.Contains(line, "model="+serviceReasoningOptInModel) {
+				t.Errorf("missing model field: %s", line)
+			}
+			for _, fragment := range test.want {
+				if !strings.Contains(line, fragment) {
+					t.Errorf("log line missing %q: %s", fragment, line)
+				}
+			}
+			if strings.Contains(line, "secret-user-string") {
+				t.Errorf("log line leaked raw request value: %s", line)
 			}
 		})
 	}

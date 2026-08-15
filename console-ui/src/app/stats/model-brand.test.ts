@@ -17,7 +17,7 @@ describe("modelBrand", () => {
   });
 
   it("uses the official Qwen mark for Qwen model IDs", () => {
-    expect(modelBrand("qwen3.5-9b")).toMatchObject({
+    expect(modelBrand("qwen3.6-35b-a3b-vl-mtp-mxfp8")).toMatchObject({
       maker: "qwen",
       makerLabel: "Qwen",
       logoSrc: "/brand/qwen-logo.png",
@@ -25,7 +25,7 @@ describe("modelBrand", () => {
   });
 
   it("uses the official Qwen mark when the family identifies Qwen", () => {
-    expect(modelBrand("custom-build", "qwen3")).toMatchObject({
+    expect(modelBrand("custom-build", "Qwen3.6")).toMatchObject({
       maker: "qwen",
       logoSrc: "/brand/qwen-logo.png",
     });

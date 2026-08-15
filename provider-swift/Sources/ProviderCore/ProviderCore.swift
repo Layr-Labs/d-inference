@@ -218,6 +218,7 @@ public enum ProviderCore {
     // (+15% at 8k with trust) with fused gate_up, MTP GDN capture-verify +
     // target_prefix + single-forward drafts (1.13x, behind the mtp beta
     // flag), symlink-proof inline-MTP inspection, MTP /metrics counters,
-    // and hardened plaintext egress paths.
+    // hardened plaintext egress paths, and Qwen3.5/3.6 late-system history
+    // normalization before template rendering.
     public static let version = "0.8.5"
 }

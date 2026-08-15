@@ -29,6 +29,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eigeninference/d-inference/coordinator/auth"
 	"github.com/eigeninference/d-inference/coordinator/internal/e2e"
 	"github.com/eigeninference/d-inference/coordinator/payments"
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
@@ -1611,6 +1612,25 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	requestedMaxTokens := estimateRequestedMaxTokens(parsed)
 	deadline := ttftDeadline(estimatedPromptTokens)
 	timing.ParsedAt = time.Now()
+
+	// Privacy-safe request-shape telemetry for service-role (aggregator)
+	// traffic: one INFO line per admitted chat-completions request, after
+	// alias resolution and before dispatch, joinable by trace_id against
+	// terminal outcomes (client_gone). Closed-set fields only — never prompt,
+	// message, or tool-schema content (see request_shape_telemetry.go).
+	if user := auth.UserFromContext(r.Context()); user != nil &&
+		user.Role == store.RoleService && !isResponsesAPI {
+		s.logger.Info("service request shape", serviceRequestShapeFields(parsed, requestShapeComputed{
+			traceID:               requestIDFromContext(r.Context()),
+			model:                 model,
+			publicModel:           publicModel,
+			stream:                stream,
+			estimatedPromptTokens: estimatedPromptTokens,
+			requestedMaxTokens:    requestedMaxTokens,
+			hasTools:              hasTools,
+			requiresVision:        requiresVision,
+		})...)
+	}
 	if s.shedIfModelRejected(w, r, parsed, policy, publicModel, model, stream, estimatedPromptTokens, requestedMaxTokens, requiresVision, hasTools) {
 		return
 	}

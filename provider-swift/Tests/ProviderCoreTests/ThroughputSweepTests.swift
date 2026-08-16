@@ -213,7 +213,10 @@ struct ThroughputSweepReportTests {
             decode: decodeSamples(b1Aggregate: 21),
             derived: derived,
             notes: ["test"],
-            gemmaOptimizations: .init(settings: GemmaOptimizationSettings())
+            gemmaOptimizations: .init(
+                settings: GemmaOptimizationSettings(),
+                getenv: { _ in nil }
+            )
         )
 
         let json = try report.jsonString()
@@ -233,7 +236,7 @@ struct ThroughputSweepReportTests {
         #expect(decoded.gemmaOptimizations.environment == [
             GemmaOptimizationEnvironment.prefillLayer18Key: "18",
             GemmaOptimizationEnvironment.weightedUnsortKey: "1",
-            GemmaOptimizationEnvironment.safeR1Key: "1",
+            GemmaOptimizationEnvironment.safeR1Key: "trust",
         ])
         #expect(decoded.schemaVersion == ThroughputSweepReport.currentSchemaVersion)
     }

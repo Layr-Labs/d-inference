@@ -18,12 +18,12 @@ def validate_gemma_optimizations(value: object, source: str) -> dict:
     environment = value.get("environment")
     if not isinstance(prefill, bool) or not isinstance(weighted, bool):
         raise RuntimeError(f"{source} reported malformed Gemma optimization booleans")
-    # Safe R1 admits one operator refinement when the route is on: "trust"
-    # (descriptor-retract readback skipped). The provider's serving-context
-    # projection preserves it, so the recorded posture must too; anything
-    # else must still be the exact coupled value.
+    # Safe R1 serving default is "trust" (descriptor-retract readback
+    # skipped). Exact "1" is the operator drain refinement. The recorded
+    # posture must keep whichever of those the serving projection wrote;
+    # anything else falls back to the serving default.
     safe_r1 = environment.get(SAFE_R1_KEY) if isinstance(environment, Mapping) else None
-    allowed_safe_r1 = ("1", "trust") if weighted else ("0",)
+    allowed_safe_r1 = ("trust", "1") if weighted else ("0",)
     expected_environment = {
         PREFILL_KEY: "18" if prefill else "0",
         WEIGHTED_KEY: "1" if weighted else "0",

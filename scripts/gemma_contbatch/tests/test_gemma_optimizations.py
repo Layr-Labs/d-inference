@@ -72,10 +72,9 @@ class GemmaOptimizationProvenanceTests(unittest.TestCase):
             resolve_gemma_optimizations(outputs)
 
     def test_trust_refinement_is_accepted_and_preserved(self):
-        # The serving projection preserves an operator-exported
-        # MLX_GATHER_QMM_EXPERT_SLICES=trust when the route is on; the
-        # recorded posture must resolve, keeping the trust value visible in
-        # the report instead of collapsing it to "1".
+        # Serving defaults to MLX_GATHER_QMM_EXPERT_SLICES=trust when the
+        # route is on; the recorded posture must resolve, keeping the trust
+        # value visible in the report instead of collapsing it to "1".
         outputs = raw_outputs()
         for payload in outputs.values():
             payload["gemmaOptimizations"]["environment"][

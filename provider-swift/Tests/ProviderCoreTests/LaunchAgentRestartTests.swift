@@ -93,24 +93,26 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
-    @Test func persistsOperatorTrustRefinementIntoDaemonEnvironment() {
-        // launchd does not inherit the installing shell, so the one legal
-        // operator refinement (safe R1 = trust) must be persisted into the
-        // plist or the background daemon silently collapses it to "1".
+    @Test func persistsOperatorDrainRefinementIntoDaemonEnvironment() {
+        // Serving defaults to trust. launchd does not inherit the installing
+        // shell, so the one legal operator refinement (safe R1 = 1, restore
+        // the drain) must be persisted into the plist or the background
+        // daemon silently collapses it back to trust.
         let out = LaunchAgent.passthroughEnvironment(from: [
-            GemmaOptimizationEnvironment.safeR1Key: "trust",
-            GemmaOptimizationEnvironment.weightedUnsortKey: "trust",
+            GemmaOptimizationEnvironment.safeR1Key: "1",
+            GemmaOptimizationEnvironment.weightedUnsortKey: "1",
             "PATH": "/usr/bin",
         ])
         // Only safe R1 carries the refinement; the coupled weighted-unsort
         // key stays config-backed and excluded.
-        #expect(out == [GemmaOptimizationEnvironment.safeR1Key: "trust"])
+        #expect(out == [GemmaOptimizationEnvironment.safeR1Key: "1"])
     }
 
     @Test func excludesConfigExactGemmaValuesEvenWhenSet() {
-        // "1"/"0" are config territory: forwarding them would freeze a past
-        // config decision into the plist and fight later TOML edits.
-        for value in ["0", "1"] {
+        // "0"/"trust" are config/default territory: forwarding them would
+        // freeze a past decision into the plist and fight later TOML edits
+        // or the serving default.
+        for value in ["0", "trust"] {
             #expect(LaunchAgent.passthroughEnvironment(
                 from: [GemmaOptimizationEnvironment.safeR1Key: value]).isEmpty)
         }
@@ -152,18 +154,18 @@ struct LaunchAgentServicePlistTests {
         #expect((plist["EnvironmentVariables"] as? [String: String]) == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
-    @Test func persistsTrustRefinementIntoServicePlist() {
+    @Test func persistsDrainRefinementIntoServicePlist() {
         let plist = LaunchAgent.makeServicePlist(
             label: "io.darkbloom.provider",
             programArguments: ["/usr/local/bin/darkbloom", "start", "--foreground"],
             logPath: "/tmp/p.log",
             environment: [
-                GemmaOptimizationEnvironment.safeR1Key: "trust",
+                GemmaOptimizationEnvironment.safeR1Key: "1",
                 "PATH": "/usr/bin",
             ]
         )
         #expect((plist["EnvironmentVariables"] as? [String: String])
-            == [GemmaOptimizationEnvironment.safeR1Key: "trust"])
+            == [GemmaOptimizationEnvironment.safeR1Key: "1"])
     }
 
     @Test func omitsEnvironmentWhenNoAllowlistedVarsSet() {

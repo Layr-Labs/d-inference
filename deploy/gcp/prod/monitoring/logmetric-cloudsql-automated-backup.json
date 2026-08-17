@@ -1,0 +1,5 @@
+{
+  "name": "darkbloom_cloudsql_automated_backup",
+  "description": "Counts Cloud SQL automated-backup window events for the production instance d-inference-prod-pg17, regardless of outcome. Backs the 'backup missing' alert policy: an absent counter means no backup window ran at all (backups disabled, instance replaced, audit logging broken). Failed windows are alerted separately by 'Darkbloom Cloud SQL backup failed'.",
+  "filter": "logName=\"projects/darkbloom-mainnet/logs/cloudaudit.googleapis.com%2Fsystem_event\" AND protoPayload.methodName=\"cloudsql.instances.automatedBackup\" AND resource.labels.database_id=\"darkbloom-mainnet:d-inference-prod-pg17\""
+}

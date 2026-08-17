@@ -219,5 +219,8 @@ public enum ProviderCore {
     // target_prefix + single-forward drafts (1.13x, behind the mtp beta
     // flag), symlink-proof inline-MTP inspection, MTP /metrics counters,
     // and hardened plaintext egress paths.
-    public static let version = "0.8.5"
+    // 0.8.6 adds the M4 Max Qwen3.6 wide-prefill route and an explicit,
+    // ABI-safe fused D256 bounded-memory control. Automatic fused selection
+    // stays closed because composed attention remains faster on M4 Max.
+    public static let version = "0.8.6"
 }

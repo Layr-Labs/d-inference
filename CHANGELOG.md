@@ -1,11 +1,12 @@
 # Changelog
 
-## Unreleased (v0.8.5 candidate - provider)
+## Unreleased (v0.8.6 candidate - provider)
 
 ### Provider (Swift)
 
 #### Performance
 
+- **Qwen3.6 M4 Max wide-prefill route + explicit fused D256 control** - Uses the measured composed qL=512 path only on the qualified 40-core, 128 GB M4 Max (`Mac16,5`), retaining qL=128 elsewhere and honoring the existing override. On the production CBv2 path, paired release measurements improve median TTFT **2.4% at 8k and 3.7% at 32k (1.22 s)** for only +40.6 MiB (+2.2%) transient memory at 32k. Adds ABI-safe `force_fused` from MLX through mlx-c/Swift and a source-matched BF16/F16 D256 Steel kernel as an explicit bounded-memory arm: at 32k it reduces transient memory 15.5% versus qL=512 but is slower, so it remains opt-in and `auto` fails closed. Four faster-kernel designs (Q8 head-sharded, Q32/D128-sharded, two-head GQA, eight-head GQA) were correct but lost the composed-path gate and are not shipped.
 - **Qwen3.6 E=256 expert-tile prefill route + fused gate_up** - Instantiates the Gemma4 descriptor/tile kernel family for Qwen's 256-expert shapes (mlx `d3c82db`), fuses the routed gate/up projection into one gather (`SwitchGLU(fuseGateUp: true)`, per-layer and per-load with heterogeneous-quantization split fallback across every checkpoint key space), and adds the opt-in `trust` refinement that skips the per-chunk retract drain. Measured on M4 Max, prod artifact: routed MoE block -26.3% at T=512; end-to-end prefill 1243→1364 tok/s default, 1433 with `trust` (+15.2%) at 8k; 2k +7.4%, 32k +6.6%. (#617, mlx-swift-lm#107)
 - **Qwen3.6 MTP: GDN capture-verify, target_prefix acceptance, single-forward drafts** *(behind the `mtp` beta flag, default off)* - Replaces the serial target verify (measured 0.70x vs MTP-off) with one `[1,1+k]` forward capturing per-position recurrent states (1.08x), lifts the `temperature == 0` eligibility gate via pre-sampled target-token acceptance (exact at any temperature; temp-0.7 speculates at 0.70-0.77 acceptance), and defers the draft pair to eliminate the second MTP-head forward + 286 MB lm_head re-read per round: **116.5 tok/s vs 104.8 MTP-off (1.11-1.13x) at 0.78 acceptance**, B=1 greedy, release, paired sessions. (#616, mlx-swift-lm#106/#108)
 - **mlx gpu::eval use-after-free fix** - A stale `MTL::CommandBuffer` captured across `eval_gpu` could crash any primitive that syncs mid-eval (deterministic SIGSEGV on the E=256 route; previously survived on allocator luck). (mlx#5/#7)

@@ -11,7 +11,7 @@ from .checks import assert_finite, require_positive
 
 RAW_SCHEMA_VERSIONS = {
     "throughput sweep": 5,
-    "scheduler prefill": 2,
+    "scheduler prefill": 3,
     "arrival invariance": 4,
 }
 
@@ -99,6 +99,18 @@ def validate_scheduler(args: argparse.Namespace, scheduler: dict) -> None:
             sample.get("msPerPrefillToken"),
             f"scheduler[{index}].msPerPrefillToken",
         )
+        for key in (
+            "activeMemoryBeforeBytes",
+            "peakMemoryBytes",
+            "transientPeakBytes",
+        ):
+            require_positive(sample.get(key), f"scheduler[{index}].{key}")
+        if sample["peakMemoryBytes"] - sample["activeMemoryBeforeBytes"] != sample[
+            "transientPeakBytes"
+        ]:
+            raise RuntimeError(
+                f"scheduler[{index}] transient memory does not match peak - active"
+            )
 
 
 def validate_raw_outputs(

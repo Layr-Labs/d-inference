@@ -30,9 +30,12 @@ GEMV_SYMBOL="gemv"
 R1_BUILDER_SYMBOL="build_gemma4_sorted_expert_tiles_bm32"
 R1_BUILDER_E256_SYMBOL="build_sorted_expert_tiles_bm32_e256"
 R1_KERNEL_SYMBOL="affine_gather_qmm_gemma4_expert_tiles_bfloat16_t_gs_64_b_4_alN_true_bm_32_bn_32_bk_32"
+SDPA_D256_BF16_SYMBOL="steel_attention_bfloat16_bq32_bk16_bd256_wm4_wn1_maskbfloat16"
+SDPA_D256_FP16_SYMBOL="steel_attention_float16_bq32_bk16_bd256_wm4_wn1_maskfloat16"
 COMPLETENESS_CONTRACT="$(
     printf '%s\n' "$NAX_SYMBOL" "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" \
         "$R1_BUILDER_E256_SYMBOL" "$R1_KERNEL_SYMBOL" \
+        "$SDPA_D256_BF16_SYMBOL" "$SDPA_D256_FP16_SYMBOL" \
         | shasum -a 256 | cut -d' ' -f1
 )"
 TARGET_ARG="${1:-debug}"
@@ -154,7 +157,9 @@ verify_metallib() {
         "$GEMV_SYMBOL" \
         "$R1_BUILDER_SYMBOL" \
         "$R1_BUILDER_E256_SYMBOL" \
-        "$R1_KERNEL_SYMBOL"
+        "$R1_KERNEL_SYMBOL" \
+        "$SDPA_D256_BF16_SYMBOL" \
+        "$SDPA_D256_FP16_SYMBOL"
     do
         # Use grep -c rather than grep -q: grep -q closes the pipe after its
         # first match, causing strings to receive SIGPIPE under pipefail.

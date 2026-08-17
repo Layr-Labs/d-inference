@@ -11,7 +11,8 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     ///    UNVERSIONED payload predates the backend pin and cannot say which
     ///    backend it measured, so a gate must refuse it rather than assume.
     /// 2 adds required effective config-projected Gemma settings.
-    public static let currentSchemaVersion = 2
+    /// 3 adds per-sample MLX active, peak, and transient memory evidence.
+    public static let currentSchemaVersion = 3
 
     public struct Sample: Codable, Sendable {
         public let strategy: String
@@ -19,6 +20,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
         public let iteration: Int
         public let ttftMs: Double
         public let msPerPrefillToken: Double
+        public let activeMemoryBeforeBytes: Int
+        public let peakMemoryBytes: Int
+        public let transientPeakBytes: Int
         /// The backend THIS sample's engine actually resolved to. Per sample
         /// rather than once per run because each measurement builds its own
         /// engine: a selection can be honoured at L=128 and degrade at
@@ -135,7 +139,11 @@ public enum SchedulerPrefillBenchmark {
                     resolved.append(sample.resolvedKVBackend)
                     log("  engine resolved kv backend: \(sample.resolvedKVBackend)")
                 }
-                log("  \(strategyLabel) L=\(length) i=\(iteration): \(String(format: "%.3f", sample.msPerPrefillToken)) ms/t (\(String(format: "%.1f", sample.ttftMs)) ms)")
+                log(
+                    "  \(strategyLabel) L=\(length) i=\(iteration): "
+                        + "\(String(format: "%.3f", sample.msPerPrefillToken)) ms/t "
+                        + "(\(String(format: "%.1f", sample.ttftMs)) ms), "
+                        + "transient peak \(sample.transientPeakBytes) B")
                 samples.append(sample)
             }
         }
@@ -198,6 +206,9 @@ public enum SchedulerPrefillBenchmark {
         let engine = parts.engine
 
         let prompt = ThroughputSweep.tile(baseTokens, to: promptTokens, offset: iteration * 17)
+        Stream().synchronize()
+        let activeMemoryBefore = Memory.activeMemory
+        GPU.resetPeakMemory()
         let started = ContinuousClock.now
         let stream = try engine.submit(CBv2Request(
             id: CBv2RequestID(1),
@@ -222,6 +233,8 @@ public enum SchedulerPrefillBenchmark {
         let elapsed = firstOutput ?? (ContinuousClock.now - started)
         let ttftMs = ThroughputSweep.seconds(elapsed) * 1000.0
         let prefillTokens = max(1, promptTokens - 1)
+        Stream().synchronize()
+        let peakMemory = Memory.peakMemory
         await stopAndReclaim(engine)
         return SchedulerPrefillBenchmarkReport.Sample(
             strategy: strategyLabel,
@@ -229,6 +242,9 @@ public enum SchedulerPrefillBenchmark {
             iteration: iteration,
             ttftMs: ttftMs,
             msPerPrefillToken: ttftMs / Double(prefillTokens),
+            activeMemoryBeforeBytes: activeMemoryBefore,
+            peakMemoryBytes: peakMemory,
+            transientPeakBytes: max(0, peakMemory - activeMemoryBefore),
             resolvedKVBackend: parts.resolvedBackend
         )
     }

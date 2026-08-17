@@ -21,12 +21,13 @@ struct Qwen36ProductionCanaryTests {
         var liveBundle: ProviderEngineBundle?
 
         do {
+            let targetPreparation = SpecDecPreparation(
+                artifact: nil,
+                status: .disabled(.configDisabled, configured: false))
             let targetBundle: ProviderEngineBundle
             do {
                 targetBundle = try await fixture.makeBundle(
-                    preparation: .init(
-                        artifact: nil,
-                        status: .disabled(.configDisabled, configured: false)))
+                    preparation: targetPreparation)
             } catch {
                 throw Qwen36ProductionCanaryError.stage(
                     "target-only EngineV2SlotFactory production bundle",
@@ -131,6 +132,21 @@ struct Qwen36ProductionCanaryTests {
             await Qwen36ProductionCanary.retire(targetBundle)
             liveBundle = nil
 
+            let fusedBundle = try await fixture.makeBundle(
+                preparation: targetPreparation,
+                attentionExecution: "fused")
+            liveBundle = fusedBundle
+            let fusedText = try await Qwen36ProductionCanary.collect(
+                fixture.scheduler(bundle: fusedBundle),
+                request: fixture.textRequest())
+            #expect(
+                fusedText.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    == #"{"sum":423,"check":"ok"}"#)
+            #expect(fusedText.info?.promptTokens ?? 0 > 0)
+            #expect(fusedText.info?.completionTokens ?? 0 > 0)
+            await Qwen36ProductionCanary.retire(fusedBundle)
+            liveBundle = nil
+
             let inlinePreparation = await fixture.inlinePreparation()
             let artifact = try #require(
                 inlinePreparation.artifact,
@@ -162,8 +178,8 @@ struct Qwen36ProductionCanaryTests {
             #expect(mtp.proposedTokens > 0)
             #expect(mtp.acceptedDraftTokens > 0)
             #expect(mtp.proposedTokens > mtp.acceptedDraftTokens, "parity run exercised no rejection")
-            #expect(mtp.serialVerificationRounds > 0)
-            #expect(mtp.rectangularVerificationRounds == 0)
+            #expect(mtp.serialVerificationRounds == 0)
+            #expect(mtp.rectangularVerificationRounds > 0)
             #expect(mtp.rounds > 0)
 
             let cancellation = try await fixture.cancelAfterFirstDelta(bundle: mtpBundle)
@@ -352,7 +368,10 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
     let targetSizing: SlotSizingSnapshot
     let tokenizer: TokenizerHandle
 
-    func makeBundle(preparation: SpecDecPreparation) async throws -> ProviderEngineBundle {
+    func makeBundle(
+        preparation: SpecDecPreparation,
+        attentionExecution: String? = nil
+    ) async throws -> ProviderEngineBundle {
         let prepared = try await EngineV2SlotFactory.prepareProductionModel(
             modelId: Qwen36ProductionCanary.modelID,
             isVLM: true,
@@ -366,6 +385,13 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
                 residentWeightBytes: UInt64(max(0, sizing.weightsBytes)),
                 configReserveBytes: 0),
             UInt64(Int.max)))
+        var environment = [
+            "DARKBLOOM_PREFIX_CACHE": "0",
+            "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "0",
+        ]
+        if let attentionExecution {
+            environment[CBv2AttentionExecutionPolicy.environmentVariable] = attentionExecution
+        }
         do {
             return try await EngineV2SlotFactory.makeProductionBundle(
                 modelId: Qwen36ProductionCanary.modelID,
@@ -380,10 +406,7 @@ private struct Qwen36ProductionCanaryFixture: @unchecked Sendable {
                 kvBudget: nil,
                 specDecPreparation: preparation,
                 preparedModel: prepared,
-                environment: [
-                    "DARKBLOOM_PREFIX_CACHE": "0",
-                    "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "0",
-                ])
+                environment: environment)
         } catch {
             prepared.assistant?.release()
             MLX.Memory.clearCache()

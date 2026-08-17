@@ -1404,6 +1404,7 @@ struct EngineV2FailLoudFactoryTests {
             makeEngine: {
                 EngineV2Factory.ProductionBuild(
                     engine: ScriptedCBv2Engine(script: .manual),
+                    fixedRequestBytes: 0,
                     kvBackendKind: .contiguous,
                     kvBackendFallbackReason: nil)
             }
@@ -1420,6 +1421,35 @@ struct EngineV2FailLoudFactoryTests {
         #expect(events.first?.fields?["model"]?.description == "gemma-4-26b-qat-4bit")
     }
 
+    @Test("factory bridge reserves exact resolved recurrent and MTP fixed bytes")
+    func factoryUsesResolvedFixedRequestBytes() async throws {
+        let bytesPerGeneration = 64_389_120
+        let resolvedModes = [
+            ("compact", 3 * bytesPerGeneration),
+            ("captured-k4", 6 * bytesPerGeneration),
+        ]
+        for (mode, fixedRequestBytes) in resolvedModes {
+            let bridge = try EngineV2Factory.makeBridge(
+                modelId: "qwen3.6-\(mode)",
+                tokenizer: TokenizerHandle(StubTokenizer()),
+                eosTokenIds: [2],
+                kvBytesPerToken: 100,
+                makeEngine: {
+                    EngineV2Factory.ProductionBuild(
+                        engine: ScriptedCBv2Engine(script: .manual),
+                        fixedRequestBytes: fixedRequestBytes,
+                        kvBackendKind: .contiguous,
+                        kvBackendFallbackReason: nil)
+                })
+            #expect(await bridge.fixedRequestBytes == fixedRequestBytes)
+            #expect(
+                await bridge.requestReservationBytes(tokenCount: 2)
+                    == fixedRequestBytes + 200,
+                "shared-budget reservation drifted for \(mode)")
+            await bridge.shutdown()
+        }
+    }
+
     @Test("factory: paged fallback rides the kv-backend event reason")
     func factoryFallbackTelemetry() throws {
         let telemetry = TelemetrySink()
@@ -1431,6 +1461,7 @@ struct EngineV2FailLoudFactoryTests {
             makeEngine: {
                 EngineV2Factory.ProductionBuild(
                     engine: ScriptedCBv2Engine(script: .manual),
+                    fixedRequestBytes: 0,
                     kvBackendKind: .contiguous,
                     kvBackendFallbackReason: "ineligible: layer 0 headDim 80")
             }

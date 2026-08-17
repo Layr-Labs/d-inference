@@ -312,6 +312,17 @@ private func recordServerStream(
 @Suite("EngineV2 production wiring: v2-only slot build")
 struct EngineV2SlotBuildTests {
 
+    @Test("production selects adaptive depth only for request-stateful assistants")
+    func productionMTPDepthModeFollowsDrafterCapability() {
+        #expect(
+            MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                usesRequestStatefulDrafter: true) == nil)
+        #expect(
+            MTPAutomaticVerificationPolicy.fixedDraftTokens(
+                usesRequestStatefulDrafter: false)
+                == MTPAutomaticVerificationPolicy.initialDraftTokens)
+    }
+
     @Test("slot build is unconditional: builds, registers, and streams translated events")
     func slotBuildAlwaysBuildsRegistersAndStreams() async throws {
         let loop = try makeWiringLoop()
@@ -2105,6 +2116,7 @@ struct EngineV2KVBackendFallbackHeartbeatTests {
             makeEngine: {
                 EngineV2Factory.ProductionBuild(
                     engine: WiringScriptedEngine(script: .manual),
+                    fixedRequestBytes: 0,
                     kvBackendKind: kind,
                     kvBackendFallbackReason: fallbackReason)
             })

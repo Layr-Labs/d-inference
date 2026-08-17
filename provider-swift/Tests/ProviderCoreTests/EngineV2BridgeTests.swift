@@ -1425,7 +1425,7 @@ struct EngineV2FailLoudFactoryTests {
     func factoryUsesResolvedFixedRequestBytes() async throws {
         let bytesPerGeneration = 64_389_120
         let resolvedModes = [
-            ("compact", 3 * bytesPerGeneration),
+            ("compact-k4", 4 * bytesPerGeneration),
             ("captured-k4", 6 * bytesPerGeneration),
         ]
         for (mode, fixedRequestBytes) in resolvedModes {

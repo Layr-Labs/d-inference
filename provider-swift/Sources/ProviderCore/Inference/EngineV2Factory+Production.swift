@@ -500,6 +500,7 @@ extension EngineV2Factory {
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        attentionExecutionPolicy: CBv2AttentionExecutionPolicy? = nil,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBuild {
         let preparedBackend = try prepareProductionBackend(
@@ -509,6 +510,7 @@ extension EngineV2Factory {
             kvBackend: kvBackend,
             maxContextLength: maxContextLength,
             environment: environment,
+            attentionExecutionPolicy: attentionExecutionPolicy,
             pagedPreflightOverride: pagedPreflightOverride)
         return try assembleProductionBuild(
             model: model,
@@ -530,6 +532,7 @@ extension EngineV2Factory {
         kvBackend: EngineV2KVBackendSelection = .auto,
         maxContextLength: Int? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
+        attentionExecutionPolicy: CBv2AttentionExecutionPolicy? = nil,
         pagedPreflightOverride: (([CBv2LayerKind]) throws -> Void)? = nil
     ) throws -> ProductionBackendPreparation {
         guard kvBytesCapacity > 0 else {
@@ -554,19 +557,23 @@ extension EngineV2Factory {
         // at build time — never on the step path).
         let layerKinds: [CBv2LayerKind]
         let modelCapabilities: CBv2ModelCapabilities
+        let isQwen35: Bool
         let newCaches:
             ((Int, CBv2LayerKind) -> any CBv2AttendingLayerCache)
                 throws -> [any CBv2AttendingLayerCache]
         switch model {
         case let gemma as Gemma4TextModel:
+            isQwen35 = false
             layerKinds = gemma.cbv2LayerKinds
             modelCapabilities = .attentionOnly
             newCaches = { make in try gemma.newCacheV2(makeLayerCache: make) }
         case let gptoss as GPTOSSModel:
+            isQwen35 = false
             layerKinds = gptoss.cbv2LayerKinds
             modelCapabilities = .attentionOnly
             newCaches = { make in gptoss.newCacheV2(makeLayerCache: make) }
         case let qwen as Qwen35MoEModel:
+            isQwen35 = true
             layerKinds = qwen.cbv2LayerKinds
             modelCapabilities = qwen.cbv2Capabilities
             newCaches = { make in qwen.newCacheV2(makeLayerCache: make) }
@@ -574,6 +581,11 @@ extension EngineV2Factory {
             throw EngineV2ProductionError.unsupportedModel(
                 String(describing: type(of: model)))
         }
+
+        let resolvedAttentionExecutionPolicy = attentionExecutionPolicy
+            ?? QwenHead256AttentionTuning.currentMachinePolicy(
+                isQwen35: isQwen35,
+                environment: environment)
 
         var resolvedKind: EngineV2KVBackendKind
         switch kvBackend {
@@ -787,7 +799,10 @@ extension EngineV2Factory {
             let backend = CBv2ContiguousKVBackend(
                 config: CBv2ContiguousBackendConfig(bytesCapacity: cappedCapacity))
             let caches = try newCaches { index, kind in
-                CBv2LayerCache(layerIndex: index, kind: kind)
+                CBv2LayerCache(
+                    layerIndex: index,
+                    kind: kind,
+                    attentionExecutionPolicy: resolvedAttentionExecutionPolicy)
             }
             return ProductionBackendPreparation(
                 model: model,

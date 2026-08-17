@@ -117,7 +117,7 @@ def scheduler_payload(
     the binary emits it.
     """
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
         "gemmaOptimizations": copy.deepcopy(GEMMA_OPTIMIZATIONS),
@@ -128,6 +128,9 @@ def scheduler_payload(
                 "iteration": iteration,
                 "ttftMs": 50.0 + length,
                 "msPerPrefillToken": (50.0 + length) / length,
+                "activeMemoryBeforeBytes": 20_000_000_000,
+                "peakMemoryBytes": 21_000_000_000,
+                "transientPeakBytes": 1_000_000_000,
                 "resolvedKVBackend": resolved,
             }
             for length in prefill_lengths

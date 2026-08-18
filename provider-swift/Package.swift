@@ -13,6 +13,7 @@ let package = Package(
         .library(name: "DarkbloomFanCore", targets: ["DarkbloomFanCore"]),
         .library(name: "DarkbloomFanProtocol", targets: ["DarkbloomFanProtocol"]),
         .library(name: "DarkbloomFanService", targets: ["DarkbloomFanService"]),
+        .executable(name: "DarkbloomApp", targets: ["DarkbloomApp"]),
         .executable(name: "darkbloom", targets: ["darkbloom"]),
         .executable(name: "darkbloom-fan-helper", targets: ["DarkbloomFanHelper"]),
         .executable(name: "darkbloom-enclave", targets: ["DarkbloomEnclaveCLI"]),
@@ -120,6 +121,17 @@ let package = Package(
                 .product(name: "Hummingbird", package: "hummingbird"),
             ],
             path: "Sources/ProviderCore"
+        ),
+
+        // ----------------------------------------------------------------
+        // DarkbloomApp: native macOS setup and provider-management UI. Runtime,
+        // model-catalog, and diagnostics integration stay behind focused store
+        // and service boundaries while this target develops independently.
+        // ----------------------------------------------------------------
+        .executableTarget(
+            name: "DarkbloomApp",
+            path: "Sources/DarkbloomApp",
+            resources: [.process("Resources")]
         ),
 
         // ----------------------------------------------------------------
@@ -255,6 +267,11 @@ let package = Package(
                 "DarkbloomFanService",
             ],
             path: "Tests/DarkbloomFanHelperTests"
+        ),
+        .testTarget(
+            name: "DarkbloomAppTests",
+            dependencies: ["DarkbloomApp"],
+            path: "Tests/DarkbloomAppTests"
         ),
 
         // ----------------------------------------------------------------

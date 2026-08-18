@@ -2,18 +2,19 @@ import ArgumentParser
 import Foundation
 import ProviderCore
 
-/// `darkbloom local` — print the direct/local-mode endpoint (URL + API key)
-/// for the OpenAI-compatible server started by `darkbloom start --local`, with
-/// ready-to-paste client examples. `--json` emits the raw discovery record for
-/// tooling.
+/// `darkbloom local` — print the discovered local endpoint (URL + API key)
+/// for either local-only or local-plus-network serving, with ready-to-paste
+/// client examples. `--json` emits the raw discovery record for tooling.
 struct Local: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "local",
-        abstract: "Show the local (direct-mode) OpenAI endpoint and API key.",
+        abstract: "Show the local OpenAI endpoint and API key.",
         discussion: """
-        Reads ~/.darkbloom/local.json, written by `darkbloom start --local`.
+        Reads ~/.darkbloom/local.json, written by `darkbloom start --local` or
+        `darkbloom start --local-endpoint`.
         Point any OpenAI client at the base URL with the API key to run
-        inference on this Mac directly — free, and without the coordinator.
+        inference directly on this Mac. Local requests do not pass through the
+        coordinator.
         """
     )
 
@@ -44,7 +45,7 @@ struct Local: AsyncParsableCommand {
             return
         }
 
-        print("Local (direct-mode) OpenAI endpoint")
+        print("Local OpenAI endpoint")
         print("  base URL: \(info.baseURL)")
         if info.apiKey.isEmpty {
             print("  API key:  (auth disabled)")

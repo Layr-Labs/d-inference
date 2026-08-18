@@ -40,11 +40,19 @@ struct DarkbloomApp: App {
                 initialDestination: productPreview?.destination ?? .overview
             )
         )
-        _providerStore = State(
-            initialValue: ProviderStore(
-                previewScenario: productPreview?.providerScenario ?? .online
+        // Preview captures stay fully deterministic (fixture service, frozen
+        // clock). Real launches track the actual provider daemon: the service
+        // polls ~/.darkbloom/daemon-state.json and shells out to the
+        // `darkbloom` CLI for start/stop/restart.
+        if let productPreview {
+            _providerStore = State(
+                initialValue: ProviderStore(previewScenario: productPreview.providerScenario)
             )
-        )
+        } else {
+            _providerStore = State(
+                initialValue: ProviderStore(daemon: DaemonRuntimeService())
+            )
+        }
         _modelLibraryStore = State(
             initialValue: ModelLibraryStore(
                 fixture: productPreview?.modelFixture ?? .ready

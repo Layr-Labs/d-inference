@@ -8,11 +8,16 @@
 /// provider the user explicitly stopped; `start` re-enables it.
 
 import Foundation
+import ProviderCoreFoundation
 
 public enum LaunchAgent: Sendable {
 
-    public static let label = "io.darkbloom.provider"
-    private static let legacyLabels = ["dev.darkbloom.provider"]
+    /// Labels single-sourced from `DarkbloomServiceLabels` in
+    /// ProviderCoreFoundation — the Darkbloom macOS app resolves the same
+    /// install state when choosing between `restart` and `start --all`, and a
+    /// drifted label would fork that decision silently.
+    public static let label = DarkbloomServiceLabels.providerLaunchAgent
+    private static let legacyLabels = DarkbloomServiceLabels.providerLaunchAgentLegacy
 
     /// Canonical + legacy labels the provider may be registered under (the
     /// watchdog probes all of them).
@@ -22,9 +27,7 @@ public enum LaunchAgent: Sendable {
 
     /// Path to the launchd plist: ~/Library/LaunchAgents/io.darkbloom.provider.plist
     public static func plistPath() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/LaunchAgents")
-            .appendingPathComponent("\(label).plist")
+        DarkbloomServiceLabels.launchAgentPlistPath(label: label)
     }
 
     /// Path to the provider log file: ~/.darkbloom/provider.log

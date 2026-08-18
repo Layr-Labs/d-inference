@@ -565,6 +565,7 @@ extension ProviderLoop {
                     // re-slice tests.
                     EngineV2Factory.ProductionBuild(
                         engine: try hookBuilder(modelId, kvBytesCapacity),
+                        fixedRequestBytes: 0,
                         kvBackendKind: hooks.kvBackendKindByModel[modelId] ?? .contiguous,
                         kvBackendFallbackReason: nil)
                 })

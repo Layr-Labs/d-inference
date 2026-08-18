@@ -122,6 +122,7 @@ struct EngineV2PagedParityLiveTests {
             modelId: live.modelID,
             tokenizer: live.tokenizer,
             eosTokenIds: live.eosTokenIds,
+            fixedRequestBytes: build.fixedRequestBytes,
             kvBackendKind: build.kvBackendKind)
         return (bridge, build.kvBackendKind)
     }

@@ -360,6 +360,10 @@ extension EngineV2Factory {
     /// the fleet reports which backend every slot serves with.
     public struct ProductionBuild {
         public let engine: any CBv2Engine
+        /// Exact post-resolution fixed request residency from the concrete
+        /// engine. This includes any captured-MTP generation expansion and is
+        /// the bridge/shared-budget source of truth.
+        public let fixedRequestBytes: Int
         public let kvBackendKind: EngineV2KVBackendKind
         /// Non-nil when a paged selection DEGRADED to contiguous: the fleet
         /// kill switch always, and preflight/capacity/eligibility failures
@@ -390,11 +394,13 @@ extension EngineV2Factory {
 
         public init(
             engine: any CBv2Engine,
+            fixedRequestBytes: Int,
             kvBackendKind: EngineV2KVBackendKind,
             kvBackendFallbackReason: String?,
             pagedPoolDType: String? = nil
         ) {
             self.engine = engine
+            self.fixedRequestBytes = fixedRequestBytes
             self.kvBackendKind = kvBackendKind
             self.kvBackendFallbackReason = kvBackendFallbackReason
             self.pagedPoolDType = pagedPoolDType
@@ -954,23 +960,25 @@ extension EngineV2Factory {
         // to what the paged pool's `maxPrefillChunk` was sized from.
         var schedulerConfig = preparedBackend.schedulerConfig
         schedulerConfig.enablePrefixCache = effectivePrefixCache != nil
+        let engine = makeEngineV2(
+            model: model,
+            tokenizer: tokenizer,
+            layerKinds: preparedBackend.layerKinds,
+            backend: backend,
+            caches: caches,
+            schedulerConfig: schedulerConfig,
+            prefixCache: effectivePrefixCache,
+            // New monotonic phase leases are on by default
+            // (`useLegacyRequestTimeout` defaults false). The ONLY override
+            // is the emergency rollback kill-switch below — production never
+            // otherwise touches the lease config.
+            loopConfig: CBv2EngineLoopConfig(
+                useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
+            mtpDrafter: mtpDrafter,
+            mtpConfig: mtpConfig)
         return ProductionBuild(
-            engine: makeEngineV2(
-                model: model,
-                tokenizer: tokenizer,
-                layerKinds: preparedBackend.layerKinds,
-                backend: backend,
-                caches: caches,
-                schedulerConfig: schedulerConfig,
-                prefixCache: effectivePrefixCache,
-                // New monotonic phase leases are on by default
-                // (`useLegacyRequestTimeout` defaults false). The ONLY override
-                // is the emergency rollback kill-switch below — production never
-                // otherwise touches the lease config.
-                loopConfig: CBv2EngineLoopConfig(
-                    useLegacyRequestTimeout: Self.legacyRequestTimeoutEnabled()),
-                mtpDrafter: mtpDrafter,
-                mtpConfig: mtpConfig),
+            engine: engine,
+            fixedRequestBytes: engine.resolvedFixedBytesPerRequest,
             kvBackendKind: preparedBackend.kind,
             kvBackendFallbackReason: preparedBackend.fallbackReason,
             pagedPoolDType: preparedBackend.pagedPoolDType)

@@ -122,11 +122,19 @@ struct Qwen36ProductionCanaryTests {
             _ = try await Qwen36ProductionCanary.waitForIdle(targetBundle.bridge)
 
             let parityPrompt = try fixture.tokenize(fixture.parityRequest())
-            let targetTokens = try await Qwen36ProductionCanary.rawTokens(
-                bundle: targetBundle,
-                promptTokens: parityPrompt,
-                maxTokens: Qwen36ProductionCanary.parityMaxTokens)
+            var targetRuns: [(tokens: [Int], seconds: Double)] = []
+            targetRuns.reserveCapacity(Qwen36ProductionCanary.measuredRepetitions)
+            for _ in 0..<Qwen36ProductionCanary.measuredRepetitions {
+                targetRuns.append(try await Qwen36ProductionCanary.timedRawTokens(
+                    bundle: targetBundle,
+                    promptTokens: parityPrompt,
+                    maxTokens: Qwen36ProductionCanary.parityMaxTokens))
+            }
+            let targetTokens = try #require(targetRuns.first?.tokens)
             #expect(targetTokens.count > 32, "parity prompt did not exercise a long decode")
+            #expect(
+                targetRuns.allSatisfy { $0.tokens == targetTokens },
+                "target-only measured repetitions were not deterministic")
 
             await Qwen36ProductionCanary.retire(targetBundle)
             liveBundle = nil
@@ -148,22 +156,59 @@ struct Qwen36ProductionCanaryTests {
             #expect(initialMTP.assistantSource == .inline)
             #expect(initialMTP.assistantResidentBytes > 0)
             #expect(mtpBundle.assistantBytes > 0)
+            // The installed drafter is the production source of truth for
+            // request-owned assistant residency: Qwen head KV plus retained
+            // trusted target hidden/token rows. Do not pin the former
+            // cache-only constant here.
+            let assistantReservationPerToken =
+                await mtpBundle.bridge.auxiliaryBytesPerToken
+            #expect(assistantReservationPerToken > 0)
             #expect(
                 await mtpBundle.bridge.kvBytesPerToken
-                    == fixture.targetSizing.fp16KVBytesPerToken + 2_048)
+                    == fixture.targetSizing.fp16KVBytesPerToken
+                        + assistantReservationPerToken)
 
-            let mtpTokens = try await Qwen36ProductionCanary.rawTokens(
+            let warmupTokens = try await Qwen36ProductionCanary.rawTokens(
                 bundle: mtpBundle,
                 promptTokens: parityPrompt,
-                maxTokens: Qwen36ProductionCanary.parityMaxTokens)
+                maxTokens: Qwen36ProductionCanary.mtpWarmupMaxTokens)
+            #expect(
+                warmupTokens == Array(targetTokens.prefix(warmupTokens.count)),
+                "MTP warm-up changed greedy emitted token IDs")
+            _ = try await Qwen36ProductionCanary.waitForIdle(mtpBundle.bridge)
+
+            var mtpRuns: [(tokens: [Int], seconds: Double)] = []
+            mtpRuns.reserveCapacity(Qwen36ProductionCanary.measuredRepetitions)
+            for _ in 0..<Qwen36ProductionCanary.measuredRepetitions {
+                let run = try await Qwen36ProductionCanary.timedRawTokens(
+                    bundle: mtpBundle,
+                    promptTokens: parityPrompt,
+                    maxTokens: Qwen36ProductionCanary.parityMaxTokens)
+                #expect(run.tokens == targetTokens, "MTP changed greedy emitted token IDs")
+                mtpRuns.append(run)
+            }
+            let targetMedian = Qwen36ProductionCanary.medianSeconds(
+                targetRuns.map { $0.seconds })
+            let mtpMedian = Qwen36ProductionCanary.medianSeconds(
+                mtpRuns.map { $0.seconds })
+            print(Qwen36ProductionCanary.timingDiagnostic(
+                targetMedianSeconds: targetMedian,
+                mtpMedianSeconds: mtpMedian))
+            let mtpTokens = try #require(mtpRuns.first?.tokens)
             #expect(mtpTokens == targetTokens, "MTP changed greedy emitted token IDs")
             let mtp = await mtpBundle.bridge.mtpStatusSnapshot()
             #expect(mtp.active)
             #expect(mtp.proposedTokens > 0)
             #expect(mtp.acceptedDraftTokens > 0)
             #expect(mtp.proposedTokens > mtp.acceptedDraftTokens, "parity run exercised no rejection")
-            #expect(mtp.serialVerificationRounds > 0)
-            #expect(mtp.rectangularVerificationRounds == 0)
+            #expect(mtp.rectangularVerificationRounds > 0)
+            #expect(mtp.serialVerificationRounds == 0)
+            #expect(mtp.verificationMode == CBv2MTPVerificationMode.rectangular.rawValue)
+            // Adaptive policy may legitimately finish on temporary k=0; the
+            // production wiring test separately proves the override is nil.
+            #expect((0 ... 4).contains(mtp.selectedDepth))
+            #expect(!mtp.acceptanceByPosition.isEmpty)
+            #expect(mtp.acceptanceByPosition.count <= 4)
             #expect(mtp.rounds > 0)
 
             let cancellation = try await fixture.cancelAfterFirstDelta(bundle: mtpBundle)
@@ -197,6 +242,8 @@ private enum Qwen36ProductionCanary {
     static let modelID = "qwen3.6-35b-a3b-vl-mtp-production-canary"
     static let modelType = "qwen3_5_moe"
     static let parityMaxTokens = 192
+    static let measuredRepetitions = 3
+    static let mtpWarmupMaxTokens = 32
 
     private static let liveGate = "DARKBLOOM_LIVE_MLX_TESTS"
     private static let qwenGate = "DARKBLOOM_LIVE_MLX_QWEN36"
@@ -318,6 +365,40 @@ private enum Qwen36ProductionCanary {
             throw Qwen36ProductionCanaryError.unexpectedTerminal(
                 "\(cause): \(message)")
         }
+    }
+
+    static func timedRawTokens(
+        bundle: ProviderEngineBundle,
+        promptTokens: [Int],
+        maxTokens: Int
+    ) async throws -> (tokens: [Int], seconds: Double) {
+        let clock = ContinuousClock()
+        let started = clock.now
+        let tokens = try await rawTokens(
+            bundle: bundle, promptTokens: promptTokens, maxTokens: maxTokens)
+        let elapsed = started.duration(to: clock.now).components
+        let seconds =
+            Double(elapsed.seconds)
+            + Double(elapsed.attoseconds) / 1_000_000_000_000_000_000
+        return (tokens, seconds)
+    }
+
+    static func medianSeconds(_ samples: [Double]) -> Double {
+        precondition(!samples.isEmpty)
+        let ordered = samples.sorted()
+        return ordered[ordered.count / 2]
+    }
+
+    static func timingDiagnostic(
+        targetMedianSeconds: Double,
+        mtpMedianSeconds: Double
+    ) -> String {
+        let speedup = targetMedianSeconds / mtpMedianSeconds
+        return String(
+            format:
+                "QWEN36_MTP_CANARY median_target_seconds=%.6f median_mtp_seconds=%.6f speedup=%.4fx",
+            locale: Locale(identifier: "en_US_POSIX"),
+            targetMedianSeconds, mtpMedianSeconds, speedup)
     }
 
     static func waitForIdle(_ bridge: EngineV2Bridge) async throws -> CBv2CapacitySnapshot {

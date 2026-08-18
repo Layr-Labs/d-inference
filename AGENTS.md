@@ -59,7 +59,14 @@ e2e/                  System-level E2E testing framework
 
 provider-swift/       Swift provider CLI for Apple Silicon Macs
 ├── Sources/ProviderCore/             coordinator client, protocol, hardware, security, inference, server, telemetry, model downloads
-├── Sources/ProviderCoreFoundation/   model manifests, scanner, weight hashing, template render check, publish-safe foundation code
+├── Sources/ProviderCoreFoundation/   model manifests, scanner, weight hashing, template render check, daemon-state
+│                                     schema (`DaemonState`/`DaemonStateFile`), local-endpoint discovery record
+│                                     (`LocalEndpointInfo`), launchd labels (`DarkbloomServiceLabels`) — no-MLX,
+│                                     Linux-buildable; the ONLY provider layer the macOS app links
+├── Sources/DarkbloomApp/             SwiftUI macOS app (window + menu bar). Views stay fixture-driven for
+│                                     deterministic previews; real launches wire `ProviderStore` to
+│                                     `Services/DaemonRuntimeService` (polls daemon-state.json, shells out to
+│                                     the `darkbloom` CLI for start/stop/restart). NO MLX/ProviderCore dependency.
 ├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor`, `login`, `local`, etc.)
 ├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
@@ -209,6 +216,8 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
 - Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI. Do not add hardcoded provider `MODEL_CATALOG` lists.
+- `~/.darkbloom/daemon-state.json` is a three-consumer contract: the daemon (writer, `ProviderLoop+Trust.swift`), `darkbloom status`/`doctor`, and **DarkbloomApp** (`Services/DaemonRuntimeService`). Its schema lives ONCE in `provider-swift/Sources/ProviderCoreFoundation/DaemonState.swift` — never re-declare it app-side; bump `DaemonState.currentSchema` deliberately (readers reject forward versions rather than mis-decode). Same rule for `~/.darkbloom/local.json` (`ProviderCoreFoundation/LocalEndpointInfo.swift`) and the launchd labels (`ProviderCoreFoundation/ProviderServiceLabels.swift`, used by both `LaunchAgent` and the app's start/stop routing).
+- The app must never gain a ProviderCore/MLX dependency: it links only `ProviderCoreFoundation`. Shared wire/file types belong in the foundation layer; anything inference-adjacent stays out (e.g. `DaemonSlotPostureBuilder` remains in ProviderCore because it consults `EngineV2KVBackendPolicy`).
 
 ## Common Pitfalls
 

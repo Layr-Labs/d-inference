@@ -124,12 +124,15 @@ let package = Package(
         ),
 
         // ----------------------------------------------------------------
-        // DarkbloomApp: native macOS setup and provider-management UI. Runtime,
-        // model-catalog, and diagnostics integration stay behind focused store
-        // and service boundaries while this target develops independently.
+        // DarkbloomApp: native macOS setup and provider-management UI. Talks
+        // to the real daemon through `DaemonRuntimeService` (state file +
+        // CLI subprocess) — deliberately runs WITHOUT ProviderCore/MLX, so it
+        // links only the no-MLX ProviderCoreFoundation for the shared
+        // daemon-state / local-endpoint wire contracts.
         // ----------------------------------------------------------------
         .executableTarget(
             name: "DarkbloomApp",
+            dependencies: ["ProviderCoreFoundation"],
             path: "Sources/DarkbloomApp",
             resources: [.process("Resources")]
         ),

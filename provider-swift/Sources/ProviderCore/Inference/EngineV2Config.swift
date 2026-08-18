@@ -142,11 +142,11 @@ public enum EngineV2Factory {
     /// `makeEngine` is a closure (not a concrete type) so unit tests can
     /// script a `CBv2Engine` without weights; the production body lives in
     /// `EngineV2Factory+Production.makeProductionBuild`. The build result
-    /// carries the KV-backend decision: the bridge stores the kind (its
-    /// shared-gate accounting, heartbeat clamp, and re-slice policy key
-    /// off it) and an INFO `engine_v2_kv_backend` event reports it — with
-    /// the fallback reason when a paged selection degraded to contiguous —
-    /// so the fleet dashboard can attribute every slot's serving backend.
+    /// carries both the exact post-resolution fixed request residency and the
+    /// KV-backend decision. The bridge uses that fixed byte value directly for
+    /// shared-gate accounting, stores the backend kind for heartbeat/re-slice
+    /// policy, and emits an INFO `engine_v2_kv_backend` event — with the
+    /// fallback reason when a paged selection degraded to contiguous.
     public static func makeBridge(
         modelId: String,
         tokenizer: TokenizerHandle,
@@ -155,7 +155,6 @@ public enum EngineV2Factory {
         defaultMaxTokens: Int = 4096,
         maxConcurrentRequests: Int = 4,
         kvBytesPerToken: Int = 0,
-        fixedRequestBytes: Int = 0,
         auxiliaryBytesPerToken: Int = 0,
         auxiliaryTokenGranularity: Int = 1,
         auxiliaryTokenAllocationPadding: Int = 0,
@@ -181,7 +180,7 @@ public enum EngineV2Factory {
                 defaultMaxTokens: defaultMaxTokens,
                 maxConcurrentRequests: maxConcurrentRequests,
                 kvBytesPerToken: kvBytesPerToken,
-                fixedRequestBytes: fixedRequestBytes,
+                fixedRequestBytes: build.fixedRequestBytes,
                 auxiliaryBytesPerToken: auxiliaryBytesPerToken,
                 auxiliaryTokenGranularity: auxiliaryTokenGranularity,
                 auxiliaryTokenAllocationPadding: auxiliaryTokenAllocationPadding,

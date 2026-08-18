@@ -3,6 +3,13 @@ import Foundation
 public enum MTPAutomaticVerificationPolicy {
     public static let initialDraftTokens = 1
 
+    /// Request-stateful assistants own enough trusted history to use the
+    /// engine's marginal 0...4 controller. Stateless Gemma keeps the
+    /// established fixed initial depth.
+    static func fixedDraftTokens(usesRequestStatefulDrafter: Bool) -> Int? {
+        usesRequestStatefulDrafter ? nil : initialDraftTokens
+    }
+
     public static func maxRectangularTokens(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         chipName: String? = nil

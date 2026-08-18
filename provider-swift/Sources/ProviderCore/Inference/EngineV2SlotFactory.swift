@@ -345,9 +345,12 @@ enum EngineV2SlotFactory {
         let mtpVerification = providerMTPVerificationPolicy(
             for: assistantHandle?.drafter,
             automaticRectangularTokens: automaticRectangularTokens)
+        let fixedDraftTokens = MTPAutomaticVerificationPolicy.fixedDraftTokens(
+            usesRequestStatefulDrafter:
+                assistantHandle?.drafter is any CBv2MTPRequestStatefulDrafter)
         let mtpConfig = CBv2MTPConfig(
             enabled: assistantHandle != nil,
-            fixedDraftTokens: MTPAutomaticVerificationPolicy.initialDraftTokens,
+            fixedDraftTokens: fixedDraftTokens,
             verificationMode: mtpVerification.mode,
             maxAutomaticRectangularTokens: mtpVerification.automaticRectangularTokens)
         // Same model-specific EOS augmentation as always (GPT-OSS/Harmony
@@ -553,6 +556,7 @@ enum EngineV2SlotFactory {
             makeEngine = {
                 EngineV2Factory.ProductionBuild(
                     engine: try makeEngineOverride(modelId, engineKVBytesCapacity),
+                    fixedRequestBytes: 0,
                     kvBackendKind: .contiguous,
                     kvBackendFallbackReason: nil)
             }
@@ -594,15 +598,6 @@ enum EngineV2SlotFactory {
             throw EngineV2ProductionError.noKVHeadroom
         }
 
-        let fixedRequestBytes: Int
-        if let recurrent = servingModel as? any CBv2RecurrentLanguageModelForwardable {
-            // Keep the process-wide admission gate aligned with EngineV2's
-            // request-owned recurrent-state charge. Invalid geometry must
-            // refuse the load rather than advertise capacity that cannot fit.
-            fixedRequestBytes = try recurrent.cbv2RecurrentStateSpec.peakBytesPerRequest()
-        } else {
-            fixedRequestBytes = 0
-        }
 
         let bridge = try EngineV2Factory.makeBridge(
             modelId: modelId,
@@ -612,7 +607,6 @@ enum EngineV2SlotFactory {
             defaultMaxTokens: sizing.defaultMaxTokens,
             maxConcurrentRequests: maxConcurrentRequests,
             kvBytesPerToken: processKVBytesPerToken,
-            fixedRequestBytes: fixedRequestBytes,
             auxiliaryBytesPerToken: assistantStateBytesPerToken,
             auxiliaryTokenGranularity: assistantStateTokenGranularity,
             auxiliaryTokenAllocationPadding: assistantStateTokenAllocationPadding,

@@ -6,97 +6,117 @@ import ProviderCoreFoundation
 @MainActor
 @Observable
 final class OnboardingFlowModel {
-    private(set) var step: OnboardingStep { didSet { publishDraft() } }
-    private(set) var readinessCompletedCount = 0 { didSet { publishDraft() } }
-    private(set) var readinessPhase: ReadinessPhase = .checking { didSet { publishDraft() } }
-    private(set) var accountPhase: AccountLinkPhase = .introduction { didSet { publishDraft() } }
-    private(set) var enrollmentPhase: EnrollmentPhase = .overview { didSet { publishDraft() } }
-    private(set) var preparationPhase: PreparationPhase = .reservingSpace { didSet { publishDraft() } }
-    private(set) var preparationProgress = 0.04 { didSet { publishDraft() } }
-    private(set) var verificationPhase: VerificationPhase = .profileDetected { didSet { publishDraft() } }
-    private(set) var isRestoredFromDraft = false
-    private(set) var resumeReconciliationState: ResumeReconciliationState = .notNeeded
-    private(set) var accountLinkSession: OnboardingAccountLinkSession
-    /// Ephemeral (not persisted in the draft): a live link attempt is in
-    /// flight (code requested through terminal event) — the view renders
-    /// the introduction phase's button as disabled/working while this is true.
-    private(set) var accountLinkRequestInFlight = false
-    /// Ephemeral: the terminal `.error` from the last live link attempt (a
-    /// `DeviceAuthError` description), rendered next to the retry actions.
-    private(set) var accountLinkFailureDetail: String?
+    var step: OnboardingStep { didSet { publishDraft() } }
+    var readinessCompletedCount = 0 { didSet { publishDraft() } }
+    var readinessPhase: ReadinessPhase = .checking { didSet { publishDraft() } }
+    var readinessItems: [ReadinessEvaluation.Item] = []
+    var accountPhase: AccountLinkPhase = .introduction { didSet { publishDraft() } }
+    var enrollmentPhase: EnrollmentPhase = .overview { didSet { publishDraft() } }
+    var enrollmentFailureDetail: String?
+    var enrollmentProfilePath: String?
+    var preparationPhase: PreparationPhase = .reservingSpace { didSet { publishDraft() } }
+    var preparationProgress = 0.04 { didSet { publishDraft() } }
+    var preparationChoices: [OnboardingModelChoice] = []
+    var selectedModelID: String? { didSet { publishDraft() } }
+    var downloadCompletedModelID: String? { didSet { publishDraft() } }
+    var preparationFailureDetail: String?
+    var providerStartCompleted = false
+    var verificationPhase: VerificationPhase = .profileDetected { didSet { publishDraft() } }
+    var isRestoredFromDraft = false
+    var resumeReconciliationState: ResumeReconciliationState = .notNeeded
+    var accountLinkSession: OnboardingAccountLinkSession
+    var accountLinkRequestInFlight = false
+    var accountLinkFailureDetail: String?
     var showsProfilePrivacyDetails = false
 
-    @ObservationIgnored private let freezesAutomaticProgress: Bool
-    @ObservationIgnored private let reconciliationOutcome: ResumeReconciliationOutcome
-    @ObservationIgnored private var operationRevision = 0
-    @ObservationIgnored private var accountLinkAttempt = 0
-    @ObservationIgnored private var immutableReadinessFailure: ReadinessPhase?
-    @ObservationIgnored private var conflictingManagementPersists = false
-    @ObservationIgnored private var isApplyingDraft = false
-    @ObservationIgnored private var onDraftChange: ((OnboardingDraft) -> Void)?
+    @ObservationIgnored let freezesAutomaticProgress: Bool
+    @ObservationIgnored let reconciliationOutcome: ResumeReconciliationOutcome
+    @ObservationIgnored var operationRevision = 0
+    @ObservationIgnored var accountLinkAttempt = 0
+    @ObservationIgnored var immutableReadinessFailure: ReadinessPhase?
+    @ObservationIgnored var conflictingManagementPersists = false
+    @ObservationIgnored var isApplyingDraft = false
+    @ObservationIgnored var onDraftChange: ((OnboardingDraft) -> Void)?
 
-    // Live seams (slice: real account linking + real verification gating).
-    // All default to production implementations so `DarkbloomApp.swift`
-    // wiring is unchanged; tests inject fakes/temp files.
-    /// The `darkbloom login --json` subprocess adapter driving account steps.
-    @ObservationIgnored private let accountLinkRunner: (any AccountLinkRunning)?
-    /// Deeplinks the coordinator's verification URL. Default: the system
-    /// browser via NSWorkspace. Injected in tests.
-    @ObservationIgnored private let verificationURLHandler: @MainActor (URL) -> Void
-    /// Reads the daemon's on-disk truth for the verification gate. Default:
-    /// the real `~/.darkbloom/daemon-state.json` via DaemonStateFile.read.
-    @ObservationIgnored private let daemonStateProvider: @Sendable () -> DaemonState?
-    @ObservationIgnored private let verificationPollInterval: Duration
-    /// How long verification waits for a FIRST server check-in before marking
-    /// `.checkInDelayed` (it keeps polling after — the phase is advisory).
-    @ObservationIgnored private let verificationCheckInGrace: Duration
-    @ObservationIgnored private var accountLinkTask: Task<Void, Never>?
+    @ObservationIgnored let diagnosticsRunner: (any DiagnosticsCLIRunning)?
+    @ObservationIgnored let readinessFactsProvider: @Sendable () -> ReadinessMachineFacts
+    @ObservationIgnored let accountLinkRunner: (any AccountLinkRunning)?
+    @ObservationIgnored let enrollmentRunner: (any EnrollmentCLIRunning)?
+    @ObservationIgnored let preparationService: (any OnboardingPreparationServicing)?
+    @ObservationIgnored let verificationURLHandler: @MainActor (URL) -> Void
+    @ObservationIgnored let providerEvidenceProvider: @Sendable () -> OnboardingProviderEvidence
+    @ObservationIgnored let enrollmentPollInterval: Duration
+    @ObservationIgnored let preparationEvidencePollInterval: Duration
+    @ObservationIgnored let preparationEvidenceTimeout: Duration
+    @ObservationIgnored let verificationPollInterval: Duration
+    @ObservationIgnored let verificationCheckInGrace: Duration
+    @ObservationIgnored var accountLinkTask: Task<Void, Never>?
+    @ObservationIgnored var enrollmentPollTask: Task<Void, Never>?
+    @ObservationIgnored var enrollmentPollSession: UUID?
+    @ObservationIgnored var preparationTask: Task<Void, Never>?
 
     nonisolated static let readinessItemCount = 6
     nonisolated static let verificationItemCount = 4
+
     init(
         startingAt step: OnboardingStep = .readiness,
         previewVariant: String? = nil,
         freezesAutomaticProgress: Bool = false,
         reconciliationOutcome: ResumeReconciliationOutcome = .matched,
         accountLinkIssuedAt: Date = .now,
+        diagnosticsRunner: (any DiagnosticsCLIRunning)? = ProcessDiagnosticsCLIRunner(),
+        readinessFactsProvider: @escaping @Sendable () -> ReadinessMachineFacts = { .live },
         accountLinkRunner: (any AccountLinkRunning)? = ProcessAccountLinkCLI(),
+        enrollmentRunner: (any EnrollmentCLIRunning)? = ProcessEnrollmentCLI(),
+        preparationService: (any OnboardingPreparationServicing)? = OnboardingPreparationService(),
         verificationURLHandler: (@MainActor (URL) -> Void)? = nil,
         daemonStateProvider: (@Sendable () -> DaemonState?)? = nil,
+        providerEvidenceProvider: (@Sendable () -> OnboardingProviderEvidence)? = nil,
+        enrollmentPollInterval: Duration = .seconds(2),
+        preparationEvidencePollInterval: Duration = .milliseconds(250),
+        preparationEvidenceTimeout: Duration = .seconds(30),
         verificationPollInterval: Duration = .seconds(2),
         verificationCheckInGrace: Duration = .seconds(90)
     ) {
         self.step = step
         self.freezesAutomaticProgress = freezesAutomaticProgress
         self.reconciliationOutcome = reconciliationOutcome
+        self.diagnosticsRunner = diagnosticsRunner
+        self.readinessFactsProvider = readinessFactsProvider
         self.accountLinkRunner = accountLinkRunner
+        self.enrollmentRunner = enrollmentRunner
+        self.preparationService = preparationService
         self.verificationURLHandler = verificationURLHandler ?? { NSWorkspace.shared.open($0) }
-        self.daemonStateProvider = daemonStateProvider ?? { DaemonStateFile.read() }
+        let daemonStateProvider = daemonStateProvider ?? { DaemonStateFile.read() }
+        self.providerEvidenceProvider = providerEvidenceProvider ?? {
+            OnboardingProviderEvidence(
+                daemonState: daemonStateProvider(),
+                localEndpoint: LocalEndpointDiscovery.readInfo()
+            )
+        }
+        self.enrollmentPollInterval = enrollmentPollInterval
+        self.preparationEvidencePollInterval = preparationEvidencePollInterval
+        self.preparationEvidenceTimeout = preparationEvidenceTimeout
         self.verificationPollInterval = verificationPollInterval
         self.verificationCheckInGrace = verificationCheckInGrace
         accountLinkSession = .fixture(issuedAt: accountLinkIssuedAt, attempt: 0)
+        readinessItems = Self.previewReadinessItems(completedCount: 0, phase: .checking)
 
         if freezesAutomaticProgress {
             applyPreview(OnboardingPreviewState(step: step, variant: previewVariant))
         }
     }
 
-    /// Whether the account step drives a real `darkbloom login --json`
-    /// attempt (vs. the fully simulated fixture path used by previews and
-    /// design captures).
-    var usesLiveAccountLink: Bool {
-        !freezesAutomaticProgress && accountLinkRunner != nil
-    }
+    var usesLiveReadiness: Bool { !freezesAutomaticProgress && diagnosticsRunner != nil }
+    var usesLiveAccountLink: Bool { !freezesAutomaticProgress && accountLinkRunner != nil }
+    var usesLiveEnrollment: Bool { !freezesAutomaticProgress && enrollmentRunner != nil }
+    var usesLivePreparation: Bool { !freezesAutomaticProgress && preparationService != nil }
+    var usesLiveVerification: Bool { !freezesAutomaticProgress }
+    var verificationCompletedCount: Int { verificationPhase.completedMilestoneCount }
 
-    /// Whether the verification step polls the real daemon state file (vs.
-    /// the frozen preview phases). Gated only on `freezesAutomaticProgress`:
-    /// the default `daemonStateProvider` is the real reader.
-    var usesLiveVerification: Bool {
-        !freezesAutomaticProgress
-    }
-
-    var verificationCompletedCount: Int {
-        verificationPhase.completedMilestoneCount
+    var selectedPreparationChoice: OnboardingModelChoice? {
+        guard let selectedModelID else { return nil }
+        return preparationChoices.first { $0.id == selectedModelID }
     }
 
     var draft: OnboardingDraft {
@@ -109,23 +129,34 @@ final class OnboardingFlowModel {
             preparationProgress: preparationProgress,
             verificationCompletedCount: verificationCompletedCount,
             readinessPhase: readinessPhase,
-            verificationPhase: verificationPhase
+            verificationPhase: verificationPhase,
+            selectedModelID: selectedModelID,
+            downloadCompletedModelID: downloadCompletedModelID
         )
     }
 
     func setDraftChangeHandler(_ handler: ((OnboardingDraft) -> Void)?) {
         onDraftChange = handler
     }
+
     func restore(from draft: OnboardingDraft) {
         let draft = draft.normalizedForResume
+        cancelPendingOperations()
         isApplyingDraft = true
         step = draft.step
         readinessCompletedCount = draft.readinessCompletedCount
         readinessPhase = draft.readinessPhase
+        readinessItems = Self.previewReadinessItems(
+            completedCount: draft.readinessCompletedCount,
+            phase: draft.readinessPhase
+        )
         accountPhase = draft.accountPhase
         enrollmentPhase = draft.enrollmentPhase
         preparationPhase = draft.preparationPhase
         preparationProgress = draft.preparationProgress
+        selectedModelID = draft.selectedModelID
+        downloadCompletedModelID = draft.downloadCompletedModelID
+        providerStartCompleted = false
         verificationPhase = draft.verificationPhase
         immutableReadinessFailure = switch draft.readinessPhase {
         case .unsupportedMac, .insufficientMemory: draft.readinessPhase
@@ -142,30 +173,24 @@ final class OnboardingFlowModel {
         resumeReconciliationState = .required
     }
 
-    func reconcileRestoredProgress() async {
-        guard resumeReconciliationState == .required || resumeReconciliationState == .rechecking else {
-            return
-        }
-        let revision = operationRevision
-        resumeReconciliationState = .rechecking
-        guard await pause(.milliseconds(760)) else {
-            if revision == operationRevision { resumeReconciliationState = .required }
-            return
-        }
-        guard revision == operationRevision else { return }
-        applyReconciliationOutcome()
-    }
-
     func resetForNewSetup() {
         cancelPendingOperations()
         isApplyingDraft = true
         step = .readiness
         readinessCompletedCount = 0
         readinessPhase = .checking
+        readinessItems = Self.previewReadinessItems(completedCount: 0, phase: .checking)
         accountPhase = .introduction
         enrollmentPhase = .overview
+        enrollmentFailureDetail = nil
+        enrollmentProfilePath = nil
         preparationPhase = .reservingSpace
         preparationProgress = 0.04
+        preparationChoices = []
+        selectedModelID = nil
+        downloadCompletedModelID = nil
+        preparationFailureDetail = nil
+        providerStartCompleted = false
         verificationPhase = .profileDetected
         immutableReadinessFailure = nil
         conflictingManagementPersists = false
@@ -185,8 +210,10 @@ final class OnboardingFlowModel {
         case .readiness: readinessPhase.allowsContinuation
         case .account: accountPhase == .linked
         case .enrollment: enrollmentPhase == .profileDetected
-        case .preparation: preparationPhase == .ready
+        case .preparation:
+            preparationPhase == .ready && (freezesAutomaticProgress || providerStartCompleted)
         case .verification: verificationPhase == .hardwareTrusted
+            && (freezesAutomaticProgress || hasLiveVerifiedSelectedProvider())
         case .complete: false
         }
     }
@@ -209,9 +236,20 @@ final class OnboardingFlowModel {
     func runAutomaticWorkForCurrentStep() async {
         guard !freezesAutomaticProgress, !resumeReconciliationState.blocksProgress else { return }
         switch step {
-        case .readiness: await runReadinessChecks()
-        case .verification: await runVerification()
-        case .account, .enrollment, .preparation, .complete: break
+        case .readiness:
+            await runReadinessChecks()
+        case .enrollment:
+            if enrollmentPhase == .systemSettingsOpen || enrollmentPhase == .detectingProfile {
+                startEnrollmentPolling()
+            }
+        case .preparation:
+            if preparationPhase == .reservingSpace || preparationPhase == .loadingCatalog {
+                await loadPreparationCatalog()
+            }
+        case .verification:
+            await runVerification()
+        case .account, .complete:
+            break
         }
     }
 
@@ -220,7 +258,7 @@ final class OnboardingFlowModel {
         switch step {
         case .readiness: step = .account
         case .account: step = .enrollment
-        case .enrollment: step = .verification
+        case .enrollment: step = .preparation
         case .preparation: step = .verification
         case .verification: step = .complete
         case .complete: break
@@ -237,24 +275,31 @@ final class OnboardingFlowModel {
 
     func cancelPendingOperations() {
         operationRevision &+= 1
-        // Kill a live link attempt too: cancelling the consuming task ends
-        // the AsyncThrowingStream iteration, whose onTermination terminates
-        // the `darkbloom login` child process.
         accountLinkTask?.cancel()
         accountLinkTask = nil
         accountLinkRequestInFlight = false
+        enrollmentPollTask?.cancel()
+        enrollmentPollTask = nil
+        enrollmentPollSession = nil
+        preparationTask?.cancel()
+        preparationTask = nil
     }
+
+    // MARK: - Account linking
+
     func showAccountApproval(at date: Date = .now) {
         accountLinkSession = .fixture(issuedAt: date, attempt: accountLinkAttempt)
         accountPhase = .waitingForApproval
     }
+
     func retryAccountLink(at date: Date = .now) {
         accountLinkAttempt += 1
         accountLinkSession = .fixture(issuedAt: date, attempt: accountLinkAttempt)
         accountPhase = .waitingForApproval
     }
+
     func confirmAccountApproval() async {
-        guard accountPhase == .waitingForApproval else { return }
+        guard freezesAutomaticProgress, accountPhase == .waitingForApproval else { return }
         guard !accountLinkSession.isExpired(at: .now) else {
             accountPhase = .expired
             return
@@ -265,25 +310,11 @@ final class OnboardingFlowModel {
         accountPhase = .linked
     }
 
-    // MARK: - Live account linking (real `darkbloom login --json`)
-
-    /// The account step's primary action.
-    ///
-    /// Simulated→real boundary: frozen previews keep the fixture path
-    /// (`showAccountApproval` / `retryAccountLink`) untouched. Live runs spawn
-    /// ONE `darkbloom login --json` attempt per call and drive phases from
-    /// its NDJSON event stream — the code shown is coordinator-issued, the
-    /// verification URL deeplinks automatically, expiry follows the
-    /// coordinator's `expires_in`, and `accountPhase == .linked` is now only
-    /// reachable from a real terminal `.linked` event (or a pre-existing
-    /// login). `AppFlowStore`'s completion gating is otherwise unchanged: the
-    /// phase predicate stays the single source of truth.
     func startAccountLink() {
         guard accountLinkTask == nil, !accountLinkRequestInFlight else { return }
-        guard accountPhase == .introduction
-            || accountPhase == .expired
-            || accountPhase == .unreachable
-        else { return }
+        guard accountPhase == .introduction || accountPhase == .expired || accountPhase == .unreachable else {
+            return
+        }
 
         if freezesAutomaticProgress {
             switch accountPhase {
@@ -309,9 +340,6 @@ final class OnboardingFlowModel {
                     self.handleAccountLink(event)
                     if event.isTerminal { return }
                 }
-                // The stream ended without a terminal event (child died
-                // silently): the outcome is unknown — surface it as a
-                // retryable failure instead of spinning forever.
                 guard !Task.isCancelled else { return }
                 self.applyAccountLinkError("The login helper exited before the account was linked.")
             } catch {
@@ -332,9 +360,7 @@ final class OnboardingFlowModel {
             )
             accountLinkFailureDetail = nil
             accountPhase = .waitingForApproval
-            if let url = URL(string: verificationURI) {
-                verificationURLHandler(url)
-            }
+            if let url = URL(string: verificationURI) { verificationURLHandler(url) }
         case .linked:
             accountLinkFailureDetail = nil
             accountPhase = .linked
@@ -343,14 +369,8 @@ final class OnboardingFlowModel {
         }
     }
 
-    /// Maps the terminal `.error` message (a stable, user-facing
-    /// `DeviceAuthError.description` from ProviderCore) onto the step's phase
-    /// vocabulary.
     private func applyAccountLinkError(_ message: String) {
         if message.hasPrefix("Already logged in") {
-            // The machine is already linked (e.g. a previous `darkbloom
-            // login`): the account step's requirement is satisfied, exactly
-            // as if this attempt had succeeded.
             accountLinkFailureDetail = nil
             accountPhase = .linked
         } else {
@@ -359,126 +379,9 @@ final class OnboardingFlowModel {
         }
     }
 
-    func showEnrollmentInstructions() { enrollmentPhase = .instructions }
-    func markSystemSettingsOpened() {
-        guard enrollmentPhase == .instructions || enrollmentPhase == .systemSettingsOpen else { return }
-        enrollmentPhase = .systemSettingsOpen
-    }
+    // MARK: - Shared helpers
 
-    func confirmProfileInstallation() async {
-        guard enrollmentPhase == .systemSettingsOpen || enrollmentPhase == .instructions else { return }
-        await detectProfile()
-    }
-
-    func retryProfileDetection() async { await detectProfile() }
-    func reopenSystemSettings() { enrollmentPhase = .systemSettingsOpen }
-    func downloadProfileAgain() {
-        guard !conflictingManagementPersists else { return }
-        enrollmentPhase = .instructions
-    }
-    func retryReadinessChecks() async {
-        readinessCompletedCount = 0
-        readinessPhase = .checking
-        if let immutableReadinessFailure {
-            let revision = operationRevision
-            guard await pause(.milliseconds(240)), revision == operationRevision else { return }
-            readinessCompletedCount = immutableReadinessFailure.issueItemIndex ?? 0
-            readinessPhase = immutableReadinessFailure
-            return
-        }
-        await runReadinessChecks()
-    }
-
-    func previewPreparationRetry() {
-        preparationProgress = 1
-        preparationPhase = .ready
-    }
-
-    func retryVerification() async {
-        verificationPhase = .profileDetected
-        await runVerification()
-    }
-    func returnToEnrollmentForSettings() {
-        enrollmentPhase = .systemSettingsOpen
-        step = .enrollment
-    }
-
-    func returnToEnrollmentForDownload() {
-        enrollmentPhase = .instructions
-        step = .enrollment
-    }
-
-    func returnToReadinessForSystemCheck() {
-        readinessCompletedCount = 0
-        readinessPhase = .checking
-        step = .readiness
-    }
-
-    private func detectProfile() async {
-        let revision = operationRevision
-        enrollmentPhase = .detectingProfile
-        guard await pause(.milliseconds(760)), revision == operationRevision else { return }
-        enrollmentPhase = conflictingManagementPersists ? .conflictingManagement : .profileDetected
-    }
-
-    private func runReadinessChecks() async {
-        guard readinessPhase == .checking else { return }
-        let revision = operationRevision
-        while readinessCompletedCount < Self.readinessItemCount {
-            guard await pause(.milliseconds(240)), revision == operationRevision else { return }
-            readinessCompletedCount += 1
-        }
-        readinessPhase = .ready
-    }
-
-    /// Verification gate: profile accepted → hardware trust pending →
-    /// verified, driven by REAL coordinator trust as mirrored into
-    /// `daemon-state.json` by the running daemon (`DaemonStateFile.read` via
-    /// the injected `daemonStateProvider`), NOT by timers. The trust
-    /// status/level vocabulary is `DaemonSnapshotMapping`'s (see
-    /// `OnboardingTrustGating`). Polls until a terminal verdict
-    /// (`.hardwareTrusted` / `.trustFailed` / `.offline`) or cancellation;
-    /// `.checkInDelayed` is advisory and self-heals — polling continues.
-    private func runVerification() async {
-        guard verificationPhase == .profileDetected
-            || verificationPhase == .enrollmentPending
-            || verificationPhase == .trustPending
-        else { return }
-        let revision = operationRevision
-        if verificationPhase == .profileDetected {
-            verificationPhase = .enrollmentPending
-        }
-        let checkInDelayedAt = ContinuousClock.now + verificationCheckInGrace
-        while revision == operationRevision, !Task.isCancelled {
-            if let trust = daemonStateProvider()?.trust {
-                switch OnboardingTrustGating.verdict(for: trust) {
-                case .verified:
-                    verificationPhase = .hardwareTrusted
-                    return
-                case .refused:
-                    verificationPhase = .trustFailed
-                    return
-                case .offline:
-                    verificationPhase = .offline
-                    return
-                case .pending:
-                    // Any trust record means the MDM server check-in
-                    // happened; only the trust verdict is outstanding.
-                    if verificationPhase != .trustPending {
-                        verificationPhase = .trustPending
-                    }
-                }
-            } else if verificationPhase == .enrollmentPending,
-                      ContinuousClock.now >= checkInDelayedAt {
-                // Keep polling after marking: a late check-in self-heals
-                // into .trustPending without user action.
-                verificationPhase = .checkInDelayed
-            }
-            guard await pause(verificationPollInterval), revision == operationRevision else { return }
-        }
-    }
-
-    private func pause(_ duration: Duration) async -> Bool {
+    func pause(_ duration: Duration) async -> Bool {
         do {
             try await Task.sleep(for: duration)
             return !Task.isCancelled
@@ -487,45 +390,63 @@ final class OnboardingFlowModel {
         }
     }
 
-    private func publishDraft() {
+    func publishDraft() {
         guard !isApplyingDraft else { return }
         onDraftChange?(draft)
     }
 
-    private func applyReconciliationOutcome() {
-        switch reconciliationOutcome {
-        case .matched:
-            resumeReconciliationState = .reconciled
-        case .accountLinkRequired:
-            step = .account
-            accountPhase = .introduction
-            resumeReconciliationState = .reconciled
-        case .profileMissing:
-            step = .enrollment
-            conflictingManagementPersists = false
-            enrollmentPhase = .profileMissing
-            resumeReconciliationState = .reconciled
-        case .trustRequired:
-            step = .verification
-            verificationPhase = .trustFailed
-            resumeReconciliationState = .reconciled
-        case .unavailable:
-            resumeReconciliationState = .unavailable
-        }
-    }
-
-    private func applyPreview(_ preview: OnboardingPreviewState) {
+    func applyPreview(_ preview: OnboardingPreviewState) {
         readinessCompletedCount = preview.readinessCompletedCount
         readinessPhase = preview.readinessPhase
+        readinessItems = Self.previewReadinessItems(
+            completedCount: preview.readinessCompletedCount,
+            phase: preview.readinessPhase
+        )
         accountPhase = preview.accountPhase
         enrollmentPhase = preview.enrollmentPhase
         preparationPhase = preview.preparationPhase
         preparationProgress = preview.preparationProgress
+        providerStartCompleted = preview.preparationPhase == .ready
+        downloadCompletedModelID = preview.preparationPhase == .ready ? selectedModelID : nil
         verificationPhase = preview.verificationPhase
         immutableReadinessFailure = switch preview.readinessPhase {
         case .unsupportedMac, .insufficientMemory: preview.readinessPhase
         default: nil
         }
         conflictingManagementPersists = preview.enrollmentPhase == .conflictingManagement
+    }
+
+    nonisolated static func previewReadinessItems(
+        completedCount: Int,
+        phase: ReadinessPhase
+    ) -> [ReadinessEvaluation.Item] {
+        let definitions = [
+            ("apple-silicon", "Apple silicon", "Apple silicon is required"),
+            ("supported-macos", "macOS", "Sonoma or later"),
+            ("secure-enclave", "Secure Enclave", "Available for private identity"),
+            ("unified-memory", "Unified memory", "8 GB minimum"),
+            ("available-storage", "Available storage", "Exact model size is checked before download"),
+            ("boot-security", "Boot security", "SIP and authenticated root"),
+        ]
+        return definitions.enumerated().map { index, definition in
+            let state: SetupItemState
+            if phase.issueItemIndex == index {
+                state = phase == .lowStorage ? .advisory : .issue
+            } else if index < completedCount {
+                state = .complete
+            } else if phase == .checking, index == completedCount {
+                state = .working
+            } else {
+                state = .waiting
+            }
+            return ReadinessEvaluation.Item(
+                id: definition.0,
+                title: definition.1,
+                detail: definition.2,
+                action: nil,
+                state: state,
+                doctorCheckIDs: []
+            )
+        }
     }
 }

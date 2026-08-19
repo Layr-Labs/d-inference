@@ -53,8 +53,8 @@ struct AppFlowStoreTests {
         #expect(store.onboardingFlow.step == .readiness)
     }
 
-    @Test("Relaunch maps obsolete model preparation progress into required trust setup")
-    func relaunchNormalizesOptionalPreparation() {
+    @Test("Relaunch preserves interrupted model preparation for reconciliation")
+    func relaunchPreservesRequiredPreparation() {
         let savedDraft = OnboardingDraft(
             step: .preparation,
             readinessCompletedCount: 2,
@@ -71,20 +71,20 @@ struct AppFlowStoreTests {
         )
 
         #expect(store.phase == .welcome)
-        #expect(store.resumableOnboardingDraft?.step == .verification)
+        #expect(store.resumableOnboardingDraft?.step == .preparation)
         #expect(store.resumableOnboardingDraft?.preparationProgress == 0.58)
-        #expect(store.onboardingFlow.step == .verification)
+        #expect(store.resumableOnboardingDraft?.preparationPhase == .downloadFailed)
+        #expect(store.onboardingFlow.step == .preparation)
         #expect(store.onboardingFlow.preparationProgress == 0.58)
         #expect(store.onboardingFlow.verificationPhase == .profileDetected)
-        #expect(store.onboardingFlow.readinessCompletedCount == OnboardingFlowModel.readinessItemCount)
-        #expect(store.onboardingFlow.accountPhase == .linked)
-        #expect(store.onboardingFlow.enrollmentPhase == .profileDetected)
+        #expect(store.onboardingFlow.accountPhase == .introduction)
+        #expect(store.onboardingFlow.enrollmentPhase == .overview)
         #expect(store.onboardingFlow.resumeReconciliationState == .required)
         #expect(store.onboardingFlow.isRestoredFromDraft)
 
         store.resumeOnboarding()
         #expect(store.phase == .onboarding)
-        #expect(store.onboardingFlow.step == .verification)
+        #expect(store.onboardingFlow.step == .preparation)
         #expect(store.onboardingFlow.preparationProgress == 0.58)
         #expect(store.onboardingFlow.resumeReconciliationState == .required)
     }

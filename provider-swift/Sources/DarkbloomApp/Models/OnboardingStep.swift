@@ -14,8 +14,9 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         switch self {
         case .readiness: 1
         case .account: 2
-        case .enrollment, .preparation: 3
-        case .verification, .complete: 4
+        case .enrollment: 3
+        case .preparation: 4
+        case .verification, .complete: 5
         }
     }
 
@@ -24,7 +25,7 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         case .readiness: "Checking this Mac"
         case .account: "Connecting your account"
         case .enrollment: "Installing the verification profile"
-        case .preparation: "Previewing optional model setup"
+        case .preparation: "Preparing a private model"
         case .verification: "Bringing this Mac online"
         case .complete: "Choosing what to do first"
         }
@@ -46,7 +47,7 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         case .readiness: "Let’s check\nthis Mac."
         case .account: "Connect your\naccount."
         case .enrollment: "Verify\nthis Mac."
-        case .preparation: "Previewing\nmodel setup."
+        case .preparation: "Choose your\nprivate model."
         case .verification: "Bringing this\nMac online."
         case .complete: "This Mac\nis ready."
         }
@@ -61,11 +62,11 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         case .enrollment:
             "Darkbloom uses a read-only management profile to verify this is a genuine, securely configured Mac."
         case .preparation:
-            "This screen previews model setup only. Live setup will select a compatible model, confirm its exact size, and verify the finished download."
+            "Choose a catalog model confirmed to fit this Mac. Darkbloom downloads and verifies it before starting the provider and local API."
         case .verification:
             "Profile detection, enrollment check-in, and hardware trust are separate checks. Darkbloom will show exactly which one is still pending."
         case .complete:
-            "This setup preview is complete. Live setup will reconcile the account, profile, hardware trust, and network before calling this Mac available. Models can be chosen later."
+            "Your account, verification profile, private model, local API, and hardware trust are ready."
         }
     }
 
@@ -75,7 +76,7 @@ enum OnboardingStep: Int, CaseIterable, Codable, Identifiable, Sendable {
         case .account: .readiness
         case .enrollment: .account
         case .preparation: .enrollment
-        case .verification: .enrollment
+        case .verification: .preparation
         case .complete: nil
         }
     }

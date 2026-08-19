@@ -10,6 +10,8 @@ import Testing
 @Suite("Onboarding live verification gating")
 @MainActor
 struct OnboardingVerificationGatingTests {
+    private static let modelID = "catalog/verification-model"
+
     private struct Fixture {
         let directory: URL
         let stateURL: URL
@@ -26,13 +28,20 @@ struct OnboardingVerificationGatingTests {
         )
     }
 
-    private func writeTrust(_ trust: DaemonState.Trust?, to fixture: Fixture) {
+    private func writeTrust(
+        _ trust: DaemonState.Trust?,
+        to fixture: Fixture,
+        pid: Int32 = Int32(ProcessInfo.processInfo.processIdentifier),
+        modelID: String = Self.modelID
+    ) {
         let state = DaemonState(
-            pid: 1,
+            pid: pid,
             version: "0.0.0-test",
             writtenAt: fixture.writtenAt,
             startedAt: fixture.writtenAt,
-            trust: trust
+            trust: trust,
+            currentModel: modelID,
+            warmModels: [modelID]
         )
         DaemonStateFile.write(state, to: fixture.stateURL)
     }
@@ -47,13 +56,32 @@ struct OnboardingVerificationGatingTests {
     }
 
     private func makeFlow(stateURL: URL) -> OnboardingFlowModel {
-        OnboardingFlowModel(
+        let flow = OnboardingFlowModel(
             startingAt: .verification,
             accountLinkRunner: nil,
             daemonStateProvider: { DaemonStateFile.read(from: stateURL) },
+            providerEvidenceProvider: {
+                let state = DaemonStateFile.read(from: stateURL)
+                let endpoint = state.map {
+                    LocalEndpointInfo(
+                        host: "127.0.0.1",
+                        port: 18080,
+                        apiKey: "test",
+                        version: "test",
+                        pid: $0.pid,
+                        updatedAt: "2026-01-01T00:00:00Z"
+                    )
+                }
+                return OnboardingProviderEvidence(
+                    daemonState: state,
+                    localEndpoint: endpoint
+                )
+            },
             verificationPollInterval: .milliseconds(10),
             verificationCheckInGrace: .milliseconds(300)
         )
+        flow.selectedModelID = Self.modelID
+        return flow
     }
 
     private func eventually(_ predicate: @MainActor () -> Bool) async -> Bool {
@@ -107,6 +135,62 @@ struct OnboardingVerificationGatingTests {
         writeTrust(trust(status: "online", level: "mda_verified"), to: fixture)
         let trusted = await eventually { flow.verificationPhase == .hardwareTrusted }
         #expect(trusted)
+        await run.value
+    }
+
+    @Test("A fresh verified state file with a dead PID cannot unlock verification")
+    func deadProviderCannotPass() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let flow = makeFlow(stateURL: fixture.stateURL)
+        writeTrust(
+            trust(status: "verified", level: "hardware"),
+            to: fixture,
+            pid: Int32.max
+        )
+
+        let run = Task { await flow.runAutomaticWorkForCurrentStep() }
+        let delayed = await eventually { flow.verificationPhase == .checkInDelayed }
+        #expect(delayed)
+        #expect(!flow.canContinue)
+        flow.cancelPendingOperations()
+        await run.value
+    }
+
+    @Test("Completion rechecks live selected-model evidence after trust was granted")
+    func completionRechecksProviderEvidence() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let flow = makeFlow(stateURL: fixture.stateURL)
+
+        let run = Task { await flow.runAutomaticWorkForCurrentStep() }
+        writeTrust(trust(status: "verified", level: "hardware"), to: fixture)
+        #expect(await eventually { flow.verificationPhase == .hardwareTrusted })
+        await run.value
+        #expect(flow.canContinue)
+
+        writeTrust(
+            trust(status: "verified", level: "hardware"),
+            to: fixture,
+            modelID: "catalog/different-model"
+        )
+        #expect(!flow.canContinue)
+        flow.continueToNextStep()
+        #expect(flow.step == .verification)
+    }
+
+    @Test("A success status without hardware trust stays pending")
+    func verifiedSelfSignedDoesNotPass() async throws {
+        let fixture = try makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let flow = makeFlow(stateURL: fixture.stateURL)
+
+        let run = Task { await flow.runAutomaticWorkForCurrentStep() }
+        writeTrust(trust(status: "verified", level: "self_signed"), to: fixture)
+        let pending = await eventually { flow.verificationPhase == .trustPending }
+        #expect(pending)
+        #expect(!flow.canContinue)
+        flow.cancelPendingOperations()
         await run.value
     }
 

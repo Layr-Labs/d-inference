@@ -3,7 +3,7 @@ import Foundation
 /// Persisted UI-only progress for setup. This intentionally contains no account
 /// identifiers, profile payloads, authorization codes, or model file paths.
 struct OnboardingDraft: Codable, Equatable, Sendable {
-    static let currentSchemaVersion = 2
+    static let currentSchemaVersion = 4
     private static let readinessItemCount = 6
     private static let verificationItemCount = 4
 
@@ -15,6 +15,8 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
     var enrollmentPhase: EnrollmentPhase
     var preparationPhase: PreparationPhase
     var preparationProgress: Double
+    var selectedModelID: String?
+    var downloadCompletedModelID: String?
     var verificationPhase: VerificationPhase
 
     /// Retained as a computed compatibility surface for older tests and encoded
@@ -33,7 +35,9 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
         preparationProgress: Double,
         verificationCompletedCount: Int,
         readinessPhase: ReadinessPhase? = nil,
-        verificationPhase: VerificationPhase? = nil
+        verificationPhase: VerificationPhase? = nil,
+        selectedModelID: String? = nil,
+        downloadCompletedModelID: String? = nil
     ) {
         self.schemaVersion = schemaVersion
         self.step = step
@@ -44,6 +48,8 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
         self.enrollmentPhase = enrollmentPhase
         self.preparationPhase = preparationPhase
         self.preparationProgress = preparationProgress
+        self.selectedModelID = selectedModelID
+        self.downloadCompletedModelID = downloadCompletedModelID
         self.verificationPhase = verificationPhase
             ?? VerificationPhase(legacyCompletedCount: verificationCompletedCount)
     }
@@ -53,7 +59,7 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
     }
 
     var progressLabel: String {
-        "Step \(step.progressOrdinal) of 4 · \(step.resumeTitle)"
+        "Step \(step.progressOrdinal) of 5 · \(step.resumeTitle)"
     }
 
     /// Transient work cannot safely continue after a process exit. Normalize it
@@ -74,28 +80,39 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
         if result.enrollmentPhase == .detectingProfile {
             result.enrollmentPhase = .systemSettingsOpen
         }
+        if result.enrollmentPhase == .requestingProfile {
+            result.enrollmentPhase = .overview
+        }
         if result.verificationPhase == .enrollmentPending
             || result.verificationPhase == .trustPending
         {
             result.verificationPhase = .profileDetected
         }
 
-        if result.preparationPhase == .downloadFailed {
-            result.preparationProgress = min(result.preparationProgress, 0.81)
-        } else if result.preparationProgress >= 1 || result.preparationPhase == .ready {
+        if result.preparationPhase == .downloading || result.preparationPhase == .verifying {
+            result.preparationPhase = .downloadFailed
+            result.preparationProgress = min(result.preparationProgress, 0.99)
+            result.downloadCompletedModelID = nil
+        } else if result.preparationPhase == .startingProvider || result.preparationPhase == .ready {
+            result.preparationPhase = .startFailed
             result.preparationProgress = 1
-            result.preparationPhase = .ready
-        } else {
+            result.downloadCompletedModelID = result.downloadCompletedModelID ?? result.selectedModelID
+        } else if result.preparationPhase == .downloadFailed {
+            result.preparationProgress = min(result.preparationProgress, 0.81)
+        } else if result.preparationPhase == .reservingSpace || result.preparationPhase == .loadingCatalog {
+            result.preparationPhase = .reservingSpace
+        } else if result.preparationPhase != .choosingModel
+            && result.preparationPhase != .catalogFailed
+            && result.preparationPhase != .noCompatibleModel
+            && result.preparationPhase != .startFailed {
             switch result.preparationProgress {
             case ..<0.18: result.preparationPhase = .reservingSpace
             case ..<0.82: result.preparationPhase = .downloading
             default: result.preparationPhase = .verifying
             }
         }
-
-        if result.step == .preparation {
-            result.step = .verification
-            result.verificationPhase = .profileDetected
+        if result.preparationPhase == .startFailed, result.preparationProgress == 1 {
+            result.downloadCompletedModelID = result.downloadCompletedModelID ?? result.selectedModelID
         }
 
         if result.step != .readiness {
@@ -126,6 +143,8 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
         case preparationProgress
         case verificationPhase
         case verificationCompletedCount
+        case selectedModelID
+        case downloadCompletedModelID
     }
 
     init(from decoder: Decoder) throws {
@@ -142,6 +161,11 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
         enrollmentPhase = try values.decode(EnrollmentPhase.self, forKey: .enrollmentPhase)
         preparationPhase = try values.decode(PreparationPhase.self, forKey: .preparationPhase)
         preparationProgress = try values.decode(Double.self, forKey: .preparationProgress)
+        selectedModelID = try values.decodeIfPresent(String.self, forKey: .selectedModelID)
+        downloadCompletedModelID = try values.decodeIfPresent(
+            String.self,
+            forKey: .downloadCompletedModelID
+        )
         let legacyCount = try values.decodeIfPresent(
             Int.self,
             forKey: .verificationCompletedCount
@@ -162,6 +186,8 @@ struct OnboardingDraft: Codable, Equatable, Sendable {
         try values.encode(enrollmentPhase, forKey: .enrollmentPhase)
         try values.encode(preparationPhase, forKey: .preparationPhase)
         try values.encode(preparationProgress, forKey: .preparationProgress)
+        try values.encodeIfPresent(selectedModelID, forKey: .selectedModelID)
+        try values.encodeIfPresent(downloadCompletedModelID, forKey: .downloadCompletedModelID)
         try values.encode(verificationPhase, forKey: .verificationPhase)
         try values.encode(verificationCompletedCount, forKey: .verificationCompletedCount)
     }

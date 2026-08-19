@@ -149,7 +149,9 @@ private struct VerificationSurface: View {
 
             HStack(spacing: 7) {
                 Image(systemName: "lock.fill").font(.system(size: 8))
-                Text("UI preview · prompts remain end-to-end encrypted during network inference.")
+                Text(flow.usesLiveVerification
+                    ? "The running provider reports trust directly from the coordinator."
+                    : "Fixture preview · live trust comes from the running provider daemon.")
                     .font(DarkbloomTheme.chivo(9))
             }
             .foregroundStyle(DarkbloomTheme.ink.opacity(0.38))

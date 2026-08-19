@@ -19,6 +19,19 @@ recorded that it had ever been on, or that it stopped. Consequences:
 
 Restored as advanced setup (config in git) in `ci/restore-codeql-gate`.
 
+### Don't confuse this with GitHub's "code quality" run
+
+Every PR also gets checks named `Analyze (go)`, `Analyze (javascript-typescript)`
+and `Analyze (python)` from a run titled **"Code Quality: PR #N"**, with
+`path: dynamic/github-code-scanning/codeql` and `event: dynamic`. That is
+GitHub's *code quality* feature — CodeQL-powered, no config in this repo, and
+it uploads **no security analyses** (nothing appeared under
+`/code-scanning/analyses` from it).
+
+It is easy to mistake those checks for security scanning, which is plausibly
+part of why the gap went unnoticed for two months. The security analyses are
+the ones whose `analysis_key` is `.github/workflows/codeql.yml:analyze`.
+
 ## What is scanned
 
 | Language | Build mode | Trigger | Required check | Covers |
@@ -85,6 +98,17 @@ gh api repos/Layr-Labs/d-inference/rulesets/15055885 \
 
 If the analyses query returns nothing newer than a week, the gate is broken
 regardless of what the Security tab shows. That is the check to automate next.
+
+Baseline from the first advanced-setup run (PR #644, 2026-08-19) — a later run
+reporting materially fewer rules means coverage silently narrowed:
+
+| Category | Rules | vs June default setup |
+|---|---|---|
+| `/language:actions` | 17 | 17 |
+| `/language:python` | 43 | 43 |
+| `/language:javascript-typescript` | 87 | 86 |
+| `/language:go` | 34 | 34 |
+| `/language:rust` | 25 | never ran |
 
 ## Alert backlog
 

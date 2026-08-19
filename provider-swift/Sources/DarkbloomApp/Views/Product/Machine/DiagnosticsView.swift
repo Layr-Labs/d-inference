@@ -51,12 +51,21 @@ struct DiagnosticsView: View {
                 set: { if !$0 { dismissFixSimulation() } }
             )
         ) {
-            Button("Simulate Resolution") { resolveLaunchedFix() }
-            Button("Cancel", role: .cancel) { dismissFixSimulation() }
+            if store.isLive {
+                Button("OK") { dismissFixSimulation() }
+            } else {
+                Button("Simulate Resolution") { resolveLaunchedFix() }
+                Button("Cancel", role: .cancel) { dismissFixSimulation() }
+            }
         } message: {
-            Text("Preview only: Darkbloom will mark this check resolved here. No macOS settings, provider files, or model weights will change.")
+            if store.isLive {
+                Text("\(launchedFix?.detail ?? "")\n\nFollow this guidance, then use Run Again to verify the real state.")
+            } else {
+                Text("Preview only: Darkbloom will mark this check resolved here. No macOS settings, provider files, or model weights will change.")
+            }
         }
         .onDisappear(perform: cancelScan)
+        .onAppear(perform: startOnFirstOpen)
     }
 
     @ViewBuilder
@@ -69,6 +78,10 @@ struct DiagnosticsView: View {
             Button("Run Again", systemImage: "arrow.clockwise") {
                 runScan()
             }
+        case .notStarted:
+            Button("Run System Check", systemImage: "stethoscope") {
+                runScan()
+            }
         case .unavailable:
             Button("Try Again", systemImage: "arrow.clockwise") {
                 runScan()
@@ -76,9 +89,18 @@ struct DiagnosticsView: View {
         }
     }
 
+    /// Live stores auto-run the first real scan when the sheet opens;
+    /// fixture stores boot `.ready`, so this no-ops for previews.
+    private func startOnFirstOpen() {
+        store.beginScanIfIdle()
+    }
+
     private func runScan() {
         scanTask?.cancel()
         store.startScan()
+        // Live stores own their scan task end-to-end; only fixture stores
+        // need the simulated progress timer below.
+        guard !store.isLive else { return }
         scanTask = Task { @MainActor in
             while !Task.isCancelled, store.isScanning {
                 do {
@@ -97,7 +119,9 @@ struct DiagnosticsView: View {
     }
 
     private func resolveLaunchedFix() {
-        guard let launchedFix else { return }
+        // Against a LIVE report nothing is "simulated" — only the next real
+        // scan can verify a fix.
+        guard !store.isLive, let launchedFix else { return }
         _ = store.simulateResolution(fixID: launchedFix.id)
         dismissFixSimulation()
     }

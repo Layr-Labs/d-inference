@@ -67,9 +67,9 @@ struct MyMacsView: View {
                             Text("Updated \(lastUpdated.formatted(date: .abbreviated, time: .shortened))")
                                 .font(.caption2.monospaced())
                                 .foregroundStyle(.secondary)
-                            if store.canRefreshPreview {
+                            if store.canRefresh {
                                 Button("Refresh", systemImage: "arrow.clockwise") {
-                                    store.refreshPreview()
+                                    store.refresh()
                                 }
                                 .controlSize(.small)
                                 .help("Refresh this UI preview snapshot")
@@ -103,6 +103,9 @@ struct MyMacsView: View {
             hideSensitiveDetails()
         }
         .onDisappear(perform: hideSensitiveDetails)
+        // Live mode only: session check + first fleet fetch when the
+        // destination appears. Fixture previews ignore it (deterministic).
+        .task { store.start() }
         .sheet(isPresented: $showsLinkAnotherMac) {
             LinkAnotherMacSheet()
         }
@@ -136,18 +139,19 @@ struct MyMacsView: View {
         case .signedOut:
             MyMacsStateView(
                 kind: .signedOut,
-                message: nil,
+                message: store.signInErrorMessage,
                 onRetry: nil,
-                actionTitle: "Sign In",
+                actionTitle: store.isSigningIn ? "Signing In…" : "Sign In",
                 actionSystemImage: "person.crop.circle",
-                onAction: signInPreview
+                onAction: signIn,
+                actionDisabled: store.isSigningIn
             )
 
         case let .unavailable(message):
             MyMacsStateView(
                 kind: .unavailable,
                 message: message,
-                onRetry: store.retryPreviewLoad
+                onRetry: store.retry
             )
 
         case let .ready(_, summaryAvailability):
@@ -357,10 +361,14 @@ struct MyMacsView: View {
         AccessibilityNotification.Announcement("Serial number copied").post()
     }
 
-    private func signInPreview() {
-        store.signInPreview()
+    private func signIn() {
+        store.signIn()
         reconcileFilteredSelection()
-        AccessibilityNotification.Announcement("Signed in to the My Macs UI preview").post()
+        // Fixture sign-in resolves synchronously; live sign-in is async — the
+        // announcement only fires for the deterministic preview transition.
+        if case .ready = store.availability {
+            AccessibilityNotification.Announcement("Signed in to the My Macs UI preview").post()
+        }
     }
 
     private func requestRemoval(of mac: MyMac) {
@@ -374,11 +382,15 @@ struct MyMacsView: View {
 
     private func confirmRemoval() {
         guard let removalRequest else { return }
-        let removed = store.removePreviewMac(id: removalRequest.macID)
         self.removalRequest = nil
-        if removed {
-            reconcileFilteredSelection()
-            AccessibilityNotification.Announcement("Mac removed from this account preview").post()
+        Task {
+            // Fixture removals apply synchronously; live removals await the
+            // coordinator DELETE before local bookkeeping lands.
+            let removed = await store.removeMac(id: removalRequest.macID)
+            if removed {
+                reconcileFilteredSelection()
+                AccessibilityNotification.Announcement("Mac removed from this account").post()
+            }
         }
     }
 }

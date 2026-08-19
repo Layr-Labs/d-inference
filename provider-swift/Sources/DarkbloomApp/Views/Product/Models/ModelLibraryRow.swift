@@ -30,6 +30,13 @@ struct ModelLibraryRow: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
 
+                if case .failed(let failure) = model.installation {
+                    Label(failure.message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(ProductPalette.warning)
+                        .lineLimit(2)
+                }
+
                 HStack(spacing: 7) {
                     Text(ByteCountFormatter.string(fromByteCount: model.sizeBytes, countStyle: .file))
                     if let quantization = model.quantization {

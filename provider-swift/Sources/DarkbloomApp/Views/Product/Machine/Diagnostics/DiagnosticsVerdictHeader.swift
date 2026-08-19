@@ -54,6 +54,10 @@ private struct DiagnosticsRunStateView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
+        case .notStarted:
+            Text("No checks have run yet")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
         case .unavailable(let message):
             Text(message)
                 .font(.system(size: 11))

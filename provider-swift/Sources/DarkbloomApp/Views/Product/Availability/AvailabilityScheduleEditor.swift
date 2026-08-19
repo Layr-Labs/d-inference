@@ -40,13 +40,17 @@ struct AvailabilityScheduleEditor: View {
         .frame(minWidth: 700, idealWidth: 760, minHeight: 620, idealHeight: 700)
         .background(ProductPalette.pageBackground)
         .interactiveDismissDisabled(store.hasUnsavedChanges || store.saveState.isSaving)
-        .alert("Restart while this Mac is serving?", isPresented: $showingServingConfirmation) {
+        .alert("Save schedule while this Mac is serving?", isPresented: $showingServingConfirmation) {
             Button("Cancel", role: .cancel) {}
-            Button("Save & Restart") {
+            Button(store.isLive ? "Save Schedule" : "Save & Restart") {
                 performPreviewSave()
             }
         } message: {
-            Text("A real restart would interrupt current inference. This UI preview will save sample state only; it will not change a config file, interrupt work, or restart the provider.")
+            if store.isLive {
+                Text("Saving rewrites the provider schedule now; it takes effect on the next provider restart, which would interrupt current inference.")
+            } else {
+                Text("A real restart would interrupt current inference. This UI preview will save sample state only; it will not change a config file, interrupt work, or restart the provider.")
+            }
         }
     }
 
@@ -77,9 +81,11 @@ struct AvailabilityScheduleEditor: View {
 
     private var previewNotice: some View {
         AvailabilityInlineNotice(
-            title: "UI preview only",
-            detail: "Save & Restart changes the sample shown in this app. No provider configuration or process will be changed.",
-            systemImage: "rectangle.and.pencil.and.ellipsis",
+            title: store.isLive ? "Writes this Mac’s provider config" : "UI preview only",
+            detail: store.isLive
+                ? "Save updates the schedule in the provider configuration. The running provider keeps its current plan until you restart it."
+                : "Save & Restart changes the sample shown in this app. No provider configuration or process will be changed.",
+            systemImage: store.isLive ? "externaldrive.connected.to.line.below" : "rectangle.and.pencil.and.ellipsis",
             tint: DarkbloomTheme.accent
         )
         .padding(.bottom, 22)
@@ -120,7 +126,9 @@ struct AvailabilityScheduleEditor: View {
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
             .disabled(!store.canSaveAndRestart)
-            .help("UI preview only — no config file or process will change")
+            .help(store.isLive
+                ? "Writes the provider configuration; applies on the next provider restart"
+                : "UI preview only — no config file or process will change")
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 16)
@@ -147,6 +155,11 @@ struct AvailabilityScheduleEditor: View {
             case .savedAndRestarted:
                 AccessibilityNotification.Announcement(
                     "Availability preview saved. No configuration or provider process changed."
+                ).post()
+                onSaved()
+            case .savedRequiresRestart:
+                AccessibilityNotification.Announcement(
+                    "Schedule saved to the provider configuration. Restart the provider to apply it."
                 ).post()
                 onSaved()
             case .failed(let message):

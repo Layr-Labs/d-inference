@@ -40,49 +40,60 @@ struct DarkbloomApp: App {
                 initialDestination: productPreview?.destination ?? .overview
             )
         )
-        // Preview captures stay fully deterministic (fixture service, frozen
-        // clock). Real launches track the actual provider daemon: the service
-        // polls ~/.darkbloom/daemon-state.json and shells out to the
-        // `darkbloom` CLI for start/stop/restart.
+        // Preview captures stay fully deterministic (fixture services, frozen
+        // clock). Real launches wire every product store to its live source:
+        // ProviderStore polls ~/.darkbloom/daemon-state.json and shells out
+        // to the `darkbloom` CLI for lifecycle; the model library drives the
+        // CLI's models commands; diagnostics run `doctor --json`;
+        // availability persists via `config set schedule`; contributions read
+        // `earnings --json`; the local API probes ~/.darkbloom/local.json;
+        // My Macs uses the coordinator-backed account session.
         if let productPreview {
             _providerStore = State(
                 initialValue: ProviderStore(previewScenario: productPreview.providerScenario)
+            )
+            _modelLibraryStore = State(
+                initialValue: ModelLibraryStore(fixture: productPreview.modelFixture)
+            )
+            _diagnosticsStore = State(
+                initialValue: DiagnosticsStore(fixture: productPreview.diagnosticsFixture)
+            )
+            _contributionsStore = State(
+                initialValue: ContributionsStore(fixture: productPreview.contributionsFixture)
+            )
+            _localAPIStore = State(
+                initialValue: LocalAPIStore(fixture: productPreview.localAPIFixture)
+            )
+            _myMacsStore = State(
+                initialValue: MyMacsStore(fixture: productPreview.myMacsFixture)
+            )
+            _availabilityStore = State(
+                initialValue: AvailabilityStore(fixture: productPreview.availabilityFixture)
             )
         } else {
             _providerStore = State(
                 initialValue: ProviderStore(daemon: DaemonRuntimeService())
             )
+            _modelLibraryStore = State(
+                initialValue: ModelLibraryStore(live: ProcessModelCatalogCLIRunner())
+            )
+            _diagnosticsStore = State(
+                initialValue: DiagnosticsStore(cli: ProcessDiagnosticsCLIRunner())
+            )
+            _contributionsStore = State(
+                initialValue: ContributionsStore(cli: ProcessContributionsCLI())
+            )
+            _localAPIStore = State(initialValue: LocalAPIStore.live())
+            _myMacsStore = State(
+                initialValue: MyMacsStore(
+                    session: AccountSessionManager(),
+                    fleet: FleetClient()
+                )
+            )
+            _availabilityStore = State(
+                initialValue: AvailabilityStore(cli: ProcessAvailabilityCLI())
+            )
         }
-        _modelLibraryStore = State(
-            initialValue: ModelLibraryStore(
-                fixture: productPreview?.modelFixture ?? .ready
-            )
-        )
-        _diagnosticsStore = State(
-            initialValue: DiagnosticsStore(
-                fixture: productPreview?.diagnosticsFixture ?? .healthy
-            )
-        )
-        _contributionsStore = State(
-            initialValue: ContributionsStore(
-                fixture: productPreview?.contributionsFixture ?? .active
-            )
-        )
-        _localAPIStore = State(
-            initialValue: LocalAPIStore(
-                fixture: productPreview?.localAPIFixture ?? .active
-            )
-        )
-        _myMacsStore = State(
-            initialValue: MyMacsStore(
-                fixture: productPreview?.myMacsFixture ?? .ready
-            )
-        )
-        _availabilityStore = State(
-            initialValue: AvailabilityStore(
-                fixture: productPreview?.availabilityFixture ?? .always
-            )
-        )
     }
 
     var body: some Scene {

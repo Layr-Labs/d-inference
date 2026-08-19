@@ -10,6 +10,20 @@ struct ContributionsView: View {
     var body: some View {
         ProductPage {
             switch store.availability {
+            case .loading:
+                VStack(spacing: 13) {
+                    ProductPageHeader(
+                        eyebrow: "Network",
+                        title: "Useful work, accounted for.",
+                        subtitle: "See what your Macs contributed and earned. The ledger contains accounting metadata—never prompts or responses."
+                    )
+                    Spacer()
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Fetching earnings from the network…")
+                        .font(.system(size: 13, weight: .medium))
+                    Spacer()
+                }
             case .available(let lastUpdated):
                 if let snapshot = store.snapshot {
                     TimelineView(.periodic(from: .now, by: 60)) { context in
@@ -29,6 +43,9 @@ struct ContributionsView: View {
         .navigationTitle("Contributions")
         .sheet(isPresented: $showsPayout) {
             PreviewPayoutSheet(store: store)
+        }
+        .task {
+            await store.refresh()
         }
     }
 

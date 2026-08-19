@@ -29,16 +29,67 @@ enum MyMacsAvailability: Equatable, Sendable {
     )
 }
 
+/// Store mode: deterministic fixture previews or the live coordinator-backed
+/// account session. Fixture mode and `init(fixture:)` are untouched by the
+/// live wiring so previews and their pinned tests stay deterministic.
+enum MyMacsStoreMode: Equatable, Sendable {
+    case fixture
+    case live
+}
+
 @MainActor
 @Observable
 final class MyMacsStore {
+    /// User-facing copy shared with the live-mode transitions. Kept identical
+    /// to the fixture strings so a live failure looks exactly like its
+    /// preview pin.
+    private enum LiveCopy {
+        static let unavailable = "Darkbloom could not load the Macs linked to this account."
+        static let refreshFailed = "Refresh failed. Showing the last account snapshot."
+        static let summaryUnavailable =
+            "Machine status is current, but the account summary is unavailable."
+    }
+
     private(set) var availability: MyMacsAvailability
     private(set) var snapshot: MyMacsSnapshot?
+
+    /// Live-mode-only surface: sign-in handoff bookkeeping.
+    private(set) var isSigningIn = false
+    private(set) var signInErrorMessage: String?
+
+    @ObservationIgnored
+    let mode: MyMacsStoreMode
+    @ObservationIgnored
+    private let session: (any AccountSessionManaging)?
+    @ObservationIgnored
+    private let fleet: (any FleetServicing)?
+    @ObservationIgnored
+    private var didStart = false
+    @ObservationIgnored
+    private var liveTask: Task<Void, Never>?
 
     init(fixture: MyMacsFixture = .ready) {
         let state = MyMacsFixtures.make(fixture)
         availability = state.availability
         snapshot = state.snapshot
+        mode = .fixture
+        session = nil
+        fleet = nil
+    }
+
+    /// Live store: reads the persisted account session (Privy token in the
+    /// keychain) and the coordinator's account-scoped fleet endpoints.
+    /// Network starts only via `start()` / user actions — never from init.
+    init(session: any AccountSessionManaging, fleet: any FleetServicing) {
+        availability = .loading
+        snapshot = nil
+        mode = .live
+        self.session = session
+        self.fleet = fleet
+    }
+
+    deinit {
+        liveTask?.cancel()
     }
 
     var macs: [MyMac] {
@@ -50,7 +101,7 @@ final class MyMacsStore {
         return macs.isEmpty
     }
 
-    var canRefreshPreview: Bool {
+    var canRefresh: Bool {
         switch availability {
         case .ready, .staleRetained:
             snapshot != nil
@@ -59,9 +110,219 @@ final class MyMacsStore {
         }
     }
 
+    // Kept for the fixture-transition tests pinned to the preview name.
+    var canRefreshPreview: Bool { canRefresh }
+
     func mac(id: String) -> MyMac? {
         macs.first { $0.id == id }
     }
+
+    // MARK: - Mode-dispatched actions (consumed by MyMacsView)
+
+    /// Kicks the live session check + first fetch. Idempotent. Fixture mode
+    /// ignores this so preview captures stay untouched.
+    func start() {
+        guard mode == .live, !didStart else { return }
+        didStart = true
+        guard let session, session.isSignedIn else {
+            availability = .signedOut
+            return
+        }
+        availability = .loading
+        liveTask = Task { [weak self] in
+            await self?.refreshLive()
+        }
+    }
+
+    func signIn() {
+        signInErrorMessage = nil
+        switch mode {
+        case .fixture:
+            signInPreview()
+        case .live:
+            guard !isSigningIn else { return }
+            isSigningIn = true
+            liveTask = Task { [weak self] in
+                await self?.signInLive()
+            }
+        }
+    }
+
+    func refresh() {
+        switch mode {
+        case .fixture:
+            refreshPreview()
+        case .live:
+            liveTask = Task { [weak self] in
+                await self?.refreshLive()
+            }
+        }
+    }
+
+    func retry() {
+        switch mode {
+        case .fixture:
+            retryPreviewLoad()
+        case .live:
+            liveTask = Task { [weak self] in
+                await self?.refreshLive()
+            }
+        }
+    }
+
+    func signOut() {
+        guard mode == .live else { return }
+        // A Privy token in an ephemeral browser leaves no shared browser
+        // session, so signing out is purely local — coordinator tokens
+        // self-expire server-side.
+        session?.signOut()
+        liveTask?.cancel()
+        liveTask = nil
+        didStart = false
+        snapshot = nil
+        signInErrorMessage = nil
+        availability = .signedOut
+    }
+
+    /// Removes a retained machine. Fixture mode applies the local bookkeeping
+    /// synchronously; live mode DELETEs `removalToken` coordinates-side first
+    /// and applies the same bookkeeping only after the coordinator confirms.
+    @discardableResult
+    func removeMac(id: String) async -> Bool {
+        switch mode {
+        case .fixture:
+            return removePreviewMac(id: id)
+        case .live:
+            return await removeMacLive(id: id)
+        }
+    }
+
+    // MARK: - Live transitions (mirrors of the fixture state machine)
+
+    func signInLive() async {
+        defer { isSigningIn = false }
+        guard let session else { return }
+        do {
+            _ = try await session.signIn()
+            // signOut() may have raced the minutes-long auth browser; that
+            // transition owns the state — never resurrect inventory after it.
+            guard !Task.isCancelled else { return }
+            signInErrorMessage = nil
+            await refreshLive()
+        } catch AccountSessionError.cancelled {
+            // User dismissed the auth browser: stay signed out, silently.
+            // Restore .signedOut if sign-in started from a pre-session state
+            // (e.g. start() raced the CTA) — never an error, never a hang in
+            // .loading.
+            guard !Task.isCancelled else { return }
+            if snapshot == nil, session.accessToken() == nil {
+                availability = .signedOut
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            signInErrorMessage = error.localizedDescription
+            availability = .signedOut
+        }
+    }
+
+    func refreshLive(at date: Date = .now) async {
+        guard let session, let fleet else { return }
+        guard let bearerToken = session.accessToken() else {
+            // No usable session: the coordinator cannot be queried at all.
+            snapshot = nil
+            availability = .signedOut
+            return
+        }
+
+        do {
+            let providers = try await fleet.providers(bearerToken: bearerToken)
+            // Summary is best-effort: the providers payload alone is
+            // sufficient to render inventory (see MyMacsSnapshot).
+            let summary = try? await fleet.summary(bearerToken: bearerToken)
+            guard !Task.isCancelled else { return }
+            let updated = try MyMacsSnapshot(providers: providers, summary: summary, asOf: date)
+            snapshot = updated
+            availability = .ready(
+                lastUpdated: date,
+                summary: updated.accountSummary == nil
+                    ? .unavailable(message: LiveCopy.summaryUnavailable)
+                    : .available
+            )
+        } catch is CancellationError {
+            // signOut() raced the fetch; it already owns the state.
+        } catch FleetClientError.sessionExpired {
+            // Coordinator rejected the Privy token: drop it so the user
+            // re-authenticates instead of streaming repeated 401s.
+            session.signOut()
+            snapshot = nil
+            availability = .signedOut
+        } catch {
+            if let retained = snapshot {
+                availability = .staleRetained(
+                    lastUpdated: retained.asOf,
+                    failedAt: date,
+                    message: LiveCopy.refreshFailed,
+                    summary: currentSummaryAvailability
+                )
+            } else {
+                availability = .unavailable(message: LiveCopy.unavailable)
+            }
+        }
+    }
+
+    private func removeMacLive(id: String, at date: Date = .now) async -> Bool {
+        guard let session, let fleet,
+              let mac = mac(id: id),
+              mac.canRemove,
+              let removalToken = mac.removalToken
+        else {
+            return false
+        }
+        guard let bearerToken = session.accessToken() else {
+            snapshot = nil
+            availability = .signedOut
+            return false
+        }
+
+        do {
+            try await fleet.deleteProvider(removalToken: removalToken, bearerToken: bearerToken)
+        } catch FleetClientError.sessionExpired {
+            session.signOut()
+            snapshot = nil
+            availability = .signedOut
+            return false
+        } catch {
+            // 403 (not owned), 404 (already gone), 409 (still online),
+            // transport: retain the inventory and surface the failure without
+            // collapsing the page into the unavailable state.
+            guard let retained = snapshot else {
+                availability = .unavailable(message: LiveCopy.unavailable)
+                return false
+            }
+            availability = .staleRetained(
+                lastUpdated: retained.asOf,
+                failedAt: date,
+                message: "Could not remove that Mac. \(error.localizedDescription)",
+                summary: currentSummaryAvailability
+            )
+            return false
+        }
+
+        // Coordinator confirmed: apply the identical local bookkeeping the
+        // preview path uses (counts reconcile, activity totals retained).
+        return removePreviewMac(id: id, at: date)
+    }
+
+    private var currentSummaryAvailability: MyMacsSummaryAvailability {
+        switch availability {
+        case let .ready(_, summary), let .staleRetained(_, _, _, summary):
+            summary
+        case .loading, .signedOut, .unavailable:
+            .unavailable(message: LiveCopy.summaryUnavailable)
+        }
+    }
+
+    // MARK: - Preview transitions (fixture mode; unchanged behavior)
 
     /// Deterministic UI-preview transition for loading-state evaluations.
     func completePreviewLoad() {
@@ -81,9 +342,11 @@ final class MyMacsStore {
         apply(MyMacsFixtures.make(.ready))
     }
 
-    /// Removes only a coordinator-removable retained record from the local UI
-    /// preview. Earnings and job history remain account-scoped, so this updates
-    /// inventory counts but intentionally leaves activity totals untouched.
+    /// Removes only a coordinator-removable retained record and reconciles
+    /// the local inventory counts. Earnings and job history remain
+    /// account-scoped, so this updates inventory counts but intentionally
+    /// leaves activity totals untouched. Used by fixture previews AND by the
+    /// live path after the coordinator confirms a DELETE.
     @discardableResult
     func removePreviewMac(id: String, at requestedDate: Date = .now) -> Bool {
         guard var snapshot,

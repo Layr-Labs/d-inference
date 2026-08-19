@@ -14,7 +14,14 @@ struct PrivateChatView: View {
         fixture: PreviewChatFixture = .empty
     ) {
         self.identity = identity
-        _store = State(initialValue: PreviewChatStore(fixture: fixture))
+        // Preview captures (DEBUG env config) stay fixture-driven and fully
+        // deterministic. Real launches chat against the actual local endpoint
+        // from ~/.darkbloom/local.json through the live store.
+        if ProductPreviewConfiguration.current != nil {
+            _store = State(initialValue: PreviewChatStore(fixture: fixture))
+        } else {
+            _store = State(initialValue: PreviewChatStore(live: LiveChatConfiguration()))
+        }
     }
 
     var body: some View {
@@ -33,7 +40,9 @@ struct PrivateChatView: View {
             ToolbarItem(placement: .automatic) {
                 if store.hasConversation {
                     Button("New Chat", systemImage: "square.and.pencil", action: resetConversation)
-                        .help("Start a new preview conversation")
+                        .help(store.isLive
+                            ? "Start a new conversation"
+                            : "Start a new preview conversation")
                 }
             }
         }
@@ -51,6 +60,9 @@ struct PrivateChatView: View {
                         ChatEmptyState(
                             identity: identity,
                             route: store.route,
+                            detailOverride: store.isLive
+                                ? "Everything you send runs on \(identity.displayName) through the local endpoint — nothing leaves this Mac."
+                                : nil,
                             onSelectSuggestion: submit
                         )
                         .frame(maxWidth: .infinity)
@@ -63,6 +75,15 @@ struct PrivateChatView: View {
             .layoutPriority(1)
             .clipped()
 
+            if let failure = store.failure {
+                ChatFailureNotice(
+                    failure: failure,
+                    onRetry: lastUserPrompt.map { prompt in { submit(prompt) } },
+                    onDismiss: store.clearFailure
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             VStack(spacing: 0) {
                 Divider()
                 ChatComposer(
@@ -73,6 +94,8 @@ struct PrivateChatView: View {
                     ),
                     isResponding: store.isResponding,
                     isFocused: $composerIsFocused,
+                    availableRoutes: store.isLive ? [.thisMac] : ChatRoute.allCases,
+                    noteOverride: store.isLive ? liveComposerNote : nil,
                     onSubmit: { submit(draft) },
                     onStop: stopResponse
                 )
@@ -80,6 +103,17 @@ struct PrivateChatView: View {
             .background(.bar)
             .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private var liveComposerNote: String {
+        if let model = store.activeModelID {
+            "On this Mac · \(model) via the local endpoint"
+        }
+        return "On this Mac · the local endpoint picks the model"
+    }
+
+    private var lastUserPrompt: String? {
+        store.messages.last(where: { $0.role == .user })?.text
     }
 
     private var conversation: some View {
@@ -92,7 +126,7 @@ struct PrivateChatView: View {
                     }
 
                     if store.isResponding {
-                        ChatResponseIndicator()
+                        ChatResponseIndicator(isLive: store.isLive)
                             .id("responding")
                     }
                 }
@@ -102,6 +136,9 @@ struct PrivateChatView: View {
                 .frame(maxWidth: .infinity)
             }
             .onChange(of: store.messages.count) { _, _ in
+                scrollToLatest(using: proxy)
+            }
+            .onChange(of: store.lastMessageText) { _, _ in
                 scrollToLatest(using: proxy)
             }
             .onChange(of: store.isResponding) { _, _ in
@@ -119,11 +156,16 @@ struct PrivateChatView: View {
         draft = ""
         responseTask?.cancel()
         responseTask = Task { @MainActor in
-            if !reduceMotion {
-                try? await Task.sleep(for: .milliseconds(620))
+            if store.isLive {
+                await store.respondLive(to: prompt)
+            } else {
+                if !reduceMotion {
+                    try? await Task.sleep(for: .milliseconds(620))
+                }
+                guard !Task.isCancelled else { return }
+                store.completeResponse(to: prompt)
             }
             guard !Task.isCancelled else { return }
-            store.completeResponse(to: prompt)
             responseTask = nil
             composerIsFocused = true
         }
@@ -156,17 +198,23 @@ struct PrivateChatView: View {
 }
 
 private struct ChatResponseIndicator: View {
+    var isLive: Bool = false
+
+    private var label: String {
+        isLive ? "Generating on this Mac…" : "Preparing a sample reply…"
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             ProgressView()
                 .controlSize(.small)
-            Text("Preparing a sample reply…")
+            Text(label)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
             Spacer()
         }
         .padding(.leading, 40)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Preparing a sample reply")
+        .accessibilityLabel(label)
     }
 }

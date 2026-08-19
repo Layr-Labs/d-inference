@@ -18,5 +18,36 @@
   <true/>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
+  <!--
+    Account sign-in handoff: the ASWebAuthenticationSession in
+    Sources/DarkbloomApp/Services/AccountSessionManager.swift completes on
+    `darkbloom://auth/callback#token=<privyJWT>` (console page
+    /auth/app-link). Registering the scheme keeps the callback resolvable
+    when the auth flow ever falls back to a non-ephemeral system browser.
+
+    Keychain: the session token is stored via
+    Sources/DarkbloomApp/Services/AccountSessionKeychainStore.swift, which
+    prefers the data-protection keychain on access group
+    "dev.darkbloom.app.shared". A signed bundle that should use that shared
+    partition MUST carry the entitlement
+      keychain-access-groups = [ "$(AppIdentifierPrefix)dev.darkbloom.app.shared" ]
+    The app scaffold has no .entitlements file today and this slice does not
+    invent one: the store probes partitions at runtime and falls back to an
+    app-scoped data-protection item, then the legacy keychain for unsigned
+    dev builds (no keychain-access-groups → errSecMissingEntitlement). When a
+    bundling step adds signing, create the entitlements file there with the
+    entry above and the shared partition engages automatically.
+  -->
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key>
+      <string>dev.darkbloom.app.auth</string>
+      <key>CFBundleURLSchemes</key>
+      <array>
+        <string>darkbloom</string>
+      </array>
+    </dict>
+  </array>
 </dict>
 </plist>

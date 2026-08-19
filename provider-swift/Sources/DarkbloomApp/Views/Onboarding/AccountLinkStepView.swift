@@ -28,7 +28,7 @@ struct AccountLinkStepView: View {
             EmptyView()
         case .waitingForApproval:
             Label(
-                "Live setup checks approval every \(Int(OnboardingAccountLinkSession.pollInterval)) seconds · codes expire after \(Int(OnboardingAccountLinkSession.lifetime / 60)) minutes",
+                "Darkbloom checks approval automatically · this code expires after \(flow.accountLinkSession.lifetimeMinutes) minutes",
                 systemImage: "safari"
             )
                 .accountStatusStyle()
@@ -39,11 +39,21 @@ struct AccountLinkStepView: View {
             Label("Account connected", systemImage: "checkmark.circle.fill")
                 .accountStatusStyle(color: DarkbloomTheme.accent)
         case .expired:
-            Label("This code expired. Request a fresh code to continue.", systemImage: "clock.badge.exclamationmark")
-                .accountStatusStyle(color: .orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Label(flow.accountLinkFailureDetail ?? "This code expired. Request a fresh code to continue.", systemImage: "clock.badge.exclamationmark")
+                    .accountStatusStyle(color: .orange)
+            }
         case .unreachable:
-            Label("Darkbloom could not be reached. Check your connection and retry.", systemImage: "wifi.exclamationmark")
-                .accountStatusStyle(color: .orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Label("Darkbloom could not be reached. Check your connection and retry.", systemImage: "wifi.exclamationmark")
+                    .accountStatusStyle(color: .orange)
+                if let detail = flow.accountLinkFailureDetail {
+                    Text(detail)
+                        .font(DarkbloomTheme.chivo(10))
+                        .foregroundStyle(DarkbloomTheme.ink.opacity(0.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 
@@ -51,15 +61,26 @@ struct AccountLinkStepView: View {
     private var actions: some View {
         switch flow.accountPhase {
         case .introduction:
-            OnboardingPrimaryButton(title: "Preview browser approval", systemImage: "arrow.up.right") {
-                flow.showAccountApproval()
+            if flow.accountLinkRequestInFlight {
+                OnboardingPrimaryButton(title: "Contacting coordinator…", isWorking: true, isDisabled: true, action: {})
+            } else {
+                OnboardingPrimaryButton(
+                    title: flow.usesLiveAccountLink ? "Link this Mac" : "Preview browser approval",
+                    systemImage: "arrow.up.right"
+                ) {
+                    flow.startAccountLink()
+                }
+                .keyboardShortcut(.defaultAction)
             }
-            .keyboardShortcut(.defaultAction)
         case .waitingForApproval:
-            OnboardingPrimaryButton(title: "Preview approval detected", systemImage: "checkmark") {
-                Task { await flow.confirmAccountApproval() }
+            if flow.usesLiveAccountLink {
+                OnboardingPrimaryButton(title: "Waiting for browser approval…", isWorking: true, isDisabled: true, action: {})
+            } else {
+                OnboardingPrimaryButton(title: "Preview approval detected", systemImage: "checkmark") {
+                    Task { await flow.confirmAccountApproval() }
+                }
+                .keyboardShortcut(.defaultAction)
             }
-            .keyboardShortcut(.defaultAction)
         case .confirming:
             OnboardingPrimaryButton(title: "Checking approval…", isWorking: true, isDisabled: true, action: {})
         case .linked:
@@ -69,12 +90,12 @@ struct AccountLinkStepView: View {
             .keyboardShortcut(.defaultAction)
         case .expired:
             OnboardingPrimaryButton(title: "Request a new code", systemImage: "arrow.clockwise") {
-                flow.retryAccountLink()
+                flow.startAccountLink()
             }
             .keyboardShortcut(.defaultAction)
         case .unreachable:
             OnboardingPrimaryButton(title: "Try again", systemImage: "arrow.clockwise") {
-                flow.retryAccountLink()
+                flow.startAccountLink()
             }
             .keyboardShortcut(.defaultAction)
         }
@@ -140,9 +161,17 @@ private struct AccountLinkSurface: View {
                                 .foregroundStyle(DarkbloomTheme.ink.opacity(0.4))
                         }
                     }
+                    if let verificationURI = flow.accountLinkSession.verificationURI,
+                       flow.accountPhase != .expired {
+                        Text(verificationURI)
+                            .font(DarkbloomTheme.chivo(9))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(DarkbloomTheme.ink.opacity(0.38))
+                    }
                 }
                 .accessibilityElement(children: .combine)
-                .accessibilityLabel("Link code \(flow.accountLinkSession.code). Expires after 15 minutes.")
+                .accessibilityLabel("Link code \(flow.accountLinkSession.code). Expires after \(flow.accountLinkSession.lifetimeMinutes) minutes.")
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             } else {
                 Text("Prompts and local files never become part of the account link.")
@@ -168,9 +197,14 @@ private struct AccountLinkSurface: View {
 
     private func expiryDetail(at date: Date) -> String {
         if flow.accountPhase == .expired || flow.accountLinkSession.isExpired(at: date) {
-            return "Expired · this sample code can no longer be approved"
+            return flow.usesLiveAccountLink
+                ? "Expired · request a fresh code"
+                : "Expired · this sample code can no longer be approved"
         }
-        return "\(flow.accountLinkSession.remainingMinutes(at: date)) minutes remaining · UI preview"
+        let remaining = flow.accountLinkSession.remainingMinutes(at: date)
+        return flow.usesLiveAccountLink
+            ? "\(remaining) minutes remaining"
+            : "\(remaining) minutes remaining · UI preview"
     }
 }
 

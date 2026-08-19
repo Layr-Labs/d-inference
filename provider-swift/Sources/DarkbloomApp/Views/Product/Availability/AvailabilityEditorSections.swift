@@ -118,7 +118,9 @@ struct AvailabilityEditorValidationSection: View {
         case .failed(let message):
             AvailabilityInlineNotice(
                 title: "Save failed",
-                detail: "\(message) No provider configuration or process changed.",
+                detail: store.isLive
+                    ? message
+                    : "\(message) No provider configuration or process changed.",
                 systemImage: "exclamationmark.triangle.fill",
                 tint: ProductPalette.critical
             )
@@ -135,7 +137,7 @@ struct AvailabilityEditorValidationSection: View {
             )
             .padding(.top, 18)
 
-        case .idle, .saving, .savedAndRestarted:
+        case .idle, .saving, .savedAndRestarted, .savedRequiresRestart:
             EmptyView()
         }
     }

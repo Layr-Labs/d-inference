@@ -52,6 +52,9 @@ struct AvailabilityView: View {
         .onAppear {
             synchronizeHorizonClock(to: currentRuntime.sampledAt)
         }
+        .task {
+            await store.refresh()
+        }
         .onChange(of: currentRuntime.sampledAt) { _, sampledAt in
             synchronizeHorizonClock(to: sampledAt)
         }
@@ -119,7 +122,9 @@ struct AvailabilityView: View {
 
             AvailabilityBehaviorSection()
 
-            Text("Availability is evaluated in this Mac’s current local timezone. Schedule changes in this UI preview do not edit the provider configuration or restart a process.")
+            Text(store.isLive
+                ? "Availability is evaluated in this Mac’s current local timezone. Saving writes the provider configuration; the provider applies it on its next restart."
+                : "Availability is evaluated in this Mac’s current local timezone. Schedule changes in this UI preview do not edit the provider configuration or restart a process.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -149,10 +154,27 @@ struct AvailabilityView: View {
                     onDismiss: { store.dismissSaveResult() }
                 )
 
+            case .savedRequiresRestart:
+                AvailabilityInlineNotice(
+                    title: "Schedule saved — restart to apply",
+                    detail: "The provider configuration is updated. Restart the provider for the new availability to take effect.",
+                    systemImage: "arrow.clockwise.circle.fill",
+                    tint: ProductPalette.warning,
+                    onDismiss: { store.dismissSaveResult() }
+                )
+                Button("Restart Provider Now", systemImage: "arrow.clockwise") {
+                    onRequestProviderAction(.restart)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+
             case .failed(let message):
                 AvailabilityInlineNotice(
                     title: "Changes were not saved",
-                    detail: "\(message) No provider configuration or process changed.",
+                    detail: store.isLive
+                        ? message
+                        : "\(message) No provider configuration or process changed.",
                     systemImage: "exclamationmark.triangle.fill",
                     tint: ProductPalette.critical
                 )

@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import Observation
+import ProviderCoreFoundation
 
 @MainActor
 @Observable
@@ -15,6 +17,13 @@ final class OnboardingFlowModel {
     private(set) var isRestoredFromDraft = false
     private(set) var resumeReconciliationState: ResumeReconciliationState = .notNeeded
     private(set) var accountLinkSession: OnboardingAccountLinkSession
+    /// Ephemeral (not persisted in the draft): a live link attempt is in
+    /// flight (code requested through terminal event) — the view renders
+    /// the introduction phase's button as disabled/working while this is true.
+    private(set) var accountLinkRequestInFlight = false
+    /// Ephemeral: the terminal `.error` from the last live link attempt (a
+    /// `DeviceAuthError` description), rendered next to the retry actions.
+    private(set) var accountLinkFailureDetail: String?
     var showsProfilePrivacyDetails = false
 
     @ObservationIgnored private let freezesAutomaticProgress: Bool
@@ -26,6 +35,23 @@ final class OnboardingFlowModel {
     @ObservationIgnored private var isApplyingDraft = false
     @ObservationIgnored private var onDraftChange: ((OnboardingDraft) -> Void)?
 
+    // Live seams (slice: real account linking + real verification gating).
+    // All default to production implementations so `DarkbloomApp.swift`
+    // wiring is unchanged; tests inject fakes/temp files.
+    /// The `darkbloom login --json` subprocess adapter driving account steps.
+    @ObservationIgnored private let accountLinkRunner: (any AccountLinkRunning)?
+    /// Deeplinks the coordinator's verification URL. Default: the system
+    /// browser via NSWorkspace. Injected in tests.
+    @ObservationIgnored private let verificationURLHandler: @MainActor (URL) -> Void
+    /// Reads the daemon's on-disk truth for the verification gate. Default:
+    /// the real `~/.darkbloom/daemon-state.json` via DaemonStateFile.read.
+    @ObservationIgnored private let daemonStateProvider: @Sendable () -> DaemonState?
+    @ObservationIgnored private let verificationPollInterval: Duration
+    /// How long verification waits for a FIRST server check-in before marking
+    /// `.checkInDelayed` (it keeps polling after — the phase is advisory).
+    @ObservationIgnored private let verificationCheckInGrace: Duration
+    @ObservationIgnored private var accountLinkTask: Task<Void, Never>?
+
     nonisolated static let readinessItemCount = 6
     nonisolated static let verificationItemCount = 4
     init(
@@ -33,16 +59,40 @@ final class OnboardingFlowModel {
         previewVariant: String? = nil,
         freezesAutomaticProgress: Bool = false,
         reconciliationOutcome: ResumeReconciliationOutcome = .matched,
-        accountLinkIssuedAt: Date = .now
+        accountLinkIssuedAt: Date = .now,
+        accountLinkRunner: (any AccountLinkRunning)? = ProcessAccountLinkCLI(),
+        verificationURLHandler: (@MainActor (URL) -> Void)? = nil,
+        daemonStateProvider: (@Sendable () -> DaemonState?)? = nil,
+        verificationPollInterval: Duration = .seconds(2),
+        verificationCheckInGrace: Duration = .seconds(90)
     ) {
         self.step = step
         self.freezesAutomaticProgress = freezesAutomaticProgress
         self.reconciliationOutcome = reconciliationOutcome
+        self.accountLinkRunner = accountLinkRunner
+        self.verificationURLHandler = verificationURLHandler ?? { NSWorkspace.shared.open($0) }
+        self.daemonStateProvider = daemonStateProvider ?? { DaemonStateFile.read() }
+        self.verificationPollInterval = verificationPollInterval
+        self.verificationCheckInGrace = verificationCheckInGrace
         accountLinkSession = .fixture(issuedAt: accountLinkIssuedAt, attempt: 0)
 
         if freezesAutomaticProgress {
             applyPreview(OnboardingPreviewState(step: step, variant: previewVariant))
         }
+    }
+
+    /// Whether the account step drives a real `darkbloom login --json`
+    /// attempt (vs. the fully simulated fixture path used by previews and
+    /// design captures).
+    var usesLiveAccountLink: Bool {
+        !freezesAutomaticProgress && accountLinkRunner != nil
+    }
+
+    /// Whether the verification step polls the real daemon state file (vs.
+    /// the frozen preview phases). Gated only on `freezesAutomaticProgress`:
+    /// the default `daemonStateProvider` is the real reader.
+    var usesLiveVerification: Bool {
+        !freezesAutomaticProgress
     }
 
     var verificationCompletedCount: Int {
@@ -122,6 +172,9 @@ final class OnboardingFlowModel {
         showsProfilePrivacyDetails = false
         isRestoredFromDraft = false
         resumeReconciliationState = .notNeeded
+        accountLinkSession = .fixture(issuedAt: .now, attempt: 0)
+        accountLinkFailureDetail = nil
+        accountLinkRequestInFlight = false
         isApplyingDraft = false
         publishDraft()
     }
@@ -184,6 +237,12 @@ final class OnboardingFlowModel {
 
     func cancelPendingOperations() {
         operationRevision &+= 1
+        // Kill a live link attempt too: cancelling the consuming task ends
+        // the AsyncThrowingStream iteration, whose onTermination terminates
+        // the `darkbloom login` child process.
+        accountLinkTask?.cancel()
+        accountLinkTask = nil
+        accountLinkRequestInFlight = false
     }
     func showAccountApproval(at date: Date = .now) {
         accountLinkSession = .fixture(issuedAt: date, attempt: accountLinkAttempt)
@@ -204,6 +263,100 @@ final class OnboardingFlowModel {
         accountPhase = .confirming
         guard await pause(.milliseconds(720)), revision == operationRevision else { return }
         accountPhase = .linked
+    }
+
+    // MARK: - Live account linking (real `darkbloom login --json`)
+
+    /// The account step's primary action.
+    ///
+    /// Simulated→real boundary: frozen previews keep the fixture path
+    /// (`showAccountApproval` / `retryAccountLink`) untouched. Live runs spawn
+    /// ONE `darkbloom login --json` attempt per call and drive phases from
+    /// its NDJSON event stream — the code shown is coordinator-issued, the
+    /// verification URL deeplinks automatically, expiry follows the
+    /// coordinator's `expires_in`, and `accountPhase == .linked` is now only
+    /// reachable from a real terminal `.linked` event (or a pre-existing
+    /// login). `AppFlowStore`'s completion gating is otherwise unchanged: the
+    /// phase predicate stays the single source of truth.
+    func startAccountLink() {
+        guard accountLinkTask == nil, !accountLinkRequestInFlight else { return }
+        guard accountPhase == .introduction
+            || accountPhase == .expired
+            || accountPhase == .unreachable
+        else { return }
+
+        if freezesAutomaticProgress {
+            switch accountPhase {
+            case .introduction: showAccountApproval()
+            default: retryAccountLink()
+            }
+            return
+        }
+        guard let accountLinkRunner else { return }
+
+        accountLinkAttempt += 1
+        accountLinkFailureDetail = nil
+        accountLinkRequestInFlight = true
+        accountLinkTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                self.accountLinkTask = nil
+                self.accountLinkRequestInFlight = false
+            }
+            do {
+                for try await event in accountLinkRunner.linkEvents() {
+                    if Task.isCancelled { break }
+                    self.handleAccountLink(event)
+                    if event.isTerminal { return }
+                }
+                // The stream ended without a terminal event (child died
+                // silently): the outcome is unknown — surface it as a
+                // retryable failure instead of spinning forever.
+                guard !Task.isCancelled else { return }
+                self.applyAccountLinkError("The login helper exited before the account was linked.")
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.applyAccountLinkError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func handleAccountLink(_ event: AccountLinkEvent) {
+        switch event {
+        case let .code(userCode, verificationURI, expiresIn):
+            accountLinkSession = .live(
+                code: userCode,
+                verificationURI: verificationURI,
+                issuedAt: .now,
+                expiresIn: expiresIn
+            )
+            accountLinkFailureDetail = nil
+            accountPhase = .waitingForApproval
+            if let url = URL(string: verificationURI) {
+                verificationURLHandler(url)
+            }
+        case .linked:
+            accountLinkFailureDetail = nil
+            accountPhase = .linked
+        case let .error(message):
+            applyAccountLinkError(message)
+        }
+    }
+
+    /// Maps the terminal `.error` message (a stable, user-facing
+    /// `DeviceAuthError.description` from ProviderCore) onto the step's phase
+    /// vocabulary.
+    private func applyAccountLinkError(_ message: String) {
+        if message.hasPrefix("Already logged in") {
+            // The machine is already linked (e.g. a previous `darkbloom
+            // login`): the account step's requirement is satisfied, exactly
+            // as if this attempt had succeeded.
+            accountLinkFailureDetail = nil
+            accountPhase = .linked
+        } else {
+            accountLinkFailureDetail = message
+            accountPhase = message.contains("expired") ? .expired : .unreachable
+        }
     }
 
     func showEnrollmentInstructions() { enrollmentPhase = .instructions }
@@ -278,6 +431,14 @@ final class OnboardingFlowModel {
         readinessPhase = .ready
     }
 
+    /// Verification gate: profile accepted → hardware trust pending →
+    /// verified, driven by REAL coordinator trust as mirrored into
+    /// `daemon-state.json` by the running daemon (`DaemonStateFile.read` via
+    /// the injected `daemonStateProvider`), NOT by timers. The trust
+    /// status/level vocabulary is `DaemonSnapshotMapping`'s (see
+    /// `OnboardingTrustGating`). Polls until a terminal verdict
+    /// (`.hardwareTrusted` / `.trustFailed` / `.offline`) or cancellation;
+    /// `.checkInDelayed` is advisory and self-heals — polling continues.
     private func runVerification() async {
         guard verificationPhase == .profileDetected
             || verificationPhase == .enrollmentPending
@@ -285,16 +446,35 @@ final class OnboardingFlowModel {
         else { return }
         let revision = operationRevision
         if verificationPhase == .profileDetected {
-            guard await pause(.milliseconds(340)), revision == operationRevision else { return }
             verificationPhase = .enrollmentPending
         }
-        if verificationPhase == .enrollmentPending {
-            guard await pause(.milliseconds(620)), revision == operationRevision else { return }
-            verificationPhase = .trustPending
-        }
-        if verificationPhase == .trustPending {
-            guard await pause(.milliseconds(620)), revision == operationRevision else { return }
-            verificationPhase = .hardwareTrusted
+        let checkInDelayedAt = ContinuousClock.now + verificationCheckInGrace
+        while revision == operationRevision, !Task.isCancelled {
+            if let trust = daemonStateProvider()?.trust {
+                switch OnboardingTrustGating.verdict(for: trust) {
+                case .verified:
+                    verificationPhase = .hardwareTrusted
+                    return
+                case .refused:
+                    verificationPhase = .trustFailed
+                    return
+                case .offline:
+                    verificationPhase = .offline
+                    return
+                case .pending:
+                    // Any trust record means the MDM server check-in
+                    // happened; only the trust verdict is outstanding.
+                    if verificationPhase != .trustPending {
+                        verificationPhase = .trustPending
+                    }
+                }
+            } else if verificationPhase == .enrollmentPending,
+                      ContinuousClock.now >= checkInDelayedAt {
+                // Keep polling after marking: a late check-in self-heals
+                // into .trustPending without user action.
+                verificationPhase = .checkInDelayed
+            }
+            guard await pause(verificationPollInterval), revision == operationRevision else { return }
         }
     }
 

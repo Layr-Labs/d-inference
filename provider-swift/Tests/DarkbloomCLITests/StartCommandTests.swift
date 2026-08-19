@@ -125,7 +125,7 @@ struct StartCommandTests {
         let found = try #require(conflict)
         #expect(found.key == GemmaOptimizationEnvironment.safeR1Key)
         #expect(found.shellValue == "0")
-        #expect(found.configValue == "1")
+        #expect(found.configValue == "trust")
     }
 
     @Test("benchmark env guard: the paired weighted-unsort key is checked too")
@@ -168,9 +168,7 @@ struct StartCommandTests {
 
     @Test("benchmark env guard: a trust shell export is not a conflict when the route is on")
     func conflictingEnvironmentOverrideAcceptsTrust() {
-        // The serving projection preserves the operator trust refinement, so
-        // the guard's expectation and the shell agree — the trust-mode
-        // benchmark experiment must be allowed to run.
+        // Serving defaults to trust, so an explicit trust export matches.
         let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
             settings: GemmaOptimizationSettings(
                 prefillLayer18: true,
@@ -178,6 +176,21 @@ struct StartCommandTests {
             )
         ) { key in
             key == GemmaOptimizationEnvironment.safeR1Key ? "trust" : nil
+        }
+        #expect(conflict == nil)
+    }
+
+    @Test("benchmark env guard: a drain shell export is not a conflict when the route is on")
+    func conflictingEnvironmentOverrideAcceptsDrain() {
+        // Exact MLX_GATHER_QMM_EXPERT_SLICES=1 is the serving escape hatch;
+        // the guard must not refuse the drain-mode benchmark.
+        let conflict = ServeRuntimePreparer.conflictingEnvironmentOverride(
+            settings: GemmaOptimizationSettings(
+                prefillLayer18: true,
+                weightedR1: true
+            )
+        ) { key in
+            key == GemmaOptimizationEnvironment.safeR1Key ? "1" : nil
         }
         #expect(conflict == nil)
     }

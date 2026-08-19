@@ -1,3 +1,4 @@
+import Darwin
 import ProviderCore
 
 /// Effective config-backed Gemma posture carried by every benchmark payload.
@@ -11,9 +12,15 @@ public struct BenchmarkGemmaOptimizations: Codable, Sendable, Equatable {
     public let weightedR1: Bool
     public let environment: [String: String]
 
-    public init(settings: GemmaOptimizationSettings) {
+    public init(
+        settings: GemmaOptimizationSettings,
+        getenv: (String) -> String? = {
+            $0.withCString { Darwin.getenv($0) }.map { String(cString: $0) }
+        }
+    ) {
         self.prefillLayer18 = settings.prefillLayer18
         self.weightedR1 = settings.weightedR1
-        self.environment = GemmaOptimizationEnvironment.projection(for: settings)
+        self.environment = GemmaOptimizationEnvironment.projection(
+            for: settings, getenv: getenv)
     }
 }

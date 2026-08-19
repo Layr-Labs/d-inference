@@ -50,6 +50,81 @@ public struct DaemonState: Codable, Sendable, Equatable {
     /// reported and has nothing loaded.
     public var slots: [SlotPosture]?
     public var connectivity: Connectivity?
+    /// The daemon's availability-schedule posture, evaluated by
+    /// `ProviderLoop.currentDaemonState()` from the SAME
+    /// `Schedule.from(config:)` evaluation the serving loop uses. nil ⇒ NOT
+    /// REPORTED (a state file written by a pre-schedule-reporting daemon) —
+    /// readers must render UNKNOWN, falling back to the historical
+    /// "always available while running" assumption rather than inventing a
+    /// schedule.
+    public var schedule: SchedulePosture?
+    /// Who this daemon is: the operator-facing provider name plus the
+    /// earning identity. nil ⇒ NOT REPORTED (older writer). Never secrets —
+    /// this file is read by `status`/`doctor` and the macOS app.
+    public var identity: Identity?
+
+    /// Availability posture derived from `[schedule]` in provider.toml.
+    ///
+    /// Mode semantics (stringly stable, decoded by the app):
+    ///   - "always": no effective schedule (absent, disabled, or unparsable),
+    ///     matching `Schedule.from(config:)` returning nil.
+    ///   - "scheduled-active": a window matched at `writtenAt`.
+    ///   - "scheduled-off": no window matched at `writtenAt`.
+    ///
+    /// Note the scheduled-off caveat: the supervised serving loop only exists
+    /// INSIDE a window, so a `scheduled-off` file ages out of freshness fast —
+    /// the mode records the posture at `writtenAt`, and `nextChangeAtEpoch`
+    /// (the same wall-clock horizon `durationUntilNextActive`/`durationUntilInactive`
+    /// computed for the supervisor) tells the reader when it flips.
+    public struct SchedulePosture: Codable, Sendable, Equatable {
+        /// "always" | "scheduled-active" | "scheduled-off" (see type docs).
+        public var mode: String
+        /// `Schedule.describe()` (e.g. "Mon,Tue,Wed,Thu,Fri 20:00-07:00 |
+        /// Sat,Sun 09:00-18:00"), or "always available" when mode == "always".
+        public var summary: String
+        /// Epoch seconds of the next schedule boundary as computed by the
+        /// daemon-side `Schedule` evaluator at `writtenAt`: window end while
+        /// active, next window open while off. nil when mode == "always"
+        /// (no boundary exists).
+        public var nextChangeAtEpoch: Double?
+
+        public init(mode: String, summary: String, nextChangeAtEpoch: Double? = nil) {
+            self.mode = mode
+            self.summary = summary
+            self.nextChangeAtEpoch = nextChangeAtEpoch
+        }
+    }
+
+    /// Provider identity as the daemon knows it, for read-only consumers that
+    /// must name or address this machine without re-reading provider.toml.
+    public struct Identity: Codable, Sendable, Equatable {
+        /// `[provider] name` from provider.toml (e.g. "darkbloom-mac16-1").
+        public var providerName: String
+        /// The operator payout address the coordinator's
+        /// `GET /v1/provider/earnings?wallet=<address>` endpoint keys on.
+        ///
+        /// Which string that IS: the coordinator resolves it on the web
+        /// handler side as `s.ledger.Balance(wallet)` + payouts whose
+        /// `ProviderAddress == wallet` — i.e. the **ledger account id the
+        /// coordinator credited this machine's payouts to**, which is the
+        /// account id minted when the operator linked THIS machine via the
+        /// device-code flow (`darkbloom login`). The coordinator returns it
+        /// as `account_id` in the `POST /v1/device/token` response; the
+        /// provider persists it at `~/.darkbloom/provider_account`
+        /// (`ProviderCore.ProviderAccountStore`) at login time and sends the
+        /// corresponding auth token at WebSocket registration. nil when the
+        /// machine has never completed a login (the daemon then serves
+        /// unlinked and there is nothing to key earnings on).
+        ///
+        /// It is an identifier, not a credential: the earnings endpoint is
+        /// explicitly NO-AUTH, so persisting it widens no attack surface.
+        public var operatorAddress: String?
+
+        public init(providerName: String, operatorAddress: String? = nil) {
+            self.providerName = providerName
+            self.operatorAddress = operatorAddress
+        }
+    }
 
     public struct Trust: Codable, Sendable, Equatable {
         public var trustLevel: String
@@ -204,7 +279,9 @@ public struct DaemonState: Codable, Sendable, Equatable {
         capacity: Capacity? = nil,
         lastModelLoadError: ModelLoadError? = nil,
         slots: [SlotPosture]? = nil,
-        connectivity: Connectivity? = nil
+        connectivity: Connectivity? = nil,
+        schedule: SchedulePosture? = nil,
+        identity: Identity? = nil
     ) {
         self.schema = schema
         self.pid = pid
@@ -222,6 +299,8 @@ public struct DaemonState: Codable, Sendable, Equatable {
         self.lastModelLoadError = lastModelLoadError
         self.slots = slots
         self.connectivity = connectivity
+        self.schedule = schedule
+        self.identity = identity
     }
 
     // MARK: - Reader helpers

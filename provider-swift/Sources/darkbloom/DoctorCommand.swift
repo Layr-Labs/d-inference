@@ -21,6 +21,9 @@ struct Doctor: AsyncParsableCommand {
     @Flag(help: "Print local provider identifiers used for support/debugging.")
     var support = false
 
+    @Flag(help: "Emit one machine-readable JSON report (schema 1) as the only stdout output, for the Darkbloom app and scripts. Exit-code semantics are unchanged.")
+    var json = false
+
     @Flag(help: "Clear the crash-loop KV-backend guard so backend selection resolves normally on the next model load, then exit.")
     var clearBackendGuard = false
 
@@ -29,28 +32,67 @@ struct Doctor: AsyncParsableCommand {
             try Self.runClearBackendGuard()
             return
         }
-        await runUpdateBannerIfEnabled()
+        // The update banner prints prose to stdout — that would corrupt the
+        // single JSON document `doctor --json` promises on stdout (version
+        // posture is a check inside the report anyway), so JSON mode skips it.
+        if !json {
+            await runUpdateBannerIfEnabled()
+        }
 
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
+        let artifacts = await buildDoctorArtifacts(
+            snapshot: snapshot,
+            coordinatorOverride: coordinator,
+            includeSupport: support
+        )
+
+        if json {
+            let report = DoctorJSONReportBuilder.build(
+                version: artifacts.version,
+                daemonRunning: artifacts.daemonRunning,
+                diagnosis: artifacts.diagnosis,
+                detailedChecks: artifacts.detailedChecks
+            )
+            print(try DoctorJSONReportRenderer.render(report))
+        } else {
+            print(DoctorHumanReportRenderer.render(artifacts))
+        }
+
+        let hasFailure = artifacts.detailedChecks.contains { $0.status == .fail }
+            || artifacts.diagnosis.contains { $0.level == .fail }
+        let hasWarning = artifacts.detailedChecks.contains { $0.status == .warn }
+            || artifacts.diagnosis.contains { $0.level == .warn }
+
+        if hasFailure || (strict && hasWarning) {
+            throw ExitCode.failure
+        }
+    }
+
+    /// Gathers every check a doctor run produces — read-only (the provider
+    /// daemon is only observed through its state file; network checks GET
+    /// public endpoints). Rendering is a separate concern: this builds the
+    /// ONE truth both output modes render.
+    func buildDoctorArtifacts(
+        snapshot: RuntimeSnapshot,
+        coordinatorOverride: String?,
+        includeSupport: Bool
+    ) async -> DoctorRunArtifacts {
         let bootSecurity = BootSecuritySnapshot.live()
         var checks = buildDoctorChecks(snapshot: snapshot, bootSecurity: bootSecurity)
         checks.append(contentsOf: await buildCoordinatorDoctorChecks(
             snapshot: snapshot,
-            coordinatorOverride: coordinator
+            coordinatorOverride: coordinatorOverride
         ))
 
         // Operator-facing diagnosis: trust reason, SE key, model fit, runtime,
         // billing, version — the "why am I / aren't I earning?" answers.
         let diagnosis = await DoctorRunner.buildOperatorDiagnosis(
             snapshot: snapshot,
-            coordinatorURL: coordinator ?? snapshot.config.coordinator.url
+            coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url
         )
 
-        print("darkbloom doctor \(ProviderCore.version)")
-        print("Config: \(describeConfigPath(snapshot))")
         let daemonState = DaemonStateFile.read()
         let daemonRunning = daemonState.map { daemonProcessAlive(pid: $0.pid) } ?? false
-        print("Daemon: \(daemonRunning ? "running" : "NOT running — run `darkbloom start`")")
 
         // §16.5: did this box serve the KV backend it was configured for,
         // and is the snapshot that answer comes from still being refreshed?
@@ -76,40 +118,27 @@ struct Doctor: AsyncParsableCommand {
                 runningVersion: ProviderCore.version))
         }
 
-        // The high-signal diagnosis first (sectioned, with fixes).
-        let rendered = DiagnosticReportRenderer.render(diagnosis)
-        if !rendered.isEmpty { print(rendered) }
+        let supportInfo: DoctorSupportInfo? = includeSupport
+            ? DoctorSupportInfo(
+                coordinator: coordinatorHTTPBase(coordinatorOverride ?? snapshot.config.coordinator.url),
+                serial: macHardwareSerialNumber() ?? "<unavailable>",
+                authTokenPresent: AuthTokenStore.load() != nil,
+                mdmEnrolled: describeMDMEnrollment(
+                    checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url)
+                ),
+                pidFile: ProcessLifecycle.defaultPIDFile().path
+            )
+            : nil
 
-        // Then the detailed low-level checks.
-        print("")
-        print("DETAILED CHECKS")
-        for check in checks {
-            print("  \(check.status.marker) \(check.name): \(check.detail)")
-        }
-
-        if let guide = bootSecurityActionGuide(bootSecurity) {
-            print("")
-            print("BOOT SECURITY — ACTION REQUIRED")
-            print(guide)
-        }
-        if support {
-            print("")
-            print("Support")
-            print("  coordinator: \(coordinatorHTTPBase(coordinator ?? snapshot.config.coordinator.url))")
-            print("  serial: \(macHardwareSerialNumber() ?? "<unavailable>")")
-            print("  auth token: \(AuthTokenStore.load() == nil ? "missing" : "present")")
-            print("  mdm enrolled: \(describeMDMEnrollment(checkMDMEnrollment(coordinatorURL: coordinator ?? snapshot.config.coordinator.url)))")
-            print("  pid file: \(ProcessLifecycle.defaultPIDFile().path)")
-        }
-
-        let hasFailure = checks.contains { $0.status == .fail }
-            || diagnosis.contains { $0.level == .fail }
-        let hasWarning = checks.contains { $0.status == .warn }
-            || diagnosis.contains { $0.level == .warn }
-
-        if hasFailure || (strict && hasWarning) {
-            throw ExitCode.failure
-        }
+        return DoctorRunArtifacts(
+            version: ProviderCore.version,
+            configDescription: describeConfigPath(snapshot),
+            daemonRunning: daemonRunning,
+            diagnosis: diagnosis,
+            detailedChecks: checks,
+            bootSecurityGuide: bootSecurityActionGuide(bootSecurity),
+            support: supportInfo
+        )
     }
 
     /// `doctor --clear-backend-guard`: the manual exit from the crash-loop
@@ -209,6 +238,10 @@ struct DoctorCheck {
     let name: String
     let status: CheckStatus
     let detail: String
+    /// `DiagnosticSection.wireID` this check groups under in structured
+    /// (`--json`) output. The human report ignores it: those checks always
+    /// print flat under "DETAILED CHECKS".
+    let section: String
 }
 
 func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
@@ -226,13 +259,15 @@ func buildDoctorChecks(
         checks.append(.init(
             name: "hardware",
             status: .pass,
-            detail: "\(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores"
+            detail: "\(hardware.chipName), \(hardware.memoryGb) GB RAM, \(hardware.gpuCores) GPU cores",
+            section: DiagnosticSection.hardware.wireID
         ))
     } else {
         checks.append(.init(
             name: "hardware",
             status: .fail,
-            detail: snapshot.hardwareError?.localizedDescription ?? "hardware detection failed"
+            detail: snapshot.hardwareError?.localizedDescription ?? "hardware detection failed",
+            section: DiagnosticSection.hardware.wireID
         ))
     }
 
@@ -243,20 +278,23 @@ func buildDoctorChecks(
         checks.append(.init(
             name: "metal gpu",
             status: .pass,
-            detail: "\(device), \(working) GB working set"
+            detail: "\(device), \(working) GB working set",
+            section: DiagnosticSection.hardware.wireID
         ))
     } else {
         checks.append(.init(
             name: "metal gpu",
             status: .fail,
-            detail: "Metal device not found; provider refuses to run on CPU"
+            detail: "Metal device not found; provider refuses to run on CPU",
+            section: DiagnosticSection.hardware.wireID
         ))
     }
 
     checks.append(.init(
         name: "config",
         status: snapshot.configFileExists ? .pass : .warn,
-        detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only"
+        detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only",
+        section: DiagnosticSection.traffic.wireID
     ))
 
     if let cacheDir = ModelScanner.defaultCacheDirectory(),
@@ -264,73 +302,84 @@ func buildDoctorChecks(
         checks.append(.init(
             name: "huggingface cache",
             status: .pass,
-            detail: cacheDir.path
+            detail: cacheDir.path,
+            section: DiagnosticSection.traffic.wireID
         ))
     } else {
         checks.append(.init(
             name: "huggingface cache",
             status: .warn,
-            detail: "not found"
+            detail: "not found",
+            section: DiagnosticSection.traffic.wireID
         ))
     }
 
     checks.append(.init(
         name: "local mlx models",
         status: snapshot.models.isEmpty ? .warn : .pass,
-        detail: "\(snapshot.models.count) discovered"
+        detail: "\(snapshot.models.count) discovered",
+        section: DiagnosticSection.traffic.wireID
     ))
 
     checks.append(.init(
         name: "macos",
         status: CheckStatus(bootSecurity.macOSVerdict),
-        detail: bootSecurity.macOSSummary
+        detail: bootSecurity.macOSSummary,
+        section: DiagnosticSection.security.wireID
     ))
 
     checks.append(.init(
         name: "sip",
         status: CheckStatus(bootSecurity.sipVerdict),
-        detail: bootSecurity.sip.summary
+        detail: bootSecurity.sip.summary,
+        section: DiagnosticSection.security.wireID
     ))
 
     let rdmaDisabled = checkRDMADisabled()
     checks.append(.init(
         name: "rdma",
         status: rdmaDisabled ? .pass : .warn,
-        detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes"
+        detail: rdmaDisabled ? "disabled" : "enabled; allowed for RDMA-aware runtimes",
+        section: DiagnosticSection.security.wireID
     ))
 
     let authenticatedRoot = checkAuthenticatedRootEnabled()
     checks.append(.init(
         name: "authenticated root",
         status: authenticatedRoot ? .pass : .warn,
-        detail: authenticatedRoot ? "enabled" : "not confirmed"
+        detail: authenticatedRoot ? "enabled" : "not confirmed",
+        section: DiagnosticSection.security.wireID
     ))
 
     let hardenedRuntime = checkHardenedRuntimeEnabled()
     checks.append(.init(
         name: "hardened runtime",
         status: hardenedRuntime ? .pass : .warn,
-        detail: hardenedRuntime ? "enabled" : "not confirmed for this executable"
+        detail: hardenedRuntime ? "enabled" : "not confirmed for this executable",
+        section: DiagnosticSection.security.wireID
     ))
 
     let debuggerAttached = checkDebuggerAttached()
     checks.append(.init(
         name: "debugger",
         status: debuggerAttached ? .fail : .pass,
-        detail: debuggerAttached ? "attached" : "not attached"
+        detail: debuggerAttached ? "attached" : "not attached",
+        section: DiagnosticSection.security.wireID
     ))
 
     if let binaryHash = selfBinaryHash() {
         checks.append(.init(
             name: "binary hash",
             status: .pass,
-            detail: binaryHash
+            detail: binaryHash,
+            section: DiagnosticSection.security.wireID
         ))
     } else {
         checks.append(.init(
             name: "binary hash",
             status: .warn,
-            detail: "could not compute"
+            detail: "could not compute",
+            section: DiagnosticSection.security.wireID
         ))
     }
 
@@ -379,25 +428,30 @@ func buildCoordinatorDoctorChecks(
     checks.append(.init(
         name: "account link",
         status: AuthTokenStore.load() == nil ? .warn : .pass,
-        detail: AuthTokenStore.load() == nil ? "not logged in; run darkbloom login" : "auth token present"
+        detail: AuthTokenStore.load() == nil ? "not logged in; run darkbloom login" : "auth token present",
+        section: DiagnosticSection.trust.wireID
     ))
 
     switch checkMDMEnrollment(coordinatorURL: coordinatorOverride ?? snapshot.config.coordinator.url) {
     case .enrolledDarkbloom:
         checks.append(.init(
-            name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed"))
+            name: "mdm enrollment", status: .pass, detail: "Darkbloom profile installed",
+            section: DiagnosticSection.trust.wireID))
     case .enrolledOtherMDM(let serverURL):
         checks.append(.init(
             name: "mdm enrollment", status: .warn,
-            detail: "enrolled in another MDM (\(serverURL)) — Darkbloom hardware trust unavailable on this Mac"))
+            detail: "enrolled in another MDM (\(serverURL)) — Darkbloom hardware trust unavailable on this Mac",
+            section: DiagnosticSection.trust.wireID))
     case .notEnrolled:
         checks.append(.init(
             name: "mdm enrollment", status: .warn,
-            detail: "not enrolled; hardware trust may remain pending"))
+            detail: "not enrolled; hardware trust may remain pending",
+            section: DiagnosticSection.trust.wireID))
     case .checkFailed:
         checks.append(.init(
             name: "mdm enrollment", status: .warn,
-            detail: "could not determine (profiles tool failed) — check System Settings → Device Management"))
+            detail: "could not determine (profiles tool failed) — check System Settings → Device Management",
+            section: DiagnosticSection.trust.wireID))
     }
 
     do {
@@ -405,13 +459,15 @@ func buildCoordinatorDoctorChecks(
         checks.append(.init(
             name: "coordinator health",
             status: .pass,
-            detail: base
+            detail: base,
+            section: DiagnosticSection.connectivity.wireID
         ))
     } catch {
         checks.append(.init(
             name: "coordinator health",
             status: .fail,
-            detail: "\(base): \(error.localizedDescription)"
+            detail: "\(base): \(error.localizedDescription)",
+            section: DiagnosticSection.connectivity.wireID
         ))
         return checks
     }
@@ -420,7 +476,8 @@ func buildCoordinatorDoctorChecks(
         checks.append(.init(
             name: "coordinator trust",
             status: .warn,
-            detail: "local serial number unavailable"
+            detail: "local serial number unavailable",
+            section: DiagnosticSection.trust.wireID
         ))
         return checks
     }
@@ -433,7 +490,8 @@ func buildCoordinatorDoctorChecks(
             checks.append(.init(
                 name: "coordinator trust",
                 status: .warn,
-                detail: "no live provider record for this serial yet"
+                detail: "no live provider record for this serial yet",
+                section: DiagnosticSection.trust.wireID
             ))
             return checks
         }
@@ -452,13 +510,15 @@ func buildCoordinatorDoctorChecks(
         checks.append(.init(
             name: "coordinator trust",
             status: status,
-            detail: "\(provider.providerID) \(provider.status), trust=\(provider.trustLevel), proofs=\(proofText)"
+            detail: "\(provider.providerID) \(provider.status), trust=\(provider.trustLevel), proofs=\(proofText)",
+            section: DiagnosticSection.trust.wireID
         ))
     } catch {
         checks.append(.init(
             name: "coordinator trust",
             status: .warn,
-            detail: "could not read attestation endpoint: \(error.localizedDescription)"
+            detail: "could not read attestation endpoint: \(error.localizedDescription)",
+            section: DiagnosticSection.trust.wireID
         ))
     }
 

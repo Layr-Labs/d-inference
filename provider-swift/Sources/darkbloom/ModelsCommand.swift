@@ -186,7 +186,11 @@ extension Models {
         @Option(help: "Override the R2 CDN base URL.")
         var r2CDN: String?
 
+        @Flag(help: "Emit newline-delimited JSON download events on stdout instead of human progress output.")
+        var json = false
+
         mutating func run() async throws {
+            let emitter = ModelsDownloadEventEmitter()
             let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
             let coordinatorURL = coordinator ?? snapshot.config.coordinator.url
             let client = ModelCatalogClient(coordinatorURL: coordinatorURL)
@@ -195,14 +199,21 @@ extension Models {
             do {
                 catalog = try await client.fetchCatalog(typeFilter: nil)
             } catch let error as ModelCatalogError {
+                emitter.failIfJSON(enabled: json, message: "could not fetch catalog: \(error)")
                 printError("could not fetch catalog: \(error)")
                 throw ExitCode.failure
             }
 
             guard let entry = catalog.first(where: { $0.id == modelID || $0.s3Name == modelID }) else {
+                emitter.failIfJSON(enabled: json, message: "model '\(modelID)' is not in the coordinator catalog")
                 printError("model '\(modelID)' is not in the coordinator catalog")
                 printError("hint: list available IDs with `darkbloom models catalog`")
                 throw ExitCode.failure
+            }
+
+            if json {
+                try await runJSON(entry: entry, client: client, emitter: emitter)
+                return
             }
 
             print("Downloading \(entry.displayName) (\(entry.id))…")
@@ -219,6 +230,159 @@ extension Models {
 
             print("Done. Cached at \(ModelDownloader.cacheModelDirectory(for: entry.id).path)")
         }
+
+        /// NDJSON mode: `ModelsDownloadEventEmitter` renders every downloader
+        /// event (plus terminal done/error) as one compact JSON object per
+        /// stdout line for machine consumers like the Darkbloom app. Human
+        /// output stays on stderr-only paths (printError).
+        private func runJSON(
+            entry: CatalogModel,
+            client: ModelCatalogClient,
+            emitter: ModelsDownloadEventEmitter
+        ) async throws {
+            let downloader = ModelDownloader(r2CDNURL: r2CDN, catalogClient: client)
+            do {
+                try await downloader.download(model: entry, onEvent: { event in
+                    emitter.emit(event, model: entry.id)
+                })
+            } catch is CancellationError {
+                // Terminated mid-download (e.g. the app's parent process killed
+                // us): the staged `.part` bytes stay on disk for a later resume.
+                // No error line — the caller knows it cancelled.
+                throw CancellationError()
+            } catch let error as ModelCatalogError {
+                emitter.failure(message: "\(error)")
+                printError("\(error)")
+                throw ExitCode.failure
+            } catch {
+                emitter.failure(message: error.localizedDescription)
+                printError("\(error.localizedDescription)")
+                throw ExitCode.failure
+            }
+            emitter.done(model: entry.id)
+        }
+    }
+}
+
+// MARK: - download --json NDJSON emitter
+
+/// Machine-facing event stream for `darkbloom models download --json`: one
+/// compact JSON object per stdout line.
+///
+/// Line shapes (keys sorted; nil fields omitted):
+///   {"bytes":N,"event":"progress","file":F,"model":M,"total":N}
+///   {"event":"verifying","model":M}
+///   {"event":"done","model":M}
+///   {"event":"error","message":M}
+///
+/// `progress.bytes` is CUMULATIVE bytes on disk for `file` — a resumed
+/// `.part` prefix is included, so consumers never see the bar restart at 0
+/// for a resumed download. `total` is present only when the manifest
+/// declares the file's size (the legacy CDN path emits `total: null`-less
+/// events). `verifying` fires once all bytes are staged, while the aggregate
+/// hash is checked; `done` fires after the snapshot is published. Failures
+/// also repeat on stderr and exit non-zero, so a consumer may rely on either
+/// channel.
+///
+/// Progress lines are rate-limited per file (stdout is a pipe into a UI, not
+/// a terminal): the first line per file, any completion line (bytes ≥
+/// total), and at most one line per `minProgressInterval` per file escape
+/// the throttle. Structured events (`verifying`/`done`/`error`) are never
+/// throttled.
+final class ModelsDownloadEventEmitter: @unchecked Sendable {
+
+    /// One NDJSON line. Non-nil fields only; keys sort deterministically.
+    struct Line: Encodable {
+        let event: String
+        let model: String?
+        let file: String?
+        let bytes: Int64?
+        let total: Int64?
+        let message: String?
+    }
+
+    private let minProgressInterval: TimeInterval
+    private let now: @Sendable () -> Date
+    private let write: @Sendable (String) -> Void
+
+    private let lock = NSLock()
+    private var lastProgressEmission: [String: Date] = [:]
+
+    private let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        // Unescaped slashes: model IDs ("org/name") dominate the stream and
+        // stay greppable that way; both forms are legal JSON anyway.
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        return encoder
+    }()
+
+    init(
+        minProgressInterval: TimeInterval = 0.2,
+        now: @escaping @Sendable () -> Date = { Date() },
+        write: @escaping @Sendable (String) -> Void = { line in
+            FileHandle.standardOutput.write(Data((line + "\n").utf8))
+        }
+    ) {
+        self.minProgressInterval = minProgressInterval
+        self.now = now
+        self.write = write
+    }
+
+    /// Map a ProviderCore download event onto the wire schema.
+    func emit(_ event: ModelDownloader.DownloadEvent, model: String) {
+        switch event.phase {
+        case .progress:
+            progress(
+                file: event.file,
+                bytes: event.bytesDownloaded,
+                total: event.bytesTotal,
+                model: model
+            )
+        case .verifying:
+            verifying(model: model)
+        }
+    }
+
+    func progress(file: String, bytes: Int64, total: Int64?, model: String) {
+        lock.lock()
+        let isFirstForFile = lastProgressEmission[file] == nil
+        let isComplete = total.map { bytes >= $0 } ?? false
+        let isDue = now().timeIntervalSince(lastProgressEmission[file] ?? .distantPast) >= minProgressInterval
+        guard isFirstForFile || isComplete || isDue else {
+            lock.unlock()
+            return
+        }
+        lastProgressEmission[file] = now()
+        lock.unlock()
+        writeLine(Line(event: "progress", model: model, file: file, bytes: bytes, total: total, message: nil))
+    }
+
+    func verifying(model: String) {
+        writeLine(Line(event: "verifying", model: model, file: nil, bytes: nil, total: nil, message: nil))
+    }
+
+    func done(model: String) {
+        writeLine(Line(event: "done", model: model, file: nil, bytes: nil, total: nil, message: nil))
+    }
+
+    func failure(message: String) {
+        writeLine(Line(event: "error", model: nil, file: nil, bytes: nil, total: nil, message: message))
+    }
+
+    /// Emit an error line only in `--json` mode; shared by the pre-download
+    /// failure paths so machine consumers see the same failure text stderr
+    /// already carries.
+    func failIfJSON(enabled: Bool, message: String) {
+        guard enabled else { return }
+        failure(message: message)
+    }
+
+    private func writeLine(_ line: Line) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let data = try? encoder.encode(line),
+              let string = String(data: data, encoding: .utf8) else { return }
+        write(string)
     }
 }
 

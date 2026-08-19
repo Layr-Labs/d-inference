@@ -19,6 +19,45 @@ public struct ModelDownloader: Sendable {
         public let bytesTotal: Int64?
     }
 
+    /// Structured, machine-facing download event — the feed behind
+    /// `darkbloom models download --json`'s NDJSON stream. Unlike
+    /// `ProgressEvent` (per-file completion notifications for human output),
+    /// this fires per streamed byte chunk (cumulative bytes on disk, so a
+    /// resumed `.part` prefix is included) plus a `verifying` phase marker
+    /// before the manifest aggregate-hash check.
+    ///
+    /// Purely additive: when no `onEvent` sink is attached to `download`,
+    /// nothing is emitted and the human terminal renderer behaves exactly
+    /// as before.
+    public struct DownloadEvent: Sendable, Equatable {
+        public enum Phase: String, Sendable {
+            /// Cumulative `bytesDownloaded` on disk for `file`
+            /// (`bytesTotal` when the manifest knows the file's size).
+            case progress
+            /// All bytes are staged; the aggregate hash is being verified
+            /// before the snapshot is published. `file` carries the model id
+            /// and the byte fields are zero.
+            case verifying
+        }
+
+        public let phase: Phase
+        public let file: String
+        public let bytesDownloaded: Int64
+        public let bytesTotal: Int64?
+
+        public init(
+            phase: Phase,
+            file: String,
+            bytesDownloaded: Int64 = 0,
+            bytesTotal: Int64? = nil
+        ) {
+            self.phase = phase
+            self.file = file
+            self.bytesDownloaded = bytesDownloaded
+            self.bytesTotal = bytesTotal
+        }
+    }
+
     /// CDN root for model artifacts. Override with `DARKBLOOM_R2_CDN_URL` for
     /// transition/testing against alternate buckets.
     public static let defaultR2CDNURL = "https://models.darkbloom.ai"
@@ -59,7 +98,8 @@ public struct ModelDownloader: Sendable {
     /// time `darkbloom status` runs.
     public func download(
         model: CatalogModel,
-        onProgress: (@Sendable (ProgressEvent) -> Void)? = nil
+        onProgress: (@Sendable (ProgressEvent) -> Void)? = nil,
+        onEvent: (@Sendable (DownloadEvent) -> Void)? = nil
     ) async throws {
         if model.r2Prefix != nil, model.aggregateSHA256 != nil {
             let manifest: ModelManifest
@@ -68,11 +108,12 @@ public struct ModelDownloader: Sendable {
             } else {
                 manifest = try await fetchManifestFromCDN(model: model)
             }
-            try await downloadManifestModel(model: model, manifest: manifest, onProgress: onProgress)
+            try await downloadManifestModel(
+                model: model, manifest: manifest, onProgress: onProgress, onEvent: onEvent)
             return
         }
 
-        try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress)
+        try await downloadLegacyModelFromCDN(model: model, onProgress: onProgress, onEvent: onEvent)
     }
 
     /// Remove a downloaded model from the cache. Returns true if anything was

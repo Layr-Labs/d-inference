@@ -32,11 +32,12 @@ extension ProviderLoop {
     /// racing every other suite.
     internal func currentDaemonState() -> DaemonState {
         let cap = state.backendCapacity
+        let writtenAt = Date().timeIntervalSince1970
         return DaemonState(
             pid: getpid(),
             processIdentity: ProcessIdentity.current(),
             version: ProviderCore.version,
-            writtenAt: Date().timeIntervalSince1970,
+            writtenAt: writtenAt,
             startedAt: startedAtEpoch,
             trust: lastTrustStatus,
             currentModel: state.currentModel,
@@ -68,8 +69,47 @@ extension ProviderLoop {
                 // default: 0 (unload disabled) never expires by age, a
                 // longer-than-default timeout keeps evidence just as long.
                 failureMaxAge: DaemonSlotPostureBuilder.failureMaxAge(
-                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins))
+                    idleTimeoutMins: loopConfig.config.backend.idleTimeoutMins)),
+            schedule: schedulePostureForState(at: writtenAt),
+            identity: DaemonState.Identity(
+                providerName: loopConfig.config.provider.name,
+                operatorAddress: ProviderAccountStore.load())
         )
+    }
+
+    /// The availability posture this daemon serves under, as a daemon-state
+    /// `SchedulePosture`. Built from the SAME `Schedule.from(config:)` parse
+    /// of `loopConfig.config.schedule` that the supervised loop
+    /// (`Start.runScheduled`) gates its windows on — the daemon does not
+    /// invent a second schedule authority.
+    ///
+    /// Evaluated at `writtenAt` (this write), not cached: the posture flips
+    /// exactly when wall-clock time crosses a window edge, and a state file
+    /// carrying a stale "scheduled-active" banner through the close is
+    /// precisely the lie this field exists to prevent.
+    internal func schedulePostureForState(at writtenAt: Double) -> DaemonState.SchedulePosture {
+        guard let scheduleConfig = loopConfig.config.schedule,
+              let schedule = Schedule.from(config: scheduleConfig)
+        else {
+            return DaemonState.SchedulePosture(mode: "always", summary: "always available")
+        }
+
+        let date = Date(timeIntervalSince1970: writtenAt)
+        if schedule.isActive(at: date) {
+            // Same horizon the supervisor sleeps against while active
+            // (`durationUntilInactive`); nil → unknown boundary, carried as
+            // nil rather than guessed.
+            let remaining = schedule.durationUntilInactive(from: date)
+            return DaemonState.SchedulePosture(
+                mode: "scheduled-active",
+                summary: schedule.describe(),
+                nextChangeAtEpoch: remaining.map { writtenAt + $0 })
+        }
+        let wait = schedule.durationUntilNextActive(from: date)
+        return DaemonState.SchedulePosture(
+            mode: "scheduled-off",
+            summary: schedule.describe(),
+            nextChangeAtEpoch: writtenAt + wait)
     }
 
     /// The set of models this daemon still wants to serve, for the

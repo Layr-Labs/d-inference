@@ -57,7 +57,8 @@ enum KVBackendGuardDiagnostics {
                 name: "kv backend crash-loop guard",
                 status: .warn,
                 detail: "stale record from v\(record.providerVersion) (this binary is "
-                    + "v\(runningVersion)) — inert, removed at next daemon start")
+                    + "v\(runningVersion)) — inert, removed at next daemon start",
+                section: DiagnosticSection.runtime.wireID)
         }
         return DoctorCheck(
             name: "kv backend crash-loop guard",
@@ -66,7 +67,8 @@ enum KVBackendGuardDiagnostics {
                 + "\(ageText(record: record, now: now)) ago on v\(record.providerVersion) "
                 + "after \(record.crashCount) crash-loop restarts. Clears on the next "
                 + "release, or run `darkbloom doctor --clear-backend-guard` to retry "
-                + "paged now")
+                + "paged now",
+            section: DiagnosticSection.runtime.wireID)
     }
 
     /// Coarse human age ("41s", "12m", "5h", "3d") — the reader needs "how

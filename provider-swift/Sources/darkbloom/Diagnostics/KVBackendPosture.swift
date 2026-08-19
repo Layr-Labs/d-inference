@@ -220,7 +220,8 @@ enum KVPostureDiagnosis {
                     name: "kv backend posture",
                     status: .warn,
                     detail: "daemon is running but has written no state file yet; "
-                        + "re-run in a few seconds")
+                        + "re-run in a few seconds",
+                    section: DiagnosticSection.runtime.wireID)
             ]
         }
 
@@ -244,19 +245,22 @@ enum KVPostureDiagnosis {
                     status: .fail,
                     detail: "daemon is running but its state file has not been rewritten for "
                         + "\(ageText) (expected every ~\(Int(period))s) — it is wedged; "
-                        + "check `darkbloom logs`, then `darkbloom stop && darkbloom start`"))
+                        + "check `darkbloom logs`, then `darkbloom stop && darkbloom start`",
+                    section: DiagnosticSection.runtime.wireID))
         } else if age > staleAfter {
             out.append(
                 DoctorCheck(
                     name: "daemon state freshness",
                     status: .warn,
-                    detail: "state file is \(ageText) old (expected every ~\(Int(period))s)"))
+                    detail: "state file is \(ageText) old (expected every ~\(Int(period))s)",
+                    section: DiagnosticSection.runtime.wireID))
         } else {
             out.append(
                 DoctorCheck(
                     name: "daemon state freshness",
                     status: .pass,
-                    detail: "state file rewritten \(ageText) ago"))
+                    detail: "state file rewritten \(ageText) ago",
+                    section: DiagnosticSection.runtime.wireID))
         }
 
         if wedged {
@@ -265,7 +269,8 @@ enum KVPostureDiagnosis {
                     name: "kv backend posture",
                     status: .warn,
                     detail: "verdict withheld — the state file is \(ageText) old, so any backend "
-                        + "it names may predate a reload"))
+                        + "it names may predate a reload",
+                    section: DiagnosticSection.runtime.wireID))
             return out
         }
 
@@ -275,7 +280,8 @@ enum KVPostureDiagnosis {
                     name: "kv backend posture",
                     status: .warn,
                     detail: "this daemon does not report per-slot KV posture; "
-                        + "upgrade and restart to diagnose a paged rollout"))
+                        + "upgrade and restart to diagnose a paged rollout",
+                    section: DiagnosticSection.runtime.wireID))
             return out
         }
 
@@ -348,13 +354,15 @@ enum KVPostureDiagnosis {
                 detail += "; config also requests \(unproven.joined(separator: ", ")) "
                     + "with no slot behind it"
             }
-            return DoctorCheck(name: "kv backend posture", status: .fail, detail: detail)
+            return DoctorCheck(name: "kv backend posture", status: .fail, detail: detail,
+                               section: DiagnosticSection.runtime.wireID)
         }
         if !unknown.isEmpty {
             return DoctorCheck(
                 name: "kv backend posture",
                 status: .warn,
-                detail: "no resolved backend reported for \(unknown.joined(separator: ", "))")
+                detail: "no resolved backend reported for \(unknown.joined(separator: ", "))",
+                section: DiagnosticSection.runtime.wireID)
         }
         guard unproven.isEmpty else {
             return DoctorCheck(
@@ -362,18 +370,21 @@ enum KVPostureDiagnosis {
                 status: .warn,
                 detail: "config requests \(unproven.joined(separator: ", ")) but no slot reports "
                     + "that request (\(summary)) — nothing on this box has loaded, let alone "
-                    + "proved, the backend it was configured for")
+                    + "proved, the backend it was configured for",
+                section: DiagnosticSection.runtime.wireID)
         }
         if honoured.isEmpty {
             // Nothing explicit anywhere: not in config, not on a slot.
             return DoctorCheck(
                 name: "kv backend posture",
                 status: .pass,
-                detail: "no explicit backend request (auto); \(summary)")
+                detail: "no explicit backend request (auto); \(summary)",
+                section: DiagnosticSection.runtime.wireID)
         }
         return DoctorCheck(
             name: "kv backend posture",
             status: .pass,
-            detail: "every explicit request honoured: \(honoured.joined(separator: ", "))")
+            detail: "every explicit request honoured: \(honoured.joined(separator: ", "))",
+            section: DiagnosticSection.runtime.wireID)
     }
 }

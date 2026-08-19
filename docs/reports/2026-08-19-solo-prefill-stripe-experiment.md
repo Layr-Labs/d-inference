@@ -68,3 +68,84 @@ The measured prefill levers of consequence remain LM-head narrowing (removes the
 [1,chunk,248320] logits transient — which striping *quadruples* to 970 MiB/chunk) and the
 attention L² term. Revisit striping after LM-head narrowing lands: the stripe's residual
 overhead-amortization win is additive and its main memory cost disappears.
+
+## Addendum (same day, later): verdict change — trust x stripe interaction
+
+The standalone-wash verdict above is superseded by a 2x2 at 8K (3 iters/cell, HPM):
+
+| cell | median TTFT | vs base |
+|---|---:|---:|
+| base (`=1`, 512) | 6208.7 ms | — |
+| stripe alone (`=1`) | 6639.4 ms | +6.9%* |
+| trust alone (512) | 6265.6 ms | +0.9%* |
+| **trust + stripe** | **5350.2 ms (~1,531 tok/s)** | **-13.8%** |
+
+*single-iteration battery-droop-affected cells (trust-512 climbed +11.7% within one
+invocation; stripe-alone ran last at 43% battery). The trust+stripe cell ran second,
+against the drift, with 2.8% spread — the robust result. Replicate plugged-in before PR.
+
+Mechanism — serial-bubble unmasking: per chunk, the 80 expert-descriptor drains and the
+chunk boundary (eval/submit) are bubbles in series. With drains on, boundaries are masked
+(stripe alone ≈ wash). Trust removes drains; the boundary cost is unmasked; the stripe
+removes 3/4 of the boundaries. Since #638 (trust default) merged upstream, THE fleet
+config is the right-hand column: solo stripe is worth ~-9% on top of trust, not the
+standalone ~0%.
+
+## Addendum: engagement verification
+
+- Production path proven striped: with a temporary env-gated plan log, a 4096-token
+  benchmark planned `[128]` (warm-up), then `[2048], [2048]` — admission AND running
+  paths striped. Debug print reverted before commit.
+- Expert-tile route statically verified at stripe width: the classifier explicitly
+  qualifies 16,384 assignments, and `max_tile_count = M/32 + E - 1` sizes descriptors
+  dynamically (767 at M=16,384) — no capacity cliff.
+- Both env echoes present in every arm JSON (`soloPrefillStripeTokens`, `SLICES`).
+
+## Addendum: multi-request prefill baseline (arrival-invariance, 4 x 8K, HPM)
+
+| arm | burst row-TTFTs (s) | aggregate prefill tok/s |
+|---|---|---:|
+| base (`=1`) | 24.98 / 24.98 / 24.98 / 24.98 | 1,312 |
+| trust | 24.12 / 24.12 / 24.12 / 24.12 | 1,359 |
+| solo reference | 6.2 (one request) | 1,319 (base) / 1,531 (trust+stripe) |
+
+Two structural findings (single iteration; charger attached mid-second-run):
+1. **4 concurrent prefills ≈ 1x aggregate throughput** (1,312 vs solo 1,319): rows run as
+   separate forwards, so weights re-stream per row per chunk. This is the quantified case
+   for packed prefill (`CBv2PackedPrefillSteppableModel` — Gemma conforms, Qwen cannot
+   until the recurrent prefill seam exists).
+2. **Every burst row's TTFT equals the makespan** (all finish at 24.98 s): the 512
+   interleave is fair and mean-TTFT-pessimal. FCFS run-to-completion would deliver
+   ~6.2/12.5/18.7/25.0 s at identical throughput — mean TTFT halved by policy alone.
+
+## Prefill roadmap (consolidated, dependency-ordered)
+
+1. **Rebase onto #638 (trust default — merged upstream)** and replicate trust x stripe
+   plugged-in; if -13.8% holds, promote `soloPrefillStripeTokens=2048` as the serving
+   default. Admission note: a request arriving mid-stripe waits one striped step
+   (~1.3-1.4 s worst case at 8K rates, vs ~0.4 s today) before normal interleaving
+   resumes — no queueing-policy change, no serialized prefill; Phase-2 yields shrink it.
+2. **Recurrent prefill seam in EngineLoopV2** — one refactor, three payoffs:
+   (a) **LM-head narrowing** (Qwen `.evaluationOnly`/`.lastPositionLogits`): ~-14% at 8K,
+   removes the 970 MiB/chunk logits transient striping amplifies;
+   (b) **packed prefill for Qwen**: closes the measured 4x-requests = 1x-throughput gap
+   (experts are weight-bandwidth-bound, so cohort weight sharing is the real lever);
+   (c) clean seam for stripe yield points.
+3. **Mean-TTFT scheduling policy**: cap concurrent partial prefills (FCFS-lean) — mean
+   TTFT ~halves at identical throughput per the measured all-rows-finish-together burst.
+4. **qL512 (#640)**: repair 4 review findings; measured +2.4% (8K) / +3.7% (32K).
+5. **Prefill-only stripe relaxation**: stripe when no decode row exists (multi-prefill).
+6. **Layer-quantum preemption (stripe-major Phase 2)**: yield to decode at layer-group
+   boundaries inside stripes; extends trust x stripe to busy providers (ITL bound
+   ~35-100 ms); the Gemma `PREFILL_CHUNK_EVAL` mechanism is the seam embryo.
+7. **Tiny-GEMM fusion**: GDN 4-into-1 input projection; router+shared-gate fusion
+   (35.8% of dense QMM dispatches carry 1.29% of the FLOPs).
+8. **GDN chunkwise-parallel scan** (~5-7%; requires tolerance-based parity, not bitwise).
+9. **Mask+softmax fused into the QK epilogue** (removes 2 of 6 score traversals;
+   641 GiB per 64K prefill).
+10. **Wavefront/concurrent dispatch**: GPU busy union == sum (zero overlap ever) at 24%
+    of peak — the structural 2x lever; needs MLX concurrent-encoding work.
+11. **Sparse prefill attention** for >=32K (probe-gated); tracer measures per-head mass
+    first. The only lever that beats the L^2 term at 64K+.
+12. **Prefix cache enablement** (product decision): hybrid GDN state makes cached
+    prefixes 3.8x smaller than an all-attention peer; off by default today.

@@ -12,6 +12,7 @@ shapes under [`../reference/README.md`](../reference/README.md).
 | Runbook | Scope |
 |---|---|
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Swap the production coordinator container to a reviewed build, verify, roll back |
+| [`app-release.md`](app-release.md) | Ship the combined native app and provider CLI: build, sign, notarize, verify, and roll back |
 | [`provider-release.md`](provider-release.md) | Ship a provider CLI release: version bump, tag, signed and notarized bundle to R2, registration with the coordinator, rollback by deactivation |
 | [`dev-environment.md`](dev-environment.md) | Stand up, operate, and tear down the GCP dev environment |
 | [`release-policy-rollout.md`](release-policy-rollout.md) | Deploy the release-policy routing gate in shadow, then flip it to enforce |

@@ -229,6 +229,118 @@ do
     fi
 done
 
+test_user_app_shortcut() {
+    local installer=$1
+    local label=$2
+    local fixture="$ROOT/shortcut-$label"
+    local managed="$fixture/home/.darkbloom/Darkbloom.app"
+    local applications="$fixture/home/Applications"
+    local shortcut="$applications/Darkbloom.app"
+    mkdir -p "$managed"
+
+    bash "$installer" --ensure-user-app-shortcut-test "$managed" "$shortcut"
+    test -L "$shortcut"
+    test "$(readlink "$shortcut")" = "$managed"
+    bash "$installer" --ensure-user-app-shortcut-test "$managed" "$shortcut"
+    test "$(readlink "$shortcut")" = "$managed"
+
+    rm "$shortcut"
+    printf 'foreign file\n' > "$shortcut"
+    bash "$installer" --ensure-user-app-shortcut-test "$managed" "$shortcut"
+    test ! -L "$shortcut"
+    test "$(cat "$shortcut")" = "foreign file"
+
+    rm "$shortcut"
+    mkdir -p "$shortcut"
+    printf 'foreign app\n' > "$shortcut/sentinel"
+    bash "$installer" --ensure-user-app-shortcut-test "$managed" "$shortcut"
+    test ! -L "$shortcut"
+    test "$(cat "$shortcut/sentinel")" = "foreign app"
+
+    rm -rf "$shortcut"
+    local foreign_target="$fixture/Foreign.app"
+    mkdir -p "$foreign_target"
+    printf 'foreign symlink target\n' > "$foreign_target/sentinel"
+    ln -s "$foreign_target" "$shortcut"
+    bash "$installer" --ensure-user-app-shortcut-test "$managed" "$shortcut"
+    test -L "$shortcut"
+    test "$(readlink "$shortcut")" = "$foreign_target"
+    test "$(cat "$foreign_target/sentinel")" = "foreign symlink target"
+}
+
+test_user_app_shortcut "$REPO_ROOT/scripts/install.sh" source
+test_user_app_shortcut "$REPO_ROOT/coordinator/api/install.sh" embedded
+
+write_existing_bundle() {
+    local app=$1
+    local bundle_id=$2
+    mkdir -p "$app/Contents"
+    cat > "$app/Contents/Info.plist" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>$bundle_id</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+PLIST
+    printf 'existing\n' > "$app/sentinel"
+}
+
+assert_one_foreign_copy() {
+    local install_dir=$1
+    shopt -s nullglob
+    local copies=("$install_dir"/Darkbloom.app.foreign-*)
+    if [ "${#copies[@]}" -ne 1 ]; then
+        echo "expected one preserved foreign item in $install_dir, found ${#copies[@]}" >&2
+        exit 1
+    fi
+    PRESERVED_FOREIGN=${copies[0]}
+}
+
+# A real foreign bundle is moved aside, never deleted or merged into the new
+# app. The same rule covers malformed regular files and symlinks without
+# following them into user-owned content elsewhere.
+FOREIGN_INSTALL="$ROOT/foreign-install"
+write_existing_bundle "$FOREIGN_INSTALL/Darkbloom.app" com.example.foreign
+run_install "$VALID" "$FOREIGN_INSTALL"
+assert_one_foreign_copy "$FOREIGN_INSTALL"
+test -f "$PRESERVED_FOREIGN/sentinel"
+test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+    "$PRESERVED_FOREIGN/Contents/Info.plist")" = "com.example.foreign"
+test -x "$FOREIGN_INSTALL/Darkbloom.app/Contents/MacOS/darkbloom"
+
+FILE_INSTALL="$ROOT/file-install"
+mkdir -p "$FILE_INSTALL"
+printf 'foreign regular file\n' > "$FILE_INSTALL/Darkbloom.app"
+run_install "$VALID" "$FILE_INSTALL"
+assert_one_foreign_copy "$FILE_INSTALL"
+test "$(cat "$PRESERVED_FOREIGN")" = "foreign regular file"
+test -d "$FILE_INSTALL/Darkbloom.app"
+
+SYMLINK_INSTALL="$ROOT/symlink-install"
+SYMLINK_TARGET="$ROOT/symlink-target"
+mkdir -p "$SYMLINK_INSTALL" "$SYMLINK_TARGET"
+printf 'outside content\n' > "$SYMLINK_TARGET/sentinel"
+ln -s "$SYMLINK_TARGET" "$SYMLINK_INSTALL/Darkbloom.app"
+run_install "$VALID" "$SYMLINK_INSTALL"
+assert_one_foreign_copy "$SYMLINK_INSTALL"
+test -L "$PRESERVED_FOREIGN"
+test "$(cat "$SYMLINK_TARGET/sentinel")" = "outside content"
+test -d "$SYMLINK_INSTALL/Darkbloom.app"
+test ! -L "$SYMLINK_INSTALL/Darkbloom.app"
+
+# Release and unsigned-dev identifiers are the only replaceable owners. They
+# are swapped in place without producing a misleading foreign backup.
+for owned_id in io.darkbloom.provider dev.darkbloom.app; do
+    owned_install="$ROOT/owned-${owned_id//./-}"
+    write_existing_bundle "$owned_install/Darkbloom.app" "$owned_id"
+    run_install "$VALID" "$owned_install"
+    test ! -e "$owned_install/Darkbloom.app/sentinel"
+    shopt -s nullglob
+    owned_foreign=("$owned_install"/Darkbloom.app.foreign-*)
+    test "${#owned_foreign[@]}" -eq 0
+done
+
 make_fan_variant() {
     local output=$1
     local mutation=$2

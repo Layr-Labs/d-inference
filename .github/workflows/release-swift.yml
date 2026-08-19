@@ -3,6 +3,8 @@ name: Release Provider Bundle (Swift)
 # Swift provider release pipeline.
 #
 # Builds and ships:
+#   - Darkbloom-macOS-arm64.zip (people: final notarized + stapled app)
+#   - darkbloom-bundle-macos-arm64.tar.gz (coordinator/self-update verifier)
 #   - bin/darkbloom          (provider CLI)
 #   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
 #   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
@@ -75,6 +77,8 @@ env:
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
   MIN_MACOS: '14.0'
+  APP_ARCHIVE_NAME: 'Darkbloom-macOS-arm64.zip'
+  LEGACY_BUNDLE_NAME: 'darkbloom-bundle-macos-arm64.tar.gz'
   # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
   # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
   # wheel. Building from source guarantees the GPU kernels match the exact fork
@@ -94,30 +98,35 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - id: pick
+        env:
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
+          INPUT_VERSION_OVERRIDE: ${{ inputs.version_override }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
         run: |
           set -euo pipefail
-          if [ -n "${{ inputs.environment }}" ]; then
-            ENV="${{ inputs.environment }}"
+          if [ -n "$INPUT_ENVIRONMENT" ]; then
+            ENV="$INPUT_ENVIRONMENT"
           else
             ENV="prod"
           fi
-          if [ "${{ github.ref_type }}" = "tag" ] && [[ "${{ github.ref_name }}" == *-dev.* ]]; then
+          if [ "$REF_TYPE" = "tag" ] && [[ "$REF_NAME" == *-dev.* ]]; then
             echo "::error::-dev tags are unsupported by the exact-version release contract; use workflow_dispatch with environment=dev"
             exit 1
           fi
-          if [ "$ENV" = "prod" ] && [ "${{ github.ref_type }}" != "tag" ]; then
+          if [ "$ENV" = "prod" ] && [ "$REF_TYPE" != "tag" ]; then
             echo "::error::Production publication requires a source-matching release tag"
             exit 1
           fi
           echo "environment=$ENV" >> "$GITHUB_OUTPUT"
 
-          if [ -n "${{ inputs.version_override }}" ]; then
-            VERSION="${{ inputs.version_override }}"
-          elif [ "${{ github.ref_type }}" != "tag" ]; then
+          if [ -n "$INPUT_VERSION_OVERRIDE" ]; then
+            VERSION="$INPUT_VERSION_OVERRIDE"
+          elif [ "$REF_TYPE" != "tag" ]; then
             VERSION=$(awk -F'\"' '/public static let version =/ { print $2 }' \
               provider-swift/Sources/ProviderCore/ProviderCore.swift)
           else
-            REF="${GITHUB_REF_NAME#v}"
+            REF="${REF_NAME#v}"
             VERSION="${REF%-swift*}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -220,7 +229,13 @@ jobs:
           security create-keychain -p "build" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "build" "$KEYCHAIN_PATH"
-          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          CURRENT_KEYCHAINS=()
+          while IFS= read -r keychain; do
+            keychain=${keychain//\"/}
+            [ -z "$keychain" ] || CURRENT_KEYCHAINS+=("$keychain")
+          done < <(security list-keychains -d user)
+          security list-keychains -d user -s \
+            "$KEYCHAIN_PATH" "${CURRENT_KEYCHAINS[@]}"
           security import /tmp/cert.p12 -k "$KEYCHAIN_PATH" \
             -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/productsign -f pkcs12
           security set-key-partition-list -S apple-tool:,apple: \
@@ -338,7 +353,8 @@ jobs:
           test -x "$BIN_DIR/$APP_BINARY_NAME"
           test -d "$BIN_DIR/DarkbloomProvider_DarkbloomApp.bundle"
           echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
-          ls -la "$BIN_DIR" | head -50
+          /usr/bin/find "$BIN_DIR" -mindepth 1 -maxdepth 1 -print \
+            | LC_ALL=C sort
           REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
           ../scripts/check-release-version.sh "$VERSION" "$REPORTED"
 
@@ -657,18 +673,15 @@ jobs:
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
 
-          # Notarize only the canonical app. The flat bin/ copies exist solely
-          # for coordinator artifact verification and inherit signatures that
-          # are valid only in the app-bundle context, so they are not valid
-          # notarization inputs on their own.
-          ditto -c -k --keepParent "$APP" /tmp/darkbloom-notarize.zip
+          # This zip is input to Apple's notary service only. It is created
+          # before stapling and MUST NEVER be uploaded as a release asset. The
+          # downloadable Darkbloom-macOS-arm64.zip is rebuilt from the stapled
+          # app in the next step.
+          rm -f /tmp/darkbloom-notarization-submission.zip
+          ditto -c -k --keepParent \
+            "$APP" /tmp/darkbloom-notarization-submission.zip
 
-          # The distribution tar retains both shapes: install.sh uses the app,
-          # while the coordinator hashes the regular file at bin/darkbloom.
-          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$STAGE" .
-          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
-          ls -lh /tmp/darkbloom-bundle-macos-arm64.tar.gz
 
       - name: Notarize bundle
         env:
@@ -676,7 +689,7 @@ jobs:
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           set -euo pipefail
-          xcrun notarytool submit /tmp/darkbloom-notarize.zip \
+          xcrun notarytool submit /tmp/darkbloom-notarization-submission.zip \
             --apple-id "$APPLE_ID" \
             --password "$APPLE_APP_PASSWORD" \
             --team-id "$APPLE_TEAM_ID" \
@@ -724,8 +737,16 @@ jobs:
           cmp "$STAGE/bin/$ENCLAVE_NAME" "$APP/Contents/MacOS/$ENCLAVE_NAME"
           cmp "$STAGE/bin/mlx.metallib" "$APP/Contents/MacOS/mlx.metallib"
 
-          tar czf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "${{ steps.bundle.outputs.stage }}" .
-          tar tzf /tmp/darkbloom-bundle-macos-arm64.tar.gz | sort | tee /tmp/darkbloom-bundle-files.txt
+          # Build BOTH distributable views only after stapling. The app zip is
+          # the public, app-first download. The legacy tar remains the sole
+          # coordinator/self-update artifact because its regular bin/ files are
+          # part of the registered hash contract.
+          APP_ARCHIVE="/tmp/$APP_ARCHIVE_NAME"
+          LEGACY_BUNDLE="/tmp/$LEGACY_BUNDLE_NAME"
+          rm -f "$APP_ARCHIVE" "$LEGACY_BUNDLE"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$APP_ARCHIVE"
+          tar czf "$LEGACY_BUNDLE" -C "${{ steps.bundle.outputs.stage }}" .
+          tar tzf "$LEGACY_BUNDLE" | sort | tee /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/darkbloom-enclave' /tmp/darkbloom-bundle-files.txt
           grep -qx './bin/mlx.metallib' /tmp/darkbloom-bundle-files.txt
@@ -772,7 +793,7 @@ jobs:
           SMOKE_ROOT=/tmp/darkbloom-final-artifact-smoke
           rm -rf "$SMOKE_ROOT"
           mkdir -p "$SMOKE_ROOT"
-          tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
+          tar xzf "$LEGACY_BUNDLE" -C "$SMOKE_ROOT"
           FINAL_APP_METALLIB="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
           FINAL_FLAT_METALLIB="$SMOKE_ROOT/bin/mlx.metallib"
           test -s "$FINAL_APP_METALLIB"
@@ -830,17 +851,94 @@ jobs:
           # GUI main executable survived notarization + stapling intact.
           test -x "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/DarkbloomApp"
 
+          # Verify the exact public download after rebuilding it from the
+          # stapled app. This is deliberately independent from the tar checks:
+          # a valid legacy updater artifact must not mask a stale/pre-staple or
+          # incomplete human-facing zip.
+          ZIP_SMOKE_ROOT=/tmp/darkbloom-app-zip-smoke
+          rm -rf "$ZIP_SMOKE_ROOT"
+          mkdir -p "$ZIP_SMOKE_ROOT"
+          ditto -x -k "$APP_ARCHIVE" "$ZIP_SMOKE_ROOT"
+          ROOT_ENTRY_COUNT=$(/usr/bin/find "$ZIP_SMOKE_ROOT" \
+            -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')
+          if [ "$ROOT_ENTRY_COUNT" != "1" ] \
+            || [ ! -d "$ZIP_SMOKE_ROOT/Darkbloom.app" ]; then
+            echo "::error::$APP_ARCHIVE_NAME must contain exactly one top-level Darkbloom.app"
+            /usr/bin/find "$ZIP_SMOKE_ROOT" -mindepth 1 -maxdepth 2 -print
+            exit 1
+          fi
+          ZIP_APP="$ZIP_SMOKE_ROOT/Darkbloom.app"
+
+          test -x "$ZIP_APP/Contents/MacOS/$APP_BINARY_NAME"
+          test -x "$ZIP_APP/Contents/MacOS/$CLI_NAME"
+          test -x "$ZIP_APP/Contents/MacOS/$ENCLAVE_NAME"
+          test -s "$ZIP_APP/Contents/MacOS/mlx.metallib"
+          test -x "$ZIP_APP/Contents/Helpers/$FAN_HELPER_NAME"
+          test "$(stat -f '%Lp' "$ZIP_APP/Contents/Helpers/$FAN_HELPER_NAME")" = "755"
+          test -s "$ZIP_APP/Contents/Resources/Chivo-Regular.ttf"
+          test -s "$ZIP_APP/Contents/Resources/Chivo-Medium.ttf"
+          test -s "$ZIP_APP/Contents/Resources/DarkbloomProvider_DarkbloomApp.bundle/default.metallib"
+          test -s "$ZIP_APP/Contents/Resources/mlx-swift-lm_MLXLMCommon.bundle/pagedattention.metal"
+          test -f "$ZIP_APP/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1"
+          test -f "$ZIP_APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+          test -s "$ZIP_APP/Contents/embedded.provisionprofile"
+          while IFS= read -r bundle_name; do
+            test -d "$ZIP_APP/Contents/Resources/$bundle_name"
+          done < /tmp/darkbloom-swiftpm-resource-bundles.txt
+
+          cmp "$APP/Contents/MacOS/$APP_BINARY_NAME" \
+            "$ZIP_APP/Contents/MacOS/$APP_BINARY_NAME"
+          cmp "$APP/Contents/MacOS/$CLI_NAME" \
+            "$ZIP_APP/Contents/MacOS/$CLI_NAME"
+          cmp "$APP/Contents/MacOS/$ENCLAVE_NAME" \
+            "$ZIP_APP/Contents/MacOS/$ENCLAVE_NAME"
+          cmp "$APP/Contents/MacOS/mlx.metallib" \
+            "$ZIP_APP/Contents/MacOS/mlx.metallib"
+
+          codesign --verify --deep --strict --verbose=2 "$ZIP_APP"
+          xcrun stapler validate "$ZIP_APP"
+          spctl --assess --type execute --verbose=4 "$ZIP_APP"
+          ZIP_APP_DR=$(codesign -d -r- "$ZIP_APP" 2>&1 \
+            | awk -F' => ' '/designated/{print $2; exit}')
+          echo "$ZIP_APP_DR" | grep -qF 'identifier "io.darkbloom.provider"'
+          echo "$ZIP_APP_DR" | grep -qF 'anchor apple generic'
+          ZIP_CLI_SIGNING_ID=$(codesign -dvvv \
+            "$ZIP_APP/Contents/MacOS/$CLI_NAME" 2>&1 \
+            | awk -F= '/^Identifier=/{print $2; exit}')
+          test "$ZIP_CLI_SIGNING_ID" = "io.darkbloom.provider"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
+            "$ZIP_APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
+            "$ZIP_APP/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$ZIP_APP/Contents/Info.plist")" = "io.darkbloom.provider"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$ZIP_APP/Contents/Info.plist")" = "$APP_BINARY_NAME"
+          ZIP_REPORTED=$("$ZIP_APP/Contents/MacOS/$CLI_NAME" --version)
+          ./scripts/check-release-version.sh "$VERSION" "$ZIP_REPORTED"
+          ZIP_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            "$ZIP_APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          printf '%s\n' "$ZIP_SMOKE_OUTPUT"
+          printf '%s\n' "$ZIP_SMOKE_OUTPUT" \
+            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
-          BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
+          BUNDLE_HASH=$(shasum -a 256 "$LEGACY_BUNDLE" | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
-          echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
-          echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
-          echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
+          APP_ARCHIVE_HASH=$(shasum -a 256 "$APP_ARCHIVE" | cut -d' ' -f1)
+          {
+            echo "BINARY_HASH=$BINARY_HASH"
+            echo "BUNDLE_HASH=$BUNDLE_HASH"
+            echo "METALLIB_HASH=$METALLIB_HASH"
+            echo "APP_ARCHIVE_HASH=$APP_ARCHIVE_HASH"
+          } >> "$GITHUB_ENV"
           echo "Binary hash:   $BINARY_HASH"
           echo "Bundle hash:   $BUNDLE_HASH"
           echo "Metallib hash: $METALLIB_HASH"
+          echo "App zip hash:  $APP_ARCHIVE_HASH"
+          ls -lh "$APP_ARCHIVE" "$LEGACY_BUNDLE"
 
-      - name: Upload bundle to R2
+      - name: Upload release artifacts to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ env.r2_access_key_id }}
           AWS_SECRET_ACCESS_KEY: ${{ env.r2_secret_access_key }}
@@ -849,18 +947,21 @@ jobs:
         run: |
           set -euo pipefail
           PREFIX="s3://${R2_BUCKET}/releases/v${VERSION}"
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "${PREFIX}/darkbloom-bundle-macos-arm64.tar.gz" \
+          aws s3 cp "/tmp/$LEGACY_BUNDLE_NAME" \
+            "${PREFIX}/${LEGACY_BUNDLE_NAME}" \
+            --endpoint-url "$R2_ENDPOINT" --only-show-errors
+          aws s3 cp "/tmp/$APP_ARCHIVE_NAME" \
+            "${PREFIX}/${APP_ARCHIVE_NAME}" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
           # Latest pointer for `install.sh` discovery. Publish under both
           # the canonical `darkbloom-bundle` name and the legacy
           # `eigeninference-bundle` name for backward compatibility with
           # any caller that hardcoded the old filename.
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
-            "s3://${R2_BUCKET}/releases/latest/darkbloom-bundle-macos-arm64.tar.gz" \
+          aws s3 cp "/tmp/$LEGACY_BUNDLE_NAME" \
+            "s3://${R2_BUCKET}/releases/latest/${LEGACY_BUNDLE_NAME}" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
-          aws s3 cp /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+          aws s3 cp "/tmp/$LEGACY_BUNDLE_NAME" \
             "s3://${R2_BUCKET}/releases/latest/eigeninference-bundle-macos-arm64.tar.gz" \
             --endpoint-url "$R2_ENDPOINT" --only-show-errors
 
@@ -887,7 +988,7 @@ jobs:
           R2_PUBLIC_URL: ${{ env.r2_public_url }}
         run: |
           set -euo pipefail
-          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/darkbloom-bundle-macos-arm64.tar.gz"
+          BUNDLE_URL="${R2_PUBLIC_URL}/releases/v${VERSION}/${LEGACY_BUNDLE_NAME}"
 
           TAG_MSG=$(git tag -l --format='%(contents:subject)%0a%(contents:body)' "$GITHUB_REF_NAME" 2>/dev/null || echo "")
           if [ -z "$TAG_MSG" ] || [ "$TAG_MSG" = $'\n' ]; then
@@ -926,28 +1027,43 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/release-notes.md <<NOTES
-          ## Provider v${VERSION} (Swift CLI + Darkbloom app)
+          ## Darkbloom v${VERSION} for macOS
 
-          The bundle's \`Darkbloom.app\` now ships the SwiftUI **Darkbloom** macOS app
-          (bundle id \`io.darkbloom.provider\`) with the provider CLI co-bundled in
-          \`Contents/MacOS\` — installed to \`~/.darkbloom/Darkbloom.app\` by the installer.
+          ### Download the app
+
+          Download **\`${APP_ARCHIVE_NAME}\`** from Assets, unzip it, and open
+          **Darkbloom.app**. The signed, notarized, and stapled app installs itself at
+          \`~/.darkbloom/Darkbloom.app\` before onboarding, creates a safe
+          \`~/Applications/Darkbloom.app\` symlink when that path is available, and
+          reopens the installed copy. It includes its provider CLI and runtime resources.
+
+          Direct downloads and Terminal installs use the same writable canonical path,
+          background-service path, and managed updater. After the first handoff, open
+          the installed app from \`~/Applications\` or \`~/.darkbloom\`; delete the
+          extracted copy after the installed app opens successfully instead of reopening
+          an older copy later.
+
+          The legacy tar asset remains available for the coordinator verifier and
+          provider updater; it is not the human-facing download.
 
           **Binary hash:**   \`${BINARY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
           **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
+          **App zip hash:**  \`${APP_ARCHIVE_HASH}\`
           **Signed by:**     \`${DEVELOPER_ID}\`
-          **Notarized:**     yes
+          **Notarized and stapled:** yes
           **Min macOS:**     ${MIN_MACOS}
 
-          ### Install
+          ### Terminal install
 
           \`\`\`bash
-          curl -fsSL ${{ env.coordinator_url }}/install.sh | bash
+          curl -fsSL ${coordinator_url}/install.sh | bash
           \`\`\`
 
           NOTES
           gh release create "${{ github.ref_name }}" \
-            /tmp/darkbloom-bundle-macos-arm64.tar.gz \
+            "/tmp/$APP_ARCHIVE_NAME" \
+            "/tmp/$LEGACY_BUNDLE_NAME" \
             --title "${{ github.ref_name }}" \
             --notes-file /tmp/release-notes.md \
             --generate-notes

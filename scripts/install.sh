@@ -10,7 +10,8 @@ set -euo pipefail
 #   1. Fetches the latest signed release from the coordinator
 #   2. Downloads Darkbloom.app (SwiftUI DarkbloomApp main executable PLUS the
 #      co-bundled provider CLI, enclave helper, metallib, SwiftPM resources)
-#      and installs it to ~/.darkbloom/Darkbloom.app
+#      and installs it at the stable managed-update path
+#      ~/.darkbloom/Darkbloom.app
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
 #   5. Optionally enrolls in MDM (device attestation)
@@ -193,6 +194,7 @@ verify_staged_app_payload() {
 existing_bundle_is_ours() {
     local app=$1
     local id
+    [ -d "$app" ] && [ ! -L "$app" ] || return 1
     id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
         "$app/Contents/Info.plist" 2>/dev/null || true)
     case "$id" in
@@ -204,10 +206,54 @@ existing_bundle_is_ours() {
 preserve_foreign_bundle() {
     local destination=$1
     local install_dir=$2
-    local preserved="$install_dir/Darkbloom.app.foreign-$(date +%Y%m%d-%H%M%S)"
+    local base
+    base="$install_dir/Darkbloom.app.foreign-$(date +%Y%m%d-%H%M%S)"
+    local preserved=$base
+    local suffix=1
+    while [ -e "$preserved" ] || [ -L "$preserved" ]; do
+        preserved="${base}-${suffix}"
+        suffix=$((suffix + 1))
+    done
     echo "  ⚠ $destination is not a Darkbloom build — preserving it at:"
     echo "      $preserved"
     mv "$destination" "$preserved"
+}
+
+ensure_user_app_shortcut() {
+    local managed_app=$1
+    local shortcut=$2
+    local shortcut_dir=${shortcut%/*}
+    local managed_resolved
+    local shortcut_resolved
+
+    [ -d "$managed_app" ] && [ ! -L "$managed_app" ] || return 0
+    mkdir -p "$shortcut_dir" || {
+        echo "  ⚠ Could not create $shortcut_dir; launch the managed app directly."
+        return 1
+    }
+
+    if [ -e "$shortcut" ] || [ -L "$shortcut" ]; then
+        if [ -L "$shortcut" ]; then
+            managed_resolved=$(cd -P "$managed_app" 2>/dev/null && pwd -P || true)
+            shortcut_resolved=$(cd -P "$shortcut" 2>/dev/null && pwd -P || true)
+            if [ -n "$managed_resolved" ] \
+                && [ "$shortcut_resolved" = "$managed_resolved" ]
+            then
+                return 0
+            fi
+        fi
+        echo "  ⚠ Preserving existing $shortcut; open $managed_app directly."
+        return 0
+    fi
+
+    if ! ln -s "$managed_app" "$shortcut"; then
+        if [ -e "$shortcut" ] || [ -L "$shortcut" ]; then
+            echo "  ⚠ Preserving $shortcut, which appeared while installing."
+            return 0
+        fi
+        echo "  ⚠ Could not create the user Applications shortcut at $shortcut."
+        return 1
+    fi
 }
 
 commit_staged_app() {
@@ -218,7 +264,7 @@ commit_staged_app() {
     local had_previous=0
     mkdir -p "$backup" "$install_dir/bin"
 
-    if [ -d "$destination" ]; then
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
         if existing_bundle_is_ours "$destination"; then
             mv "$destination" "$backup/Darkbloom.app" || {
                 rm -rf "$backup"
@@ -356,6 +402,15 @@ if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
     exit $?
 fi
 
+if [ "${1:-}" = "--ensure-user-app-shortcut-test" ]; then
+    [ "$#" -eq 3 ] || {
+        echo "usage: $0 --ensure-user-app-shortcut-test <managed-app> <shortcut>" >&2
+        exit 64
+    }
+    ensure_user_app_shortcut "$2" "$3"
+    exit $?
+fi
+
 if [ "${1:-}" = "--install-bundle-test" ]; then
     { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || {
         echo "usage: $0 --install-bundle-test <archive> <install-dir> <binary-hash> <metallib-hash> [fan-helper-requirement]" >&2
@@ -453,6 +508,10 @@ fi
 rm -f "$TARBALL"
 echo "  Strict signature, runtime resources, and atomic swap verified ✓"
 
+ensure_user_app_shortcut \
+    "$INSTALL_DIR/Darkbloom.app" \
+    "$HOME/Applications/Darkbloom.app" || true
+
 # Make available in PATH. Try /usr/local/bin symlink, fall back to shell rc.
 if ln -sf "$BIN_DIR/darkbloom" /usr/local/bin/darkbloom 2>/dev/null; then
     :
@@ -474,6 +533,8 @@ export PATH="$BIN_DIR:$PATH"
 # Source rc so commands work in this shell. Disable -eu around it: rc files
 # may use unbound vars or shell-specific builtins that fail under bash strict.
 set +eu
+# The selected user rc path is intentionally dynamic.
+# shellcheck disable=SC1090
 source "$RC" 2>/dev/null || true
 set -eu
 
@@ -544,7 +605,7 @@ elif [ -n "$SERIAL" ]; then
         echo "  System Settings opened — click Install and enter your password."
         if [ "$INTERACTIVE" = true ]; then
             echo ""
-            read -p "  Press Enter once you have installed the profile..." || true
+            read -r -p "  Press Enter once you have installed the profile..." || true
         else
             echo "  After installing, the provider will verify on first start."
             sleep 3
@@ -593,19 +654,13 @@ echo "╔═══════════════════════�
 echo "║  Install complete                            ║"
 echo "╚══════════════════════════════════════════════╝"
 echo ""
-echo "  Next steps:"
-echo "    darkbloom doctor             # verify the system is ready"
-echo "    darkbloom models catalog     # browse available models"
-echo "    darkbloom models download <id>"
-echo "    darkbloom login              # link this Mac to your account"
-echo "    darkbloom start              # serve inference (interactive picker)"
-echo ""
-
-# ─── Launch the app ──────────────────────────────────────────
 # Only releases that ship the SwiftUI payload can be launched; downlevel
 # flat/CLI-wrapper bundles simply skip this step.
 APP_MAIN="$INSTALL_DIR/Darkbloom.app/Contents/MacOS/DarkbloomApp"
 if [ -x "$APP_MAIN" ]; then
+    echo "  Next step: open Darkbloom and follow the guided setup."
+    echo "  App location: ~/.darkbloom/Darkbloom.app"
+    echo ""
     if [ "$INTERACTIVE" = true ]; then
         REPLY=""
         read -r -p "  Launch the Darkbloom app now? [Y/n] " REPLY || REPLY="n"
@@ -622,4 +677,14 @@ if [ -x "$APP_MAIN" ]; then
     else
         echo "  Desktop app: open ~/.darkbloom/Darkbloom.app"
     fi
+    echo ""
+    echo "  Advanced CLI (optional):"
+else
+    echo "  Next steps:"
 fi
+echo "    darkbloom doctor             # verify the system is ready"
+echo "    darkbloom models catalog     # browse available models"
+echo "    darkbloom models download <id>"
+echo "    darkbloom login              # link this Mac to your account"
+echo "    darkbloom start              # serve inference (interactive picker)"
+echo ""

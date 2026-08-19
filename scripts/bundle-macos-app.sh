@@ -61,11 +61,15 @@ fi
 
 BIN_DIR=$1
 MLX_METALLIB=$2
-APP=$3
+OUTPUT_APP=$3
 VERSION=$4
 
 [[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]] || {
     echo "Invalid version: $VERSION" >&2
+    exit 64
+}
+[[ "$OUTPUT_APP" == *.app ]] || {
+    echo "Output must be a .app bundle: $OUTPUT_APP" >&2
     exit 64
 }
 
@@ -76,6 +80,26 @@ SHADER_SOURCE="$PACKAGE_DIR/Sources/DarkbloomApp/Resources/DarkbloomSpatialField
 APP_INFO_PLIST_SOURCE="$PACKAGE_DIR/Resources/DarkbloomApp/Info.plist"
 FONT_DIR="$PACKAGE_DIR/Resources/DarkbloomApp"
 RESOURCE_BUNDLE="$BIN_DIR/$RESOURCE_BUNDLE_NAME"
+
+# An explicit output path is still not permission to delete an unrelated app.
+# Rebuild release/dev Darkbloom outputs in place; refuse files, symlinks,
+# malformed bundles, and bundles carrying any other identifier.
+if [[ -e "$OUTPUT_APP" || -L "$OUTPUT_APP" ]]; then
+    if [[ ! -d "$OUTPUT_APP" || -L "$OUTPUT_APP" ]]; then
+        echo "Refusing to replace non-bundle output: $OUTPUT_APP" >&2
+        exit 1
+    fi
+    EXISTING_BUNDLE_ID=$(/usr/libexec/PlistBuddy \
+        -c 'Print :CFBundleIdentifier' \
+        "$OUTPUT_APP/Contents/Info.plist" 2>/dev/null || true)
+    case "$EXISTING_BUNDLE_ID" in
+        "$APP_BUNDLE_ID"|dev.darkbloom.app) ;;
+        *)
+            echo "Refusing to replace foreign app at $OUTPUT_APP (id: ${EXISTING_BUNDLE_ID:-missing})" >&2
+            exit 1
+            ;;
+    esac
+fi
 
 for required in \
     "$BIN_DIR/$APP_PROCESS_NAME" \
@@ -103,7 +127,28 @@ xcrun -sdk macosx metallib "$SHADER_AIR" -o "$RESOURCE_BUNDLE/default.metallib"
 rm -f "$SHADER_AIR"
 
 # ─── Assemble ─────────────────────────────────────────────────────────
-rm -rf "$APP"
+APP_PARENT=$(dirname "$OUTPUT_APP")
+APP_NAME=$(basename "$OUTPUT_APP")
+mkdir -p "$APP_PARENT"
+STAGING_ROOT=$(mktemp -d "$APP_PARENT/.${APP_NAME}.staging.XXXXXX")
+BACKUP_ROOT=""
+APP="$STAGING_ROOT/$APP_NAME"
+
+cleanup() {
+    local status=$?
+    if [[ -n "$BACKUP_ROOT" \
+        && -e "$BACKUP_ROOT/$APP_NAME" \
+        && ! -e "$OUTPUT_APP" ]]; then
+        mv "$BACKUP_ROOT/$APP_NAME" "$OUTPUT_APP" 2>/dev/null || true
+    fi
+    rm -rf "$STAGING_ROOT"
+    if [[ -n "$BACKUP_ROOT" && -e "$OUTPUT_APP" ]]; then
+        rm -rf "$BACKUP_ROOT"
+    fi
+    return "$status"
+}
+trap cleanup EXIT
+
 mkdir -p \
     "$APP/Contents/MacOS" \
     "$APP/Contents/Helpers" \
@@ -154,4 +199,10 @@ BUNDLE_EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
     exit 1
 }
 
-echo "Assembled $APP (id $APP_BUNDLE_ID, version $VERSION)"
+if [[ -e "$OUTPUT_APP" ]]; then
+    BACKUP_ROOT=$(mktemp -d "$APP_PARENT/.${APP_NAME}.backup.XXXXXX")
+    mv "$OUTPUT_APP" "$BACKUP_ROOT/$APP_NAME"
+fi
+mv "$APP" "$OUTPUT_APP"
+
+echo "Assembled $OUTPUT_APP (id $APP_BUNDLE_ID, version $VERSION)"

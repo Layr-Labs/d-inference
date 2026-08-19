@@ -64,16 +64,17 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 │                                     (`LocalEndpointInfo`), launchd labels (`DarkbloomServiceLabels`) — no-MLX,
 │                                     Linux-buildable; the ONLY provider layer the macOS app links
 ├── Sources/DarkbloomApp/             SwiftUI macOS app (window + menu bar). Views stay fixture-driven for
-│                                     deterministic previews; real launches wire `ProviderStore` to
-│                                     `Services/DaemonRuntimeService` (polls daemon-state.json, shells out to
-│                                     the `darkbloom` CLI for start/stop/restart). NO MLX/ProviderCore dependency.
+│                                     deterministic previews; real launches are a UI wrapper over machine-readable
+│                                     CLI/file contracts. Fresh setup runs readiness → account → enrollment →
+│                                     model download/start → live trust verification with no Terminal. Release apps
+│                                     relocate to ~/.darkbloom/Darkbloom.app before setup. NO MLX/ProviderCore dependency.
 ├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor --json`,
 │                                     `login --json`, `logout`, `config get|set schedule`, `earnings`, `local`, etc. —
 │                                     every machine-readable mode the app consumes)
 ├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
 ├── Sources/ProviderBenchmark*, kv-*  benchmark + KV-cache self-test executables
-└── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, and publish tests
+└── Tests/                            ProviderCore, ProviderCoreFoundation, CLI, app (incl. hermetic fresh-install), and publish tests
 
 console-ui/           Next.js 16 / React 19 frontend
 ├── src/app/          chat (/), billing, models, stats, providers, settings, link, api-console, earn, login
@@ -99,6 +100,7 @@ scripts/              build, signing, install, and deploy helpers
 ├── bundle-macos-app.sh Darkbloom.app assembly (CLI + GUI binaries, fonts, metallib) shared by CI and local builds
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      dev-coordinator smoke test
+├── test-macos-app-fresh-install.sh hermetic bundle/window + fresh-user onboarding boundary smoke (never real MDM/account)
 ├── benchmark-models.py, load_soak.py, …  benchmark + soak helpers
 └── entitlements.plist DarkbloomApp GUI main-executable entitlements (network only; the CLI keeps its own under provider-swift/)
 
@@ -186,8 +188,8 @@ Current release-sensitive pieces:
 - Prod coordinator runs on the GCE VM `darkbloom-coordinator` in the
   `darkbloom-mainnet` project at `api.darkbloom.dev`. Build target:
   `coordinator/Dockerfile`. Dev runs in the separate `sepolia-ai` project.
-- Provider bundle creation (staging, .app wrapping, signing, notarization) lives in `.github/workflows/release-swift.yml`, with `Darkbloom.app` assembly factored into `scripts/bundle-macos-app.sh` (shared by CI and local runs). The release bundle co-bundles the GUI: `Contents/MacOS/{DarkbloomApp,darkbloom,darkbloom-enclave}`; the app's CLI locator probes its own bundle first, then `~/.darkbloom/bin`, then PATH symlinks.
-- Installer flow lives in `scripts/install.sh`.
+- Provider bundle creation (staging, .app wrapping, signing, notarization) lives in `.github/workflows/release-swift.yml`, with `Darkbloom.app` assembly factored into `scripts/bundle-macos-app.sh` (shared by CI and local runs). The release bundle co-bundles the GUI: `Contents/MacOS/{DarkbloomApp,darkbloom,darkbloom-enclave}`; the app's CLI locator probes its own bundle first, then `~/.darkbloom/bin`, then PATH symlinks. Human-facing releases upload the POST-STAPLE `Darkbloom-macOS-arm64.zip`; the legacy tar remains the coordinator/self-update artifact.
+- Installer flow lives in `scripts/install.sh`. The canonical actual bundle is `~/.darkbloom/Darkbloom.app`; `~/Applications/Darkbloom.app` is a guarded symlink for discoverability. Direct downloads authenticate the pinned Team/designated requirement, relocate to the canonical bundle, relaunch, and only then begin onboarding. Never run launchd from Downloads or use `~/Applications` as the SelfUpdater root (its `bin/`/`recovery/` layout requires the dedicated `~/.darkbloom` root).
 - Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in `coordinator/api/server.go` is only the no-release-row fallback for the version *display* path and must stay in sync with `ProviderCore.version`.
 - CI release workflow (`release-swift.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing, embeds provisioning profile in .app bundle.
 
@@ -224,11 +226,14 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 - App↔CLI machine interfaces (the app is a UI wrapper: reads shared files, drives `darkbloom` subprocesses for actions — never reimplements daemon policy app-side). Their shapes are pinned by golden tests on BOTH sides and must change together:
   - `darkbloom models download --json` NDJSON events (CLI: `ModelsCommand.swift` `ModelsDownloadEventEmitter` ← `ModelDownloader.DownloadEvent`; app: `Services/ModelCatalogCLI.swift`).
   - `darkbloom login --json` NDJSON events (emission seam in `ProviderCore/Auth/DeviceAuth.swift`; app: `Services/AccountLinkCLI.swift`).
+  - `darkbloom enroll --json` schema-1 one-shot result (`already_enrolled` / `profile_opened` / `profile_downloaded`; CLI: `EnrollCommand.swift`; app: `Services/EnrollmentCLI.swift`). JSON mode never claims `profile_opened` unless LaunchServices actually accepted the profile.
   - `darkbloom doctor --json` `DoctorReport` (schema in `ProviderCore/Diagnostics/DoctorReport.swift`, one-truth-two-renderers with the human output; app mirror: `Services/DiagnosticsCLI.swift`).
   - `darkbloom config get|set schedule ... --json` (`darkbloom/ConfigCommand.swift`; app: `Services/AvailabilityCLI.swift`).
   - `darkbloom earnings --json` (`darkbloom/EarningsCommand.swift` ← coordinator `GET /v1/provider/earnings?wallet=`; app: `Services/ContributionsCLI.swift`).
+  - Fresh onboarding starts the provider only through exact noninteractive argv `darkbloom start --model <catalog-id> --local-endpoint`; completion requires fresh daemon state, live matching daemon/endpoint PIDs, selected model current/warm, and verified hardware trust. A successful launchd bootstrap alone is NOT setup success.
 - Account-scoped app data is the documented wrapper exception: the app talks to the coordinator directly with a Privy JWT minted via the console handoff page (`console-ui/src/app/auth/app-link/page.tsx` → `darkbloom://auth/callback#token=…` fragment-only, stored in the keychain): `FleetClient` + `AccountSessionManager` app-side. Changes to `/v1/me/*` response shapes need the console decoder AND `FleetClient`.
 - The app must never gain a ProviderCore/MLX dependency: it links only `ProviderCoreFoundation`. Shared wire/file types belong in the foundation layer (Linux-buildable, Foundation-only); anything inference-adjacent stays out (e.g. `DaemonSlotPostureBuilder` remains in ProviderCore because it consults `EngineV2KVBackendPolicy`; `DoctorReport` stays in ProviderCore since only the CLI emits it).
+- `scripts/test-macos-app-fresh-install.sh` assembles an unsigned production-ID fixture but launches the DEBUG executable with the DEBUG-only relocation bypass under `env -i`; it must reach the exact settled `main`/`Darkbloom` 1040×680 welcome window and `.ready` install state. Any installation-error window is a failure. Real signed relocation is covered separately by designated-requirement tests and the manual clean-Mac release checklist.
 
 ## Common Pitfalls
 

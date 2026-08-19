@@ -219,13 +219,27 @@ A model loads when it fits in available memory plus a small headroom (`weights +
 
 ### Install
 
+**Mac app (recommended):** [Download `Darkbloom-macOS-arm64.zip`](https://github.com/Layr-Labs/d-inference/releases/latest/download/Darkbloom-macOS-arm64.zip), unzip it, and open `Darkbloom.app`. The signed, notarized, and stapled app installs itself at `~/.darkbloom/Darkbloom.app` before onboarding, creates a safe user-visible `~/Applications/Darkbloom.app` symlink when that path is available, and reopens the installed copy. No administrator access is required.
+
+The bundled CLI works from the canonical app location:
+
+```bash
+~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom --version
+```
+
+The canonical location is user-writable, so the managed updater and background-service path work for both direct downloads and Terminal installs. After the first handoff, open Darkbloom from `~/Applications` (or `~/.darkbloom`) rather than reopening an older extracted copy in Downloads; the extracted copy can be deleted after the installed app opens successfully.
+
+**Terminal install:** installs the same app at the same canonical location and creates the same CLI shortcuts.
+
 ```bash
 curl -fsSL https://api.darkbloom.dev/install.sh | bash
 ```
 
-Zero prerequisites and no `sudo`. The installer fetches the latest signed release, verifies the bundle / binary / `mlx.metallib` SHA-256 against the coordinator's release record, checks the Apple Developer ID code signature, provisions the Secure Enclave helper, and offers to install the MDM enrollment profile for hardware trust. See [`docs/provider/installation.md`](docs/provider/installation.md).
+Zero prerequisites and no `sudo`. The installer fetches the latest signed release, verifies the bundle / binary / `mlx.metallib` SHA-256 against the coordinator's release record, checks the Apple Developer ID code signature, installs the app atomically, provisions the Secure Enclave helper, and offers to launch the app. See [`docs/provider/installation.md`](docs/provider/installation.md).
 
 ### First run
+
+Open `Darkbloom.app` for guided setup. The equivalent advanced CLI commands are:
 
 ```bash
 darkbloom start              # background launchd service (interactive model picker)

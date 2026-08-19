@@ -1434,7 +1434,7 @@ response = client.chat.completions.create(
       <div class="rv">
         <div class="sec-label">07 - Earn</div>
         <h2>Earn from your Mac</h2>
-        <p class="sec-desc">Install the provider, choose when your Mac is available, and earn from inference jobs matched by the network. During the public alpha, operators keep 100% of inference revenue.</p>
+        <p class="sec-desc">Download the Mac app, choose when your Mac is available, and earn from inference jobs matched by the network. During the public alpha, operators keep 100% of inference revenue.</p>
       </div>
       <div class="stat-grid rv">
         <div class="stat-cell"><div class="stat-num">100%</div><div class="stat-label">of inference revenue goes to you</div></div>
@@ -1442,20 +1442,21 @@ response = client.chat.completions.create(
       </div>
       <div class="install-box rv" style="margin-top:24px;">
         <div class="install-tabs">
-          <button class="on" id="tab-c" onclick="swTab('c')">CLI</button>
-          <button id="tab-a" onclick="swTab('a')">Mac App</button>
+          <button class="on" id="tab-a" onclick="swTab('a')">Mac App</button>
+          <button id="tab-c" onclick="swTab('c')">Terminal</button>
         </div>
-        <div id="panel-c" class="ipanel">
+        <div id="panel-a" class="ipanel">
+          <h4>Darkbloom for macOS</h4>
+          <p class="desc">Download the signed and notarized app, unzip it, and open Darkbloom.app. It installs itself in your user account, then starts guided setup.</p>
+          <a href="https://github.com/Layr-Labs/d-inference/releases/latest/download/Darkbloom-macOS-arm64.zip" class="btn btn-primary">Download for Apple Silicon</a>
+          <p class="desc" style="margin:16px 0 0;font-size:12px;">Darkbloom keeps the updatable app at ~/.darkbloom/Darkbloom.app and adds a safe shortcut at ~/Applications/Darkbloom.app. After setup, use that shortcut instead of an older copy left in Downloads.</p>
+          <div class="imeta"><span>Apple Silicon only</span><span>macOS 14+</span><span>Includes CLI + backend</span></div>
+        </div>
+        <div id="panel-c" class="ipanel" style="display:none;">
           <h4>Install via Terminal</h4>
-          <p class="desc">Downloads the provider binary and configures a background launchd service.</p>
+          <p class="desc">Install the same app layout, CLI shortcuts, and managed self-updates from Terminal.</p>
           <div class="code-block"><div class="code-bar"><span class="dot dot-r"></span><span class="dot dot-y"></span><span class="dot dot-g"></span><span class="code-lang">terminal</span></div><pre><code><span style="color:rgba(255,255,255,0.25);user-select:none;">$ </span>curl -fsSL https://api.darkbloom.dev/install.sh | bash</code></pre></div>
           <div class="imeta" style="margin-top:14px;"><span>No dependencies</span><span>Auto-updates</span><span>Runs as launchd service</span></div>
-        </div>
-        <div id="panel-a" class="ipanel" style="display:none;">
-          <h4>Native macOS Menu Bar App <span class="stag" style="margin-left:8px;">In Development</span></h4>
-          <p class="desc">A guided setup flow for non-terminal users. The CLI is the supported path during the public alpha.</p>
-          <div style="width:100%;padding:14px;text-align:center;border-radius:var(--radius-sm);background:var(--off-white);color:var(--grey-03);font-family:var(--font-mono);font-size:13px;border:1px solid var(--grey-01);">Coming soon</div>
-          <div class="imeta"><span>Apple Silicon only</span><span>macOS 14+</span><span>Includes CLI + backend</span></div>
         </div>
       </div>
       <script>function swTab(t){document.getElementById('tab-a').classList.toggle('on',t==='a');document.getElementById('tab-c').classList.toggle('on',t==='c');document.getElementById('panel-a').style.display=t==='a'?'block':'none';document.getElementById('panel-c').style.display=t==='c'?'block':'none';if(window.va)window.va('event',{name:'install_tab_click',data:{method:t==='c'?'cli':'mac_app'}});}</script>

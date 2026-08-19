@@ -169,6 +169,11 @@ jobs:
         # NOTE: do NOT pass --build-tests-relinking flags; the bundle is already
         # built above, so `swift test` reuses it (and our colocated metallib).
         run: swift test
+      - name: Test fresh-install macOS app bundle
+        timeout-minutes: 10
+        env:
+          DARKBLOOM_FRESH_INSTALL_METALLIB: ${{ runner.temp }}/mlx.metallib
+        run: ./scripts/test-macos-app-fresh-install.sh
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs

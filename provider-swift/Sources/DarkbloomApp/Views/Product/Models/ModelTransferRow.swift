@@ -18,6 +18,14 @@ struct ModelTransferRow: View {
                 HStack {
                     Text(model.displayName)
                         .font(.system(size: 12, weight: .semibold))
+                    if case .paused(let paused) = model.installation {
+                        ProductStatusBadge(
+                            title: "Resumable",
+                            systemImage: "arrow.trianglehead.clockwise",
+                            tint: .secondary
+                        )
+                        .accessibilityLabel("Download resumable from \(paused.fractionComplete.formatted(.percent.precision(.fractionLength(0))))")
+                    }
                     Spacer()
                     Text(transferDetail)
                         .font(.system(size: 10))
@@ -56,10 +64,16 @@ struct ModelTransferRow: View {
 
     private var transferStateTitle: String {
         switch model.installation {
-        case .downloading(let progress): progress.isResumed ? "Resuming download" : "Downloading"
-        case .paused: "Paused — progress is saved"
-        case .verifying: "Verifying model weights"
-        default: "Preparing"
+        case .downloading(let progress):
+            let base = progress.isResumed ? "Resuming download" : "Downloading"
+            let percent = progress.fractionComplete.formatted(.percent.precision(.fractionLength(0)))
+            return "\(base) — \(percent)"
+        case .paused:
+            return "Paused — progress is saved"
+        case .verifying:
+            return "Verifying model weights"
+        default:
+            return "Preparing"
         }
     }
 

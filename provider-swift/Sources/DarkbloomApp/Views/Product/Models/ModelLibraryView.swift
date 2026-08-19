@@ -131,6 +131,11 @@ struct ModelLibraryView: View {
         .task(id: activeTransferSignature) {
             await advanceModelTransfers()
         }
+        .task {
+            // Live mode: kick the first real catalog/local fetch (no-op for
+            // fixture previews and safe to re-run on screen re-entry).
+            await store.start()
+        }
     }
 
     private var catalogDetail: String {
@@ -174,6 +179,9 @@ struct ModelLibraryView: View {
     }
 
     private func advanceModelTransfers() async {
+        // Live mode: transfers are driven by the real CLI download stream,
+        // not this fixture simulation loop.
+        guard !store.isLive else { return }
         while !Task.isCancelled {
             let models = store.activeTransfers.filter { model in
                 switch model.installation {

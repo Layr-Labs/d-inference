@@ -3,6 +3,8 @@ import SwiftUI
 struct ChatEmptyState: View {
     let identity: MachineIdentity
     let route: ChatRoute
+    /// Replaces the preview-oriented detail copy for live surfaces.
+    var detailOverride: String? = nil
     let onSelectSuggestion: (String) -> Void
 
     private let suggestions = [
@@ -101,7 +103,8 @@ struct ChatEmptyState: View {
     }
 
     private var detail: String {
-        switch route {
+        if let detailOverride { return detailOverride }
+        return switch route {
         case .thisMac:
             "Type a message or try a prompt below. This UI preview stays on \(identity.displayName); no model runs yet."
         case .privateNetwork:

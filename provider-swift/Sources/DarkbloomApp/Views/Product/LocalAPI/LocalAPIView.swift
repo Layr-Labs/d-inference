@@ -27,6 +27,9 @@ struct LocalAPIView: View {
                 .padding(.top, 24)
         }
         .navigationTitle("Local API")
+        // Live stores poll ~/.darkbloom/local.json + probe the endpoint while
+        // this surface is visible; fixture stores no-op so previews stay frozen.
+        .task { store.startMonitoring() }
         .task(id: store.lastCopiedItem) {
             guard store.lastCopiedItem != nil else { return }
             try? await Task.sleep(for: .seconds(1.6))
@@ -39,6 +42,7 @@ struct LocalAPIView: View {
             store.hideAPIKey()
         }
         .onDisappear {
+            store.stopMonitoring()
             store.hideAPIKey()
             store.clearCopyConfirmation()
         }

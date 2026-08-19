@@ -31,6 +31,9 @@ enum DiagnosticSection: Int, CaseIterable, Hashable, Sendable {
     case connectivity
     case version
     case billing
+    /// Forward-compat bucket: a check whose section this build doesn't know
+    /// (newer CLI) still surfaces — grouped last, not silently dropped.
+    case other
 
     var title: String {
         switch self {
@@ -44,7 +47,29 @@ enum DiagnosticSection: Int, CaseIterable, Hashable, Sendable {
         case .connectivity: "Connectivity"
         case .version: "Version"
         case .billing: "Usage reporting"
+        case .other: "Other checks"
         }
+    }
+
+    /// Reverse of `DiagnosticSection.wireID` in ProviderCore
+    /// (`Sources/ProviderCore/Diagnostics/DoctorReport.swift`). The two enums
+    /// are kept in separate modules (the app cannot link ProviderCore), so
+    /// the CLI's golden test pins the strings and this init pins the pairing.
+    init(wireID: String) {
+        self =
+            switch wireID {
+            case "hardware": .hardware
+            case "security": .security
+            case "attestationKey": .attestationKey
+            case "attestationReadiness": .attestationReadiness
+            case "trust": .trust
+            case "traffic": .traffic
+            case "runtime": .runtime
+            case "connectivity": .connectivity
+            case "version": .version
+            case "billing": .billing
+            default: .other
+            }
     }
 }
 
@@ -124,5 +149,94 @@ struct DiagnosticReport: Hashable, Sendable {
                 }
                 return lhs.section.rawValue < rhs.section.rawValue
             }
+    }
+}
+
+// MARK: - Live report mapping (`darkbloom doctor --json`)
+
+extension DiagnosticReport {
+    /// Maps a decoded doctor report into the app's model. The CLI keeps the
+    /// check NAMES (they double as support vocabulary — "what does `metal
+    /// gpu` say?"), so titles are shown verbatim.
+    init(doctor payload: DoctorJSONReport, generatedAt: Date = Date()) {
+        let fixesByCheck = Dictionary(grouping: payload.fixes ?? [], by: \.check)
+        self.init(
+            generatedAt: generatedAt,
+            checks: payload.checks.map { check in
+                let section = DiagnosticSection(wireID: check.section)
+                let severity = DiagnosticSeverity(status: check.status)
+                let fix = fixesByCheck[check.id]?.first.map { fix in
+                    DiagnosticFix(
+                        id: fix.id,
+                        title: fix.title,
+                        detail: fix.detail,
+                        priority: fix.priority == "urgent" ? .urgent : .recommended,
+                        action: DiagnosticFixAction.route(
+                            forFixTargeting: check.id, section: section, detail: fix.detail
+                        )
+                    )
+                } ?? check.advice.map {
+                    // Defensive: advice without a fix record still produces a
+                    // card (the CLI always pairs them; a hand-rolled or
+                    // skewed payload shouldn't drop operator guidance).
+                    DiagnosticFix(
+                        id: "fix-\(check.id)",
+                        title: check.title,
+                        detail: $0,
+                        priority: severity == .failure ? .urgent : .recommended,
+                        action: DiagnosticFixAction.route(
+                            forFixTargeting: check.id, section: section, detail: $0
+                        )
+                    )
+                }
+                return DiagnosticCheckSummary(
+                    id: check.id,
+                    section: section,
+                    title: check.title,
+                    severity: severity,
+                    message: check.detail,
+                    fix: fix
+                )
+            }
+        )
+    }
+}
+
+extension DiagnosticSeverity {
+    /// Doctor status strings → severities. Unknown (future) statuses surface
+    /// as warnings — visible but non-blocking — rather than failing the
+    /// decode of a whole report.
+    init(status: String) {
+        switch status {
+        case "pass": self = .passed
+        case "fail": self = .failure
+        default: self = .warning // "warn", or anything newer
+        }
+    }
+}
+
+extension DiagnosticFixAction {
+    /// Route a live fix to the app's action surface. The advice TEXT is the
+    /// truth (rendered as the card's detail); this only picks which button
+    /// appears, so it works from stable, low-cardinality signals: a few
+    /// advice keywords, then the check's section.
+    static func route(
+        forFixTargeting checkID: String,
+        section: DiagnosticSection,
+        detail: String
+    ) -> DiagnosticFixAction {
+        let text = "\(checkID) \(detail)".lowercased()
+        if text.contains("enroll") { return .openEnrollment }
+        if text.contains("restart") || text.contains("stop && darkbloom start") {
+            return .restartProvider
+        }
+        switch section {
+        case .version: return .checkForUpdates
+        case .security: return .openRecoveryInstructions
+        case .connectivity: return .openNetworkSettings
+        case .hardware, .attestationKey, .attestationReadiness, .trust,
+             .traffic, .runtime, .billing, .other:
+            return .openSupport
+        }
     }
 }

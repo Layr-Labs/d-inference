@@ -9,6 +9,8 @@ enum ContributionsFixture: String, CaseIterable, Sendable {
 }
 
 enum ContributionsAvailability: Equatable, Sendable {
+    /// Live store before its first fetch completes (fixture stores never use it).
+    case loading
     case available(lastUpdated: Date)
     case unavailable(message: String)
 }
@@ -19,7 +21,8 @@ final class ContributionsStore {
     private(set) var availability: ContributionsAvailability
     private(set) var snapshot: ContributionsSnapshot?
     /// Decorative seven-day series for UI evaluation only. This is intentionally
-    /// separate from the coordinator-shaped snapshot.
+    /// separate from the coordinator-shaped snapshot. Live stores replace it
+    /// with a series derived from the fetched payout rows.
     private(set) var pulsePreview: ContributionPulsePreview?
     var scope: ContributionScope
     private(set) var previewPayoutState: PreviewPayoutState = .idle
@@ -27,6 +30,12 @@ final class ContributionsStore {
     private(set) var payoutError: PayoutValidationError?
 
     private var previewPayoutSequence = 1
+    private let live: LiveContext?
+
+    struct LiveContext: Sendable {
+        let cli: any ContributionsCLIRunning
+        let now: @Sendable () -> Date
+    }
 
     init(
         fixture: ContributionsFixture = .active,
@@ -37,6 +46,36 @@ final class ContributionsStore {
         snapshot = state.snapshot
         pulsePreview = state.pulsePreview
         scope = initialScope
+        live = nil
+    }
+
+    /// Live store: feeds from `darkbloom earnings --json` (the coordinator's
+    /// no-auth provider earnings endpoint). Starts in `.loading`; the view's
+    /// first appear (or the retry action) drives `refresh()`.
+    init(cli: any ContributionsCLIRunning, now: @escaping @Sendable () -> Date = Date.init) {
+        availability = .loading
+        snapshot = nil
+        pulsePreview = nil
+        scope = .thisMac
+        live = LiveContext(cli: cli, now: now)
+    }
+
+    /// Live only: fetch the earnings endpoint and remap into coordinator-
+    /// shaped snapshot state. Safe for fixture stores (no-op) so views can
+    /// call it unconditionally.
+    func refresh() async {
+        guard let live else { return }
+        do {
+            let payload = try await live.cli.fetchEarnings()
+            snapshot = ContributionsLiveMapping.snapshot(from: payload, asOf: live.now())
+            // The pulse series is a UI-preview-only artifact by contract
+            // ("must never be presented as observed account data"): live mode
+            // leaves it absent and the view shows the privacy note alone.
+            pulsePreview = nil
+            availability = .available(lastUpdated: live.now())
+        } catch {
+            availability = .unavailable(message: error.localizedDescription)
+        }
     }
 
     var filteredLedger: [ContributionRecord] {
@@ -149,9 +188,14 @@ final class ContributionsStore {
         payoutError = nil
     }
 
-    /// Deterministic UI-only recovery until a real contributions service exists.
+    /// UI-troubleshooting recovery: fixtures restore their deterministic
+    /// state; live stores refetch the earnings endpoint.
     func retryPreviewLoad() {
         guard case .unavailable = availability else { return }
+        guard live == nil else {
+            Task { await refresh() }
+            return
+        }
         let state = ContributionsFixtures.make(.active)
         availability = state.availability
         snapshot = state.snapshot
@@ -161,5 +205,83 @@ final class ContributionsStore {
     private static func saturatingAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
         let result = lhs.addingReportingOverflow(rhs)
         return result.overflow ? .max : result.partialValue
+    }
+}
+
+// MARK: - Live mapping (earnings payload -> snapshot)
+
+/// Maps the coordinator's wallet-keyed earnings payload onto the app's
+/// coordinator-shaped models. Exact integer micro-USD end to end; fields the
+/// endpoint does not report are derived conservatively and documented here:
+///
+/// - `withdrawableBalance` mirrors `balance_micro_usd`: the wallet endpoint
+///   does not split withdrawable vs. pending (that split exists only on the
+///   authenticated account endpoint), so the invariant
+///   `withdrawable <= available` holds trivially and the UI's payout
+///   validation floors against the full balance.
+/// - `minimumPayout` is an app-side display floor ($1), not a coordinator
+///   rule — the endpoint has no minimum concept.
+/// - Records come from `payouts` only; `ledger` rows are account-audit
+///   metadata, not per-job earnings.
+enum ContributionsLiveMapping {
+    /// Display-only payout floor for the live snapshot. Matches the fixture
+    /// value so preview and live surfaces describe payouts identically.
+    static let liveMinimumPayout = MicroUSD(1_000_000)
+
+    static func snapshot(from payload: ContributionsEarningsPayload, asOf: Date) -> ContributionsSnapshot {
+        // The wallet this payload was fetched for (echoed by the CLI) keys
+        // every record: the endpoint already filtered payouts to that
+        // address. A bare coordinator payload (tests only) leaves it empty —
+        // the snapshot requires a non-empty key, so substitute a marker.
+        let wallet = (payload.wallet?.isEmpty == false) ? payload.wallet! : "unknown-wallet"
+        let records = payload.payouts.map { record(from: $0, wallet: wallet, asOf: asOf) }
+        return ContributionsSnapshot(
+            asOf: asOf,
+            currentProviderKey: wallet,
+            availableBalance: nonNegative(payload.balanceMicroUSD),
+            withdrawableBalance: nonNegative(payload.balanceMicroUSD),
+            earnedLifetime: nonNegative(payload.totalEarnedMicroUSD),
+            lifetimeJobs: Int64(max(0, payload.totalJobs)),
+            minimumPayout: liveMinimumPayout,
+            payoutReadiness: .ready,
+            records: records
+        )
+    }
+
+    private static func record(
+        from payout: ContributionsEarningsPayload.Payout,
+        wallet: String,
+        asOf: Date
+    ) -> ContributionRecord {
+        // Stable unique ids prefer the store row id; ledger-reconstructed
+        // rows (id 0) fall back to the job reference.
+        let id: String
+        if payout.id != 0 {
+            id = "payout-\(payout.id)"
+        } else if let jobID = payout.jobID, !jobID.isEmpty {
+            id = "job-\(jobID)"
+        } else {
+            id = "payout-\(payout.timestamp.map { String(Int($0.timeIntervalSince1970)) } ?? "unknown")"
+        }
+        let modelID = (payout.model?.isEmpty == false) ? payout.model! : "unknown"
+        return ContributionRecord(
+            id: id,
+            timestamp: min(payout.timestamp ?? asOf, asOf),
+            providerKey: wallet,
+            providerID: (payout.jobID?.isEmpty == false) ? payout.jobID! : id,
+            providerName: "This Mac",
+            modelID: modelID,
+            modelName: modelID,
+            inputTokens: 0,
+            outputTokens: 0,
+            amount: nonNegative(payout.amountMicroUSD)
+        )
+    }
+
+    /// Defensive clamp: the coordinator only ever writes non-negative payout
+    /// amounts, but `MicroUSD` preconditions on it — a corrupt row must not
+    /// crash the app.
+    private static func nonNegative(_ value: Int64) -> MicroUSD {
+        MicroUSD(validating: value) ?? .zero
     }
 }

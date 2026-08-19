@@ -15,6 +15,16 @@ struct DiagnosticsVerdictPresentation {
             return
         }
 
+        // A live store before its first scan: no truth to judge yet — stay
+        // neutral instead of flashing the empty report's "healthy" verdict.
+        if case .notStarted = runState {
+            tint = .secondary
+            icon = "stethoscope"
+            title = "Check this Mac"
+            detail = "Run the system check to review hardware, trust, models, connectivity, and the provider runtime."
+            return
+        }
+
         switch report.overallVerdict {
         case .healthy:
             tint = ProductPalette.positive

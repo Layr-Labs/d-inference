@@ -14,6 +14,7 @@ struct MyMacsStateView: View {
     let actionTitle: String?
     let actionSystemImage: String?
     let onAction: (() -> Void)?
+    let actionDisabled: Bool
 
     init(
         kind: Kind,
@@ -21,7 +22,8 @@ struct MyMacsStateView: View {
         onRetry: (() -> Void)?,
         actionTitle: String? = nil,
         actionSystemImage: String? = nil,
-        onAction: (() -> Void)? = nil
+        onAction: (() -> Void)? = nil,
+        actionDisabled: Bool = false
     ) {
         self.kind = kind
         self.message = message
@@ -29,6 +31,7 @@ struct MyMacsStateView: View {
         self.actionTitle = actionTitle
         self.actionSystemImage = actionSystemImage
         self.onAction = onAction
+        self.actionDisabled = actionDisabled
     }
 
     var body: some View {
@@ -49,7 +52,12 @@ struct MyMacsStateView: View {
                 ContentUnavailableView {
                     Label("Sign in to see your Macs", systemImage: "person.crop.circle.badge.exclamationmark")
                 } description: {
-                    Text("My Macs is account-scoped. Sign in to Darkbloom, then return here to see linked machines.")
+                    // A live sign-in failure lands here as `message`; absent
+                    // one, the explanation stays preview-deterministic.
+                    Text(
+                        message
+                            ?? "My Macs is account-scoped. Sign in to Darkbloom, then return here to see linked machines."
+                    )
                 } actions: {
                     primaryAction
                 }
@@ -84,8 +92,10 @@ struct MyMacsStateView: View {
         if let actionTitle, let onAction {
             if let actionSystemImage {
                 Button(actionTitle, systemImage: actionSystemImage, action: onAction)
+                    .disabled(actionDisabled)
             } else {
                 Button(actionTitle, action: onAction)
+                    .disabled(actionDisabled)
             }
         }
     }

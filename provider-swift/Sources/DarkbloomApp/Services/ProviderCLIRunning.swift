@@ -83,6 +83,11 @@ struct ProcessProviderCLIRunner: ProviderCLIRunning {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<ProviderCLIResult, any Error>) in
                 process.terminationHandler = { process in
                     stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    // Drain what the handler didn't deliver: the child is
+                    // dead so this returns at EOF — without it the final
+                    // stderr line races the readability callback and the
+                    // failure message intermittently comes back empty.
+                    stderr.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
                     let status = process.terminationStatus
                     let cancelled = guardBox.cancelled
                     let timedOut = guardBox.timedOut

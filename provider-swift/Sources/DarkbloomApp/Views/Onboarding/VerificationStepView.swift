@@ -82,7 +82,9 @@ struct VerificationStepView: View {
         case .trustPending:
             "Darkbloom may use APNs to request current SecurityInfo while checking Secure Enclave identity, SIP, and Secure Boot."
         case .hardwareTrusted:
-            "Hardware trust is confirmed for this UI preview. Live setup will require the same checks from the coordinator."
+            flow.usesLiveVerification
+                ? "Hardware trust is confirmed: the coordinator approved this Mac's Secure Enclave identity, SIP, and Secure Boot via the Darkbloom daemon."
+                : "Hardware trust is confirmed for this UI preview. Live setup will require the same checks from the coordinator."
         case .checkInDelayed:
             "Keep this Mac awake and Darkbloom open. If check-in remains delayed, reopen System Settings or re-enroll with a fresh profile."
         case .trustFailed:

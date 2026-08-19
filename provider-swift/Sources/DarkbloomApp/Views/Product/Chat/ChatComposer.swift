@@ -5,6 +5,12 @@ struct ChatComposer: View {
     @Binding var route: ChatRoute
     let isResponding: Bool
     var isFocused: FocusState<Bool>.Binding
+    /// Selectable routes; live stores restrict this to `.thisMac` because
+    /// network routing isn't a live surface yet (honesty over symmetry).
+    var availableRoutes: [ChatRoute] = ChatRoute.allCases
+    /// Overrides the small status line next to the route picker (live
+    /// surfaces report the real endpoint instead of preview copy).
+    var noteOverride: String? = nil
     let onSubmit: () -> Void
     let onStop: () -> Void
 
@@ -51,7 +57,7 @@ struct ChatComposer: View {
 
             HStack(spacing: 8) {
                 Menu {
-                    ForEach(ChatRoute.allCases) { option in
+                    ForEach(availableRoutes) { option in
                         Button {
                             route = option
                         } label: {
@@ -63,9 +69,9 @@ struct ChatComposer: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .disabled(isResponding)
+                .disabled(isResponding || availableRoutes.count <= 1)
 
-                Text(route.previewNote)
+                Text(noteOverride ?? route.previewNote)
                     .lineLimit(1)
 
                 Spacer()

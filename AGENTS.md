@@ -67,7 +67,9 @@ provider-swift/       Swift provider CLI for Apple Silicon Macs
 │                                     deterministic previews; real launches wire `ProviderStore` to
 │                                     `Services/DaemonRuntimeService` (polls daemon-state.json, shells out to
 │                                     the `darkbloom` CLI for start/stop/restart). NO MLX/ProviderCore dependency.
-├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor`, `login`, `local`, etc.)
+├── Sources/darkbloom/                CLI (`start`, `stop`, `status`, `models`, `benchmark`, `doctor --json`,
+│                                     `login --json`, `logout`, `config get|set schedule`, `earnings`, `local`, etc. —
+│                                     every machine-readable mode the app consumes)
 ├── Sources/darkbloom-publish/        registry manifest builder used by publish workflow
 ├── Sources/darkbloom-enclave-cli/    Secure Enclave attestation/sign helper
 ├── Sources/ProviderBenchmark*, kv-*  benchmark + KV-cache self-test executables
@@ -91,13 +93,14 @@ admin-ui/             Next.js 16 internal read-only ops dashboard (SELECT-only q
 landing/              static landing page (index.html, earn calculator, network stats)
 
 scripts/              build, signing, install, and deploy helpers
-├── install.sh        end-user installer served from coordinator (hash + codesign verification)
+├── install.sh        end-user installer served from coordinator (hash + codesign verification, ownership-aware Darkbloom.app swap)
 ├── admin.sh          admin CLI (Privy auth, release mgmt, API calls)
 ├── publish-model.sh  model registry publish workflow
+├── bundle-macos-app.sh Darkbloom.app assembly (CLI + GUI binaries, fonts, metallib) shared by CI and local builds
 ├── fetch-metallib.sh MLX metallib builder (cmake from libs/mlx-swift source)
 ├── smoke-dev.sh      dev-coordinator smoke test
 ├── benchmark-models.py, load_soak.py, …  benchmark + soak helpers
-└── entitlements.plist hardened runtime entitlements (network, keychain)
+└── entitlements.plist DarkbloomApp GUI main-executable entitlements (network only; the CLI keeps its own under provider-swift/)
 
 deploy/               infra config: gcp/ (Cloud Build + VM bootstrap), environments/ (dev/prod env),
                       datadog/ (dashboard JSON), provider-fleet/ (fleet update helper)
@@ -183,7 +186,7 @@ Current release-sensitive pieces:
 - Prod coordinator runs on the GCE VM `darkbloom-coordinator` in the
   `darkbloom-mainnet` project at `api.darkbloom.dev`. Build target:
   `coordinator/Dockerfile`. Dev runs in the separate `sepolia-ai` project.
-- Provider bundle creation (staging, .app wrapping, signing, notarization) lives inline in `.github/workflows/release-swift.yml` (bundle steps ~341-617); there is no standalone bundling script.
+- Provider bundle creation (staging, .app wrapping, signing, notarization) lives in `.github/workflows/release-swift.yml`, with `Darkbloom.app` assembly factored into `scripts/bundle-macos-app.sh` (shared by CI and local runs). The release bundle co-bundles the GUI: `Contents/MacOS/{DarkbloomApp,darkbloom,darkbloom-enclave}`; the app's CLI locator probes its own bundle first, then `~/.darkbloom/bin`, then PATH symlinks.
 - Installer flow lives in `scripts/install.sh`.
 - Provider update checks read the latest registered release from the store (CI registers via `POST /v1/releases`). The installer and `darkbloom update` hit `GET /v1/releases/latest`, which returns **404 when no release row exists** — a missing/mis-registered release row breaks installs and self-updates and is fixed by registering the release, not by bumping code. `LatestProviderVersion` in `coordinator/api/server.go` is only the no-release-row fallback for the version *display* path and must stay in sync with `ProviderCore.version`.
 - CI release workflow (`release-swift.yml`) signs binaries with Developer ID Application cert, notarizes with Apple, computes SHA-256 hashes after signing, embeds provisioning profile in .app bundle.
@@ -216,8 +219,16 @@ Dev coordinator deploy (Google Cloud): see `docs/operations/dev-environment.md`.
 - If you change install paths or process invocation, update both the CLI and install flow.
 - Device linking changes often span both coordinator device auth endpoints and the provider `login` / `logout` commands.
 - Model registry changes span coordinator registry schema/endpoints, `provider-swift` manifest download/publish code, `scripts/publish-model.sh`, and the console UI. Do not add hardcoded provider `MODEL_CATALOG` lists.
-- `~/.darkbloom/daemon-state.json` is a three-consumer contract: the daemon (writer, `ProviderLoop+Trust.swift`), `darkbloom status`/`doctor`, and **DarkbloomApp** (`Services/DaemonRuntimeService`). Its schema lives ONCE in `provider-swift/Sources/ProviderCoreFoundation/DaemonState.swift` — never re-declare it app-side; bump `DaemonState.currentSchema` deliberately (readers reject forward versions rather than mis-decode). Same rule for `~/.darkbloom/local.json` (`ProviderCoreFoundation/LocalEndpointInfo.swift`) and the launchd labels (`ProviderCoreFoundation/ProviderServiceLabels.swift`, used by both `LaunchAgent` and the app's start/stop routing).
-- The app must never gain a ProviderCore/MLX dependency: it links only `ProviderCoreFoundation`. Shared wire/file types belong in the foundation layer; anything inference-adjacent stays out (e.g. `DaemonSlotPostureBuilder` remains in ProviderCore because it consults `EngineV2KVBackendPolicy`).
+- `~/.darkbloom/daemon-state.json` is a four-consumer contract: the daemon (writer, `ProviderLoop+Trust.swift`), `darkbloom status`/`doctor`, `darkbloom config` (schedule display), and **DarkbloomApp** (`Services/DaemonRuntimeService`, verification gating). Its schema lives ONCE in `provider-swift/Sources/ProviderCoreFoundation/DaemonState.swift` — never re-declare it app-side; new fields must be ADDITIVE + optional (nil = not reported; `slots`/`schedule` are the precedent) and `DaemonState.currentSchema` bumps stay deliberate (readers reject forward versions).
+- Same single-source rule for the other app/CLI shared contracts: `~/.darkbloom/local.json` (`ProviderCoreFoundation/LocalEndpointInfo.swift`), launchd labels (`ProviderCoreFoundation/ProviderServiceLabels.swift`), and **`~/.darkbloom/provider_account`** (`ProviderCore/Auth/ProviderAccountStore.swift`): the coordinator account id captured at `darkbloom login` — earnings (`darkbloom earnings`) and daemon-state `identity` key on it, and `logout` must clear it (tested).
+- App↔CLI machine interfaces (the app is a UI wrapper: reads shared files, drives `darkbloom` subprocesses for actions — never reimplements daemon policy app-side). Their shapes are pinned by golden tests on BOTH sides and must change together:
+  - `darkbloom models download --json` NDJSON events (CLI: `ModelsCommand.swift` `ModelsDownloadEventEmitter` ← `ModelDownloader.DownloadEvent`; app: `Services/ModelCatalogCLI.swift`).
+  - `darkbloom login --json` NDJSON events (emission seam in `ProviderCore/Auth/DeviceAuth.swift`; app: `Services/AccountLinkCLI.swift`).
+  - `darkbloom doctor --json` `DoctorReport` (schema in `ProviderCore/Diagnostics/DoctorReport.swift`, one-truth-two-renderers with the human output; app mirror: `Services/DiagnosticsCLI.swift`).
+  - `darkbloom config get|set schedule ... --json` (`darkbloom/ConfigCommand.swift`; app: `Services/AvailabilityCLI.swift`).
+  - `darkbloom earnings --json` (`darkbloom/EarningsCommand.swift` ← coordinator `GET /v1/provider/earnings?wallet=`; app: `Services/ContributionsCLI.swift`).
+- Account-scoped app data is the documented wrapper exception: the app talks to the coordinator directly with a Privy JWT minted via the console handoff page (`console-ui/src/app/auth/app-link/page.tsx` → `darkbloom://auth/callback#token=…` fragment-only, stored in the keychain): `FleetClient` + `AccountSessionManager` app-side. Changes to `/v1/me/*` response shapes need the console decoder AND `FleetClient`.
+- The app must never gain a ProviderCore/MLX dependency: it links only `ProviderCoreFoundation`. Shared wire/file types belong in the foundation layer (Linux-buildable, Foundation-only); anything inference-adjacent stays out (e.g. `DaemonSlotPostureBuilder` remains in ProviderCore because it consults `EngineV2KVBackendPolicy`; `DoctorReport` stays in ProviderCore since only the CLI emits it).
 
 ## Common Pitfalls
 

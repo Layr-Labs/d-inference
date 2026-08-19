@@ -1,0 +1,29 @@
+name: darkbloom
+
+# Scope exclusions live here, NOT as `paths-ignore` on the workflow triggers —
+# a path-filtered job never reports its check context, and the analyze jobs are
+# required checks on master. See .github/workflows/codeql.yml.
+
+paths-ignore:
+  # Vendored upstream trees. libs/* are submodules (MLX and friends); we do not
+  # own that code and cannot fix findings in it.
+  - libs
+  # Build output and dependency trees.
+  - "**/node_modules"
+  - "**/.build"
+  - "**/.next"
+  - "**/target"
+  # Test fixtures: intentionally contain throwaway keys and crypto scaffolding
+  # that trips the credential queries.
+  - coordinator/internal/e2e/testdata
+
+# NOTE: for Swift, `paths-ignore` has limited effect. Swift is extracted by
+# tracing the compiler, so files the build compiles get extracted regardless —
+# meaning the weekly Swift run will surface findings from libs/mlx-swift and
+# libs/mlx-swift-lm alongside provider-swift's own. Dismiss those as
+# "used in tests"/"won't fix" per-alert; do not try to fix upstream MLX here.
+
+# Query suite is deliberately left at the default. `security-extended` roughly
+# doubles the alert count, and an alert flood on a freshly re-enabled gate is
+# how the gate ends up switched off again. Revisit once the 12-alert backlog
+# from the June 2026 snapshot is triaged to zero.

@@ -1,8 +1,9 @@
 # Darkbloom App Release Runbook
 
-How the SwiftUI **Darkbloom** macOS app (`DarkbloomApp`) ships as a first-class
-citizen of the provider release: one artifact, one version, one registration,
-one approval gate. Production releases remain human-approved per
+How the SwiftUI **Darkbloom** macOS app (`DarkbloomApp`) ships as the primary
+human download in the provider release: one version and approval gate, with a
+public app zip plus a legacy verifier/self-update tar registered with the
+coordinator. Production releases remain human-approved per
 [README.md](README.md) safety rule 1 — this document describes what the
 approved operator executes and verifies, not an automated path.
 
@@ -50,9 +51,10 @@ release id into `Contents/Info.plist`.
 version, resolved by the same job that runs `scripts/check-release-version.sh`
 (source of truth: `ProviderCore.version`).
 
-Justification: the app is a co-bundled payload of the provider bundle —
-installed, self-updated, hash-verified, and rolled back **as one unit**.
-Consumers of the version (install.sh, `darkbloom update`,
+Justification: the app is a co-bundled payload of the provider release. The
+public zip and registered tar contain the same signed app bytes, and managed
+installs are installed, self-updated, hash-verified, and rolled back **as one
+unit**. Consumers of the version (install.sh, `darkbloom update`,
 `GET /v1/releases/latest`, the console UI) read the single registered release
 row; a divergent app version would need new coordinator schema and split hash
 contracts for zero user-visible benefit. The app has no independent release
@@ -67,11 +69,43 @@ cadence.
 3. `~/.darkbloom/bin/darkbloom` — installer symlink
 4. `/usr/local/bin/darkbloom`, `/opt/homebrew/bin/darkbloom`
 
-After install.sh places the combined app at `~/.darkbloom/Darkbloom.app`,
-probe 2 and probe 3 resolve to **the same bytes** (`bin/darkbloom` is a
-symlink into the bundle) — probe 2 merely short-circuits. An unsigned dev
+For a direct download, the app first relocates itself to the canonical
+`~/.darkbloom/Darkbloom.app`; probe 2 then runs the co-bundled CLI from that
+stable, user-writable location without requiring a separate install. The app
+also creates `~/Applications/Darkbloom.app` as a user-visible symlink when it
+can do so without replacing an unrelated item. After install.sh places the
+combined app at the same canonical path, probe 2 and probe 3 resolve to **the
+same bytes** (`bin/darkbloom` is a symlink into the bundle) - probe 2 merely
+short-circuits. An unsigned dev
 build contains no co-bundled CLI, so probe 2 misses and the installed CLI
 (probe 3) wins: dev launches keep talking to the production-signed daemon.
+
+### Direct app relocation and writable updates
+
+Before SwiftUI starts onboarding or any launchd action, a production app with
+bundle id `io.darkbloom.provider` checks its location. A managed or previously
+relocated install at `~/.darkbloom/Darkbloom.app` continues in place. A launch
+from Downloads, temporary extraction, `/Applications`, or the user-visible
+symlink is resolved and, when necessary, copied with `/usr/bin/ditto` to a
+same-volume staging path under `~/.darkbloom`, checked for matching bundle id,
+executable, and version, then validated with
+`codesign --verify --deep --strict` before an atomic destination swap. An
+unrelated canonical destination is retained as
+`Darkbloom.app.foreign-<id>`. The convenience symlink is created or repaired
+only when doing so cannot replace an unrelated file or app. The app opens the
+verified canonical destination and terminates the source instance; failure
+shows an installation error and never continues provider setup from the
+disposable path. Unsigned `dev.darkbloom.app` builds never relocate, and the
+debug-only `DARKBLOOM_SKIP_APP_RELOCATION=1` seam supports harnesses without
+creating a production bypass.
+
+The single persistent app path is compatible with the updater: for the
+bundled CLI, `SelfUpdater.installRoot(forExecutablePath:)` walks out of
+`Contents/MacOS` to writable `~/.darkbloom`. LaunchAgent setup therefore
+records a stable CLI path only after relocation. The downloaded source remains
+outside the managed path; once handoff succeeds, users should open the
+installed app and may delete the source rather than later reopening a stale
+extracted release.
 
 ### Signing sequence (what changed and what to double-check)
 
@@ -121,7 +155,19 @@ for an end-to-end check:
 
 ## Layout
 
-Distribution tarball `darkbloom-bundle-macos-arm64.tar.gz`:
+Human-facing GitHub release asset `Darkbloom-macOS-arm64.zip`:
+
+```text
+Darkbloom.app/                         # the only top-level item
+  Contents/                            # layout below
+```
+
+This zip is created with `ditto` **after** notarization and stapling. The
+pre-staple `/tmp/darkbloom-notarization-submission.zip` is only input to Apple
+notarytool and must never be uploaded.
+
+Legacy coordinator/self-update asset
+`darkbloom-bundle-macos-arm64.tar.gz`:
 
 ```text
 ./bin/{darkbloom, darkbloom-enclave, mlx.metallib}   # flat verifier copies (regular files; coordinator hashes bin/darkbloom)
@@ -145,39 +191,57 @@ Distribution tarball `darkbloom-bundle-macos-arm64.tar.gz`:
 ## Steps (human-approved release operator)
 
 1. Land source changes; confirm `swift build -c release --product DarkbloomApp`
-   builds and `scripts/test-install-atomic.sh` passes locally.
+   builds, then run `scripts/test-bundle-macos-app.sh` and
+   `scripts/test-install-atomic.sh` locally.
 2. Cut the release the usual way (tag `vX.Y.Z` for prod, or
    `workflow_dispatch` for dev). The workflow additionally: builds
    `DarkbloomApp`, assembles via `scripts/bundle-macos-app.sh`, signs app-clone
-   + CLI per the table above, notarizes/staples the whole app, hashes the
-   signed artifacts, uploads, and registers the release row.
+   + CLI per the table above, submits a temporary pre-staple zip to Apple,
+   staples the accepted app, rebuilds both final distribution archives, hashes
+   them, uploads both to versioned release storage, exposes both as GitHub
+   assets for production tags, and registers only the legacy tar in the
+   coordinator release row.
 3. Review the job log's new guards: bundle DR pinned to
    `io.darkbloom.provider`, CLI signing id pinned, GUI binary free of
-   restricted entitlements, app payload completeness greps.
+   restricted entitlements, and the extracted final zip passing payload,
+   version, codesign, stapler, Gatekeeper, and runtime-smoke checks.
 
 ## Verification
 
 After the **dev** release (before any prod tag):
 
-1. CI-final checks in the `Notarize bundle` step: `spctl --assess`,
-   `stapler validate`, final-artifact `codesign --verify --deep --strict`,
-   and the runtime smoke all pass.
-2. On a clean Mac: `curl -fsSL <dev-coordinator>/install.sh | bash` — install
-   succeeds, `~/.darkbloom/Darkbloom.app` contains all three MacOS binaries.
-3. **Attestation end-to-end (the nested-CLI profile assumption):**
+1. CI-final checks in the `Notarize bundle` step extract the exact
+   `Darkbloom-macOS-arm64.zip` asset and run `spctl --assess`,
+   `stapler validate`, `codesign --verify --deep --strict`, identity/version
+   checks, completeness checks, and runtime smoke against that extracted app.
+2. On a clean Mac, download the versioned dev object at
+   `<resolved-dev-R2-public-url>/releases/v<VERSION>/Darkbloom-macOS-arm64.zip`,
+   unzip it in Downloads, and double-click the app there. Confirm the source
+   instance installs and reopens `~/.darkbloom/Darkbloom.app`, creates
+   `~/Applications/Darkbloom.app` as a symlink to that canonical app without
+   replacing unrelated content, then confirm Go Online writes
+   `~/.darkbloom/Darkbloom.app/Contents/MacOS/darkbloom` to the LaunchAgent.
+3. Separately run `curl -fsSL <dev-coordinator>/install.sh | bash`. Confirm the
+   managed install succeeds and `~/.darkbloom/Darkbloom.app` contains all three
+   MacOS binaries.
+4. **Attestation end-to-end (the nested-CLI profile assumption):**
    `~/.darkbloom/bin/darkbloom start`, then confirm in the coordinator that the
    provider registers with full trust (APNs code identity + persistent
    Secure Enclave key, not the ephemeral fallback). Also `darkbloom doctor`.
-4. Self-update from the previous release → new bundle (the self-updater's
+5. Self-update the managed `~/.darkbloom` install from the previous release to
+   the new bundle (the self-updater's
    pinned requirement must accept it), then next update cycle forward.
-5. Launch the GUI (`open ~/.darkbloom/Darkbloom.app`): window appears, the app
+6. Launch the managed GUI (`open ~/.darkbloom/Darkbloom.app`): window appears, the app
    drives the co-bundled CLI (start/stop works, daemon state renders).
-6. Legacy handling: pre-seed `~/.darkbloom/Darkbloom.app` from (a) a previous
+7. Legacy handling: pre-seed `~/.darkbloom/Darkbloom.app` from (a) a previous
    install (id `io.darkbloom.provider`) → replaced in place; (b) a foreign app
-   (any other id, or no Info.plist) → preserved at
+   (any other id, no Info.plist, a regular file, or a symlink) → preserved at
    `~/.darkbloom/Darkbloom.app.foreign-<timestamp>` with a warning;
-   (c) an unsigned dev build (id `dev.darkbloom.app`) → replaced.
-7. Interactive TTY install offers `open`; piped `curl | bash` prints the
+   (c) an unsigned dev build (id `dev.darkbloom.app`) → replaced. Separately
+   pre-seed `~/Applications/Darkbloom.app` with the correct symlink, a stale
+   symlink, and unrelated content; confirm only a Darkbloom-owned symlink is
+   repaired and unrelated content is left untouched.
+8. Interactive TTY install offers `open`; piped `curl | bash` prints the
    `open` hint only.
 
 ## Rollback
@@ -198,6 +262,12 @@ After the **dev** release (before any prod tag):
   installs (installer + self-update read `/v1/releases/latest`), which is the
   existing misuse-breaker behavior — re-register a known-good release to
   restore service.
+- **Direct-download app:** direct downloads become managed installs at
+  `~/.darkbloom/Darkbloom.app`, so release deactivation and normal updater
+  rollback protect them exactly like Terminal installs. For a one-machine
+  recovery, stop Darkbloom and open the prior stapled app once so relocation
+  atomically replaces the canonical app; verify the `~/Applications` symlink,
+  then select Go Online again only if the LaunchAgent needs to be rewritten.
 
 ## Version-display sync rule (`LatestProviderVersion`)
 

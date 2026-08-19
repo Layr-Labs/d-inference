@@ -229,23 +229,64 @@ struct ChatStoreTests {
 
     @Test("Stopping mid-stream keeps the partial reply without a failure")
     func stopKeepsPartialWithoutFailure() async throws {
-        let store = makeLiveStore(client: makeClient(
-            lines: [
-                #"data: {"choices":[{"delta":{"content":"partial"}}]}"#,
-                #"data: {"choices":[{"delta":{"content":" rest"}}]}"#,
-                "data: [DONE]",
-            ],
-            lineDelay: .milliseconds(30)
-        ))
+        // Gate the second delta behind the test's stop: under parallel-suite
+        // executor load, a wallclock 30 ms spacing occasionally collapses
+        // behind main-actor backlog and the "post-stop" token lands BEFORE
+        // the poll loop even sees the first one. The gate makes the stop
+        // state itself deterministic.
+        actor DeltaGate {
+            private var continuation: CheckedContinuation<Void, Never>?
+            private var isOpen = false
+
+            func wait() async {
+                if isOpen { return }
+                await withCheckedContinuation { continuation = $0 }
+            }
+
+            func open() {
+                isOpen = true
+                continuation?.resume()
+            }
+        }
+        let gate = DeltaGate()
+
+        let client = LocalEndpointClient(
+            baseURL: URL(string: "http://127.0.0.1:8000/v1")!,
+            apiKey: "dk-test",
+            dataTransport: { request in
+                (#"{"data":[]}"#.data(using: .utf8)!, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            },
+            lineTransport: { _ in
+                let stream = AsyncThrowingStream<String, Error> { continuation in
+                    let task = Task {
+                        continuation.yield(#"data: {"choices":[{"delta":{"content":"partial"}}]}"#)
+                        await gate.wait()
+                        guard !Task.isCancelled else {
+                            continuation.finish(throwing: URLError(.cancelled))
+                            return
+                        }
+                        continuation.yield(#"data: {"choices":[{"delta":{"content":" rest"}}]}"#)
+                        continuation.yield("data: [DONE]")
+                        continuation.finish()
+                    }
+                    continuation.onTermination = { _ in task.cancel() }
+                }
+                return (stream, HTTPURLResponse(
+                    url: URL(string: "http://127.0.0.1:8000/v1/chat/completions")!,
+                    statusCode: 200, httpVersion: nil, headerFields: nil)!)
+            }
+        )
+        let store = makeLiveStore(client: client, modelProvider: { "gpt-oss-20b" })
         let prompt = try #require(store.beginResponse(to: "stream"))
         let task = Task { @MainActor in await store.respondLive(to: prompt) }
 
-        // Wait for the first delta to land, then stop like the composer does.
-        while store.messages.last?.role != .assistant || store.messages.last?.text.isEmpty != false {
+        // "partial" is the only text reachable before the gate opens.
+        while store.messages.last?.text != "partial" {
             try? await Task.sleep(for: .milliseconds(5))
         }
         task.cancel()
         store.stopResponse()
+        await gate.open()
         _ = await task.value
 
         #expect(!store.isResponding)

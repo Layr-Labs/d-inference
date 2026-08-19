@@ -160,6 +160,9 @@ struct ProcessAccountLinkCLI: AccountLinkRunning {
                 // child (`linked` immediately) would otherwise lose the tail
                 // of its NDJSON stream.
                 pump.append(stdout: stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                // stderr races the same way — drain it before a non-zero
+                // exit consults the tail for its failure message.
+                pump.append(stderr: stderrPipe.fileHandleForReading.readDataToEndOfFile())
                 pump.flushPendingLine()
                 guard !terminalEventSeen.value else {
                     // `.linked` or `.error` was already delivered as data;

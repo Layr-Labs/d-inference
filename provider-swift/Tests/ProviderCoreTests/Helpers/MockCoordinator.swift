@@ -75,6 +75,10 @@ public struct MockDeviceCodeFixture: Sendable {
     public var interval: Int
     public var token: String
     public var authorizeImmediately: Bool
+    /// When set, `/v1/device/token` answers a terminal error with this message
+    /// (coordinator refusal, e.g. the user declined the link) instead of
+    /// authorizing or staying pending.
+    public var denialMessage: String?
 
     public init(
         deviceCode: String = "mock-device-code",
@@ -83,7 +87,8 @@ public struct MockDeviceCodeFixture: Sendable {
         expiresIn: Int = 300,
         interval: Int = 1,
         token: String = "mock-auth-token",
-        authorizeImmediately: Bool = true
+        authorizeImmediately: Bool = true,
+        denialMessage: String? = nil
     ) {
         self.deviceCode = deviceCode
         self.userCode = userCode
@@ -92,6 +97,7 @@ public struct MockDeviceCodeFixture: Sendable {
         self.interval = interval
         self.token = token
         self.authorizeImmediately = authorizeImmediately
+        self.denialMessage = denialMessage
     }
 }
 
@@ -544,6 +550,13 @@ public final class MockCoordinator: @unchecked Sendable {
                     body: ["error": "mock dead"], status: .internalServerError
                 )
             }
+            if let denialMessage = self.deviceCode.denialMessage {
+                let body = DeviceTokenDenied(
+                    status: "error",
+                    error: .init(message: denialMessage)
+                )
+                return MockCoordinator.makeJSONResponse(body: body)
+            }
             if self.deviceCode.authorizeImmediately {
                 let body = DeviceTokenAuthorized(
                     status: "authorized",
@@ -725,6 +738,15 @@ private struct DeviceTokenAuthorized: Encodable {
 
 private struct DeviceTokenPending: Encodable {
     let status: String
+}
+
+private struct DeviceTokenDenied: Encodable {
+    let status: String
+    let error: DeviceTokenDeniedError
+
+    struct DeviceTokenDeniedError: Encodable {
+        let message: String
+    }
 }
 
 // MARK: - URL helpers

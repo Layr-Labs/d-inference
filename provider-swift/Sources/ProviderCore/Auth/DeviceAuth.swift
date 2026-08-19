@@ -130,10 +130,55 @@ private struct DeviceCodeResponse: Decodable, Sendable {
 private struct DeviceTokenResponse: Decodable, Sendable {
     let status: String?
     let token: String?
+    /// The coordinator account this machine was linked to (`account_id` on the
+    /// wire). Present on a successful authorization; persisted locally so
+    /// `darkbloom earnings` and the daemon-state identity block can address
+    /// payouts without re-resolving the auth token server-side.
+    let accountID: String?
     let error: TokenError?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case token
+        case accountID = "account_id"
+        case error
+    }
 
     struct TokenError: Decodable, Sendable {
         let message: String?
+    }
+}
+
+/// Live progress of an RFC 8628 device-code login.
+///
+/// Emitted at the seam where the flow runs (`performDeviceCodeLogin`) so UI
+/// wrappers can consume machine-readable state instead of scraping terminal
+/// output. `darkbloom login --json` serializes these as NDJSON on stdout (one
+/// JSON object per line) for the Darkbloom macOS app's onboarding; the decoder
+/// on the app side lives in
+/// `Sources/DarkbloomApp/Services/AccountLinkCLI.swift` and mirrors this enum
+/// case-for-case. Keep both sides in sync when changing the wire shape.
+///
+/// Delivery contract: `.code` fires at most once per attempt; exactly one
+/// terminal event (`.linked` or `.error`) fires before `performDeviceCodeLogin`
+/// returns or throws. The polling loop always terminates — on approval,
+/// coordinator denial, or expiry — so a consumer's event stream never hangs.
+public enum DeviceLoginEvent: Sendable, Equatable {
+    /// A fresh device code was issued by the coordinator. `expiresIn` is in
+    /// seconds; the login attempt gives up (`.error`) once it lapses.
+    case code(userCode: String, verificationURI: String, expiresIn: Int)
+    /// The user approved the code and the auth token was saved.
+    case linked
+    /// The attempt ended without linking (expired, denied, unreachable, or
+    /// malformed response). `message` is the terminal error's description.
+    case error(message: String)
+
+    /// Whether this event ends the attempt's event stream.
+    public var isTerminal: Bool {
+        switch self {
+        case .code: return false
+        case .linked, .error: return true
+        }
     }
 }
 
@@ -187,13 +232,49 @@ public func coordinatorHTTPBase(_ wsURL: String) -> String {
 ///     Called once when the device code is received. The caller should print
 ///     these to the terminal. Parameters: (userCode, verificationURI, expiresInSeconds).
 ///   - onPollTick: Optional callback on each poll iteration (e.g., to print a dot).
+///   - openBrowser: Try to open the verification URL in the system browser
+///     (`/usr/bin/open`). UI wrappers pass false — they deeplink the URL
+///     themselves once they receive the `.code` event.
+///   - onEvent: Optional machine-readable progress seam (see
+///     `DeviceLoginEvent`). Emits `.code` once, then exactly one terminal
+///     `.linked`/`.error` before this function returns or throws — a consumer
+///     keying off terminal events never hangs, because the poll loop below is
+///     bounded by the coordinator-provided expiry.
 /// - Returns: The auth token string on success.
 /// - Throws: `DeviceAuthError` on failure.
 @discardableResult
 public func performDeviceCodeLogin(
     coordinatorURL: String,
     onDisplayCode: @Sendable (String, String, Int) -> Void,
-    onPollTick: (@Sendable () -> Void)? = nil
+    onPollTick: (@Sendable () -> Void)? = nil,
+    openBrowser: Bool = true,
+    onEvent: (@Sendable (DeviceLoginEvent) -> Void)? = nil
+) async throws -> String {
+    do {
+        let token = try await runDeviceCodeLogin(
+            coordinatorURL: coordinatorURL,
+            onDisplayCode: onDisplayCode,
+            onPollTick: onPollTick,
+            openBrowser: openBrowser,
+            onEvent: onEvent
+        )
+        onEvent?(.linked)
+        return token
+    } catch {
+        let message = (error as? DeviceAuthError)?.description ?? error.localizedDescription
+        onEvent?(.error(message: message))
+        throw error
+    }
+}
+
+/// The flow body behind `performDeviceCodeLogin`; the public wrapper owns the
+/// terminal `.linked`/`.error` event emission.
+private func runDeviceCodeLogin(
+    coordinatorURL: String,
+    onDisplayCode: @Sendable (String, String, Int) -> Void,
+    onPollTick: (@Sendable () -> Void)?,
+    openBrowser: Bool,
+    onEvent: (@Sendable (DeviceLoginEvent) -> Void)?
 ) async throws -> String {
     // Check if already logged in.
     if let existingToken = AuthTokenStore.load() {
@@ -232,16 +313,19 @@ public func performDeviceCodeLogin(
         throw DeviceAuthError.invalidResponse("could not decode device code response: \(error)")
     }
 
-    // Display the code to the user.
+    // Display the code to the user; notify the machine-readable seam.
     onDisplayCode(dc.user_code, dc.verification_uri, dc.expires_in)
+    onEvent?(.code(userCode: dc.user_code, verificationURI: dc.verification_uri, expiresIn: dc.expires_in))
 
     // Try to open the browser automatically.
-    let openProcess = Process()
-    openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-    openProcess.arguments = [dc.verification_uri]
-    openProcess.standardOutput = FileHandle.nullDevice
-    openProcess.standardError = FileHandle.nullDevice
-    _ = try? openProcess.run()
+    if openBrowser {
+        let openProcess = Process()
+        openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        openProcess.arguments = [dc.verification_uri]
+        openProcess.standardOutput = FileHandle.nullDevice
+        openProcess.standardError = FileHandle.nullDevice
+        _ = try? openProcess.run()
+    }
 
     // Step 2: Poll for authorization.
     let tokenURL = URL(string: "\(baseURL)/v1/device/token")!
@@ -289,6 +373,14 @@ public func performDeviceCodeLogin(
                 throw DeviceAuthError.invalidResponse("authorized but no token in response")
             }
             try AuthTokenStore.save(token)
+            // Persist the linked account id next to the token (best-effort):
+            // `darkbloom earnings` and the daemon-state identity block read
+            // it to address the coordinator's wallet-keyed earnings endpoint.
+            // A failure here must not fail the link — the auth token already
+            // carries the serving-critical half.
+            if let accountID = tokenResp.accountID, !accountID.isEmpty {
+                try? ProviderAccountStore.save(accountID)
+            }
             return token
 
         default:

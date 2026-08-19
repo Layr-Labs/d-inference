@@ -62,6 +62,8 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
     case coordinatorRequestFailed(String)
     case coordinatorReturnedHTTP(Int, body: String)
     case profileWriteFailed(String)
+    case profileOpenFailed(String)
+    case systemSettingsOpenFailed(String)
     case managedByOtherMDM(serverURL: String)
 
     public var description: String {
@@ -74,6 +76,10 @@ public enum EnrollmentError: Error, CustomStringConvertible, Sendable {
             return "Coordinator returned HTTP \(status): \(body)"
         case .profileWriteFailed(let detail):
             return "Failed to write enrollment profile: \(detail)"
+        case .profileOpenFailed(let detail):
+            return "The enrollment profile was downloaded, but macOS could not open it: \(detail). Open the profile manually, then install it in System Settings → General → Device Management."
+        case .systemSettingsOpenFailed(let detail):
+            return "The enrollment profile opened, but System Settings could not be opened automatically: \(detail). Open System Settings → General → Device Management to finish installation."
         case .managedByOtherMDM(let serverURL):
             return "This Mac is already managed by another MDM (server: \(serverURL)). "
                 + "macOS allows only one MDM enrollment per device, so Darkbloom "
@@ -90,6 +96,22 @@ public struct EnrollmentResult: Sendable {
     public let serialNumber: String
     public let profilePath: URL
     public let alreadyEnrolled: Bool
+    public let profileOpened: Bool
+    public let openWarning: String?
+
+    public init(
+        serialNumber: String,
+        profilePath: URL,
+        alreadyEnrolled: Bool,
+        profileOpened: Bool = false,
+        openWarning: String? = nil
+    ) {
+        self.serialNumber = serialNumber
+        self.profilePath = profilePath
+        self.alreadyEnrolled = alreadyEnrolled
+        self.profileOpened = profileOpened
+        self.openWarning = openWarning
+    }
 }
 
 /// Drives the MDM enrollment flow against a coordinator.
@@ -98,8 +120,26 @@ public struct EnrollmentResult: Sendable {
 /// downloads the profile, saves it to a temp path, and (on macOS) opens
 /// System Settings.
 public struct EnrollmentService: Sendable {
+    typealias OpenCommand = @Sendable ([String]) throws -> Void
+    typealias Pause = @Sendable () async throws -> Void
 
-    public init() {}
+    private let openCommand: OpenCommand
+    private let pauseBeforeOpeningSettings: Pause
+
+    public init() {
+        openCommand = Self.runOpen
+        pauseBeforeOpeningSettings = {
+            try await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    init(
+        openCommand: @escaping OpenCommand,
+        pauseBeforeOpeningSettings: @escaping Pause = {}
+    ) {
+        self.openCommand = openCommand
+        self.pauseBeforeOpeningSettings = pauseBeforeOpeningSettings
+    }
 
     /// Request a per-device enrollment profile and (on macOS) open the
     /// System Settings pane so the user can install it.
@@ -120,7 +160,8 @@ public struct EnrollmentService: Sendable {
             return EnrollmentResult(
                 serialNumber: macHardwareSerialNumber() ?? "<unknown>",
                 profilePath: URL(fileURLWithPath: "/dev/null"),
-                alreadyEnrolled: true
+                alreadyEnrolled: true,
+                profileOpened: false
             )
         case .enrolledOtherMDM(let serverURL):
             throw EnrollmentError.managedByOtherMDM(serverURL: serverURL)
@@ -169,42 +210,73 @@ public struct EnrollmentService: Sendable {
             throw EnrollmentError.profileWriteFailed(error.localizedDescription)
         }
 
+        let profileOpened: Bool
+        let openWarning: String?
         if openSystemSettings {
-            // Step 1: register with System Settings by opening the .mobileconfig.
-            _ = try? runOpen(arguments: [profilePath.path])
-            // Tiny pause so the profile registers before we open the pane.
-            try? await Task.sleep(nanoseconds: 1_000_000_000)
-            // Step 2: open System Settings → Profiles directly.
-            _ = try? runOpen(arguments: [
-                "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
-            ])
+            openWarning = try await openDownloadedProfile(at: profilePath)
+            profileOpened = true
+        } else {
+            openWarning = nil
+            profileOpened = false
         }
 
         return EnrollmentResult(
             serialNumber: serial,
             profilePath: profilePath,
-            alreadyEnrolled: false
+            alreadyEnrolled: false,
+            profileOpened: profileOpened,
+            openWarning: openWarning
         )
+    }
+
+    /// Opening the profile is the success boundary for `profile_opened`.
+    /// Opening the pane is a convenience; its failure is returned as an
+    /// actionable warning because the downloaded profile has already opened.
+    func openDownloadedProfile(at profilePath: URL) async throws -> String? {
+        do {
+            try openCommand([profilePath.path])
+        } catch {
+            throw EnrollmentError.profileOpenFailed(Self.errorDetail(error))
+        }
+
+        try await pauseBeforeOpeningSettings()
+        do {
+            try openCommand([
+                "x-apple.systempreferences:com.apple.Profiles-Settings.extension"
+            ])
+            return nil
+        } catch {
+            return EnrollmentError.systemSettingsOpenFailed(
+                Self.errorDetail(error)
+            ).description
+        }
     }
 
     /// Open the System Settings → Device Management pane so the user can
     /// remove the profile. Apple requires user interaction; we cannot remove
     /// it programmatically.
     public func openProfilesPaneForRemoval() {
-        _ = try? runOpen(arguments: [
+        try? openCommand([
             "x-apple.systempreferences:com.apple.preferences.configurationprofiles"
         ])
     }
 
-    private func runOpen(arguments: [String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = arguments
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        process.waitUntilExit()
-        return process.terminationStatus
+    private static func runOpen(arguments: [String]) throws {
+        try BoundedProcess.run(
+            URL(fileURLWithPath: "/usr/bin/open"),
+            arguments: arguments,
+            timeout: 15,
+            captureStderrTail: 4_096
+        )
+    }
+
+    private static func errorDetail(_ error: Error) -> String {
+        if let localized = error as? any LocalizedError,
+           let description = localized.errorDescription,
+           !description.isEmpty {
+            return description
+        }
+        return String(describing: error)
     }
 }
 

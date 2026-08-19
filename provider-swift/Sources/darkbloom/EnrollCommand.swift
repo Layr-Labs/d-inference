@@ -25,54 +25,163 @@ struct Enroll: AsyncParsableCommand {
     @Flag(help: "Don't open System Settings; just download the profile.")
     var noOpen = false
 
+    @Flag(help: "Emit one machine-readable JSON result (schema 1) as the only stdout output.")
+    var json = false
+
     mutating func run() async throws {
         let snapshot = try loadRuntimeSnapshot(configOptions: configOptions)
         let coordinatorURL = coordinator
             ?? snapshot.config.coordinator.url
-        let httpBase = coordinatorHTTPBase(coordinatorURL)
+        try await execute(
+            coordinatorURL: coordinatorURL,
+            enroll: { coordinatorURL, openSystemSettings in
+                try await EnrollmentService().enroll(
+                    coordinatorURL: coordinatorURL,
+                    openSystemSettings: openSystemSettings
+                )
+            },
+            output: { print($0) },
+            errorOutput: { printError($0) }
+        )
+    }
 
-        print("Darkbloom Device Attestation Enrollment")
-        print("Coordinator: \(httpBase)")
-        print()
+    /// Runs one enrollment attempt through an injectable service boundary.
+    /// Production passes `EnrollmentService`; tests pass a non-mutating stub.
+    func execute(
+        coordinatorURL: String,
+        enroll: EnrollmentOperation,
+        output: (String) -> Void,
+        errorOutput: (String) -> Void
+    ) async throws {
+        if !json {
+            output(EnrollmentHumanRenderer.preamble(
+                coordinator: coordinatorHTTPBase(coordinatorURL)
+            ))
+        }
 
-        let service = EnrollmentService()
-        let result: EnrollmentResult
+        let serviceResult: EnrollmentResult
         do {
-            result = try await service.enroll(
-                coordinatorURL: coordinatorURL,
-                openSystemSettings: !noOpen
-            )
-        } catch let err as EnrollmentError {
-            printError("\(err)")
+            serviceResult = try await enroll(coordinatorURL, !noOpen)
+        } catch let error as EnrollmentError {
+            // The schema has only successful terminal states. Operational
+            // failures therefore stay on stderr and leave JSON stdout empty.
+            errorOutput(error.description)
             throw ExitCode.failure
         }
 
-        if result.alreadyEnrolled {
-            print("  ✓ Already enrolled — no action needed.")
-            print("  Verify with: darkbloom doctor")
-            return
-        }
-
-        print("  → Device serial:  \(result.serialNumber)")
-        print("  → Profile saved:  \(result.profilePath.path)")
-        print()
-
-        if noOpen {
-            print("  Install the profile manually:")
-            print("    open \(result.profilePath.path)")
-            print()
+        let result = EnrollmentCommandResult(
+            serviceResult: serviceResult
+        )
+        if json {
+            output(try EnrollmentJSONRenderer.render(result))
         } else {
-            print("  System Settings → Device Management is now open.")
-            print("  Click Install on the Darkbloom profile and enter your password.")
-            print()
-            print("  This verifies:")
-            print("    • SIP, Secure Boot, and system integrity")
-            print("    • Your Secure Enclave is genuine Apple hardware")
-            print("    • Device identity signed by Apple's Root CA")
-            print()
-            print("  Darkbloom CANNOT erase, lock, or control your Mac.")
+            output(EnrollmentHumanRenderer.completion(result))
         }
+    }
+}
 
-        print("After installing, verify with: darkbloom doctor")
+typealias EnrollmentOperation = @Sendable (
+    _ coordinatorURL: String,
+    _ openSystemSettings: Bool
+) async throws -> EnrollmentResult
+
+/// The one normalized enrollment outcome rendered by both CLI output modes.
+struct EnrollmentCommandResult: Encodable, Equatable, Sendable {
+    enum Status: String, Encodable, Sendable {
+        case alreadyEnrolled = "already_enrolled"
+        case profileOpened = "profile_opened"
+        case profileDownloaded = "profile_downloaded"
+    }
+
+    let schema = 1
+    let status: Status
+    let serialNumber: String
+    let profilePath: String?
+    let warning: String?
+
+    init(serviceResult: EnrollmentResult) {
+        serialNumber = serviceResult.serialNumber
+        warning = serviceResult.openWarning
+        if serviceResult.alreadyEnrolled {
+            status = .alreadyEnrolled
+            profilePath = nil
+        } else {
+            status = serviceResult.profileOpened ? .profileOpened : .profileDownloaded
+            profilePath = serviceResult.profilePath.path
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema
+        case status
+        case serialNumber = "serial_number"
+        case profilePath = "profile_path"
+        case warning
+    }
+}
+
+enum EnrollmentJSONRenderer {
+    static func render(_ result: EnrollmentCommandResult) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let data = try encoder.encode(result)
+        return String(decoding: data, as: UTF8.self)
+    }
+}
+
+enum EnrollmentHumanRenderer {
+    static func preamble(coordinator: String) -> String {
+        """
+        Darkbloom Device Attestation Enrollment
+        Coordinator: \(coordinator)
+
+        """
+    }
+
+    static func completion(_ result: EnrollmentCommandResult) -> String {
+        switch result.status {
+        case .alreadyEnrolled:
+            return """
+              ✓ Already enrolled — no action needed.
+              Verify with: darkbloom doctor
+            """
+        case .profileDownloaded:
+            return """
+              → Device serial:  \(result.serialNumber)
+              → Profile saved:  \(result.profilePath ?? "")
+
+              Install the profile manually:
+                open \(result.profilePath ?? "")
+
+            After installing, verify with: darkbloom doctor
+            """
+        case .profileOpened:
+            if let warning = result.warning {
+                return """
+                  → Device serial:  \(result.serialNumber)
+                  → Profile saved:  \(result.profilePath ?? "")
+
+                  Warning: \(warning)
+
+                  The enrollment profile opened. Finish installation in System Settings → General → Device Management.
+                After installing, verify with: darkbloom doctor
+                """
+            }
+            return """
+              → Device serial:  \(result.serialNumber)
+              → Profile saved:  \(result.profilePath ?? "")
+
+              System Settings → Device Management is now open.
+              Click Install on the Darkbloom profile and enter your password.
+
+              This verifies:
+                • SIP, Secure Boot, and system integrity
+                • Your Secure Enclave is genuine Apple hardware
+                • Device identity signed by Apple's Root CA
+
+              Darkbloom CANNOT erase, lock, or control your Mac.
+            After installing, verify with: darkbloom doctor
+            """
+        }
     }
 }

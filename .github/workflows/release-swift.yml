@@ -1,21 +1,29 @@
 name: Release Provider Bundle (Swift)
 
-# CLI-only Swift release pipeline.
+# Swift provider release pipeline.
 #
 # Builds and ships:
 #   - bin/darkbloom          (provider CLI)
 #   - bin/darkbloom-enclave  (Secure Enclave attestation/sign helper)
 #   - bin/mlx.metallib       (compiled Metal kernels for the matching MLX)
+#   - Darkbloom.app          (SwiftUI DarkbloomApp main executable with the
+#     provider CLI co-bundled in Contents/MacOS — DarkbloomCLILocator probes
+#     the bundle copy first)
 #   - Darkbloom.app/Contents/Helpers/darkbloom-fan-helper (dormant opt-in root helper)
-#   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources)
+#   - Darkbloom.app/Contents/Resources/*.bundle (SwiftPM resources, incl. the
+#     app's DarkbloomProvider_DarkbloomApp.bundle with its default.metallib)
+#
+# App identity: Darkbloom.app keeps CFBundleIdentifier io.darkbloom.provider
+# (see scripts/bundle-macos-app.sh for the four contracts pinning it); the
+# co-bundled darkbloom CLI is signed with an explicit matching
+# --identifier so demoting it to nested code does not change its identity.
 #
 # install.sh creates a backward-compatibility symlink from the legacy
 # `eigeninference-enclave` name to `darkbloom-enclave` for existing
 # installations that referenced the old binary name.
 #
-# No SwiftUI app, no DMG, and no Python runtime — this is a pure Swift CLI
-# build. The legacy `release.yml` was deleted alongside `app/` once we
-# committed to a CLI-only migration.
+# No DMG and no Python runtime. The legacy `release.yml` was deleted
+# alongside `app/` once we committed to a Swift-only build.
 #
 # Swift cutover tag conventions:
 #   - vX.Y.Z           -> prod Swift release (reviewer approval required)
@@ -62,6 +70,7 @@ env:
   DEVELOPER_ID: 'Developer ID Application: Eigen Labs, Inc. (SLDQ2GJ6TL)'
   APPLE_TEAM_ID: 'SLDQ2GJ6TL'
   CLI_NAME: 'darkbloom'
+  APP_BINARY_NAME: 'DarkbloomApp'
   ENCLAVE_NAME: 'darkbloom-enclave'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
@@ -318,10 +327,16 @@ jobs:
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-enclave
           swift build -c release --product darkbloom-fan-helper
+          # DarkbloomApp (SwiftUI) ships co-bundled with the CLI inside
+          # Darkbloom.app, so it is a first-class build product of the same
+          # release (same tree, same version).
+          swift build -c release --product DarkbloomApp
           BIN_DIR=$(swift build -c release --show-bin-path)
           test -x "$BIN_DIR/$CLI_NAME"
           test -x "$BIN_DIR/$ENCLAVE_NAME"
           test -x "$BIN_DIR/$FAN_HELPER_NAME"
+          test -x "$BIN_DIR/$APP_BINARY_NAME"
+          test -d "$BIN_DIR/DarkbloomProvider_DarkbloomApp.bundle"
           echo "BIN_DIR=$BIN_DIR" >> "$GITHUB_ENV"
           ls -la "$BIN_DIR" | head -50
           REPORTED=$("$BIN_DIR/$CLI_NAME" --version)
@@ -437,45 +452,17 @@ jobs:
           STAGE=/tmp/darkbloom-bundle
           rm -rf "$STAGE"
 
-          # Wrap the CLI in a minimal .app bundle so the provisioning profile
-          # authorizes keychain-access-groups for the persistent SE key.
+          # Assemble the combined .app: SwiftUI DarkbloomApp main executable,
+          # co-bundled provider CLI, fonts, compiled SpatialField metallib,
+          # fan helper + marker, and the release-stamped Info.plist. Keeping
+          # the .app shape (and embedding the provisioning profile below) is
+          # what authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
-          mkdir -p \
-            "$APP/Contents/MacOS" \
-            "$APP/Contents/Helpers" \
-            "$APP/Contents/Resources/darkbloom-runtime-capabilities"
-
-          cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
-          cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
-          cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
-          install -m 0755 \
-            "$BIN_DIR/$FAN_HELPER_NAME" \
-            "$APP/Contents/Helpers/$FAN_HELPER_NAME"
-          printf '1\n' \
-            > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
-
-          cat > "$APP/Contents/Info.plist" << PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleIdentifier</key>
-              <string>io.darkbloom.provider</string>
-              <key>CFBundleExecutable</key>
-              <string>${CLI_NAME}</string>
-              <key>CFBundleName</key>
-              <string>Darkbloom</string>
-              <key>CFBundleVersion</key>
-              <string>${VERSION}</string>
-              <key>CFBundleShortVersionString</key>
-              <string>${VERSION}</string>
-              <key>CFBundlePackageType</key>
-              <string>APPL</string>
-              <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
-          </dict>
-          </plist>
-          PLIST
+          scripts/bundle-macos-app.sh \
+            "$BIN_DIR" \
+            "${{ steps.metallib.outputs.metallib }}" \
+            "$APP" \
+            "$VERSION"
 
           if [ "${{ steps.profile.outputs.profile_available }}" = "true" ]; then
             cp /tmp/embedded.provisionprofile "$APP/Contents/embedded.provisionprofile"
@@ -524,22 +511,42 @@ jobs:
           # darkbloom-enclave only uses ephemeral SE keys (no keychain).
           # It gets its own entitlements without keychain-access-groups and
           # application-identifier so AMFI doesn't require a provisioning
-          # profile match (which only works for the main bundle executable).
+          # profile match for it.
           codesign --force --options runtime --timestamp \
             --entitlements provider-swift/entitlements-enclave.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$ENCLAVE_NAME"
+          # The CLI is now NESTED code (DarkbloomApp is the bundle's main
+          # executable). Pin its signing identifier explicitly to what it was
+          # as the legacy wrapper's main executable — fan-helper XPC client
+          # authorization, the APNs topic, and the keychain access group are
+          # all keyed to `io.darkbloom.provider`, and codesign would
+          # otherwise derive a basename-based identifier here. Duplicate
+          # identifiers between the main executable and this nested binary
+          # are accepted by codesign/--deep (verified locally with this exact
+          # layout); the bundle's designated requirement resolves to the
+          # shared identifier regardless.
           codesign --force --options runtime --timestamp \
+            --identifier "io.darkbloom.provider" \
             --entitlements provider-swift/entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$CLI_NAME"
+          # GUI main executable: its own entitlements (network only — no
+          # keychain-access-groups / application-identifier / aps-environment)
+          # so profile authorization stays a CLI-only property. Its signing
+          # identifier is derived from Info.plist => io.darkbloom.provider.
           codesign --force --options runtime --timestamp \
-            --entitlements provider-swift/entitlements.plist \
+            --entitlements scripts/entitlements.plist \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/$APP_BINARY_NAME"
+          codesign --force --options runtime --timestamp \
+            --entitlements scripts/entitlements.plist \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP"
 
           codesign --verify --deep --strict --verbose=2 "$APP"
           codesign --verify --verbose=2 "$APP/Contents/MacOS/$CLI_NAME"
+          codesign --verify --verbose=2 "$APP/Contents/MacOS/$APP_BINARY_NAME"
 
           # Persistent Secure Enclave key requires keychain-access-groups
           # bound to the team-scoped access group. If the entitlement is
@@ -593,6 +600,54 @@ jobs:
             exit 1
           fi
           echo "Entitlement verification passed: $EXPECTED_ACCESS_GROUP authorized via embedded provisioning profile"
+
+          # App identity guards. The bundle's designated requirement must keep
+          # resolving to the pinned identifier: the provider self-updater
+          # (DarkbloomCodeSignature.swift) and install.sh
+          # DARKBLOOM_DESIGNATED_REQUIREMENT both refuse anything else.
+          APP_DR=$(codesign -d -r- "$APP" 2>&1 | awk -F' => ' '/designated/{print $2; exit}')
+          echo "$APP_DR" | grep -qF 'identifier "io.darkbloom.provider"' || {
+            echo "::error::Bundle designated requirement lost io.darkbloom.provider: $APP_DR"
+            exit 1
+          }
+          echo "$APP_DR" | grep -qF 'anchor apple generic' || {
+            echo "::error::Bundle designated requirement lost the Apple anchor: $APP_DR"
+            exit 1
+          }
+          CLI_SIGNING_ID=$(codesign -dvvv "$APP/Contents/MacOS/$CLI_NAME" 2>&1 | awk -F= '/^Identifier=/{print $2; exit}')
+          if [ "$CLI_SIGNING_ID" != "io.darkbloom.provider" ]; then
+            echo "::error::Co-bundled CLI identifier drifted to '$CLI_SIGNING_ID' — fan-helper XPC, APNs topic, and keychain group authorization depend on io.darkbloom.provider"
+            exit 1
+          fi
+
+          # The GUI main executable must NOT carry the CLI's restricted
+          # entitlements — profile authorization stays a CLI-only property.
+          rm -f /tmp/app-ents.plist
+          codesign -d --entitlements /tmp/app-ents.plist --xml "$APP/Contents/MacOS/$APP_BINARY_NAME" 2>/dev/null || true
+          # Fail loudly on empty extraction so the loop below cannot pass vacuously.
+          if [ ! -s /tmp/app-ents.plist ]; then
+            echo "::error::Failed to extract entitlements from signed DarkbloomApp"
+            exit 1
+          fi
+          for FORBIDDEN in \
+            keychain-access-groups \
+            com.apple.developer.aps-environment \
+            com.apple.application-identifier \
+            com.apple.security.get-task-allow
+          do
+            if /usr/libexec/PlistBuddy -c "Print :$FORBIDDEN" /tmp/app-ents.plist >/dev/null 2>&1; then
+              echo "::error::Signed DarkbloomApp must not carry '$FORBIDDEN' — restricted entitlements are CLI-only (see scripts/entitlements.plist)"
+              exit 1
+            fi
+          done
+          # App payload completeness (assembly contract of scripts/bundle-macos-app.sh).
+          test -x "$APP/Contents/MacOS/$APP_BINARY_NAME"
+          test -s "$APP/Contents/Resources/Chivo-Regular.ttf"
+          test -s "$APP/Contents/Resources/Chivo-Medium.ttf"
+          test -s "$APP/Contents/Resources/DarkbloomProvider_DarkbloomApp.bundle/default.metallib"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Contents/Info.plist")" = "io.darkbloom.provider"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")" = "$APP_BINARY_NAME"
+          echo "App identity verified: DR pins io.darkbloom.provider, CLI id pinned, GUI restricted-entitlement-free"
 
           # Flat layout alongside the .app bundle. Coordinator's release
           # artifact verifier (release_handlers.go:413) requires bin/darkbloom
@@ -695,6 +750,21 @@ jobs:
           grep -qx \
             './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1' \
             /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/MacOS/DarkbloomApp' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/Chivo-Regular.ttf' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/Chivo-Medium.ttf' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/DarkbloomProvider_DarkbloomApp.bundle/default.metallib' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/embedded.provisionprofile' \
+            /tmp/darkbloom-bundle-files.txt
 
           # Verify the FINAL archived layout, not merely the staging tree.
           # This runs after signing, notarization, stapling, and tar rebuild,
@@ -753,6 +823,12 @@ jobs:
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
             "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "$VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "io.darkbloom.provider"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+            "$SMOKE_ROOT/Darkbloom.app/Contents/Info.plist")" = "DarkbloomApp"
+          # GUI main executable survived notarization + stapling intact.
+          test -x "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/DarkbloomApp"
 
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
@@ -850,7 +926,11 @@ jobs:
         run: |
           set -euo pipefail
           cat > /tmp/release-notes.md <<NOTES
-          ## Provider v${VERSION} (Swift CLI)
+          ## Provider v${VERSION} (Swift CLI + Darkbloom app)
+
+          The bundle's \`Darkbloom.app\` now ships the SwiftUI **Darkbloom** macOS app
+          (bundle id \`io.darkbloom.provider\`) with the provider CLI co-bundled in
+          \`Contents/MacOS\` — installed to \`~/.darkbloom/Darkbloom.app\` by the installer.
 
           **Binary hash:**   \`${BINARY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`

@@ -2,22 +2,32 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <!-- NO get-task-allow → blocks debugger attachment under Hardened Runtime -->
+    <!--
+      Entitlements for the SwiftUI DarkbloomApp main executable of the release
+      Darkbloom.app (signed in .github/workflows/release-swift.yml).
+
+      Deliberately DIFFERENT from the co-bundled provider CLI
+      (provider-swift/entitlements.plist):
+
+      - NO keychain-access-groups / application-identifier /
+        aps-environment. Those are restricted entitlements whose runtime
+        authorization depends on the bundle's embedded provisioning profile;
+        they exist only for the CLI's persistent Secure Enclave key and APNs
+        code identity. The GUI app keeps NO secrets in the keychain (provider
+        auth tokens are files under ~/.darkbloom) and never registers for
+        push, so granting them would widen profile coupling for no function.
+        The release workflow asserts their absence on the signed app binary.
+      - NO get-task-allow: blocks debugger attachment under Hardened Runtime.
+
+      Network: the app polls the local provider endpoint (LocalEndpointInfo /
+      daemon-state) and may reach the coordinator API, so it keeps the same
+      client/server network entitlements the CLI carries. (Both are sandbox
+      keys — no-ops without com.apple.security.app-sandbox — but they document
+      the intended surface and keep notarization assessment unambiguous.)
+    -->
     <key>com.apple.security.network.client</key>
     <true/>
     <key>com.apple.security.network.server</key>
     <true/>
-    <!--
-      Keychain access for E2E key storage.
-      Team prefix is hardcoded because codesign (our release flow) does NOT
-      expand $(AppIdentifierPrefix) — that's an Xcode-only build variable.
-      A literal unexpanded macro gets baked into the entitlements blob and
-      keychain writes fail with errSecMissingEntitlement (-34018).
-      Format per Apple docs: "TEAMID.identifier".
-    -->
-    <key>com.apple.security.keychain-access-groups</key>
-    <array>
-        <string>SLDQ2GJ6TL.io.darkbloom.provider</string>
-    </array>
 </dict>
 </plist>

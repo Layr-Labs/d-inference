@@ -14,6 +14,7 @@ Runbooks are written for operators. For architecture and security context, see t
 | Runbook | Scope | Audience |
 |---|---|---|
 | [`coordinator-deploy.md`](coordinator-deploy.md) | Build and deploy the coordinator (Go) and provider CLI (Swift) | Infra / release engineer |
+| [`app-release.md`](app-release.md) | Ship the combined Darkbloom.app (SwiftUI app + co-bundled provider CLI): build, sign, notarize, register, verify, roll back | Release engineer (human-approved) |
 | [`dev-environment.md`](dev-environment.md) | Stand up and operate the GCP dev environment | Infra engineer |
 | [`model-migration.md`](model-migration.md) | Zero-downtime model alias / build cutover | Model ops / on-call |
 | [`state-export.md`](state-export.md) | Extract and rehydrate sealed coordinator state (`DAR-70`) | Infra engineer / human-approved agent |

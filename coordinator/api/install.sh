@@ -8,11 +8,14 @@ set -euo pipefail
 #
 # This script:
 #   1. Fetches the latest signed release from the coordinator
-#   2. Downloads the provider app (binaries, metallib, SwiftPM resources)
+#   2. Downloads Darkbloom.app (SwiftUI DarkbloomApp main executable PLUS the
+#      co-bundled provider CLI, enclave helper, metallib, SwiftPM resources)
+#      and installs it to ~/.darkbloom/Darkbloom.app
 #   3. Verifies bundle SHA-256 + Apple Developer ID code signature
 #   4. Sets up the Secure Enclave identity
 #   5. Optionally enrolls in MDM (device attestation)
 #   6. Optionally downloads a starter model
+#   7. Offers to launch the app (interactive terminals only)
 #
 # Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
 # links mlx-swift directly and ships a colocated mlx.metallib for Metal
@@ -181,6 +184,32 @@ verify_staged_app_payload() {
         && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
 }
 
+# ~/.darkbloom/Darkbloom.app ownership: release bundles have always carried
+# OUR id (io.darkbloom.provider — first the CLI wrapper, now the combined
+# app); dev loops via script/build_and_run.sh produce the unsigned dev build
+# (dev.darkbloom.app). Both are replaced in place. Anything else at that path
+# is NOT ours (user-copied app, other tooling, corrupt bundle without an
+# Info.plist): preserve it beside the install dir and warn, never clobber it.
+existing_bundle_is_ours() {
+    local app=$1
+    local id
+    id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
+        "$app/Contents/Info.plist" 2>/dev/null || true)
+    case "$id" in
+        io.darkbloom.provider|dev.darkbloom.app) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+preserve_foreign_bundle() {
+    local destination=$1
+    local install_dir=$2
+    local preserved="$install_dir/Darkbloom.app.foreign-$(date +%Y%m%d-%H%M%S)"
+    echo "  ⚠ $destination is not a Darkbloom build — preserving it at:"
+    echo "      $preserved"
+    mv "$destination" "$preserved"
+}
+
 commit_staged_app() {
     local staged_app=$1
     local install_dir=$2
@@ -190,11 +219,18 @@ commit_staged_app() {
     mkdir -p "$backup" "$install_dir/bin"
 
     if [ -d "$destination" ]; then
-        mv "$destination" "$backup/Darkbloom.app" || {
-            rm -rf "$backup"
-            return 1
-        }
-        had_previous=1
+        if existing_bundle_is_ours "$destination"; then
+            mv "$destination" "$backup/Darkbloom.app" || {
+                rm -rf "$backup"
+                return 1
+            }
+            had_previous=1
+        else
+            preserve_foreign_bundle "$destination" "$install_dir" || {
+                rm -rf "$backup"
+                return 1
+            }
+        fi
     fi
     if ! mv "$staged_app" "$destination"; then
         [ "$had_previous" -eq 1 ] \
@@ -564,3 +600,26 @@ echo "    darkbloom models download <id>"
 echo "    darkbloom login              # link this Mac to your account"
 echo "    darkbloom start              # serve inference (interactive picker)"
 echo ""
+
+# ─── Launch the app ──────────────────────────────────────────
+# Only releases that ship the SwiftUI payload can be launched; downlevel
+# flat/CLI-wrapper bundles simply skip this step.
+APP_MAIN="$INSTALL_DIR/Darkbloom.app/Contents/MacOS/DarkbloomApp"
+if [ -x "$APP_MAIN" ]; then
+    if [ "$INTERACTIVE" = true ]; then
+        REPLY=""
+        read -r -p "  Launch the Darkbloom app now? [Y/n] " REPLY || REPLY="n"
+        case "$REPLY" in
+            n|N|no|NO|No|nO)
+                echo "  Skipped. Launch later with: open ~/.darkbloom/Darkbloom.app"
+                ;;
+            *)
+                /usr/bin/open "$INSTALL_DIR/Darkbloom.app" \
+                    && echo "  Darkbloom.app launched ✓" \
+                    || echo "  ⚠ Could not launch the app; try: open ~/.darkbloom/Darkbloom.app"
+                ;;
+        esac
+    else
+        echo "  Desktop app: open ~/.darkbloom/Darkbloom.app"
+    fi
+fi

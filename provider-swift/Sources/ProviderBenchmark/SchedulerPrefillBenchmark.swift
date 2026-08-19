@@ -37,6 +37,10 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     public let gemmaOptimizations: BenchmarkGemmaOptimizations
     /// Selection versus the backends the measured engines were built with.
     public let kvBackend: BenchmarkKVBackend
+    /// Effective `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE` the measured engines
+    /// were built with (nil = plain 512-token chunks). Recorded so a stripe
+    /// arm can never masquerade as a plain-chunk baseline.
+    public let soloPrefillStripeTokens: Int?
     public let samples: [Sample]
 
     public func jsonString() throws -> String {
@@ -151,6 +155,8 @@ public enum SchedulerPrefillBenchmark {
                 settings: gemmaOptimizations),
             kvBackend: BenchmarkKVBackend(
                 selection: kvBackend.rawValue, resolved: resolved),
+            soloPrefillStripeTokens: EngineV2Factory.soloPrefillStripeTokens(
+                abovePlainChunk: CBv2SchedulerConfig().prefillChunkSize),
             samples: samples
         )
     }

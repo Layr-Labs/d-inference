@@ -123,6 +123,14 @@ struct ProcessAccountLinkCLI: AccountLinkRunning {
 
             let stderr = StderrTail(limit: Self.stderrTailLimit)
             let terminalEventSeen = TerminalEventFlag()
+            // FileHandle callbacks and Process.terminationHandler run on
+            // unrelated queues. Serialize EVERY read + parse with final EOF
+            // draining so termination cannot finish the stream after a
+            // callback consumed a line but before it delivered that line to
+            // the NDJSON pump.
+            let pipeQueue = DispatchQueue(
+                label: "dev.darkbloom.app.account-link-pipes"
+            )
 
             let pump = NDJSONLinePump(
                 onLine: { line in
@@ -145,42 +153,46 @@ struct ProcessAccountLinkCLI: AccountLinkRunning {
             )
 
             stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-                pump.append(stdout: handle.availableData)
+                pipeQueue.sync {
+                    pump.append(stdout: handle.availableData)
+                }
             }
             // Drain stderr so a chatty child never blocks on a full pipe.
             stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-                pump.append(stderr: handle.availableData)
+                pipeQueue.sync {
+                    pump.append(stderr: handle.availableData)
+                }
             }
 
             process.terminationHandler = { process in
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
-                // Drain whatever stdout bytes are still buffered: the last
-                // readability tick fires before exit is noticed, and a fast
-                // child (`linked` immediately) would otherwise lose the tail
-                // of its NDJSON stream.
-                pump.append(stdout: stdoutPipe.fileHandleForReading.readDataToEndOfFile())
-                // stderr races the same way — drain it before a non-zero
-                // exit consults the tail for its failure message.
-                pump.append(stderr: stderrPipe.fileHandleForReading.readDataToEndOfFile())
-                pump.flushPendingLine()
-                guard !terminalEventSeen.value else {
-                    // `.linked` or `.error` was already delivered as data;
-                    // the non-zero exit that follows an error event is part
-                    // of the CLI's contract, not a transport failure.
-                    continuation.finish()
-                    return
-                }
-                let status = process.terminationStatus
-                if status == 0 {
-                    continuation.finish()
-                } else {
-                    let tail = stderr.text
-                        .split(separator: "\n")
-                        .map { $0.trimmingCharacters(in: .whitespaces) }
-                        .filter { !$0.isEmpty }
-                        .last ?? ""
-                    continuation.finish(throwing: ProviderCLIError.exited(status, message: tail))
+                pipeQueue.sync {
+                    // Drain whatever bytes are still buffered: the child is
+                    // dead so both reads reach EOF. A callback that entered
+                    // first completes before this block; one that enters
+                    // later sees empty data.
+                    pump.append(stdout: stdoutPipe.fileHandleForReading.readDataToEndOfFile())
+                    pump.append(stderr: stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                    pump.flushPendingLine()
+                    guard !terminalEventSeen.value else {
+                        // `.linked` or `.error` was already delivered as data;
+                        // the non-zero exit that follows an error event is part
+                        // of the CLI's contract, not a transport failure.
+                        continuation.finish()
+                        return
+                    }
+                    let status = process.terminationStatus
+                    if status == 0 {
+                        continuation.finish()
+                    } else {
+                        let tail = stderr.text
+                            .split(separator: "\n")
+                            .map { $0.trimmingCharacters(in: .whitespaces) }
+                            .filter { !$0.isEmpty }
+                            .last ?? ""
+                        continuation.finish(throwing: ProviderCLIError.exited(status, message: tail))
+                    }
                 }
             }
 

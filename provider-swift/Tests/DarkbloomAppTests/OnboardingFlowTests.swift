@@ -87,7 +87,7 @@ struct OnboardingFlowTests {
         #expect(detected.enrollmentPhase == .profileDetected)
         #expect(detected.verificationPhase == .profileDetected)
         detected.continueToNextStep()
-        #expect(detected.step == .verification)
+        #expect(detected.step == .preparation)
         #expect(detected.goBack())
         #expect(detected.step == .enrollment)
 
@@ -133,8 +133,8 @@ struct OnboardingFlowTests {
         #expect(!flow.canContinue)
     }
 
-    @Test("Model preparation is optional and restored preparation advances to trust")
-    func modelPreparationIsOptional() async {
+    @Test("Model preparation is required and interrupted work remains resumable")
+    func modelPreparationIsRequired() async {
         let restoredPreparation = draft(
             step: .preparation,
             account: .linked,
@@ -142,9 +142,10 @@ struct OnboardingFlowTests {
             preparation: .downloadFailed,
             progress: 0.43
         ).normalizedForResume
-        #expect(restoredPreparation.step == .verification)
+        #expect(restoredPreparation.step == .preparation)
+        #expect(restoredPreparation.preparationPhase == .downloadFailed)
         #expect(restoredPreparation.verificationPhase == .profileDetected)
-        #expect(restoredPreparation.progressLabel.contains("of 4"))
+        #expect(restoredPreparation.progressLabel.contains("of 5"))
 
         let flow = OnboardingFlowModel(
             startingAt: .complete,
@@ -161,7 +162,8 @@ struct OnboardingFlowTests {
             )
         )
         await flow.reconcileRestoredProgress()
-        #expect(flow.hasCompletedAllRequiredSteps)
+        #expect(!flow.hasCompletedAllRequiredSteps)
+        #expect(flow.preparationPhase == .downloadFailed)
     }
 
     @Test("Only hardware trust completes verification")

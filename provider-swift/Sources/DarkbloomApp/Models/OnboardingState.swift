@@ -7,14 +7,17 @@ enum ReadinessPhase: Int, Codable, Equatable, Sendable {
     case insufficientMemory
     case lowStorage
     case offline
+    case requirementsFailed
+    case insufficientStorage
+    case unavailable
 
     var issueItemIndex: Int? {
         switch self {
         case .unsupportedMac: 0
         case .insufficientMemory: 3
-        case .lowStorage: 4
+        case .lowStorage, .insufficientStorage: 4
         case .offline: 5
-        case .checking, .ready: nil
+        case .requirementsFailed, .unavailable, .checking, .ready: nil
         }
     }
 
@@ -42,6 +45,7 @@ enum EnrollmentPhase: Int, Codable, Equatable, Sendable {
     case profileMissing = 5
     case conflictingManagement = 6
     case enrollmentFailed = 7
+    case requestingProfile = 8
 }
 
 enum PreparationPhase: Int, Codable, Equatable, Sendable {
@@ -50,6 +54,12 @@ enum PreparationPhase: Int, Codable, Equatable, Sendable {
     case verifying
     case ready
     case downloadFailed
+    case loadingCatalog
+    case choosingModel
+    case startingProvider
+    case catalogFailed
+    case noCompatibleModel
+    case startFailed
 }
 
 enum VerificationPhase: Int, Codable, Equatable, Sendable {

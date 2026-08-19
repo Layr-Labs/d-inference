@@ -33,7 +33,7 @@ struct EnrollmentStepView: View {
     private var title: String {
         switch flow.enrollmentPhase {
         case .overview: "Verify\nthis Mac."
-        case .instructions, .systemSettingsOpen, .detectingProfile: "Finish in\nSystem Settings."
+        case .instructions, .systemSettingsOpen, .detectingProfile, .requestingProfile: "Finish in\nSystem Settings."
         case .profileDetected: "Profile\ndetected."
         case .profileMissing: "Profile not\nfound."
         case .conflictingManagement: "Management\nconflict."
@@ -45,8 +45,8 @@ struct EnrollmentStepView: View {
         switch flow.enrollmentPhase {
         case .overview:
             "Darkbloom uses a read-only management profile to verify Apple hardware and system security. It cannot erase, lock, install apps, or change settings."
-        case .instructions, .systemSettingsOpen, .detectingProfile:
-            "macOS requires you to review the profile and approve it with administrator authentication. Darkbloom cannot approve it for you."
+        case .instructions, .systemSettingsOpen, .detectingProfile, .requestingProfile:
+            "macOS requires you to click Install and approve the profile with an administrator password. Darkbloom cannot perform either action for you."
         case .profileDetected:
             "The profile is present on this Mac. Enrollment check-in and hardware trust are verified separately in the next step."
         case .profileMissing:
@@ -63,14 +63,19 @@ struct EnrollmentStepView: View {
         switch flow.enrollmentPhase {
         case .overview:
             OnboardingPrimaryButton(title: "Install verification profile", systemImage: "arrow.right") {
-                flow.showEnrollmentInstructions()
+                Task { await flow.beginEnrollment() }
             }
             .keyboardShortcut(.defaultAction)
         case .instructions:
-            OnboardingPrimaryButton(title: "Preview System Settings step", systemImage: "arrow.up.right") {
-                flow.markSystemSettingsOpened()
+            OnboardingPrimaryButton(
+                title: flow.usesLiveEnrollment ? "Open verification profile" : "Preview System Settings step",
+                systemImage: "arrow.up.right"
+            ) {
+                Task { await flow.beginEnrollment() }
             }
             .keyboardShortcut(.defaultAction)
+        case .requestingProfile:
+            OnboardingPrimaryButton(title: "Preparing the profile…", isWorking: true, isDisabled: true, action: {})
         case .systemSettingsOpen:
             OnboardingPrimaryButton(title: "Check for installed profile", systemImage: "arrow.clockwise") {
                 Task { await flow.confirmProfileInstallation() }
@@ -93,8 +98,8 @@ struct EnrollmentStepView: View {
             }
             .keyboardShortcut(.defaultAction)
         case .enrollmentFailed:
-            recoveryActions(primaryTitle: "Check profile again", primarySymbol: "arrow.clockwise") {
-                Task { await flow.retryProfileDetection() }
+            recoveryActions(primaryTitle: "Try enrollment again", primarySymbol: "arrow.clockwise") {
+                Task { await flow.beginEnrollment() }
             }
         }
     }
@@ -144,12 +149,16 @@ struct EnrollmentStepView: View {
 
     private var footnote: String {
         switch flow.enrollmentPhase {
-        case .instructions, .systemSettingsOpen, .detectingProfile:
-            "Administrator authentication happens in System Settings—not inside Darkbloom. UI preview only."
+        case .instructions, .systemSettingsOpen, .detectingProfile, .requestingProfile:
+            flow.usesLiveEnrollment
+                ? "Required macOS step: click Install in System Settings and enter an administrator password. Keep Darkbloom open while it detects the real profile."
+                : "Administrator authentication happens in System Settings—not inside Darkbloom. Fixture preview only."
         case .conflictingManagement:
             "This flow remains blocked while another MDM is active. If this is a work or school Mac, contact its administrator before changing management profiles."
         default:
-            "UI preview only · live setup will verify local profile and server enrollment independently."
+            flow.usesLiveEnrollment
+                ? (flow.enrollmentFailureDetail ?? "Darkbloom verifies local profile and server enrollment evidence independently.")
+                : "Fixture preview · live setup verifies local profile and server enrollment independently."
         }
     }
 }

@@ -107,7 +107,7 @@ struct PrivateChatView: View {
 
     private var liveComposerNote: String {
         if let model = store.activeModelID {
-            "On this Mac · \(model) via the local endpoint"
+            return "On this Mac · \(model) via the local endpoint"
         }
         return "On this Mac · the local endpoint picks the model"
     }

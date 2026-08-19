@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 
 @main
@@ -98,63 +99,187 @@ struct DarkbloomApp: App {
 
     var body: some Scene {
         Window("Darkbloom", id: "main") {
-            ContentView(
-                showsLaunchExperience: !isCapturingPreview || isCapturingLaunchPreview,
-                launchMode: appFlowStore.phase == .product && !isCapturingLaunchPreview
-                    ? .ignition
-                    : .full,
-                onboardingPreview: onboardingPreview,
-                productPreview: productPreview,
-                appFlowStore: appFlowStore,
-                providerStore: providerStore,
-                modelLibraryStore: modelLibraryStore,
-                diagnosticsStore: diagnosticsStore,
-                contributionsStore: contributionsStore,
-                localAPIStore: localAPIStore,
-                myMacsStore: myMacsStore,
-                availabilityStore: availabilityStore
-            )
-                .background(DarkbloomMainWindowTag())
-                .frame(minWidth: 900, minHeight: 620)
-                .environment(
-                    \.isCapturingDarkbloomPreview,
-                    isCapturingPreview && !isCapturingLaunchPreview
-                )
+            Group {
+                switch appDelegate.installState {
+                case .ready:
+                    ContentView(
+                        showsLaunchExperience: !isCapturingPreview || isCapturingLaunchPreview,
+                        launchMode: appFlowStore.phase == .product && !isCapturingLaunchPreview
+                            ? .ignition
+                            : .full,
+                        onboardingPreview: onboardingPreview,
+                        productPreview: productPreview,
+                        appFlowStore: appFlowStore,
+                        providerStore: providerStore,
+                        modelLibraryStore: modelLibraryStore,
+                        diagnosticsStore: diagnosticsStore,
+                        contributionsStore: contributionsStore,
+                        localAPIStore: localAPIStore,
+                        myMacsStore: myMacsStore,
+                        availabilityStore: availabilityStore
+                    )
+                    .background(DarkbloomMainWindowTag())
+                    .environment(
+                        \.isCapturingDarkbloomPreview,
+                        isCapturingPreview && !isCapturingLaunchPreview
+                    )
+                case .failed(let failure):
+                    AppInstallationFailureView(failure: failure)
+                case .checking:
+                    AppInstallationProgressView(message: "Preparing Darkbloom...")
+                case .handingOff:
+                    AppInstallationProgressView(message: "Opening the installed app...")
+                }
+            }
+            .frame(minWidth: 900, minHeight: 620)
         }
         .defaultSize(width: 1040, height: 680)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}
-            ProviderCommands()
+            if appDelegate.installState.isReady {
+                ProviderCommands()
+            }
         }
 
         Settings {
-            SettingsRootView(
-                appFlowStore: appFlowStore,
-                providerStore: providerStore
-            )
+            if appDelegate.installState.isReady {
+                SettingsRootView(
+                    appFlowStore: appFlowStore,
+                    providerStore: providerStore
+                )
+            } else {
+                Text("Finish installing Darkbloom before changing settings.")
+                    .padding(24)
+            }
         }
 
         MenuBarExtra("Darkbloom", systemImage: "sparkles") {
-            ProviderMenuBarView(
-                content: ProviderMenuBarContent.resolve(
-                    hasCompletedSetup: appFlowStore.hasCompletedNetworkOnboarding,
-                    snapshot: providerStore.snapshot
-                ),
-                providerStore: providerStore
-            )
+            if appDelegate.installState.isReady {
+                ProviderMenuBarView(
+                    content: ProviderMenuBarContent.resolve(
+                        hasCompletedSetup: appFlowStore.hasCompletedNetworkOnboarding,
+                        snapshot: providerStore.snapshot
+                    ),
+                    providerStore: providerStore
+                )
+            } else {
+                Button("Quit Darkbloom") {
+                    NSApp.terminate(nil)
+                }
+            }
         }
         .menuBarExtraStyle(.window)
     }
 }
 
 @MainActor
-final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate {
+final class DarkbloomAppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
+    @Published fileprivate var installState = AppInstallLaunchState.checking
+
+    func applicationWillFinishLaunching(_: Notification) {
+        let coordinator = AppInstallCoordinator()
+        do {
+            switch try coordinator.coordinate() {
+            case .continueLaunch:
+                installState = .ready
+            case .relocated:
+                installState = .handingOff
+                NSApp.terminate(nil)
+            }
+        } catch {
+            installState = .failed(AppInstallationFailure(
+                error: error,
+                destination: coordinator.destinationURL
+            ))
+        }
+    }
+
     func applicationDidFinishLaunching(_: Notification) {
         #if DEBUG
         PreviewAppearance.applyIfRequested(to: NSApp)
         #endif
+        guard installState.isInteractive else { return }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+private enum AppInstallLaunchState {
+    case checking
+    case ready
+    case handingOff
+    case failed(AppInstallationFailure)
+
+    var isReady: Bool {
+        if case .ready = self { return true }
+        return false
+    }
+
+    var isInteractive: Bool {
+        switch self {
+        case .ready, .failed:
+            true
+        case .checking, .handingOff:
+            false
+        }
+    }
+}
+
+private struct AppInstallationFailure {
+    let message: String
+    let recoverySuggestion: String
+    let destination: URL
+
+    init(error: any Error, destination: URL) {
+        let localized = error as? any LocalizedError
+        message = localized?.errorDescription
+            ?? (error as NSError).localizedDescription
+        recoverySuggestion = localized?.recoverySuggestion
+            ?? "Check that ~/.darkbloom and your home Applications folder are writable, then reopen Darkbloom."
+        self.destination = destination
+    }
+}
+
+private struct AppInstallationProgressView: View {
+    let message: String
+
+    var body: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+            Text(message)
+                .font(.headline)
+        }
+    }
+}
+
+private struct AppInstallationFailureView: View {
+    let failure: AppInstallationFailure
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 34))
+                .foregroundStyle(.orange)
+            Text("Darkbloom could not install itself")
+                .font(.title2.bold())
+            Text(failure.message)
+            Text(failure.recoverySuggestion)
+                .foregroundStyle(.secondary)
+            Text("Install location: \(failure.destination.path)")
+                .font(.callout.monospaced())
+                .textSelection(.enabled)
+            HStack {
+                Button("Show Install Folder") {
+                    NSWorkspace.shared.open(failure.destination.deletingLastPathComponent())
+                }
+                Button("Quit") {
+                    NSApp.terminate(nil)
+                }
+                .keyboardShortcut(.cancelAction)
+            }
+        }
+        .frame(maxWidth: 580, alignment: .leading)
+        .padding(48)
     }
 }

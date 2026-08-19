@@ -12,8 +12,8 @@ struct SetupCompleteStepView: View {
     var body: some View {
         OnboardingStageScaffold(
             step: .complete,
-            title: "Setup preview\nis complete.",
-            message: "Choose where to explore next. This UI preview has not changed an account, profile, or provider setting. No model is required to finish setup.",
+            title: "This Mac\nis ready.",
+            message: "Darkbloom confirmed the account, verification profile, model, running local endpoint, and hardware trust. Choose where to go next.",
             isCompact: isCompact
         ) {
             VStack(alignment: .leading, spacing: 13) {
@@ -26,7 +26,9 @@ struct SetupCompleteStepView: View {
                     onFinish(.reviewAvailability)
                 }
 
-                Text("Sample handoff only. Live setup will reconcile account, verification profile, hardware trust, and network availability. Choose a model later when you want to run private AI.")
+                Text(isCapturingPreview
+                    ? "Fixture preview · live setup requires every verified prerequisite before this handoff."
+                    : "The provider is running with a local OpenAI-compatible endpoint and can now serve private AI.")
                     .font(DarkbloomTheme.chivo(11))
                     .lineSpacing(3)
                     .foregroundStyle(DarkbloomTheme.ink.opacity(0.58))
@@ -77,7 +79,7 @@ private struct VerifiedMachineSurface: View {
                         Circle()
                             .fill(DarkbloomTheme.accent)
                             .frame(width: 7, height: 7)
-                        Text("UI SETUP COMPLETE")
+                        Text("SETUP COMPLETE")
                             .font(DarkbloomTheme.chivo(10, weight: .medium))
                             .tracking(1.1)
                     }

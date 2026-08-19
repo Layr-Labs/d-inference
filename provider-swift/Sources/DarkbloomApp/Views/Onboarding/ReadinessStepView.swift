@@ -55,17 +55,6 @@ private struct ReadinessSurface: View {
     let flow: OnboardingFlowModel
     let identity: MachineIdentity
 
-    private var items: [(String, String)] {
-        [
-            ("Apple silicon", appleSiliconDetail),
-            ("macOS", "Sonoma or later"),
-            ("Secure Enclave", "Available for private identity"),
-            ("Unified memory", memoryDetail),
-            ("Available storage", storageDetail),
-            ("Network", networkDetail),
-        ]
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 13) {
@@ -95,16 +84,26 @@ private struct ReadinessSurface: View {
                 .padding(.vertical, 13)
 
             VStack(spacing: 0) {
-                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                    SetupStatusRow(title: item.0, detail: item.1, state: state(for: index))
+                ForEach(flow.readinessItems) { item in
+                    SetupStatusRow(title: item.title, detail: item.detail, state: item.state)
                 }
             }
 
             Spacer(minLength: 5)
 
-            Text("UI preview only · the live setup connector will rerun every check before continuing.")
-                .font(DarkbloomTheme.chivo(9))
-                .foregroundStyle(DarkbloomTheme.ink.opacity(0.38))
+            if let issue = flow.readinessItems.first(where: { $0.state == .issue }),
+               let action = issue.action {
+                Text(action)
+                    .font(DarkbloomTheme.chivo(9, weight: .medium))
+                    .foregroundStyle(Color.orange.opacity(0.86))
+                    .lineLimit(3)
+            } else {
+                Text(flow.usesLiveReadiness
+                    ? "Only local hardware, storage, and boot-security prerequisites gate this step."
+                    : "Fixture preview · live setup runs darkbloom doctor --json.")
+                    .font(DarkbloomTheme.chivo(9))
+                    .foregroundStyle(DarkbloomTheme.ink.opacity(0.38))
+            }
         }
         .padding(23)
         .frame(width: 365, height: 402, alignment: .topLeading)
@@ -116,7 +115,8 @@ private struct ReadinessSurface: View {
         case .checking: "CHECKING"
         case .ready: "READY"
         case .lowStorage: "READY WITH NOTE"
-        case .unsupportedMac, .insufficientMemory, .offline: "NEEDS ATTENTION"
+        case .unsupportedMac, .insufficientMemory, .offline, .requirementsFailed,
+             .insufficientStorage, .unavailable: "NEEDS ATTENTION"
         }
     }
 
@@ -124,32 +124,4 @@ private struct ReadinessSurface: View {
         flow.readinessPhase.allowsContinuation ? DarkbloomTheme.accent : DarkbloomTheme.ink.opacity(0.58)
     }
 
-    private var appleSiliconDetail: String {
-        flow.readinessPhase == .unsupportedMac ? "Apple silicon is required" : (identity.isDetected ? identity.chipName : "Detecting this Mac")
-    }
-
-    private var memoryDetail: String {
-        if flow.readinessPhase == .insufficientMemory { return "8 GB minimum · More memory required" }
-        let detected = MachineFactsFormatter.memory(identity.physicalMemoryBytes)
-        return detected == "—" ? "8 GB minimum" : "8 GB minimum · \(detected) detected"
-    }
-
-    private var storageDetail: String {
-        if flow.readinessPhase == .lowStorage { return "Exact requirement is checked when you choose a model" }
-        return MachineFactsFormatter.storageSummary(total: nil, available: identity.storageAvailableBytes)
-    }
-
-    private var networkDetail: String {
-        flow.readinessPhase == .offline ? "Connect to the internet and check again" : "Connection available"
-    }
-
-    private func state(for index: Int) -> SetupItemState {
-        if flow.readinessPhase == .lowStorage, flow.readinessPhase.issueItemIndex == index {
-            return .advisory
-        }
-        if flow.readinessPhase.issueItemIndex == index { return .issue }
-        if index < flow.readinessCompletedCount { return .complete }
-        if flow.readinessPhase == .checking, index == flow.readinessCompletedCount { return .working }
-        return .waiting
-    }
 }

@@ -48,7 +48,7 @@ struct EnrollmentInstructionsView: View {
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 20))
                 .foregroundStyle(DarkbloomTheme.accent)
-        } else if phase == .detectingProfile {
+        } else if phase == .detectingProfile || phase == .requestingProfile {
             BreathingStatusDot().frame(width: 20, height: 20)
         } else if isFailure {
             Image(systemName: "exclamationmark.triangle.fill")
@@ -74,7 +74,7 @@ struct EnrollmentInstructionsView: View {
             SetupStatusRow(title: "Profile downloaded", detail: EnrollmentGuide.profileName, state: .complete)
             SetupStatusRow(
                 title: "Administrator authentication",
-                detail: phase == .detectingProfile ? "Approved; checking profile" : "Finish in System Settings",
+                detail: phase == .detectingProfile ? "Approved; checking profile" : "Click Install and enter an administrator password",
                 state: phase == .detectingProfile ? .complete : .working
             )
             SetupStatusRow(

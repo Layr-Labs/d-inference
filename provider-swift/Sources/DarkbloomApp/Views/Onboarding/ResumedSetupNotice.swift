@@ -15,13 +15,13 @@ struct ResumedSetupNotice: View {
     private var message: String {
         switch state {
         case .required, .rechecking:
-            "This UI preview is reconciling saved progress before any restored status can advance."
+            "Darkbloom is checking the live account, profile, model, provider endpoint, and trust before restored status can advance."
         case .reconciled:
-            "This UI preview matched saved progress; live account, profile, and trust checks remain preview-only."
+            "Saved progress was replaced with the latest live machine state."
         case .unavailable:
             "Saved status could not be reconciled. Return to welcome and start over, or try again when live services are available."
         case .notNeeded:
-            "Live account, profile, and trust checks remain preview-only."
+            "Setup will use current machine state rather than saved success flags."
         }
     }
 

@@ -1,6 +1,5 @@
-# Prod overlay. image.tag is set by the tag-triggered Cloud Build
-# (deploy/gcp/cloudbuild-gke.yaml) to the git tag, e.g. coordinator-v0.8.1.
-# secrets.existingSecret must already exist with EIGENINFERENCE_* secret keys.
+# Prod overlay. image.tag is set by the human who runs helm (or a GitHub
+# workflow_dispatch later). secrets.existingSecret must already exist.
 
 replicaCount: 1
 

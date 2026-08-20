@@ -40,7 +40,7 @@ app.kubernetes.io/component: coordinator
 
 {{- define "coordinator.image" -}}
 {{- if not .Values.image.tag -}}
-{{- fail "image.tag is required (git tag coordinator-v*)" -}}
+{{- fail "image.tag is required" -}}
 {{- end -}}
 {{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- end -}}

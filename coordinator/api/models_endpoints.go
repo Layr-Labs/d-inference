@@ -24,15 +24,16 @@ func hideAliasBuild(hidden map[string]struct{}, catalogByID map[string]store.Sup
 }
 
 // aliasModelEntries builds the consumer-facing /v1/models entries for active
-// public aliases and returns the set of underlying build ids those aliases
-// cover (so the caller can hide them from the default listing). The hidden set
-// covers EVERY build an alias references — desired, previous, and the retired
-// lineage — so a concrete quant build never appears as its own entry once it is
-// behind an alias. Each alias entry derives its metadata from its primary build
-// — the desired build, or the previous build if the desired one isn't in the
-// catalog yet — and aggregates live capacity across the desired and previous
-// builds so the alias's routable/warm counts reflect every quant currently
-// serving it (retired builds are hide-only and never contribute capacity).
+// standard aliases and their OpenRouter-only clones, and returns the set of
+// underlying build ids those aliases cover (so the caller can hide them from
+// the default listing). The hidden set covers EVERY build a standard alias
+// references — desired, previous, and the retired lineage — so a concrete
+// quant build never appears as its own entry once it is behind an alias. Each
+// standard alias derives its metadata from its primary build — the desired
+// build, or the previous build if the desired one isn't in the catalog yet —
+// and aggregates live capacity across the desired and previous builds.
+// OpenRouter-only aliases clone that complete source entry and override only
+// their consumer-facing id and Hugging Face identity.
 func (s *Server) aliasModelEntries(
 	capByModel map[string]*registry.ModelCapacity,
 	catalogByID map[string]store.SupportedModel,
@@ -46,9 +47,9 @@ func (s *Server) aliasModelEntries(
 	}
 
 	entries := make([]types.ModelEntry, 0, len(aliases))
+	standardEntries := make(map[string]types.ModelEntry, len(aliases))
 	for _, a := range aliases {
 		if !a.Active || a.OpenRouterOnly || a.DesiredBuild == "" {
-
 			continue
 		}
 		// A consumer must only ever see the alias, never a concrete build behind
@@ -135,6 +136,25 @@ func (s *Server) aliasModelEntries(
 		}
 		entry.InputModalities, entry.OutputModalities = deriveModalities(cm.ModelType, caps)
 		entries = append(entries, entry)
+		standardEntries[a.AliasID] = entry
+	}
+
+	// OpenRouter-only aliases are already valid inference names. Surface them
+	// in the main catalog by cloning their standard source entry, without
+	// turning them into provider-convergence or canonical-naming aliases.
+	for _, a := range aliases {
+		if !a.Active || !a.OpenRouterOnly {
+			continue
+		}
+		source, ok := standardEntries[a.SourceModel]
+		if !ok || a.OpenRouterSlug == "" || a.HuggingFaceID == "" {
+			s.logger.Warn("model registry: OpenRouter alias source or identities unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
+			continue
+		}
+		clone := source
+		clone.ID = a.AliasID
+		clone.HuggingFaceID = a.HuggingFaceID
+		entries = append(entries, clone)
 	}
 	return entries, hidden
 }

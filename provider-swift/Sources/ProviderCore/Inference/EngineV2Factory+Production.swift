@@ -112,16 +112,24 @@ extension EngineV2Factory {
     /// that model family's routed experts off the tile route.
     public static let soloPrefillStripeKey = "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE"
 
-    /// Parse the solo-stripe env override. Values must exceed the plain
-    /// chunk size to arm; anything unparsable, non-positive, or not above
-    /// the plain chunk disarms (nil) so a stray export cannot shrink chunks.
+    /// Serving default for the solo-prefill stripe (tokens). 2,048 is the
+    /// largest expert-tile-qualified stripe (16,384 assignments at top-8)
+    /// and the measured winner with trust + prompt narrowing.
+    public static let defaultSoloPrefillStripeTokens = 2048
+
+    /// Resolve the solo-stripe setting: absent env -> the serving default;
+    /// an explicit value above the plain chunk overrides; any other
+    /// explicit value (`0`, garbage, <= plain chunk) DISARMS — the escape
+    /// hatch mirrors the `=1` drain-restore convention.
     public static func soloPrefillStripeTokens(
         abovePlainChunk plainChunk: Int,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> Int? {
-        guard let raw = environment[soloPrefillStripeKey],
-            let value = Int(raw), value > plainChunk
-        else { return nil }
+        guard let raw = environment[soloPrefillStripeKey] else {
+            return defaultSoloPrefillStripeTokens > plainChunk
+                ? defaultSoloPrefillStripeTokens : nil
+        }
+        guard let value = Int(raw), value > plainChunk else { return nil }
         return value
     }
 

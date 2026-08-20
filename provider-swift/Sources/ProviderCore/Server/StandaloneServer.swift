@@ -1083,14 +1083,16 @@ public actor StandaloneServer {
         )
     }
 
-    /// Resolve a tokenizer for the OpenAI token-utility endpoints
+    /// Resolve tokenizer metadata for the OpenAI token-utility endpoints
     /// (`/tokenize`, `/detokenize`, `/apply-template`). Unlike
     /// `acquireModel`, this does NOT bump a reservation: tokenizer
     /// access is read-only and finishes synchronously inside the
     /// upstream handler, so eviction races are not a concern.
-    func resolveTokenizer(_ modelId: String?) async throws -> TokenizerHandle {
+    func resolveTokenizer(
+        _ modelId: String?
+    ) async throws -> MultiModelBatchSchedulerEngine.TokenizerResolution {
         if let modelId, let slot = slots[modelId] {
-            return slot.tokenizer
+            return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
         if let modelId, slots[modelId] == nil {
             throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
@@ -1098,7 +1100,7 @@ public actor StandaloneServer {
         if let firstKey = slots.keys.sorted().first,
            let slot = slots[firstKey]
         {
-            return slot.tokenizer
+            return .init(tokenizer: slot.tokenizer, modelType: slot.modelType)
         }
         throw MultiModelBatchSchedulerEngineError.noModelLoadedForTokenization
     }

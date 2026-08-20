@@ -5,6 +5,7 @@
 // after the model family so future fixes do not bleed across templates.
 
 import Foundation
+import MLXLMServer
 
 struct ChatTemplateFixContext: Sendable {
     let modelId: String?
@@ -34,6 +35,17 @@ enum ChatTemplateFixes {
             return try Gemma4TemplateFix.normalizeMessages(normalized)
         }
         return normalized
+    }
+
+    /// Typed request path used by multimodal preparation. Other model-family
+    /// hooks operate on tokenizer dictionaries; Qwen's ordering repair must run
+    /// earlier because the vision processor renders directly from typed messages.
+    static func normalizeMessages(
+        _ messages: [OpenAIChatMessage],
+        context: ChatTemplateFixContext
+    ) -> [OpenAIChatMessage] {
+        guard Qwen35TemplateFix.applies(to: context) else { return messages }
+        return Qwen35TemplateFix.normalizeMessages(messages)
     }
 
     static func normalizeTools(

@@ -1,6 +1,37 @@
 import Testing
+import MLXLMCommon
+import MLXLMServer
 
 @testable import ProviderCore
+
+private enum QwenTemplateTestError: Error {
+    case systemMessageNotFirst
+}
+
+private struct QwenSystemFirstTokenizer: MLXLMCommon.Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        Array(repeating: 0, count: text.count)
+    }
+
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        let roles = messages.compactMap { $0["role"] as? String }
+        guard roles.first == "system", !roles.dropFirst().contains("system") else {
+            throw QwenTemplateTestError.systemMessageNotFirst
+        }
+        return [1, 2, 3]
+    }
+}
 
 @Suite("Qwen 3.5/3.6 template compatibility")
 struct Qwen35TemplateFixesTests {
@@ -157,4 +188,56 @@ struct Qwen35TemplateFixesTests {
 
         #expect(roles(normalized) == ["user", "system"])
     }
+
+    @Test func typedMessagesPreserveVisionUserContent() throws {
+        let imagePart = OpenAIContentPart.imageURL("data:image/png;base64,AAAA")
+        let user = OpenAIChatMessage(
+            role: .user,
+            content: .parts([.text("describe this"), imagePart]))
+        let normalized = ChatTemplateFixes.normalizeMessages(
+            [user, .init(role: .system, content: .text("be concise"))],
+            context: qwenContext)
+
+        #expect(normalized.map(\.role) == [.system, .user])
+        #expect(normalized[0].content == .text("be concise"))
+        #expect(normalized[1].content == user.content)
+    }
+
+    @Test func applyTemplateUsesLoadedModelTypeForOpaqueID() async throws {
+        let engine = MultiModelBatchSchedulerEngine(
+            acquire: { modelId in
+                throw MultiModelBatchSchedulerEngineError.modelNotLoaded(modelId)
+            },
+            tokenizerProvider: { _ in
+                .init(
+                    tokenizer: TokenizerHandle(QwenSystemFirstTokenizer()),
+                    modelType: "qwen3_5_moe")
+            },
+            availableModels: { ["opaque-model"] })
+
+        let response = try await engine.applyTemplate(.init(
+            model: "opaque-model",
+            messages: [
+                .init(role: .user, content: .text("question")),
+                .init(role: .system, content: .text("late policy")),
+            ]))
+        #expect(response.tokens == [1, 2, 3])
+    }
+
+    @Test func promptTokenFloorUsesLoadedModelTypeForOpaqueID() {
+        let request = OpenAIChatCompletionRequest(
+            model: "opaque-model",
+            messages: [
+                .init(role: .user, content: .text("question")),
+                .init(role: .system, content: .text("late policy")),
+            ])
+
+        let floor = ProviderLoop.promptTokenFloor(
+            request: request,
+            tokenizer: TokenizerHandle(QwenSystemFirstTokenizer()),
+            modelType: "qwen3_5_moe",
+            reasoningEffort: nil)
+        #expect(floor == 3)
+    }
+
 }

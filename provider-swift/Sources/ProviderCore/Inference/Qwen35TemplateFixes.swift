@@ -7,6 +7,7 @@
 // "System message must be at the beginning" error.
 
 import Foundation
+import MLXLMServer
 
 enum Qwen35TemplateFix {
     static func applies(to context: ChatTemplateFixContext) -> Bool {
@@ -59,6 +60,56 @@ enum Qwen35TemplateFix {
         var mergedSystem = systemMessages[0]
         mergedSystem["content"] = systemTexts.joined(separator: "\n\n")
         return [mergedSystem] + nonSystemMessages
+    }
+
+    /// Typed counterpart used by the multimodal path before `UserInput`
+    /// construction. It preserves user image/video parts byte-for-byte while
+    /// enforcing the same leading-system invariant as the dictionary/Jinja path.
+    static func normalizeMessages(
+        _ messages: [OpenAIChatMessage]
+    ) -> [OpenAIChatMessage] {
+        let systemIndices = messages.indices.filter {
+            messages[$0].role == .system
+        }
+        guard let firstSystemIndex = systemIndices.first else { return messages }
+        guard systemIndices.count > 1 || firstSystemIndex != messages.startIndex else {
+            return messages
+        }
+
+        let nonSystemMessages = messages.filter { $0.role != .system }
+        if systemIndices.count == 1 {
+            return [messages[firstSystemIndex]] + nonSystemMessages
+        }
+
+        let systemMessages = systemIndices.map { messages[$0] }
+        var systemTexts: [String] = []
+        systemTexts.reserveCapacity(systemMessages.count)
+        for message in systemMessages {
+            guard let text = systemTextContent(message.content) else {
+                return messages
+            }
+            if !text.isEmpty { systemTexts.append(text) }
+        }
+
+        var mergedSystem = systemMessages[0]
+        mergedSystem.content = .text(systemTexts.joined(separator: "\n\n"))
+        return [mergedSystem] + nonSystemMessages
+    }
+
+    private static func systemTextContent(_ content: OpenAIMessageContent) -> String? {
+        switch content {
+        case .text(let text):
+            return text
+        case .null:
+            return ""
+        case .parts(let parts):
+            var text = ""
+            for part in parts {
+                guard case .text(let partText) = part else { return nil }
+                text += partText
+            }
+            return text
+        }
     }
 
     private static func systemTextContent(_ content: (any Sendable)?) -> String? {

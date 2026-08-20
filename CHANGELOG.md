@@ -1,6 +1,24 @@
 # Changelog
 
-## Unreleased (v0.8.5 candidate - provider)
+## v0.8.6 (2026-08-20)
+
+### Provider (Swift)
+
+#### Performance
+
+- **CBv2 prefill stack, default-on** — Cold prefill 6,406.8 → 4,636.9 ms at 8K on the M4 Max prod artifact (**~1,766 tok/s, +38% vs v0.8.5 defaults**); 4×8K burst aggregate 1,312 → ~1,500 tok/s (+13–17%) with token-checksum parity across every arrival pattern. Four independently escapable levers (#646, mlx-swift-lm#111):
+  - *Expert-tile `trust` serving default* — skips the per-chunk descriptor retract drain (80 stream drains/chunk); exact `MLX_GATHER_QMM_EXPERT_SLICES=1` restores the drain posture. (#638)
+  - *Solo-prefill stripe (2048)* — when exactly one live text request holds the scheduler, its chunk widens 512→2048 (weights streamed 4× less often, full 32-row expert tiles). Armed per-plan; any company disarms to plain 512s; KV-capacity failure shrinks once, never preempts; the stripe budget belongs exclusively to the armed row. `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE=0` disarms. **Known trade: ~12% TTFT regression under Low Power Mode — throttled/battery providers should export the escape.**
+  - *Recurrent prompt narrowing (Qwen LM head)* — intermediate chunks return a one-element handle instead of the `[1,512,248320]` logits tensor (242.5 MiB/chunk); the frontier chunk norms + projects exactly one row. `DARKBLOOM_CBV2_PREFILL_NARROWING=0` restores byte-old behavior.
+  - *Packed prefill (Qwen3.6)* — equal-length prompt chunks from concurrent requests run as one `[B,L]` forward with per-row recurrent state (one weight stream per cohort; text-only v1).
+- **Mean-TTFT prefill serialization** *(opt-in)* — `DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS=1` caps rows receiving prompt work per step (FCFS): burst TTFTs become a staircase instead of everyone waiting for the makespan. Paused rows hold no slot (a stalled consumer cannot head-of-line block admission). (#646)
+- **Adaptive persistent-history MTP promoted onto master** *(still behind the `mtp` beta flag)* — the v0.8.5-described capture-verify stack's adaptive width selection and persistent head KV now ship in the release pin. (#641, mlx-swift-lm#110)
+
+#### Benchmarks / Tooling
+
+- Scheduler-prefill report schema 3 (records the effective stripe posture); Gemma contbatch wrapper schema 6 — baseline pins refuse pre-default-flip reports so the posture change can never masquerade as a code delta. 14 review-hardening scheduler fixes with regression tests; measurement methodology + posture discipline in `docs/reports/2026-08-19-solo-prefill-stripe-experiment.md`. (#646)
+
+## v0.8.5 (2026-08-14)
 
 ### Provider (Swift)
 

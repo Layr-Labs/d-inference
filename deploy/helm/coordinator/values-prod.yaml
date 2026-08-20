@@ -1,0 +1,36 @@
+# Prod overlay. image.tag is set by the tag-triggered Cloud Build
+# (deploy/gcp/cloudbuild-gke.yaml) to the git tag, e.g. coordinator-v0.8.1.
+# secrets.existingSecret must already exist with EIGENINFERENCE_* secret keys.
+
+replicaCount: 1
+
+image:
+  repository: us-east4-docker.pkg.dev/darkbloom-mainnet/coordinator/coordinator
+  pullPolicy: IfNotPresent
+
+secrets:
+  existingSecret: coordinator-runtime
+
+persistence:
+  size: 100Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 1
+  maxReplicas: 3
+
+computeClass:
+  enabled: true
+  name: darkbloom-coordinator
+  zones: [us-east4-a]
+
+gatewayAPI:
+  enabled: true
+  gatewayClassName: gke-l7-global-external-managed
+  hostnames:
+    - api.darkbloom.dev
+
+serviceAccount:
+  name: coordinator
+  annotations:
+    iam.gke.io/gcp-service-account: darkbloom-coordinator@darkbloom-mainnet.iam.gserviceaccount.com

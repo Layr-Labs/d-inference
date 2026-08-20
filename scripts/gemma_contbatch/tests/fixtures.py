@@ -117,11 +117,13 @@ def scheduler_payload(
     the binary emits it.
     """
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "modelID": MODEL_ID,
         "modelPath": MODEL_PATH,
         "gemmaOptimizations": copy.deepcopy(GEMMA_OPTIMIZATIONS),
         "kvBackend": {"selection": selection, "resolved": [resolved]},
+        # Default-on solo-stripe posture, as the schema-3 binary emits it.
+        "soloPrefillStripeTokens": 2048,
         "samples": [
             {
                 "promptTokens": length,

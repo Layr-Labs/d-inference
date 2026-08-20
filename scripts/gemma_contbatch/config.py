@@ -22,7 +22,13 @@ from pathlib import Path
 #       whole run's population rather than the sweep's.
 #   5 — required effective config-projected Gemma settings, validated across
 #       all three subprocesses and pinned for baseline comparisons.
-SCHEMA_VERSION = 5
+#   6 — CBv2 prefill-stack default flip (solo stripe 2048 + prompt narrowing
+#       + packed prefill, d-inference#646): raw scheduler-prefill schema is 3
+#       and records `soloPrefillStripeTokens`. Pre-flip baselines measured
+#       plain 512-token chunks under identical-looking empty environments,
+#       so cross-flip deltas would misattribute the posture change as a code
+#       delta; the exact-match schema pin refuses them.
+SCHEMA_VERSION = 6
 
 
 DEFAULT_MODEL = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"

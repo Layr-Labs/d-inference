@@ -6,13 +6,21 @@ machine (M4 Max, Qwen3.6 35B-A3B, `--scheduler-prefill`, contiguous KV, cold pre
 
 ## Feature
 
-Canonical implementation: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/`
-`SchedulerV2.swift` (`plan()` solo gate, chunk caps, capacity shrink-retry),
-`CBv2Contracts.swift` (`CBv2SchedulerConfig`), and
-`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
-(env resolution, defaults, paged-pool lockstep). Later addenda:
-`PrefillOutputV2.swift`/`SteppableAdapterV2.swift`/`EngineLoopV2.swift`
-(narrowing seam + packed executor), `Qwen35.swift` (conformances).
+Canonical implementation (line ranges as of mlx-swift-lm `3d7c459` /
+superproject `214f3dc98`; re-anchor by symbol if they drift):
+- `libs/mlx-swift-lm/.../ContinuousBatchingV2/SchedulerV2.swift:295-321` solo/policy
+  stripe gate; `:473-495` running-path capacity shrink-retry; `:574-583`
+  partial-prefill cap (fail-open for cap <= 0); `:611-640` admission shrink-retry.
+- `.../CBv2Contracts.swift` `CBv2SchedulerConfig.soloPrefillStripeTokens` /
+  `maxConcurrentPartialPrefills` field docs.
+- `.../PrefillOutputV2.swift:113-140` recurrent prefill seam protocols;
+  `SteppableAdapterV2.swift:95-150` adapter narrowing + fail-safe fallbacks;
+  `EngineLoopV2.swift:1283-1289` `targetForward(requirement:)`; `:1756-1768`
+  recurrent packed cohort execution.
+- `.../MLXLLM/Models/Qwen35.swift:1640-1680` Qwen narrowing + packed claims.
+- `provider-swift/.../EngineV2Factory+Production.swift:118` stripe serving
+  default (2048); `:819-825` injected-environment resolution of both knobs;
+  `:894-900` paged-pool lockstep `max(prefillChunkSize, stripe)`.
 
 `CBv2SchedulerConfig.soloPrefillStripeTokens` (env `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`;
 **default ON at 2,048 since PR #646** — `EngineV2Factory.defaultSoloPrefillStripeTokens`,

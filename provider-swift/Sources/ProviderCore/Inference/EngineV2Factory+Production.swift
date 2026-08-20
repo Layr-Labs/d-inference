@@ -810,6 +810,9 @@ extension EngineV2Factory {
             maxConcurrentRequests: max(1, maxConcurrentRequests))
         schedulerConfig.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
             abovePlainChunk: schedulerConfig.prefillChunkSize)
+        schedulerConfig.maxConcurrentPartialPrefills = ProcessInfo.processInfo
+            .environment["DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"].flatMap(Int.init)
+            .flatMap { $0 > 0 ? $0 : nil }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(

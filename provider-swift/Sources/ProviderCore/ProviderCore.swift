@@ -224,5 +224,9 @@ public enum ProviderCore {
     // and packed prefill — 8k cold prefill -27.6% (~1,766 tok/s, +38%) and
     // 4x8k aggregate +13-17% vs 0.8.5 defaults; plus the opt-in mean-TTFT
     // partial-prefill cap and adaptive persistent-history MTP (mtp beta).
-    public static let version = "0.8.6"
+    // 0.8.7 restores the Qwen3.5/3.6 late-system-message normalizer that
+    // shipped from the v0.8.5 release branch but was absent from master and
+    // therefore v0.8.6. Text-only system turns are folded into Qwen's required
+    // leading system slot; structured/media system content remains fail-closed.
+    public static let version = "0.8.7"
 }

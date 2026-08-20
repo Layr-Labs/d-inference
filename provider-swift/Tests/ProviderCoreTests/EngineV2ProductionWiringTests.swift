@@ -1674,7 +1674,9 @@ struct EngineV2RequestRoutingTests {
                     modelType: "gemma4",
                     engineV2Bridge: bridge)
             },
-            tokenizerProvider: { _ in TokenizerHandle(WiringStubTokenizer()) },
+            tokenizerProvider: { _ in .init(
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                modelType: "gemma4") },
             availableModels: { ["gemma-4-26b-qat-4bit"] }
         )
 
@@ -1701,7 +1703,9 @@ struct EngineV2RequestRoutingTests {
                     modelType: "gemma4",
                     engineV2Bridge: bridge)
             },
-            tokenizerProvider: { _ in TokenizerHandle(WiringStubTokenizer()) },
+            tokenizerProvider: { _ in .init(
+                tokenizer: TokenizerHandle(WiringStubTokenizer()),
+                modelType: "gemma4") },
             availableModels: { ["gemma-4-26b-qat-4bit"] }
         )
         let parameters: MLXLMCommon.JSONValue = .object([

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.7 (2026-08-20)
+
+### Provider (Swift)
+
+#### Fixes
+
+- **Restore Qwen3.5/3.6 system-history normalization** — The compatibility fix released on the `v0.8.5` branch was absent from master and therefore from `v0.8.6`, causing Qwen's published template to reject OpenAI-compatible histories with a late system turn (`System message must be at the beginning`). Production Qwen 422s rose from 3.46–4.95% on `v0.8.5` to 27.73–33.95% on `v0.8.6`. Text-only system turns are again folded into one leading system message before generic tool-history validation; structured/media system content remains fail-closed.
+
 ## v0.8.6 (2026-08-20)
 
 ### Provider (Swift)

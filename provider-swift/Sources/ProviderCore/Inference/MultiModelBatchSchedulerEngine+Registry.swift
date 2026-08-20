@@ -61,6 +61,19 @@ public extension MultiModelBatchSchedulerEngine {
         }
     }
 
+    /// Tokenizer plus the loaded model type used by token utility endpoints.
+    /// `/apply-template` needs both: model-family normalization must not depend
+    /// on a registry ID containing a recognizable family name.
+    struct TokenizerResolution: Sendable {
+        public let tokenizer: TokenizerHandle
+        public let modelType: String?
+
+        public init(tokenizer: TokenizerHandle, modelType: String?) {
+            self.tokenizer = tokenizer
+            self.modelType = modelType
+        }
+    }
+
     /// Snapshot type returned by `registryProvider`. Keyed by model id
     /// exactly as it appears in `OpenAIChatCompletionRequest.model`.
     typealias Registry = [String: ModelRegistryEntry]

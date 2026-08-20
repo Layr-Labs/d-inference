@@ -1,5 +1,6 @@
 # Prod overlay. image.tag is set by the human who runs helm (or a GitHub
-# workflow_dispatch later). secrets.existingSecret must already exist.
+# workflow_dispatch later). coordinator-runtime is created by the ExternalSecret
+# below, so the chart brings its own secrets.
 
 replicaCount: 1
 
@@ -9,6 +10,94 @@ image:
 
 secrets:
   existingSecret: coordinator-runtime
+
+# Mirrors the VM's Secret Manager wiring: every key in
+# deploy/gcp/prod/required-env-keys.txt that the ConfigMap does not supply.
+# ClusterSecretStore gcp-secret-manager comes from the infra repo
+# (resources/gke-addons). A missing remoteRef fails the whole sync, so keep
+# this list in step with resources/secrets.
+externalSecret:
+  enabled: true
+  targetName: coordinator-runtime
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: gcp-secret-manager
+  data:
+    - secretKey: EIGENINFERENCE_DATABASE_URL
+      remoteRef: { key: eigeninference-database-url }
+    - secretKey: EIGENINFERENCE_ADMIN_KEY
+      remoteRef: { key: eigeninference-admin-key }
+    - secretKey: EIGENINFERENCE_ADMIN_EMAILS
+      remoteRef: { key: eigeninference-admin-emails }
+    - secretKey: EIGENINFERENCE_RELEASE_KEY
+      remoteRef: { key: eigeninference-release-key }
+    - secretKey: EIGENINFERENCE_R2_CDN_URL
+      remoteRef: { key: eigeninference-r2-cdn-url }
+    - secretKey: EIGENINFERENCE_PRIVY_APP_ID
+      remoteRef: { key: eigeninference-privy-app-id }
+    - secretKey: EIGENINFERENCE_PRIVY_APP_SECRET
+      remoteRef: { key: eigeninference-privy-app-secret }
+    - secretKey: EIGENINFERENCE_PRIVY_VERIFICATION_KEY
+      remoteRef: { key: eigeninference-privy-verification-key }
+    - secretKey: EIGENINFERENCE_STRIPE_SECRET_KEY
+      remoteRef: { key: eigeninference-stripe-secret-key }
+    - secretKey: EIGENINFERENCE_STRIPE_WEBHOOK_SECRET
+      remoteRef: { key: eigeninference-stripe-webhook-secret }
+    - secretKey: EIGENINFERENCE_STRIPE_CONNECT_WEBHOOK_SECRET
+      remoteRef: { key: eigeninference-stripe-connect-webhook-secret }
+    - secretKey: EIGENINFERENCE_STRIPE_SUCCESS_URL
+      remoteRef: { key: eigeninference-stripe-success-url }
+    - secretKey: EIGENINFERENCE_STRIPE_CANCEL_URL
+      remoteRef: { key: eigeninference-stripe-cancel-url }
+    - secretKey: EIGENINFERENCE_STRIPE_CONNECT_RETURN_URL
+      remoteRef: { key: eigeninference-stripe-connect-return-url }
+    - secretKey: EIGENINFERENCE_STRIPE_CONNECT_REFRESH_URL
+      remoteRef: { key: eigeninference-stripe-connect-refresh-url }
+    - secretKey: EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_ENABLED
+      remoteRef: { key: eigeninference-service-expected-output-admission-enabled }
+    - secretKey: EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_CEILING
+      remoteRef: { key: eigeninference-service-expected-output-admission-ceiling }
+    - secretKey: EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_FLOOR
+      remoteRef: { key: eigeninference-service-expected-output-admission-floor }
+    - secretKey: EIGENINFERENCE_SERVICE_EXPECTED_OUTPUT_ADMISSION_FRACTION
+      remoteRef: { key: eigeninference-service-expected-output-admission-fraction }
+    - secretKey: EIGENINFERENCE_SERVICE_RESERVATIONS_ENABLED
+      remoteRef: { key: eigeninference-service-reservations-enabled }
+    - secretKey: EIGENINFERENCE_STATE_EXPORT_ENABLED
+      remoteRef: { key: eigeninference-state-export-enabled }
+    - secretKey: EIGENINFERENCE_TRUST_GEO_HEADERS
+      remoteRef: { key: eigeninference-trust-geo-headers }
+    - secretKey: MICROMDM_API_KEY
+      remoteRef: { key: eigeninference-micromdm-api-key }
+    - secretKey: EIGENINFERENCE_MDM_API_KEY
+      remoteRef: { key: eigeninference-micromdm-api-key }
+    - secretKey: MDM_PUSH_P12_B64
+      remoteRef: { key: eigeninference-mdm-push-p12-b64 }
+    - secretKey: PROFILE_SIGNING_P12_B64
+      remoteRef: { key: eigeninference-profile-signing-p12-b64 }
+    - secretKey: PROFILE_SIGNING_P12_PASSWORD
+      remoteRef: { key: eigeninference-profile-signing-p12-password }
+    - secretKey: MODEL_REGISTRY_PUBLISHING_KEY
+      remoteRef: { key: eigeninference-model-registry-publishing-key }
+    - secretKey: MNEMONIC
+      remoteRef: { key: eigeninference-solana-mnemonic }
+    - secretKey: APNS_AUTH_KEY_P8_B64
+      remoteRef: { key: eigeninference-apns-auth-key-p8-b64 }
+    - secretKey: APNS_ENFORCE_AFTER
+      remoteRef: { key: eigeninference-apns-enforce-after }
+    - secretKey: APNS_KEY_ID
+      remoteRef: { key: eigeninference-apns-key-id }
+    - secretKey: APNS_MODE
+      remoteRef: { key: eigeninference-apns-mode }
+    - secretKey: APNS_TEAM_ID
+      remoteRef: { key: eigeninference-apns-team-id }
+    - secretKey: APNS_TOPIC
+      remoteRef: { key: eigeninference-apns-topic }
+    - secretKey: DD_API_KEY
+      remoteRef: { key: eigeninference-dd-api-key }
+    - secretKey: DD_SITE
+      remoteRef: { key: eigeninference-dd-site }
 
 persistence:
   size: 100Gi

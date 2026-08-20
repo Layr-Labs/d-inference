@@ -1046,8 +1046,8 @@ func TestModelAliasTakeoverOfConcreteID(t *testing.T) {
 	}
 }
 
-// An OpenRouter-only alias clones every feed detail from a standard source
-// alias while overriding only id, marketplace slug, and Hugging Face identity.
+// An OpenRouter-only alias clones every model-list and dedicated-feed detail
+// from a standard source alias while overriding its configured identities.
 
 func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
@@ -1115,7 +1115,8 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 		t.Fatalf("PublicNameForBuild = %q, want source alias %s", got, baseAlias)
 	}
 
-	// The OpenRouter-only alias is intentionally absent from the normal catalog.
+	// The OpenRouter-only alias is discoverable in the normal catalog and
+	// differs from its source only in the identities that schema exposes.
 	listRec := httptest.NewRecorder()
 	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if listRec.Code != http.StatusOK {
@@ -1129,11 +1130,18 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	for _, m := range listResp.Data {
 		listByID[m.ID] = m
 	}
-	if _, ok := listByID[baseAlias]; !ok {
-		t.Fatalf("source alias missing from /v1/models: %+v", listResp.Data)
+	baseModel, baseOK := listByID[baseAlias]
+	paidModel, paidOK := listByID[paidAlias]
+	if !baseOK || !paidOK {
+		t.Fatalf("aliases missing from /v1/models: %+v", listResp.Data)
 	}
-	if _, leaked := listByID[paidAlias]; leaked {
-		t.Fatalf("OpenRouter-only alias leaked into /v1/models: %+v", listResp.Data)
+	if paidModel.HuggingFaceID != paidHFID {
+		t.Fatalf("paid model hugging_face_id = %q, want %q", paidModel.HuggingFaceID, paidHFID)
+	}
+	paidModel.ID = baseModel.ID
+	paidModel.HuggingFaceID = baseModel.HuggingFaceID
+	if !reflect.DeepEqual(paidModel, baseModel) {
+		t.Fatalf("main catalog clone differs beyond identities: source=%+v clone=%+v", baseModel, paidModel)
 	}
 	if _, leaked := listByID[aliasQAT]; leaked {
 		t.Fatalf("shared build leaked into /v1/models: %+v", listResp.Data)

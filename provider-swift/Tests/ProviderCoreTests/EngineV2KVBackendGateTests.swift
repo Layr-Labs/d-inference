@@ -573,9 +573,15 @@ struct EngineV2KVBackendGateTests {
         // `assembleProductionBuild`; this pins the pool against it so a
         // re-introduced parallel constant fails here instead of aborting
         // the daemon under a long windowed prefill.
+        // The solo-prefill stripe (default-on) is a chunk the engine can
+        // actually schedule, so the lockstep covers max(chunk, stripe).
         #expect(
             paged.pool.config.maxPrefillChunk
-                == prepared.schedulerConfig.prefillChunkSize)
+                == max(
+                    prepared.schedulerConfig.prefillChunkSize,
+                    prepared.schedulerConfig.soloPrefillStripeTokens ?? 0))
+        #expect(prepared.schedulerConfig.soloPrefillStripeTokens
+            == EngineV2Factory.defaultSoloPrefillStripeTokens)
         #expect(prepared.schedulerConfig.maxConcurrentRequests == 2)
         // Prefix caching is the ONLY field assembly may still decide, and
         // it is off until a cache instance is supplied.

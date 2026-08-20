@@ -105,6 +105,34 @@ extension EngineV2Factory {
     }
 
 
+    /// Environment key arming the CBv2 solo-prefill stripe (tokens). See
+    /// `CBv2SchedulerConfig.soloPrefillStripeTokens` for semantics. 2,048 is
+    /// the largest expert-tile-qualified stripe for the E=256 top-8 MoE
+    /// geometry (16,384 assignments); larger values remain correct but drop
+    /// that model family's routed experts off the tile route.
+    public static let soloPrefillStripeKey = "DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE"
+
+    /// Serving default for the solo-prefill stripe (tokens). 2,048 is the
+    /// largest expert-tile-qualified stripe (16,384 assignments at top-8)
+    /// and the measured winner with trust + prompt narrowing.
+    public static let defaultSoloPrefillStripeTokens = 2048
+
+    /// Resolve the solo-stripe setting: absent env -> the serving default;
+    /// an explicit value above the plain chunk overrides; any other
+    /// explicit value (`0`, garbage, <= plain chunk) DISARMS — the escape
+    /// hatch mirrors the `=1` drain-restore convention.
+    public static func soloPrefillStripeTokens(
+        abovePlainChunk plainChunk: Int,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Int? {
+        guard let raw = environment[soloPrefillStripeKey] else {
+            return defaultSoloPrefillStripeTokens > plainChunk
+                ? defaultSoloPrefillStripeTokens : nil
+        }
+        guard let value = Int(raw), value > plainChunk else { return nil }
+        return value
+    }
+
     /// Clamp a KV admission ceiling to physical unified memory. A ceiling
     /// above physical RAM can only come from a mis-derivation upstream; the
     /// engine would then admit requests that can never fit. Pure/static so it
@@ -786,8 +814,14 @@ extension EngineV2Factory {
         // paged pool's `maxPrefillChunk` below AND is the instance the
         // engine runs on — `assembleProductionBuild` reads it back off the
         // preparation and sets only `enablePrefixCache`.
-        let schedulerConfig = CBv2SchedulerConfig(
+        var schedulerConfig = CBv2SchedulerConfig(
             maxConcurrentRequests: max(1, maxConcurrentRequests))
+        schedulerConfig.soloPrefillStripeTokens = Self.soloPrefillStripeTokens(
+            abovePlainChunk: schedulerConfig.prefillChunkSize,
+            environment: environment)
+        schedulerConfig.maxConcurrentPartialPrefills =
+            environment["DARKBLOOM_CBV2_MAX_PARTIAL_PREFILLS"].flatMap(Int.init)
+            .flatMap { $0 > 0 ? $0 : nil }
 
         func contiguousPreparation() throws -> ProductionBackendPreparation {
             let backend = CBv2ContiguousKVBackend(
@@ -857,7 +891,13 @@ extension EngineV2Factory {
                             // value to `EngineV2`, copying it only to set
                             // `enablePrefixCache`. There is no second config
                             // left to drift from.
-                            maxPrefillChunk: schedulerConfig.prefillChunkSize,
+                            maxPrefillChunk: max(
+                                schedulerConfig.prefillChunkSize,
+                                // A solo stripe is a chunk the engine can
+                                // actually schedule, so the lockstep above
+                                // must cover it or a striped windowed-layer
+                                // update would trap the process.
+                                schedulerConfig.soloPrefillStripeTokens ?? 0),
                             nominalMaxSequenceLength: max(
                                 1, maxContextLength ?? 8192),
                             maxBufferLength: maxBufferLength),

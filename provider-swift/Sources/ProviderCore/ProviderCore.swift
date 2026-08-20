@@ -219,5 +219,10 @@ public enum ProviderCore {
     // target_prefix + single-forward drafts (1.13x, behind the mtp beta
     // flag), symlink-proof inline-MTP inspection, MTP /metrics counters,
     // and hardened plaintext egress paths.
-    public static let version = "0.8.5"
+    // 0.8.6 ships the default-on CBv2 prefill stack: expert-tile trust
+    // serving default, solo-prefill stripe (2048), Qwen prompt narrowing,
+    // and packed prefill — 8k cold prefill -27.6% (~1,766 tok/s, +38%) and
+    // 4x8k aggregate +13-17% vs 0.8.5 defaults; plus the opt-in mean-TTFT
+    // partial-prefill cap and adaptive persistent-history MTP (mtp beta).
+    public static let version = "0.8.6"
 }

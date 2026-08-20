@@ -11,7 +11,7 @@ from .checks import assert_finite, require_positive
 
 RAW_SCHEMA_VERSIONS = {
     "throughput sweep": 5,
-    "scheduler prefill": 2,
+    "scheduler prefill": 3,
     "arrival invariance": 4,
 }
 

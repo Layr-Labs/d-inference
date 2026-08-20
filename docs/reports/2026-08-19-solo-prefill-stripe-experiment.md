@@ -6,8 +6,19 @@ machine (M4 Max, Qwen3.6 35B-A3B, `--scheduler-prefill`, contiguous KV, cold pre
 
 ## Feature
 
-`CBv2SchedulerConfig.soloPrefillStripeTokens` (env `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`,
-default off): when exactly ONE live text request holds the scheduler's entire schedulable
+Canonical implementation: `libs/mlx-swift-lm/Libraries/MLXLMCommon/ContinuousBatchingV2/`
+`SchedulerV2.swift` (`plan()` solo gate, chunk caps, capacity shrink-retry),
+`CBv2Contracts.swift` (`CBv2SchedulerConfig`), and
+`provider-swift/Sources/ProviderCore/Inference/EngineV2Factory+Production.swift`
+(env resolution, defaults, paged-pool lockstep). Later addenda:
+`PrefillOutputV2.swift`/`SteppableAdapterV2.swift`/`EngineLoopV2.swift`
+(narrowing seam + packed executor), `Qwen35.swift` (conformances).
+
+`CBv2SchedulerConfig.soloPrefillStripeTokens` (env `DARKBLOOM_CBV2_SOLO_PREFILL_STRIPE`;
+**default ON at 2,048 since PR #646** — `EngineV2Factory.defaultSoloPrefillStripeTokens`,
+`EngineV2Factory+Production.swift`; an explicit non-qualifying value such as `0` disarms,
+which throttled/Low-Power-Mode machines should export given the ~12% LPM regression
+below): when exactly ONE live text request holds the scheduler's entire schedulable
 population (no decode-ready row, no other live running row, no waiter, no multimodal
 blocks), its prefill chunk — and when needed the step budget — extends from 512 to the
 stripe. KV-capacity failure on a striped chunk shrinks once to the plain chunk (running and

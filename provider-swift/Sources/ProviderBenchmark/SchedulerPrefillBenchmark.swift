@@ -11,7 +11,9 @@ public struct SchedulerPrefillBenchmarkReport: Codable, Sendable {
     ///    UNVERSIONED payload predates the backend pin and cannot say which
     ///    backend it measured, so a gate must refuse it rather than assume.
     /// 2 adds required effective config-projected Gemma settings.
-    public static let currentSchemaVersion = 2
+    /// 3 adds `soloPrefillStripeTokens` — the effective solo-stripe posture
+    /// the measured engines were built with (nil/absent = plain 512 chunks).
+    public static let currentSchemaVersion = 3
 
     public struct Sample: Codable, Sendable {
         public let strategy: String

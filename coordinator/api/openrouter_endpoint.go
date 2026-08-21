@@ -28,15 +28,9 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Provider-reported model types (when any provider is online) let us
-	// exclude non-text models even though the registry currently stores every
-	// model as "text".
-	aggTypeByID := make(map[string]string)
-	for _, m := range s.registry.ListModels() {
-		if m.ModelType != "" {
-			aggTypeByID[m.ID] = m.ModelType
-		}
-	}
+	// Provider-reported model types override the catalog's text fallback so
+	// known non-text models never enter the OpenRouter provider feed.
+	aggTypeByID := s.openRouterAggregateTypeByID()
 
 	// Public aliases get the same treatment as /v1/models: the alias is the
 	// purchasable entry and its member builds are hidden, so the marketplace

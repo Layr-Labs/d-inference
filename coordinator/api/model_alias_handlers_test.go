@@ -1351,6 +1351,57 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 	}
 }
 
+func TestOpenRouterAliasConcreteRetrievalWithoutProviders(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const (
+		sourceID = "gpt-oss-20b"
+		aliasID  = "openai-gpt-oss-20b"
+		hfID     = "openai/gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	if err := st.SetModelPrice("platform", sourceID, 20_000, 100_000); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	body, _ := json.Marshal(map[string]any{
+		"id": aliasID, "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": hfID,
+	})
+	createReq := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	createReq.Header.Set("Authorization", "Bearer publish-secret")
+	createRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusOK {
+		t.Fatalf("create concrete clone: status=%d body=%s", createRec.Code, createRec.Body.String())
+	}
+
+	retrieveReq := httptest.NewRequest(http.MethodGet, "/v1/models/"+aliasID, nil)
+	retrieveReq.SetPathValue("id", aliasID)
+	retrieveRec := httptest.NewRecorder()
+	srv.handleGetModel(retrieveRec, retrieveReq)
+	if retrieveRec.Code != http.StatusOK {
+		t.Fatalf("retrieve zero-provider concrete clone: status=%d body=%s", retrieveRec.Code, retrieveRec.Body.String())
+	}
+	var retrieved types.ModelEntry
+	if err := json.Unmarshal(retrieveRec.Body.Bytes(), &retrieved); err != nil {
+		t.Fatal(err)
+	}
+	if retrieved.ID != aliasID || retrieved.HuggingFaceID != hfID {
+		t.Fatalf("retrieved identities: %+v", retrieved)
+	}
+	if retrieved.Pricing == nil || retrieved.Pricing.Prompt != "0.00000002" || retrieved.Pricing.Completion != "0.0000001" {
+		t.Fatalf("retrieved pricing: %+v", retrieved.Pricing)
+	}
+	if retrieved.Metadata.ProviderCount != 0 || retrieved.Metadata.RoutableProviders != 0 {
+		t.Fatalf("zero-provider metadata: %+v", retrieved.Metadata)
+	}
+}
+
 func TestOpenRouterAliasRejectsCoveredConcreteModel(t *testing.T) {
 	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))

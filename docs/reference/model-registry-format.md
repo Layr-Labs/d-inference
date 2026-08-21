@@ -167,35 +167,38 @@ OpenRouter feed clones are managed separately from rollout aliases:
 ```
 
 `source_model` must be either an active standard alias or an active concrete
-catalog model. A standard-alias source follows its desired/previous rollout
-pointers. A concrete source routes directly to that model and remains listed
-beside the clone in the dedicated feed; the OpenRouter-only alias never drives
-provider convergence, hides its source, or becomes the source build's canonical
-public name.
+model eligible for the text-only OpenRouter feed. A standard-alias source follows
+its desired/previous rollout pointers. A concrete source routes directly to that
+model and remains listed beside the clone in the dedicated feed; the
+OpenRouter-only alias never drives provider convergence, hides its source, or
+becomes the source build's canonical public name.
 
 The clone appears only in `GET /v1/models/openrouter`; it is intentionally
 omitted from the normal `GET /v1/models` list but remains retrievable through
-`GET /v1/models/{id}` for inference-client validation. The source supplies
-pricing, context limits, features, readiness, capacity, datacenters, and every
-other applicable response field. Only `id`, `openrouter.slug`, and
-`hugging_face_id` differ where exposed.
+`GET /v1/models/{id}` for inference-client validation, including while its
+concrete source has zero connected providers. The source supplies pricing,
+context limits, features, readiness, capacity, datacenters, and every other
+applicable response field. Only `id`, `openrouter.slug`, and `hugging_face_id`
+differ where exposed.
 
 Canonical enforcement:
 
-- Serialized source validation, source-kind persistence, and covered-build
-  rejection:
-  [`openrouter_alias_handlers.go:61-124`](../../coordinator/api/openrouter_alias_handlers.go#L61-L124).
+- Serialized source validation, feed-eligibility checks, source-kind persistence,
+  and covered-build rejection:
+  [`openrouter_alias_handlers.go:61-129`](../../coordinator/api/openrouter_alias_handlers.go#L61-L129).
 - The serialized reverse guard preventing a later standard alias from covering
   a pinned concrete source:
   [`model_alias_handlers.go:74-171`](../../coordinator/api/model_alias_handlers.go#L74-L171).
 - Request-routing resolution without provider convergence or canonical-name
   ownership:
   [`server.go:1037-1078`](../../coordinator/api/server.go#L1037-L1078).
+- Durable concrete metadata and the shared feed-eligibility rule:
+  [`concrete_model_entries.go:61-147`](../../coordinator/api/concrete_model_entries.go#L61-L147).
 - Standard-list exclusion, exact-id retrieval, and dedicated OpenRouter-feed
   cloning:
   [`models_endpoints.go:26-49`](../../coordinator/api/models_endpoints.go#L26-L49),
-  [`models_endpoints.go:319-370`](../../coordinator/api/models_endpoints.go#L319-L370),
-  and [`openrouter_endpoint.go:163-183`](../../coordinator/api/openrouter_endpoint.go#L163-L183).
+  [`models_endpoints.go:319-384`](../../coordinator/api/models_endpoints.go#L319-L384),
+  and [`openrouter_endpoint.go:157-177`](../../coordinator/api/openrouter_endpoint.go#L157-L177).
 
 ## Admin model actions
 

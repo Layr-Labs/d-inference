@@ -75,7 +75,12 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get source model"))
 			return
 		}
-		_, sourceAvailable = catalogByID[req.SourceModel]
+		_, concreteFound := catalogByID[req.SourceModel]
+		if concreteFound && !concreteModelEligibleForOpenRouterFeed(req.SourceModel, catalogByID, s.openRouterAggregateTypeByID()) {
+			writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "concrete source_model is not eligible for the OpenRouter text feed", withParam("source_model")))
+			return
+		}
+		sourceAvailable = concreteFound
 		if sourceAvailable {
 			aliases, listErr := s.store.ListModelAliases()
 			if listErr != nil {

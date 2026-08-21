@@ -58,6 +58,60 @@ func (s *Server) modelEntryForConcrete(
 	return entry
 }
 
+// modelEntryForCatalogConcrete builds exact-retrieval metadata for an active
+// concrete model even when no provider is connected. Live counts remain zero;
+// the durable registry supplies identity, limits, pricing, and capabilities.
+func (s *Server) modelEntryForCatalogConcrete(
+	modelID string,
+	catalogByID map[string]store.SupportedModel,
+	registryByID map[string]store.ModelRegistryEntry,
+) (types.ModelEntry, bool) {
+	catalogModel, ok := catalogByID[modelID]
+	if !ok {
+		return types.ModelEntry{}, false
+	}
+	registryEntry, hasRegistryEntry := registryByID[modelID]
+	entry := s.modelEntryForConcrete(
+		registry.AggregateModel{
+			ID:           modelID,
+			ModelType:    catalogModel.ModelType,
+			Quantization: registryEntry.Quantization,
+		},
+		nil,
+		catalogModel,
+		true,
+		registryEntry,
+		hasRegistryEntry,
+	)
+	return entry, true
+}
+
+func (s *Server) openRouterAggregateTypeByID() map[string]string {
+	typesByID := make(map[string]string)
+	for _, model := range s.registry.ListModels() {
+		if model.ModelType != "" {
+			typesByID[model.ID] = model.ModelType
+		}
+	}
+	return typesByID
+}
+
+func concreteModelEligibleForOpenRouterFeed(
+	modelID string,
+	catalogByID map[string]store.SupportedModel,
+	aggregateTypeByID map[string]string,
+) bool {
+	catalogModel, ok := catalogByID[modelID]
+	if !ok {
+		return false
+	}
+	modelType := catalogModel.ModelType
+	if aggregateType, found := aggregateTypeByID[modelID]; found {
+		modelType = aggregateType
+	}
+	return !isNonTextModelType(modelType)
+}
+
 // openRouterEntryForConcrete builds the dedicated provider-feed representation
 // of one active concrete catalog model. It remains independently listed when an
 // OpenRouter-only alias clones it.
@@ -68,14 +122,7 @@ func (s *Server) openRouterEntryForConcrete(
 	aggregateTypeByID map[string]string,
 ) (types.OpenRouterModel, bool) {
 	catalogModel, ok := catalogByID[modelID]
-	if !ok {
-		return types.OpenRouterModel{}, false
-	}
-	modelType := catalogModel.ModelType
-	if aggregateType, found := aggregateTypeByID[modelID]; found {
-		modelType = aggregateType
-	}
-	if isNonTextModelType(modelType) {
+	if !ok || !concreteModelEligibleForOpenRouterFeed(modelID, catalogByID, aggregateTypeByID) {
 		return types.OpenRouterModel{}, false
 	}
 

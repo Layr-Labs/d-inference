@@ -357,13 +357,28 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if found && alias.Active && alias.OpenRouterOnly {
-		for _, source := range data {
-			if source.ID != alias.SourceModel {
-				continue
+		var sourceEntry types.ModelEntry
+		sourceFound := false
+		for _, entry := range data {
+			if entry.ID == alias.SourceModel {
+				sourceEntry = entry
+				sourceFound = true
+				break
 			}
-			source.ID = alias.AliasID
-			source.HuggingFaceID = alias.HuggingFaceID
-			writeJSON(w, http.StatusOK, source)
+		}
+		if !sourceFound && openRouterAliasUsesConcreteSource(*alias) {
+			catalogByID, registryByID, catalogErr := s.activeCatalogLookups()
+			if catalogErr != nil {
+				s.logger.Error("model registry: failed to retrieve concrete alias source", "model", id, "source_model", alias.SourceModel, "error", catalogErr)
+				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to retrieve model"))
+				return
+			}
+			sourceEntry, sourceFound = s.modelEntryForCatalogConcrete(alias.SourceModel, catalogByID, registryByID)
+		}
+		if sourceFound {
+			sourceEntry.ID = alias.AliasID
+			sourceEntry.HuggingFaceID = alias.HuggingFaceID
+			writeJSON(w, http.StatusOK, sourceEntry)
 			return
 		}
 	}

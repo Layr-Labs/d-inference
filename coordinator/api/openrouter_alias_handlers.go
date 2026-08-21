@@ -59,6 +59,7 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	sourceKind := store.ModelAliasSourceAlias
 	source, found, err := s.store.GetModelAlias(req.SourceModel)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get source model"))
@@ -66,12 +67,24 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 	}
 	sourceAvailable := found && !source.OpenRouterOnly && source.Active && source.DesiredBuild != ""
 	if !found {
+		sourceKind = store.ModelAliasSourceConcrete
 		catalogByID, _, catalogErr := s.activeCatalogLookups()
 		if catalogErr != nil {
 			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get source model"))
 			return
 		}
 		_, sourceAvailable = catalogByID[req.SourceModel]
+		if sourceAvailable {
+			aliases, listErr := s.store.ListModelAliases()
+			if listErr != nil {
+				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to validate source model"))
+				return
+			}
+			if coveringAlias, covered := standardAliasCoveringBuild(aliases, req.SourceModel); covered {
+				writeJSON(w, http.StatusConflict, errorResponse("invalid_request_error", "concrete source_model is covered by standard alias "+coveringAlias+"; use that alias as source_model", withParam("source_model")))
+				return
+			}
+		}
 	}
 	if !sourceAvailable {
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "source_model must be an active standard alias or concrete catalog model", withParam("source_model")))
@@ -97,6 +110,7 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 		AliasID:        req.ID,
 		OpenRouterOnly: true,
 		SourceModel:    req.SourceModel,
+		SourceKind:     sourceKind,
 		OpenRouterSlug: req.OpenRouterSlug,
 		HuggingFaceID:  req.HuggingFaceID,
 		Active:         active,

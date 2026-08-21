@@ -169,13 +169,29 @@ OpenRouter feed clones are managed separately from rollout aliases:
 `source_model` must be either an active standard alias or an active concrete
 catalog model. A standard-alias source follows its desired/previous rollout
 pointers. A concrete source routes directly to that model and remains listed
-beside the clone; the OpenRouter-only alias never drives provider convergence,
-hides its source, or becomes the source build's canonical public name.
+beside the clone in the dedicated feed; the OpenRouter-only alias never drives
+provider convergence, hides its source, or becomes the source build's canonical
+public name.
 
-The clone appears in both `GET /v1/models/openrouter` and the normal
-`GET /v1/models` catalog. The source supplies pricing, context limits, features,
-readiness, capacity, datacenters, and every other applicable response field;
-only `id`, `openrouter.slug`, and `hugging_face_id` differ where exposed.
+The clone appears only in `GET /v1/models/openrouter`; it is intentionally
+omitted from the normal `GET /v1/models` catalog. The source supplies pricing,
+context limits, features, readiness, capacity, datacenters, and every other
+applicable response field. Only `id`, `openrouter.slug`, and `hugging_face_id`
+differ where exposed.
+
+Canonical enforcement:
+
+- Source validation, source-kind persistence, and the covered-build rejection:
+  [`openrouter_alias_handlers.go:62-117`](../../coordinator/api/openrouter_alias_handlers.go#L62-L117).
+- The reverse guard preventing a later standard alias from covering a pinned
+  concrete source:
+  [`model_alias_handlers.go:134-153`](../../coordinator/api/model_alias_handlers.go#L134-L153).
+- Request-routing resolution without provider convergence or canonical-name
+  ownership:
+  [`server.go:1036-1077`](../../coordinator/api/server.go#L1036-L1077).
+- Standard-catalog exclusion and dedicated OpenRouter-feed cloning:
+  [`models_endpoints.go:26-49`](../../coordinator/api/models_endpoints.go#L26-L49) and
+  [`openrouter_endpoint.go:163-183`](../../coordinator/api/openrouter_endpoint.go#L163-L183).
 
 ## Admin model actions
 

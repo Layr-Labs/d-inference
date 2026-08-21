@@ -161,12 +161,15 @@ func (s *Server) openRouterAliasEntries(
 	}
 
 	// OpenRouter-only aliases clone the complete source entry, then replace only
-	// the three configured identities. Standard sources carry rollout behavior;
-	// concrete sources remain independently listed and route directly.
+	// the three configured identities. Persisted source kind prevents a later
+	// standard-alias mutation from changing concrete-source routing or feeds.
 	for _, a := range openRouterAliases {
-		source, ok := standardEntries[a.SourceModel]
-		if !ok {
+		var source types.OpenRouterModel
+		var ok bool
+		if openRouterAliasUsesConcreteSource(a) {
 			source, ok = s.openRouterEntryForConcrete(a.SourceModel, catalogByID, registryByID, aggTypeByID)
+		} else {
+			source, ok = standardEntries[a.SourceModel]
 		}
 		if !ok || a.OpenRouterSlug == "" || a.HuggingFaceID == "" {
 			s.logger.Warn("OpenRouter alias source or identities unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)

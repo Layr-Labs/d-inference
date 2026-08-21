@@ -151,7 +151,7 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 		"gemma-4-26b-retired": {ModelID: "gemma-4-26b-retired", RoutableProviders: 10, WarmProviders: 10, CanAccept: true},
 	}
 
-	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID, nil)
+	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("expected one alias entry, got %+v", entries)
 	}
@@ -203,7 +203,7 @@ func TestAliasModelEntriesDesiredNotInCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}}
-	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID, nil)
+	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("only the alias with an in-catalog build should list, got %+v", entries)
 	}
@@ -984,7 +984,7 @@ func TestListModelsHidesRetiredAliasBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}, aliasQAT: {ID: aliasQAT, Active: true, ModelType: "text"}}
-	_, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID, nil)
+	_, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
 	if _, ok := hidden[aliasFP8]; !ok {
 		t.Fatalf("retired build should be in the hidden set: %v", hidden)
 	}
@@ -1115,8 +1115,8 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 		t.Fatalf("PublicNameForBuild = %q, want source alias %s", got, baseAlias)
 	}
 
-	// The OpenRouter-only alias is discoverable in the normal catalog and
-	// differs from its source only in the identities that schema exposes.
+	// OpenRouter-only aliases remain callable but are not advertised in the
+	// standard consumer catalog.
 	listRec := httptest.NewRecorder()
 	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
 	if listRec.Code != http.StatusOK {
@@ -1130,18 +1130,11 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	for _, m := range listResp.Data {
 		listByID[m.ID] = m
 	}
-	baseModel, baseOK := listByID[baseAlias]
-	paidModel, paidOK := listByID[paidAlias]
-	if !baseOK || !paidOK {
-		t.Fatalf("aliases missing from /v1/models: %+v", listResp.Data)
+	if _, baseOK := listByID[baseAlias]; !baseOK {
+		t.Fatalf("standard source alias missing from /v1/models: %+v", listResp.Data)
 	}
-	if paidModel.HuggingFaceID != paidHFID {
-		t.Fatalf("paid model hugging_face_id = %q, want %q", paidModel.HuggingFaceID, paidHFID)
-	}
-	paidModel.ID = baseModel.ID
-	paidModel.HuggingFaceID = baseModel.HuggingFaceID
-	if !reflect.DeepEqual(paidModel, baseModel) {
-		t.Fatalf("main catalog clone differs beyond identities: source=%+v clone=%+v", baseModel, paidModel)
+	if _, leaked := listByID[paidAlias]; leaked {
+		t.Fatalf("OpenRouter-only alias leaked into /v1/models: %+v", listResp.Data)
 	}
 	if _, leaked := listByID[aliasQAT]; leaked {
 		t.Fatalf("shared build leaked into /v1/models: %+v", listResp.Data)
@@ -1249,17 +1242,12 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 		listByID[model.ID] = model
 	}
 	sourceModel, sourceOK := listByID[sourceID]
-	aliasModel, aliasOK := listByID[aliasID]
-	if !sourceOK || !aliasOK {
-		t.Fatalf("source and clone must both remain in /v1/models: %+v", listResp.Data)
+	_, aliasLeaked := listByID[aliasID]
+	if !sourceOK || aliasLeaked {
+		t.Fatalf("standard catalog must list only the concrete source: %+v", listResp.Data)
 	}
-	if aliasModel.Pricing == nil || aliasModel.Pricing.Prompt != "0.00000002" || aliasModel.Pricing.Completion != "0.0000001" {
-		t.Fatalf("clone pricing = %+v", aliasModel.Pricing)
-	}
-	aliasModel.ID = sourceModel.ID
-	aliasModel.HuggingFaceID = sourceModel.HuggingFaceID
-	if !reflect.DeepEqual(aliasModel, sourceModel) {
-		t.Fatalf("main catalog clone differs beyond identities: source=%+v clone=%+v", sourceModel, aliasModel)
+	if sourceModel.Pricing == nil || sourceModel.Pricing.Prompt != "0.00000002" || sourceModel.Pricing.Completion != "0.0000001" {
+		t.Fatalf("source pricing = %+v", sourceModel.Pricing)
 	}
 
 	openRouterRec := httptest.NewRecorder()
@@ -1288,6 +1276,102 @@ func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
 	aliasFeed.OpenRouter = sourceFeed.OpenRouter
 	if !reflect.DeepEqual(aliasFeed, sourceFeed) {
 		t.Fatalf("OpenRouter clone differs beyond identities: source=%+v clone=%+v", sourceFeed, aliasFeed)
+	}
+}
+
+func TestOpenRouterAliasRejectsCoveredConcreteModel(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	srv := NewServer(registry.New(logger), st, ServerConfig{}, logger)
+
+	const sourceID = "gpt-oss-20b"
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	if err := st.UpsertModelAlias(&store.ModelAlias{
+		AliasID: "gpt-oss-public", DesiredBuild: sourceID, Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	body, _ := json.Marshal(map[string]any{
+		"id": "openai-gpt-oss-20b", "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": "openai/gpt-oss-20b",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "covered by standard alias gpt-oss-public") {
+		t.Fatalf("covered concrete source: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if _, found, err := st.GetModelAlias("openai-gpt-oss-20b"); err != nil || found {
+		t.Fatalf("rejected clone persisted: found=%v err=%v", found, err)
+	}
+}
+
+func TestStandardAliasRejectsConcreteSourceTakeover(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const (
+		sourceID      = "gpt-oss-20b"
+		replacementID = "gpt-oss-20b-v2"
+		cloneID       = "openai-gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	seedActiveModel(t, st, replacementID, "GPT-OSS 20B v2")
+	srv.SyncModelCatalog()
+
+	post := func(path string, payload map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer publish-secret")
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := post("/v1/admin/models/openrouter-aliases", map[string]any{
+		"id": cloneID, "source_model": sourceID,
+		"openrouter_slug": "openai/gpt-oss-20b", "hugging_face_id": "openai/gpt-oss-20b",
+	}); rec.Code != http.StatusOK {
+		t.Fatalf("create concrete clone: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	saved, found, err := st.GetModelAlias(cloneID)
+	if err != nil || !found || saved.SourceKind != store.ModelAliasSourceConcrete {
+		t.Fatalf("stored source kind: alias=%+v found=%v err=%v", saved, found, err)
+	}
+
+	rec := post("/v1/admin/models/aliases", map[string]any{
+		"alias_id": sourceID, "desired_build": replacementID,
+		"previous_build": sourceID, "takeover": true,
+	})
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "pinned by OpenRouter alias "+cloneID) {
+		t.Fatalf("takeover conflict: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if build, isAlias, ok := reg.ResolveModel(cloneID); !ok || !isAlias || build != sourceID {
+		t.Fatalf("clone retargeted after rejected takeover: build=%q isAlias=%v ok=%v", build, isAlias, ok)
+	}
+	if _, found, err := st.GetModelAlias(sourceID); err != nil || found {
+		t.Fatalf("rejected takeover persisted: found=%v err=%v", found, err)
+	}
+}
+
+func TestStandardAliasCoversEveryBuildState(t *testing.T) {
+	for name, alias := range map[string]store.ModelAlias{
+		"desired":  {Active: true, DesiredBuild: "source"},
+		"previous": {Active: true, PreviousBuild: "source"},
+		"retired":  {Active: true, RetiredBuilds: []string{"source"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !standardAliasCoversBuild(alias, "source") {
+				t.Fatalf("%s build was not covered: %+v", name, alias)
+			}
+		})
 	}
 }
 

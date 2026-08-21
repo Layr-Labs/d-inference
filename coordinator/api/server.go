@@ -1060,12 +1060,14 @@ func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 		if !a.Active || !a.OpenRouterOnly {
 			continue
 		}
-		target, ok := resolved[a.SourceModel]
-		if !ok {
-			if _, concrete := activeConcreteModels[a.SourceModel]; concrete {
+		var target registry.AliasTarget
+		var ok bool
+		if openRouterAliasUsesConcreteSource(a) {
+			if _, ok = activeConcreteModels[a.SourceModel]; ok {
 				target = registry.AliasTarget{Desired: a.SourceModel}
-				ok = true
 			}
+		} else {
+			target, ok = resolved[a.SourceModel]
 		}
 		if !ok {
 			s.logger.Warn("OpenRouter alias source is unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)

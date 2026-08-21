@@ -69,7 +69,10 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!admitted)                                   // rejected on current snapshot
     #expect(elapsed < .milliseconds(250))                // returned well before the 0.5s flush
     #expect(spy.completedCount == 0)                     // flush not finished when reserve returned
-    #expect(await eventually(timeout: .seconds(3)) { spy.completedCount == 1 })  // it did run, off-actor
+    // This is eventual liveness, not the fast-return SLA above. Swift Testing
+    // runs ~2k tests concurrently in CI, so the fire-and-forget task can be
+    // scheduler-starved for several seconds without blocking the budget actor.
+    #expect(await eventually(timeout: .seconds(10)) { spy.completedCount == 1 })
 }
 
 @Test func admissionAdmitsImmediatelyWhenItFitsWithoutAnyFlush() async {

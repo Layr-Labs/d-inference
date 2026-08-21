@@ -1,12 +1,20 @@
 # Changelog
 
-## v0.8.7 (2026-08-20)
+## v0.8.8 (2026-08-21)
 
 ### Provider (Swift)
 
 #### Performance
 
-- **Small-batch quantized matvec (`qmv_wide`)** — Ports upstream MLX #3764 (`548dd80e`) into the Darkbloom MLX fork and regenerates MLX-Swift's embedded JIT Metal sources. On generation-15+ Apple GPUs, affine BF16 W4/W8 dense projections with `2 <= M < vector_limit` reuse each decoded weight group across the small activation-row tile; M=1 remains on QMV, matrix-sized inputs remain on QMM, and gathered expert projections are unchanged. Source-built metallib and release-artifact checks require representative W4/W8 ordinary and batched symbols. Local M4 Max directional medians preserved B=1 and improved Gemma B=4 aggregate decode 195.93→216.94 tok/s at 512 context (+10.72%) and 143.18→155.72 tok/s at 8K (+8.76%); B=2 was +4.49%/−1.00%. The attempted 32K comparison is intentionally unclaimed because both benchmark arms entered a persistent degraded host/device state.
+- **Default-on small-batch quantized matvec (`qmv_wide`)** — Ports upstream MLX #3764 (`548dd80e`) into the Darkbloom MLX fork and regenerates MLX-Swift's embedded JIT Metal sources. On generation-15+ Apple GPUs, affine BF16 W4/W8 dense projections with `2 <= M < vector_limit` reuse each decoded weight group across the small activation-row tile; M=1 remains on QMV, matrix-sized inputs remain on QMM, and gathered expert projections are unchanged. Source-built metallib and release-artifact checks require representative W4/W8 ordinary and batched symbols. Local M4 Max directional medians preserved B=1 and improved Gemma B=4 aggregate decode 195.93→216.94 tok/s at 512 context (+10.72%) and 143.18→155.72 tok/s at 8K (+8.76%); B=2 was +4.49%/−1.00%. The attempted 32K comparison is intentionally unclaimed because both benchmark arms entered a persistent degraded host/device state.
+
+#### Default posture
+
+- `qmv_wide` is an automatic Metal dispatcher route, not a beta flag: eligible generation-15+ affine `2 <= M < vector_limit` projections take it by default. Gemma layer-18 submission, coupled weighted-unsort/safe-R1, expert-tile trust, solo-prefill stripe, prompt narrowing, and packed-prefill defaults remain enabled for existing and new provider configurations.
+
+## v0.8.7 (2026-08-20)
+
+### Provider (Swift)
 
 #### Fixes
 

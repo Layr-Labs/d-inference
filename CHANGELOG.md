@@ -4,6 +4,10 @@
 
 ### Provider (Swift)
 
+#### Performance
+
+- **Small-batch quantized matvec (`qmv_wide`)** — Ports upstream MLX #3764 (`548dd80e`) into the Darkbloom MLX fork and regenerates MLX-Swift's embedded JIT Metal sources. On generation-15+ Apple GPUs, affine BF16 W4/W8 dense projections with `2 <= M < vector_limit` reuse each decoded weight group across the small activation-row tile; M=1 remains on QMV, matrix-sized inputs remain on QMM, and gathered expert projections are unchanged. Source-built metallib and release-artifact checks require representative W4/W8 ordinary and batched symbols. Local M4 Max directional medians preserved B=1 and improved Gemma B=4 aggregate decode 195.93→216.94 tok/s at 512 context (+10.72%) and 143.18→155.72 tok/s at 8K (+8.76%); B=2 was +4.49%/−1.00%. The attempted 32K comparison is intentionally unclaimed because both benchmark arms entered a persistent degraded host/device state.
+
 #### Fixes
 
 - **Restore Qwen3.5/3.6 system-history normalization** — The compatibility fix released on the `v0.8.5` branch was absent from master and therefore from `v0.8.6`, causing Qwen's published template to reject OpenAI-compatible histories with a late system turn (`System message must be at the beginning`). Production Qwen 422s rose from 3.46–4.95% on `v0.8.5` to 27.73–33.95% on `v0.8.6`. Text-only system turns are again folded into one leading system message before generic tool-history validation; structured/media system content remains fail-closed.

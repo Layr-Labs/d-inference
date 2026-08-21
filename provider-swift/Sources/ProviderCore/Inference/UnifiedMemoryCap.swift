@@ -122,10 +122,15 @@ public enum UnifiedMemoryCap {
     /// headroom was LESS than the 3 GiB activation reserve, so a near-cap model
     /// loaded with zero serveable KV). Returns
     /// `activationReserve + minimumLoadKV`.
+    ///
+    /// When `modelID` is provided, the activation reserve is looked up from
+    /// ``modelActivationPeaks`` so the headroom matches the model's measured
+    /// B=8 peak instead of the worst-case default.
     public static func loadHeadroomBytes(
-        activationReserveBytes: UInt64? = nil
+        activationReserveBytes: UInt64? = nil,
+        modelID: String? = nil
     ) -> UInt64 {
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes(modelID: modelID)
         return saturatingAdd(activations, minimumLoadKVBytes)
     }
 
@@ -166,6 +171,7 @@ public enum UnifiedMemoryCap {
         physicalBytes: UInt64 = ProcessInfo.processInfo.physicalMemory,
         residentWeightBytes: UInt64,
         activationReserveBytes: UInt64? = nil,
+        modelID: String? = nil,
         ramPrefixAllowanceBytes: UInt64 = 0,
         configReserveBytes: UInt64 = 0,
         capFraction: Double? = nil
@@ -174,7 +180,7 @@ public enum UnifiedMemoryCap {
         let reserveFloor =
             physicalBytes > configReserveBytes ? physicalBytes - configReserveBytes : 0
         let effectiveCap = min(cap, reserveFloor)
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes(modelID: modelID)
         let claimed = saturatingAdd(residentWeightBytes, activations, ramPrefixAllowanceBytes)
         return effectiveCap > claimed ? effectiveCap - claimed : 0
     }
@@ -202,6 +208,7 @@ public enum UnifiedMemoryCap {
         mlxUsedBytes: UInt64,
         systemAvailableBytes: UInt64,
         activationReserveBytes: UInt64? = nil,
+        modelID: String? = nil,
         configReserveBytes: UInt64 = 0,
         capFraction: Double? = nil
     ) -> UInt64 {
@@ -217,7 +224,7 @@ public enum UnifiedMemoryCap {
         let effectiveCap = min(cap, reserveFloor)
         let underCap = effectiveCap > mlxUsedBytes ? effectiveCap - mlxUsedBytes : 0
         let realFree = min(underCap, systemAvailableBytes)
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes(modelID: modelID)
         return realFree > activations ? realFree - activations : 0
     }
 
@@ -231,11 +238,12 @@ public enum UnifiedMemoryCap {
         candidateWeightBytes: UInt64,
         minimumKVBytes: UInt64,
         activationReserveBytes: UInt64? = nil,
+        modelID: String? = nil,
         ramPrefixAllowanceBytes: UInt64 = 0,
         capFraction: Double? = nil
     ) -> Bool {
         let cap = hardCapBytes(physicalBytes: physicalBytes, capFraction: capFraction)
-        let activations = activationReserveBytes ?? resolvedActivationReserveBytes()
+        let activations = activationReserveBytes ?? resolvedActivationReserveBytes(modelID: modelID)
         let need = saturatingAdd(
             currentResidentWeightBytes, candidateWeightBytes,
             activations, ramPrefixAllowanceBytes, minimumKVBytes)
@@ -262,7 +270,41 @@ public enum UnifiedMemoryCap {
         return max(configReserveBytes, capImpliedReserve)
     }
 
-    // MARK: - Resolution (explicit → env → default)
+    // MARK: - Per-model activation peaks
+
+    /// Measured activation peaks (B=8 decode) from the v0.8.0 benchmark sweep.
+    /// Keyed by a distinguishing substring of the model ID; matched
+    /// case-insensitively against the lowercased model ID. The reserve is
+    /// peak + ~10% slack, rounded to a clean number.
+    ///
+    /// Only models whose peaks differ materially from the default are listed.
+    /// Unknown models fall back to ``defaultActivationReserveBytes`` (5.5 GiB),
+    /// which is sized for the worst-case measured model (gemma-4-26b at B=8).
+    ///
+    /// When adding a new model with a measured peak, add an entry here AND
+    /// update the coordinator's `servabilityActivationFloorGB` if the new
+    /// model becomes the fleet-wide worst case.
+    static let modelActivationPeaks: [String: UInt64] = [
+        // gemma-4-26B-qat-4bit: composed, head_dim 256/512, B=8 peak 5.05 GiB
+        // → reserve 5.5 GiB (default, no entry needed — falls through).
+        // gpt-oss-20b-MXFP4-Q8: fused, head_dim 64, B=8 peak 2.56 GiB
+        // → reserve 2.75 GiB (peak + 0.19 slack).
+        "gpt-oss": 2_952_790_016,  // 2.75 GiB = 2.75 × 2^30
+    ]
+
+    /// Look up the activation reserve for a model by ID. Returns the
+    /// model-specific reserve when the ID matches a known entry, or
+    /// ``defaultActivationReserveBytes`` for unknown models.
+    static func activationReserveBytes(forModelID modelID: String?) -> UInt64 {
+        guard let modelID else { return defaultActivationReserveBytes }
+        let lowered = modelID.lowercased()
+        for (pattern, bytes) in modelActivationPeaks {
+            if lowered.contains(pattern) { return bytes }
+        }
+        return defaultActivationReserveBytes
+    }
+
+    // MARK: - Resolution (explicit → env → per-model → default)
 
     /// Cap fraction from explicit value, env `DARKBLOOM_MEM_CAP_FRACTION`
     /// (0–1), or the 0.90 default. A `<= 0` or non-finite env value is treated as
@@ -283,19 +325,28 @@ public enum UnifiedMemoryCap {
     }
 
     /// Activation reserve from explicit bytes, env
-    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), per-model lookup, or
+    /// ``defaultActivationReserveBytes``.
+    ///
+    /// Resolution order:
+    /// 1. Explicit programmatic value (tests).
+    /// 2. `DARKBLOOM_ACTIVATION_RESERVE_GB` env var (operators may override
+    ///    for a specific deployment).
+    /// 3. Per-model lookup via ``activationReserveBytes(forModelID:)`` —
+    ///    uses the model's measured B=8 activation peak + slack.
+    /// 4. Default 5.5 GiB (worst-case measured model: gemma-4-26b at B=8).
     ///
     /// The env override sets the reserve directly. A `<= 0` or non-finite
-    /// env value is treated as UNSET (→ the floor). Operators serving a
-    /// single model with a lower activation peak (e.g. gpt-oss-20b at 2.56
-    /// GiB B=8 vs gemma-4 at 5.05 GiB) may set this below the default to
-    /// reclaim KV budget — but must size it against their model's measured
-    /// peak, not guess. The coordinator must be updated in lockstep when
-    /// changing this on a fleet provider. An explicit programmatic value
-    /// (tests) is honored as given, below the floor included — test
+    /// env value is treated as UNSET (→ per-model or default). The
+    /// per-model lookup lets the provider automatically size the reserve
+    /// for the model being served, reclaiming KV budget when the model's
+    /// measured peak is well below the worst case. The coordinator must
+    /// be updated in lockstep when changing this on a fleet provider.
+    /// An explicit programmatic value (tests) is honored as given — test
     /// fixtures legitimately model small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
+        modelID: String? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
     ) -> UInt64 {
         if let explicit { return explicit }
@@ -305,7 +356,7 @@ public enum UnifiedMemoryCap {
             let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
             return bytes
         }
-        return defaultActivationReserveBytes
+        return activationReserveBytes(forModelID: modelID)
     }
 
     // MARK: - Helpers

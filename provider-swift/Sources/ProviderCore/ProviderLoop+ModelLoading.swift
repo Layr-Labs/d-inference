@@ -322,7 +322,7 @@ extension ProviderLoop {
                 extraWeightBytes: 0)
             let requiredGb = ModelLoadAdmission.requiredToLoadGb(
                 weightsGb: targetWeightsGb,
-                headroomGb: Self.loadHeadroomGb)
+                headroomGb: Self.loadHeadroomGb(modelID: modelId))
             do {
                 try await evictUntilAvailable(requiredGb: requiredGb, allowEviction: allowEviction)
             } catch let InferenceError.modelLoadFailed(message) {
@@ -851,8 +851,12 @@ extension ProviderLoop {
     /// admit a near-cap model that GlobalKVCacheBudget then rejects every request
     /// for (the old flat 2 GiB was LESS than the 3 GiB activation reserve). Sized
     /// from UnifiedMemoryCap so the load gate and the runtime KV path agree.
-    static let loadHeadroomGb =
-        Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0)
+    ///
+    /// When a `modelID` is provided, the activation reserve is looked up from
+    /// the model's measured B=8 peak instead of using the worst-case default.
+    static func loadHeadroomGb(modelID: String? = nil) -> Double {
+        Double(UnifiedMemoryCap.loadHeadroomBytes(modelID: modelID)) / (1024.0 * 1024.0 * 1024.0)
+    }
 
     private static func saturatingAdd(_ values: UInt64...) -> UInt64 {
         var total: UInt64 = 0
@@ -932,7 +936,7 @@ extension ProviderLoop {
         // preparation (and any prefetch) itself.
         let requiredGb = ModelLoadAdmission.requiredToLoadGb(
             weightsGb: modelInfo.estimatedMemoryGb,
-            headroomGb: Self.loadHeadroomGb)
+            headroomGb: Self.loadHeadroomGb(modelID: modelId))
 
         // Sample live memory FIRST — this is the only suspension point in the
         // method (it awaits the KV-budget actor). Reading all the actor-local

@@ -140,7 +140,7 @@ extension ProviderLoop {
                     modelId: id,
                     requiredGb: ModelLoadAdmission.requiredToLoadGb(
                         weightsGb: info.estimatedMemoryGb,
-                        headroomGb: Self.loadHeadroomGb)))
+                        headroomGb: Self.loadHeadroomGb(modelID: id))))
         }
         return plan
     }

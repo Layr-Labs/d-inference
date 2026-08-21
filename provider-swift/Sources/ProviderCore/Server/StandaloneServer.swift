@@ -1234,7 +1234,7 @@ public actor StandaloneServer {
                     weightsGb: modelInfo.estimatedMemoryGb,
                     // Cap-aware: activation reserve + min serveable KV, so a model
                     // that loads can actually serve (matches the runtime KV gate).
-                    headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes()) / (1024.0 * 1024.0 * 1024.0))
+                    headroomGb: Double(UnifiedMemoryCap.loadHeadroomBytes(modelID: modelId)) / (1024.0 * 1024.0 * 1024.0))
             try await ensureMemoryHeadroomForLoad(requiredGb: targetRequiredGb)
             if let artifact = mtpPreparation.artifact {
                 if !ProviderLoop.assistantMemoryFits(

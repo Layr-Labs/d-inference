@@ -135,6 +135,62 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.resolvedActivationReserveBytes(explicit: 5 * gib, env: [:]) == 5 * gib)
 }
 
+// MARK: - Per-model activation peak lookup
+
+@Test func perModelActivationReserveMatchesKnownModels() {
+    let def = UnifiedMemoryCap.defaultActivationReserveBytes
+    let gptReserve = UnifiedMemoryCap.activationReserveBytes(forModelID: "gpt-oss-20b-MXFP4-Q8")
+    // gpt-oss: 2.56 GiB peak → 2.75 GiB reserve
+    #expect(gptReserve == 2_952_790_016, "gpt-oss should use the measured 2.75 GiB reserve")
+    #expect(gptReserve < def, "gpt-oss reserve must be below the worst-case default")
+
+    // gemma-4 is not in the table (it IS the worst case) → falls back to default.
+    let gemmaReserve = UnifiedMemoryCap.activationReserveBytes(forModelID: "gemma-4-26b-qat-4bit")
+    #expect(gemmaReserve == def, "gemma-4 should use the worst-case default")
+
+    // Unknown model → default.
+    let unknownReserve = UnifiedMemoryCap.activationReserveBytes(forModelID: "some-new-model-v2")
+    #expect(unknownReserve == def, "unknown model should use the worst-case default")
+
+    // nil model ID → default.
+    #expect(UnifiedMemoryCap.activationReserveBytes(forModelID: nil) == def)
+}
+
+@Test func perModelActivationReserveIsCaseInsensitive() {
+    let reserve = UnifiedMemoryCap.activationReserveBytes(forModelID: "GPT-OSS-20B-MXFP4-Q8")
+    #expect(reserve == 2_952_790_016, "lookup should be case-insensitive")
+}
+
+@Test func resolvedActivationReserveUsesPerModelWhenNoEnv() {
+    let gptReserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, modelID: "gpt-oss-20b-MXFP4-Q8", env: [:])
+    #expect(gptReserve == 2_952_790_016, "should use per-model lookup when env is unset")
+}
+
+@Test func envOverrideBeatsPerModelLookup() {
+    // Env var should take priority over the per-model lookup.
+    let reserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: nil, modelID: "gpt-oss-20b-MXFP4-Q8",
+        env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"])
+    #expect(reserve == 4 * gib, "env override should beat per-model lookup")
+}
+
+@Test func explicitOverrideBeatsEverything() {
+    // Explicit programmatic value beats both env and per-model lookup.
+    let reserve = UnifiedMemoryCap.resolvedActivationReserveBytes(
+        explicit: 1 * gib, modelID: "gpt-oss-20b-MXFP4-Q8",
+        env: ["DARKBLOOM_ACTIVATION_RESERVE_GB": "4"])
+    #expect(reserve == 1 * gib, "explicit value should beat env and per-model lookup")
+}
+
+@Test func loadHeadroomUsesModelSpecificReserve() {
+    let gptHeadroom = UnifiedMemoryCap.loadHeadroomBytes(modelID: "gpt-oss-20b-MXFP4-Q8")
+    let defaultHeadroom = UnifiedMemoryCap.loadHeadroomBytes()
+    // gpt-oss: 2.75 + 1 = 3.75 GiB; default: 5.5 + 1 = 6.5 GiB.
+    #expect(gptHeadroom == 2_952_790_016 + UnifiedMemoryCap.minimumLoadKVBytes)
+    #expect(gptHeadroom < defaultHeadroom, "model-specific headroom must be less than the default")
+}
+
 /// `defaultActivationReserveBytes` is not a local tuning knob. The coordinator
 /// hard-codes the same figure (`servabilityActivationFloorGB = 5.5`, in
 /// `coordinator/registry/servability.go`) and subtracts it in
@@ -143,15 +199,12 @@ private let gib: UInt64 = 1024 * 1024 * 1024
 /// to observe a provider that quietly retuned the reserve — the two figures
 /// stay equal only because someone moves both.
 ///
-/// FLATNESS is the other half of that contract. A per-model reserve scaled by
-/// batch, context, head count and attention posture (`ActivationReserveShape` /
-/// `peakPrefillScoreBytes`) once lived in this file. It was deleted because it
-/// shipped on the coordinator side and never on this one: every gate here kept
-/// taking the floor while the coordinator charged composed AND fused models a
-/// per-token surcharge, leaving the predictor strictly TIGHTER than the gate it
-/// mirrors and 429ing prompts the fleet could serve. Anything that makes this
-/// figure depend on the model has to land on both sides in one change.
-@Test func activationReserveIsFlatAndIsTheFigureTheCoordinatorMirrors() {
+/// Per-model sizing is LOCAL to the provider: the coordinator's cold estimate
+/// still uses the worst-case floor (5.5 GiB) because it doesn't know which
+/// model will be loaded. The provider's per-model lookup lets it be more
+/// conservative (use the default) or more aggressive (use the model's measured
+/// peak) without changing the coordinator's prediction.
+@Test func activationReserveDefaultCoversWorstCaseAndPerModelLowersForGPT() {
     // 5.5 GiB as of v0.8.0: the release ships decode batch 8, and gemma-4's
     // MEASURED B=8 peak-over-weights is 5.05 GiB — above the old 3 GiB floor
     // that was sized against the B=4 sweep. See the constant's doc comment.
@@ -160,10 +213,17 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(UnifiedMemoryCap.defaultActivationReserveBytes
         > UInt64(5.05 * Double(gib)), "the floor must cover the measured B=8 peak")
 
+    // The default reserve covers the worst-case model (gemma-4). The per-model
+    // lookup returns a smaller reserve for gpt-oss, which has a lower peak.
+    let gptReserve = UnifiedMemoryCap.activationReserveBytes(forModelID: "gpt-oss-20b-MXFP4-Q8")
+    #expect(gptReserve < UnifiedMemoryCap.defaultActivationReserveBytes)
+    #expect(gptReserve > UInt64(2.56 * Double(gib)),
+        "gpt-oss reserve must cover its measured B=8 peak of 2.56 GiB")
+
     // The coordinator's cold estimate subtracts ONE reserve and assumes both
-    // provider gates hold back that same figure. They must: the load gate
-    // carving out less than the KV gate is the exact cross-phase bug
-    // `loadHeadroomBytes` documents (a model admitted with zero serveable KV).
+    // provider gates hold back that same figure. With per-model sizing, the
+    // provider may use a SMALLER reserve than the coordinator expects — this is
+    // safe because the coordinator's estimate is conservative (worst-case).
     let reserve = UnifiedMemoryCap.defaultActivationReserveBytes
     let phys: UInt64 = 128 * gib
     let weights: UInt64 = 28 * gib  // gemma-4-26b, the composed-attention model

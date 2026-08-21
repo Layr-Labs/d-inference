@@ -42,8 +42,9 @@ approximately `3.1e-6` for the small A/B projections.
 Qwen's sorted expert output is reduced through the inverse permutation directly
 into `[tokens, hidden]`, avoiding the `[tokens, topK, hidden]` assignment-order
 intermediate. This is enabled by default. `MLX_QWEN_DIRECT_EXPERT_REDUCTION=0` restores
-the legacy assignment-tensor reduction for rollback and controlled A/B. A paired 25-sample primitive benchmark at the exact
-2048-token stripe geometry (`16,384 x 8 x 2,048` assignment tensor) measured:
+the legacy assignment-tensor reduction for rollback and controlled A/B. A paired 25-sample primitive benchmark at the exact 2,048-token stripe
+geometry measured the legacy tensor as `[2,048, 8, 2,048]`, flattened to
+`[16,384, 2,048]` for the direct path:
 
 | Reduction | Median |
 |---|---:|
@@ -53,6 +54,25 @@ the legacy assignment-tensor reduction for rollback and controlled A/B. A paired
 
 This isolates a real local win. The expected full-model delta is smaller because
 expert projections dominate the MoE layer.
+
+
+## Canonical implementation
+
+Line ranges are anchored to `mlx-swift-lm` branch `perf/qwen-prefill-retained` and should be
+re-anchored by symbol after later edits:
+
+- GDN projection topology, quantization guards, and fused projection:
+  `Libraries/MLXLLM/Models/Qwen35.swift:306-391`
+  (`exactQuantizedInputProjections`, `makeFusedInputProjection`, `projectInputs`).
+- Batched Qwen MoE flattening and direct-reduction caller:
+  `Libraries/MLXLLM/Models/Qwen35.swift:1190-1261`
+  (`qwen35FlattenMoEInputs`, `Qwen35SparseMoeBlock.callAsFunction`).
+- Default enablement and rollback parsing:
+  `Libraries/MLXLMCommon/SwitchLayers.swift:261-266`
+  (`qwenDirectExpertReductionEnabled`).
+- Exact production eligibility and legacy fallback:
+  `Libraries/MLXLMCommon/SwitchLayers.swift:493-581`
+  (`supportsWeightedExpertUnsort`, `callAndWeightedReduce`).
 
 ## Reverted / excluded
 

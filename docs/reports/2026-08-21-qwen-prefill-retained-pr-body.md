@@ -50,6 +50,13 @@ flowchart LR
   end
 ```
 
+## Canonical implementation
+
+- GDN fusion: `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:306-391`
+- Batched MoE flattening/caller: `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:1190-1261`
+- Direct-reduction default/rollback: `mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift:261-266`
+- Eligibility/fallback: `mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift:493-581`
+
 ## Evidence
 
 - GDN fusion parity: QKV/Z exact; A/B max difference approximately `4.1e-6`.

@@ -12,12 +12,30 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
-const coldBurstPerContract = 16
+const (
+	coldBurstPerContract = 16
+	coldStartPlanTimeout = 30 * time.Second
+)
 
 type coldProbe struct {
 	vector              planVector
 	exactMatch          bool
 	expectDynamicReject bool
+}
+
+func coldStartSupervisorConfig(
+	args arguments,
+	socketPath string,
+	maxLoadedContracts, maxConcurrency int,
+) promptcontract.SupervisorConfig {
+	config := proofSupervisorConfig(
+		args, socketPath, maxLoadedContracts, maxConcurrency)
+	// This phase proves cold-load singleflight, byte-exact plans, bounded RSS,
+	// and no child restart. Keep the production one-second request timeout for
+	// the later warm 25-QPS proof; cold tokenizer construction is CPU-speed
+	// dependent and has exceeded one second on otherwise healthy 4-vCPU runners.
+	config.RequestTimeout = coldStartPlanTimeout
+	return config
 }
 
 func runColdStartProof(
@@ -30,7 +48,7 @@ func runColdStartProof(
 	if len(inventory.Contracts) < 2 {
 		return summary, errors.New("cold-start proof requires at least two real contracts")
 	}
-	config := proofSupervisorConfig(
+	config := coldStartSupervisorConfig(
 		args,
 		filepath.Join(runtimeRoot, "promptsidecar-cold.sock"),
 		len(inventory.Contracts)-1,

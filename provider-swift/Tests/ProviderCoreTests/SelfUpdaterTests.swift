@@ -527,12 +527,16 @@ struct SelfUpdaterTests {
         let (validTar, validRelease, install) = try makeSignedRuntimeFixture(
             root: root.appendingPathComponent("valid", isDirectory: true),
             includeResource: true)
-        guard case .success(let staged) = updater.stageSignedBundleForTesting(
+        let validResult = updater.stageSignedBundleForTesting(
             from: validTar,
             release: validRelease,
             installDir: install)
-        else {
-            Issue.record("real signed/runtime marker verification failed")
+        guard case .success(let staged) = validResult else {
+            guard case .failure(let error) = validResult else {
+                Issue.record("real signed/runtime marker verification returned an unknown result")
+                return
+            }
+            Issue.record("real signed/runtime marker verification failed: \(error)")
             return
         }
         staged.discard()

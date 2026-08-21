@@ -72,9 +72,10 @@ struct PackagedRetainedGemmaSmokeTests {
         GemmaOptimizationEnvironment.prefillLayer18Key: "18",
         GemmaOptimizationEnvironment.weightedUnsortKey: "1",
         GemmaOptimizationEnvironment.safeR1Key: "1",
+        GemmaOptimizationEnvironment.qwenDirectExpertReductionKey: "1",
     ]
 
-    @Test("synthetic retained config has an exact three-key projection")
+    @Test("synthetic retained config has an exact four-key projection")
     func exactProjectionAndNoRejectedKeys() throws {
         let config = try PackagedRuntimeSmoke.retainedConfiguration()
         // Mirror verifyGemmaOptimizations: the smoke validates the retained

@@ -104,6 +104,7 @@ public enum PackagedRuntimeSmoke {
             GemmaOptimizationEnvironment.prefillLayer18Key: "18",
             GemmaOptimizationEnvironment.weightedUnsortKey: "1",
             GemmaOptimizationEnvironment.safeR1Key: "1",
+            GemmaOptimizationEnvironment.qwenDirectExpertReductionKey: "1",
         ]
         guard projection == expected else {
             throw VerificationError.unexpectedProjection(projection)

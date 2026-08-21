@@ -58,6 +58,8 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "hugging_face_id is required", withParam("hugging_face_id")))
 		return
 	}
+	s.modelAliasMutationMu.Lock()
+	defer s.modelAliasMutationMu.Unlock()
 
 	sourceKind := store.ModelAliasSourceAlias
 	source, found, err := s.store.GetModelAlias(req.SourceModel)
@@ -66,7 +68,7 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	sourceAvailable := found && !source.OpenRouterOnly && source.Active && source.DesiredBuild != ""
-	if !found {
+	if !sourceAvailable {
 		sourceKind = store.ModelAliasSourceConcrete
 		catalogByID, _, catalogErr := s.activeCatalogLookups()
 		if catalogErr != nil {

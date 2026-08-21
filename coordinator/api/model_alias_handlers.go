@@ -71,6 +71,9 @@ func (s *Server) handleModelAliasUpsert(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "desired_build is required", withParam("desired_build")))
 		return
 	}
+	s.modelAliasMutationMu.Lock()
+	defer s.modelAliasMutationMu.Unlock()
+
 	// Namespace + takeover rules. Normally an alias id must not collide with a
 	// concrete model id (resolution would be ambiguous), and an alias may never
 	// name itself as a member. `takeover` is the deliberate exception for the

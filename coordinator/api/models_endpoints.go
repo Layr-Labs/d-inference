@@ -318,8 +318,8 @@ func ownedModelEntry(m registry.AggregateModel) types.ModelEntry {
 
 // handleGetModel handles GET /v1/models/{id...} — the OpenAI "retrieve model"
 // endpoint. Model IDs may contain slashes (HuggingFace paths), hence the
-// wildcard path segment. Hidden quant builds are retrievable by their exact
-// id, matching the behavior of requesting one for inference.
+// wildcard path segment. Hidden quant builds and marketplace-only OpenRouter
+// aliases remain retrievable by exact id for inference-client parity.
 func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Self-route requests retrieve from their owned live models (mirrors
@@ -347,6 +347,23 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range data {
 		if entry.ID == id {
 			writeJSON(w, http.StatusOK, entry)
+			return
+		}
+	}
+	alias, found, aliasErr := s.store.GetModelAlias(id)
+	if aliasErr != nil {
+		s.logger.Error("model registry: failed to retrieve model alias", "model", id, "error", aliasErr)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to retrieve model"))
+		return
+	}
+	if found && alias.Active && alias.OpenRouterOnly {
+		for _, source := range data {
+			if source.ID != alias.SourceModel {
+				continue
+			}
+			source.ID = alias.AliasID
+			source.HuggingFaceID = alias.HuggingFaceID
+			writeJSON(w, http.StatusOK, source)
 			return
 		}
 	}

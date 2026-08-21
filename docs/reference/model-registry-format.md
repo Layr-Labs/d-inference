@@ -174,24 +174,28 @@ provider convergence, hides its source, or becomes the source build's canonical
 public name.
 
 The clone appears only in `GET /v1/models/openrouter`; it is intentionally
-omitted from the normal `GET /v1/models` catalog. The source supplies pricing,
-context limits, features, readiness, capacity, datacenters, and every other
-applicable response field. Only `id`, `openrouter.slug`, and `hugging_face_id`
-differ where exposed.
+omitted from the normal `GET /v1/models` list but remains retrievable through
+`GET /v1/models/{id}` for inference-client validation. The source supplies
+pricing, context limits, features, readiness, capacity, datacenters, and every
+other applicable response field. Only `id`, `openrouter.slug`, and
+`hugging_face_id` differ where exposed.
 
 Canonical enforcement:
 
-- Source validation, source-kind persistence, and the covered-build rejection:
-  [`openrouter_alias_handlers.go:62-117`](../../coordinator/api/openrouter_alias_handlers.go#L62-L117).
-- The reverse guard preventing a later standard alias from covering a pinned
-  concrete source:
-  [`model_alias_handlers.go:134-153`](../../coordinator/api/model_alias_handlers.go#L134-L153).
+- Serialized source validation, source-kind persistence, and covered-build
+  rejection:
+  [`openrouter_alias_handlers.go:61-124`](../../coordinator/api/openrouter_alias_handlers.go#L61-L124).
+- The serialized reverse guard preventing a later standard alias from covering
+  a pinned concrete source:
+  [`model_alias_handlers.go:74-171`](../../coordinator/api/model_alias_handlers.go#L74-L171).
 - Request-routing resolution without provider convergence or canonical-name
   ownership:
-  [`server.go:1036-1077`](../../coordinator/api/server.go#L1036-L1077).
-- Standard-catalog exclusion and dedicated OpenRouter-feed cloning:
-  [`models_endpoints.go:26-49`](../../coordinator/api/models_endpoints.go#L26-L49) and
-  [`openrouter_endpoint.go:163-183`](../../coordinator/api/openrouter_endpoint.go#L163-L183).
+  [`server.go:1037-1078`](../../coordinator/api/server.go#L1037-L1078).
+- Standard-list exclusion, exact-id retrieval, and dedicated OpenRouter-feed
+  cloning:
+  [`models_endpoints.go:26-49`](../../coordinator/api/models_endpoints.go#L26-L49),
+  [`models_endpoints.go:319-370`](../../coordinator/api/models_endpoints.go#L319-L370),
+  and [`openrouter_endpoint.go:163-183`](../../coordinator/api/openrouter_endpoint.go#L163-L183).
 
 ## Admin model actions
 

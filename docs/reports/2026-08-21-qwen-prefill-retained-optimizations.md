@@ -41,9 +41,18 @@ approximately `3.1e-6` for the small A/B projections.
 
 Qwen's sorted expert output is reduced through the inverse permutation directly
 into `[tokens, hidden]`, avoiding the `[tokens, topK, hidden]` assignment-order
-intermediate. This was positive only in a combined benchmark with router fusion,
-so this branch includes an explicit environment gate and a controlled isolated
-A/B is required before enabling it by default in production.
+intermediate. This remains behind `MLX_QWEN_DIRECT_EXPERT_REDUCTION` while full-model
+qualification is completed. A paired 25-sample primitive benchmark at the exact
+2048-token stripe geometry (`16,384 x 8 x 2,048` assignment tensor) measured:
+
+| Reduction | Median |
+|---|---:|
+| Legacy assignment tensor multiply + top-8 sum | 0.6389 ms |
+| Direct inverse-permutation weighted reduction | 0.3564 ms |
+| Primitive speedup | **1.793x (44.2% lower latency)** |
+
+This isolates a real local win. The expected full-model delta is smaller because
+expert projections dominate the MoE layer.
 
 ## Reverted / excluded
 

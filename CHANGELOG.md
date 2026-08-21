@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.9 (2026-08-21)
+
+### Provider (Swift)
+
+#### Fixes
+
+- **Emergency Qwen3.6 runtime rollback** — Restores the v0.8.7 `mlx-swift-lm` pin (`ab73a827`) and removes v0.8.8's default-on GDN four-input projection fusion and direct weighted-expert reduction. In the fixed one-hour production comparison, Qwen success fell 85.52%→65.79%, p50 decode fell 38→26 tok/s, client timeouts approximately doubled, and the hard TTFT gate emitted 612 429s (602 marked counterfactually serveable). M1/M2 providers regressed even though they cannot use affine `qmv_wide`, isolating the Qwen runtime changes as the first rollback target. Gemma's merged `qmv_wide` MLX/MLX-Swift pins remain enabled for continued benefit and separate attribution.
+- **Restore the retained runtime-smoke contract** — Removes the retired Qwen process-global reduction key from serving projection, launchd passthrough, signed-child validation, and benchmark-report expectations. Provider artifact verification returns to the three retained Gemma controls.
+
 ## v0.8.8 (2026-08-21)
 
 ### Provider (Swift)

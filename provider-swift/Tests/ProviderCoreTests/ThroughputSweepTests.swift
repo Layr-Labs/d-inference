@@ -237,6 +237,7 @@ struct ThroughputSweepReportTests {
             GemmaOptimizationEnvironment.prefillLayer18Key: "18",
             GemmaOptimizationEnvironment.weightedUnsortKey: "1",
             GemmaOptimizationEnvironment.safeR1Key: "trust",
+            GemmaOptimizationEnvironment.qwenDirectExpertReductionKey: "1",
         ])
         #expect(decoded.schemaVersion == ThroughputSweepReport.currentSchemaVersion)
     }

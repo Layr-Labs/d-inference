@@ -657,21 +657,32 @@ type ModelRegistryRecord struct {
 	Files         []ModelVersionFile `json:"files,omitempty"`
 }
 
+type ModelAliasSourceKind string
+
+const (
+	// ModelAliasSourceAlias follows an active standard alias's rollout pointers.
+	// It is also the backward-compatible meaning of an empty source_kind.
+	ModelAliasSourceAlias ModelAliasSourceKind = "standard_alias"
+	// ModelAliasSourceConcrete pins routing and feed cloning to one concrete model.
+	ModelAliasSourceConcrete ModelAliasSourceKind = "concrete_model"
+)
+
 // ModelAlias has two forms. A standard alias is a stable consumer-facing name
 // resolving to one desired concrete build plus an optional previous build while
-// providers converge. An OpenRouter-only alias clones a standard SourceModel in
-// the provider feed and request router, but is hidden from the public catalog
-// and provider desired-state fanout. The split keeps marketplace identities
-// independent without duplicating pricing, capacity, or rollout configuration.
+// providers converge. An OpenRouter-only alias clones either a standard alias or
+// an active concrete catalog model for marketplace identity and request routing.
+// It never drives provider convergence, hides its source, or becomes the
+// canonical public name for a concrete build.
 type ModelAlias struct {
-	AliasID        string `json:"alias_id"`
-	DisplayName    string `json:"display_name"`
-	OpenRouterOnly bool   `json:"openrouter_only,omitempty"` // feed-only clone; hidden from the public catalog and provider convergence
-	SourceModel    string `json:"source_model,omitempty"`    // standard alias cloned by an OpenRouter-only entry
-	OpenRouterSlug string `json:"openrouter_slug,omitempty"` // marketplace identity for an OpenRouter-only entry
-	HuggingFaceID  string `json:"hugging_face_id,omitempty"` // metadata repository for an OpenRouter-only entry
-	DesiredBuild   string `json:"desired_build"`             // the single build providers should converge to
-	PreviousBuild  string `json:"previous_build,omitempty"`  // still-acceptable during rollout; "" when none
+	AliasID        string               `json:"alias_id"`
+	DisplayName    string               `json:"display_name"`
+	OpenRouterOnly bool                 `json:"openrouter_only,omitempty"` // marketplace clone; excluded from provider convergence and canonical naming
+	SourceModel    string               `json:"source_model,omitempty"`    // standard alias or concrete catalog model cloned by an OpenRouter-only entry
+	SourceKind     ModelAliasSourceKind `json:"source_kind,omitempty"`     // source identity semantics; empty legacy values mean standard_alias
+	OpenRouterSlug string               `json:"openrouter_slug,omitempty"` // marketplace identity for an OpenRouter-only entry
+	HuggingFaceID  string               `json:"hugging_face_id,omitempty"` // metadata repository for an OpenRouter-only entry
+	DesiredBuild   string               `json:"desired_build"`             // the single build providers should converge to
+	PreviousBuild  string               `json:"previous_build,omitempty"`  // still-acceptable during rollout; "" when none
 
 	// RetiredBuilds is the alias's lineage: former desired/previous builds
 	// rotated out by later upserts. Kept so a provider that was offline through

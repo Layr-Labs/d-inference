@@ -23,17 +23,10 @@ func hideAliasBuild(hidden map[string]struct{}, catalogByID map[string]store.Sup
 	}
 }
 
-// aliasModelEntries builds the consumer-facing /v1/models entries for active
-// standard aliases and their OpenRouter-only clones, and returns the set of
-// underlying build ids those aliases cover (so the caller can hide them from
-// the default listing). The hidden set covers EVERY build a standard alias
-// references — desired, previous, and the retired lineage — so a concrete
-// quant build never appears as its own entry once it is behind an alias. Each
-// standard alias derives its metadata from its primary build — the desired
-// build, or the previous build if the desired one isn't in the catalog yet —
-// and aggregates live capacity across the desired and previous builds.
-// OpenRouter-only aliases clone that complete source entry and override only
-// their consumer-facing id and Hugging Face identity.
+// aliasModelEntries builds consumer-facing /v1/models entries for active
+// standard aliases and returns the concrete build ids they hide. OpenRouter-only
+// aliases are deliberately excluded; they are discoverable only through the
+// dedicated /v1/models/openrouter marketplace feed.
 func (s *Server) aliasModelEntries(
 	capByModel map[string]*registry.ModelCapacity,
 	catalogByID map[string]store.SupportedModel,
@@ -47,7 +40,6 @@ func (s *Server) aliasModelEntries(
 	}
 
 	entries := make([]types.ModelEntry, 0, len(aliases))
-	standardEntries := make(map[string]types.ModelEntry, len(aliases))
 	for _, a := range aliases {
 		if !a.Active || a.OpenRouterOnly || a.DesiredBuild == "" {
 			continue
@@ -136,26 +128,8 @@ func (s *Server) aliasModelEntries(
 		}
 		entry.InputModalities, entry.OutputModalities = deriveModalities(cm.ModelType, caps)
 		entries = append(entries, entry)
-		standardEntries[a.AliasID] = entry
 	}
 
-	// OpenRouter-only aliases are already valid inference names. Surface them
-	// in the main catalog by cloning their standard source entry, without
-	// turning them into provider-convergence or canonical-naming aliases.
-	for _, a := range aliases {
-		if !a.Active || !a.OpenRouterOnly {
-			continue
-		}
-		source, ok := standardEntries[a.SourceModel]
-		if !ok || a.OpenRouterSlug == "" || a.HuggingFaceID == "" {
-			s.logger.Warn("model registry: OpenRouter alias source or identities unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
-			continue
-		}
-		clone := source
-		clone.ID = a.AliasID
-		clone.HuggingFaceID = a.HuggingFaceID
-		entries = append(entries, clone)
-	}
 	return entries, hidden
 }
 
@@ -165,89 +139,47 @@ func (s *Server) aliasModelEntries(
 func (s *Server) listModelEntries(includeBuilds bool) ([]types.ModelEntry, error) {
 	models := s.registry.ListModels()
 
-	// Build a lookup of capacity data keyed by model ID.
 	capacities := s.registry.ModelCapacitySnapshot()
 	capByModel := make(map[string]*registry.ModelCapacity, len(capacities))
 	for i := range capacities {
 		capByModel[capacities[i].ModelID] = &capacities[i]
 	}
 
-	// Filter to only show models from the active catalog, and capture the richer
-	// registry entries used to populate the OpenRouter provider fields. These
-	// lookups are shared with the dedicated /v1/models/openrouter feed.
 	catalogByID, registryByID, err := s.activeCatalogLookups()
 	if err != nil {
 		return nil, err
 	}
 
-	// Public aliases are the consumer-facing model names; their underlying
-	// quant builds are hidden by default so consumers never see the quant.
-	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
-
-	data := make([]types.ModelEntry, 0, len(models)+len(aliasEntries))
-	data = append(data, aliasEntries...)
-	for _, m := range models {
-		cm, inCatalog := catalogByID[m.ID]
+	// Build each concrete entry once. OpenRouter-only aliases may clone these
+	// entries, while standard aliases independently decide which builds to hide.
+	concreteEntries := make(map[string]types.ModelEntry, len(models))
+	concreteOrder := make([]string, 0, len(models))
+	for _, model := range models {
+		catalogModel, inCatalog := catalogByID[model.ID]
 		if len(catalogByID) > 0 && !inCatalog {
 			continue
 		}
-		if _, hidden := hiddenBuilds[m.ID]; hidden && !includeBuilds {
-			continue
-		}
-		metadata := types.ModelMetadata{
-			ModelType:         m.ModelType,
-			Quantization:      m.Quantization,
-			ProviderCount:     m.Providers,
-			AttestedProviders: m.AttestedProviders,
-			TrustLevel:        string(m.TrustLevel),
-		}
-		// Add capacity fields from live snapshot.
-		if cap, ok := capByModel[m.ID]; ok {
-			metadata.RoutableProviders = cap.RoutableProviders
-			metadata.WarmProviders = cap.WarmProviders
-			metadata.CanAccept = cap.CanAccept
-		} else {
-			metadata.RoutableProviders = 0
-			metadata.WarmProviders = 0
-			metadata.CanAccept = false
-		}
-		if m.Attestation != nil {
-			metadata.Attestation = &types.ModelAttestation{
-				SecureEnclave: m.Attestation.SecureEnclave,
-				SIPEnabled:    m.Attestation.SIPEnabled,
-				SecureBoot:    m.Attestation.SecureBoot,
-			}
-		}
-		if inCatalog && cm.DisplayName != "" {
-			metadata.DisplayName = cm.DisplayName
-		}
-
-		reg, hasReg := registryByID[m.ID]
-		entry := types.ModelEntry{
-			ID:            m.ID,
-			Object:        "model",
-			Created:       0,
-			OwnedBy:       "eigeninference",
-			Name:          metadata.DisplayName,
-			HuggingFaceID: huggingFaceIDForModel(m.ID, reg.Metadata),
-			Metadata:      metadata,
-		}
-
-		// OpenRouter provider fields (quantization, per-token pricing, sampling
-		// params, and registry-sourced metadata), shared with the dedicated
-		// /v1/models/openrouter feed.
-		s.openRouterModelFieldsFor(m.ID, m.Quantization, reg, hasReg).applyToModelEntry(&entry)
-
-		// Modalities are derived from the model's capabilities (text by default).
-		var caps []string
-		if hasReg {
-			caps = reg.Capabilities
-		}
-		entry.InputModalities, entry.OutputModalities = deriveModalities(m.ModelType, caps)
-
-		data = append(data, entry)
+		registryEntry, hasRegistryEntry := registryByID[model.ID]
+		concreteEntries[model.ID] = s.modelEntryForConcrete(
+			model,
+			capByModel[model.ID],
+			catalogModel,
+			inCatalog,
+			registryEntry,
+			hasRegistryEntry,
+		)
+		concreteOrder = append(concreteOrder, model.ID)
 	}
 
+	aliasEntries, hiddenBuilds := s.aliasModelEntries(capByModel, catalogByID, registryByID)
+	data := make([]types.ModelEntry, 0, len(concreteEntries)+len(aliasEntries))
+	data = append(data, aliasEntries...)
+	for _, modelID := range concreteOrder {
+		if _, hidden := hiddenBuilds[modelID]; hidden && !includeBuilds {
+			continue
+		}
+		data = append(data, concreteEntries[modelID])
+	}
 	return data, nil
 }
 
@@ -386,8 +318,8 @@ func ownedModelEntry(m registry.AggregateModel) types.ModelEntry {
 
 // handleGetModel handles GET /v1/models/{id...} — the OpenAI "retrieve model"
 // endpoint. Model IDs may contain slashes (HuggingFace paths), hence the
-// wildcard path segment. Hidden quant builds are retrievable by their exact
-// id, matching the behavior of requesting one for inference.
+// wildcard path segment. Hidden quant builds and marketplace-only OpenRouter
+// aliases remain retrievable by exact id for inference-client parity.
 func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	// Self-route requests retrieve from their owned live models (mirrors
@@ -415,6 +347,38 @@ func (s *Server) handleGetModel(w http.ResponseWriter, r *http.Request) {
 	for _, entry := range data {
 		if entry.ID == id {
 			writeJSON(w, http.StatusOK, entry)
+			return
+		}
+	}
+	alias, found, aliasErr := s.store.GetModelAlias(id)
+	if aliasErr != nil {
+		s.logger.Error("model registry: failed to retrieve model alias", "model", id, "error", aliasErr)
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to retrieve model"))
+		return
+	}
+	if found && alias.Active && alias.OpenRouterOnly {
+		var sourceEntry types.ModelEntry
+		sourceFound := false
+		for _, entry := range data {
+			if entry.ID == alias.SourceModel {
+				sourceEntry = entry
+				sourceFound = true
+				break
+			}
+		}
+		if !sourceFound && openRouterAliasUsesConcreteSource(*alias) {
+			catalogByID, registryByID, catalogErr := s.activeCatalogLookups()
+			if catalogErr != nil {
+				s.logger.Error("model registry: failed to retrieve concrete alias source", "model", id, "source_model", alias.SourceModel, "error", catalogErr)
+				writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to retrieve model"))
+				return
+			}
+			sourceEntry, sourceFound = s.modelEntryForCatalogConcrete(alias.SourceModel, catalogByID, registryByID)
+		}
+		if sourceFound {
+			sourceEntry.ID = alias.AliasID
+			sourceEntry.HuggingFaceID = alias.HuggingFaceID
+			writeJSON(w, http.StatusOK, sourceEntry)
 			return
 		}
 	}

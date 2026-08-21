@@ -124,7 +124,10 @@ extension ProviderLoop {
         // is in flight we treat NOTHING as reclaimable (conservative, never
         // advertises an actively-served model's weights as free); only when fully
         // idle do we assume idle models can be evicted.
-        let mlxUsed = UInt64(max(0, MLX.GPU.activeMemory)) + UInt64(max(0, MLX.GPU.cacheMemory))
+        let mlxActiveBytes = UInt64(max(0, MLX.GPU.activeMemory))
+        let mlxPeakBytes = UInt64(max(0, MLX.GPU.peakMemory))
+        let mlxCacheBytes = UInt64(max(0, MLX.GPU.cacheMemory))
+        let mlxUsed = mlxActiveBytes + mlxCacheBytes
         let reclaimableMlx: UInt64 = hasInflightWork ? 0 : mlxUsed
         let loadReserve = UnifiedMemoryCap.loadReserveBytes(
             configReserveBytes: Self.memoryReserveBytes(forGiB: loopConfig.config.provider.memoryReserveGB))
@@ -138,14 +141,24 @@ extension ProviderLoop {
             mlxUsedBytes: reclaimableMlx,
             reserveBytes: loadReserve,
             outstandingReservationBytes: outstandingKV)
+        let reclaimer = kvBudget.cacheReclaimerTelemetrySnapshot()
+        let reclaimerTelemetry = MLXCacheReclaimerTelemetry(
+            cacheLimitBytes: UInt64(max(
+                0, MLXMemoryGuard.configuredLimitsSnapshot()?.cacheLimitBytes ?? 0)),
+            sweepSignals: reclaimer.sweepSignals,
+            reclaims: reclaimer.reclaims,
+            reclaimedBytes: reclaimer.reclaimedBytes,
+            lastReclaimedBytes: reclaimer.lastReclaimedBytes,
+            lastReclaimDurationMs: reclaimer.lastReclaimDurationMs)
 
         state.backendCapacity = BackendCapacity(
             slots: allSlots,
-            gpuMemoryActiveGb: Double(MLX.GPU.activeMemory) / gbDivisor,
-            gpuMemoryPeakGb: Double(MLX.GPU.peakMemory) / gbDivisor,
-            gpuMemoryCacheGb: Double(MLX.GPU.cacheMemory) / gbDivisor,
+            gpuMemoryActiveGb: Double(mlxActiveBytes) / gbDivisor,
+            gpuMemoryPeakGb: Double(mlxPeakBytes) / gbDivisor,
+            gpuMemoryCacheGb: Double(mlxCacheBytes) / gbDivisor,
             totalMemoryGb: Double(totalMem) / gbDivisor,
-            freeForLoadGb: freeForLoadGb
+            freeForLoadGb: freeForLoadGb,
+            mlxCacheReclaimer: reclaimerTelemetry
         )
         state.inferenceActive = totalActive > 0
         let loadedSlots = modelSlots.compactMap { modelId, slot

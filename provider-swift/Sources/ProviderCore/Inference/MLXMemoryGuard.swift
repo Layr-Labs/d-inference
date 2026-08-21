@@ -104,6 +104,16 @@ public enum MLXMemoryGuard {
     // Set once per process; loadModel runs many times, so guard with lock + flag.
     private static let lock = NSLock()
     nonisolated(unsafe) private static var configured = false
+    nonisolated(unsafe) private static var configuredLimits: Limits?
+
+    /// The limits actually selected by `configureOnce`, without touching MLX
+    /// globals. Capacity telemetry uses this snapshot because reading
+    /// `Memory.cacheLimit` can initialize the Metal backend in no-GPU tests.
+    static func configuredLimitsSnapshot() -> Limits? {
+        lock.lock()
+        defer { lock.unlock() }
+        return configuredLimits
+    }
 
     /// Set the MLX ceiling once per process (idempotent). `apply` is injectable
     /// for tests so they avoid touching real MLX globals.
@@ -130,6 +140,9 @@ public enum MLXMemoryGuard {
             physicalBytes: physicalBytes,
             reserveBytes: resolvedReserveBytes(explicit: reserveBytes),
             cacheCapBytes: resolvedCacheCapBytes(explicit: cacheCapBytes))
+        lock.lock()
+        configuredLimits = limits
+        lock.unlock()
         apply(limits)
         log?(limits)
         return limits
@@ -139,6 +152,7 @@ public enum MLXMemoryGuard {
     static func _resetForTest() {
         lock.lock()
         configured = false
+        configuredLimits = nil
         lock.unlock()
     }
 }

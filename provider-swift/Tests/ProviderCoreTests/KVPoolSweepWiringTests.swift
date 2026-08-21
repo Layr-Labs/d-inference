@@ -45,6 +45,14 @@ struct KVPoolSweepWiringTests {
         // until the signal lands on the reclaimer actor.
         let signalled = await pollUntil { await reclaimer.sweepSignalCount > 0 }
         #expect(signalled, "the capacity tick must signal the proactive pool sweep")
+
+        // The next capacity sample exports the reclaimer counters on the
+        // heartbeat wire. This pins the operational telemetry path, not merely
+        // the internal caller.
+        await loop.updateAggregateCapacity()
+        let capacity = try #require(await loop.backendCapacityForTesting())
+        let telemetry = try #require(capacity.mlxCacheReclaimer)
+        #expect(telemetry.sweepSignals > 0)
     }
 
     @Test("StandaloneServer.start spawns the periodic pool sweep")

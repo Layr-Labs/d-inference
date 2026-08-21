@@ -27,6 +27,56 @@ import Foundation
 import MLX
 
 actor KVPoolReclaimer {
+    /// Cumulative allocator-reclaim telemetry sampled by the provider heartbeat.
+    /// Counts reset on process restart; byte deltas are best-effort observations
+    /// around `clearCache()` because inference may allocate concurrently.
+    struct TelemetrySnapshot: Equatable, Sendable {
+        let sweepSignals: UInt64
+        let reclaims: UInt64
+        let reclaimedBytes: UInt64
+        let lastReclaimedBytes: UInt64
+        let lastReclaimDurationMs: UInt64
+    }
+
+    /// Lock-backed so heartbeat sampling never queues behind this actor while
+    /// `clearCache()` is synchronously waiting for the GPU. The reclaimer actor
+    /// remains the sole writer; the lock only provides a non-blocking read path.
+    private final class TelemetryStore: @unchecked Sendable {
+        private let lock = NSLock()
+        private var sweepSignals: UInt64 = 0
+        private var reclaims: UInt64 = 0
+        private var reclaimedBytes: UInt64 = 0
+        private var lastReclaimedBytes: UInt64 = 0
+        private var lastReclaimDurationMs: UInt64 = 0
+
+        func recordSweepSignal() {
+            lock.lock()
+            defer { lock.unlock() }
+            if sweepSignals < .max { sweepSignals += 1 }
+        }
+
+        func recordReclaim(reclaimed: UInt64, durationMs: UInt64) {
+            lock.lock()
+            defer { lock.unlock() }
+            if reclaims < .max { reclaims += 1 }
+            let (newTotal, overflow) = reclaimedBytes.addingReportingOverflow(reclaimed)
+            reclaimedBytes = overflow ? .max : newTotal
+            lastReclaimedBytes = reclaimed
+            lastReclaimDurationMs = durationMs
+        }
+
+        func snapshot() -> TelemetrySnapshot {
+            lock.lock()
+            defer { lock.unlock() }
+            return TelemetrySnapshot(
+                sweepSignals: sweepSignals,
+                reclaims: reclaims,
+                reclaimedBytes: reclaimedBytes,
+                lastReclaimedBytes: lastReclaimedBytes,
+                lastReclaimDurationMs: lastReclaimDurationMs)
+        }
+    }
+
     /// The blocking GPU flush. Injected so tests can observe invocations
     /// (count/timing) deterministically without a GPU. Production fences async
     /// GPU completion before freeing buffers (matches the engine reclaim paths /
@@ -45,17 +95,12 @@ actor KVPoolReclaimer {
     private let proactiveThresholdBytes: UInt64
     private var lastReclaimAt: ContinuousClock.Instant?
 
-    /// Total flushes performed (test observability).
-    private(set) var reclaimCount = 0
+    private let telemetry = TelemetryStore()
 
-    /// Total sweep signals received, counted BEFORE the threshold gate —
-    /// wiring observability, so the periodic drivers (ProviderLoop's
-    /// capacity-refresh tick, StandaloneServer's sweep task) can be asserted
-    /// to actually signal this reclaimer without needing a multi-GiB real
-    /// MLX pool in the test process. The v0.7.5 regression this guards
-    /// against: the sweep's only caller was deleted with the legacy engine
-    /// and the pool grew unbounded in the field.
-    private(set) var sweepSignalCount = 0
+    /// Compatibility/debug accessors. Production heartbeat reads the same store
+    /// through nonisolated `telemetrySnapshot()` and never waits on this actor.
+    var reclaimCount: UInt64 { telemetry.snapshot().reclaims }
+    var sweepSignalCount: UInt64 { telemetry.snapshot().sweepSignals }
 
     static let defaultMinInterval: Duration = .seconds(1)
     /// 2 GiB: a pool this large is materially eating admission headroom; below it
@@ -108,17 +153,31 @@ actor KVPoolReclaimer {
     /// headroom healthy under sustained load so most admissions never near-miss.
     @discardableResult
     func sweep() -> Bool {
-        sweepSignalCount += 1
+        telemetry.recordSweepSignal()
         guard reclaimableBytes() >= proactiveThresholdBytes else { return false }
         return flushIfDue()
+    }
+
+    nonisolated func telemetrySnapshot() -> TelemetrySnapshot {
+        telemetry.snapshot()
     }
 
     private func flushIfDue() -> Bool {
         let now = ContinuousClock.now
         if let last = lastReclaimAt, now - last < minInterval { return false }
         lastReclaimAt = now
+
+        let cacheBefore = reclaimableBytes()
+        let startedAt = ContinuousClock.now
         clearCache()
-        reclaimCount += 1
+        let elapsed = ContinuousClock.now - startedAt
+        let cacheAfter = reclaimableBytes()
+        let reclaimed = cacheBefore > cacheAfter ? cacheBefore - cacheAfter : 0
+        let elapsedMs = Double(elapsed.components.seconds) * 1_000
+            + Double(elapsed.components.attoseconds) / 1e15
+        telemetry.recordReclaim(
+            reclaimed: reclaimed,
+            durationMs: UInt64(max(0, elapsedMs.rounded())))
         return true
     }
 }

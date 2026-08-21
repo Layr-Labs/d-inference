@@ -294,6 +294,25 @@ Go: [`BackendCapacity`](../../coordinator/protocol/messages.go); Swift: `Backend
 | `gpu_memory_peak_gb` | number |
 | `gpu_memory_cache_gb` | number |
 | `total_memory_gb` | number |
+| `free_for_load_gb` | number |
+| `mlx_cache_reclaimer` | [`MLXCacheReclaimerTelemetry`](#mlxcachereclaimertelemetry), optional |
+
+### `MLXCacheReclaimerTelemetry`
+
+Allocator telemetry carried by instrumented providers. Counters are cumulative
+for one provider process and reset on restart; older providers omit the object.
+
+| Field | Type | Notes |
+|---|---|---|
+| `cache_limit_bytes` | integer | Configured MLX reusable-buffer cache ceiling |
+| `sweep_signals` | integer | Periodic proactive sweep signals received |
+| `reclaims` | integer | `clearCache()` operations actually performed |
+| `reclaimed_bytes` | integer | Cumulative observed cache reduction |
+| `last_reclaimed_bytes` | integer | Observed reduction around the latest reclaim |
+| `last_reclaim_duration_ms` | integer | Blocking synchronize + clear duration |
+
+The coordinator publishes these heartbeat values as Datadog gauges under
+`provider.mlx_memory.*` and `provider.mlx_cache.*`, tagged by `provider_id`.
 
 ### `BackendSlotCapacity`
 

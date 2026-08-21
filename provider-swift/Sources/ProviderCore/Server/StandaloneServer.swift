@@ -467,7 +467,7 @@ public actor StandaloneServer {
 
     /// Sweep signals the budget's reclaimer has received — wiring assertion
     /// seam for the periodic `kvSweepTask` (see `KVPoolReclaimer.sweepSignalCount`).
-    func debugKVSweepSignalCount() async -> Int {
+    func debugKVSweepSignalCount() async -> UInt64 {
         await kvBudget.reclaimerForTesting.sweepSignalCount
     }
 

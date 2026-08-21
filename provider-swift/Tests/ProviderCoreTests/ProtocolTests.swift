@@ -1085,7 +1085,14 @@ import Testing
             gpuMemoryActiveGb: 5.5,
             gpuMemoryPeakGb: 6.5,
             gpuMemoryCacheGb: 1.5,
-            totalMemoryGb: 36
+            totalMemoryGb: 36,
+            mlxCacheReclaimer: MLXCacheReclaimerTelemetry(
+                cacheLimitBytes: 8 * 1024 * 1024 * 1024,
+                sweepSignals: 12,
+                reclaims: 4,
+                reclaimedBytes: 24 * 1024 * 1024 * 1024,
+                lastReclaimedBytes: 6 * 1024 * 1024 * 1024,
+                lastReclaimDurationMs: 17)
         )
     ))
 
@@ -1093,11 +1100,18 @@ import Testing
     let object = try jsonObject(data)
     let capacity = object["backend_capacity"] as? [String: Any]
     let slot = (capacity?["slots"] as? [[String: Any]])?.first
+    let reclaimer = capacity?["mlx_cache_reclaimer"] as? [String: Any]
 
     #expect(capacity?["gpu_memory_active_gb"] as? Double == 5.5)
     #expect(capacity?["gpu_memory_peak_gb"] as? Double == 6.5)
     #expect(capacity?["gpu_memory_cache_gb"] as? Double == 1.5)
     #expect(capacity?["total_memory_gb"] as? Double == 36)
+    #expect((reclaimer?["cache_limit_bytes"] as? NSNumber)?.uint64Value == UInt64(8) * 1024 * 1024 * 1024)
+    #expect(reclaimer?["sweep_signals"] as? Int == 12)
+    #expect(reclaimer?["reclaims"] as? Int == 4)
+    #expect((reclaimer?["reclaimed_bytes"] as? NSNumber)?.uint64Value == UInt64(24) * 1024 * 1024 * 1024)
+    #expect((reclaimer?["last_reclaimed_bytes"] as? NSNumber)?.uint64Value == UInt64(6) * 1024 * 1024 * 1024)
+    #expect(reclaimer?["last_reclaim_duration_ms"] as? Int == 17)
     #expect(slot?["num_running"] as? Int == 1)
     #expect(slot?["num_waiting"] as? Int == 2)
     #expect(slot?["active_tokens"] as? Int == 3000)

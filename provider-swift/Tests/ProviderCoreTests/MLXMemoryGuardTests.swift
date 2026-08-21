@@ -166,6 +166,8 @@ struct MLXMemoryGuardConfigureOnceTests {
             apply: { applied.append($0) })
         #expect(limits?.cacheLimitBytes == 2 * gib)
         #expect(applied.first?.cacheLimitBytes == 2 * gib)
+        #expect(MLXMemoryGuard.configuredLimitsSnapshot() == limits)
         MLXMemoryGuard._resetForTest()
+        #expect(MLXMemoryGuard.configuredLimitsSnapshot() == nil)
     }
 }

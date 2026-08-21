@@ -418,6 +418,13 @@ public actor GlobalKVCacheBudget {
         reclaimer.scheduleSweep()
     }
 
+    /// Heartbeat-facing cumulative reclaim counters. The snapshot is lock-backed
+    /// and never hops the reclaimer actor, so a GPU synchronize already running
+    /// there cannot delay capacity reporting or request admission.
+    nonisolated func cacheReclaimerTelemetrySnapshot() -> KVPoolReclaimer.TelemetrySnapshot {
+        reclaimer.telemetrySnapshot()
+    }
+
     private func availableReservationBytes() -> UInt64 {
         let snap = memorySnapshot()
         let mlxUsed = Self.saturatingAdd(snap.active, snap.cache)

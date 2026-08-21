@@ -1,6 +1,7 @@
 # Qwen Prefill Retained Optimizations on Current Master
 
 **Date:** 2026-08-21  
+**Status:** Rolled back for v0.8.9 after v0.8.8 production decode and uptime regression; retained measurements remain prefill-only evidence.
 **Base:** `origin/master` at `937a8a1d1` (through PR #650)  
 **Branch:** `perf/qwen-prefill-retained`
 

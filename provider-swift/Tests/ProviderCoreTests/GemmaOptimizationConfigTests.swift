@@ -83,7 +83,6 @@ struct GemmaOptimizationEnvironmentTests {
         "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL",
         "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT",
         "MLX_GATHER_QMM_EXPERT_SLICES",
-        "MLX_QWEN_DIRECT_EXPERT_REDUCTION",
     ]
 
     @Test("projection emits the selected controls")
@@ -96,7 +95,6 @@ struct GemmaOptimizationEnvironmentTests {
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "18",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
             "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
-            "MLX_QWEN_DIRECT_EXPERT_REDUCTION": "1",
         ])
 
         let disabled = GemmaOptimizationEnvironment.projection(
@@ -110,27 +108,7 @@ struct GemmaOptimizationEnvironmentTests {
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "0",
             "MLX_GATHER_QMM_EXPERT_SLICES": "0",
-            "MLX_QWEN_DIRECT_EXPERT_REDUCTION": "1",
         ])
-    }
-
-    @Test("Qwen direct reduction defaults on and honors serving rollback")
-    func qwenDirectReductionDefaultAndRollback() {
-        let enabled = GemmaOptimizationEnvironment.projection(
-            for: GemmaOptimizationSettings(), getenv: { _ in nil })
-        #expect(enabled[GemmaOptimizationEnvironment.qwenDirectExpertReductionKey] == "1")
-
-        let rolledBack = GemmaOptimizationEnvironment.projection(
-            for: GemmaOptimizationSettings(),
-            getenv: { key in
-                key == GemmaOptimizationEnvironment.qwenDirectExpertReductionKey ? "0" : nil
-            })
-        #expect(rolledBack[GemmaOptimizationEnvironment.qwenDirectExpertReductionKey] == "0")
-
-        let validation = GemmaOptimizationEnvironment.projection(
-            for: GemmaOptimizationSettings(), context: .retainedValidation,
-            getenv: { _ in "0" })
-        #expect(validation[GemmaOptimizationEnvironment.qwenDirectExpertReductionKey] == "1")
     }
 
     @Test("weighted unsort and safe R1 stay coupled on or off")
@@ -261,7 +239,6 @@ struct GemmaOptimizationEnvironmentTests {
             "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL": "0",
             "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT": "1",
             "MLX_GATHER_QMM_EXPERT_SLICES": "trust",
-            "MLX_QWEN_DIRECT_EXPERT_REDUCTION": "1",
         ])
         // The application boundary must hand the environment exactly what
         // projection() reports, or the release matrix describes a dispatch

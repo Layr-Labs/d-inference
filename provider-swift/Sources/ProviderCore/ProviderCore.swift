@@ -233,5 +233,9 @@ public enum ProviderCore {
     // matrix-sized inputs remain on QMM, and gathered expert projections are
     // unchanged. Existing Gemma and CBv2 default-on optimization postures stay
     // enabled; no beta flag or provider-config migration is required.
-    public static let version = "0.8.8"
+    // 0.8.9 rolls Qwen3.6 execution back to the v0.8.7 mlx-swift-lm pin after
+    // v0.8.8's GDN input fusion/direct expert reduction reduced production
+    // decode throughput and triggered client timeouts. The Gemma qmv_wide
+    // MLX/MLX-Swift pins remain enabled.
+    public static let version = "0.8.9"
 }

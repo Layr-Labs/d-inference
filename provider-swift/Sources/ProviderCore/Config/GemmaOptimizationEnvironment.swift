@@ -6,7 +6,6 @@ public enum GemmaOptimizationEnvironment {
     public static let prefillLayer18Key = "DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL"
     public static let weightedUnsortKey = "MLX_GEMMA4_FUSED_WEIGHTED_UNSORT"
     public static let safeR1Key = "MLX_GATHER_QMM_EXPERT_SLICES"
-    public static let qwenDirectExpertReductionKey = "MLX_QWEN_DIRECT_EXPERT_REDUCTION"
     /// Serving default when the expert-slice route is ON: skip the
     /// descriptor-retract readback (no mid-eval stream drain). The tile grid
     /// is already over-dispatched; unused slots early-return.
@@ -58,13 +57,10 @@ public enum GemmaOptimizationEnvironment {
         } else {
             safeR1 = "0"
         }
-        let qwenDirectReduction = context == .serving
-            && getenv(qwenDirectExpertReductionKey) == "0" ? "0" : "1"
         return [
             prefillLayer18Key: settings.prefillLayer18 ? "18" : "0",
             weightedUnsortKey: weightedR1,
             safeR1Key: safeR1,
-            qwenDirectExpertReductionKey: qwenDirectReduction,
         ]
     }
 

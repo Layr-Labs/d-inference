@@ -151,7 +151,7 @@ func keyLimitResetFromContext(ctx context.Context) string {
 // the provider's EngineV2Factory.prepareProductionBackend for the argument).
 // Keep this fallback in sync with ProviderCore.version so dev/in-memory
 // coordinators advertise the same floor as the Swift binary they expect.
-var LatestProviderVersion = "0.8.8"
+var LatestProviderVersion = "0.8.9"
 
 // minProviderVersionForDesiredModels is the first provider version whose Swift
 // runtime understands the desired_models message. The coordinator must NOT send

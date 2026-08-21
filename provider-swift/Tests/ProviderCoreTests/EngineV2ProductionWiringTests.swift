@@ -2005,18 +2005,17 @@ struct EngineV2RuntimeGuardTests {
         // the state file immediately, and the join turns that record into a
         // slot entry rather than leaving doctor to guess from absence.
         // `recordModelLoadError` writes the REAL state file, so redirect it
-        // (this suite is `.serialized` and nothing else reads the default
-        // path) — then read the bytes back, which is the actual contract:
-        // the CLI decodes this file, it does not call into the daemon.
+        // through the per-loop seam (a process-global DARKBLOOM_STATE_FILE
+        // setenv would race concurrently running suites' daemon-state
+        // writes into this file) — then read the bytes back, which is the
+        // actual contract: the CLI decodes this file, it does not call
+        // into the daemon.
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("dstate-refused-\(UUID().uuidString).json")
-        setenv("DARKBLOOM_STATE_FILE", stateURL.path, 1)
-        defer {
-            unsetenv("DARKBLOOM_STATE_FILE")
-            try? FileManager.default.removeItem(at: stateURL)
-        }
+        defer { try? FileManager.default.removeItem(at: stateURL) }
 
         let loop = try makeWiringLoop(kvBackend: "paged")
+        await loop.setDaemonStateFileForTesting(stateURL)
         await loop.recordModelLoadError(
             model: "gemma-4-26b-qat-4bit",
             message: "Model 'gemma-4-26b-qat-4bit' loaded but its v2 engine construction "

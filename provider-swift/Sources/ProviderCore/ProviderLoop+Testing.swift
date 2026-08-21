@@ -108,6 +108,14 @@ extension ProviderLoop {
         loadedModelsPersistenceEnabled = url != nil
     }
 
+    /// Test seam: redirect `writeDaemonState()` to a temp path. Per-loop and
+    /// race-free, unlike a `DARKBLOOM_STATE_FILE` setenv, which is process
+    /// global and can route a concurrently running suite's daemon-state
+    /// write into this test's file (suites run in parallel).
+    func setDaemonStateFileForTesting(_ url: URL?) {
+        daemonStateFileOverride = url
+    }
+
     /// Test seam: toggle the persistence gate independently of the path
     /// override (pins the "inert unless serving" guard).
     func setLoadedModelsPersistenceEnabledForTesting(_ enabled: Bool) {

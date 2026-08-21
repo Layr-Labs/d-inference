@@ -372,6 +372,14 @@ public actor ProviderLoop {
     /// (default: `LoadedModelsStore.path()`).
     internal var loadedModelsFileOverride: URL?
 
+    /// Test seam: overrides the daemon-state file `writeDaemonState()`
+    /// persists to (default: `DaemonStateFile.path()`). Per-loop, unlike the
+    /// process-global `DARKBLOOM_STATE_FILE` env var — two suites mutating
+    /// that env concurrently can route one another's writes into each
+    /// other's temp files (swift-testing runs suites in parallel;
+    /// `.serialized` only orders tests WITHIN a suite).
+    internal var daemonStateFileOverride: URL?
+
     /// Gate on the loaded-models persistence writes. `run()` flips it on at
     /// startup; it stays FALSE for `ProviderLoop` instances that never serve
     /// (unit tests exercising load/unload paths), so an unrelated test can

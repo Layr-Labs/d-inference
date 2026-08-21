@@ -128,21 +128,44 @@ private let gib = 1024 * 1024 * 1024
         explicit: nil, env: ["DARKBLOOM_MLX_MEMORY_RESERVE_GB": "0"]) == 0)
 }
 
-@Test func mlxGuardConfigureOnceAppliesExactlyOnce() {
-    MLXMemoryGuard._resetForTest()
-    var applied: [MLXMemoryGuard.Limits] = []
-    let first = MLXMemoryGuard.configureOnce(
-        reserveBytes: UInt64(6 * gib),
-        physicalBytes: UInt64(32 * gib),
-        apply: { applied.append($0) })
-    let second = MLXMemoryGuard.configureOnce(
-        reserveBytes: UInt64(6 * gib),
-        physicalBytes: UInt64(32 * gib),
-        apply: { applied.append($0) })
+/// Serialized: both tests reset + trip the process-global once-flag, so
+/// running them in parallel would race `configured` and flake.
+@Suite("MLXMemoryGuard.configureOnce", .serialized)
+struct MLXMemoryGuardConfigureOnceTests {
 
-    #expect(first != nil)
-    #expect(second == nil, "second call must be a no-op (ceiling set once per process)")
-    #expect(applied.count == 1)
-    #expect(applied.first?.memoryLimitBytes == 26 * gib)
-    MLXMemoryGuard._resetForTest()
+    @Test func mlxGuardConfigureOnceAppliesExactlyOnce() {
+        MLXMemoryGuard._resetForTest()
+        var applied: [MLXMemoryGuard.Limits] = []
+        let first = MLXMemoryGuard.configureOnce(
+            reserveBytes: UInt64(6 * gib),
+            physicalBytes: UInt64(32 * gib),
+            apply: { applied.append($0) })
+        let second = MLXMemoryGuard.configureOnce(
+            reserveBytes: UInt64(6 * gib),
+            physicalBytes: UInt64(32 * gib),
+            apply: { applied.append($0) })
+
+        #expect(first != nil)
+        #expect(second == nil, "second call must be a no-op (ceiling set once per process)")
+        #expect(applied.count == 1)
+        #expect(applied.first?.memoryLimitBytes == 26 * gib)
+        MLXMemoryGuard._resetForTest()
+    }
+
+    @Test func mlxGuardConfigureOnceThreadsTheCacheCapThrough() {
+        // Pins the configureOnce → recommendedLimits(cacheCapBytes:) composition:
+        // dropping the argument would silently fall back to the default cap
+        // (the values coincide) and only the override path would break — the
+        // shape of bug a defaulted parameter invites.
+        MLXMemoryGuard._resetForTest()
+        var applied: [MLXMemoryGuard.Limits] = []
+        let limits = MLXMemoryGuard.configureOnce(
+            reserveBytes: UInt64(6 * gib),
+            cacheCapBytes: UInt64(2 * gib),
+            physicalBytes: UInt64(64 * gib),
+            apply: { applied.append($0) })
+        #expect(limits?.cacheLimitBytes == 2 * gib)
+        #expect(applied.first?.cacheLimitBytes == 2 * gib)
+        MLXMemoryGuard._resetForTest()
+    }
 }

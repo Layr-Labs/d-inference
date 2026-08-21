@@ -83,8 +83,9 @@ actor KVPoolReclaimer {
         Task { await self.reclaimIfNeeded(shortfall: shortfall) }
     }
 
-    /// Proactive signal from the periodic scheduler watchdog. Non-isolated, same
-    /// contract as `scheduleReclaim`.
+    /// Proactive signal from the periodic drivers (ProviderLoop's
+    /// capacity-refresh tick, StandaloneServer's sweep task). Non-isolated,
+    /// same contract as `scheduleReclaim`.
     nonisolated func scheduleSweep() {
         Task { await self.sweep() }
     }

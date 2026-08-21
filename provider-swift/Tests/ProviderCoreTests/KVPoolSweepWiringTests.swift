@@ -22,23 +22,20 @@ import Testing
 
 @testable import ProviderCore
 
-@Suite("KV pool sweep wiring", .serialized)
+@Suite("KV pool sweep wiring")
 struct KVPoolSweepWiringTests {
 
     @Test("ProviderLoop.capacityRefreshTick signals the proactive pool sweep")
     func capacityTickSignalsSweep() async throws {
-        // The tick also writes the daemon state file; redirect it (same
-        // pattern as EngineV2ProductionWiringTests — serialized suite,
-        // nothing else reads the default path).
+        // The tick also writes the daemon state file; redirect it through the
+        // per-loop seam (NOT the process-global DARKBLOOM_STATE_FILE env var,
+        // which races concurrently running suites).
         let stateURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("dstate-sweep-\(UUID().uuidString).json")
-        setenv("DARKBLOOM_STATE_FILE", stateURL.path, 1)
-        defer {
-            unsetenv("DARKBLOOM_STATE_FILE")
-            try? FileManager.default.removeItem(at: stateURL)
-        }
+        defer { try? FileManager.default.removeItem(at: stateURL) }
 
         let loop = try makeSweepWiringLoop()
+        await loop.setDaemonStateFileForTesting(stateURL)
         let reclaimer = await loop.kvBudgetForTesting().reclaimerForTesting
         #expect(await reclaimer.sweepSignalCount == 0)
 

@@ -166,14 +166,16 @@ OpenRouter feed clones are managed separately from rollout aliases:
 }
 ```
 
-`source_model` must be an active standard alias. The clone appears in both
-`GET /v1/models/openrouter` and the normal `GET /v1/models` catalog. OpenRouter
-and ordinary consumers can send the clone's `id` to the inference API, where it
-resolves through the source alias's current desired/previous build pointers.
-The source supplies pricing, context limits, features, readiness, capacity,
-datacenters, and every other applicable response field. Future source build
-migrations therefore update the clone automatically; only `id`,
-`openrouter.slug`, and `hugging_face_id` differ where those fields are exposed.
+`source_model` must be either an active standard alias or an active concrete
+catalog model. A standard-alias source follows its desired/previous rollout
+pointers. A concrete source routes directly to that model and remains listed
+beside the clone; the OpenRouter-only alias never drives provider convergence,
+hides its source, or becomes the source build's canonical public name.
+
+The clone appears in both `GET /v1/models/openrouter` and the normal
+`GET /v1/models` catalog. The source supplies pricing, context limits, features,
+readiness, capacity, datacenters, and every other applicable response field;
+only `id`, `openrouter.slug`, and `hugging_face_id` differ where exposed.
 
 ## Admin model actions
 

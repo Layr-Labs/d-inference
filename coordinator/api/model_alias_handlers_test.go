@@ -151,7 +151,7 @@ func TestAliasModelEntriesHidesBuilds(t *testing.T) {
 		"gemma-4-26b-retired": {ModelID: "gemma-4-26b-retired", RoutableProviders: 10, WarmProviders: 10, CanAccept: true},
 	}
 
-	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID)
+	entries, hidden := srv.aliasModelEntries(capByModel, catalogByID, registryByID, nil)
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("expected one alias entry, got %+v", entries)
 	}
@@ -203,7 +203,7 @@ func TestAliasModelEntriesDesiredNotInCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}}
-	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	entries, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID, nil)
 	if len(entries) != 1 || entries[0].ID != "gemma-4-26b" {
 		t.Fatalf("only the alias with an in-catalog build should list, got %+v", entries)
 	}
@@ -984,7 +984,7 @@ func TestListModelsHidesRetiredAliasBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	catalogByID := map[string]store.SupportedModel{aliasFP8: {ID: aliasFP8, Active: true, ModelType: "text"}, aliasQAT: {ID: aliasQAT, Active: true, ModelType: "text"}}
-	_, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID)
+	_, hidden := srv.aliasModelEntries(map[string]*registry.ModelCapacity{}, catalogByID, registryByID, nil)
 	if _, ok := hidden[aliasFP8]; !ok {
 		t.Fatalf("retired build should be in the hidden set: %v", hidden)
 	}
@@ -1185,6 +1185,109 @@ func TestOpenRouterAliasClonesSourceEntry(t *testing.T) {
 	srv.Handler().ServeHTTP(deleteRec, deleteReq)
 	if deleteRec.Code != http.StatusOK || reg.IsAlias(paidAlias) {
 		t.Fatalf("delete OpenRouter alias: status=%d still_registered=%v body=%s", deleteRec.Code, reg.IsAlias(paidAlias), deleteRec.Body.String())
+	}
+}
+
+// A concrete source remains independently listed while its OpenRouter-only
+// clone shares routing, pricing, capacity, and every non-identity feed field.
+func TestOpenRouterAliasClonesConcreteModel(t *testing.T) {
+	t.Setenv("MODEL_REGISTRY_PUBLISHING_KEY", "publish-secret")
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	st := store.NewMemory(store.Config{})
+	reg := registry.New(logger)
+	srv := NewServer(reg, st, ServerConfig{}, logger)
+
+	const (
+		sourceID = "gpt-oss-20b"
+		aliasID  = "openai-gpt-oss-20b"
+		slug     = "openai/gpt-oss-20b"
+		hfID     = "openai/gpt-oss-20b"
+	)
+	seedActiveModel(t, st, sourceID, "GPT-OSS 20B")
+	if err := st.SetModelPrice("platform", sourceID, 20_000, 100_000); err != nil {
+		t.Fatal(err)
+	}
+	srv.SyncModelCatalog()
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	conn := connectAndPrepareProvider(t, ctx, ts.URL, reg, sourceID, testPublicKeyB64(), 50.0)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	body, _ := json.Marshal(map[string]any{
+		"id": aliasID, "source_model": sourceID,
+		"openrouter_slug": slug, "hugging_face_id": hfID,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/admin/models/openrouter-aliases", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer publish-secret")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create concrete-source OpenRouter alias: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	if build, isAlias, ok := reg.ResolveModel(aliasID); !ok || !isAlias || build != sourceID {
+		t.Fatalf("resolve clone = %q isAlias=%v ok=%v, want concrete source %q", build, isAlias, ok, sourceID)
+	}
+	if got := reg.PublicNameForBuild(sourceID); got != sourceID {
+		t.Fatalf("OpenRouter alias became canonical name: got %q want %q", got, sourceID)
+	}
+
+	listRec := httptest.NewRecorder()
+	srv.handleListModels(listRec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listResp types.ModelListResponse
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listResp); err != nil {
+		t.Fatal(err)
+	}
+	listByID := make(map[string]types.ModelEntry, len(listResp.Data))
+	for _, model := range listResp.Data {
+		listByID[model.ID] = model
+	}
+	sourceModel, sourceOK := listByID[sourceID]
+	aliasModel, aliasOK := listByID[aliasID]
+	if !sourceOK || !aliasOK {
+		t.Fatalf("source and clone must both remain in /v1/models: %+v", listResp.Data)
+	}
+	if aliasModel.Pricing == nil || aliasModel.Pricing.Prompt != "0.00000002" || aliasModel.Pricing.Completion != "0.0000001" {
+		t.Fatalf("clone pricing = %+v", aliasModel.Pricing)
+	}
+	aliasModel.ID = sourceModel.ID
+	aliasModel.HuggingFaceID = sourceModel.HuggingFaceID
+	if !reflect.DeepEqual(aliasModel, sourceModel) {
+		t.Fatalf("main catalog clone differs beyond identities: source=%+v clone=%+v", sourceModel, aliasModel)
+	}
+
+	openRouterRec := httptest.NewRecorder()
+	srv.handleListModelsOpenRouter(openRouterRec, httptest.NewRequest(http.MethodGet, "/v1/models/openrouter", nil))
+	if openRouterRec.Code != http.StatusOK {
+		t.Fatalf("OpenRouter feed status = %d body=%s", openRouterRec.Code, openRouterRec.Body.String())
+	}
+	var openRouterResp types.OpenRouterModelsResponse
+	if err := json.Unmarshal(openRouterRec.Body.Bytes(), &openRouterResp); err != nil {
+		t.Fatal(err)
+	}
+	openRouterByID := make(map[string]types.OpenRouterModel, len(openRouterResp.Data))
+	for _, model := range openRouterResp.Data {
+		openRouterByID[model.ID] = model
+	}
+	sourceFeed, sourceOK := openRouterByID[sourceID]
+	aliasFeed, aliasOK := openRouterByID[aliasID]
+	if !sourceOK || !aliasOK {
+		t.Fatalf("source and clone must both remain in OpenRouter feed: %+v", openRouterResp.Data)
+	}
+	if aliasFeed.HuggingFaceID != hfID || aliasFeed.OpenRouter == nil || aliasFeed.OpenRouter.Slug != slug {
+		t.Fatalf("clone identities: hugging_face_id=%q openrouter=%+v", aliasFeed.HuggingFaceID, aliasFeed.OpenRouter)
+	}
+	aliasFeed.ID = sourceFeed.ID
+	aliasFeed.HuggingFaceID = sourceFeed.HuggingFaceID
+	aliasFeed.OpenRouter = sourceFeed.OpenRouter
+	if !reflect.DeepEqual(aliasFeed, sourceFeed) {
+		t.Fatalf("OpenRouter clone differs beyond identities: source=%+v clone=%+v", sourceFeed, aliasFeed)
 	}
 }
 

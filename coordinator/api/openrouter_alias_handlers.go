@@ -9,8 +9,8 @@ import (
 )
 
 // openRouterAliasUpsertRequest configures one OpenRouter-only clone of an
-// existing standard model alias. OpenRouter sends ID to the inference API;
-// SourceModel supplies every non-identity feed field and the live routing target.
+// existing standard alias or concrete catalog model. OpenRouter sends ID to the
+// inference API; SourceModel supplies every non-identity feed field and routing.
 type openRouterAliasUpsertRequest struct {
 	ID             string `json:"id"`
 	SourceModel    string `json:"source_model"`
@@ -61,11 +61,20 @@ func (s *Server) handleOpenRouterAliasUpsert(w http.ResponseWriter, r *http.Requ
 
 	source, found, err := s.store.GetModelAlias(req.SourceModel)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get source alias"))
+		writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get source model"))
 		return
 	}
-	if !found || source.OpenRouterOnly || !source.Active || source.DesiredBuild == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "source_model must be an active standard model alias", withParam("source_model")))
+	sourceAvailable := found && !source.OpenRouterOnly && source.Active && source.DesiredBuild != ""
+	if !found {
+		catalogByID, _, catalogErr := s.activeCatalogLookups()
+		if catalogErr != nil {
+			writeJSON(w, http.StatusInternalServerError, errorResponse("internal_error", "failed to get source model"))
+			return
+		}
+		_, sourceAvailable = catalogByID[req.SourceModel]
+	}
+	if !sourceAvailable {
+		writeJSON(w, http.StatusBadRequest, errorResponse("invalid_request_error", "source_model must be an active standard alias or concrete catalog model", withParam("source_model")))
 		return
 	}
 	if rec, _ := s.store.GetModelRegistryRecord(req.ID); rec != nil {

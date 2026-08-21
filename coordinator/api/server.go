@@ -1025,20 +1025,27 @@ func (s *Server) SyncModelCatalog() {
 	s.registry.SetModelCatalog(entries)
 	s.logger.Info("model registry catalog synced to registry", "active_models", len(entries))
 
-	s.syncModelAliases()
+	s.syncModelAliases(registryRows)
 	s.invalidateCatalogCache()
 }
 
 // syncModelAliases loads standard rollout aliases first, then resolves
-// OpenRouter-only aliases through their source alias. The latter route requests
-// but do not participate in provider convergence or canonical public naming.
-func (s *Server) syncModelAliases() {
+// OpenRouter-only aliases through either a standard alias or an active concrete
+// catalog model. OpenRouter-only targets route requests but do not participate
+// in provider convergence or canonical public naming.
+func (s *Server) syncModelAliases(registryRows []store.ModelRegistryRecord) {
 	aliases, err := s.store.ListModelAliases()
 	if err != nil {
 		s.logger.Error("model alias sync failed", "error", err)
 		return
 	}
 	resolved := make(map[string]registry.AliasTarget, len(aliases))
+	activeConcreteModels := make(map[string]struct{}, len(registryRows))
+	for _, row := range registryRows {
+		if row.ActiveVersion != nil {
+			activeConcreteModels[row.ID] = struct{}{}
+		}
+	}
 	for _, a := range aliases {
 		if !a.Active || a.OpenRouterOnly || a.DesiredBuild == "" {
 			continue
@@ -1055,7 +1062,13 @@ func (s *Server) syncModelAliases() {
 		}
 		target, ok := resolved[a.SourceModel]
 		if !ok {
-			s.logger.Warn("OpenRouter alias source is not an active standard alias", "alias_id", a.AliasID, "source_model", a.SourceModel)
+			if _, concrete := activeConcreteModels[a.SourceModel]; concrete {
+				target = registry.AliasTarget{Desired: a.SourceModel}
+				ok = true
+			}
+		}
+		if !ok {
+			s.logger.Warn("OpenRouter alias source is unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
 			continue
 		}
 		target.OpenRouterOnly = true

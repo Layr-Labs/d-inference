@@ -57,42 +57,10 @@ func (s *Server) handleListModelsOpenRouter(w http.ResponseWriter, r *http.Reque
 		if _, hidden := hiddenBuilds[id]; hidden {
 			continue
 		}
-		cm := catalogByID[id]
-		// Text-only feed: prefer the provider-reported type, fall back to the
-		// catalog type. Excludes only known non-text modalities
-		// (embedding/tts/image/audio/rerank); text/chat/unknown stay listed.
-		modelType := cm.ModelType
-		if at, ok := aggTypeByID[id]; ok {
-			modelType = at
-		}
-		if isNonTextModelType(modelType) {
+		entry, ok := s.openRouterEntryForConcrete(id, catalogByID, registryByID, aggTypeByID)
+		if !ok {
 			continue
 		}
-
-		reg, hasReg := registryByID[id]
-		entry := types.OpenRouterModel{
-			ID:                id,
-			HuggingFaceID:     huggingFaceIDForModel(id, reg.Metadata),
-			Name:              openRouterModelName(cm, reg, hasReg, id),
-			InputModalities:   []string{"text"},
-			OutputModalities:  []string{"text"},
-			SupportedFeatures: []string{},
-			IsReady:           true,
-		}
-		// Quantization comes from the registry entry (the catalog row carries
-		// none); legacy rows simply omit it.
-		s.openRouterModelFieldsFor(id, reg.Quantization, reg, hasReg).applyToFeed(&entry)
-
-		// is_ready is a launch/staging flag and the slug is per-model; both
-		// come from registry metadata (defaults apply for legacy rows).
-		if hasReg {
-			entry.IsReady = openRouterIsReady(reg.Metadata)
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(id, reg.Metadata)}
-		} else {
-			entry.OpenRouter = &types.OpenRouterSlug{Slug: openRouterSlug(id, nil)}
-		}
-		entry.Datacenters = s.modelDatacenters(id)
-
 		data = append(data, entry)
 	}
 
@@ -193,10 +161,13 @@ func (s *Server) openRouterAliasEntries(
 	}
 
 	// OpenRouter-only aliases clone the complete source entry, then replace only
-	// the three configured identities. This keeps pricing, limits, features,
-	// readiness, and datacenters exactly synchronized with the source alias.
+	// the three configured identities. Standard sources carry rollout behavior;
+	// concrete sources remain independently listed and route directly.
 	for _, a := range openRouterAliases {
 		source, ok := standardEntries[a.SourceModel]
+		if !ok {
+			source, ok = s.openRouterEntryForConcrete(a.SourceModel, catalogByID, registryByID, aggTypeByID)
+		}
 		if !ok || a.OpenRouterSlug == "" || a.HuggingFaceID == "" {
 			s.logger.Warn("OpenRouter alias source or identities unavailable", "alias_id", a.AliasID, "source_model", a.SourceModel)
 			continue

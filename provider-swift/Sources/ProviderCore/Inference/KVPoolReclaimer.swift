@@ -48,6 +48,15 @@ actor KVPoolReclaimer {
     /// Total flushes performed (test observability).
     private(set) var reclaimCount = 0
 
+    /// Total sweep signals received, counted BEFORE the threshold gate —
+    /// wiring observability, so the periodic drivers (ProviderLoop's
+    /// capacity-refresh tick, StandaloneServer's sweep task) can be asserted
+    /// to actually signal this reclaimer without needing a multi-GiB real
+    /// MLX pool in the test process. The v0.7.5 regression this guards
+    /// against: the sweep's only caller was deleted with the legacy engine
+    /// and the pool grew unbounded in the field.
+    private(set) var sweepSignalCount = 0
+
     static let defaultMinInterval: Duration = .seconds(1)
     /// 2 GiB: a pool this large is materially eating admission headroom; below it
     /// the on-pressure path (which gates on the exact shortfall) handles flushing.
@@ -98,6 +107,7 @@ actor KVPoolReclaimer {
     /// headroom healthy under sustained load so most admissions never near-miss.
     @discardableResult
     func sweep() -> Bool {
+        sweepSignalCount += 1
         guard reclaimableBytes() >= proactiveThresholdBytes else { return false }
         return flushIfDue()
     }

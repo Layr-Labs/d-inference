@@ -52,6 +52,16 @@ extension ProviderLoop {
 
     /// One capacity-monitor tick, isolated on the loop actor.
     internal func capacityRefreshTick() async {
+        // Proactive trim of the MLX reclaimable buffer pool (DAR-338). Freed
+        // KV/activation buffers otherwise sit in MLX's cache up to the cache
+        // limit and are never returned to the OS — under sustained serving the
+        // pool grows monotonically (each completed request parks its buffers)
+        // until macOS memory pressure fires. The legacy engine's liveness
+        // watchdog drove this sweep every 2s until the v0.7.5 engine deletion
+        // removed it with its host; this tick is that watchdog's documented
+        // successor. Non-blocking: only signals the off-actor reclaimer
+        // (rate-limited, threshold-gated); the GPU sync never runs here.
+        kvBudget.proactiveReclaimSweep()
         await updateAggregateCapacity()
         await recoverWedgedEngineV2Slots()
         writeDaemonState()

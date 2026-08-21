@@ -96,6 +96,31 @@ struct KVPoolReclaimerTests {
         #expect(await reclaimer.reclaimCount == 1)
     }
 
+    @Test("sweep signals are counted even when the threshold gate skips the flush")
+    func sweepSignalCountTracksWiring() async {
+        // `sweepSignalCount` is the wiring seam the periodic drivers
+        // (ProviderLoop capacity tick, StandaloneServer sweep task) are
+        // asserted through — it must tick on EVERY signal, flushed or gated,
+        // or a test-process pool below the threshold would hide a lost caller
+        // (the v0.7.5 regression this observability exists for).
+        let spy = ReclaimSpy(reclaimable: 0)
+        let reclaimer = KVPoolReclaimer(
+            clearCache: { spy.clear() },
+            reclaimableBytes: { spy.reclaimable },
+            minInterval: .zero,
+            proactiveThresholdBytes: 2 * gib)
+
+        #expect(await reclaimer.sweepSignalCount == 0)
+        #expect(!(await reclaimer.sweep()))              // empty pool: flush gated out…
+        #expect(await reclaimer.sweepSignalCount == 1)   // …but the signal is counted
+        #expect(await reclaimer.reclaimCount == 0)
+
+        spy.reclaimable = 3 * gib
+        #expect(await reclaimer.sweep())
+        #expect(await reclaimer.sweepSignalCount == 2)
+        #expect(await reclaimer.reclaimCount == 1)
+    }
+
     @Test("the on-pressure and proactive paths share one rate-limit window")
     func sweepAndReclaimShareRateLimit() async {
         let spy = ReclaimSpy(reclaimable: 4 * gib, shrinkOnClear: false)

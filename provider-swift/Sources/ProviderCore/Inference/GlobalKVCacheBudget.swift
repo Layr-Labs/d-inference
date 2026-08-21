@@ -407,23 +407,13 @@ public actor GlobalKVCacheBudget {
         rejectionStreakStart = nil
     }
 
-    /// Signal the off-actor reclaimer to flush the reclaimable MLX pool for a
-    /// shortfall observed by the scheduler's token-budget gate. Non-blocking and
-    /// `nonisolated` (it touches no actor state — only the immutable reclaimer),
-    /// so the caller doesn't even hop this actor: the GPU sync runs on the
-    /// reclaimer, never here (it used to run inline as a blocking synchronize,
-    /// which wedged the admission actor). The reclaimer gates on whether the pool
-    /// can cover the shortfall and rate-limits, so this is an unconditional
-    /// fire-and-forget.
-    public nonisolated func reclaimForShortfall(_ shortfall: UInt64) {
-        guard shortfall > 0 else { return }
-        reclaimer.scheduleReclaim(shortfall: shortfall)
-    }
-
     /// Trigger a proactive, rate-limited, threshold-gated background sweep of the
     /// reclaimable MLX pool so admission headroom stays healthy under sustained
-    /// load without any inline flush. Non-blocking and `nonisolated`. Called
-    /// periodically by the scheduler watchdog while a model is loaded.
+    /// load without any inline flush, and freed KV/activation buffers are
+    /// returned to the OS instead of accumulating below the cache limit.
+    /// Non-blocking and `nonisolated` (it touches no actor state — only the
+    /// immutable reclaimer). Driven periodically by ProviderLoop's
+    /// capacity-refresh tick and StandaloneServer's sweep task.
     public nonisolated func proactiveReclaimSweep() {
         reclaimer.scheduleSweep()
     }

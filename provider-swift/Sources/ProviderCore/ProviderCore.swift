@@ -228,5 +228,10 @@ public enum ProviderCore {
     // shipped from the v0.8.5 release branch but was absent from master and
     // therefore v0.8.6. Text-only system turns are folded into Qwen's required
     // leading system slot; structured/media system content remains fail-closed.
-    public static let version = "0.8.7"
+    // 0.8.8 enables the merged upstream qmv_wide route automatically for
+    // generation-15+ affine small-M projections. M=1 remains on ordinary QMV,
+    // matrix-sized inputs remain on QMM, and gathered expert projections are
+    // unchanged. Existing Gemma and CBv2 default-on optimization postures stay
+    // enabled; no beta flag or provider-config migration is required.
+    public static let version = "0.8.8"
 }

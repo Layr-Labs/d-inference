@@ -83,6 +83,14 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4"])
     }
 
+    @Test func forwardsQwenDirectReductionRollbackToDaemon() {
+        let out = LaunchAgent.passthroughEnvironment(from: [
+            GemmaOptimizationEnvironment.qwenDirectExpertReductionKey: "0",
+            "PATH": "/usr/bin",
+        ])
+        #expect(out == [GemmaOptimizationEnvironment.qwenDirectExpertReductionKey: "0"])
+    }
+
     @Test func excludesConfigBackedGemmaControlsFromDaemonEnvironment() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             "DARKBLOOM_PREFIX_CACHE": "0",

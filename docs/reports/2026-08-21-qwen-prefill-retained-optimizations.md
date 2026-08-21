@@ -35,7 +35,7 @@ Measured progression on the earlier qualification branch:
 | 32K | 28,529.06 ms | 26,681.86 ms | 6.5% |
 
 The dedicated packed-W4 parity test measured zero difference for QKV/Z and
-approximately `3.1e-6` for the small A/B projections.
+below `4.6e-6` for the small A/B projections.
 
 ### Direct weighted expert unsort reduction
 
@@ -61,7 +61,7 @@ expert projections dominate the MoE layer.
 Line ranges are anchored to `mlx-swift-lm` branch `perf/qwen-prefill-retained` and should be
 re-anchored by symbol after later edits:
 
-- GDN projection topology, quantization guards, and fused projection:
+- GDN projection inference-only quantization guards and fused projection:
   `Libraries/MLXLLM/Models/Qwen35.swift:306-396`
   (`exactQuantizedInputProjections`, `makeFusedInputProjection`, `projectInputs`).
 - Batched Qwen MoE flattening and direct-reduction caller:

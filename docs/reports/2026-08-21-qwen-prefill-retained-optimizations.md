@@ -58,14 +58,14 @@ expert projections dominate the MoE layer.
 
 ## Canonical implementation
 
-Line ranges are anchored to `mlx-swift-lm` branch `perf/qwen-prefill-retained` and should be
+Line ranges are anchored to `mlx-swift-lm` merged commit `1483827b6c39e219685e0b5f3cf52b18a167ec00` and should be
 re-anchored by symbol after later edits:
 
 - GDN projection inference-only quantization guards and fused projection:
-  `Libraries/MLXLLM/Models/Qwen35.swift:306-396`
+  `Libraries/MLXLLM/Models/Qwen35.swift:306-516`
   (`exactQuantizedInputProjections`, `makeFusedInputProjection`, `projectInputs`).
 - Batched Qwen MoE flattening and direct-reduction caller:
-  `Libraries/MLXLLM/Models/Qwen35.swift:1195-1266`
+  `Libraries/MLXLLM/Models/Qwen35.swift:1311-1382`
   (`qwen35FlattenMoEInputs`, `Qwen35SparseMoeBlock.callAsFunction`).
 - Default enablement and rollback parsing:
   `Libraries/MLXLMCommon/SwitchLayers.swift:261-266`

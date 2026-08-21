@@ -52,8 +52,8 @@ flowchart LR
 
 ## Canonical implementation
 
-- GDN fusion: `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:306-396`
-- Batched MoE flattening/caller: `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:1195-1266`
+- GDN fusion: `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:306-516`
+- Batched MoE flattening/caller: `mlx-swift-lm/Libraries/MLXLLM/Models/Qwen35.swift:1311-1382`
 - Direct-reduction default/rollback: `mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift:261-266`
 - Eligibility/fallback: `mlx-swift-lm/Libraries/MLXLMCommon/SwitchLayers.swift:493-581`
 

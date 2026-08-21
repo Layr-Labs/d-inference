@@ -58,11 +58,18 @@ struct KVPoolSweepWiringTests {
         #expect(signalled, "start() must spawn the periodic sweep task")
 
         // The sweep task dies with the server: after stop(), the signal
-        // count must go quiet (one in-flight signal may still land).
-        let after = await server.debugKVSweepSignalCount()
-        try await taskSleep(.milliseconds(100))
-        let later = await server.debugKVSweepSignalCount()
-        #expect(later <= after + 1, "the sweep task must stop with the server")
+        // stream quiesces. Already-spawned fire-and-forget signal tasks may
+        // still land right after stop, so poll until the count holds still
+        // for 100ms — ten idle sweep cycles at this test's 10ms cadence, so
+        // a still-alive task cannot fake it — rather than assuming a fixed
+        // in-flight allowance.
+        let quiesced = await pollUntil {
+            let before = await server.debugKVSweepSignalCount()
+            try? await taskSleep(.milliseconds(100))
+            let after = await server.debugKVSweepSignalCount()
+            return before == after
+        }
+        #expect(quiesced, "the sweep task must stop with the server")
     }
 }
 

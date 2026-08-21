@@ -23,7 +23,8 @@ public enum MLXMemoryGuard {
     /// to the OS (observed in the field as 377 GB of Metal allocation for a
     /// ~21 GB model). 8 GiB keeps steady-state buffer reuse while bounding the
     /// hoard on every machine size; `DARKBLOOM_MLX_CACHE_LIMIT_GB` overrides in
-    /// either direction (floored at 1 GiB, capped at the memory limit).
+    /// either direction (floored at 1 GiB, bounded above by cacheFraction ×
+    /// memoryLimit — a raise can restore the old pool size, not exceed it).
     public static let defaultCacheLimitGB: UInt64 = 8
 
     /// Floor so a tiny/misreported machine never gets a pathological limit.

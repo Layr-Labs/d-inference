@@ -285,16 +285,15 @@ public enum UnifiedMemoryCap {
     /// Activation reserve from explicit bytes, env
     /// `DARKBLOOM_ACTIVATION_RESERVE_GB` (GB), or ``defaultActivationReserveBytes``.
     ///
-    /// The env override is RAISE-ONLY, enforced, not just documented: the
-    /// resolved value is `max(env, default)`. A value below the floor —
-    /// most likely a legacy `3` set when 3 GiB WAS the default — would
-    /// silently recreate the B=8 activation OOM the 5.5 GiB floor exists to
-    /// prevent, while the coordinator keeps predicting capacity with the
-    /// floor (`servability.go`). A `<= 0` or non-finite env value is
-    /// likewise treated as UNSET (→ the floor): a `0` reserve would remove
-    /// the activation headroom the cap exists to guarantee. An explicit
-    /// programmatic value (tests) is honored as given, below the floor
-    /// included — test fixtures legitimately model small boxes.
+    /// The env override sets the reserve directly. A `<= 0` or non-finite
+    /// env value is treated as UNSET (→ the floor). Operators serving a
+    /// single model with a lower activation peak (e.g. gpt-oss-20b at 2.56
+    /// GiB B=8 vs gemma-4 at 5.05 GiB) may set this below the default to
+    /// reclaim KV budget — but must size it against their model's measured
+    /// peak, not guess. The coordinator must be updated in lockstep when
+    /// changing this on a fleet provider. An explicit programmatic value
+    /// (tests) is honored as given, below the floor included — test
+    /// fixtures legitimately model small boxes.
     static func resolvedActivationReserveBytes(
         explicit: UInt64? = nil,
         env: [String: String] = ProcessInfo.processInfo.environment
@@ -304,7 +303,7 @@ public enum UnifiedMemoryCap {
             gb.isFinite, gb > 0 {
             let scaled = gb * 1_073_741_824
             let bytes = scaled >= uint64MaxAsDouble ? UInt64.max : UInt64(scaled)
-            return max(bytes, defaultActivationReserveBytes)
+            return bytes
         }
         return defaultActivationReserveBytes
     }

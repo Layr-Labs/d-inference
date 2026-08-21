@@ -360,6 +360,19 @@ type BackendSlotCapacity struct {
 	IdleClearInFlightMs        int64   `json:"idle_clear_in_flight_ms,omitempty"`        // ms the current idle GPU drain+clearCache has run for this slot; seconds-range = clearCache/IOKit race
 }
 
+// MLXCacheReclaimerTelemetry reports cumulative provider allocator-reclaim
+// counters. Values reset on provider process restart. Reclaimed byte deltas are
+// best-effort observations around MLX clearCache; active allocations are never
+// included.
+type MLXCacheReclaimerTelemetry struct {
+	CacheLimitBytes       uint64 `json:"cache_limit_bytes"`
+	SweepSignals          uint64 `json:"sweep_signals"`
+	Reclaims              uint64 `json:"reclaims"`
+	ReclaimedBytes        uint64 `json:"reclaimed_bytes"`
+	LastReclaimedBytes    uint64 `json:"last_reclaimed_bytes"`
+	LastReclaimDurationMS uint64 `json:"last_reclaim_duration_ms"`
+}
+
 // BackendCapacity describes the aggregate capacity across all backend slots
 // on a provider. Reported in heartbeats so the coordinator can make informed
 // routing decisions based on actual GPU utilization rather than hardcoded limits.
@@ -377,6 +390,8 @@ type BackendCapacity struct {
 	// re-derives free memory). A pointer so a legacy provider that doesn't report
 	// it is nil (→ coordinator falls back to the total-memory heuristic).
 	FreeForLoadGB *float64 `json:"free_for_load_gb,omitempty"`
+	// MLXCacheReclaimer is nil for providers predating allocator telemetry.
+	MLXCacheReclaimer *MLXCacheReclaimerTelemetry `json:"mlx_cache_reclaimer,omitempty"`
 }
 
 // SystemMetrics contains live resource utilization reported by a provider.

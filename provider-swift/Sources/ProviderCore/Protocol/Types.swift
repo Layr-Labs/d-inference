@@ -704,6 +704,43 @@ public struct BackendSlotCapacity: Codable, Sendable, Equatable {
     }
 }
 
+/// Cumulative MLX buffer-pool reclaim telemetry. Counters reset when the
+/// provider process restarts. Byte deltas are observed immediately around
+/// `Memory.clearCache()` and therefore exclude active allocations.
+public struct MLXCacheReclaimerTelemetry: Codable, Sendable, Equatable {
+    public var cacheLimitBytes: UInt64
+    public var sweepSignals: UInt64
+    public var reclaims: UInt64
+    public var reclaimedBytes: UInt64
+    public var lastReclaimedBytes: UInt64
+    public var lastReclaimDurationMs: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case cacheLimitBytes = "cache_limit_bytes"
+        case sweepSignals = "sweep_signals"
+        case reclaims
+        case reclaimedBytes = "reclaimed_bytes"
+        case lastReclaimedBytes = "last_reclaimed_bytes"
+        case lastReclaimDurationMs = "last_reclaim_duration_ms"
+    }
+
+    public init(
+        cacheLimitBytes: UInt64,
+        sweepSignals: UInt64,
+        reclaims: UInt64,
+        reclaimedBytes: UInt64,
+        lastReclaimedBytes: UInt64,
+        lastReclaimDurationMs: UInt64
+    ) {
+        self.cacheLimitBytes = cacheLimitBytes
+        self.sweepSignals = sweepSignals
+        self.reclaims = reclaims
+        self.reclaimedBytes = reclaimedBytes
+        self.lastReclaimedBytes = lastReclaimedBytes
+        self.lastReclaimDurationMs = lastReclaimDurationMs
+    }
+}
+
 public struct BackendCapacity: Codable, Sendable, Equatable {
     public var slots: [BackendSlotCapacity]
     public var gpuMemoryActiveGb: Double
@@ -718,6 +755,9 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
     /// re-deriving free memory from the gpu/total figures. 0 means "cannot load
     /// anything new right now".
     public var freeForLoadGb: Double
+    /// Optional so coordinators and tooling can distinguish providers with the
+    /// reclaimer instrumentation from older providers whose counters are unknown.
+    public var mlxCacheReclaimer: MLXCacheReclaimerTelemetry?
 
     enum CodingKeys: String, CodingKey {
         case slots
@@ -726,6 +766,7 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         case gpuMemoryCacheGb = "gpu_memory_cache_gb"
         case totalMemoryGb = "total_memory_gb"
         case freeForLoadGb = "free_for_load_gb"
+        case mlxCacheReclaimer = "mlx_cache_reclaimer"
     }
 
     public init(
@@ -734,7 +775,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         gpuMemoryPeakGb: Double,
         gpuMemoryCacheGb: Double,
         totalMemoryGb: Double,
-        freeForLoadGb: Double = 0
+        freeForLoadGb: Double = 0,
+        mlxCacheReclaimer: MLXCacheReclaimerTelemetry? = nil
     ) {
         self.slots = slots
         self.gpuMemoryActiveGb = gpuMemoryActiveGb
@@ -742,10 +784,11 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = gpuMemoryCacheGb
         self.totalMemoryGb = totalMemoryGb
         self.freeForLoadGb = freeForLoadGb
+        self.mlxCacheReclaimer = mlxCacheReclaimer
     }
 
-    // Explicit decode so older payloads without `free_for_load_gb` still decode
-    // (defaults to 0). Encoding stays synthesized and always emits the field.
+    // Explicit decode so older payloads without `free_for_load_gb` or
+    // `mlx_cache_reclaimer` still decode. Encoding stays synthesized.
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.slots = try c.decode([BackendSlotCapacity].self, forKey: .slots)
@@ -754,6 +797,8 @@ public struct BackendCapacity: Codable, Sendable, Equatable {
         self.gpuMemoryCacheGb = try c.decode(Double.self, forKey: .gpuMemoryCacheGb)
         self.totalMemoryGb = try c.decode(Double.self, forKey: .totalMemoryGb)
         self.freeForLoadGb = try c.decodeIfPresent(Double.self, forKey: .freeForLoadGb) ?? 0
+        self.mlxCacheReclaimer = try c.decodeIfPresent(
+            MLXCacheReclaimerTelemetry.self, forKey: .mlxCacheReclaimer)
     }
 }
 

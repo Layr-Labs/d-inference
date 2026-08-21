@@ -509,11 +509,12 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 				}
 			}
 			s.registry.Heartbeat(providerID, hbMsg)
-			// First-token-wedge observability (measurement only): surface the
-			// accepted engine-health signal as a Datadog counter. Use the
-			// registry snapshot, never the raw heartbeat: its slot model IDs have
-			// been constrained to this connection's coordinator-known inventory.
-			s.recordBackendWedgeTelemetry(provider.BackendCapacitySnapshot())
+			// Emit only from the accepted registry snapshot: malformed values
+			// have been clamped and slot model IDs constrained to this
+			// connection's coordinator-known inventory.
+			capacity := provider.BackendCapacitySnapshot()
+			s.recordBackendWedgeTelemetry(capacity)
+			s.recordMLXCacheTelemetry(providerID, capacity)
 			// W5 Fix 2 (2a): a late/changed APNs token carried in the heartbeat
 			// re-arms a code-identity challenge WITHOUT a reconnect.
 			s.maybeRearmCodeAttest(loopCtx, providerID, provider, hbMsg)

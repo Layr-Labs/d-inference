@@ -58,6 +58,8 @@ func canonicalHeartbeatModelState(
 		freeForLoadGB := *reportedCapacity.FreeForLoadGB
 		capacity.FreeForLoadGB = &freeForLoadGB
 	}
+	capacity.MLXCacheReclaimer = cloneMLXCacheReclaimerTelemetry(
+		reportedCapacity.MLXCacheReclaimer)
 	if reportedCapacity.Slots != nil {
 		slotLimit := len(reportedCapacity.Slots)
 		if slotLimit > len(accepted) {
@@ -105,6 +107,8 @@ func (p *Provider) BackendCapacitySnapshot() *protocol.BackendCapacity {
 		freeForLoadGB := *p.BackendCapacity.FreeForLoadGB
 		capacity.FreeForLoadGB = &freeForLoadGB
 	}
+	capacity.MLXCacheReclaimer = cloneMLXCacheReclaimerTelemetry(
+		p.BackendCapacity.MLXCacheReclaimer)
 	if p.BackendCapacity.Slots != nil {
 		capacity.Slots = make([]protocol.BackendSlotCapacity, len(p.BackendCapacity.Slots))
 		for index, retainedSlot := range p.BackendCapacity.Slots {
@@ -121,4 +125,14 @@ func (p *Provider) BackendCapacitySnapshot() *protocol.BackendCapacity {
 		}
 	}
 	return &capacity
+}
+
+func cloneMLXCacheReclaimerTelemetry(
+	in *protocol.MLXCacheReclaimerTelemetry,
+) *protocol.MLXCacheReclaimerTelemetry {
+	if in == nil {
+		return nil
+	}
+	copy := *in
+	return &copy
 }

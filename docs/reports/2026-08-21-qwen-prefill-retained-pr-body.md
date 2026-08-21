@@ -7,7 +7,7 @@ router fusion, and the rejected MoE Mega-Kernel experiments.
 Retained:
 
 - fuse the four GDN input projections into one quantized QMM;
-- add Qwen direct sorted-expert weighted reduction behind a qualification flag;
+- enable Qwen direct sorted-expert weighted reduction by default with an explicit rollback flag;
 - include parity and isolated performance tests.
 
 ## Before
@@ -44,7 +44,7 @@ flowchart LR
   subgraph Code_after[Code]
     Q2[Qwen35GatedDeltaNet.projectInputs] --> Fused[QuantizedLinear fused weights/scales/biases]
     Fused --> Views[QKV / Z / beta / decay views]
-    S2[SwitchGLU.callAndWeightedReduce] --> Gate{Qwen qualification flag}
+    S2[SwitchGLU.callAndWeightedReduce] --> Gate{Exact Qwen production shape}
     Gate -->|on and exact production shape| Direct[weightedExpertUnsort]
     Gate -->|otherwise| Legacy2[legacy fallback]
   end

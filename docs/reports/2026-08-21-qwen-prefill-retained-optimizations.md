@@ -41,8 +41,8 @@ approximately `3.1e-6` for the small A/B projections.
 
 Qwen's sorted expert output is reduced through the inverse permutation directly
 into `[tokens, hidden]`, avoiding the `[tokens, topK, hidden]` assignment-order
-intermediate. This remains behind `MLX_QWEN_DIRECT_EXPERT_REDUCTION` while full-model
-qualification is completed. A paired 25-sample primitive benchmark at the exact
+intermediate. This is enabled by default. `MLX_QWEN_DIRECT_EXPERT_REDUCTION=0` restores
+the legacy assignment-tensor reduction for rollback and controlled A/B. A paired 25-sample primitive benchmark at the exact
 2048-token stripe geometry (`16,384 x 8 x 2,048` assignment tensor) measured:
 
 | Reduction | Median |
@@ -86,8 +86,8 @@ No Mega-Kernel code is present in the retained branch.
 This master-based branch is intended to produce focused PRs:
 
 1. `mlx-swift-lm`: GDN 4-in-1 fusion and parity test.
-2. `mlx-swift-lm`: direct expert reduction behind an isolated qualification
-   gate, retained only if the new A/B is positive.
+2. `mlx-swift-lm`: default-on direct expert reduction with an explicit rollback
+   environment switch.
 3. Superproject: pin the qualified `mlx-swift-lm` commit and add production
    benchmark evidence.
 

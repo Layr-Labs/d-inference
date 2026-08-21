@@ -62,10 +62,10 @@ Line ranges are anchored to `mlx-swift-lm` branch `perf/qwen-prefill-retained` a
 re-anchored by symbol after later edits:
 
 - GDN projection topology, quantization guards, and fused projection:
-  `Libraries/MLXLLM/Models/Qwen35.swift:306-391`
+  `Libraries/MLXLLM/Models/Qwen35.swift:306-396`
   (`exactQuantizedInputProjections`, `makeFusedInputProjection`, `projectInputs`).
 - Batched Qwen MoE flattening and direct-reduction caller:
-  `Libraries/MLXLLM/Models/Qwen35.swift:1190-1261`
+  `Libraries/MLXLLM/Models/Qwen35.swift:1195-1266`
   (`qwen35FlattenMoEInputs`, `Qwen35SparseMoeBlock.callAsFunction`).
 - Default enablement and rollback parsing:
   `Libraries/MLXLMCommon/SwitchLayers.swift:261-266`

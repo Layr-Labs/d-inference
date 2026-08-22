@@ -259,6 +259,17 @@ func buildDoctorChecks(
         detail: snapshot.configFileExists ? "loaded" : "missing, defaults are in memory only"
     ))
 
+    // A binary executing out of an update-staging tree reports that tree's
+    // runtime hashes, matches no registered release, and is silently derouted
+    // while every other local check stays green. FAIL, so `doctor` can never
+    // report all-clear on a machine the coordinator has fenced for it.
+    let installLocation = InstallLocation.current()
+    checks.append(.init(
+        name: "install location",
+        status: installLocation.isTransient ? .fail : .pass,
+        detail: InstallLocation.remediation(for: installLocation) ?? "live install layout"
+    ))
+
     if let cacheDir = ModelScanner.defaultCacheDirectory(),
        FileManager.default.fileExists(atPath: cacheDir.path) {
         checks.append(.init(

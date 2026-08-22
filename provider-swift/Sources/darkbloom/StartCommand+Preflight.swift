@@ -14,6 +14,16 @@ extension Start {
     internal func runPreflightChecks(snapshot: RuntimeSnapshot) throws {
         warnBootSecurity(coordinatorEnforced: true)
 
+        // Serving from an update-staging tree produces a node that looks
+        // healthy locally and is derouted by the coordinator for runtime
+        // hashes that match no release — with no local symptom to chase. Refuse
+        // before we burn a model download and hours of apparent uptime on it.
+        let installLocation = InstallLocation.current()
+        if let remediation = InstallLocation.remediation(for: installLocation) {
+            printError("This provider is \(remediation)")
+            throw ExitCode.failure
+        }
+
         let debuggerAttached = checkDebuggerAttached()
         if debuggerAttached {
             printError("A debugger is attached. The coordinator will reject this provider.")

@@ -194,7 +194,34 @@ extension UpdateRecoveryStore {
                     target: target
                 )
             }
+            try linkBaselineMetallib(bin: bin)
         }
+    }
+
+    /// MLX resolves its metallib probes against the directory of the running
+    /// executable (`dladdr` on its own symbol), which for a `$PATH` invocation
+    /// through `bin/darkbloom` is `bin/`, not the app bundle. That is why
+    /// `bin/mlx.metallib` exists at all — and why the baseline library needs
+    /// the same mirror, or a macOS 15 host loses the fallback for every
+    /// foreground command. Retired when the installed app has no baseline, so
+    /// a downgrade cannot leave a dangling probe behind.
+    private func linkBaselineMetallib(bin: URL) throws {
+        let link = bin.appendingPathComponent(
+            PackagedMetallib.baselineProbeRelativePath)
+        let installed = installRoot
+            .appendingPathComponent("Darkbloom.app")
+            .appendingPathComponent(PackagedMetallib.baselineBundleRelativePath)
+        guard fm.fileExists(atPath: installed.path) else {
+            try UpdateAtomicFilesystem.removeDurably(
+                link.deletingLastPathComponent())
+            return
+        }
+        try UpdateAtomicFilesystem.createDirectoryDurably(
+            link.deletingLastPathComponent())
+        try UpdateAtomicFilesystem.replaceSymlink(
+            at: link,
+            target: "../../Darkbloom.app/\(PackagedMetallib.baselineBundleRelativePath)"
+        )
     }
 
     /// Retire a `Darkbloom.app` left over from a prior `.app` candidate before

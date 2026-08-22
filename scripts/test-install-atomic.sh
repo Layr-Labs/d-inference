@@ -264,6 +264,9 @@ make_baseline_variant() {
             ;;
         empty-library)
             : > "$baseline"
+            # Re-sign the truncated file, or `codesign --verify --deep --strict`
+            # rejects the app first and the dedicated emptiness check never runs.
+            codesign --force --sign - "$baseline"
             ;;
         bad-marker)
             printf '0\n' > "$marker"
@@ -379,17 +382,31 @@ make_baseline_variant "$BASELINE_EMPTY_LIBRARY" empty-library
 make_baseline_variant "$BASELINE_BAD_MARKER" bad-marker
 make_baseline_variant "$BASELINE_SYMLINK" symlink
 
+# Each variant must be rejected BY THE BASELINE CHECK, not incidentally by the
+# signature check that runs before it — otherwise the coupling logic is
+# untested and a regression in it would still show a green suite. The symlink
+# case is the one exception: replacing nested signed code with a symlink is
+# also a legitimate signature failure, so either rejection is correct there.
 assert_baseline_variants_rejected() {
     local install_dir=$1
-    for archive in \
-        "$BASELINE_MISSING_LIBRARY" \
-        "$BASELINE_MISSING_MARKER" \
-        "$BASELINE_EMPTY_LIBRARY" \
-        "$BASELINE_BAD_MARKER" \
-        "$BASELINE_SYMLINK"
+    local pair archive expected output
+    for pair in \
+        "$BASELINE_MISSING_LIBRARY:must be present together" \
+        "$BASELINE_MISSING_MARKER:must be present together" \
+        "$BASELINE_EMPTY_LIBRARY:non-empty regular file" \
+        "$BASELINE_BAD_MARKER:capability marker is invalid" \
+        "$BASELINE_SYMLINK:"
     do
-        if run_install "$archive" "$install_dir"; then
+        archive=${pair%:*}
+        expected=${pair##*:}
+        if output=$(run_install "$archive" "$install_dir" 2>&1); then
             echo "invalid baseline-metallib artifact unexpectedly installed: $archive" >&2
+            exit 1
+        fi
+        if [ -n "$expected" ] && ! printf '%s' "$output" | grep -Fq "$expected"; then
+            echo "baseline variant $archive rejected for the wrong reason:" >&2
+            printf '%s\n' "$output" >&2
+            echo "expected the failure to mention: $expected" >&2
             exit 1
         fi
     done
@@ -433,11 +450,25 @@ run_install "$VALID" "$INSTALL"
 test ! -f "$INSTALL/Darkbloom.app/sentinel"
 test -s "$INSTALL/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
 test ! -L "$INSTALL/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
+# MLX probes relative to the RUNNING executable, so a $PATH invocation resolves
+# against bin/, not the bundle. Both libraries must be mirrored there or macOS
+# 15 loses the fallback for every foreground command.
+test -L "$INSTALL/bin/Resources/mlx.metallib"
+test -s "$INSTALL/bin/Resources/mlx.metallib"
 DARKBLOOM_NO_UPDATE_CHECK=1 "$INSTALL/bin/darkbloom" runtime-smoke
 
 PRE_BASELINE_INSTALL="$ROOT/pre-baseline-install"
 run_install "$PRE_BASELINE" "$PRE_BASELINE_INSTALL"
 test ! -e "$PRE_BASELINE_INSTALL/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
+test ! -e "$PRE_BASELINE_INSTALL/bin/Resources/mlx.metallib"
+
+# Downgrading onto a baseline install must retire the bin/ mirror rather than
+# leave a dangling probe that MLX would try before giving up.
+run_install "$PRE_BASELINE" "$INSTALL"
+test ! -e "$INSTALL/bin/Resources/mlx.metallib"
+test ! -L "$INSTALL/bin/Resources/mlx.metallib"
+run_install "$VALID" "$INSTALL"
+test -L "$INSTALL/bin/Resources/mlx.metallib"
 INSTALLED_FAN_HELPER="$INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 INSTALLED_FAN_MARKER="$INSTALL/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 test -f "$INSTALLED_FAN_HELPER"

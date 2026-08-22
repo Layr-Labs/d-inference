@@ -35,6 +35,13 @@ binary. Releases ship two of them
 | Primary | 26.2 | yes | `Contents/MacOS/mlx.metallib` |
 | Baseline | 15.0 | no | `Contents/MacOS/Resources/mlx.metallib` |
 
+MLX resolves those paths against the directory of the *running* executable
+(`dladdr`), which for a `$PATH` invocation through `~/.darkbloom/bin/darkbloom`
+is `bin/`, not the bundle. Both the installer and self-update therefore mirror
+**both** libraries there as symlinks (`bin/mlx.metallib` and
+`bin/Resources/mlx.metallib`), and retire the baseline mirror when the installed
+app has none.
+
 The M5 `_nax` kernels compile only against Metal 4.0 with a macOS 26.2
 deployment target, and a metallib linked for 26.2 is rejected outright by every
 older Metal runtime. MLX's `load_default_library`

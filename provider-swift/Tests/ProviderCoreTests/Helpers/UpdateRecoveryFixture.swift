@@ -148,7 +148,21 @@ struct UpdateRecoveryFixture {
         return true
     }
 
-    static func writeApp(version: String, root: URL) throws {
+    /// Contents that `bin/Resources/mlx.metallib` resolves to, or nil when the
+    /// mirror is absent. MLX probes relative to the running executable, so a
+    /// `$PATH` invocation only sees the baseline library through this link.
+    func liveBaselineMetallibContents() throws -> String? {
+        let link = installRoot.appendingPathComponent(
+            "bin/\(PackagedMetallib.baselineProbeRelativePath)")
+        guard FileManager.default.fileExists(atPath: link.path) else { return nil }
+        return try String(contentsOf: link, encoding: .utf8)
+    }
+
+    static func writeApp(
+        version: String,
+        root: URL,
+        includeBaselineMetallib: Bool = true
+    ) throws {
         let fm = FileManager.default
         let contents = root.appendingPathComponent("Darkbloom.app/Contents")
         let appBin = contents.appendingPathComponent("MacOS")
@@ -157,6 +171,19 @@ struct UpdateRecoveryFixture {
         try Data("\(version)-darkbloom".utf8).write(to: appBin.appendingPathComponent("darkbloom"))
         try Data("\(version)-enclave".utf8).write(to: appBin.appendingPathComponent("darkbloom-enclave"))
         try Data("\(version)-metallib".utf8).write(to: appBin.appendingPathComponent("mlx.metallib"))
+        guard includeBaselineMetallib else { return }
+        let baseline = root.appendingPathComponent(
+            "Darkbloom.app/\(PackagedMetallib.baselineBundleRelativePath)")
+        try fm.createDirectory(
+            at: baseline.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("\(version)-baseline-metallib".utf8).write(to: baseline)
+        let marker = root.appendingPathComponent(
+            "Darkbloom.app/\(PackagedMetallib.baselineCapabilityRelativePath)")
+        try fm.createDirectory(
+            at: marker.deletingLastPathComponent(),
+            withIntermediateDirectories: true)
+        try Data("1\n".utf8).write(to: marker)
     }
 
     static func writeCanonicalLinks(root: URL) throws {

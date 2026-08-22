@@ -71,18 +71,47 @@ struct BaselineMetallibCapabilityTests {
         }
     }
 
+    // MLX resolves its metallib probes against the RUNNING executable's
+    // directory, so a `$PATH` invocation through `bin/darkbloom` probes `bin/`,
+    // not the bundle. That is why `bin/mlx.metallib` exists; without the same
+    // mirror for the baseline, a macOS 15 host has no fallback for any
+    // foreground command even though the bundle ships one.
+    @Test("canonical app links mirror the baseline library into bin/")
+    func canonicalLinksMirrorBaseline() throws {
+        let fixture = try UpdateRecoveryFixture()
+        defer { fixture.cleanup() }
+        let store = UpdateRecoveryStore(
+            installRoot: fixture.installRoot,
+            verifyCodeSignatures: false)
+
+        // The fixture's initial links model a pre-baseline install.
+        #expect(try fixture.liveBaselineMetallibContents() == nil)
+
+        try store.ensureCanonicalLinks(layout: .app)
+        #expect(
+            try fixture.liveBaselineMetallibContents() == "1.0.0-baseline-metallib")
+
+        // Downgrading onto a pre-baseline app must retire the mirror, not leave
+        // a dangling probe MLX tries before giving up.
+        try FileManager.default.removeItem(
+            at: fixture.installRoot.appendingPathComponent(
+                "Darkbloom.app/\(PackagedMetallib.baselineBundleRelativePath)"))
+        try store.ensureCanonicalLinks(layout: .app)
+        #expect(try fixture.liveBaselineMetallibContents() == nil)
+    }
+
     @Test("a symlinked library is rejected")
     func symlinkRejected() throws {
         let fm = FileManager.default
         let app = try makeApp(baseline: nil, marker: "1\n")
         defer { try? fm.removeItem(at: app) }
-        let primary = app.appendingPathComponent("Contents/MacOS/mlx.metallib")
-        try Data("metallib".utf8).write(to: primary)
         let baseline = app.appendingPathComponent(
             PackagedMetallib.baselineBundleRelativePath)
         try fm.createDirectory(
             at: baseline.deletingLastPathComponent(),
             withIntermediateDirectories: true)
+        let primary = app.appendingPathComponent("Contents/MacOS/mlx.metallib")
+        try Data("metallib".utf8).write(to: primary)
         try fm.createSymbolicLink(atPath: baseline.path, withDestinationPath: "../mlx.metallib")
 
         #expect(throws: UpdateError.self) {

@@ -48,6 +48,110 @@ func TestSyncRuntimeManifestIncludesSwiftMetallibHash(t *testing.T) {
 	}
 }
 
+// Providers below macOS 26.2 execute the BASELINE kernel library, not the
+// primary, so `mlx_metallib` alone attests a library that host never runs.
+func TestVerifyRuntimeHashesChecksBaselineMetallibWhenReported(t *testing.T) {
+	metallibHash := strings.Repeat("a", 64)
+	baselineHash := strings.Repeat("d", 64)
+	tamperedBaseline := strings.Repeat("e", 64)
+
+	newServer := func(t *testing.T) *Server {
+		t.Helper()
+		srv, _ := runtimeManifestTestServer(t)
+		srv.SetRuntimeManifest(&RuntimeManifest{
+			PythonHashes:  map[string]bool{},
+			RuntimeHashes: map[string]bool{},
+			TemplateHashes: map[string]string{
+				metallibTemplateKey:         metallibHash,
+				baselineMetallibTemplateKey: baselineHash,
+			},
+		})
+		return srv
+	}
+
+	t.Run("matching baseline passes", func(t *testing.T) {
+		ok, mismatches := newServer(t).verifyRuntimeHashesForBackend(
+			"mlx-swift", "", "", map[string]string{
+				metallibTemplateKey:         metallibHash,
+				baselineMetallibTemplateKey: baselineHash,
+			})
+		if !ok {
+			t.Fatalf("expected pass, got mismatches: %+v", mismatches)
+		}
+	})
+
+	t.Run("swapped baseline is caught", func(t *testing.T) {
+		ok, mismatches := newServer(t).verifyRuntimeHashesForBackend(
+			"mlx-swift", "", "", map[string]string{
+				metallibTemplateKey:         metallibHash,
+				baselineMetallibTemplateKey: tamperedBaseline,
+			})
+		if ok {
+			t.Fatal("a swapped baseline metallib was accepted")
+		}
+		if len(mismatches) != 1 ||
+			mismatches[0].Component != "template:"+baselineMetallibTemplateKey ||
+			mismatches[0].Got != tamperedBaseline {
+			t.Fatalf("unexpected mismatches: %+v", mismatches)
+		}
+	})
+
+	// Registering the expectation must not deroute the fleet that predates the
+	// two-library layout, nor a macOS 26.2+ provider with nothing to attest.
+	t.Run("a provider that reports no baseline still passes", func(t *testing.T) {
+		ok, mismatches := newServer(t).verifyRuntimeHashesForBackend(
+			"mlx-swift", "", "", map[string]string{
+				metallibTemplateKey: metallibHash,
+			})
+		if !ok {
+			t.Fatalf("pre-baseline provider was fenced: %+v", mismatches)
+		}
+	})
+
+	// And the primary is still required, baseline or not.
+	t.Run("a swapped primary is still caught", func(t *testing.T) {
+		ok, _ := newServer(t).verifyRuntimeHashesForBackend(
+			"mlx-swift", "", "", map[string]string{
+				metallibTemplateKey:         strings.Repeat("f", 64),
+				baselineMetallibTemplateKey: baselineHash,
+			})
+		if ok {
+			t.Fatal("a swapped primary metallib was accepted")
+		}
+	})
+}
+
+func TestSyncRuntimeManifestCarriesBaselineMetallibFromTemplateHashes(t *testing.T) {
+	srv, st := runtimeManifestTestServer(t)
+	baselineHash := strings.Repeat("d", 64)
+
+	// The release workflow ships the baseline expectation through the existing
+	// comma-separated template_hashes field, so no schema change is needed.
+	if err := st.SetRelease(&store.Release{
+		Version:        "0.9.0",
+		Platform:       "macos-arm64",
+		Backend:        "mlx-swift",
+		BinaryHash:     strings.Repeat("b", 64),
+		BundleHash:     strings.Repeat("c", 64),
+		MetallibHash:   strings.Repeat("a", 64),
+		TemplateHashes: baselineMetallibTemplateKey + "=" + baselineHash,
+		URL:            "https://example.com/swift.tar.gz",
+		Active:         true,
+	}); err != nil {
+		t.Fatalf("SetRelease: %v", err)
+	}
+
+	srv.SyncRuntimeManifest()
+
+	if srv.knownRuntimeManifest == nil {
+		t.Fatal("knownRuntimeManifest = nil")
+	}
+	got := srv.knownRuntimeManifest.TemplateHashes[baselineMetallibTemplateKey]
+	if got != baselineHash {
+		t.Fatalf("%s = %q, want %q", baselineMetallibTemplateKey, got, baselineHash)
+	}
+}
+
 func TestVerifyRuntimeHashesForSwiftRequiresMetallibButNotLegacyRuntime(t *testing.T) {
 	srv, _ := runtimeManifestTestServer(t)
 	metallibHash := strings.Repeat("a", 64)

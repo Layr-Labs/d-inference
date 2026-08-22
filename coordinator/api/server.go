@@ -1373,7 +1373,7 @@ func (s *Server) SyncRuntimeManifest() {
 					"error", err,
 				)
 			} else {
-				manifest.TemplateHashes["mlx_metallib"] = normalized
+				manifest.TemplateHashes[metallibTemplateKey] = normalized
 				hasAny = true
 			}
 		}
@@ -1495,6 +1495,13 @@ func semverLess(a, b string) bool {
 	return semverGreater(b, a)
 }
 
+const (
+	// Template-hash keys the Swift provider reports for its GPU kernel
+	// libraries. Mirrored in provider-swift ProviderLoop+Serve.swift.
+	metallibTemplateKey         = "mlx_metallib"
+	baselineMetallibTemplateKey = "mlx_metallib_baseline"
+)
+
 func (s *Server) SetRuntimeManifest(m *RuntimeManifest) {
 	s.knownRuntimeManifest = m
 }
@@ -1522,11 +1529,24 @@ func (s *Server) verifyRuntimeHashesForBackend(backend, pythonHash, runtimeHash 
 	}
 	scopedReportedTemplates := make(map[string]string)
 
-	if expected := manifest.TemplateHashes["mlx_metallib"]; expected != "" {
-		scoped.TemplateHashes["mlx_metallib"] = expected
+	if expected := manifest.TemplateHashes[metallibTemplateKey]; expected != "" {
+		scoped.TemplateHashes[metallibTemplateKey] = expected
 	}
-	if got := templateHashes["mlx_metallib"]; got != "" {
-		scopedReportedTemplates["mlx_metallib"] = got
+	if got := templateHashes[metallibTemplateKey]; got != "" {
+		scopedReportedTemplates[metallibTemplateKey] = got
+	}
+
+	// The baseline kernel library is what actually executes on providers below
+	// macOS 26.2, where the primary metallib cannot be loaded at all — so
+	// without this the attested `mlx_metallib` hash describes a library that
+	// host never runs. Enforced only when BOTH sides have it: a release that
+	// registers the expectation must not deroute the pre-baseline fleet, and a
+	// provider on macOS 26.2+ that ships no baseline has nothing to attest.
+	if expected := manifest.TemplateHashes[baselineMetallibTemplateKey]; expected != "" {
+		if got := templateHashes[baselineMetallibTemplateKey]; got != "" {
+			scoped.TemplateHashes[baselineMetallibTemplateKey] = expected
+			scopedReportedTemplates[baselineMetallibTemplateKey] = got
+		}
 	}
 
 	return s.verifyRuntimeHashesAgainstManifest(scoped, pythonHash, runtimeHash, scopedReportedTemplates)

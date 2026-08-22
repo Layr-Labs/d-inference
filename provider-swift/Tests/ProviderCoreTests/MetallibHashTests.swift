@@ -20,6 +20,37 @@ struct MetallibHashTests {
         }
     }
 
+    // Below macOS 26.2 the baseline library is what actually executes, so
+    // registration must attest it too; reporting only the primary would
+    // describe a kernel set that whole population never loads.
+    @Test("the baseline library is located and hashed beside the primary")
+    func baselineMetallibBesidePrimary() throws {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("baseline-hash-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(
+            at: root.appendingPathComponent("Resources"),
+            withIntermediateDirectories: true)
+        let primary = root.appendingPathComponent("mlx.metallib")
+        let baseline = root.appendingPathComponent("Resources/mlx.metallib")
+        try Data(repeating: 0x11, count: 512).write(to: primary)
+        try Data(repeating: 0x22, count: 512).write(to: baseline)
+
+        try MLXMetallibEnvironment.withPath(primary.path) {
+            #expect(locateBaselineMetallib()?.path == baseline.path)
+            let primaryHash = metallibHash()
+            let baselineHash = baselineMetallibHash()
+            #expect(baselineHash?.count == 64)
+            #expect(primaryHash != baselineHash)
+
+            // Pre-baseline releases ship one library and must report no key.
+            try fm.removeItem(at: baseline)
+            #expect(locateBaselineMetallib() == nil)
+            #expect(baselineMetallibHash() == nil)
+        }
+    }
+
     @Test("metallibHash returns a 64-character hex string when located")
     func metallibHashShape() throws {
         let tmp = URL(fileURLWithPath: NSTemporaryDirectory())

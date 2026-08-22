@@ -133,6 +133,9 @@ jobs:
     name: Build, sign, notarize, upload, register
     needs: [resolve-env]
     runs-on: blacksmith-12vcpu-macos-latest
+    # Two cold metallib builds plus Apple notarization; well under this, but the
+    # GitHub default is 6h and a wedged notarytool should not burn that.
+    timeout-minutes: 120
     environment: ${{ needs.resolve-env.outputs.environment }}
 
     env:
@@ -328,8 +331,11 @@ jobs:
           echo "metallib=$MLIB" >> "$GITHUB_OUTPUT"
           echo "baseline_metallib=$BASELINE_MLIB" >> "$GITHUB_OUTPUT"
 
+      # always(): two cold cmake builds run under one key now, so a failure in
+      # the second must not throw away the first — otherwise every retry pays
+      # for both again.
       - name: Save source-matched metallib cache
-        if: steps.metallib-cache.outputs.cache-hit != 'true'
+        if: always() && steps.metallib-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
         with:
           path: ${{ runner.temp }}/metallib-cache
@@ -534,8 +540,14 @@ jobs:
           # latch/AOT capability without arming counters, then runs the
           # existing GPT-OSS paged-kernel shapes. The v0.7.6 artifact still
           # fails here because its resource bundle is absent.
+          # `X=$(...)` under `set -e` aborts before any printf, taking the
+          # child's stdout with it, so every smoke below dumps on failure first.
           PRE_SIGN_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke) || {
+              printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
+              echo "::error::pre-sign packaged runtime smoke failed"
+              exit 1
+            }
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -554,7 +566,11 @@ jobs:
           cp "${{ steps.metallib.outputs.baseline_metallib }}" \
             "$BASELINE_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
           BASELINE_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$BASELINE_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$BASELINE_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke) || {
+              printf '%s\n' "$BASELINE_SMOKE_OUTPUT"
+              echo "::error::baseline metallib failed the packaged runtime smoke"
+              exit 1
+            }
           printf '%s\n' "$BASELINE_SMOKE_OUTPUT"
           printf '%s\n' "$BASELINE_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -572,7 +588,11 @@ jobs:
           head -c 4096 /dev/urandom \
             > "$FALLBACK_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
           FALLBACK_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$FALLBACK_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$FALLBACK_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke) || {
+              printf '%s\n' "$FALLBACK_SMOKE_OUTPUT"
+              echo "::error::MLX did not fall through to the colocated baseline metallib when the primary was unloadable"
+              exit 1
+            }
           printf '%s\n' "$FALLBACK_SMOKE_OUTPUT"
           printf '%s\n' "$FALLBACK_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -882,7 +902,11 @@ jobs:
           codesign --verify --deep --strict --verbose=2 \
             "$SMOKE_ROOT/Darkbloom.app"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
-            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+            "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke) || {
+              printf '%s\n' "$FINAL_SMOKE_OUTPUT"
+              echo "::error::final signed artifact failed the packaged runtime smoke"
+              exit 1
+            }
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
@@ -896,12 +920,20 @@ jobs:
           BINARY_HASH=$(shasum -a 256 "$SMOKE_ROOT/bin/$CLI_NAME" | cut -d' ' -f1)
           BUNDLE_HASH=$(shasum -a 256 /tmp/darkbloom-bundle-macos-arm64.tar.gz | cut -d' ' -f1)
           METALLIB_HASH=$(shasum -a 256 "$FINAL_FLAT_METALLIB" | cut -d' ' -f1)
+          # The baseline is what actually executes below macOS 26.2, so it needs
+          # its own registered expectation — `metallib_hash` alone would attest a
+          # library that whole population never loads. Rides the existing
+          # template_hashes field; the coordinator scopes routing verification to
+          # mlx_metallib and mlx_metallib_baseline.
+          BASELINE_METALLIB_HASH=$(shasum -a 256 "$FINAL_BASELINE_METALLIB" | cut -d' ' -f1)
           echo "BINARY_HASH=$BINARY_HASH" >> "$GITHUB_ENV"
           echo "BUNDLE_HASH=$BUNDLE_HASH" >> "$GITHUB_ENV"
           echo "METALLIB_HASH=$METALLIB_HASH" >> "$GITHUB_ENV"
-          echo "Binary hash:   $BINARY_HASH"
-          echo "Bundle hash:   $BUNDLE_HASH"
-          echo "Metallib hash: $METALLIB_HASH"
+          echo "BASELINE_METALLIB_HASH=$BASELINE_METALLIB_HASH" >> "$GITHUB_ENV"
+          echo "Binary hash:            $BINARY_HASH"
+          echo "Bundle hash:            $BUNDLE_HASH"
+          echo "Metallib hash:          $METALLIB_HASH"
+          echo "Baseline metallib hash: $BASELINE_METALLIB_HASH"
 
       - name: Upload bundle to R2
         env:
@@ -931,7 +963,11 @@ jobs:
         run: |
           set -euo pipefail
           MODELS_CDN="https://pub-7cbee059c80c46ec9c071dbee2726f8a.r2.dev"
-          TEMPLATE_HASHES=""
+          if [ -z "${BASELINE_METALLIB_HASH:-}" ]; then
+            echo "::error::baseline metallib hash was not computed; the release would register an unattested kernel library for every provider below macOS $MIN_MACOS's successor"
+            exit 1
+          fi
+          TEMPLATE_HASHES="mlx_metallib_baseline=${BASELINE_METALLIB_HASH}"
           for name in qwen3.5 trinity gemma4 minimax; do
             HASH=$(curl -fsSL "$MODELS_CDN/templates/${name}.jinja" 2>/dev/null | shasum -a 256 | cut -d' ' -f1 || true)
             # ignore the empty-string SHA (which means the file 404'd)
@@ -993,7 +1029,8 @@ jobs:
 
           **Binary hash:**   \`${BINARY_HASH}\`
           **Bundle hash:**   \`${BUNDLE_HASH}\`
-          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`)
+          **Metallib hash:** \`${METALLIB_HASH}\` (built from mlx \`${{ steps.mlxkey.outputs.mlx_sha_short }}\`, macOS ${MLX_METALLIB_DEPLOYMENT_TARGET}+, NAX)
+          **Baseline metallib hash:** \`${BASELINE_METALLIB_HASH}\` (macOS ${MLX_METALLIB_BASELINE_DEPLOYMENT_TARGET}+, no NAX)
           **Signed by:**     \`${DEVELOPER_ID}\`
           **Notarized:**     yes
           **Min macOS:**     ${MIN_MACOS}

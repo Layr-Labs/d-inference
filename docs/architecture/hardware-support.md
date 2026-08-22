@@ -52,6 +52,15 @@ get the NAX kernels and older hosts land on the baseline. `is_nax_available()`
 is itself gated on macOS 26.2, so a host on the baseline never asks for a kernel
 it lacks.
 
+Both libraries are attested. The provider reports
+`template_hashes["mlx_metallib"]` and `template_hashes["mlx_metallib_baseline"]`
+at registration (`BinaryHasher.swift`, `ProviderLoop+Serve.swift`); the release
+registers the baseline expectation through the existing `template_hashes` field
+and the coordinator scopes routing verification to exactly those two keys
+(`coordinator/api/server.go`, `verifyRuntimeHashesForBackend`). The baseline is
+enforced only when the provider reports it, so registering the expectation
+cannot deroute providers that predate the two-library layout.
+
 Below the floor neither library loads, MLX's `Device()` constructor throws, and
 the provider cannot serve at all. `scripts/install.sh` refuses to install there,
 and `PackagedRuntimeSmoke` reports the OS and the underlying Metal error rather

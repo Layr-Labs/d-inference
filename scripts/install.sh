@@ -452,13 +452,18 @@ fi
 CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
 MEM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
 SERIAL=$(ioreg -c IOPlatformExpertDevice -d 2 | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
-MACOS=$(sw_vers -productVersion 2>/dev/null || echo "?")
+# env -u SYSTEM_VERSION_COMPAT: with that variable set (compatibility shims,
+# some CI images) sw_vers reports 10.16 on every modern macOS, which would
+# refuse the install on a perfectly good host.
+MACOS=$(env -u SYSTEM_VERSION_COMPAT sw_vers -productVersion 2>/dev/null || echo "?")
+[ -n "$MACOS" ] || MACOS="?"
 echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
 
 # Below the floor the bundled Metal kernel libraries cannot be loaded at all, so
 # MLX never starts. Say so here rather than after a multi-gigabyte download and
-# a staged-app verification failure.
+# a staged-app verification failure. An unreadable version is not a refusal:
+# the staged-app smoke still fails closed if the kernels really cannot load.
 if [ "$MACOS" != "?" ] && ! version_at_least "$MACOS" "$MIN_MACOS"; then
     echo "Error: Darkbloom requires macOS $MIN_MACOS or later (found $MACOS)."
     echo "       The bundled Metal GPU kernels cannot be loaded on this version."

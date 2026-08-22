@@ -152,6 +152,20 @@ public struct SelfUpdater: Sendable {
         manualOverride: Bool = false,
         session: UpdateSession? = nil
     ) async -> UpdateCheckResult {
+        // Below the floor no shipped kernel library loads, so every candidate
+        // would fail the staged runtime smoke after a multi-gigabyte download.
+        // Stage-verification failures get no quarantine backoff, so without
+        // this the host re-downloads on every watchdog tick, forever.
+        let hostOS = PackagedMetallib.versionString(
+            ProcessInfo.processInfo.operatingSystemVersion)
+        guard PackagedMetallib.meetsMinimumMacOS(hostOS) else {
+            return .checkFailed(
+                reason: "macOS \(hostOS) is below the macOS "
+                    + "\(PackagedMetallib.minimumMacOSVersion) floor this "
+                    + "provider's Metal kernels require; updates are paused "
+                    + "until the host is updated")
+        }
+
         let recoveryState: UpdateRecoveryState
         do {
             if let session {

@@ -286,6 +286,11 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-nested-suite.sh CBv2KVSharingParityTests
+      # The floor gate ships to macOS /bin/bash 3.2; Release Integrity only ever
+      # runs it under Ubuntu bash 5.x.
+      - name: Run installer preflight tests (macOS bash 3.2)
+        if: ${{ !cancelled() }}
+        run: ./scripts/test-install-preflight.sh
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh

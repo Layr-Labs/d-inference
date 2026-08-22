@@ -76,6 +76,14 @@ HELPER_NAX=$(read_pin "$HELPER" '^NAX_DEPLOYMENT_TARGET=' '"')
 [ "$SWIFT_BASELINE" = "$WORKFLOW_MIN" ] \
     || fail "macOS floor: baseline target=$SWIFT_BASELINE workflow MIN_MACOS=$WORKFLOW_MIN"
 
+FLOOR_MAJOR=${WORKFLOW_MIN%%.*}
+
+# The Swift package's deployment target must not claim support the packaged
+# kernels cannot deliver.
+PACKAGE_SWIFT="$ROOT/provider-swift/Package.swift"
+grep -Eq "platforms: \[\.macOS\(\.v${FLOOR_MAJOR}\)\]" "$PACKAGE_SWIFT" \
+    || fail "$PACKAGE_SWIFT does not declare .macOS(.v${FLOOR_MAJOR})"
+
 for installer in "${INSTALLERS[@]}"; do
     installer_min=$(read_pin "$installer" '^MIN_MACOS=' '"')
     [ "$installer_min" = "$WORKFLOW_MIN" ] \
@@ -87,7 +95,6 @@ for installer in "${INSTALLERS[@]}"; do
 done
 
 # "macOS 15" / "macOS 15.0+" both satisfy the pin; any OTHER major is drift.
-FLOOR_MAJOR=${WORKFLOW_MIN%%.*}
 for surface in "${ADVERTISED[@]}"; do
     grep -Eq "macOS ${FLOOR_MAJOR}(\.[0-9]+)?\+?([^0-9.]|$)" "$surface" \
         || fail "$surface does not advertise the macOS $WORKFLOW_MIN floor"

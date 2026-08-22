@@ -89,7 +89,41 @@ Each term maps to a field in `RoutingDecision`:
 | This request | `ThisReqMs` | `promptTokens/prefillTPS + maxTokens/effectiveTPS` |
 | Health | `HealthMs` | Memory pressure, CPU usage, thermal state, GPU utilization |
 
-Penalty constants are defined at `scheduler.go:16-36`.
+Penalty constants are defined at `scheduler.go:17-37`.
+
+`healthPenaltyMs` (`scheduler.go:1688`) sums four additive terms:
+
+| Signal | Contribution |
+|---|---|
+| Memory pressure | `memoryPressure × 4_000` ms (0.0-1.0 fraction from the heartbeat) |
+| CPU usage | `cpuUsage × 1_500` ms |
+| Thermal state | `+2_000` ms at `fair`, `+8_000` ms at `serious`, `0` otherwise |
+| GPU utilization | `(gpuMemoryActiveGB / totalMemoryGB) × 5_000` ms |
+
+### Thermal state
+
+Thermal state is **not** a Darkbloom temperature threshold. The provider reports
+`ProcessInfo.processInfo.thermalState` verbatim
+(`provider-swift/Sources/ProviderCore/Hardware/SystemMetrics.swift:10-25`), so
+macOS alone decides when a machine is `nominal`, `fair`, `serious`, or
+`critical`. Apple derives that from its own sensor fusion and power/fan
+mitigation state, publishes no degree thresholds, and applies different curves
+per chassis — a desktop under sustained load can report `fair` at temperatures a
+laptop would call idle. No coordinator or provider code reads a temperature to
+produce it. (The unrelated opt-in `darkbloom fan` controller does use real
+degrees: engage at 45 C, release at 40 C. See `../../provider/fan-control.md`.)
+
+The coordinator consumes the four states as follows:
+
+| State | Routing | Base rewards |
+|---|---|---|
+| `nominal` | No penalty | Eligible |
+| `fair` | `+2_000` ms of cost. Within `nearTieCostWindowMs` (`3_000` ms), so an otherwise-equal machine still enters the near-tie set and is spread by queue depth and randomness rather than losing on cost | Eligible |
+| `serious` | `+8_000` ms of cost. Exceeds the near-tie window, so it loses to an otherwise-equal cooler peer. Also `-1000` on the warm-pool preload score (`warm_pool_controller.go:738-745`, `-250` at `fair`) | Eligible |
+| `critical` | Excluded outright — from routing candidates (`scheduler.go:1524`), from the transient-capacity accounting (`scheduler.go:2224`), and from cold-spill eligibility (`cold_dispatch.go:96`) | Ineligible (`baserewards/engine.go:233`) |
+
+Only `critical` is a gate. `fair` and `serious` are cost terms that shift
+preference within an eligible fleet, and neither affects earnings.
 
 ### Effective decode TPS (routing cost)
 

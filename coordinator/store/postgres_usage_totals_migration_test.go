@@ -3,8 +3,8 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
-	"sync"
 	"testing"
 	"time"
 )
@@ -66,36 +66,40 @@ func TestUsageTotalsMigrationSerializesConcurrentCoordinators(t *testing.T) {
 	seedUsageForTotalsMigration(t, first, 10, 20)
 	seedUsageForTotalsMigration(t, first, 30, 40)
 
-	start := make(chan struct{})
-	results := make(chan usageTotalsMigrationResult, 2)
-	errs := make(chan error, 2)
-	var wg sync.WaitGroup
-	for _, replica := range []*PostgresStore{first, second} {
-		wg.Add(1)
-		go func(s *PostgresStore) {
-			defer wg.Done()
-			<-start
-			result, err := s.applyUsageTotalsMigration(context.Background())
-			results <- result
-			errs <- err
-		}(replica)
+	// Hold the exact migration advisory lock from a separate transaction. A
+	// contender must time out at lock acquisition rather than reaching the
+	// aggregate, proving the serialization does not depend on goroutine timing.
+	lockTx, err := first.pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin advisory lock: %v", err)
 	}
-	close(start)
-	wg.Wait()
-	close(results)
-	close(errs)
+	defer lockTx.Rollback(context.Background())
+	if _, err := lockTx.Exec(context.Background(), `
+		SELECT pg_advisory_xact_lock(
+			hashtext(current_schema()),
+			hashtext($1)
+		)`,
+		usageTotalsMigrationID,
+	); err != nil {
+		t.Fatalf("hold advisory lock: %v", err)
+	}
 
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent migration: %v", err)
-		}
+	blockedCtx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	if _, err := second.applyUsageTotalsMigration(blockedCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("contending migration error = %v, want context deadline at advisory lock", err)
 	}
-	counts := map[usageTotalsMigrationResult]int{}
-	for result := range results {
-		counts[result]++
+	if err := lockTx.Commit(context.Background()); err != nil {
+		t.Fatalf("release advisory lock: %v", err)
 	}
-	if counts[usageTotalsMigrationBackfilled] != 1 || counts[usageTotalsMigrationSkipped] != 1 {
-		t.Fatalf("concurrent results = %v, want one backfill and one skip", counts)
+
+	result, err := first.applyUsageTotalsMigration(context.Background())
+	if err != nil || result != usageTotalsMigrationBackfilled {
+		t.Fatalf("first migration after lock release = (%q, %v), want backfilled", result, err)
+	}
+	result, err = second.applyUsageTotalsMigration(context.Background())
+	if err != nil || result != usageTotalsMigrationSkipped {
+		t.Fatalf("second migration = (%q, %v), want already-applied", result, err)
 	}
 	assertUsageTotalsMigrationValues(t, first, 2, 40, 60)
 }

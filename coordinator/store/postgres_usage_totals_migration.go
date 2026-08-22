@@ -40,11 +40,9 @@ func (s *PostgresStore) migrateUsageTotals(ctx context.Context) error {
 // the full aggregate before discovering the conflict, so every restart scanned
 // all historical usage.
 //
-// The transaction-scoped advisory lock serializes concurrent coordinators. On
-// the first run, the table lock establishes an exact cutover: existing usage
-// writers finish before the aggregate snapshot, while new writers wait until
-// the counter row exists and can increment it. Every later startup takes only
-// the advisory lock and primary-key existence check.
+// The transaction-scoped advisory lock serializes concurrent coordinators
+// without blocking usage writers. Every later startup takes only that lock and
+// a primary-key existence check.
 func (s *PostgresStore) applyUsageTotalsMigration(ctx context.Context) (usageTotalsMigrationResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -73,13 +71,6 @@ func (s *PostgresStore) applyUsageTotalsMigration(ctx context.Context) (usageTot
 			return "", fmt.Errorf("commit skip: %w", err)
 		}
 		return usageTotalsMigrationSkipped, nil
-	}
-
-	// Usage inserts take ROW EXCLUSIVE, which conflicts with SHARE. Once this
-	// lock is granted, the aggregate includes every committed insert and later
-	// inserts wait until the initialized counter row commits.
-	if _, err := tx.Exec(ctx, `LOCK TABLE usage IN SHARE MODE`); err != nil {
-		return "", fmt.Errorf("lock usage table: %w", err)
 	}
 
 	tag, err := tx.Exec(ctx, `

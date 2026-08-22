@@ -28,6 +28,7 @@ public enum PackagedRuntimeSmoke {
         case safeR1NotRequested
         case safeR1AOTUnavailable
         case safeR1CountersArmed
+        case metalRuntimeUnavailable(MetalRuntimeDiagnosis)
 
         var description: String {
             switch self {
@@ -41,6 +42,8 @@ public enum PackagedRuntimeSmoke {
                 return "packaged safe R1 AOT kernels are unavailable"
             case .safeR1CountersArmed:
                 return "production safe R1 route counters are armed"
+            case .metalRuntimeUnavailable(let diagnosis):
+                return "MLX has no usable Metal runtime: \(diagnosis)"
             }
         }
     }
@@ -119,12 +122,26 @@ public enum PackagedRuntimeSmoke {
         }.sorted()
     }
 
+    /// The environment check above already proved
+    /// `MLX_GATHER_QMM_EXPERT_SLICES=1` is live in this process, so an
+    /// unrequested route is not a config outcome — it is the all-zero struct
+    /// the C facade returns when `metal::device(gpu)` throws. Probe Metal
+    /// directly before naming the failure, or a host whose OS simply cannot
+    /// load the packaged kernel library gets told its safe-R1 latch misbehaved.
     static func validateSafeR1(
         requested: Bool,
         aotAvailable: Bool,
-        countersArmed: Bool
+        countersArmed: Bool,
+        probeMetalRuntime: () -> MetalRuntimeDiagnosis = {
+            MetalRuntimeProbe.diagnose()
+        }
     ) throws {
-        guard requested else { throw VerificationError.safeR1NotRequested }
+        guard requested else {
+            let diagnosis = probeMetalRuntime()
+            throw diagnosis.isHealthy
+                ? VerificationError.safeR1NotRequested
+                : VerificationError.metalRuntimeUnavailable(diagnosis)
+        }
         guard aotAvailable else { throw VerificationError.safeR1AOTUnavailable }
         guard !countersArmed else { throw VerificationError.safeR1CountersArmed }
     }

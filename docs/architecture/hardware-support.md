@@ -26,6 +26,48 @@ coordinator admits can still fail to load on the provider.
 - Secure Boot must be set to Full (for `hardware` trust).
 - A logged-in GUI Aqua session is required for APNs code-identity attestation.
 
+The floor is set by the packaged Metal kernel libraries, not by the Swift
+binary. Releases ship two of them
+(`.github/workflows/release-swift.yml`, `scripts/fetch-metallib.sh`):
+
+| Library | Deployment target | `_nax` kernels | Location in `Darkbloom.app` |
+|---|---|---|---|
+| Primary | 26.2 | yes | `Contents/MacOS/mlx.metallib` |
+| Baseline | 15.0 | no | `Contents/MacOS/Resources/mlx.metallib` |
+
+MLX resolves those paths against the directory of the *running* executable
+(`dladdr`), which for a `$PATH` invocation through `~/.darkbloom/bin/darkbloom`
+is `bin/`, not the bundle. Both the installer and self-update therefore mirror
+**both** libraries there as symlinks (`bin/mlx.metallib` and
+`bin/Resources/mlx.metallib`), and retire the baseline mirror when the installed
+app has none.
+
+The M5 `_nax` kernels compile only against Metal 4.0 with a macOS 26.2
+deployment target, and a metallib linked for 26.2 is rejected outright by every
+older Metal runtime. MLX's `load_default_library`
+(`libs/mlx-swift/Source/Cmlx/mlx/mlx/backend/metal/device.cpp`) probes the
+colocated `mlx.metallib` first and the colocated `Resources/mlx.metallib`
+second, falling through only when the first fails to load — so macOS 26.2+ hosts
+get the NAX kernels and older hosts land on the baseline. `is_nax_available()`
+is itself gated on macOS 26.2, so a host on the baseline never asks for a kernel
+it lacks.
+
+Both libraries are attested. The provider reports
+`template_hashes["mlx_metallib"]` and `template_hashes["mlx_metallib_baseline"]`
+at registration (`BinaryHasher.swift`, `ProviderLoop+Serve.swift`); the release
+registers the baseline expectation through the existing `template_hashes` field
+and the coordinator scopes routing verification to exactly those two keys
+(`coordinator/api/server.go`, `verifyRuntimeHashesForBackend`). The baseline is
+enforced only when the provider reports it, so registering the expectation
+cannot deroute providers that predate the two-library layout.
+
+Below the floor neither library loads, MLX's `Device()` constructor throws, and
+the provider cannot serve at all. `scripts/install.sh` refuses to install there,
+and `PackagedRuntimeSmoke` reports the OS and the underlying Metal error rather
+than a downstream symptom. `scripts/check-macos-floor.sh` pins the floor across
+the installers, the release workflow, and
+`provider-swift/Sources/ProviderCore/Inference/PackagedMetallib.swift`.
+
 ## Networking
 
 Providers need outbound HTTPS/WebSocket to the coordinator. No inbound port

@@ -116,10 +116,15 @@ extension ProviderLoop {
         // so legacy providers and Swift providers can keep one protocol
         // shape while the coordinator applies backend-specific enforcement.
         let runtimeWithMetallib = augmentRuntimeHashesWithMetallib(loopConfig.runtimeHashes)
-        if let metallib = runtimeWithMetallib?.templateHashes["mlx_metallib"] {
+        if let metallib = runtimeWithMetallib?.templateHashes[Self.metallibTemplateKey] {
             logger.info("mlx.metallib hash: \(metallib.prefix(16))...")
         } else {
             logger.warning("mlx.metallib not found near binary -- inference will fail at first GPU call")
+        }
+        if let baseline = runtimeWithMetallib?
+            .templateHashes[Self.baselineMetallibTemplateKey]
+        {
+            logger.info("baseline mlx.metallib hash: \(baseline.prefix(16))...")
         }
 
         // APNs code-identity (v0.6.0): wait briefly for the device token the app
@@ -414,16 +419,24 @@ extension ProviderLoop {
         _ existing: RuntimeHashes?
     ) -> RuntimeHashes? {
         let metallib = metallibHash()
+        // Hosts below macOS 26.2 cannot load the primary at all and execute
+        // this library instead, so reporting only the primary would attest a
+        // kernel set those providers never run. Absent on pre-baseline
+        // releases; the coordinator only enforces it when reported.
+        let baseline = baselineMetallibHash()
 
         // No metallib and no caller-supplied data -- return whatever the
         // caller passed (might be nil; that's fine).
-        if metallib == nil, existing == nil {
+        if metallib == nil, baseline == nil, existing == nil {
             return nil
         }
 
         var templates = existing?.templateHashes ?? [:]
         if let metallib {
-            templates["mlx_metallib"] = metallib
+            templates[Self.metallibTemplateKey] = metallib
+        }
+        if let baseline {
+            templates[Self.baselineMetallibTemplateKey] = baseline
         }
 
         return RuntimeHashes(
@@ -432,6 +445,12 @@ extension ProviderLoop {
             templateHashes: templates
         )
     }
+
+    /// Mirrored in `coordinator/api/server.go` (`metallibTemplateKey`,
+    /// `baselineMetallibTemplateKey`); the coordinator scopes routing
+    /// verification to exactly these two keys.
+    static let metallibTemplateKey = "mlx_metallib"
+    static let baselineMetallibTemplateKey = "mlx_metallib_baseline"
 
     // MARK: - Attestation
 

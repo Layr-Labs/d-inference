@@ -14,10 +14,10 @@ set -euo pipefail
 #   5. Optionally enrolls in MDM (device attestation)
 #   6. Optionally downloads a starter model
 #
-# Zero prerequisites — just macOS 14+ on Apple Silicon. The Swift CLI
-# links mlx-swift directly and ships a colocated mlx.metallib for Metal
-# kernels; there is no Python interpreter to install and no inference
-# subprocess to spawn.
+# Zero prerequisites — just macOS 15+ on Apple Silicon. The Swift CLI
+# links mlx-swift directly and ships colocated Metal kernel libraries;
+# there is no Python interpreter to install and no inference subprocess
+# to spawn.
 
 # This source intentionally retains the placeholder used by the coordinator.
 # End users fetch /install.sh from a coordinator, which substitutes its own base
@@ -25,6 +25,11 @@ set -euo pipefail
 COORD_URL="${COORD_URL:-__DARKBLOOM_COORD_URL__}"
 INSTALL_DIR="$HOME/.darkbloom"
 BIN_DIR="$INSTALL_DIR/bin"
+# Oldest macOS the packaged app can serve. The Swift binary itself runs older,
+# but MLX cannot start without a loadable Metal kernel library, and the baseline
+# library shipped in the bundle is built for this floor. Pinned against
+# PackagedMetallib.swift and the release workflow by scripts/check-macos-floor.sh.
+MIN_MACOS="15.0"
 DARKBLOOM_DESIGNATED_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.provider" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 DARKBLOOM_FAN_HELPER_REQUIREMENT='anchor apple generic and identifier "io.darkbloom.fan-helper" and certificate leaf[subject.OU] = "SLDQ2GJ6TL"'
 FAN_HELPER_REQUIREMENT="$DARKBLOOM_FAN_HELPER_REQUIREMENT"
@@ -33,6 +38,27 @@ INSTALL_TEST_MODE=0
 fail_install() {
     echo "  ✗ $*" >&2
     return 1
+}
+
+# Dotted numeric compare, base-macOS only (no sort -V, no developer tools).
+version_at_least() {
+    local have=$1
+    local want=$2
+    local index have_part want_part
+    local -a have_parts want_parts
+    IFS=. read -r -a have_parts <<< "$have"
+    IFS=. read -r -a want_parts <<< "$want"
+    for index in 0 1 2; do
+        have_part=${have_parts[index]:-0}
+        want_part=${want_parts[index]:-0}
+        have_part=${have_part//[!0-9]/}
+        want_part=${want_part//[!0-9]/}
+        have_part=${have_part:-0}
+        want_part=${want_part:-0}
+        if [ "$((10#$have_part))" -gt "$((10#$want_part))" ]; then return 0; fi
+        if [ "$((10#$have_part))" -lt "$((10#$want_part))" ]; then return 1; fi
+    done
+    return 0
 }
 
 verify_file_hash() {
@@ -115,6 +141,38 @@ verify_fan_helper_capability() {
     }
 }
 
+# The primary mlx.metallib is built for macOS 26.2 so it can carry the M5 _nax
+# kernels, which no older Metal runtime will load. Releases therefore also ship
+# a NAX-free baseline at Contents/MacOS/Resources/mlx.metallib — MLX's own
+# second colocated probe, reached only when the primary fails to load. Marker
+# and file must appear together; pre-baseline releases have neither and stay
+# installable.
+verify_baseline_metallib_capability() {
+    local app=$1
+    local baseline="$app/Contents/MacOS/Resources/mlx.metallib"
+    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/baseline-metallib-v1"
+    local baseline_present=0
+    local marker_present=0
+
+    if [ -e "$baseline" ] || [ -L "$baseline" ]; then baseline_present=1; fi
+    if [ -e "$marker" ] || [ -L "$marker" ]; then marker_present=1; fi
+    [ "$baseline_present" -eq "$marker_present" ] || {
+        fail_install "Baseline Metal kernel library and its signed marker must be present together."
+        return 1
+    }
+    [ "$baseline_present" -eq 1 ] || return 0
+
+    [ -f "$baseline" ] && [ ! -L "$baseline" ] && [ -s "$baseline" ] || {
+        fail_install "Baseline Metal kernel library must be a non-empty regular file."
+        return 1
+    }
+    [ -f "$marker" ] && [ ! -L "$marker" ] \
+        && [ "$(tr -d '[:space:]' < "$marker")" = "1" ] || {
+        fail_install "Baseline metallib capability marker is invalid."
+        return 1
+    }
+}
+
 verify_staged_app() {
     local app=$1
     local executable="$app/Contents/MacOS/darkbloom"
@@ -129,6 +187,7 @@ verify_staged_app() {
         verify_staged_app_signature "$app" || return 1
     fi
     verify_fan_helper_capability "$app" || return 1
+    verify_baseline_metallib_capability "$app" || return 1
 
     local code_has_paged=0
     local marker_present=0
@@ -161,9 +220,15 @@ verify_staged_app() {
             return 1
         }
 
-    DARKBLOOM_NO_UPDATE_CHECK=1 "$executable" runtime-smoke >/dev/null \
+    # Keep the child's own diagnosis: it is the only place that can tell
+    # "this Mac cannot load the packaged Metal kernels" apart from a genuine
+    # kernel fault, and a bare "smoke failed" line sends every reader hunting
+    # the wrong bug.
+    local smoke_output=""
+    smoke_output=$(DARKBLOOM_NO_UPDATE_CHECK=1 "$executable" runtime-smoke 2>&1) \
         || {
-            fail_install "Packaged paged-kernel runtime smoke failed."
+            printf '%s\n' "$smoke_output" | tail -n 5 | sed 's/^/    /' >&2
+            fail_install "Packaged runtime smoke failed."
             return 1
         }
 }
@@ -179,6 +244,22 @@ verify_staged_app_payload() {
     }
     verify_file_hash "$app_bin/darkbloom" "$binary_hash" "App binary" \
         && verify_file_hash "$app_bin/mlx.metallib" "$metallib_hash" "App metallib"
+}
+
+# MLX resolves its metallib probes against the directory of the RUNNING
+# executable, which for a $PATH invocation through bin/darkbloom is bin/, not
+# the app bundle. That is why bin/mlx.metallib exists at all, and the baseline
+# library needs the same mirror or a macOS 15 host loses the fallback for every
+# foreground command. Retired when the installed app has no baseline, so a
+# downgrade cannot leave a dangling probe behind.
+link_baseline_metallib() {
+    local install_dir=$1
+    local app_bin=$2
+    rm -rf "$install_dir/bin/Resources" || return 1
+    [ -f "$app_bin/Resources/mlx.metallib" ] || return 0
+    mkdir -p "$install_dir/bin/Resources" || return 1
+    ln -sfn "../../Darkbloom.app/Contents/MacOS/Resources/mlx.metallib" \
+        "$install_dir/bin/Resources/mlx.metallib"
 }
 
 commit_staged_app() {
@@ -207,7 +288,8 @@ commit_staged_app() {
     if ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom" "$install_dir/bin/darkbloom" \
         || ! ln -sfn "../Darkbloom.app/Contents/MacOS/darkbloom-enclave" "$install_dir/bin/darkbloom-enclave" \
         || ! ln -sfn "../Darkbloom.app/Contents/MacOS/mlx.metallib" "$install_dir/bin/mlx.metallib" \
-        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave"
+        || ! ln -sfn "darkbloom-enclave" "$install_dir/bin/eigeninference-enclave" \
+        || ! link_baseline_metallib "$install_dir" "$app_bin"
     then
         rm -rf "$destination"
         [ "$had_previous" -eq 1 ] \
@@ -311,6 +393,20 @@ install_bundle_atomically() {
     rm -rf "$stage"
 }
 
+if [ "${1:-}" = "--version-gate-test" ]; then
+    [ "$#" -eq 3 ] || {
+        echo "usage: $0 --version-gate-test <have> <want>" >&2
+        exit 64
+    }
+    version_at_least "$2" "$3"
+    exit $?
+fi
+
+if [ "${1:-}" = "--min-macos-test" ]; then
+    printf '%s\n' "$MIN_MACOS"
+    exit 0
+fi
+
 if [ "${1:-}" = "--verify-staged-app-signature-test" ]; then
     [ "$#" -eq 3 ] || {
         echo "usage: $0 --verify-staged-app-signature-test <app> <requirement>" >&2
@@ -356,9 +452,24 @@ fi
 CHIP=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo "Apple Silicon")
 MEM=$(sysctl -n hw.memsize 2>/dev/null | awk '{printf "%.0f", $1/1073741824}')
 SERIAL=$(ioreg -c IOPlatformExpertDevice -d 2 | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
-MACOS=$(sw_vers -productVersion 2>/dev/null || echo "?")
+# env -u SYSTEM_VERSION_COMPAT: with that variable set (compatibility shims,
+# some CI images) sw_vers reports 10.16 on every modern macOS, which would
+# refuse the install on a perfectly good host.
+MACOS=$(env -u SYSTEM_VERSION_COMPAT sw_vers -productVersion 2>/dev/null || echo "?")
+[ -n "$MACOS" ] || MACOS="?"
 echo "  $CHIP · ${MEM}GB · macOS $MACOS"
 echo ""
+
+# Below the floor the bundled Metal kernel libraries cannot be loaded at all, so
+# MLX never starts. Say so here rather than after a multi-gigabyte download and
+# a staged-app verification failure. An unreadable version is not a refusal:
+# the staged-app smoke still fails closed if the kernels really cannot load.
+if [ "$MACOS" != "?" ] && ! version_at_least "$MACOS" "$MIN_MACOS"; then
+    echo "Error: Darkbloom requires macOS $MIN_MACOS or later (found $MACOS)."
+    echo "       The bundled Metal GPU kernels cannot be loaded on this version."
+    echo "       Update in System Settings > General > Software Update."
+    exit 1
+fi
 
 # ─── Step 1: Fetch latest release ────────────────────────────
 echo "→ [1/5] Fetching latest release from $COORD_URL ..."

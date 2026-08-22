@@ -4,9 +4,14 @@ import PackageDescription
 
 let package = Package(
     name: "DarkbloomProvider",
-    // macOS 14 (Sonoma) — matches libs/mlx-swift-lm and libs/mlx-swift declared
-    // platforms.
-    platforms: [.macOS(.v14)],
+    // macOS 15 (Sequoia). Above libs/mlx-swift{,-lm}'s declared .v14, which is
+    // allowed and deliberate: the floor is set by the packaged Metal kernel
+    // libraries, not the Swift sources. The baseline metallib is built at 15.0
+    // (Metal 3.2 — below that MLX's `fence` kernel is not compiled while the
+    // host still dispatches it), so a macOS 14 host cannot start MLX at all.
+    // Pinned to the installers and the release workflow by
+    // scripts/check-macos-floor.sh.
+    platforms: [.macOS(.v15)],
     products: [
         .library(name: "ProviderCoreFoundation", targets: ["ProviderCoreFoundation"]),
         .library(name: "ProviderCore", targets: ["ProviderCore"]),

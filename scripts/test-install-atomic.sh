@@ -103,6 +103,7 @@ make_artifact() {
     local capability=$2
     local include_resource=$3
     local include_fan=${4:-no}
+    local include_baseline=${5:-yes}
     local stage="$ROOT/stage-$RANDOM"
     local app="$stage/Darkbloom.app"
     local binary="$ROOT/$capability"
@@ -110,6 +111,14 @@ make_artifact() {
     cp "$binary" "$app/Contents/MacOS/darkbloom"
     cp "$binary" "$app/Contents/MacOS/darkbloom-enclave"
     cp "$binary" "$app/Contents/MacOS/mlx.metallib"
+    if [ "$include_baseline" = "yes" ]; then
+        mkdir -p \
+            "$app/Contents/MacOS/Resources" \
+            "$app/Contents/Resources/darkbloom-runtime-capabilities"
+        printf 'baseline\n' > "$app/Contents/MacOS/Resources/mlx.metallib"
+        printf '1\n' \
+            > "$app/Contents/Resources/darkbloom-runtime-capabilities/baseline-metallib-v1"
+    fi
     cat > "$app/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -147,6 +156,9 @@ PLIST
     fi
 
     codesign --force --sign - "$app/Contents/MacOS/mlx.metallib"
+    if [ "$include_baseline" = "yes" ]; then
+        codesign --force --sign - "$app/Contents/MacOS/Resources/mlx.metallib"
+    fi
     codesign --force --sign - "$app/Contents/MacOS/darkbloom-enclave"
     codesign --force --sign - "$app/Contents/MacOS/darkbloom"
     codesign --force --sign - "$app"
@@ -190,9 +202,13 @@ run_install_without_hashes() {
 VALID="$ROOT/valid.tar.gz"
 MISSING="$ROOT/missing.tar.gz"
 LEGACY="$ROOT/legacy.tar.gz"
-make_artifact "$VALID" paged yes yes
-make_artifact "$MISSING" paged no yes
-make_artifact "$LEGACY" legacy no no
+PRE_BASELINE="$ROOT/pre-baseline.tar.gz"
+make_artifact "$VALID" paged yes yes yes
+make_artifact "$MISSING" paged no yes yes
+make_artifact "$LEGACY" legacy no no no
+# Releases predating the two-library layout ship neither the baseline nor its
+# marker and must stay installable.
+make_artifact "$PRE_BASELINE" paged yes yes no
 
 # The designated requirement must be applied to the complete app target,
 # whose main-executable signature seals Contents/Resources.
@@ -228,6 +244,50 @@ do
         exit 1
     fi
 done
+
+make_baseline_variant() {
+    local output=$1
+    local mutation=$2
+    local stage="$ROOT/baseline-variant-$mutation-$RANDOM"
+    local app="$stage/Darkbloom.app"
+    local baseline="$app/Contents/MacOS/Resources/mlx.metallib"
+    local marker="$app/Contents/Resources/darkbloom-runtime-capabilities/baseline-metallib-v1"
+    mkdir -p "$stage"
+    tar xzf "$VALID" -C "$stage"
+
+    case "$mutation" in
+        missing-library)
+            rm -f "$baseline"
+            ;;
+        missing-marker)
+            rm -f "$marker"
+            ;;
+        empty-library)
+            : > "$baseline"
+            # Re-sign the truncated file, or `codesign --verify --deep --strict`
+            # rejects the app first and the dedicated emptiness check never runs.
+            codesign --force --sign - "$baseline"
+            ;;
+        bad-marker)
+            printf '0\n' > "$marker"
+            ;;
+        symlink)
+            rm -f "$baseline"
+            ln -s ../mlx.metallib "$baseline"
+            ;;
+        *)
+            echo "unknown baseline variant: $mutation" >&2
+            exit 1
+            ;;
+    esac
+
+    codesign --force --sign - "$app"
+    cp "$app/Contents/MacOS/darkbloom" "$stage/bin/darkbloom"
+    cp "$app/Contents/MacOS/darkbloom-enclave" "$stage/bin/darkbloom-enclave"
+    cp "$app/Contents/MacOS/mlx.metallib" "$stage/bin/mlx.metallib"
+    tar czf "$output" -C "$stage" .
+    rm -rf "$stage"
+}
 
 make_fan_variant() {
     local output=$1
@@ -311,6 +371,47 @@ assert_fan_variants_rejected() {
     done
 }
 
+BASELINE_MISSING_LIBRARY="$ROOT/baseline-missing-library.tar.gz"
+BASELINE_MISSING_MARKER="$ROOT/baseline-missing-marker.tar.gz"
+BASELINE_EMPTY_LIBRARY="$ROOT/baseline-empty-library.tar.gz"
+BASELINE_BAD_MARKER="$ROOT/baseline-bad-marker.tar.gz"
+BASELINE_SYMLINK="$ROOT/baseline-symlink.tar.gz"
+make_baseline_variant "$BASELINE_MISSING_LIBRARY" missing-library
+make_baseline_variant "$BASELINE_MISSING_MARKER" missing-marker
+make_baseline_variant "$BASELINE_EMPTY_LIBRARY" empty-library
+make_baseline_variant "$BASELINE_BAD_MARKER" bad-marker
+make_baseline_variant "$BASELINE_SYMLINK" symlink
+
+# Each variant must be rejected BY THE BASELINE CHECK, not incidentally by the
+# signature check that runs before it — otherwise the coupling logic is
+# untested and a regression in it would still show a green suite. The symlink
+# case is the one exception: replacing nested signed code with a symlink is
+# also a legitimate signature failure, so either rejection is correct there.
+assert_baseline_variants_rejected() {
+    local install_dir=$1
+    local pair archive expected output
+    for pair in \
+        "$BASELINE_MISSING_LIBRARY:must be present together" \
+        "$BASELINE_MISSING_MARKER:must be present together" \
+        "$BASELINE_EMPTY_LIBRARY:non-empty regular file" \
+        "$BASELINE_BAD_MARKER:capability marker is invalid" \
+        "$BASELINE_SYMLINK:"
+    do
+        archive=${pair%:*}
+        expected=${pair##*:}
+        if output=$(run_install "$archive" "$install_dir" 2>&1); then
+            echo "invalid baseline-metallib artifact unexpectedly installed: $archive" >&2
+            exit 1
+        fi
+        if [ -n "$expected" ] && ! printf '%s' "$output" | grep -Fq "$expected"; then
+            echo "baseline variant $archive rejected for the wrong reason:" >&2
+            printf '%s\n' "$output" >&2
+            echo "expected the failure to mention: $expected" >&2
+            exit 1
+        fi
+    done
+}
+
 # Make the registered flat metallib differ from the signed app payload.
 # Structural app verification alone must not admit it.
 DIVERGED_ROOT="$ROOT/diverged"
@@ -326,6 +427,8 @@ mkdir -p "$INSTALL/Darkbloom.app"
 printf 'old\n' > "$INSTALL/Darkbloom.app/sentinel"
 
 assert_fan_variants_rejected "$INSTALL"
+test -f "$INSTALL/Darkbloom.app/sentinel"
+assert_baseline_variants_rejected "$INSTALL"
 test -f "$INSTALL/Darkbloom.app/sentinel"
 if run_install_without_hashes "$VALID" "$INSTALL"; then
     echo "app release without payload hashes unexpectedly installed" >&2
@@ -345,7 +448,27 @@ test -f "$INSTALL/Darkbloom.app/sentinel"
 
 run_install "$VALID" "$INSTALL"
 test ! -f "$INSTALL/Darkbloom.app/sentinel"
+test -s "$INSTALL/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
+test ! -L "$INSTALL/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
+# MLX probes relative to the RUNNING executable, so a $PATH invocation resolves
+# against bin/, not the bundle. Both libraries must be mirrored there or macOS
+# 15 loses the fallback for every foreground command.
+test -L "$INSTALL/bin/Resources/mlx.metallib"
+test -s "$INSTALL/bin/Resources/mlx.metallib"
 DARKBLOOM_NO_UPDATE_CHECK=1 "$INSTALL/bin/darkbloom" runtime-smoke
+
+PRE_BASELINE_INSTALL="$ROOT/pre-baseline-install"
+run_install "$PRE_BASELINE" "$PRE_BASELINE_INSTALL"
+test ! -e "$PRE_BASELINE_INSTALL/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
+test ! -e "$PRE_BASELINE_INSTALL/bin/Resources/mlx.metallib"
+
+# Downgrading onto a baseline install must retire the bin/ mirror rather than
+# leave a dangling probe that MLX would try before giving up.
+run_install "$PRE_BASELINE" "$INSTALL"
+test ! -e "$INSTALL/bin/Resources/mlx.metallib"
+test ! -L "$INSTALL/bin/Resources/mlx.metallib"
+run_install "$VALID" "$INSTALL"
+test -L "$INSTALL/bin/Resources/mlx.metallib"
 INSTALLED_FAN_HELPER="$INSTALL/Darkbloom.app/Contents/Helpers/darkbloom-fan-helper"
 INSTALLED_FAN_MARKER="$INSTALL/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
 test -f "$INSTALLED_FAN_HELPER"
@@ -378,6 +501,8 @@ COORD_INSTALL="$ROOT/coordinator-install"
 mkdir -p "$COORD_INSTALL/Darkbloom.app"
 printf 'coordinator-old\n' > "$COORD_INSTALL/Darkbloom.app/sentinel"
 assert_fan_variants_rejected "$COORD_INSTALL"
+test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
+assert_baseline_variants_rejected "$COORD_INSTALL"
 test -f "$COORD_INSTALL/Darkbloom.app/sentinel"
 if run_install_without_hashes "$VALID" "$COORD_INSTALL"; then
     echo "coordinator installer accepted an app without payload hashes" >&2

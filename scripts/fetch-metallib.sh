@@ -15,6 +15,10 @@
 #   ./scripts/fetch-metallib.sh                # next to the latest debug build
 #   ./scripts/fetch-metallib.sh release        # next to the release build
 #   ./scripts/fetch-metallib.sh /custom/path   # at /custom/path/mlx.metallib
+#
+# Environment:
+#   MLX_METALLIB_DEPLOYMENT_TARGET  -mmacosx-version-min for the kernels
+#   MLX_METALLIB_OUTPUT_NAME        destination filename (default mlx.metallib)
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -24,6 +28,8 @@ MLX_SRC="$REPO_ROOT/libs/mlx-swift/Source/Cmlx/mlx"
 # The _nax kernels are only compiled when SDK >= 26.2 AND deployment target
 # >= 26.2 AND Metal >= 4.0 (mlx/backend/metal/kernels/CMakeLists.txt).
 DEPLOYMENT_TARGET="${MLX_METALLIB_DEPLOYMENT_TARGET:-26.2}"
+OUTPUT_NAME="${MLX_METALLIB_OUTPUT_NAME:-mlx.metallib}"
+NAX_DEPLOYMENT_TARGET="26.2"
 JIT_MODE="OFF"
 NAX_SYMBOL="_nax"
 GEMV_SYMBOL="gemv"
@@ -34,11 +40,44 @@ QMV_WIDE_W4_M2_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_4_nv_2_kl_8_batch_0"
 QMV_WIDE_W4_M4_BATCHED_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_4_nv_4_kl_8_batch_1"
 QMV_WIDE_W8_M2_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_8_nv_2_kl_8_batch_0"
 QMV_WIDE_W8_M4_BATCHED_SYMBOL="affine_qmv_wide_bfloat16_t_gs_64_b_8_nv_4_kl_8_batch_1"
-COMPLETENESS_CONTRACT="$(
-    printf '%s\n' "$NAX_SYMBOL" "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" \
+version_at_least() {
+    awk -v have="$1" -v want="$2" '
+        BEGIN {
+            nh = split(have, h, "."); nw = split(want, w, ".")
+            n = (nh > nw ? nh : nw)
+            for (i = 1; i <= n; i++) {
+                hi = (i <= nh ? h[i] + 0 : 0)
+                wi = (i <= nw ? w[i] + 0 : 0)
+                if (hi > wi) { exit 0 }
+                if (hi < wi) { exit 1 }
+            }
+            exit 0
+        }'
+}
+
+# The deployment target decides BOTH halves of the symbol contract. A metallib
+# linked for 26.2 carries Metal 4.0 code that older Metal runtimes reject
+# outright, so a baseline build's whole reason to exist is being free of it:
+# _nax present in a baseline metallib means the deployment target silently did
+# not take, and the artifact would fail to load on exactly the hosts it is for.
+if version_at_least "$DEPLOYMENT_TARGET" "$NAX_DEPLOYMENT_TARGET"; then
+    NAX_CONTRACT="required"
+else
+    NAX_CONTRACT="forbidden"
+fi
+
+required_symbols() {
+    if [ "$NAX_CONTRACT" = "required" ]; then
+        printf '%s\n' "$NAX_SYMBOL"
+    fi
+    printf '%s\n' "$GEMV_SYMBOL" "$R1_BUILDER_SYMBOL" \
         "$R1_BUILDER_E256_SYMBOL" "$R1_KERNEL_SYMBOL" \
         "$QMV_WIDE_W4_M2_SYMBOL" "$QMV_WIDE_W4_M4_BATCHED_SYMBOL" \
-        "$QMV_WIDE_W8_M2_SYMBOL" "$QMV_WIDE_W8_M4_BATCHED_SYMBOL" \
+        "$QMV_WIDE_W8_M2_SYMBOL" "$QMV_WIDE_W8_M4_BATCHED_SYMBOL"
+}
+
+COMPLETENESS_CONTRACT="$(
+    { printf '%s\n' "nax=$NAX_CONTRACT"; required_symbols; } \
         | shasum -a 256 | cut -d' ' -f1
 )"
 TARGET_ARG="${1:-debug}"
@@ -155,17 +194,7 @@ verify_metallib() {
         return 1
     fi
 
-    for symbol in \
-        "$NAX_SYMBOL" \
-        "$GEMV_SYMBOL" \
-        "$R1_BUILDER_SYMBOL" \
-        "$R1_BUILDER_E256_SYMBOL" \
-        "$R1_KERNEL_SYMBOL" \
-        "$QMV_WIDE_W4_M2_SYMBOL" \
-        "$QMV_WIDE_W4_M4_BATCHED_SYMBOL" \
-        "$QMV_WIDE_W8_M2_SYMBOL" \
-        "$QMV_WIDE_W8_M4_BATCHED_SYMBOL"
-    do
+    while IFS= read -r symbol; do
         # Use grep -c rather than grep -q: grep -q closes the pipe after its
         # first match, causing strings to receive SIGPIPE under pipefail.
         matches="$(strings "$metallib" | grep -F -c "$symbol" || true)"
@@ -173,7 +202,17 @@ verify_metallib() {
             echo "✗ metallib missing required symbol string: $symbol"
             return 1
         fi
-    done
+    done < <(required_symbols)
+
+    if [ "$NAX_CONTRACT" = "forbidden" ]; then
+        matches="$(strings "$metallib" | grep -F -c "$NAX_SYMBOL" || true)"
+        if [ "$matches" -ne 0 ]; then
+            echo "✗ metallib for deployment target $DEPLOYMENT_TARGET carries" \
+                "$NAX_SYMBOL kernels and would be rejected by" \
+                "pre-$NAX_DEPLOYMENT_TARGET Metal runtimes"
+            return 1
+        fi
+    fi
 }
 
 mkdir -p "$CACHE_DIR"
@@ -294,12 +333,12 @@ fi
 
 # Always replace the destination, even on a cache hit. A merely existing file
 # may have been built from different host sources and can hang the GPU.
-DEST_TMP="$DEST_DIR/.mlx.metallib.$$"
+DEST_TMP="$DEST_DIR/.${OUTPUT_NAME}.$$"
 assert_mlx_source_unchanged
 cp "$CACHED" "$DEST_TMP"
-mv -f "$DEST_TMP" "$DEST_DIR/mlx.metallib"
+mv -f "$DEST_TMP" "$DEST_DIR/$OUTPUT_NAME"
 DEST_TMP=""
-echo "✓ wrote $DEST_DIR/mlx.metallib  ($(shasum -a 256 "$DEST_DIR/mlx.metallib" | cut -d' ' -f1))"
+echo "✓ wrote $DEST_DIR/$OUTPUT_NAME  ($(shasum -a 256 "$DEST_DIR/$OUTPUT_NAME" | cut -d' ' -f1))"
 
 release_cache_lock
 trap - EXIT HUP INT TERM

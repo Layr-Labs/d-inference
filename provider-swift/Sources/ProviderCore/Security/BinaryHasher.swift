@@ -137,6 +137,30 @@ public func metallibHash() -> String? {
     return hashFile(atPath: url.path)
 }
 
+/// Locate the NAX-free baseline kernel library — MLX's second colocated probe,
+/// and the library that actually executes on every host below macOS 26.2 where
+/// the primary cannot be loaded at all. Attesting only the primary would
+/// describe a library those hosts never run.
+///
+/// Searched beside the resolved primary rather than beside the executable, so
+/// the `MLX_METALLIB_PATH` override and the `bin/` mirror both land on the
+/// matching pair. Returns nil for pre-baseline releases, which ship one file.
+public func locateBaselineMetallib() -> URL? {
+    guard let primary = locateMetallib() else { return nil }
+    let candidate = primary
+        .deletingLastPathComponent()
+        .appendingPathComponent("Resources/mlx.metallib")
+    guard FileManager.default.fileExists(atPath: candidate.path) else { return nil }
+    return candidate
+}
+
+/// SHA-256 hash of the baseline kernel library, or nil when the release ships
+/// only the primary.
+public func baselineMetallibHash() -> String? {
+    guard let url = locateBaselineMetallib() else { return nil }
+    return hashFile(atPath: url.path)
+}
+
 // MARK: - Helpers
 
 /// Get the path to the currently running executable.

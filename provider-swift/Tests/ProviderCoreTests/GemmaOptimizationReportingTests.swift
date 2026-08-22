@@ -76,12 +76,9 @@ struct PackagedRetainedGemmaSmokeTests {
 
     @Test("synthetic retained config has an exact three-key projection")
     func exactProjectionAndNoRejectedKeys() throws {
-        let config = try PackagedRuntimeSmoke.retainedConfiguration()
-        // Mirror verifyGemmaOptimizations: the smoke validates the retained
-        // config hermetically, never the launching environment.
-        let decodedProjection = GemmaOptimizationEnvironment.projection(
-            for: config.gemmaOptimizations,
-            context: .retainedValidation)
+        // This exact projection is passed before exec and revalidated inside
+        // the child, so eager MLX initialization cannot latch stale values.
+        let decodedProjection = try PackagedRuntimeSmoke.retainedValidationEnvironment()
         #expect(decodedProjection == expectedProjection)
         try PackagedRuntimeSmoke.validateRetainedProjection(decodedProjection)
         #expect(

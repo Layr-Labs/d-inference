@@ -237,5 +237,8 @@ public enum ProviderCore {
     // v0.8.8's GDN input fusion/direct expert reduction reduced production
     // decode throughput and triggered client timeouts. The Gemma qmv_wide
     // MLX/MLX-Swift pins remain enabled.
-    public static let version = "0.8.9"
+    // 0.8.10 passes retained Gemma latch variables before exec in installer,
+    // self-update, and paged-preflight runtime-smoke children so eager MLX
+    // initialization cannot latch safe R1 off before validation runs.
+    public static let version = "0.8.10"
 }

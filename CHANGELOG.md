@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.10 (2026-08-21)
+
+### Provider (Swift)
+
+#### Fixes
+
+- **Seed retained optimization latches before packaged-child exec** — The v0.8.9 curl installer could download and verify the signed bundle but reject it with `safe R1 was not latched as requested` on hosts where MLX initialized Metal before `runtime-smoke.run()`. Installer, self-updater, and paged preflight children now receive the exact retained three-key environment (`DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18`, `MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1`, `MLX_GATHER_QMM_EXPERT_SLICES=1`) at process launch, while the child still poisons/reapplies/verifies the values and AOT kernels. Existing installations remain untouched on any failed verification.
+
 ## v0.8.9 (2026-08-21)
 
 ### Provider (Swift)

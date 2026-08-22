@@ -55,7 +55,7 @@ struct InstallLocationTests {
     func lookalikeDirectoriesAreLive() {
         for name in ["update-staging-x", "darkbloom-update-staging-x", ".updates", ".update"] {
             let path = "/Users/tim/\(name)/bin/darkbloom"
-            #expect(InstallLocation.classify(executablePath: path) == .live, name)
+            #expect(InstallLocation.classify(executablePath: path) == .live, "\(name)")
         }
     }
 
@@ -102,7 +102,7 @@ struct InstallLocationTests {
             ".recovery-restore-",  // UpdateRecoveryStore.restore
             ".predecessor-next-",  // UpdateInstallLayout.snapshotLiveAsPredecessor
         ] {
-            #expect(InstallLocation.transientDirPrefixes.contains(prefix), prefix)
+            #expect(InstallLocation.transientDirPrefixes.contains(prefix), "\(prefix)")
         }
     }
 

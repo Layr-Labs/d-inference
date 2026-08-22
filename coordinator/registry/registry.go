@@ -655,42 +655,13 @@ type Provider struct {
 }
 
 // providerSupportsPrivateTextLocked is the SINGLE routing chokepoint for
-// private/text traffic. It is a method on *Registry (not a free function) so the
-// APNs code-identity gate can consult the live rollout policy
-// (codeAttestationEnforcedLocked) rather than a value stamped at registration —
-// that is what lets the grace→enforce deadline flip without a reconnect. Callers
+// private/text traffic. The gate itself lives in
+// providerPrivateTextBlockerLocked (routing_diagnostics.go), which returns the
+// reason it refused; this is the boolean view of the same decision, so the
+// operator-facing diagnostic and the routing decision cannot disagree. Callers
 // hold r.mu (every call site is inside an r-locked Registry method).
 func (r *Registry) providerSupportsPrivateTextLocked(p *Provider) bool {
-	if p.PublicKey == "" || !privateTextBackendSupported(p.Backend) || !p.EncryptedResponseChunks {
-		return false
-	}
-	if !p.RuntimeManifestChecked {
-		return false
-	}
-	// Require coordinator-verified SIP (from attestation challenge) rather
-	// than trusting the provider's self-reported SIPEnabled field.
-	if !p.ChallengeVerifiedSIP {
-		return false
-	}
-	// v0.6.0 APNs code-identity gate — the SINGLE chokepoint, no self-route
-	// exemption (gate everyone). Enforced only once configured AND past the grace
-	// deadline, so the fleet keeps routing through the rollout; fail-closed after.
-	if r.codeAttestationEnforcedLocked() && !p.CodeAttested {
-		return false
-	}
-	caps := p.PrivacyCapabilities
-	if caps == nil {
-		return false
-	}
-	// Only mlx-swift is routable (enforced by privateTextBackendSupported above).
-	// Python-specific caps (PythonRuntimeLocked, DangerousModulesBlocked) are
-	// retained in the protocol struct for wire backward compat but are no longer
-	// required for routing.
-	return caps.TextBackendInprocess &&
-		caps.TextProxyDisabled &&
-		caps.AntiDebugEnabled &&
-		caps.CoreDumpsDisabled &&
-		caps.EnvScrubbed
+	return r.providerPrivateTextBlockerLocked(p) == ""
 }
 
 func privateTextBackendSupported(backend string) bool {
@@ -4319,14 +4290,17 @@ func (r *Registry) ListModels() []AggregateModel {
 	// offering the same model ID should be counted together regardless of
 	// minor metadata differences.
 	agg := make(map[string]*modelAgg)
+	now := time.Now()
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
-		privateOnly := p.PrivateOnly
+		// The per-provider listing gate (online, not private-only, trust floor,
+		// private-text ready) lives in one place so the operator-facing
+		// "why isn't my machine advertising" diagnostic reports exactly what
+		// this loop decided.
+		listable := r.publicListingBlockerLocked(p, now) == ""
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
 		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
 		// ranging the field after unlock.
@@ -4334,15 +4308,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		copy(models, p.Models)
 		p.mu.Unlock()
 
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
-		// Private-only providers serve only their owner's self-route traffic, so
-		// they must not appear in or inflate the public /v1/models aggregation.
-		if privateOnly {
-			continue
-		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
+		if !listable {
 			continue
 		}
 		for _, m := range models {
@@ -4412,13 +4378,13 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 	defer r.mu.RUnlock()
 	for _, p := range r.providers {
 		p.mu.Lock()
+		// The owner self-route relaxes the trust floor and private-only
+		// admission (an owner may route to their own un-enrolled Mac) but keeps
+		// every privacy-critical gate. That is exactly
+		// providerLivenessGateLocked's TrustNone/allowPrivate configuration, so
+		// use it rather than a second copy that can drift.
 		eligible := p.AccountID == accountID &&
-			p.Status != StatusOffline &&
-			p.Status != StatusUntrusted &&
-			p.RuntimeVerified &&
-			r.providerSupportsPrivateTextLocked(p) &&
-			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+			r.providerLivenessGateLocked(p, TrustNone, true, now)
 		if !eligible {
 			p.mu.Unlock()
 			continue

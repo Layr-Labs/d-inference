@@ -27,15 +27,14 @@ const (
 	// slow-provider decode, so the cost function actually spreads load
 	// across the fleet. Wider tie window admits more candidates to the
 	// queue-depth tie-break + random distribution.
-	queueDepthPenaltyMs      = 3_000.0
-	totalPendingPenaltyMs    = 750.0
-	memoryPressurePenaltyMs  = 4_000.0
-	cpuUsagePenaltyMs        = 1_500.0
-	gpuUtilizationPenaltyMs  = 5_000.0
-	thermalPenaltyFairMs     = 2_000.0
-	thermalPenaltySeriousMs  = 8_000.0
-	nearTieCostWindowMs      = 3_000.0
-	challengeFreshnessMaxAge = 16 * time.Minute
+	queueDepthPenaltyMs     = 3_000.0
+	totalPendingPenaltyMs   = 750.0
+	memoryPressurePenaltyMs = 4_000.0
+	cpuUsagePenaltyMs       = 1_500.0
+	gpuUtilizationPenaltyMs = 5_000.0
+	thermalPenaltyFairMs    = 2_000.0
+	thermalPenaltySeriousMs = 8_000.0
+	nearTieCostWindowMs     = 3_000.0
 
 	// kvCacheBytesPerToken is a per-token KV-cache size estimate used by
 	// the free-memory admission gate.
@@ -1033,7 +1032,7 @@ func (r *Registry) OwnedProviderSummary(accountID, model string, traits RequestT
 			p.RuntimeVerified &&
 			r.providerSupportsPrivateTextLocked(p) &&
 			!p.LastChallengeVerified.IsZero() &&
-			now.Sub(p.LastChallengeVerified) <= challengeFreshnessMaxAge
+			now.Sub(p.LastChallengeVerified) <= ChallengeFreshnessMaxAge
 		p.mu.Unlock()
 		if serves {
 			servesModel++

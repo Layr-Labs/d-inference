@@ -515,7 +515,7 @@ func TestWarmPoolSkipsIneligibleProviders(t *testing.T) {
 	untrusted.Status = StatusUntrusted
 	untrusted.mu.Unlock()
 	stale.mu.Lock()
-	// Stale beyond challengeFreshnessMaxAge (16m as of W5b Fix 4) so the warm-pool
+	// Stale beyond ChallengeFreshnessMaxAge (16m as of W5b Fix 4) so the warm-pool
 	// controller treats this provider's attestation as expired and skips it.
 	stale.LastChallengeVerified = time.Now().Add(-20 * time.Minute)
 	stale.mu.Unlock()

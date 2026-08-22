@@ -92,6 +92,12 @@ type myProvider struct {
 	LastChallengeVerified *time.Time `json:"last_challenge_verified,omitempty"`
 	FailedChallenges      int        `json:"failed_challenges"`
 
+	// Routing is the coordinator's own verdict on whether this machine is
+	// advertising, and the specific gates blocking it when it is not. Computed
+	// from the same predicates the router uses, so it can never claim the
+	// machine is serving when it is fenced (or the reverse).
+	Routing *registry.ProviderRoutingDiagnostics `json:"routing,omitempty"`
+
 	// Live snapshot (only set when the machine is currently connected)
 	SystemMetrics   *protocol.SystemMetrics   `json:"system_metrics,omitempty"`
 	BackendCapacity *protocol.BackendCapacity `json:"backend_capacity,omitempty"`
@@ -297,6 +303,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 	deduped := dedupeRecordsByIdentity(records)
 	seenIDs := make(map[string]bool, len(deduped))
 	seenLive := make(map[string]bool)
+	now := time.Now()
 	out := make([]myProvider, 0, len(deduped))
 	for i := range deduped {
 		// Prefer session-ID match; fall back to identity (serial/SE key)
@@ -306,6 +313,7 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 			live = liveByIdentity[recordIdentity(&deduped[i])]
 		}
 		mp := buildMyProvider(&deduped[i], live)
+		s.attachRoutingDiagnostics(&mp, live, now)
 		out = append(out, mp)
 		seenIDs[deduped[i].ID] = true
 		if live != nil {
@@ -319,9 +327,29 @@ func (s *Server) mergeFleet(ctx context.Context, accountID string) ([]myProvider
 		if liveMatchesEmittedIdentity(p, out) {
 			continue
 		}
-		out = append(out, buildMyProvider(nil, p))
+		mp := buildMyProvider(nil, p)
+		s.attachRoutingDiagnostics(&mp, p, now)
+		out = append(out, mp)
 	}
 	return out, nil
+}
+
+// attachRoutingDiagnostics asks the registry why this machine is (or is not)
+// advertising, so the owner sees the coordinator's ACTUAL verdict instead of
+// inferring it from a handful of green booleans. Offline machines get a
+// synthetic offline verdict — there is no live provider to interrogate, and
+// omitting the field entirely would read as "no problems".
+func (s *Server) attachRoutingDiagnostics(
+	mp *myProvider, live *registry.Provider, now time.Time,
+) {
+	if live == nil {
+		mp.Routing = &registry.ProviderRoutingDiagnostics{
+			Blockers:               []registry.RoutingBlocker{registry.BlockerOffline},
+			ChallengeMaxAgeSeconds: int(registry.ChallengeFreshnessMaxAge.Seconds()),
+		}
+		return
+	}
+	mp.Routing = s.registry.RoutingDiagnostics(live.ID, now)
 }
 
 func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {

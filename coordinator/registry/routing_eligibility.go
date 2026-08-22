@@ -40,26 +40,13 @@ import "time"
 // applies, so plaintext is never exposed and only the genuinely-signed provider
 // binary serves. This is exactly the set of gates publiclyRoutableLocked
 // enforces. Caller holds r.mu and p.mu.
+//
+// The gate itself lives in providerLivenessBlockerLocked
+// (routing_diagnostics.go), which returns the reason it refused; this is the
+// boolean view of the same decision, so what an operator is told and what the
+// router did cannot disagree.
 func (r *Registry) providerLivenessGateLocked(p *Provider, minTrust TrustLevel, allowPrivate bool, now time.Time) bool {
-	if p.Status == StatusOffline || p.Status == StatusUntrusted {
-		return false
-	}
-	if p.PrivateOnly && !allowPrivate {
-		return false
-	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
-		return false
-	}
-	if !p.RuntimeVerified {
-		return false
-	}
-	if !r.providerSupportsPrivateTextLocked(p) {
-		return false
-	}
-	if p.LastChallengeVerified.IsZero() || now.Sub(p.LastChallengeVerified) > challengeFreshnessMaxAge {
-		return false
-	}
-	return true
+	return r.providerLivenessBlockerLocked(p, minTrust, allowPrivate, now) == ""
 }
 
 // providerServesRoutableModelLocked reports whether the provider advertises a

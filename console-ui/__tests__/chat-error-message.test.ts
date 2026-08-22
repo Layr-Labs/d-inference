@@ -46,10 +46,26 @@ describe("chatErrorMessage", () => {
     );
   });
 
-  it("maps a queue-timeout 503 to the busy-network copy", () => {
+  // The coordinator writes this verdict as a 429 + Retry-After, so a 503-only
+  // match left the copy unreachable in production.
+  it("maps a queue timeout to the busy-network copy on the 429 the coordinator sends", () => {
     const message = 'all providers for model "x" are at capacity (queue timeout)';
-    expect(chatErrorMessage(503, body(message), { message })).toBe(
-      "All providers are busy — please try again in a moment",
+    const busy = "All providers are busy — please try again in a moment";
+    expect(chatErrorMessage(429, body(message, "rate_limit_exceeded"), {
+      message,
+      code: "rate_limit_exceeded",
+    })).toBe(busy);
+    expect(chatErrorMessage(503, body(message), { message })).toBe(busy);
+  });
+
+  it("does not treat an inherited object key as a self-route code", () => {
+    // `code` is wire data; an object-literal lookup would return Object.prototype
+    // members and hand the UI a function typed as string.
+    expect(chatErrorMessage(500, "upstream exploded", { code: "toString" })).toBe(
+      "Request failed (500): upstream exploded",
+    );
+    expect(chatErrorMessage(500, "upstream exploded", { code: "constructor" })).toBe(
+      "Request failed (500): upstream exploded",
     );
   });
 

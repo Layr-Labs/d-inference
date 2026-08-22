@@ -8,16 +8,26 @@ export type UpstreamError = { message?: string; code?: string };
  * Self-route outcomes the coordinator names with a stable code. These are
  * deterministic states of the caller's own machine, so the console explains the
  * machine rather than echoing the API copy.
+ *
+ * A Map, not an object literal: `code` comes off the wire, and an object lookup
+ * would resolve inherited keys ("toString", "constructor") to a function the
+ * `string` type says is impossible.
  */
-const SELF_ROUTE_COPY: Record<string, string> = {
-  no_linked_machine:
+const SELF_ROUTE_COPY = new Map<string, string>([
+  [
+    "no_linked_machine",
     "No machine linked to your account — run `darkbloom login` on your Mac, then try again.",
-  machine_offline:
+  ],
+  [
+    "machine_offline",
     "Your machine is offline — start your Darkbloom node and try again. (Free-only self-route won't fall back to the paid network.)",
-  model_not_loaded:
+  ],
+  [
+    "model_not_loaded",
     "This model isn't loaded on your machine — load it on your node, then try again.",
-  machine_busy: "Your machine is busy — try again in a moment.",
-};
+  ],
+  ["machine_busy", "Your machine is busy — try again in a moment."],
+]);
 
 /** Server copy leads lower-case; the console renders it as a sentence. */
 function asSentence(text: string): string {
@@ -30,12 +40,19 @@ export function chatErrorMessage(
   rawBody: string,
   error?: UpstreamError,
 ): string {
-  const code = error?.code ?? "";
-  if (SELF_ROUTE_COPY[code]) {
-    return SELF_ROUTE_COPY[code];
+  const selfRouteCopy = SELF_ROUTE_COPY.get(error?.code ?? "");
+  if (selfRouteCopy) {
+    return selfRouteCopy;
   }
   const detail = (error?.message ?? "").trim();
-  if (status === 503 && (detail || rawBody).includes("queue timeout")) {
+  // The queue-timeout verdict ships as a 429 + Retry-After (the queue-wait
+  // failure in the coordinator's dispatch.go and consumer.go), not a 503 — this
+  // branch matched only 503 and so never fired. 503 stays accepted so the copy
+  // survives if that verdict ever moves back.
+  if (
+    (status === 429 || status === 503) &&
+    (detail || rawBody).includes("queue timeout")
+  ) {
     return "All providers are busy — please try again in a moment";
   }
   if (status === 402) {

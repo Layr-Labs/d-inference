@@ -560,6 +560,98 @@ func TestSelfRoute_PreferSpendCappedKeyRunsFreeOnOwnedMachine(t *testing.T) {
 	}
 }
 
+// sendGenericRoutedRequest posts a legacy /v1/completions request (the generic
+// handler shared with Anthropic /v1/messages) with an explicit X-Darkbloom-Route
+// value ("" = no header). Returns the HTTP status code.
+func sendGenericRoutedRequest(t *testing.T, ctx context.Context, tsURL, model, apiKey, route string) int {
+	t.Helper()
+	body := `{"model":"` + model + `","prompt":"hello","max_tokens":32,"stream":true}`
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, tsURL+"/v1/completions", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if route != "" {
+		req.Header.Set("X-Darkbloom-Route", route)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	defer resp.Body.Close()
+	io.ReadAll(resp.Body)
+	return resp.StatusCode
+}
+
+// TestSelfRoute_PreferUnfundedGenericPathRunsFreeOnOwnedMachine pins the same
+// unfunded-prefer downgrade on handleGenericInference (/v1/completions and
+// Anthropic /v1/messages): that handler takes the shared reservation but adopts
+// the downgraded policy into its OWN dispatch loop, so the chat-path test alone
+// would not catch a generic path that keeps routing under prefer semantics.
+func TestSelfRoute_PreferUnfundedGenericPathRunsFreeOnOwnedMachine(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	const owner = "prefer-unfunded-generic-owner"
+	raw, _, err := st.CreateAPIKey(owner, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Fatalf("precondition: owner balance = %d, want 0", bal)
+	}
+
+	model := "prefer-unfunded-generic-model"
+	conn, _, pubKey := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, owner)
+
+	providerDone := serveOneInference(ctx, t, conn, pubKey, protocol.UsageInfo{PromptTokens: 100, CompletionTokens: 50})
+	if status := sendGenericRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusOK {
+		t.Fatalf("unfunded prefer /v1/completions status = %d, want 200 (own machine serves it for free)", status)
+	}
+	<-providerDone
+	time.Sleep(300 * time.Millisecond)
+
+	if bal := ledger.Balance(owner); bal != 0 {
+		t.Errorf("owner balance = %d, want 0 (own machine must never charge)", bal)
+	}
+	earnings, _ := st.GetAccountEarnings(owner, 100)
+	if len(earnings) != 0 {
+		t.Errorf("provider earnings = %d, want 0 for a free owned route", len(earnings))
+	}
+}
+
+// TestSelfRoute_PreferUnfundedGenericPathWithoutOwnedMachineIsRejected is the
+// generic-path half of the free-ride invariant: an unfunded prefer caller on
+// /v1/completions whose only serving provider belongs to someone else must get
+// the 402, never a dispatch onto that provider.
+func TestSelfRoute_PreferUnfundedGenericPathWithoutOwnedMachineIsRejected(t *testing.T) {
+	srv, st, ledger := billingTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	const caller = "prefer-unfunded-generic-machineless"
+	raw, _, err := st.CreateAPIKey(caller, store.APIKeyCreate{Name: "mine"})
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+
+	model := "prefer-unfunded-generic-no-machine-model"
+	conn, _, _ := setupProviderForBilling(t, ctx, ts, srv.registry, model)
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	setOwnedProvider(srv, "someone-else")
+
+	if status := sendGenericRoutedRequest(t, ctx, ts.URL, model, raw, "prefer"); status != http.StatusPaymentRequired {
+		t.Fatalf("unfunded prefer /v1/completions without an owned machine status = %d, want 402", status)
+	}
+	if entries := ledger.Usage(caller); len(entries) != 0 {
+		t.Errorf("usage entries = %d, want 0 (the public fleet must not serve an unfunded caller)", len(entries))
+	}
+}
+
 // TestSelfRoute_UnfundedFallbackDoesNotPayProvider is the Part 3 regression: a
 // FreeSelfRoute request whose ownership revalidation fails at settlement AND
 // whose owner has NO balance must not record paid usage or credit the provider

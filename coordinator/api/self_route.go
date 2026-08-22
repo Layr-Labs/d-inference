@@ -96,6 +96,11 @@ func (s *Server) unfundedPreferPolicy(model string, traits registry.RequestTrait
 		return policy, false
 	}
 	s.ddIncr("billing.unfunded_prefer_self_route", []string{"model:" + model})
+	// Per-request breadcrumb: dispatch/rejection rows for this request will say
+	// self_route_only=true even though the header said prefer, so record the
+	// downgrade where support can correlate it.
+	s.logger.Info("unfunded prefer request downgraded to owned-only self-route",
+		"model", model, "owner_account", policy.ownerAccountID)
 	return selfRoutePolicy{enabled: true, ownerAccountID: policy.ownerAccountID}, true
 }
 

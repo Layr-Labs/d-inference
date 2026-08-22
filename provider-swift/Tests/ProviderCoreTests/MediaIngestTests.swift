@@ -635,8 +635,45 @@ func vlmMediaLimitDefaults() {
     #expect(MediaIngest.maxRequestImagePixels == 384_000_000)
     #expect(MediaIngest.maxMediaDecodedBytes == 25 * 1024 * 1024)
     #expect(MediaIngest.maxVideoDurationSeconds == 600)
+    #expect(MediaIngest.maxImagesPerRequest == 16)
     #expect(MediaIngest.maxVideosPerRequest == 8)
     #expect(MediaIngest.maxRequestVideoFramePixels == 384_000_000)
+}
+
+/// The aggregate PIXEL cap does not bound the image COUNT: the processor
+/// resizes every image down, so a request of tiny images passes it while
+/// still driving one vision-tower forward pass each, under the model
+/// container's lock.
+@Test("buildUserInput caps the number of images per request")
+func vlmBuildUserInputCapsImageCount() async throws {
+    func request(images: Int) -> OpenAIChatCompletionRequest {
+        OpenAIChatCompletionRequest(
+            model: "vlm",
+            messages: [
+                .init(
+                    role: .user,
+                    content: .parts(
+                        (0 ..< images).map { _ in OpenAIContentPart.imageURL(tinyPNGDataURI) }))
+            ])
+    }
+    // At the cap: fine.
+    _ = try await MediaIngest.buildUserInput(from: request(images: 4), maxImagesPerRequest: 4)
+    // One over: refused, and the message says the count and the cap.
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: request(images: 5), maxImagesPerRequest: 4)
+    }
+    // Counted across MESSAGES, not per message — otherwise the cap is trivial
+    // to evade by splitting the images into separate turns.
+    let split = OpenAIChatCompletionRequest(
+        model: "vlm",
+        messages: [
+            .init(role: .user, content: .parts([.imageURL(tinyPNGDataURI)])),
+            .init(role: .user, content: .parts([.imageURL(tinyPNGDataURI)])),
+            .init(role: .user, content: .parts([.imageURL(tinyPNGDataURI)])),
+        ])
+    await expectMediaTooLarge {
+        _ = try await MediaIngest.buildUserInput(from: split, maxImagesPerRequest: 2)
+    }
 }
 
 /// Build a real PNG of the given dimensions (uniform gray) via ImageIO — to

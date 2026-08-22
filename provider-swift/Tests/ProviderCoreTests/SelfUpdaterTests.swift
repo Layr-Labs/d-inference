@@ -514,6 +514,25 @@ struct SelfUpdaterTests {
         return (tarball, release, install)
     }
 
+    @Test("v0.8.9 parent can bootstrap a v0.8.10 runtime-smoke child")
+    func oldParentBootstrapsCandidateSmoke() throws {
+        _ = LiveInferenceFixtures.ensureMetallibColocated()
+        let executable = try debugBuildProduct("darkbloom")
+        let output = try BoundedProcess.runCapturingStandardOutput(
+            executable,
+            arguments: ["runtime-smoke"],
+            environment: [
+                "DARKBLOOM_NO_UPDATE_CHECK": "1",
+                GemmaOptimizationEnvironment.prefillLayer18Key: "0",
+                GemmaOptimizationEnvironment.weightedUnsortKey: "0",
+                GemmaOptimizationEnvironment.safeR1Key: "0",
+            ],
+            timeout: 30)
+        #expect(PackagedRuntimeSmoke.containsGemmaOptimizationSuccessMarker(output))
+        #expect(String(data: output, encoding: .utf8)?.contains(
+            "paged-kernel-runtime-smoke: ok") == true)
+    }
+
     @Test("signed extracted child proves retained Gemma marker before staging succeeds")
     func signedAppRunsRealVerification() throws {
         _ = LiveInferenceFixtures.ensureMetallibColocated()

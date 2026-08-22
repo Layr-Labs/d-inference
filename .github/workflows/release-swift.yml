@@ -499,6 +499,9 @@ jobs:
           # existing GPT-OSS paged-kernel shapes. The v0.7.6 artifact still
           # fails here because its resource bundle is absent.
           PRE_SIGN_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+            MLX_GATHER_QMM_EXPERT_SLICES=1 \
             "$APP/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT"
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
@@ -753,6 +756,9 @@ jobs:
           codesign --verify --deep --strict --verbose=2 \
             "$SMOKE_ROOT/Darkbloom.app"
           FINAL_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            DARKBLOOM_GEMMA4_PREFILL_CHUNK_EVAL=18 \
+            MLX_GEMMA4_FUSED_WEIGHTED_UNSORT=1 \
+            MLX_GATHER_QMM_EXPERT_SLICES=1 \
             "$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
           printf '%s\n' "$FINAL_SMOKE_OUTPUT"
           printf '%s\n' "$FINAL_SMOKE_OUTPUT" \

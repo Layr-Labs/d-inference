@@ -66,6 +66,16 @@ public enum PackagedRuntimeSmoke {
         return projection
     }
 
+    /// Seed the process-global MLX latch variables before command parsing can
+    /// trigger any eager Metal access. This is the bootstrap boundary used by
+    /// a v0.8.10 child launched from an older updater that cannot provide the
+    /// new pre-exec environment itself.
+    public static func seedRetainedValidationEnvironment() throws {
+        let config = try retainedConfiguration()
+        try GemmaOptimizationEnvironment.apply(
+            config.gemmaOptimizations, context: .retainedValidation)
+    }
+
     public static func verifyGemmaOptimizations() throws {
         let config = try retainedConfiguration()
         let projection = try retainedValidationEnvironment()

@@ -45,7 +45,8 @@ In the console UI: the **My Machine** toggle in the chat composer sends
 `prefer` (prioritized, never stuck), and the **"My Machine only — free"**
 checkbox on an API key sets the strict `self_route_only` ceiling.
 
-The policy resolution is server-side in `coordinator/api/self_route.go:49-65`.
+The policy resolution is server-side in
+`coordinator/api/self_route.go:resolveSelfRoutePolicy`.
 
 ### Exclusive vs prefer
 
@@ -69,9 +70,11 @@ request (`api/self_route.go:unfundedPreferPolicy`, called from
   **exclusive** self-route: owned-only, free, no reservation. Owned-only is what
   makes this safe — an unfunded request can never reach a public provider, and
   settlement independently re-verifies ownership before settling at zero.
-- Otherwise it is still a `402`, whose message names both halves ("your machine
-  cannot serve this request right now … and your balance is too low for the paid
-  fallback").
+- Otherwise it is still a `402`. On the balance half the message names both
+  causes ("your machine cannot serve this request right now … and your balance
+  is too low for the paid fallback", `insufficientBalanceMessage`); on the
+  spend-cap half it stays the cap message from `checkKeySpendCap`, which already
+  names the key and its limit.
 
 Without this, the console's **My Machine** toggle answered "Insufficient
 credits" to an owner whose idle Mac was online and able to serve, because the
@@ -112,9 +115,13 @@ the **public** fleet on low trust.
 | No machine linked | 409 | `no_linked_machine` |
 | Machine(s) offline | 503 + Retry-After | `machine_offline` |
 | Online but model not loaded/in-catalog | 503 + Retry-After | `model_not_loaded` |
+| Model served, but not for this request shape (tools / vision) | 503 | `model_capability_unsupported` |
 | Owned machine busy (after queue) | 429 + Retry-After | `machine_busy` |
 
-These errors are written by `coordinator/api/self_route.go:73-101`.
+All but the last are written by
+`coordinator/api/self_route.go:selfRouteUnavailable`; `machine_busy` is the
+queue-wait verdict in `coordinator/api/dispatch.go` and
+`coordinator/api/consumer.go`.
 
 ## Billing
 
@@ -157,8 +164,9 @@ This adds a `private_only` field to the registration message, mirrored across
   `registry/scheduler.go` + `registry/registry.go` (owner filter, trust
   relaxation, `OwnedProviderSummary`, `private_only` gating),
   `store/{interface,memory,postgres}.go` (`self_route_only` API-key flag).
-- **Console UI:** `lib/api.ts` (header + error mapping + types), `lib/store.ts`
-  (`useMyMachine`), `app/api/chat/route.ts` (header forwarding),
-  `components/ChatInput.tsx` + `components/api-keys/{KeyForm,KeyCard}.tsx`.
+- **Console UI:** `lib/chat/stream.ts` (header), `lib/chat/errors.ts` (error
+  copy), `lib/api/types.ts` (types), `lib/store.ts` (`useMyMachine`),
+  `app/api/chat/route.ts` (header forwarding), `components/ChatInput.tsx` +
+  `components/api-keys/{KeyForm,KeyCard}.tsx`.
 - **Provider (Swift):** `Protocol/Messages.swift`, `Coordinator/CoordinatorClient*.swift`,
   `Config/ProviderConfig.swift`, `ProviderLoop.swift`.

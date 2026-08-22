@@ -560,6 +560,24 @@ jobs:
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
           rm -rf "$BASELINE_SMOKE_ROOT"
 
+          # And prove the FALLBACK itself, which is the load-bearing assumption
+          # of the whole layout: an unloadable primary beside a good baseline
+          # must still come up. This pins MLX's probe order, so a libs/mlx-swift
+          # bump that renames or reorders the colocated candidates fails here
+          # instead of shipping macOS 15 a provider that cannot start.
+          FALLBACK_SMOKE_ROOT=/tmp/darkbloom-metallib-fallback-smoke
+          rm -rf "$FALLBACK_SMOKE_ROOT"
+          mkdir -p "$FALLBACK_SMOKE_ROOT"
+          cp -R "$APP" "$FALLBACK_SMOKE_ROOT/Darkbloom.app"
+          head -c 4096 /dev/urandom \
+            > "$FALLBACK_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
+          FALLBACK_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            "$FALLBACK_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          printf '%s\n' "$FALLBACK_SMOKE_OUTPUT"
+          printf '%s\n' "$FALLBACK_SMOKE_OUTPUT" \
+            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          rm -rf "$FALLBACK_SMOKE_ROOT"
+
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
           # it as an unsigned subcomponent.
@@ -666,6 +684,13 @@ jobs:
           cp "$APP/Contents/MacOS/$CLI_NAME" "$STAGE/bin/$CLI_NAME"
           cp "$APP/Contents/MacOS/$ENCLAVE_NAME" "$STAGE/bin/$ENCLAVE_NAME"
           cp "$APP/Contents/MacOS/mlx.metallib" "$STAGE/bin/mlx.metallib"
+          # Deliberately no baseline library here. These flat copies exist only
+          # for coordinator artifact verification and for the legacy no-.app
+          # install path, which no current release produces; the app installer
+          # and SelfUpdater both point bin/ at the bundle instead. Staging one
+          # would add a file that UpdateInstallLayout's flat snapshot
+          # (copyPredecessor copies three files by name) does not carry, so a
+          # flat rollback would hash-mismatch forever.
 
           # Notarize only the canonical app. The flat bin/ copies exist solely
           # for coordinator artifact verification and inherit signatures that

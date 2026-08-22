@@ -26,6 +26,10 @@ public enum MetalRuntimeDiagnosis: Equatable, Sendable, CustomStringConvertible 
     case healthy
     /// No Metal device at all — headless, sandboxed, or virtualized session.
     case noMetalDevice
+    /// The running executable's own directory could not be resolved, so the
+    /// probe never had a candidate to try. Distinct from "tried and failed":
+    /// nothing here says anything about the packaged libraries.
+    case unknownExecutableDirectory
     /// A device exists, but no packaged kernel library was loadable on it.
     case noLoadableMetallib(hostOS: String, attempts: [PackagedMetallibAttempt])
 
@@ -40,12 +44,15 @@ public enum MetalRuntimeDiagnosis: Equatable, Sendable, CustomStringConvertible 
                 no Metal device is available to this process (headless, \
                 sandboxed, or virtualized macOS sessions expose no GPU)
                 """
+        case .unknownExecutableDirectory:
+            return """
+                could not resolve the running executable's directory, so no \
+                packaged Metal kernel library could be located
+                """
         case .noLoadableMetallib(let hostOS, let attempts):
-            let tried = attempts.isEmpty
-                ? "no packaged kernel library was found beside the executable"
-                : attempts
-                    .map { "\($0.path): \($0.failure)" }
-                    .joined(separator: "; ")
+            let tried = attempts
+                .map { "\($0.path): \($0.failure)" }
+                .joined(separator: "; ")
             // Only send someone to Software Update when that would actually
             // help. A host already at or above the floor has a packaging
             // fault, not an old OS, and telling it to upgrade buries the bug.
@@ -81,6 +88,15 @@ public enum MetalRuntimeDiagnosis: Equatable, Sendable, CustomStringConvertible 
 /// NAX-free build as the fallback that older systems land on. `is_nax_available()`
 /// is itself gated on macOS 26.2, so a host that lands on the baseline never
 /// asks for a kernel the baseline lacks.
+///
+/// That safety rests on an unstated invariant: **the primary is unloadable only
+/// because the host is below macOS 26.2.** `is_nax_available()` keys off the OS,
+/// not off which library actually loaded, so a 26.2 host that fell back for some
+/// other reason would dispatch NAX kernels the baseline does not contain. Every
+/// install path hashes and code-signature-verifies the primary, which is what
+/// keeps that unreachable — do not widen the fallback (extra candidates, a
+/// tolerated corrupt primary, an operator override) without also gating NAX on
+/// the library that won.
 public enum PackagedMetallib {
     /// Deployment target of the primary, NAX-capable library.
     public static let primaryDeploymentTarget = "26.2"
@@ -104,6 +120,11 @@ public enum PackagedMetallib {
     /// Baseline library location inside the app bundle.
     public static let baselineBundleRelativePath =
         "Contents/MacOS/Resources/mlx.metallib"
+
+    /// Where the baseline must also appear beside any *other* directory a
+    /// `darkbloom` executable can be launched from — `~/.darkbloom/bin` mirrors
+    /// both libraries because MLX probes relative to the running executable.
+    public static let baselineProbeRelativePath = relativePaths[1]
 
     /// Candidate library URLs in MLX's probe order.
     public static func candidateURLs(executableDirectory: URL) -> [URL] {

@@ -42,17 +42,19 @@ public enum MetalRuntimeProbe {
         loader: LibraryLoader?
     ) -> MetalRuntimeDiagnosis {
         guard let loader else { return .noMetalDevice }
-        guard let executableDirectory else {
-            return .noLoadableMetallib(hostOS: hostOS, attempts: [])
-        }
+        guard let executableDirectory else { return .unknownExecutableDirectory }
 
         var attempts: [PackagedMetallibAttempt] = []
         for url in PackagedMetallib.candidateURLs(
             executableDirectory: executableDirectory)
         {
             guard fileManager.isReadableFile(atPath: url.path) else {
+                // A present-but-unreadable library is a permissions bug, not a
+                // missing file, and the two need different remedies.
+                let reason = fileManager.fileExists(atPath: url.path)
+                    ? "present but unreadable" : "not present"
                 attempts.append(
-                    PackagedMetallibAttempt(path: url.path, failure: "not present"))
+                    PackagedMetallibAttempt(path: url.path, failure: reason))
                 continue
             }
             guard let failure = loader(url) else { return .healthy }

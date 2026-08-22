@@ -93,8 +93,8 @@ const REQUIREMENTS = [
   },
   {
     icon: Monitor,
-    title: "macOS 14.0+",
-    description: "Sonoma or later required for Secure Enclave attestation and hardware security features.",
+    title: "macOS 15.0+",
+    description: "Sequoia or later required for the bundled Metal GPU kernels, Secure Enclave attestation, and hardware security features.",
   },
   {
     icon: Wifi,

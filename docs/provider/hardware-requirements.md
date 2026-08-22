@@ -98,10 +98,15 @@ default).
 
 ## macOS version support
 
-The installer and CLI target macOS 14+. Individual security checks (SIP,
-Authenticated Root, RDMA controls) behave differently across macOS versions;
-`darkbloom doctor` reports the current state without requiring you to manually
-parse tool output.
+The installer and CLI target macOS 15+, and `scripts/install.sh` refuses to
+install below that. The floor comes from the packaged Metal kernel libraries
+rather than the Swift binary — see
+[Hardware Support](../architecture/hardware-support.md#macos-requirements) for
+the two-library layout and why macOS 26.2+ gets a different one.
+
+Individual security checks (SIP, Authenticated Root, RDMA controls) behave
+differently across macOS versions; `darkbloom doctor` reports the current state
+without requiring you to manually parse tool output.
 
 ## Verification checklist
 

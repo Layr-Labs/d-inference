@@ -15,7 +15,19 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SWIFT="$ROOT/provider-swift/Sources/ProviderCore/Inference/PackagedMetallib.swift"
 WORKFLOW="$ROOT/.github/workflows/release-swift.yml"
 HELPER="$ROOT/scripts/fetch-metallib.sh"
-INSTALLERS="$ROOT/scripts/install.sh $ROOT/coordinator/api/install.sh"
+INSTALLERS=(
+    "$ROOT/scripts/install.sh"
+    "$ROOT/coordinator/api/install.sh"
+)
+# Surfaces that quote the floor at a prospective provider before they ever run
+# the installer. A stale number here is how someone ends up downloading a
+# gigabyte and getting refused.
+ADVERTISED=(
+    "$ROOT/landing/index.html"
+    "$ROOT/console-ui/src/app/providers/setup/page.tsx"
+    "$ROOT/docs/provider/hardware-requirements.md"
+    "$ROOT/docs/architecture/hardware-support.md"
+)
 
 fail() {
     echo "macOS floor check: $*" >&2
@@ -64,7 +76,7 @@ HELPER_NAX=$(read_pin "$HELPER" '^NAX_DEPLOYMENT_TARGET=' '"')
 [ "$SWIFT_BASELINE" = "$WORKFLOW_MIN" ] \
     || fail "macOS floor: baseline target=$SWIFT_BASELINE workflow MIN_MACOS=$WORKFLOW_MIN"
 
-for installer in $INSTALLERS; do
+for installer in "${INSTALLERS[@]}"; do
     installer_min=$(read_pin "$installer" '^MIN_MACOS=' '"')
     [ "$installer_min" = "$WORKFLOW_MIN" ] \
         || fail "macOS floor: $installer=$installer_min workflow=$WORKFLOW_MIN"
@@ -72,6 +84,15 @@ for installer in $INSTALLERS; do
         || fail "$installer does not reference the baseline metallib path"
     grep -Fq "darkbloom-runtime-capabilities/baseline-metallib-v1" "$installer" \
         || fail "$installer does not reference the baseline capability marker"
+done
+
+# "macOS 15" / "macOS 15.0+" both satisfy the pin; any OTHER major is drift.
+FLOOR_MAJOR=${WORKFLOW_MIN%%.*}
+for surface in "${ADVERTISED[@]}"; do
+    grep -Eq "macOS ${FLOOR_MAJOR}(\.[0-9]+)?\+?([^0-9.]|$)" "$surface" \
+        || fail "$surface does not advertise the macOS $WORKFLOW_MIN floor"
+    stale=$(grep -Eon "macOS (1[0-4]|[0-9])(\.[0-9]+)?\+" "$surface" || true)
+    [ -z "$stale" ] || fail "$surface still advertises a floor below $WORKFLOW_MIN: $stale"
 done
 
 # The Swift constants name bundle-relative paths; the workflow stages them and

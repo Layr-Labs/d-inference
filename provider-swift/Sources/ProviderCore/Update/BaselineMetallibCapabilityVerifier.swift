@@ -2,10 +2,6 @@
 
 import Foundation
 
-#if canImport(Darwin)
-    import Darwin
-#endif
-
 /// Artifact-verification counterpart to the installer's
 /// `verify_baseline_metallib_capability`.
 ///
@@ -23,8 +19,11 @@ enum BaselineMetallibCapabilityVerifier {
             PackagedMetallib.baselineBundleRelativePath)
         let marker = app.appendingPathComponent(
             PackagedMetallib.baselineCapabilityRelativePath)
-        let baselinePresent = fileManager.fileExists(atPath: baseline.path)
-        let markerPresent = fileManager.fileExists(atPath: marker.path)
+        // Presence must see a dangling symlink, or two of them read as a
+        // pre-baseline release and take the early return. Mirrors the
+        // installer's `[ -e ] || [ -L ]`.
+        let baselinePresent = itemExists(baseline, fileManager: fileManager)
+        let markerPresent = itemExists(marker, fileManager: fileManager)
 
         guard baselinePresent || markerPresent else {
             return // pre-baseline release compatibility
@@ -36,9 +35,13 @@ enum BaselineMetallibCapabilityVerifier {
                     : "artifact advertises a baseline Metal kernel library it does not ship")
         }
         try requireNonEmptyRegularFile(
-            baseline, label: "baseline Metal kernel library")
+            baseline,
+            label: "baseline Metal kernel library",
+            fileManager: fileManager)
         try requireNonEmptyRegularFile(
-            marker, label: "baseline metallib capability marker")
+            marker,
+            label: "baseline metallib capability marker",
+            fileManager: fileManager)
         guard
             let markerValue = try? String(contentsOf: marker, encoding: .utf8),
             markerValue.trimmingCharacters(in: .whitespacesAndNewlines) == "1"
@@ -48,30 +51,29 @@ enum BaselineMetallibCapabilityVerifier {
         }
     }
 
+    /// `fileExists` follows symlinks; a dangling one must still read as
+    /// present so the coupling check fires instead of the early return.
+    private static func itemExists(
+        _ url: URL,
+        fileManager: FileManager
+    ) -> Bool {
+        fileManager.fileExists(atPath: url.path)
+            || (try? fileManager.destinationOfSymbolicLink(atPath: url.path)) != nil
+    }
+
     private static func requireNonEmptyRegularFile(
         _ url: URL,
-        label: String
+        label: String,
+        fileManager: FileManager
     ) throws {
-        #if canImport(Darwin)
-            var metadata = stat()
-            guard lstat(url.path, &metadata) == 0,
-                metadata.st_mode & S_IFMT == S_IFREG
-            else {
-                throw UpdateError.replaceFailed(
-                    "\(label) must be a regular non-symlink file")
-            }
-            guard metadata.st_size > 0 else {
-                throw UpdateError.replaceFailed("\(label) is empty")
-            }
-        #else
-            guard
-                let size = try? FileManager.default.attributesOfItem(
-                    atPath: url.path)[.size] as? NSNumber,
-                size.intValue > 0
-            else {
-                throw UpdateError.replaceFailed(
-                    "\(label) is missing or empty")
-            }
-        #endif
+        let attributes = try? fileManager.attributesOfItem(atPath: url.path)
+        guard let attributes, attributes[.type] as? FileAttributeType == .typeRegular
+        else {
+            throw UpdateError.replaceFailed(
+                "\(label) must be a regular non-symlink file")
+        }
+        guard (attributes[.size] as? NSNumber)?.intValue ?? 0 > 0 else {
+            throw UpdateError.replaceFailed("\(label) is empty")
+        }
     }
 }

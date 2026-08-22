@@ -49,17 +49,18 @@
 // oversized media, or an intentionally unsupported family/media pairing) keep
 // their 4xx mapping and are not refusals.
 //
-// FAIL-LOUD REQUIRES SURVIVING (v0.8.10): a refusal contract is only worth
-// what the process is worth, and MLX's default error handler is `fatalError`
-// — a C++ fault under this file used to kill the daemon outright, with every
+// FAIL-LOUD REQUIRES SURVIVING: a refusal contract is only worth what the
+// process is worth, and MLX's default error handler is `fatalError` — a C++
+// fault under this file used to kill the daemon outright, with every
 // co-batched request on it. Two changes close that:
 //
-//   1. `prepare` runs under `MLX.withError`, so an MLX fault becomes a Swift
-//      throw the catch arms above already handle (one failed request, not one
-//      dead provider).
+//   1. `prepare` runs under `MLX.withError`, and the recorded fault is checked
+//      at every `eval` site (not just on block exit — the handler records and
+//      RETURNS), so an MLX fault becomes a Swift throw the catch arms above
+//      already handle: one failed request, not one dead provider.
 //   2. The Qwen tower is driven ONE IMAGE AT A TIME and each image is admitted
 //      against `MTLDevice.maxBufferLength` first (`VisionTowerBudget`), so the
-//      dominant fault — the tower's dense `[1, N, N]` attention mask growing
+//      dominant fault — the tower's N×N attention intermediate growing
 //      quadratically in the request's TOTAL patch count — is neither produced
 //      nor left for the allocator to discover. See `EngineV2VisionTowerRun`.
 //
@@ -293,7 +294,7 @@ public enum EngineV2VisionPrefill {
         // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
             from: request, reasoningEffort: reasoningEffort)
-        let towerLimits = VisionTowerBudget.liveLimits()
+        let towerLimits = VisionTowerBudget.liveLimits
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
             // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
             // anywhere under this closure — most consequentially an allocation
@@ -306,15 +307,45 @@ public enum EngineV2VisionPrefill {
             // that the scheduler's existing catch arms turn into one failed
             // request. It is the LAST line of defence: `VisionTowerBudget`
             // refuses the predictable cases deterministically, up front.
+            //
+            // The handler RECORDS and RETURNS — it does not unwind — so the
+            // box is threaded down to every `eval` site and checked there
+            // (`throwIfMLXFaulted`) rather than only on block exit. Checking
+            // only on exit would let the code run on after a refused
+            // allocation and let a later Swift throw hide the real cause.
             do {
-                return try await MLX.withError {
-                    try await Self.buildSubmission(
-                        ctx: ctx, userInput: userInput, towerLimits: towerLimits)
+                return try await MLX.withError { (mlxErrors: MLX.ErrorBox) in
+                    let submission = try await Self.buildSubmission(
+                        ctx: ctx, userInput: userInput, towerLimits: towerLimits,
+                        mlxErrors: mlxErrors)
+                    try Self.throwIfMLXFaulted(mlxErrors)
+                    return submission
                 }
             } catch let mlxError as MLX.MLXError {
                 throw Self.visionPrefillError(for: mlxError)
             }
         }
+    }
+
+    /// Convert a recorded MLX fault into our own vocabulary and throw it.
+    ///
+    /// `MLX.ErrorBox.check()` throws the raw `MLXError`, which would reach the
+    /// scheduler's generic catch as a foreign error and lose its numbers to
+    /// the telemetry privacy filter. Translating here keeps the operator-facing
+    /// byte counts while the enum stays content-safe by construction.
+    static func throwIfMLXFaulted(_ box: MLX.ErrorBox) throws {
+        if let error = translatedFault(box.firstError) { throw error }
+    }
+
+    /// The pure half of ``throwIfMLXFaulted(_:)`` — `MLX.ErrorBox` has no
+    /// public initializer, so the translation lives here where tests can
+    /// reach it.
+    static func translatedFault(_ recorded: Error?) -> Error? {
+        guard let recorded else { return nil }
+        if let mlxError = recorded as? MLX.MLXError {
+            return visionPrefillError(for: mlxError)
+        }
+        return recorded
     }
 
     /// Run the processor, then dispatch to the loaded family's builder. Runs
@@ -323,12 +354,14 @@ public enum EngineV2VisionPrefill {
     private static func buildSubmission(
         ctx: ModelContext,
         userInput: UserInput,
-        towerLimits: VisionTowerBudget.Limits
+        towerLimits: VisionTowerBudget.Limits,
+        mlxErrors: MLX.ErrorBox
     ) async throws -> PreparedSubmission {
         let lmInput = try await ctx.processor.prepare(input: userInput)
         guard lmInput.image != nil || lmInput.video != nil else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
+        try throwIfMLXFaulted(mlxErrors)
 
         // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
         // token array only.
@@ -337,7 +370,7 @@ public enum EngineV2VisionPrefill {
         if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
             return try buildQwenSubmission(
                 wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
-                towerLimits: towerLimits)
+                towerLimits: towerLimits, mlxErrors: mlxErrors)
         }
         guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
             throw EngineV2VisionPrefillError.unsupportedVLM(
@@ -353,7 +386,8 @@ public enum EngineV2VisionPrefill {
         wrapper: MLXVLM.Qwen35MoE,
         lmInput: LMInput,
         promptTokens: [Int],
-        towerLimits: VisionTowerBudget.Limits
+        towerLimits: VisionTowerBudget.Limits,
+        mlxErrors: MLX.ErrorBox
     ) throws -> PreparedSubmission {
         // Video remains fail-closed until a real processor/output
         // representation canary pins temporal packing end-to-end.
@@ -361,11 +395,20 @@ public enum EngineV2VisionPrefill {
             throw EngineV2VisionPrefillError.unsupportedMedia(
                 "Qwen35MoE video media is not production-proven")
         }
-        guard let image = lmInput.image, let grids = image.frames, !grids.isEmpty else {
+        // `noProcessedMedia` means "the processor consumed no media", which
+        // maps to a deterministic 400. Pixels WITHOUT grids is a different
+        // thing — the processor produced something the seam cannot describe —
+        // and must keep its retriable refusal rather than tell the caller
+        // their media was attached to the wrong role.
+        guard let image = lmInput.image else {
             throw EngineV2VisionPrefillError.noProcessedMedia
         }
+        guard let grids = image.frames, !grids.isEmpty else {
+            throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+        }
         let imageFeatures = try qwenPerImageVisionFeatures(
-            wrapper: wrapper, pixels: image.pixels, grids: grids, towerLimits: towerLimits)
+            wrapper: wrapper, pixels: image.pixels, grids: grids,
+            towerLimits: towerLimits, mlxErrors: mlxErrors)
         let carved = try carveSpans(
             tokens: promptTokens,
             imagePlaceholderId: wrapper.imagePlaceholderTokenId,

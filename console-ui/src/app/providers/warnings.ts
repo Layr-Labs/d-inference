@@ -235,12 +235,17 @@ export function computeWarnings(
     });
   }
 
-  // A machine below the version floor is derouted by setting its runtime flag
-  // false, so the server's verdict says "runtime hash mismatch". The version
-  // warning above is the same fact with the actionable remedy, so don't also
-  // tell the operator to chase a hash.
+  // A machine below the version floor is derouted by clearing BOTH runtime
+  // flags, so the server's verdict says "runtime hash mismatch" and/or
+  // "runtime not verified against a release manifest". The version warning
+  // above is the same fact with the actionable remedy, so don't also send the
+  // operator chasing a hash.
   if (out.some((w) => w.id === "version_below_min")) {
-    return out.filter((w) => w.id !== "routing:runtime_hash_mismatch");
+    return out.filter(
+      (w) =>
+        w.id !== "routing:runtime_hash_mismatch" &&
+        w.id !== "routing:runtime_manifest_unchecked"
+    );
   }
   return out;
 }

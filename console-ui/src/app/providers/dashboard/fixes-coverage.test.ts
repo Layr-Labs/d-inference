@@ -35,6 +35,7 @@ const MODEL_BLOCKERS: RoutingBlocker[] = [
   "model_not_in_catalog",
   "model_weight_hash_mismatch",
   "model_template_render_broken",
+  "model_requires_dedicated_box",
 ];
 
 describe("every routing blocker is actionable", () => {
@@ -58,6 +59,7 @@ describe("every routing blocker is actionable", () => {
           {
             id: "some/model-with:colons",
             publicly_listed: false,
+            routable: false,
             owner_routable: false,
             blockers: [blocker],
           },

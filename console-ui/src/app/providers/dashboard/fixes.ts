@@ -248,6 +248,11 @@ const FIX_TABLE: Record<string, FixAction> = {
     command: "darkbloom models pull",
     note: "The chat template failed its render self-check, so every request shape is fenced away.",
   },
+  "routing:model:model_requires_dedicated_box": {
+    kind: "guidance",
+    label: "Serve only this model",
+    note: "Remove the other model families from `enabled_models` and restart, or accept that this build stays unrouted on a mixed box.",
+  },
 };
 
 /**

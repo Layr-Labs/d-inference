@@ -4290,7 +4290,6 @@ func (r *Registry) ListModels() []AggregateModel {
 	// offering the same model ID should be counted together regardless of
 	// minor metadata differences.
 	agg := make(map[string]*modelAgg)
-	now := time.Now()
 	for _, p := range r.providers {
 		p.mu.Lock()
 		trust := p.TrustLevel
@@ -4300,7 +4299,7 @@ func (r *Registry) ListModels() []AggregateModel {
 		// private-text ready) lives in one place so the operator-facing
 		// "why isn't my machine advertising" diagnostic reports exactly what
 		// this loop decided.
-		listable := r.publicListingBlockerLocked(p, now) == ""
+		listable := r.publicListingBlockerLocked(p) == ""
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
 		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
 		// ranging the field after unlock.

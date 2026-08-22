@@ -374,7 +374,10 @@ func (s *Server) handleMyProviders(w http.ResponseWriter, r *http.Request) {
 		LatestProviderVersion: s.latestReleasedVersion(),
 		MinProviderVersion:    s.minProviderVersion,
 		HeartbeatTimeoutSec:   90,
-		ChallengeMaxAgeSec:    int((6 * time.Minute).Seconds()),
+		// The window routing actually enforces. A second, tighter copy used to
+		// live here, so a card could warn "challenge stale" at 8 minutes while
+		// the coordinator was still happily routing.
+		ChallengeMaxAgeSec: int(registry.ChallengeFreshnessMaxAge.Seconds()),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

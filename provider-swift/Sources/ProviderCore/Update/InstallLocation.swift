@@ -30,16 +30,18 @@ public enum InstallLocation {
 
     /// Directory-name prefixes the updater uses for trees that are, by
     /// construction, transient: they exist only between the steps of an
-    /// install and are renamed or deleted when it finishes. Must stay in sync
-    /// with `SelfUpdater.stagingDirPrefix`, `UpdateRecoveryStore`'s rollback
-    /// and restore staging names, and `UpdateInstallLayout`'s predecessor
-    /// staging name.
+    /// install and are renamed or deleted when it finishes.
+    ///
+    /// Where a constant already exists it is referenced rather than copied, so
+    /// renaming one cannot leave a hole here. The remaining literals are the
+    /// names built inline at their single construction site; each cites it.
     public static let transientDirPrefixes = [
-        ".update-staging-",
-        ".update-backup-",
-        ".rollback-staging-",
-        ".recovery-restore-",
-        ".predecessor-next-",
+        SelfUpdater.stagingDirPrefix,  // SelfUpdater.stageBundle
+        UpdateRecoveryStore.staleAppAsidePrefix,  // stale-app retirement, via atomicRemove
+        ".update-backup-",  // SelfUpdater backup swap
+        ".rollback-staging-",  // UpdateRecoveryStore.rollbackToPredecessor
+        ".recovery-restore-",  // UpdateRecoveryStore.restore
+        ".predecessor-next-",  // UpdateInstallLayout.snapshotLiveAsPredecessor
     ]
 
     public enum Verdict: Sendable, Equatable {

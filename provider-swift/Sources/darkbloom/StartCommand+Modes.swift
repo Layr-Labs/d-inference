@@ -150,6 +150,16 @@ extension Start {
     ) async throws {
         warnBootSecurity(snapshot: bootSecuritySnapshot, coordinatorEnforced: true)
 
+        // THIS is the process launchd actually runs, and therefore the one a
+        // failed update can strand inside a staging tree. `runPreflightChecks`
+        // only guards the parent that WRITES the plist; without this check the
+        // stranded daemon would keep heartbeating, keep passing challenges,
+        // and keep being derouted for runtime hashes it can never match.
+        if let remediation = InstallLocation.remediation(for: InstallLocation.current()) {
+            printError("This provider is \(remediation)")
+            throw ExitCode.failure
+        }
+
         let selectedModels: [ModelInfo]
         if !model.isEmpty {
             selectedModels = advertisedModels(from: snapshot.models, config: config, modelOverrides: model)

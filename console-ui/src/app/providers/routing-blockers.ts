@@ -123,21 +123,33 @@ const BLOCKER_COPY: Record<RoutingBlocker, BlockerCopy> = {
     detail:
       "The provider could not render this model's chat template, so the coordinator fences every request shape away from it. Re-download the model.",
   },
+  model_requires_dedicated_box: {
+    title: "Model routes only to dedicated machines",
+    detail:
+      "This model is reserved for machines that serve nothing else, and this one also serves other model families. Restrict it to this model to receive that traffic.",
+  },
 };
 
-function warningFor(blocker: RoutingBlocker, idPrefix: string, suffix = ""): Warning {
+function warningFor(
+  blocker: RoutingBlocker,
+  idPrefix: string,
+  { suffix = "", severity }: { suffix?: string; severity?: WarningSeverity } = {}
+): Warning {
   const copy = BLOCKER_COPY[blocker];
   if (!copy) {
     return {
       id: `${idPrefix}${blocker}`,
-      severity: "blocking",
+      severity: severity ?? "blocking",
       title: "Excluded from routing",
       detail: `The coordinator reported "${blocker}".`,
     };
   }
   return {
     id: `${idPrefix}${blocker}`,
-    severity: copy.severity ?? "blocking",
+    // An explicitly informational blocker stays informational; otherwise the
+    // caller decides, because whether a model-level exclusion stops the
+    // machine earning depends on the machine's other models.
+    severity: copy.severity ?? severity ?? "blocking",
     title: copy.title + suffix,
     detail: copy.detail,
   };
@@ -159,14 +171,22 @@ export function routingWarnings(p: MyProvider): Warning[] | null {
 
   // Per-model exclusions matter even when the machine itself is routable: one
   // stale build among several is exactly the case a machine-level verdict
-  // hides.
+  // hides. But they are NOT blocking while other builds still serve — a
+  // machine that is earning must not render as "not earning" because a
+  // catalog re-publish stranded one extra local build.
+  const modelSeverity: WarningSeverity = routing.routable ? "degrading" : "blocking";
   const seen = new Set<string>();
   for (const model of routing.models ?? []) {
     for (const blocker of model.blockers ?? []) {
       const key = `${blocker}:${model.id}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      out.push(warningFor(blocker, `routing:model:${model.id}:`, ` — ${model.id}`));
+      out.push(
+        warningFor(blocker, `routing:model:${model.id}:`, {
+          suffix: ` — ${model.id}`,
+          severity: modelSeverity,
+        })
+      );
     }
   }
   return out;

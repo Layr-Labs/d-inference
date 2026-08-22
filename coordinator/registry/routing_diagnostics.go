@@ -69,6 +69,7 @@ const (
 	BlockerModelNotInCatalog         RoutingBlocker = "model_not_in_catalog"
 	BlockerModelWeightHashMismatch   RoutingBlocker = "model_weight_hash_mismatch"
 	BlockerModelTemplateRenderBroken RoutingBlocker = "model_template_render_broken"
+	BlockerModelDedicatedBoxOnly     RoutingBlocker = "model_requires_dedicated_box"
 )
 
 // Description is a one-line, content-free explanation with the remediation an
@@ -115,6 +116,8 @@ func (b RoutingBlocker) Description() string {
 		return "this model's weight hash does not match the catalog entry; re-download the model"
 	case BlockerModelTemplateRenderBroken:
 		return "this model's chat template failed the provider's render self-check"
+	case BlockerModelDedicatedBoxOnly:
+		return "this model only routes to machines dedicated to it; this machine also serves other model families"
 	default:
 		return string(b)
 	}
@@ -127,6 +130,10 @@ type ModelRoutingDiagnostics struct {
 	// PubliclyListed reports whether this model contributes to the public
 	// /v1/models aggregation from this provider.
 	PubliclyListed bool `json:"publicly_listed"`
+	// Routable reports whether public traffic can actually be dispatched to
+	// this build. Stricter than PubliclyListed: the catalog aggregation does
+	// not apply the template-render or dedicated-box gates that dispatch does.
+	Routable bool `json:"routable"`
 	// OwnerRoutable reports whether the owner's self-route can reach it.
 	OwnerRoutable bool             `json:"owner_routable"`
 	Blockers      []RoutingBlocker `json:"blockers,omitempty"`
@@ -187,7 +194,7 @@ func (r *Registry) routingDiagnosticsLocked(p *Provider, now time.Time) *Provide
 	//   listing  — what ListModels counts into the public catalog
 	//   dispatch — what public traffic must pass to actually land here
 	//   owner    — the owner's self-route (relaxed trust, privacy intact)
-	listingBlocker := r.publicListingBlockerLocked(p, now)
+	listingBlocker := r.publicListingBlockerLocked(p)
 	dispatchBlocker := r.providerLivenessBlockerLocked(p, r.MinTrustLevel, false, now)
 	ownerBlocker := r.providerLivenessBlockerLocked(p, TrustNone, true, now)
 	// Dispatch first: it is the stricter gate and the actionable one. The
@@ -202,22 +209,32 @@ func (r *Registry) routingDiagnosticsLocked(p *Provider, now time.Time) *Provide
 	}
 
 	diag.Models = make([]ModelRoutingDiagnostics, 0, len(p.Models))
-	publicModels, ownerModels := 0, 0
+	listedModels, routableModels, ownerModels := 0, 0, 0
 	for _, m := range p.Models {
 		if m.ID == "" {
 			continue
 		}
 		md := ModelRoutingDiagnostics{ID: m.ID}
-		md.Blockers = r.modelBlockersLocked(m)
-		// Public listing applies the catalog gate but NOT the template-render
-		// gate (ListModels intentionally leaves render-broken builds visible
-		// in the aggregate); the owner list applies both.
+		md.Blockers = r.modelBlockersLocked(p, m)
+		// Three gates over the same build, because the coordinator applies
+		// three. The public catalog checks only the catalog; DISPATCH also
+		// fences a render-broken build (every request shape —
+		// providerEligibleForTraitsLocked) and a build a dedicated-box rule
+		// reserves for machines that serve nothing else; the owner path takes
+		// the catalog exemption for local builds but keeps the render gate.
 		md.PubliclyListed = listingBlocker == "" && r.modelAllowedByCatalogLocked(m)
+		md.Routable = md.PubliclyListed &&
+			dispatchBlocker == "" &&
+			!templateRenderBroken(m) &&
+			!r.providerExcludedByDedicatedRuleLocked(p, m.ID)
 		md.OwnerRoutable = ownerBlocker == "" &&
 			r.modelServableForOwnerLocked(m) &&
 			!templateRenderBroken(m)
 		if md.PubliclyListed {
-			publicModels++
+			listedModels++
+		}
+		if md.Routable {
+			routableModels++
 		}
 		if md.OwnerRoutable {
 			ownerModels++
@@ -226,10 +243,15 @@ func (r *Registry) routingDiagnosticsLocked(p *Provider, now time.Time) *Provide
 	}
 	sort.Slice(diag.Models, func(i, j int) bool { return diag.Models[i].ID < diag.Models[j].ID })
 
-	diag.Advertising = listingBlocker == "" && publicModels > 0
-	diag.Routable = dispatchBlocker == "" && publicModels > 0
+	diag.Advertising = listingBlocker == "" && listedModels > 0
+	diag.Routable = dispatchBlocker == "" && routableModels > 0
 	diag.OwnerRoutable = ownerModels > 0
-	if len(diag.Blockers) == 0 && publicModels == 0 {
+	// "Every build was excluded" is a distinct, separately-actionable fact
+	// from "the machine itself is fenced" — report it whenever the machine
+	// itself is not the reason the catalog is empty, even if a dispatch gate
+	// is ALSO failing. Otherwise an operator clears the machine-level blocker
+	// and lands right back on an empty catalog.
+	if listingBlocker == "" && listedModels == 0 {
 		diag.Blockers = append(diag.Blockers, BlockerNoRoutableModels)
 	}
 	return diag
@@ -250,7 +272,7 @@ func appendBlocker(blockers []RoutingBlocker, b RoutingBlocker) []RoutingBlocker
 
 // modelBlockersLocked lists the per-model exclusions for a build the provider
 // registered. Caller holds r.mu and p.mu.
-func (r *Registry) modelBlockersLocked(m protocol.ModelInfo) []RoutingBlocker {
+func (r *Registry) modelBlockersLocked(p *Provider, m protocol.ModelInfo) []RoutingBlocker {
 	var blockers []RoutingBlocker
 	if r.modelCatalog != nil {
 		entry, tracked := r.modelCatalog[m.ID]
@@ -263,6 +285,12 @@ func (r *Registry) modelBlockersLocked(m protocol.ModelInfo) []RoutingBlocker {
 	}
 	if templateRenderBroken(m) {
 		blockers = append(blockers, BlockerModelTemplateRenderBroken)
+	}
+	// Dedicated-box isolation is on by default in production for the
+	// gemma-4 family, so "why does my mixed box get no gemma-4 traffic" is a
+	// question this has to answer or it answers nothing.
+	if r.providerExcludedByDedicatedRuleLocked(p, m.ID) {
+		blockers = append(blockers, BlockerModelDedicatedBoxOnly)
 	}
 	return blockers
 }
@@ -279,9 +307,9 @@ func templateRenderBroken(m protocol.ModelInfo) bool {
 //
 // It deliberately omits the runtime-verified and challenge-freshness checks of
 // the full liveness gate: the public catalog answers "who could serve this
-// model", while dispatch re-applies the stricter gate per request. Caller
-// holds r.mu and p.mu.
-func (r *Registry) publicListingBlockerLocked(p *Provider, now time.Time) RoutingBlocker {
+// model", while dispatch re-applies the stricter gate per request. That is why
+// it takes no clock. Caller holds r.mu and p.mu.
+func (r *Registry) publicListingBlockerLocked(p *Provider) RoutingBlocker {
 	if blocker := statusBlocker(p); blocker != "" {
 		return blocker
 	}
@@ -312,7 +340,11 @@ func (r *Registry) providerLivenessBlockerLocked(
 	if p.PrivateOnly && !allowPrivate {
 		return BlockerPrivateOnly
 	}
-	if trustRank(p.TrustLevel) < trustRank(minTrust) {
+	// `trustRank` returns -1 for an unrecognised level, and a restored store
+	// row can carry one (`RestoreProviderState` assigns the persisted string
+	// verbatim). Clamping the FLOOR at 0 keeps a caller that asked for no
+	// trust requirement — the owner self-route — from silently acquiring one.
+	if trustRank(p.TrustLevel) < max(trustRank(minTrust), 0) {
 		return BlockerTrustBelowMinimum
 	}
 	if !p.RuntimeVerified {

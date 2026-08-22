@@ -69,15 +69,93 @@ describe("coordinator routing verdict", () => {
     expect(warnings.some((w) => w.id === "no_catalog_models")).toBe(false);
   });
 
+  it("keeps an earning machine earning when one extra build is stranded", () => {
+    // A catalog re-publish is enough to strand a local build. Rendering the
+    // whole card as "not earning" for that would contradict the very verdict
+    // this module exists to trust.
+    const p = makeProvider({
+      ...serving,
+      routing: makeRouting({
+        models: [
+          { id: "good-build", publicly_listed: true, routable: true, owner_routable: true },
+          {
+            id: "stale-build",
+            publicly_listed: false,
+            routable: false,
+            owner_routable: false,
+            blockers: ["model_weight_hash_mismatch"],
+          },
+        ],
+      }),
+    });
+    const warnings = computeWarnings(p, ctx);
+    const stranded = warnings.find(
+      (w) => w.id === "routing:model:stale-build:model_weight_hash_mismatch"
+    );
+    expect(stranded!.severity).toBe("degrading");
+    expect(deriveRouting(p, warnings)).not.toBe("blocked");
+  });
+
+  it("escalates per-model exclusions to blocking when nothing is routable", () => {
+    const p = makeProvider({
+      ...serving,
+      routing: makeRouting({
+        advertising: false,
+        routable: false,
+        owner_routable: false,
+        blockers: ["no_routable_models"],
+        models: [
+          {
+            id: "stale-build",
+            publicly_listed: false,
+            routable: false,
+            owner_routable: false,
+            blockers: ["model_weight_hash_mismatch"],
+          },
+        ],
+      }),
+    });
+    const warnings = computeWarnings(p, ctx);
+    const stranded = warnings.find(
+      (w) => w.id === "routing:model:stale-build:model_weight_hash_mismatch"
+    );
+    expect(stranded!.severity).toBe("blocking");
+    expect(deriveRouting(p, warnings)).toBe("blocked");
+  });
+
+  it("reports a dedicated-box exclusion with the model named", () => {
+    const p = makeProvider({
+      ...serving,
+      routing: makeRouting({
+        models: [
+          { id: "gpt-oss-20b", publicly_listed: true, routable: true, owner_routable: true },
+          {
+            id: "gemma-4-26b-qat-4bit",
+            publicly_listed: true,
+            routable: false,
+            owner_routable: true,
+            blockers: ["model_requires_dedicated_box"],
+          },
+        ],
+      }),
+    });
+    const warning = computeWarnings(p, ctx).find(
+      (w) => w.id === "routing:model:gemma-4-26b-qat-4bit:model_requires_dedicated_box"
+    );
+    expect(warning).toBeTruthy();
+    expect(warning!.title).toContain("gemma-4-26b-qat-4bit");
+  });
+
   it("reports per-model exclusions even when the machine itself is routable", () => {
     const p = makeProvider({
       ...serving,
       routing: makeRouting({
         models: [
-          { id: "good-build", publicly_listed: true, owner_routable: true },
+          { id: "good-build", publicly_listed: true, routable: true, owner_routable: true },
           {
             id: "stale-build",
             publicly_listed: false,
+            routable: false,
             owner_routable: false,
             blockers: ["model_weight_hash_mismatch"],
           },
@@ -100,6 +178,7 @@ describe("coordinator routing verdict", () => {
           {
             id: "my-local-build",
             publicly_listed: false,
+            routable: false,
             owner_routable: true,
             blockers: ["model_not_in_catalog"],
           },
@@ -131,14 +210,20 @@ describe("coordinator routing verdict", () => {
   });
 
   it("prefers the version remedy over the generic hash remedy below the floor", () => {
+    // The coordinator clears BOTH runtime flags for a below-floor machine, so
+    // both blockers arrive and both are red herrings.
     const p = makeProvider({
       ...serving,
       version: "0.7.0",
-      routing: makeRouting({ routable: false, blockers: ["runtime_hash_mismatch"] }),
+      routing: makeRouting({
+        routable: false,
+        blockers: ["runtime_hash_mismatch", "runtime_manifest_unchecked"],
+      }),
     });
     const warnings = computeWarnings(p, ctx);
     expect(warnings.some((w) => w.id === "version_below_min")).toBe(true);
     expect(warnings.some((w) => w.id === "routing:runtime_hash_mismatch")).toBe(false);
+    expect(warnings.some((w) => w.id === "routing:runtime_manifest_unchecked")).toBe(false);
   });
 
   it("still reports the hash mismatch when the version is current", () => {

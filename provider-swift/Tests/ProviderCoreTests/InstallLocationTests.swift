@@ -79,19 +79,41 @@ struct InstallLocationTests {
         #expect(InstallLocation.Verdict.transient(directory: ".update-backup-1").isTransient)
     }
 
-    /// The prefixes must cover every transient directory the updater actually
-    /// creates. This is the list as of v0.8.9; adding one to the updater
-    /// without adding it here reopens the hole.
-    @Test("the prefix list covers every updater-created transient directory")
-    func prefixesCoverTheUpdater() {
+    /// The list must cover every transient directory the updater creates.
+    /// Where the updater owns a named constant, this asserts against THAT
+    /// constant rather than a copy of the string — a duplicated literal would
+    /// only be comparing the implementation to itself.
+    @Test("the prefix list references the updater's own constants")
+    func prefixesReferenceUpdaterConstants() {
+        #expect(InstallLocation.transientDirPrefixes.contains(SelfUpdater.stagingDirPrefix))
+        #expect(
+            InstallLocation.transientDirPrefixes.contains(
+                UpdateRecoveryStore.staleAppAsidePrefix))
+    }
+
+    /// The inline-constructed names, each with its single construction site.
+    /// Adding one to the updater without adding it here reopens the hole; the
+    /// literals are unavoidable because the updater builds them inline.
+    @Test("the prefix list covers the inline-constructed transient directories")
+    func prefixesCoverInlineNames() {
         for prefix in [
-            ".update-staging-",  // SelfUpdater.stagingDirPrefix
             ".update-backup-",  // SelfUpdater backup swap
-            ".rollback-staging-",  // UpdateRecoveryStore rollback
-            ".recovery-restore-",  // UpdateRecoveryStore restore
-            ".predecessor-next-",  // UpdateInstallLayout predecessor snapshot
+            ".rollback-staging-",  // UpdateRecoveryStore.rollbackToPredecessor
+            ".recovery-restore-",  // UpdateRecoveryStore.restore
+            ".predecessor-next-",  // UpdateInstallLayout.snapshotLiveAsPredecessor
         ] {
             #expect(InstallLocation.transientDirPrefixes.contains(prefix), prefix)
         }
+    }
+
+    /// The stale-app aside prefix was missing from the first version of this
+    /// list, so pin the behaviour that depends on it.
+    @Test("a process inside a retired stale-app directory is caught")
+    func staleAppAsideIsCaught() {
+        let directory = "\(UpdateRecoveryStore.staleAppAsidePrefix)7E4A5C1D"
+        let path = "/Users/tim/.darkbloom/\(directory)/Darkbloom.app/Contents/MacOS/darkbloom"
+        #expect(
+            InstallLocation.classify(executablePath: path)
+                == .transient(directory: directory))
     }
 }

@@ -12,7 +12,12 @@ export function makeRouting(
     routable: true,
     owner_routable: true,
     models: [
-      { id: "gemma-4-26b-qat-4bit", publicly_listed: true, owner_routable: true },
+      {
+        id: "gemma-4-26b-qat-4bit",
+        publicly_listed: true,
+        routable: true,
+        owner_routable: true,
+      },
     ],
     challenge_max_age_seconds: 960,
     ...overrides,

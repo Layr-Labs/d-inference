@@ -114,11 +114,14 @@ export type RoutingBlocker =
   | "no_routable_models"
   | "model_not_in_catalog"
   | "model_weight_hash_mismatch"
-  | "model_template_render_broken";
+  | "model_template_render_broken"
+  | "model_requires_dedicated_box";
 
 export interface MyModelRouting {
   id: string;
   publicly_listed: boolean;
+  /** Public traffic can actually be dispatched to this build. */
+  routable: boolean;
   owner_routable: boolean;
   blockers?: RoutingBlocker[];
 }

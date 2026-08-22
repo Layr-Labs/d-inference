@@ -32,31 +32,48 @@ func routableProvider(t *testing.T, r *Registry, id, model string) *Provider {
 }
 
 // gateMutation breaks exactly one gate on an otherwise-routable provider.
+// `arm` handles gates that live on registry policy rather than provider state.
 type gateMutation struct {
 	name    string
 	apply   func(p *Provider)
 	blocker RoutingBlocker
+	arm     func(r *Registry)
 }
 
 func singleGateMutations() []gateMutation {
 	return []gateMutation{
-		{"none", func(p *Provider) {}, ""},
-		{"offline", func(p *Provider) { p.Status = StatusOffline }, BlockerOffline},
-		{"untrusted", func(p *Provider) { p.Status = StatusUntrusted }, BlockerUntrusted},
-		{"private_only", func(p *Provider) { p.PrivateOnly = true }, BlockerPrivateOnly},
-		{"trust_none", func(p *Provider) { p.TrustLevel = TrustNone }, BlockerTrustBelowMinimum},
-		{"runtime_unverified", func(p *Provider) { p.RuntimeVerified = false }, BlockerRuntimeUnverified},
-		{"no_public_key", func(p *Provider) { p.PublicKey = "" }, BlockerNoEncryptionKey},
-		{"bad_backend", func(p *Provider) { p.Backend = "python-mlx" }, BlockerUnsupportedBackend},
-		{"plaintext_chunks", func(p *Provider) { p.EncryptedResponseChunks = false }, BlockerUnencryptedChunks},
-		{"manifest_unchecked", func(p *Provider) { p.RuntimeManifestChecked = false }, BlockerRuntimeManifestUnchecked},
-		{"sip_unverified", func(p *Provider) { p.ChallengeVerifiedSIP = false }, BlockerSIPUnverified},
-		{"caps_missing", func(p *Provider) { p.PrivacyCapabilities = nil }, BlockerPrivacyCapsMissing},
-		{"caps_incomplete", func(p *Provider) { p.PrivacyCapabilities.AntiDebugEnabled = false }, BlockerPrivacyCapsIncomplete},
-		{"challenge_never", func(p *Provider) { p.LastChallengeVerified = time.Time{} }, BlockerChallengeNever},
+		{"none", func(p *Provider) {}, "", nil},
+		{"offline", func(p *Provider) { p.Status = StatusOffline }, BlockerOffline, nil},
+		{"untrusted", func(p *Provider) { p.Status = StatusUntrusted }, BlockerUntrusted, nil},
+		{"private_only", func(p *Provider) { p.PrivateOnly = true }, BlockerPrivateOnly, nil},
+		{"trust_none", func(p *Provider) { p.TrustLevel = TrustNone }, BlockerTrustBelowMinimum, nil},
+		{"runtime_unverified", func(p *Provider) { p.RuntimeVerified = false }, BlockerRuntimeUnverified, nil},
+		{"no_public_key", func(p *Provider) { p.PublicKey = "" }, BlockerNoEncryptionKey, nil},
+		{"bad_backend", func(p *Provider) { p.Backend = "python-mlx" }, BlockerUnsupportedBackend, nil},
+		{"plaintext_chunks", func(p *Provider) { p.EncryptedResponseChunks = false }, BlockerUnencryptedChunks, nil},
+		{"manifest_unchecked", func(p *Provider) { p.RuntimeManifestChecked = false }, BlockerRuntimeManifestUnchecked, nil},
+		{"sip_unverified", func(p *Provider) { p.ChallengeVerifiedSIP = false }, BlockerSIPUnverified, nil},
+		{"caps_missing", func(p *Provider) { p.PrivacyCapabilities = nil }, BlockerPrivacyCapsMissing, nil},
+		{"caps_incomplete", func(p *Provider) { p.PrivacyCapabilities.AntiDebugEnabled = false }, BlockerPrivacyCapsIncomplete, nil},
+		{"challenge_never", func(p *Provider) { p.LastChallengeVerified = time.Time{} }, BlockerChallengeNever, nil},
 		{"challenge_stale", func(p *Provider) {
 			p.LastChallengeVerified = time.Now().Add(-ChallengeFreshnessMaxAge - time.Minute)
-		}, BlockerChallengeStale},
+		}, BlockerChallengeStale, nil},
+		{
+			name:    "code_attestation_missing",
+			apply:   func(p *Provider) { p.CodeAttested = false },
+			blocker: BlockerCodeAttestationMissing,
+			arm: func(r *Registry) {
+				r.SetCodeAttestationPolicy(true, time.Now().Add(-time.Hour))
+			},
+		},
+		{
+			// `trustRank` returns -1 for an unrecognised level, which a
+			// restored store row can carry verbatim.
+			name:    "unrecognised_trust",
+			apply:   func(p *Provider) { p.TrustLevel = TrustLevel("bogus") },
+			blocker: BlockerTrustBelowMinimum,
+		},
 	}
 }
 
@@ -66,6 +83,9 @@ func TestLivenessBlockerMatchesLivenessGate(t *testing.T) {
 			r := New(testLogger())
 			r.MinTrustLevel = TrustHardware
 			p := routableProvider(t, r, "p1", gemmaBuild)
+			if mutation.arm != nil {
+				mutation.arm(r)
+			}
 
 			p.mu.Lock()
 			mutation.apply(p)
@@ -96,6 +116,9 @@ func TestPrivateTextBlockerMatchesPrivateTextPredicate(t *testing.T) {
 			r := New(testLogger())
 			r.MinTrustLevel = TrustHardware
 			p := routableProvider(t, r, "p1", gemmaBuild)
+			if mutation.arm != nil {
+				mutation.arm(r)
+			}
 
 			p.mu.Lock()
 			mutation.apply(p)
@@ -111,8 +134,30 @@ func TestPrivateTextBlockerMatchesPrivateTextPredicate(t *testing.T) {
 			if supported != (blocker == "") {
 				t.Fatalf("providerSupportsPrivateTextLocked = %v but blocker = %q", supported, blocker)
 			}
+			// Which gate refused, not just that one did. Without this the
+			// suite would pass if two gates were transposed.
+			if privateTextBlockers[mutation.blocker] && blocker != mutation.blocker {
+				t.Fatalf("blocker = %q, want %q", blocker, mutation.blocker)
+			}
+			if !privateTextBlockers[mutation.blocker] && blocker != "" {
+				t.Fatalf("blocker = %q, want the private-text gate to pass", blocker)
+			}
 		})
 	}
+}
+
+// The subset of gates the private-text chokepoint owns. Anything else in the
+// mutation matrix is checked by an earlier or later gate, so the chokepoint
+// must report clean for it.
+var privateTextBlockers = map[RoutingBlocker]bool{
+	BlockerNoEncryptionKey:          true,
+	BlockerUnsupportedBackend:       true,
+	BlockerUnencryptedChunks:        true,
+	BlockerRuntimeManifestUnchecked: true,
+	BlockerSIPUnverified:            true,
+	BlockerCodeAttestationMissing:   true,
+	BlockerPrivacyCapsMissing:       true,
+	BlockerPrivacyCapsIncomplete:    true,
 }
 
 // TestAdvertisingMatchesListModels is the assertion an operator actually cares
@@ -126,6 +171,9 @@ func TestAdvertisingMatchesListModels(t *testing.T) {
 			r := New(testLogger())
 			r.MinTrustLevel = TrustHardware
 			p := routableProvider(t, r, "p1", gemmaBuild)
+			if mutation.arm != nil {
+				mutation.arm(r)
+			}
 
 			p.mu.Lock()
 			mutation.apply(p)
@@ -149,11 +197,14 @@ func TestAdvertisingMatchesListModels(t *testing.T) {
 			if diag.Routable && !diag.Advertising {
 				t.Fatalf("Routable without Advertising (blockers %v)", diag.Blockers)
 			}
-			// Whatever we claim is unroutable must actually be unroutable on
-			// the production reservation path.
+			// BOTH directions against the production reservation path. The
+			// one-sided version of this assertion is what let an
+			// over-optimistic verdict ship: `Routable` must not claim more
+			// than dispatch delivers, and must not claim less either.
 			reserved := findRoutableProvider(r, gemmaBuild) != nil
-			if !diag.Routable && reserved {
-				t.Fatalf("reported unroutable (%v) but ReserveProviderEx selected it", diag.Blockers)
+			if diag.Routable != reserved {
+				t.Fatalf("Routable = %v but ReserveProviderEx selected = %v (blockers %v)",
+					diag.Routable, reserved, diag.Blockers)
 			}
 			if mutation.name == "none" && !reserved {
 				t.Fatal("a fully-healthy provider must be reservable")
@@ -174,6 +225,9 @@ func TestOwnerRoutableMatchesOwnedModels(t *testing.T) {
 			r := New(testLogger())
 			r.MinTrustLevel = TrustHardware
 			p := routableProvider(t, r, "p1", gemmaBuild)
+			if mutation.arm != nil {
+				mutation.arm(r)
+			}
 
 			p.mu.Lock()
 			mutation.apply(p)
@@ -323,6 +377,99 @@ func TestEveryModelExcludedReportsNoRoutableModels(t *testing.T) {
 	}
 }
 
+// A render-broken build is fenced for EVERY request shape at dispatch
+// (`providerEligibleForTraitsLocked`) while still being counted in the public
+// catalog. Reporting it as routable would be the exact lie this file exists to
+// prevent.
+func TestRenderBrokenOnlyMachineIsNotRoutable(t *testing.T) {
+	r := New(testLogger())
+	r.MinTrustLevel = TrustHardware
+	p := routableProvider(t, r, "p1", gemmaBuild)
+	renderBroken := false
+	p.mu.Lock()
+	p.Models = []protocol.ModelInfo{{ID: gemmaBuild, TemplateRenderOK: &renderBroken}}
+	p.mu.Unlock()
+
+	diag := r.RoutingDiagnostics("p1", time.Now())
+	if !diag.Advertising {
+		t.Fatal("the public catalog does apply the render gate, so it should still list")
+	}
+	if diag.Routable {
+		t.Fatalf("a render-broken-only machine must not report routable (%+v)", diag.Models)
+	}
+	if findRoutableProvider(r, gemmaBuild) != nil {
+		t.Fatal("the production reservation path selected a render-broken build")
+	}
+	if len(diag.Models) != 1 || diag.Models[0].Routable {
+		t.Fatalf("model row = %+v", diag.Models)
+	}
+}
+
+// Dedicated-box isolation is enabled by default in production for the gemma-4
+// family, so a mixed box gets no gemma-4 traffic. It has to say so.
+func TestDedicatedRuleExclusionIsReported(t *testing.T) {
+	r := New(testLogger())
+	r.MinTrustLevel = TrustHardware
+	r.SetDedicatedModels([]string{"gemma-4"})
+	p := routableProvider(t, r, "p1", gemmaBuild)
+	p.mu.Lock()
+	p.Models = []protocol.ModelInfo{{ID: gemmaBuild}, {ID: qwenBuild}}
+	p.mu.Unlock()
+
+	diag := r.RoutingDiagnostics("p1", time.Now())
+	byID := make(map[string]ModelRoutingDiagnostics, len(diag.Models))
+	for _, m := range diag.Models {
+		byID[m.ID] = m
+	}
+	gemma := byID[gemmaBuild]
+	if gemma.Routable {
+		t.Fatalf("a mixed box must not report the dedicated build as routable: %+v", gemma)
+	}
+	found := false
+	for _, b := range gemma.Blockers {
+		if b == BlockerModelDedicatedBoxOnly {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("blockers = %v, want to contain %s", gemma.Blockers, BlockerModelDedicatedBoxOnly)
+	}
+	if findRoutableProvider(r, gemmaBuild) != nil {
+		t.Fatal("the production reservation path selected a non-dedicated box")
+	}
+	// The non-dedicated build on the same box is unaffected.
+	if !byID[qwenBuild].Routable {
+		t.Fatalf("the non-dedicated build must still route: %+v", byID[qwenBuild])
+	}
+	if !diag.Routable {
+		t.Fatal("a machine with one routable build is routable")
+	}
+}
+
+// An empty catalog and a machine-level fence are separate facts with separate
+// remedies; reporting only the first one sends the operator back to square one
+// after they fix it.
+func TestEmptyCatalogIsReportedAlongsideADispatchBlocker(t *testing.T) {
+	r := New(testLogger())
+	r.MinTrustLevel = TrustHardware
+	p := routableProvider(t, r, "p1", gemmaBuild)
+	p.mu.Lock()
+	p.RuntimeVerified = false
+	p.Models = []protocol.ModelInfo{{ID: "unpublished"}}
+	p.mu.Unlock()
+	r.SetModelCatalog([]CatalogEntry{{ID: gemmaBuild}})
+
+	diag := r.RoutingDiagnostics("p1", time.Now())
+	var sawRuntime, sawEmpty bool
+	for _, b := range diag.Blockers {
+		sawRuntime = sawRuntime || b == BlockerRuntimeUnverified
+		sawEmpty = sawEmpty || b == BlockerNoRoutableModels
+	}
+	if !sawRuntime || !sawEmpty {
+		t.Fatalf("blockers = %v, want both the runtime fence and the empty catalog", diag.Blockers)
+	}
+}
+
 func TestRoutingDiagnosticsUnknownProvider(t *testing.T) {
 	r := New(testLogger())
 	if diag := r.RoutingDiagnostics("nope", time.Now()); diag != nil {
@@ -339,7 +486,7 @@ func TestEveryBlockerHasRemediationText(t *testing.T) {
 		BlockerPrivacyCapsMissing, BlockerPrivacyCapsIncomplete,
 		BlockerNoModelsRegistered, BlockerNoRoutableModels,
 		BlockerModelNotInCatalog, BlockerModelWeightHashMismatch,
-		BlockerModelTemplateRenderBroken,
+		BlockerModelTemplateRenderBroken, BlockerModelDedicatedBoxOnly,
 	}
 	for _, b := range all {
 		if got := b.Description(); got == "" || got == string(b) {

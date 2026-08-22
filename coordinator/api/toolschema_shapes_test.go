@@ -371,29 +371,53 @@ func TestNormalizeToolSchemas_DepthLimitStopsRecursionWithoutPanic(t *testing.T)
 	}
 }
 
-// A node sitting exactly at the LAST in-budget depth is still normalized; the
-// first node past it is not. Pins the boundary so an off-by-one in the depth
-// accounting is caught.
-func TestNormalizeToolSchemas_DepthLimitBoundaryIsNormalized(t *testing.T) {
-	// Leaf at depth maxToolSchemaDepth-1 (the deepest in-budget node) must be
-	// repaired; building exactly that many wrapper levels puts the enum leaf
-	// one step inside the budget.
-	body := tsnDeepPropertiesBody(maxToolSchemaDepth - 1)
-	out := NormalizeToolSchemas(body)
-	if bytes.Equal(out, body) {
-		t.Fatal("boundary body was not normalized")
+// The enum leaf at depth 63 is the last node inside the current traversal
+// budget; the otherwise identical leaf at depth 64 is the first node that must
+// remain untouched. Keep the literal ceiling pinned here: silently raising it
+// would re-open unbounded-work risk, while lowering it would stop normalizing a
+// previously accepted schema.
+func TestNormalizeToolSchemas_DepthLimitBoundary(t *testing.T) {
+	const currentDepthCeiling = 64
+	if maxToolSchemaDepth != currentDepthCeiling {
+		t.Fatalf("maxToolSchemaDepth = %d, want the pinned ceiling %d", maxToolSchemaDepth, currentDepthCeiling)
 	}
 
-	node := tsnParams(t, out)
-	for i := 0; i < maxToolSchemaDepth-1; i++ {
-		props, ok := node["properties"].(map[string]any)
-		if !ok {
-			t.Fatalf("missing properties at depth %d", i)
-		}
-		node = tsnMap(t, props["child"], "child")
+	tests := []struct {
+		name         string
+		levels       int
+		wantLeafType bool
+	}{
+		{name: "exact accepted boundary", levels: currentDepthCeiling - 1, wantLeafType: true},
+		{name: "one beyond boundary", levels: currentDepthCeiling, wantLeafType: false},
 	}
-	// node is now the enum leaf at depth maxToolSchemaDepth-1 (in budget).
-	if got, ok := node["type"].(string); !ok || got != "string" {
-		t.Errorf("in-budget leaf type = %v, want string", node["type"])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := tsnDeepPropertiesBody(tt.levels)
+			out := NormalizeToolSchemas(body)
+			if bytes.Equal(out, body) {
+				t.Fatal("outer in-budget nodes were not normalized")
+			}
+
+			node := tsnParams(t, out)
+			for depth := range tt.levels {
+				props, ok := node["properties"].(map[string]any)
+				if !ok {
+					t.Fatalf("missing properties at depth %d", depth)
+				}
+				node = tsnMap(t, props["child"], "child")
+			}
+
+			got, hasType := node["type"].(string)
+			if tt.wantLeafType {
+				if !hasType || got != "string" {
+					t.Errorf("leaf at depth %d type = %v, want string", tt.levels, node["type"])
+				}
+			} else if _, exists := node["type"]; exists {
+				t.Errorf("leaf at depth %d gained type %v beyond the traversal ceiling", tt.levels, node["type"])
+			}
+			if enum, ok := node["enum"].([]any); !ok || len(enum) != 1 || enum[0] != "x" {
+				t.Errorf("leaf at depth %d content changed: %v", tt.levels, node["enum"])
+			}
+		})
 	}
 }

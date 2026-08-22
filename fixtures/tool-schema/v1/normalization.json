@@ -1,0 +1,474 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "empty-properties-annotations-and-assertions",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "model": "fixture-model",
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect",
+              "parameters": {
+                "properties": {
+                  "anything": {},
+                  "defaulted": { "default": 5 },
+                  "titled": { "title": "Title" },
+                  "formatted": { "format": "date-time" },
+                  "patterned": { "pattern": "^a", "maxLength": 10 },
+                  "referenced": { "$ref": "#/$defs/value" },
+                  "minimum": { "minimum": 1 },
+                  "collection": { "minItems": 1, "uniqueItems": true },
+                  "record": { "required": ["value"] }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "model": "fixture-model",
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "anything": {
+                    "type": "string",
+                    "x-darkbloom-original-boolean-schema": true
+                  },
+                  "defaulted": { "default": 5, "type": "string" },
+                  "titled": { "title": "Title", "type": "string" },
+                  "formatted": { "format": "date-time", "type": "string" },
+                  "patterned": { "pattern": "^a", "maxLength": 10, "type": "string" },
+                  "referenced": { "$ref": "#/$defs/value", "type": "string" },
+                  "minimum": { "minimum": 1, "type": "number" },
+                  "collection": { "minItems": 1, "uniqueItems": true, "type": "array" },
+                  "record": { "required": ["value"], "type": "object", "properties": {} }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "boolean-schemas-and-items",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "booleans",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "allow": true,
+                  "deny": false,
+                  "list": { "type": "array", "items": true },
+                  "tuple": { "type": "array", "items": [{}, false] }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "booleans",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "allow": { "type": "string", "x-darkbloom-original-boolean-schema": true },
+                  "deny": { "type": "string", "x-darkbloom-original-boolean-schema": false },
+                  "list": {
+                    "type": "array",
+                    "items": { "type": "string", "x-darkbloom-original-boolean-schema": true }
+                  },
+                  "tuple": {
+                    "type": "array",
+                    "items": [
+                      { "type": "string", "x-darkbloom-original-boolean-schema": true },
+                      { "type": "string", "x-darkbloom-original-boolean-schema": false }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "non-string-types-pattern-properties-and-prefix-items",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "containers",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "numberType": { "type": 123 },
+                  "booleanType": { "type": true },
+                  "objectType": { "type": 42, "properties": { "inner": {} } },
+                  "environment": {
+                    "type": "object",
+                    "patternProperties": {
+                      "^TEXT_": {},
+                      "^NUMBER_": { "minimum": 0 },
+                      "^ANY_": true
+                    }
+                  },
+                  "pair": { "prefixItems": [{}, { "const": 1 }, true] }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "containers",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "numberType": { "type": "string" },
+                  "booleanType": { "type": "string" },
+                  "objectType": {
+                    "type": "object",
+                    "properties": {
+                      "inner": { "type": "string", "x-darkbloom-original-boolean-schema": true }
+                    }
+                  },
+                  "environment": {
+                    "type": "object",
+                    "properties": {},
+                    "patternProperties": {
+                      "^TEXT_": { "type": "string", "x-darkbloom-original-boolean-schema": true },
+                      "^NUMBER_": { "minimum": 0, "type": "number" },
+                      "^ANY_": { "type": "string", "x-darkbloom-original-boolean-schema": true }
+                    }
+                  },
+                  "pair": {
+                    "type": "array",
+                    "prefixItems": [
+                      { "type": "string", "x-darkbloom-original-boolean-schema": true },
+                      { "const": 1, "type": "number" },
+                      { "type": "string", "x-darkbloom-original-boolean-schema": true }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "unions-and-finite-values",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "unions",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "allowAll": { "allOf": [{}], "description": "anything" },
+                  "denyAll": { "allOf": [{ "type": "integer" }, false] },
+                  "choice": { "oneOf": [{ "format": "uuid" }] },
+                  "count": { "const": 1 },
+                  "level": { "enum": [1, 2, null] },
+                  "flag": { "const": true },
+                  "tag": { "enum": ["a", "b"] },
+                  "none": { "const": null }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "unions",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "allowAll": {
+                    "description": "anything",
+                    "type": "string",
+                    "x-darkbloom-original-boolean-schema": true
+                  },
+                  "denyAll": { "type": "string", "x-darkbloom-original-boolean-schema": false },
+                  "choice": { "oneOf": [{ "format": "uuid", "type": "string" }], "type": "string" },
+                  "count": { "const": 1, "type": "number" },
+                  "level": { "enum": [1, 2, null], "nullable": true, "type": "number" },
+                  "flag": { "const": true, "type": "boolean" },
+                  "tag": { "enum": ["a", "b"], "type": "string" },
+                  "none": { "const": null, "type": "null" }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "additional-properties-and-object-shapes",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "maps",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "metadata": { "type": "object", "additionalProperties": {} },
+                  "open": { "type": "object", "additionalProperties": true },
+                  "patterns": { "patternProperties": { "^X_": { "type": "string" } } },
+                  "malformedProperties": { "type": "object", "properties": "not-a-map" }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "maps",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "metadata": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": {
+                      "type": "string",
+                      "x-darkbloom-original-boolean-schema": true
+                    }
+                  },
+                  "open": { "type": "object", "properties": {}, "additionalProperties": true },
+                  "patterns": {
+                    "type": "object",
+                    "properties": {},
+                    "patternProperties": { "^X_": { "type": "string" } }
+                  },
+                  "malformedProperties": { "type": "object", "properties": {} }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "nullable-and-type-arrays",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "nullable",
+              "parameters": {
+                "type": ["object", "null"],
+                "properties": {
+                  "city": { "type": ["string", "null"], "description": "city" },
+                  "id": { "type": ["integer", "string", "null"] },
+                  "duplicate": { "type": ["string", "STRING", "integer"] },
+                  "nullOnly": { "type": ["null"] },
+                  "override": { "type": ["STRING", "NULL"], "nullable": false, "enum": [null] },
+                  "union": { "anyOf": [{ "type": "string" }, { "type": "null" }] },
+                  "explicit": {
+                    "type": "string",
+                    "anyOf": [{ "type": "string" }, { "type": "null" }]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "nullable",
+              "parameters": {
+                "type": "object",
+                "nullable": true,
+                "properties": {
+                  "city": { "type": "string", "description": "city", "nullable": true },
+                  "id": {
+                    "type": "integer",
+                    "nullable": true,
+                    "anyOf": [{ "type": "integer" }, { "type": "string" }]
+                  },
+                  "duplicate": {
+                    "type": "string",
+                    "anyOf": [{ "type": "string" }, { "type": "integer" }]
+                  },
+                  "nullOnly": { "type": "null" },
+                  "override": { "type": "string", "nullable": true, "enum": [null] },
+                  "union": {
+                    "anyOf": [{ "type": "string" }, { "type": "null" }],
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "explicit": {
+                    "type": "string",
+                    "anyOf": [{ "type": "string" }, { "type": "null" }]
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "deep-nesting-idempotence-and-numbers",
+      "mode": "normalize",
+      "acceptance": "rewritten",
+      "input": {
+        "model": "fixture-model",
+        "max_tokens": 9007199254740993,
+        "temperature": 0.30000000000000004,
+        "top_p": 1e-7,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "deep",
+              "parameters": {
+                "properties": {
+                  "a": {
+                    "properties": {
+                      "b": {
+                        "properties": {
+                          "c": {
+                            "properties": {
+                              "d": {
+                                "properties": {
+                                  "e": {
+                                    "properties": {
+                                      "value": { "default": 9007199254740993 }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      },
+      "normalized": {
+        "model": "fixture-model",
+        "max_tokens": 9007199254740993,
+        "temperature": 0.30000000000000004,
+        "top_p": 1e-7,
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "deep",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "a": {
+                    "type": "object",
+                    "properties": {
+                      "b": {
+                        "type": "object",
+                        "properties": {
+                          "c": {
+                            "type": "object",
+                            "properties": {
+                              "d": {
+                                "type": "object",
+                                "properties": {
+                                  "e": {
+                                    "type": "object",
+                                    "properties": {
+                                      "value": { "default": 9007199254740993, "type": "string" }
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "markerless-roots-are-preserved",
+      "mode": "normalize",
+      "acceptance": "preserved",
+      "input": {
+        "tools": [
+          { "type": "function", "function": { "name": "empty", "parameters": {} } },
+          {
+            "type": "function",
+            "function": { "name": "junk", "parameters": { "not_a_schema_keyword": "value" } }
+          }
+        ]
+      },
+      "normalized": {
+        "tools": [
+          { "type": "function", "function": { "name": "empty", "parameters": {} } },
+          {
+            "type": "function",
+            "function": { "name": "junk", "parameters": { "not_a_schema_keyword": "value" } }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -137,59 +137,6 @@ func TestInferenceRequestMarshal(t *testing.T) {
 	}
 }
 
-func TestInferenceRequestCacheFieldsAreOptionalAndOuter(t *testing.T) {
-	msg := InferenceRequestMessage{Type: TypeInferenceRequest, RequestID: "req"}
-	without, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(without, []byte("cache_scope")) || bytes.Contains(without, []byte("cache_receipt_nonce")) {
-		t.Fatalf("zero-value cache fields were not omitted: %s", without)
-	}
-	msg.CacheReceiptNonce = "nonce"
-	msg.CacheScope = "opaque-scope"
-	with, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var decoded map[string]any
-	if err := json.Unmarshal(with, &decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded["cache_receipt_nonce"] != "nonce" || decoded["cache_scope"] != "opaque-scope" {
-		t.Fatalf("outer cache fields missing: %s", with)
-	}
-
-	msg.ToolSchemaMetadataProtocol = 1
-	withMetadata, err := json.Marshal(msg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(
-		withMetadata,
-		[]byte(`"tool_schema_metadata_protocol":1`),
-	) {
-		t.Fatalf("schema metadata protocol missing: %s", withMetadata)
-	}
-}
-
-func TestRegisterPrefixCacheProtocolOptional(t *testing.T) {
-	without, err := json.Marshal(RegisterMessage{Type: TypeRegister})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(without, []byte("prefix_cache_protocol")) {
-		t.Fatalf("zero protocol version was not omitted: %s", without)
-	}
-	with, err := json.Marshal(RegisterMessage{Type: TypeRegister, PrefixCacheProtocol: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(with, []byte(`"prefix_cache_protocol":1`)) {
-		t.Fatalf("protocol version missing: %s", with)
-	}
-}
-
 func TestPrefixCacheReceiptsDecode(t *testing.T) {
 	for _, tc := range []struct {
 		wire string

@@ -4,6 +4,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -269,4 +275,99 @@ func TestBidirectionalEncryption(t *testing.T) {
 	if !bytes.Equal(response, decResponse) {
 		t.Fatal("response content mismatch")
 	}
+}
+
+type encryptionFixtureCorpus struct {
+	SchemaVersion uint32              `json:"schema_version"`
+	Cases         []encryptionFixture `json:"cases"`
+}
+
+type encryptionFixture struct {
+	Name                   string `json:"name"`
+	RecipientPrivateKeyHex string `json:"recipient_private_key_hex"`
+	SenderPublicKeyBase64  string `json:"sender_public_key_base64"`
+	CiphertextBase64       string `json:"ciphertext_base64"`
+	PlaintextUTF8          string `json:"plaintext_utf8"`
+}
+
+func TestDecryptSharedEncryptionVectors(t *testing.T) {
+	encoded, err := os.ReadFile(filepath.Join(
+		"..", "..", "..", "fixtures", "security", "v1", "encryption_vectors.json",
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus encryptionFixtureCorpus
+	if err := decodeEncryptionFixture(encoded, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if len(corpus.Cases) == 0 {
+		t.Fatal("encryption fixture has no named cases")
+	}
+
+	seen := make(map[string]struct{}, len(corpus.Cases))
+	for _, fixture := range corpus.Cases {
+		t.Run(fixture.Name, func(t *testing.T) {
+			if fixture.Name == "" {
+				t.Fatal("encryption fixture case has no name")
+			}
+			if _, duplicate := seen[fixture.Name]; duplicate {
+				t.Fatalf("duplicate encryption fixture case %q", fixture.Name)
+			}
+			seen[fixture.Name] = struct{}{}
+
+			privateBytes, err := hex.DecodeString(fixture.RecipientPrivateKeyHex)
+			if err != nil {
+				t.Fatalf("decode recipient private key: %v", err)
+			}
+			if len(privateBytes) != 32 {
+				t.Fatalf("recipient private key length = %d, want 32", len(privateBytes))
+			}
+			var privateKey [32]byte
+			copy(privateKey[:], privateBytes)
+			plaintext, err := DecryptWithPrivateKey(&EncryptedPayload{
+				EphemeralPublicKey: fixture.SenderPublicKeyBase64,
+				Ciphertext:         fixture.CiphertextBase64,
+			}, privateKey)
+			if err != nil {
+				t.Fatalf("decrypt shared vector: %v", err)
+			}
+			if !bytes.Equal(plaintext, []byte(fixture.PlaintextUTF8)) {
+				t.Fatalf("plaintext mismatch\nwant: %q\ngot:  %q", fixture.PlaintextUTF8, plaintext)
+			}
+		})
+	}
+}
+
+func TestEncryptionFixtureRejectsSchemaDrift(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		encoded string
+	}{
+		{name: "missing", encoded: `{"cases":[]}`},
+		{name: "unknown", encoded: `{"schema_version":2,"cases":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var corpus encryptionFixtureCorpus
+			if err := decodeEncryptionFixture([]byte(test.encoded), &corpus); err == nil {
+				t.Fatal("fixture schema drift was accepted")
+			}
+		})
+	}
+}
+
+func decodeEncryptionFixture(encoded []byte, output any) error {
+	var metadata struct {
+		SchemaVersion *uint32 `json:"schema_version"`
+	}
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return err
+	}
+	if metadata.SchemaVersion == nil {
+		return errors.New("fixture schema version is missing")
+	}
+	if *metadata.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported fixture schema version %d", *metadata.SchemaVersion)
+	}
+	return json.Unmarshal(encoded, output)
 }

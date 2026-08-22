@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "name": "current_mlx_swift_signed_bundle",
+      "coordinator_encodes": true,
+      "response": {
+        "version": "9.1.0",
+        "platform": "macos-arm64",
+        "backend": "mlx-swift",
+        "binary_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "bundle_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "metallib_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "url": "https://releases.example.test/releases/v9.1.0/darkbloom-bundle-macos-arm64.tar.gz",
+        "changelog": "Signed provider bundle",
+        "active": true,
+        "created_at": "2026-08-22T12:00:00Z"
+      },
+      "expected": {
+        "version": "9.1.0",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/releases/v9.1.0/darkbloom-bundle-macos-arm64.tar.gz",
+        "bundle_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "binary_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "metallib_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    },
+    {
+      "name": "legacy_vllm_runtime_hashes",
+      "coordinator_encodes": true,
+      "response": {
+        "version": "0.4.9",
+        "platform": "macos-arm64",
+        "backend": "vllm-mlx",
+        "binary_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "bundle_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "python_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "runtime_hash": "4444444444444444444444444444444444444444444444444444444444444444",
+        "url": "https://releases.example.test/releases/v0.4.9/darkbloom-bundle-macos-arm64.tar.gz",
+        "changelog": "Legacy runtime bundle",
+        "active": true,
+        "created_at": "2025-04-09T12:00:00Z"
+      },
+      "expected": {
+        "version": "0.4.9",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/releases/v0.4.9/darkbloom-bundle-macos-arm64.tar.gz",
+        "bundle_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "binary_hash": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    },
+    {
+      "name": "bundle_hash_precedes_legacy_aliases",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "1.2.3",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/preference.tar.gz",
+        "bundle_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "sha256": "6666666666666666666666666666666666666666666666666666666666666666",
+        "binary_hash": "7777777777777777777777777777777777777777777777777777777777777777"
+      },
+      "expected": {
+        "version": "1.2.3",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/preference.tar.gz",
+        "bundle_hash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "binary_hash": "7777777777777777777777777777777777777777777777777777777777777777"
+      }
+    },
+    {
+      "name": "legacy_sha256_bundle_alias",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "0.3.2",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/legacy-sha256.tar.gz",
+        "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+      },
+      "expected": {
+        "version": "0.3.2",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/legacy-sha256.tar.gz",
+        "bundle_hash": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    },
+    {
+      "name": "oldest_binary_hash_bundle_alias",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "0.2.8",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/legacy-binary.tar.gz",
+        "binary_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "expected": {
+        "version": "0.2.8",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/legacy-binary.tar.gz",
+        "bundle_hash": "9999999999999999999999999999999999999999999999999999999999999999",
+        "binary_hash": "9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    {
+      "name": "legacy_optional_hashes_omitted",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "0.5.0",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/legacy-minimal.tar.gz",
+        "bundle_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "expected": {
+        "version": "0.5.0",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/legacy-minimal.tar.gz",
+        "bundle_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    },
+    {
+      "name": "unknown_response_fields_are_tolerated",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "1.4.0",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/future.tar.gz",
+        "bundle_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "future_signing_key_id": "release-key-2"
+      },
+      "expected": {
+        "version": "1.4.0",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/future.tar.gz",
+        "bundle_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      }
+    },
+    {
+      "name": "missing_release_hash_is_rejected",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "1.0.0",
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/no-hash.tar.gz"
+      },
+      "error_contains": "missing release hash field"
+    },
+    {
+      "name": "wrong_platform_is_rejected",
+      "coordinator_encodes": false,
+      "response": {
+        "version": "1.0.0",
+        "platform": "linux-amd64",
+        "url": "https://releases.example.test/linux.tar.gz",
+        "bundle_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "error_contains": "unsupported release platform"
+    },
+    {
+      "name": "missing_required_field_is_rejected",
+      "coordinator_encodes": false,
+      "response": {
+        "platform": "macos-arm64",
+        "url": "https://releases.example.test/no-version.tar.gz",
+        "bundle_hash": "abababababababababababababababababababababababababababababababab"
+      },
+      "error_contains": "missing required fields in release response"
+    }
+  ]
+}

@@ -2,6 +2,167 @@ import Foundation
 import Testing
 @testable import ProviderCore
 
+private struct ReleaseFixtureCorpus {
+    let cases: [ReleaseFixtureCase]
+}
+
+private struct ReleaseFixtureCase {
+    let name: String
+    let coordinatorEncodes: Bool
+    let response: [String: Any]
+    let expected: ReleaseFixtureExpected?
+    let errorContains: String?
+}
+
+private struct ReleaseFixtureExpected {
+    let version: String
+    let platform: String
+    let url: String
+    let bundleHash: String
+    let binaryHash: String?
+    let metallibHash: String?
+}
+
+private enum ReleaseFixtureError: LocalizedError {
+    case invalid(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .invalid(let description):
+            return description
+        }
+    }
+}
+
+private final class ReleaseFixtureURLProtocol: URLProtocol, @unchecked Sendable {
+    nonisolated(unsafe) static var payload = Data()
+    nonisolated(unsafe) static var lastURL: URL?
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        Self.lastURL = request.url
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Self.payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+}
+
+private func releaseFixtureData() throws -> Data {
+    var root = URL(fileURLWithPath: #filePath)
+    for _ in 0 ..< 4 { root.deleteLastPathComponent() }
+    return try Data(contentsOf: root.appendingPathComponent(
+        "fixtures/release/v1/latest_response.json"
+    ))
+}
+
+private func releaseFixtureRequiredString(
+    _ key: String,
+    in object: [String: Any],
+    context: String
+) throws -> String {
+    guard let value = object[key] as? String else {
+        throw ReleaseFixtureError.invalid("\(context) is missing string field \(key)")
+    }
+    return value
+}
+
+private func releaseFixtureOptionalString(
+    _ key: String,
+    in object: [String: Any],
+    context: String
+) throws -> String? {
+    guard let rawValue = object[key] else { return nil }
+    guard let value = rawValue as? String else {
+        throw ReleaseFixtureError.invalid("\(context) field \(key) is not a string")
+    }
+    return value
+}
+
+private func decodeReleaseFixtureCorpus(_ data: Data) throws -> ReleaseFixtureCorpus {
+    guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+        throw ReleaseFixtureError.invalid("release fixture root is not an object")
+    }
+    guard let schemaVersion = root["schema_version"] as? Int, schemaVersion == 1 else {
+        throw ReleaseFixtureError.invalid(
+            "unsupported or missing release fixture schema version"
+        )
+    }
+    guard let rawCases = root["cases"] as? [[String: Any]] else {
+        throw ReleaseFixtureError.invalid("release fixture cases are missing")
+    }
+
+    let cases = try rawCases.map { rawCase in
+        let name = try releaseFixtureRequiredString(
+            "name",
+            in: rawCase,
+            context: "release fixture case"
+        )
+        guard let coordinatorEncodes = rawCase["coordinator_encodes"] as? Bool,
+              let response = rawCase["response"] as? [String: Any]
+        else {
+            throw ReleaseFixtureError.invalid(
+                "release fixture case \(name) has invalid metadata or response"
+            )
+        }
+
+        let expected: ReleaseFixtureExpected?
+        if let rawExpected = rawCase["expected"] {
+            guard let object = rawExpected as? [String: Any] else {
+                throw ReleaseFixtureError.invalid(
+                    "release fixture case \(name) has an invalid expected result"
+                )
+            }
+            expected = try ReleaseFixtureExpected(
+                version: releaseFixtureRequiredString(
+                    "version", in: object, context: "release fixture case \(name) expected"
+                ),
+                platform: releaseFixtureRequiredString(
+                    "platform", in: object, context: "release fixture case \(name) expected"
+                ),
+                url: releaseFixtureRequiredString(
+                    "url", in: object, context: "release fixture case \(name) expected"
+                ),
+                bundleHash: releaseFixtureRequiredString(
+                    "bundle_hash", in: object, context: "release fixture case \(name) expected"
+                ),
+                binaryHash: releaseFixtureOptionalString(
+                    "binary_hash", in: object, context: "release fixture case \(name) expected"
+                ),
+                metallibHash: releaseFixtureOptionalString(
+                    "metallib_hash", in: object, context: "release fixture case \(name) expected"
+                )
+            )
+        } else {
+            expected = nil
+        }
+
+        return try ReleaseFixtureCase(
+            name: name,
+            coordinatorEncodes: coordinatorEncodes,
+            response: response,
+            expected: expected,
+            errorContains: releaseFixtureOptionalString(
+                "error_contains", in: rawCase, context: "release fixture case \(name)"
+            )
+        )
+    }
+    return ReleaseFixtureCorpus(cases: cases)
+}
+
+private func releaseFixtureCorpus() throws -> ReleaseFixtureCorpus {
+    try decodeReleaseFixtureCorpus(releaseFixtureData())
+}
+
 @Suite("SelfUpdater")
 struct SelfUpdaterTests {
     @Test("production public init always verifies code signatures")
@@ -116,27 +277,85 @@ struct SelfUpdaterTests {
     }
     #endif
 
-    @Test("release endpoint preserves bundle, binary, and metallib hashes")
-    func releaseEndpointPreservesAllHashes() async throws {
-        let mock = MockCoordinator(release: MockReleaseFixture(
-            version: "99.0.0",
-            bundleHash: String(repeating: "a", count: 64),
-            binaryHash: String(repeating: "b", count: 64),
-            metallibHash: String(repeating: "c", count: 64)
-        ))
-        let baseURL = try await mock.start()
-        defer { Task { await mock.shutdown() } }
+    @Test("shared release responses decode current and legacy hash shapes")
+    func sharedReleaseResponseDecoding() throws {
+        let corpus = try releaseFixtureCorpus()
+        let caseNames = Set(corpus.cases.map(\.name))
+        #expect(caseNames.count == corpus.cases.count)
+        #expect(caseNames.contains("current_mlx_swift_signed_bundle"))
+        #expect(caseNames.contains("legacy_vllm_runtime_hashes"))
+        #expect(corpus.cases.contains { $0.coordinatorEncodes })
 
-        let updater = SelfUpdater(coordinatorBaseURL: baseURL.absoluteString)
+        for fixture in corpus.cases {
+            let data = try JSONSerialization.data(withJSONObject: fixture.response)
+            if let expected = fixture.expected {
+                let actual = try SelfUpdater.decodeLatestReleaseResponse(data)
+                #expect(actual.version == expected.version, Comment(rawValue: fixture.name))
+                #expect(actual.platform == expected.platform, Comment(rawValue: fixture.name))
+                #expect(actual.url == expected.url, Comment(rawValue: fixture.name))
+                #expect(actual.bundleHash == expected.bundleHash, Comment(rawValue: fixture.name))
+                #expect(actual.binaryHash == expected.binaryHash, Comment(rawValue: fixture.name))
+                #expect(actual.metallibHash == expected.metallibHash, Comment(rawValue: fixture.name))
+            } else {
+                guard let errorContains = fixture.errorContains else {
+                    Issue.record("fixture \(fixture.name) has no expected result")
+                    continue
+                }
+                do {
+                    _ = try SelfUpdater.decodeLatestReleaseResponse(data)
+                    Issue.record("fixture \(fixture.name) was accepted")
+                } catch {
+                    #expect(
+                        error.localizedDescription.contains(errorContains),
+                        Comment(rawValue: fixture.name)
+                    )
+                }
+            }
+        }
+    }
+
+    @Test("shared release fixture schema version is required and supported")
+    func sharedReleaseFixtureSchemaVersionFailsClosed() {
+        #expect(throws: (any Error).self) {
+            try decodeReleaseFixtureCorpus(Data(#"{"cases":[]}"#.utf8))
+        }
+        #expect(throws: (any Error).self) {
+            try decodeReleaseFixtureCorpus(
+                Data(#"{"schema_version":2,"cases":[]}"#.utf8)
+            )
+        }
+    }
+
+    @Test("release fetch consumes the shared current response shape")
+    func releaseFetchConsumesSharedCurrentResponse() async throws {
+        let fixture = try #require(
+            releaseFixtureCorpus().cases.first {
+                $0.name == "current_mlx_swift_signed_bundle"
+            }
+        )
+        let expected = try #require(fixture.expected)
+        ReleaseFixtureURLProtocol.payload = try JSONSerialization.data(
+            withJSONObject: fixture.response
+        )
+        ReleaseFixtureURLProtocol.lastURL = nil
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ReleaseFixtureURLProtocol.self]
+        let updater = SelfUpdater(
+            coordinatorBaseURL: "https://coordinator.example.test/ws/provider",
+            urlSession: URLSession(configuration: configuration)
+        )
         let result = await updater.checkForUpdate()
 
         guard case .updateAvailable(_, let latest) = result else {
             Issue.record("expected updateAvailable, got \(result)")
             return
         }
-        #expect(latest.bundleHash == String(repeating: "a", count: 64))
-        #expect(latest.binaryHash == String(repeating: "b", count: 64))
-        #expect(latest.metallibHash == String(repeating: "c", count: 64))
+        #expect(latest.bundleHash == expected.bundleHash)
+        #expect(latest.binaryHash == expected.binaryHash)
+        #expect(latest.metallibHash == expected.metallibHash)
+        #expect(ReleaseFixtureURLProtocol.lastURL?.path == "/v1/releases/latest")
+        #expect(ReleaseFixtureURLProtocol.lastURL?.query == "platform=macos-arm64")
     }
 
     @Test("release endpoint refuses a mismatched platform")

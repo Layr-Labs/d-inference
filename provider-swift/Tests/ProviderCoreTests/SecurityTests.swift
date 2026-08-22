@@ -159,28 +159,115 @@ import Testing
     #expect(report.coordinatorRuntimeHashes.templateHashes == report.templateHashes)
 }
 
-@Test func statusCanonicalMatchesCoordinatorGoldenBytes() throws {
-    let data = try StatusCanonical.build(StatusCanonicalInput(
-        nonce: "test-nonce",
-        timestamp: "2026-04-16T12:00:00Z",
-        rdmaDisabled: true,
-        sipEnabled: true,
-        secureBootEnabled: true,
-        binaryHash: "binhash",
-        activeModelHash: "activemodel",
-        pythonHash: "pyhash",
-        runtimeHash: "rthash",
-        templateHashes: [
-            "chatml": "tmplhash1",
-            "gemma": "tmplhash2",
-        ],
-        modelHashes: [
-            "qwen": "modelhash1",
-            "trinity": "modelhash2",
-        ]
-    ))
-    let expected = #"{"active_model_hash":"activemodel","binary_hash":"binhash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}"#
-    #expect(String(data: data, encoding: .utf8) == expected)
+private struct AttestationStatusFixtureCorpus: VersionedSecurityFixture {
+    let schemaVersion: Int
+    let cases: [AttestationStatusFixture]
+
+    enum CodingKeys: String, CodingKey {
+        case schemaVersion = "schema_version"
+        case cases
+    }
+}
+
+private struct AttestationStatusFixture: Decodable {
+    let name: String
+    let input: AttestationStatusFixtureInput
+    let expectedSignatureInputBase64: String
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case input
+        case expectedSignatureInputBase64 = "expected_signature_input_base64"
+    }
+}
+
+private struct AttestationStatusFixtureInput: Decodable {
+    let nonce: String
+    let timestamp: String
+    let hypervisorActive: Bool?
+    let rdmaDisabled: Bool?
+    let sipEnabled: Bool?
+    let secureBootEnabled: Bool?
+    let binaryHash: String?
+    let activeModelHash: String?
+    let pythonHash: String?
+    let runtimeHash: String?
+    let templateHashes: [String: String]?
+    let modelHashes: [String: String]?
+
+    enum CodingKeys: String, CodingKey {
+        case nonce
+        case timestamp
+        case hypervisorActive = "hypervisor_active"
+        case rdmaDisabled = "rdma_disabled"
+        case sipEnabled = "sip_enabled"
+        case secureBootEnabled = "secure_boot_enabled"
+        case binaryHash = "binary_hash"
+        case activeModelHash = "active_model_hash"
+        case pythonHash = "python_hash"
+        case runtimeHash = "runtime_hash"
+        case templateHashes = "template_hashes"
+        case modelHashes = "model_hashes"
+    }
+
+    var providerInput: StatusCanonicalInput {
+        StatusCanonicalInput(
+            nonce: nonce,
+            timestamp: timestamp,
+            rdmaDisabled: rdmaDisabled,
+            sipEnabled: sipEnabled,
+            secureBootEnabled: secureBootEnabled,
+            binaryHash: binaryHash,
+            activeModelHash: activeModelHash,
+            pythonHash: pythonHash,
+            runtimeHash: runtimeHash,
+            templateHashes: templateHashes ?? [:],
+            modelHashes: modelHashes ?? [:]
+        )
+    }
+
+    func canonicalDataIncludingLegacyHypervisor() throws -> Data {
+        let current = try StatusCanonical.build(providerInput)
+        guard let hypervisorActive else { return current }
+        var object = try #require(
+            JSONSerialization.jsonObject(with: current) as? [String: Any]
+        )
+        object["hypervisor_active"] = hypervisorActive
+        return try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys, .withoutEscapingSlashes]
+        )
+    }
+}
+
+@Test func statusCanonicalMatchesSharedSignatureInputVectors() throws {
+    let corpus = try decodeSecurityFixture(
+        AttestationStatusFixtureCorpus.self,
+        from: Data(contentsOf: securityFixtureURL(named: "attestation_status_vectors.json"))
+    )
+    #expect(!corpus.cases.isEmpty)
+    #expect(Set(corpus.cases.map(\.name)).count == corpus.cases.count)
+
+    for vector in corpus.cases {
+        #expect(!vector.name.isEmpty)
+        let expected = try #require(Data(base64Encoded: vector.expectedSignatureInputBase64))
+        let actual = try vector.input.canonicalDataIncludingLegacyHypervisor()
+        #expect(actual == expected, "Status canonical vector '\(vector.name)' drifted")
+    }
+}
+
+@Test func attestationStatusFixtureRejectsSchemaDrift() {
+    for encoded in [
+        #"{"cases":[]}"#,
+        #"{"schema_version":2,"cases":[]}"#,
+    ] {
+        #expect(throws: (any Error).self) {
+            _ = try decodeSecurityFixture(
+                AttestationStatusFixtureCorpus.self,
+                from: Data(encoded.utf8)
+            )
+        }
+    }
 }
 
 @Test func registrationAttestationBlobJSONOmitsHypervisorKeys() throws {
@@ -218,17 +305,6 @@ import Testing
     #expect(object["rdmaDisabled"] as? Bool == true)
 }
 
-@Test func statusCanonicalOmitsEmptyFieldsAndSerializesFalse() throws {
-    let minimal = try StatusCanonical.build(StatusCanonicalInput(nonce: "n", timestamp: "t"))
-    #expect(String(data: minimal, encoding: .utf8) == #"{"nonce":"n","timestamp":"t"}"#)
-
-    let explicitFalse = try StatusCanonical.build(StatusCanonicalInput(
-        nonce: "n",
-        timestamp: "t",
-        sipEnabled: false
-    ))
-    #expect(String(data: explicitFalse, encoding: .utf8) == #"{"nonce":"n","sip_enabled":false,"timestamp":"t"}"#)
-}
 
 @Test func environmentScrubPlannerPlansWithoutMutatingEnvironment() {
     let planner = EnvironmentScrubPlanner()

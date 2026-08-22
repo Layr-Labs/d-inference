@@ -8,202 +8,137 @@ import (
 	"crypto/sha256"
 	"encoding/asn1"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
-// TestBuildStatusCanonicalGoldenBytes is the cross-language wire-format
-// guard for the CURRENT (v0.6.31+) provider shape, which no longer
-// reports the retired hypervisor_active field. The bytes asserted here
-// MUST be identical to the bytes produced by the Swift provider's
-// StatusCanonical.build for the same input. The matching Swift test
-// lives in provider-swift/Tests/ProviderCoreTests/SecurityTests.swift
-// (statusCanonicalMatchesCoordinatorGoldenBytes). If either side drifts,
-// both tests fail and you catch the protocol drift before it ships.
-func TestBuildStatusCanonicalGoldenBytes(t *testing.T) {
-	True := true
-	in := StatusCanonicalInput{
-		Nonce:             "test-nonce",
-		Timestamp:         "2026-04-16T12:00:00Z",
-		RDMADisabled:      &True,
-		SIPEnabled:        &True,
-		SecureBootEnabled: &True,
-		BinaryHash:        "binhash",
-		ActiveModelHash:   "activemodel",
-		PythonHash:        "pyhash",
-		RuntimeHash:       "rthash",
-		TemplateHashes: map[string]string{
-			"chatml": "tmplhash1",
-			"gemma":  "tmplhash2",
-		},
-		GrpcBinaryHash: "",
-		ModelHashes: map[string]string{
-			"qwen":    "modelhash1",
-			"trinity": "modelhash2",
-		},
-	}
+type statusCanonicalFixtureCorpus struct {
+	SchemaVersion uint32                   `json:"schema_version"`
+	Cases         []statusCanonicalFixture `json:"cases"`
+}
 
-	got, err := BuildStatusCanonical(in)
-	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
-	}
+type statusCanonicalFixture struct {
+	Name                         string                      `json:"name"`
+	Input                        statusCanonicalFixtureInput `json:"input"`
+	ExpectedSignatureInputBase64 string                      `json:"expected_signature_input_base64"`
+}
 
-	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
+type statusCanonicalFixtureInput struct {
+	Nonce             string            `json:"nonce"`
+	Timestamp         string            `json:"timestamp"`
+	HypervisorActive  *bool             `json:"hypervisor_active"`
+	RDMADisabled      *bool             `json:"rdma_disabled"`
+	SIPEnabled        *bool             `json:"sip_enabled"`
+	SecureBootEnabled *bool             `json:"secure_boot_enabled"`
+	BinaryHash        string            `json:"binary_hash"`
+	ActiveModelHash   string            `json:"active_model_hash"`
+	PythonHash        string            `json:"python_hash"`
+	RuntimeHash       string            `json:"runtime_hash"`
+	TemplateHashes    map[string]string `json:"template_hashes"`
+	GrpcBinaryHash    string            `json:"grpc_binary_hash"`
+	ModelHashes       map[string]string `json:"model_hashes"`
+}
 
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("canonical bytes drifted from Swift golden — protocol break\nwant: %s\ngot:  %s", expected, got)
-	}
-	if bytes.Contains(got, []byte("hypervisor_active")) {
-		t.Fatalf("hypervisor_active must be absent when not reported (new provider): %s", got)
+func (in statusCanonicalFixtureInput) canonicalInput() StatusCanonicalInput {
+	return StatusCanonicalInput{
+		Nonce:             in.Nonce,
+		Timestamp:         in.Timestamp,
+		HypervisorActive:  in.HypervisorActive,
+		RDMADisabled:      in.RDMADisabled,
+		SIPEnabled:        in.SIPEnabled,
+		SecureBootEnabled: in.SecureBootEnabled,
+		BinaryHash:        in.BinaryHash,
+		ActiveModelHash:   in.ActiveModelHash,
+		PythonHash:        in.PythonHash,
+		RuntimeHash:       in.RuntimeHash,
+		TemplateHashes:    in.TemplateHashes,
+		GrpcBinaryHash:    in.GrpcBinaryHash,
+		ModelHashes:       in.ModelHashes,
 	}
 }
 
-// TestBuildStatusCanonicalGoldenBytesLegacyHypervisor pins the OLD-fleet
-// canonical bytes. Legacy fleet compat only: providers < v0.6.31 sign
-// hypervisor_active into the canonical status, so when a challenge
-// response carries the field the coordinator MUST reconstruct it
-// byte-for-byte as before — including the retired "hypervisor_active"
-// key — or every old provider's StatusSignature verification breaks.
-// Remove this test together with StatusCanonicalInput.HypervisorActive
-// once the fleet floor passes v0.6.31.
-func TestBuildStatusCanonicalGoldenBytesLegacyHypervisor(t *testing.T) {
-	True := true
-	in := StatusCanonicalInput{
-		Nonce:             "test-nonce",
-		Timestamp:         "2026-04-16T12:00:00Z",
-		HypervisorActive:  &True,
-		RDMADisabled:      &True,
-		SIPEnabled:        &True,
-		SecureBootEnabled: &True,
-		BinaryHash:        "binhash",
-		ActiveModelHash:   "activemodel",
-		PythonHash:        "pyhash",
-		RuntimeHash:       "rthash",
-		TemplateHashes: map[string]string{
-			"chatml": "tmplhash1",
-			"gemma":  "tmplhash2",
-		},
-		GrpcBinaryHash: "",
-		ModelHashes: map[string]string{
-			"qwen":    "modelhash1",
-			"trinity": "modelhash2",
-		},
+func TestBuildStatusCanonicalSharedVectors(t *testing.T) {
+	corpus := loadStatusCanonicalFixtureCorpus(t)
+	if len(corpus.Cases) == 0 {
+		t.Fatal("attestation fixture has no named cases")
 	}
+	seen := make(map[string]struct{}, len(corpus.Cases))
+	for _, fixture := range corpus.Cases {
+		t.Run(fixture.Name, func(t *testing.T) {
+			if fixture.Name == "" {
+				t.Fatal("attestation fixture case has no name")
+			}
+			if _, duplicate := seen[fixture.Name]; duplicate {
+				t.Fatalf("duplicate attestation fixture case %q", fixture.Name)
+			}
+			seen[fixture.Name] = struct{}{}
 
-	got, err := BuildStatusCanonical(in)
-	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
-	}
-
-	expected := []byte(`{"active_model_hash":"activemodel","binary_hash":"binhash","hypervisor_active":true,"model_hashes":{"qwen":"modelhash1","trinity":"modelhash2"},"nonce":"test-nonce","python_hash":"pyhash","rdma_disabled":true,"runtime_hash":"rthash","secure_boot_enabled":true,"sip_enabled":true,"template_hashes":{"chatml":"tmplhash1","gemma":"tmplhash2"},"timestamp":"2026-04-16T12:00:00Z"}`)
-
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("legacy canonical bytes drifted — old-fleet StatusSignature verification would break\nwant: %s\ngot:  %s", expected, got)
-	}
-
-	// Old providers hardcode hypervisor_active=false; pin that shape too.
-	False := false
-	in.HypervisorActive = &False
-	got, err = BuildStatusCanonical(in)
-	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
-	}
-	if !bytes.Contains(got, []byte(`"hypervisor_active":false`)) {
-		t.Fatalf(`expected "hypervisor_active":false in legacy canonical, got: %s`, got)
+			expected, err := base64.StdEncoding.DecodeString(fixture.ExpectedSignatureInputBase64)
+			if err != nil {
+				t.Fatalf("decode expected signature input: %v", err)
+			}
+			got, err := BuildStatusCanonical(fixture.Input.canonicalInput())
+			if err != nil {
+				t.Fatalf("BuildStatusCanonical: %v", err)
+			}
+			if !bytes.Equal(got, expected) {
+				t.Fatalf("canonical signature input drifted\nwant: %s\ngot:  %s", expected, got)
+			}
+		})
 	}
 }
 
-// TestBuildStatusCanonicalOmitsEmpties verifies the omission convention.
-// "Unknown" must look different from "false" so a downgrade attacker
-// can't strip a positive claim and have it look like normal omission.
-func TestBuildStatusCanonicalOmitsEmpties(t *testing.T) {
-	got, err := BuildStatusCanonical(StatusCanonicalInput{
-		Nonce:     "n",
-		Timestamp: "t",
-	})
-	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
-	}
-	expected := []byte(`{"nonce":"n","timestamp":"t"}`)
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("expected only nonce+timestamp\nwant: %s\ngot:  %s", expected, got)
+func TestStatusCanonicalFixtureRejectsSchemaDrift(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		encoded string
+	}{
+		{name: "missing", encoded: `{"cases":[]}`},
+		{name: "unknown", encoded: `{"schema_version":2,"cases":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var corpus statusCanonicalFixtureCorpus
+			if err := decodeStatusCanonicalFixture([]byte(test.encoded), &corpus); err == nil {
+				t.Fatal("fixture schema drift was accepted")
+			}
+		})
 	}
 }
 
-// TestBuildStatusCanonicalFalseIsExplicit verifies that sip_enabled=false
-// is signed as `"sip_enabled":false`, distinct from the omitted (nil)
-// case. This is the entire point of the omit-empties convention — a
-// downgrade attacker must not be able to strip a positive claim and
-// have it look like normal absence.
-func TestBuildStatusCanonicalFalseIsExplicit(t *testing.T) {
-	False := false
-	got, err := BuildStatusCanonical(StatusCanonicalInput{
-		Nonce:      "n",
-		Timestamp:  "t",
-		SIPEnabled: &False,
-	})
+func loadStatusCanonicalFixtureCorpus(t *testing.T) statusCanonicalFixtureCorpus {
+	t.Helper()
+	encoded, err := os.ReadFile(filepath.Join(
+		"..", "..", "fixtures", "security", "v1", "attestation_status_vectors.json",
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
-	expected := []byte(`{"nonce":"n","sip_enabled":false,"timestamp":"t"}`)
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("false bool not explicitly serialized\nwant: %s\ngot:  %s", expected, got)
-	}
-}
-
-// TestBuildStatusCanonicalUnicodeNonce guards against future protocol
-// changes that introduce non-ASCII into a signed field. Both Go's
-// encoding/json and the Swift provider's JSON encoder escape control
-// chars but pass printable Unicode through as UTF-8 — verify the output
-// is valid UTF-8 and doesn't double-escape.
-func TestBuildStatusCanonicalUnicodeNonce(t *testing.T) {
-	// Fictional unicode nonce — nonces are base64 in production, but if
-	// the protocol ever changed, we want the canonical to handle UTF-8
-	// the same way on both sides.
-	got, err := BuildStatusCanonical(StatusCanonicalInput{
-		Nonce:     "ñön¢é-π",
-		Timestamp: "t",
-	})
-	if err != nil {
+	var corpus statusCanonicalFixtureCorpus
+	if err := decodeStatusCanonicalFixture(encoded, &corpus); err != nil {
 		t.Fatal(err)
 	}
-	expected := []byte(`{"nonce":"ñön¢é-π","timestamp":"t"}`)
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("unicode handling drifted\nwant: %s\ngot:  %s", expected, got)
-	}
+	return corpus
 }
 
-// TestBuildStatusCanonicalDoesNotHTMLEscape guards the SetEscapeHTML(false)
-// fix. Go's default json.Marshal escapes <, >, & as < > &,
-// but the Swift provider's JSONEncoder emits them raw — so any signed field
-// containing one of those characters would produce a canonical mismatch and a
-// spurious status-signature failure. The canonical bytes here MUST match what
-// Swift signs (raw characters, no \u00xx escapes).
-func TestBuildStatusCanonicalDoesNotHTMLEscape(t *testing.T) {
-	got, err := BuildStatusCanonical(StatusCanonicalInput{
-		// Fictional values exercising every HTML-escaped character. Real
-		// hashes/nonces are base64/hex today, which is exactly why this
-		// divergence is latent — this test makes it impossible to regress.
-		Nonce:           "a<b>c&d",
-		Timestamp:       "t",
-		BinaryHash:      "x&y",
-		ActiveModelHash: "p<q>r",
-	})
-	if err != nil {
-		t.Fatalf("BuildStatusCanonical: %v", err)
+func decodeStatusCanonicalFixture(encoded []byte, output any) error {
+	var metadata struct {
+		SchemaVersion *uint32 `json:"schema_version"`
 	}
-	expected := []byte(`{"active_model_hash":"p<q>r","binary_hash":"x&y","nonce":"a<b>c&d","timestamp":"t"}`)
-	if !bytes.Equal(got, expected) {
-		t.Fatalf("HTML escaping not disabled — canonical will mismatch Swift\nwant: %s\ngot:  %s", expected, got)
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return err
 	}
-	// Belt-and-suspenders: Go's HTML escaping would turn these characters into
-	// \u00xx sequences, which introduce a backslash (0x5c). The correct,
-	// un-escaped output for these inputs contains no backslash at all — so any
-	// backslash byte means escaping leaked back in.
-	if bytes.IndexByte(got, '\\') != -1 {
-		t.Fatalf("canonical output contains an escape backslash — HTML escaping not fully disabled: %s", got)
+	if metadata.SchemaVersion == nil {
+		return errors.New("fixture schema version is missing")
 	}
+	if *metadata.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported fixture schema version %d", *metadata.SchemaVersion)
+	}
+	return json.Unmarshal(encoded, output)
 }
 
 // TestVerifyStatusSignatureMissingReturnsSentinel ensures legacy

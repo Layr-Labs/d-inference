@@ -15,6 +15,8 @@ jobs:
         run: |
           ./scripts/check-release-version.sh
           ./scripts/sync-install-embed.sh check
+          ./scripts/check-macos-floor.sh
+          ./scripts/test-install-preflight.sh
           ./scripts/test-prod-env-refresh.sh
 
   test-coordinator:

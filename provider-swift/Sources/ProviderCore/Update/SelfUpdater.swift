@@ -1113,6 +1113,8 @@ public struct SelfUpdater: Sendable {
             executable: executable,
             signaturePolicy: signaturePolicy
         )
+        try BaselineMetallibCapabilityVerifier.verify(
+            app: app, fileManager: fileManager)
         let marker = app.appendingPathComponent(
             PackagedRuntimeSmoke.pagedCapabilityRelativePath)
         let markerPresent = fileManager.fileExists(atPath: marker.path)

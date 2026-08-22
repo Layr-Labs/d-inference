@@ -65,7 +65,11 @@ env:
   ENCLAVE_NAME: 'darkbloom-enclave'
   FAN_HELPER_NAME: 'darkbloom-fan-helper'
   FAN_HELPER_ID: 'io.darkbloom.fan-helper'
-  MIN_MACOS: '14.0'
+  # Oldest macOS the packaged app can serve. Set by the BASELINE metallib below:
+  # the Swift binary itself runs older, but MLX cannot start without a loadable
+  # kernel library. Pinned against the installers and PackagedMetallib.swift by
+  # scripts/check-macos-floor.sh.
+  MIN_MACOS: '15.0'
   # The mlx.metallib (compiled Metal GPU kernels) is BUILT FROM SOURCE from the
   # MLX fork pinned at libs/mlx-swift/Source/Cmlx/mlx — NOT fetched from a PyPI
   # wheel. Building from source guarantees the GPU kernels match the exact fork
@@ -75,6 +79,14 @@ env:
   # AND deployment target >= 26.2 AND Metal >= 4.0 (see
   # mlx/backend/metal/kernels/CMakeLists.txt), so we pin the deployment target.
   MLX_METALLIB_DEPLOYMENT_TARGET: '26.2'
+  # ...and a metallib linked for 26.2 is rejected outright by every older Metal
+  # runtime, which used to take MLX's whole Device() constructor down on macOS
+  # 15 hosts and surface as a bogus "safe R1 was not latched" install failure.
+  # So a second, NAX-free library is built for the floor and staged at
+  # Contents/MacOS/Resources/mlx.metallib — MLX's own second colocated probe,
+  # reached only when the primary fails to load. is_nax_available() is gated on
+  # macOS 26.2, so a host on the baseline never asks for a kernel it lacks.
+  MLX_METALLIB_BASELINE_DEPLOYMENT_TARGET: '15.0'
 
 jobs:
   resolve-env:
@@ -270,7 +282,7 @@ jobs:
           HELPER_SHA=$(shasum -a 256 scripts/fetch-metallib.sh | cut -d' ' -f1)
           SDK=$(xcrun --sdk macosx --show-sdk-version)
           XCODE=$(xcodebuild -version | tr -cs '[:alnum:].' '-')
-          KEY="metallib-helper-v1-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-jitoff"
+          KEY="metallib-helper-v2-${MLX_SHA}-${HELPER_SHA}-${XCODE}-sdk${SDK}-dt${MLX_METALLIB_DEPLOYMENT_TARGET}-bdt${MLX_METALLIB_BASELINE_DEPLOYMENT_TARGET}-jitoff"
           echo "key=$KEY" >> "$GITHUB_OUTPUT"
           echo "mlx_sha_short=${MLX_SHA:0:12}" >> "$GITHUB_OUTPUT"
           echo "Metallib cache namespace: $KEY"
@@ -291,14 +303,30 @@ jobs:
           command -v cmake >/dev/null 2>&1 || brew install cmake
           MLX_SRC="libs/mlx-swift/Source/Cmlx/mlx"
           test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)"
+          # Primary: NAX-capable, macOS 26.2 floor.
           ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
+          # Baseline: NAX-free, loadable back to MIN_MACOS. The helper enforces
+          # the inverted symbol contract (no _nax) for this deployment target.
+          MLX_METALLIB_DEPLOYMENT_TARGET="$MLX_METALLIB_BASELINE_DEPLOYMENT_TARGET" \
+          MLX_METALLIB_OUTPUT_NAME="mlx-baseline.metallib" \
+            ./scripts/fetch-metallib.sh "$RUNNER_TEMP/metallib"
           test -z "$(git -C "$MLX_SRC" status --porcelain=v1 --untracked-files=all)" || {
             echo "::error::metallib helper modified the release source checkout"
             exit 1
           }
           MLIB="$RUNNER_TEMP/metallib/mlx.metallib"
+          BASELINE_MLIB="$RUNNER_TEMP/metallib/mlx-baseline.metallib"
           test -s "$MLIB" || { echo "::error::metallib missing at $MLIB"; exit 1; }
+          test -s "$BASELINE_MLIB" || {
+            echo "::error::baseline metallib missing at $BASELINE_MLIB"
+            exit 1
+          }
+          if cmp -s "$MLIB" "$BASELINE_MLIB"; then
+            echo "::error::baseline metallib is byte-identical to the primary — the deployment target override did not take"
+            exit 1
+          fi
           echo "metallib=$MLIB" >> "$GITHUB_OUTPUT"
+          echo "baseline_metallib=$BASELINE_MLIB" >> "$GITHUB_OUTPUT"
 
       - name: Save source-matched metallib cache
         if: steps.metallib-cache.outputs.cache-hit != 'true'
@@ -441,18 +469,26 @@ jobs:
           # authorizes keychain-access-groups for the persistent SE key.
           APP="$STAGE/Darkbloom.app"
           mkdir -p \
-            "$APP/Contents/MacOS" \
+            "$APP/Contents/MacOS/Resources" \
             "$APP/Contents/Helpers" \
             "$APP/Contents/Resources/darkbloom-runtime-capabilities"
 
           cp "$BIN_DIR/$CLI_NAME" "$APP/Contents/MacOS/"
           cp "$BIN_DIR/$ENCLAVE_NAME" "$APP/Contents/MacOS/"
           cp "${{ steps.metallib.outputs.metallib }}" "$APP/Contents/MacOS/mlx.metallib"
+          # MLX probes <binary dir>/mlx.metallib first and
+          # <binary dir>/Resources/mlx.metallib second, falling through only
+          # when the first fails to LOAD. That is exactly what a macOS 15 host
+          # does with the Metal 4.0 primary, so the baseline lands here.
+          cp "${{ steps.metallib.outputs.baseline_metallib }}" \
+            "$APP/Contents/MacOS/Resources/mlx.metallib"
           install -m 0755 \
             "$BIN_DIR/$FAN_HELPER_NAME" \
             "$APP/Contents/Helpers/$FAN_HELPER_NAME"
           printf '1\n' \
             > "$APP/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
+          printf '1\n' \
+            > "$APP/Contents/Resources/darkbloom-runtime-capabilities/baseline-metallib-v1"
 
           cat > "$APP/Contents/Info.plist" << PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -472,7 +508,7 @@ jobs:
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>LSMinimumSystemVersion</key>
-              <string>14.0</string>
+              <string>${MIN_MACOS}</string>
           </dict>
           </plist>
           PLIST
@@ -504,6 +540,26 @@ jobs:
           printf '%s\n' "$PRE_SIGN_SMOKE_OUTPUT" \
             | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
 
+          # The run above only ever exercises the PRIMARY library: this runner
+          # is on macOS 26, so MLX's first colocated probe succeeds and the
+          # baseline is never reached. Run the same gate against a scratch copy
+          # with the baseline in the primary slot, or a baseline that lost the
+          # R1 AOT kernels at Metal 3.2 ships green and is discovered by macOS
+          # 15 providers in the field.
+          BASELINE_SMOKE_ROOT=/tmp/darkbloom-baseline-metallib-smoke
+          rm -rf "$BASELINE_SMOKE_ROOT"
+          mkdir -p "$BASELINE_SMOKE_ROOT"
+          cp -R "$APP" "$BASELINE_SMOKE_ROOT/Darkbloom.app"
+          rm -rf "$BASELINE_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/Resources"
+          cp "${{ steps.metallib.outputs.baseline_metallib }}" \
+            "$BASELINE_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
+          BASELINE_SMOKE_OUTPUT=$(DARKBLOOM_NO_UPDATE_CHECK=1 \
+            "$BASELINE_SMOKE_ROOT/Darkbloom.app/Contents/MacOS/$CLI_NAME" runtime-smoke)
+          printf '%s\n' "$BASELINE_SMOKE_OUTPUT"
+          printf '%s\n' "$BASELINE_SMOKE_OUTPUT" \
+            | grep -Fqx 'gemma-optimizations-runtime-smoke: ok'
+          rm -rf "$BASELINE_SMOKE_ROOT"
+
           # Hardened-runtime sign each binary and resource, then the bundle.
           # mlx.metallib must be signed before the bundle or codesign rejects
           # it as an unsigned subcomponent.
@@ -521,6 +577,15 @@ jobs:
           codesign --force --options runtime --timestamp \
             --keychain "$KEYCHAIN_PATH" \
             --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/mlx.metallib"
+          # Contents/MacOS is a `nested` slot in codesign's default resource
+          # rules, so the baseline library needs its own signature for the same
+          # reason the primary does — an unsigned subcomponent there fails
+          # `codesign --verify --deep --strict` on the whole bundle.
+          codesign --force --options runtime --timestamp \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$DEVELOPER_ID" "$APP/Contents/MacOS/Resources/mlx.metallib"
+          codesign --verify --strict --verbose=2 \
+            "$APP/Contents/MacOS/Resources/mlx.metallib"
           # darkbloom-enclave only uses ephemeral SE keys (no keychain).
           # It gets its own entitlements without keychain-access-groups and
           # application-identifier so AMFI doesn't require a provisioning
@@ -695,6 +760,12 @@ jobs:
           grep -qx \
             './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/paged-kernel-v1' \
             /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/MacOS/Resources/mlx.metallib' \
+            /tmp/darkbloom-bundle-files.txt
+          grep -qx \
+            './Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/baseline-metallib-v1' \
+            /tmp/darkbloom-bundle-files.txt
 
           # Verify the FINAL archived layout, not merely the staging tree.
           # This runs after signing, notarization, stapling, and tar rebuild,
@@ -705,9 +776,18 @@ jobs:
           tar xzf /tmp/darkbloom-bundle-macos-arm64.tar.gz -C "$SMOKE_ROOT"
           FINAL_APP_METALLIB="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/mlx.metallib"
           FINAL_FLAT_METALLIB="$SMOKE_ROOT/bin/mlx.metallib"
+          FINAL_BASELINE_METALLIB="$SMOKE_ROOT/Darkbloom.app/Contents/MacOS/Resources/mlx.metallib"
+          FINAL_BASELINE_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/baseline-metallib-v1"
           test -s "$FINAL_APP_METALLIB"
           test -s "$FINAL_FLAT_METALLIB"
+          test -s "$FINAL_BASELINE_METALLIB"
+          test ! -L "$FINAL_BASELINE_METALLIB"
+          test "$(tr -d '[:space:]' < "$FINAL_BASELINE_MARKER")" = "1"
           cmp "$FINAL_FLAT_METALLIB" "$FINAL_APP_METALLIB"
+          if cmp -s "$FINAL_BASELINE_METALLIB" "$FINAL_APP_METALLIB"; then
+            echo "::error::baseline and primary metallib are identical in the final artifact"
+            exit 1
+          fi
           # Repeat the helper's completeness contract against the final
           # extracted, signed bytes rather than the pre-signing input.
           NAX_SYMBOL="_nax"
@@ -736,6 +816,30 @@ jobs:
               exit 1
             fi
           done
+          # Same contract for the baseline, inverted on _nax: carrying it would
+          # mean the deployment-target override did not take and the fallback is
+          # just as unloadable on the floor as the primary it exists to cover.
+          for symbol in \
+            "$GEMV_SYMBOL" \
+            "$R1_BUILDER_SYMBOL" \
+            "$R1_BUILDER_E256_SYMBOL" \
+            "$R1_KERNEL_SYMBOL" \
+            "$QMV_WIDE_W4_M2_SYMBOL" \
+            "$QMV_WIDE_W4_M4_BATCHED_SYMBOL" \
+            "$QMV_WIDE_W8_M2_SYMBOL" \
+            "$QMV_WIDE_W8_M4_BATCHED_SYMBOL"
+          do
+            MATCHES=$(strings "$FINAL_BASELINE_METALLIB" | grep -F -c "$symbol" || true)
+            if [ "$MATCHES" -eq 0 ]; then
+              echo "::error::final baseline metallib is missing required symbol: $symbol"
+              exit 1
+            fi
+          done
+          MATCHES=$(strings "$FINAL_BASELINE_METALLIB" | grep -F -c "$NAX_SYMBOL" || true)
+          if [ "$MATCHES" -ne 0 ]; then
+            echo "::error::final baseline metallib carries $NAX_SYMBOL kernels — it was built for macOS $MLX_METALLIB_DEPLOYMENT_TARGET and cannot load on the macOS $MIN_MACOS floor it exists to serve"
+            exit 1
+          fi
           FINAL_FAN_HELPER="$SMOKE_ROOT/Darkbloom.app/Contents/Helpers/$FAN_HELPER_NAME"
           FINAL_FAN_MARKER="$SMOKE_ROOT/Darkbloom.app/Contents/Resources/darkbloom-runtime-capabilities/fan-helper-v1"
           test -f "$FINAL_FAN_HELPER"

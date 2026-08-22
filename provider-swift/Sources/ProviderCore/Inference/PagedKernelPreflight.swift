@@ -71,10 +71,12 @@ enum PagedKernelPreflight {
         timeout: TimeInterval
     ) throws {
         do {
+            var environment = try PackagedRuntimeSmoke.retainedValidationEnvironment()
+            environment["DARKBLOOM_NO_UPDATE_CHECK"] = "1"
             try BoundedProcess.run(
                 executableURL,
                 arguments: ["runtime-smoke"] + shapes.map(\.argumentValue),
-                environment: ["DARKBLOOM_NO_UPDATE_CHECK": "1"],
+                environment: environment,
                 timeout: timeout,
                 // The child's own message is the diagnosis. A missing
                 // SwiftPM resource bundle beside a relocated binary is a

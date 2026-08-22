@@ -102,7 +102,7 @@ struct StartupSelfTestDecodeLiveTests {
         do {
             loaded = try await loadBridge()
         } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge
@@ -146,7 +146,7 @@ struct StartupSelfTestDecodeLiveTests {
         do {
             loaded = try await loadBridge()
         } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge

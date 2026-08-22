@@ -36,8 +36,10 @@ private enum QwenVisionEquivalenceFixture {
 
     static var enabled: Bool {
         let environment = ProcessInfo.processInfo.environment
-        return environment["DARKBLOOM_LIVE_MLX_TESTS"] == "1"
-            && environment["DARKBLOOM_LIVE_MLX_QWEN36"] == "1"
+        return LiveInferenceFixtures.gateValueEnabled(
+            environment["DARKBLOOM_LIVE_MLX_TESTS"])
+            && LiveInferenceFixtures.gateValueEnabled(
+                environment["DARKBLOOM_LIVE_MLX_QWEN36"])
     }
 
     static var modelDirectory: URL {

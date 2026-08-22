@@ -326,7 +326,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         "gpt-oss-20b: donate→disk (RAM freed), from-disk adoption byte-identical, restart warmth, TTL",
         .enabled(if:
             LiveInferenceFixtures.liveTestsEnabled
-                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GPTOSS"] != nil)
+                && LiveInferenceFixtures.gateEnabled("DARKBLOOM_LIVE_MLX_GPTOSS"))
     )
     func gptOssSSDPrefixCache() async throws {
         let live = try await loadGptOss()
@@ -466,7 +466,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         "gemma-qat, DEFAULT config, typical prompt: zero disk writes, serves normally",
         .enabled(if:
             LiveInferenceFixtures.liveTestsEnabled
-                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil)
+                && LiveInferenceFixtures.gateEnabled("DARKBLOOM_LIVE_MLX_GEMMA"))
     )
     func gemmaTypicalPromptWritesNothing() async throws {
         let live = try await loadGemmaQat()
@@ -506,7 +506,7 @@ struct EngineV2SSDPrefixCacheLiveTests {
         "gemma-qat, DEFAULT config, long context (>27.1k): tail cached, adopted from disk byte-identically",
         .enabled(if:
             LiveInferenceFixtures.liveTestsEnabled
-                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil)
+                && LiveInferenceFixtures.gateEnabled("DARKBLOOM_LIVE_MLX_GEMMA"))
     )
     func gemmaLongContextTailCachedAndAdopted() async throws {
         let live = try await loadGemmaQat()

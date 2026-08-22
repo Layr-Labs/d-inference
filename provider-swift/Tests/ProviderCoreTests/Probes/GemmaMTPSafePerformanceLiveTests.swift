@@ -10,7 +10,7 @@ struct GemmaMTPSafePerformanceLiveTests {
         "safe automatic verifier performance",
         .enabled(
             if: MTPProductionLiveFixtures.enabled
-                && ProcessInfo.processInfo.environment["DARKBLOOM_MTP_SAFE_PERF_DIAGNOSTIC"] == "1",
+                && LiveInferenceFixtures.gateEnabled("DARKBLOOM_MTP_SAFE_PERF_DIAGNOSTIC"),
             Comment(rawValue: "requires the supervised MTP safe performance environment")))
     func safeAutomaticPerformance() async throws {
         let bundle = try await MTPProductionLiveFixtures.loadBundle()

@@ -11,7 +11,7 @@ import Testing
 struct FrozenReplayRealModelTests {
     private static let enabled =
         LiveInferenceFixtures.liveTestsEnabled
-        && ProcessInfo.processInfo.environment["DARKBLOOM_FROZEN_REPLAY_REAL_MODELS"] != nil
+        && LiveInferenceFixtures.gateEnabled("DARKBLOOM_FROZEN_REPLAY_REAL_MODELS")
 
     private struct Loaded: @unchecked Sendable {
         let container: ModelContainer

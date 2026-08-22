@@ -24,7 +24,7 @@ struct GemmaOpenRouterLiveTests {
                 memoryBudgetBytes: 64 * 1024 * 1024 * 1024,
                 defaultMaxTokens: maxTokens)
         } catch let skip as LiveFixtureSkip {
-            Issue.record("skipping: \(skip)")
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge

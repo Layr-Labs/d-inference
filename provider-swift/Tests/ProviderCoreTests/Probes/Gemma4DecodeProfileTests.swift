@@ -19,13 +19,13 @@ struct Gemma4DecodeProfileTests {
     @Test(
         "B=1 raw decode TPS",
         .enabled(if:
-            ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
-                && ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_GEMMA"] != nil
+            LiveInferenceFixtures.gateEnabled("DARKBLOOM_LIVE_MLX_TESTS")
+                && LiveInferenceFixtures.gateEnabled("DARKBLOOM_LIVE_MLX_GEMMA")
         )
     )
     func rawDecodeB1() async throws {
         if LiveInferenceFixtures.ensureMetallibColocated() == nil {
-            Issue.record("mlx.metallib not found near test bundle or in MLX_METALLIB_PATH/SOURCE")
+            LiveInferenceFixtures.recordUnavailable(LiveFixtureSkip.missingMetallib.description)
             return
         }
         MLX.GPU.set(memoryLimit: 96 * 1024 * 1024 * 1024)
@@ -33,7 +33,8 @@ struct Gemma4DecodeProfileTests {
         let modelID = ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA_MODEL"]
             ?? "mlx-community/gemma-4-26b-a4b-it-8bit"
         guard let modelDir = ModelScanner.resolveLocalPath(modelID: modelID) else {
-            Issue.record("model '\(modelID)' is not in the local cache")
+            LiveInferenceFixtures.recordUnavailable(
+                LiveFixtureSkip.modelNotInCache(modelID).description)
             return
         }
 
@@ -83,7 +84,7 @@ struct Gemma4DecodeProfileTests {
 
         print("[gemma4-decode-profile] model=\(modelID) prompt_tokens=\(encoded.count) raw_b1_tps=\(String(format: "%.1f", tps))")
 
-        if ProcessInfo.processInfo.environment["DARKBLOOM_GEMMA_PRINT_TEXT"] != nil {
+        if LiveInferenceFixtures.gateEnabled("DARKBLOOM_GEMMA_PRINT_TEXT") {
             let text: String = await container.perform { ctx in
                 let cache = ctx.model.newCache(parameters: nil)
                 let promptArray = MLXArray(encoded.map { Int32($0) }).reshaped([1, encoded.count])

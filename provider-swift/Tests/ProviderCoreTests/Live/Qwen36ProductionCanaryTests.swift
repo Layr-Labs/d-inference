@@ -257,7 +257,8 @@ private enum Qwen36ProductionCanary {
 
     static var enabled: Bool {
         let environment = ProcessInfo.processInfo.environment
-        return environment[liveGate] == "1" && environment[qwenGate] == "1"
+        return LiveInferenceFixtures.gateValueEnabled(environment[liveGate])
+            && LiveInferenceFixtures.gateValueEnabled(environment[qwenGate])
     }
 
     static func load() async throws -> Qwen36ProductionCanaryFixture {

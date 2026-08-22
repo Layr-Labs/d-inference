@@ -9,9 +9,15 @@ import Testing
 
 private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
-// The access group must match the binary's entitlements. In debug builds
-// without codesign, these tests will get errSecMissingEntitlement and
-// skip gracefully.
+// The access group must match the binary's entitlements. In unsigned debug
+// builds, missing entitlements are recorded as ordinary hardware-lane failures.
+
+@Suite(
+    "Persistent Secure Enclave key (hardware)",
+    .enabled(
+        if: LiveInferenceFixtures.gateEnabled("DARKBLOOM_HARDWARE_TESTS"),
+        "set DARKBLOOM_HARDWARE_TESTS=1 to run Secure Enclave and Keychain tests"))
+struct PersistentEnclaveKeyTests {
 
 @Test func persistentEnclaveKeyAvailabilityReflectsHardware() {
     // On Apple Silicon this should be true; the test just verifies
@@ -22,7 +28,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
 @Test func persistentEnclaveKeyCreateAndSign() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -31,7 +37,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         key = try PersistentEnclaveKey.loadOrCreate(label: testLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement (expected in unsigned debug builds)")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement (expected in unsigned debug builds)")
             return
         }
         throw error
@@ -56,7 +62,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
 @Test func persistentEnclaveKeyPersistence() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -67,7 +73,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         firstKey = try PersistentEnclaveKey.loadOrCreate(label: persistLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement")
             return
         }
         throw error
@@ -83,7 +89,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
 @Test func persistentEnclaveKeyDelete() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -93,7 +99,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         _ = try PersistentEnclaveKey.loadOrCreate(label: deleteLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement")
             return
         }
         throw error
@@ -109,7 +115,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
 @Test func persistentEnclaveKeyPublicKeyFormat() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -120,7 +126,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         key = try PersistentEnclaveKey.loadOrCreate(label: formatLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement")
             return
         }
         throw error
@@ -140,7 +146,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
 @Test func persistentEnclaveKeyConformsToAttestationSigner() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -151,7 +157,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         key = try PersistentEnclaveKey.loadOrCreate(label: protoLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement")
             return
         }
         throw error
@@ -170,7 +176,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 
 @Test func attestationBuilderAcceptsBothSignerTypes() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -189,7 +195,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         persistent = try PersistentEnclaveKey.loadOrCreate(label: persistentLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping persistent key test: missing entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping persistent key test: missing entitlement")
             return
         }
         throw error
@@ -208,17 +214,17 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         try PersistentEnclaveKey.delete(label: "io.darkbloom.provider.nonexistent.\(UUID().uuidString)")
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement")
             return
         }
         throw error
     }
 }
 
-// The default attestation label is the v2 label. Its presence in the
-// keychain is the migration marker for the deterministic v1 -> v2 key
-// migration (no test-sign, no attribute probing). This check needs no
-// Secure Enclave hardware or entitlements, so it always runs.
+// The default attestation label is the v2 label. Its presence in the keychain
+// is the migration marker for the deterministic v1 -> v2 key migration
+// (no test-sign, no attribute probing). The check itself needs no Secure
+// Enclave hardware or entitlements, but remains part of the opted-in suite.
 @Test func persistentEnclaveKeyDefaultLabelIsV2() {
     #expect(PersistentEnclaveKey.defaultLabel == "io.darkbloom.provider.attestation-signing.v2")
     #expect(PersistentEnclaveKey.legacyLabelV1 == "io.darkbloom.provider.attestation-signing.v1")
@@ -229,7 +235,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
 // create once, then load returns the SAME key.
 @Test func persistentEnclaveKeyCustomLabelRoundTrips() throws {
     guard PersistentEnclaveKey.isAvailable else {
-        print("Skipping: Secure Enclave not available")
+        LiveInferenceFixtures.recordUnavailable("Skipping: Secure Enclave not available")
         return
     }
 
@@ -240,7 +246,7 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
         created = try PersistentEnclaveKey.loadOrCreate(label: roundTripLabel)
     } catch let error as PersistentEnclaveKeyError {
         if case .missingEntitlement = error {
-            print("Skipping: missing keychain-access-groups entitlement")
+            LiveInferenceFixtures.recordUnavailable("Skipping: missing keychain-access-groups entitlement")
             return
         }
         throw error
@@ -251,4 +257,5 @@ private let testLabel = "io.darkbloom.provider.test-key.\(UUID().uuidString)"
     let loaded = try PersistentEnclaveKey.loadOrCreate(label: roundTripLabel)
     #expect(created.publicKeyRaw == loaded.publicKeyRaw)
     #expect(created.publicKeyBase64 == loaded.publicKeyBase64)
+}
 }

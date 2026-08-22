@@ -28,18 +28,23 @@ import MLXVLM
 import Testing
 
 @testable import ProviderCore
+private let pagedDivergenceProbeEnabled =
+    LiveInferenceFixtures.gateEnabled("DARKBLOOM_LIVE_MLX_TESTS")
+        && LiveInferenceFixtures.gateEnabled("DARKBLOOM_PAGED_DIVERGENCE_PROBE")
 
-@Suite("paged divergence probe (live)", .serialized)
+
+@Suite(
+    "paged divergence probe (live)",
+    .serialized,
+    .enabled(
+        if: pagedDivergenceProbeEnabled,
+        "set DARKBLOOM_LIVE_MLX_TESTS and DARKBLOOM_PAGED_DIVERGENCE_PROBE to run"))
 struct PagedDivergenceProbeTests {
 
     private static let gemmaID = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"
     private static let gptossID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
     private static let gib = 1024 * 1024 * 1024
 
-    private static var enabled: Bool {
-        ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
-            && ProcessInfo.processInfo.environment["DARKBLOOM_PAGED_DIVERGENCE_PROBE"] != nil
-    }
 
     // MARK: - Measurement types
 
@@ -359,7 +364,6 @@ struct PagedDivergenceProbeTests {
 
     @Test("gemma-4: logit gap, dtype/ring A-B, and per-layer localization")
     func gemma4Divergence() async throws {
-        guard Self.enabled else { return }
         let live = try await load(
             modelID: Self.gemmaID, isVLM: true, budget: 72 * Self.gib,
             prompts: [
@@ -450,7 +454,7 @@ struct PagedDivergenceProbeTests {
         }
 
         guard let target = localizeOn else {
-            print("[probe] no prompt diverged; nothing to localize")
+            #expect(localizeOn == nil, "all measured prompts remained aligned")
             return
         }
         let prompt = target.prompt
@@ -514,7 +518,6 @@ struct PagedDivergenceProbeTests {
     ///     same gather, only the kernel's compute precision differs.
     @Test("within-backend brittleness controls")
     func withinBackendControls() async throws {
-        guard Self.enabled else { return }
         let live = try await load(
             modelID: Self.gemmaID, isVLM: true, budget: 72 * Self.gib,
             prompts: [
@@ -552,7 +555,6 @@ struct PagedDivergenceProbeTests {
 
     @Test("gpt-oss control: same probe on the backend pair that PASSES")
     func gptossControl() async throws {
-        guard Self.enabled else { return }
         let live = try await load(
             modelID: Self.gptossID, isVLM: false, budget: 48 * Self.gib,
             prompts: [
@@ -603,13 +605,14 @@ struct PagedDivergenceProbeTests {
 ///     precision. Two equally valid evaluations of ONE backend, so its
 ///     agreement rate is the ceiling any cross-backend comparison can reach.
 ///   * paged fp16 pages   — the shipping candidate.
-@Suite("paged teacher-forced agreement (live)", .serialized)
+@Suite(
+    "paged teacher-forced agreement (live)",
+    .serialized,
+    .enabled(
+        if: pagedDivergenceProbeEnabled,
+        "set DARKBLOOM_LIVE_MLX_TESTS and DARKBLOOM_PAGED_DIVERGENCE_PROBE to run"))
 struct PagedTeacherForcedAgreementTests {
 
-    private static var enabled: Bool {
-        ProcessInfo.processInfo.environment["DARKBLOOM_LIVE_MLX_TESTS"] != nil
-            && ProcessInfo.processInfo.environment["DARKBLOOM_PAGED_DIVERGENCE_PROBE"] != nil
-    }
 
     private static let prompts = [
         "List three prime numbers.",
@@ -630,7 +633,6 @@ struct PagedTeacherForcedAgreementTests {
 
     @Test("teacher-forced top-1 agreement, candidate vs control arms")
     func agreementRates() async throws {
-        guard Self.enabled else { return }
         let probe = PagedDivergenceProbeTests()
         // `candidateFloor` is the per-model gate on the paged-fp16 candidate
         // arm, in percent agreement. Calibration (2026-07, M4 Max 128 GB,

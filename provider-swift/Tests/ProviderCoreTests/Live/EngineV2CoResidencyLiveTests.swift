@@ -50,7 +50,12 @@ import Testing
 
 @testable import ProviderCore
 
-@Suite("EngineV2 two-model co-residency (live)", .serialized)
+@Suite(
+    "EngineV2 two-model co-residency (live)",
+    .serialized,
+    .enabled(
+        if: LiveInferenceFixtures.gemmaTestsEnabled,
+        "set DARKBLOOM_LIVE_MLX_TESTS and DARKBLOOM_LIVE_MLX_GEMMA to run"))
 struct EngineV2CoResidencyLiveTests {
 
     static let gptossID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
@@ -127,9 +132,6 @@ struct EngineV2CoResidencyLiveTests {
         "load B while A streams: shrink, serve both, admission ceiling, regrow",
         arguments: ["contiguous", "paged"])
     func coResidencyLifecycle(kvBackend: String) async throws {
-        guard LiveInferenceFixtures.liveTestsEnabled, LiveInferenceFixtures.gemmaTestsEnabled else {
-            return  // env-gated (multi-GB weights)
-        }
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }

@@ -56,7 +56,7 @@ struct JinjaSanitizationLiveTests {
                 memoryBudgetBytes: 24 * 1024 * 1024 * 1024
             )
         } catch let skip as LiveFixtureSkip {
-            withKnownIssue("skipped: \(skip)") { Issue.record("\(skip)") }
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge

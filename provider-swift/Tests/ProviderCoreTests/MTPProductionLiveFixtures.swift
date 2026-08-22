@@ -14,7 +14,7 @@ enum MTPProductionLiveFixtures {
 
     static var enabled: Bool {
         LiveInferenceFixtures.gemmaTestsEnabled
-            && truthy(environment[liveEnvironment])
+            && LiveInferenceFixtures.gateValueEnabled(environment[liveEnvironment])
             && environment[supervisorEnvironment] == supervisorContract
     }
 
@@ -142,7 +142,8 @@ enum MTPProductionLiveFixtures {
     }
 
     static var benchmarkMTPExpectation: MTPBenchmarkMTPExpectation {
-        truthy(environment["DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE"])
+        LiveInferenceFixtures.gateValueEnabled(
+            environment["DARKBLOOM_MTP_BENCHMARK_EXPECT_MTP_INACTIVE"])
             ? .legacyM5HardwareSafetyGate
             : .active
     }
@@ -181,10 +182,6 @@ enum MTPProductionLiveFixtures {
         ProcessInfo.processInfo.environment
     }
 
-    private static func truthy(_ value: String?) -> Bool {
-        guard let value else { return false }
-        return ["1", "true", "yes", "on"].contains(value.lowercased())
-    }
 
     private static func isDescendant(_ path: URL, of root: URL) -> Bool {
         let normalizedPath = path.standardizedFileURL.path

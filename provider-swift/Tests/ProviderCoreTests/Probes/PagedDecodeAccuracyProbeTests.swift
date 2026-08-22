@@ -39,12 +39,14 @@ import Testing
 
 @testable import ProviderCore
 
-@Suite("paged decode accuracy probe", .serialized)
+@Suite(
+    "paged decode accuracy probe",
+    .serialized,
+    .enabled(
+        if: LiveInferenceFixtures.gateEnabled("DARKBLOOM_PAGED_DIVERGENCE_PROBE"),
+        "set DARKBLOOM_PAGED_DIVERGENCE_PROBE to run"))
 struct PagedDecodeAccuracyProbeTests {
 
-    private static var enabled: Bool {
-        ProcessInfo.processInfo.environment["DARKBLOOM_PAGED_DIVERGENCE_PROBE"] != nil
-    }
 
     private struct Shape {
         let name: String
@@ -87,7 +89,6 @@ struct PagedDecodeAccuracyProbeTests {
 
     @Test("decode attention error vs an fp32 reference, per backend")
     func decodeAccuracy() throws {
-        guard Self.enabled else { return }
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         MLXRandom.seed(0x5EED_1234)
 
@@ -245,7 +246,6 @@ struct PagedDecodeAccuracyProbeTests {
     /// MLX SDPA do not round it the same way.
     @Test("QK logit magnitude per shape (the conditioning term)")
     func qkConditioning() throws {
-        guard Self.enabled else { return }
         _ = LiveInferenceFixtures.ensureMetallibColocated()
         MLXRandom.seed(0x5EED_1234)
         for shape in Self.shapes {

@@ -56,7 +56,12 @@ import Testing
 
 @testable import ProviderCore
 
-@Suite("EngineV2 paged parity oracle (live)", .serialized)
+@Suite(
+    "EngineV2 paged parity oracle (live)",
+    .serialized,
+    .enabled(
+        if: LiveInferenceFixtures.liveTestsEnabled,
+        "set DARKBLOOM_LIVE_MLX_TESTS to run"))
 struct EngineV2PagedParityLiveTests {
 
     static let gptossModelID = "mlx-community/gpt-oss-20b-MXFP4-Q8"
@@ -167,7 +172,8 @@ struct EngineV2PagedParityLiveTests {
         if case InferenceError.modelLoadFailed(let message) = error,
             message.hasPrefix("Insufficient memory (")
         {
-            print("[\(arm)] skipping — pre-load free-memory gate refused on this busy box: \(message)")
+            LiveInferenceFixtures.recordUnavailable(
+                "[\(arm)] pre-load free-memory gate refused on this busy box: \(message)")
             return
         }
         Issue.record(
@@ -190,7 +196,6 @@ struct EngineV2PagedParityLiveTests {
 
     @Test("explicit paged GPT-OSS: solo == concurrent, token-exact")
     func pagedBatchCompositionInvariance() async throws {
-        guard LiveInferenceFixtures.liveTestsEnabled else { return }
         let live = try await loadGptOss()
         let (bridge, kind) = try makeBridge(live, kvBackend: .paged)
         defer { Task { await bridge.shutdown(); MLX.Memory.clearCache() } }
@@ -248,7 +253,6 @@ struct EngineV2PagedParityLiveTests {
 
     @Test("cross-backend first-token parity over the same weights")
     func crossBackendFirstTokenParity() async throws {
-        guard LiveInferenceFixtures.liveTestsEnabled else { return }
         let live = try await loadGptOss()
         let prompt = Self.workload[1].prompt
 
@@ -301,7 +305,6 @@ struct EngineV2PagedParityLiveTests {
     /// live headroom, machine size, and Metal buffer limits.
     @Test("loop path: paged gpt-oss survives the load guards and serves")
     func pagedSlotSurvivesLoadGuardsThroughProviderLoop() async throws {
-        guard LiveInferenceFixtures.liveTestsEnabled else { return }
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }
@@ -407,7 +410,6 @@ struct EngineV2PagedParityLiveTests {
     /// future revival of the VLM veto silently seating contiguous.
     @Test("explicit paged gemma-4 (VLM): solo == concurrent, token-exact")
     func gemmaPagedBatchCompositionInvariance() async throws {
-        guard LiveInferenceFixtures.liveTestsEnabled else { return }
         let loaded = try await LiveInferenceFixtures.loadBridge(
             modelID: Self.gemmaModelID,
             maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent),
@@ -472,7 +474,6 @@ struct EngineV2PagedParityLiveTests {
     /// paged under `.auto`) this suite previously never exercised.
     @Test("loop path: paged gemma-4 (VLM) survives the load guards and serves")
     func gemmaPagedSlotSurvivesLoadGuardsThroughProviderLoop() async throws {
-        guard LiveInferenceFixtures.liveTestsEnabled else { return }
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
             throw LiveFixtureSkip.missingMetallib
         }

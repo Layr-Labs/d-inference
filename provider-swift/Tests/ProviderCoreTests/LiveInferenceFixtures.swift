@@ -1,6 +1,7 @@
 import Foundation
 import MLX
 import MLXLLM
+import Testing
 import MLXLMCommon
 @testable import ProviderCore
 
@@ -32,21 +33,42 @@ enum LiveInferenceFixtures {
 
     // MARK: Gating
 
+    /// Interprets an operator gate consistently across live, probe, hardware,
+    /// and release-gate suites. Empty values and explicit false spellings are
+    /// disabled; every other non-empty value opts in.
+    static func gateValueEnabled(_ value: String?) -> Bool {
+        guard let value else { return false }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return false }
+        return !["0", "false", "no", "off"].contains(normalized)
+    }
+
+    static func gateEnabled(
+        _ name: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        gateValueEnabled(environment[name])
+    }
+
     /// True when the operator opted into running live tests.
     static var liveTestsEnabled: Bool {
-        ProcessInfo.processInfo.environment[liveEnvVar].map { !$0.isEmpty } ?? false
+        gateEnabled(liveEnvVar)
     }
 
     /// True when the operator opted into Gemma. Implies `liveTestsEnabled`.
     static var gemmaTestsEnabled: Bool {
-        liveTestsEnabled
-            && (ProcessInfo.processInfo.environment[gemmaEnvVar].map { !$0.isEmpty } ?? false)
+        liveTestsEnabled && gateEnabled(gemmaEnvVar)
     }
 
     /// True when the operator opted into tests that require two small local models.
     static var multiModelLiveTestsEnabled: Bool {
-        liveTestsEnabled
-            && (ProcessInfo.processInfo.environment[multiModelEnvVar].map { !$0.isEmpty } ?? false)
+        liveTestsEnabled && gateEnabled(multiModelEnvVar)
+    }
+
+    /// Records an ordinary test failure when an opted-in lane is missing a
+    /// runtime prerequisite. Callers retain control of cleanup and early return.
+    static func recordUnavailable(_ reason: String) {
+        Issue.record("required lane prerequisite unavailable: \(reason)")
     }
 
     // MARK: Model location
@@ -381,4 +403,29 @@ func collect(
         }
     }
     return collected
+}
+
+@Suite("Provider test lane gate parsing")
+struct ProviderTestLaneGateTests {
+    @Test(
+        "empty and explicit false values stay disabled",
+        arguments: ["", "0", "false", "FALSE", " no ", "off"])
+    func explicitFalseValues(rawValue: String) {
+        #expect(!LiveInferenceFixtures.gateValueEnabled(rawValue))
+    }
+
+    @Test(
+        "other non-empty values opt in",
+        arguments: ["1", "true", "yes", "on", "enabled"])
+    func optInValues(rawValue: String) {
+        #expect(LiveInferenceFixtures.gateValueEnabled(rawValue))
+    }
+
+    @Test("hardware lane is disabled by default and opts in explicitly")
+    func hardwareLaneGate() {
+        let name = "DARKBLOOM_HARDWARE_TESTS"
+        #expect(!LiveInferenceFixtures.gateEnabled(name, environment: [:]))
+        #expect(!LiveInferenceFixtures.gateEnabled(name, environment: [name: "false"]))
+        #expect(LiveInferenceFixtures.gateEnabled(name, environment: [name: "1"]))
+    }
 }

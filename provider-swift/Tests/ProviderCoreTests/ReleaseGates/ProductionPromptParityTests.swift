@@ -3,16 +3,32 @@ import Testing
 
 @testable import ProviderCore
 
+private enum ProductionPromptParityGate {
+    static let environment = ProcessInfo.processInfo.environment
+
+    static var required: Bool {
+        LiveInferenceFixtures.gateValueEnabled(environment["PROMPT_PARITY_REQUIRED"])
+    }
+
+    static var configured: Bool {
+        environment["PROMPT_PARITY_VECTORS"] != nil
+            && environment["PROMPT_PARITY_ARTIFACT_ROOT"] != nil
+    }
+}
+
 @Suite("Production prompt parity")
 struct ProductionPromptParityTests {
-    @Test("serving tokenizer matches manifest-generated vectors")
+    @Test(
+        "serving tokenizer matches manifest-generated vectors",
+        .enabled(
+            if: ProductionPromptParityGate.configured || ProductionPromptParityGate.required,
+            Comment(rawValue: "set PROMPT_PARITY_VECTORS and PROMPT_PARITY_ARTIFACT_ROOT to run the production release gate")))
     func servingTokenizerVectors() async throws {
         let environment = ProcessInfo.processInfo.environment
         guard let vectorsPath = environment["PROMPT_PARITY_VECTORS"],
               let artifactRootPath = environment["PROMPT_PARITY_ARTIFACT_ROOT"]
         else {
-            #expect(
-                environment["PROMPT_PARITY_REQUIRED"] != "1",
+            Issue.record(
                 "production parity gate requires PROMPT_PARITY_VECTORS and PROMPT_PARITY_ARTIFACT_ROOT")
             return
         }

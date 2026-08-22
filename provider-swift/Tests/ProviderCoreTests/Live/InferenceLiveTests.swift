@@ -83,15 +83,17 @@ struct InferenceLiveTests {
         let gptossID = EngineV2CoResidencyLiveTests.gptossID
         let gemmaQatID = EngineV2CoResidencyLiveTests.gemmaQatID
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
-            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
+            LiveInferenceFixtures.recordUnavailable(LiveFixtureSkip.missingMetallib.description)
             return
         }
         guard case .found = LiveInferenceFixtures.locate(gptossID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(gptossID).description)")
+            LiveInferenceFixtures.recordUnavailable(
+                LiveFixtureSkip.modelNotInCache(gptossID).description)
             return
         }
         guard case .found = LiveInferenceFixtures.locate(gemmaQatID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(gemmaQatID).description)")
+            LiveInferenceFixtures.recordUnavailable(
+                LiveFixtureSkip.modelNotInCache(gemmaQatID).description)
             return
         }
         LiveInferenceFixtures.applyMemoryBudget(maxBytes: 48 * 1024 * 1024 * 1024)
@@ -164,11 +166,12 @@ struct InferenceLiveTests {
         // instead of the retired tiny-qwen fixture.
         let modelID = EngineV2CoResidencyLiveTests.gptossID
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
-            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
+            LiveInferenceFixtures.recordUnavailable(LiveFixtureSkip.missingMetallib.description)
             return
         }
         guard case .found = LiveInferenceFixtures.locate(modelID) else {
-            Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(modelID).description)")
+            LiveInferenceFixtures.recordUnavailable(
+                LiveFixtureSkip.modelNotInCache(modelID).description)
             return
         }
         LiveInferenceFixtures.applyMemoryBudget(maxBytes: 24 * 1024 * 1024 * 1024)
@@ -217,7 +220,7 @@ struct InferenceLiveTests {
                 memoryBudgetBytes: 64 * 1024 * 1024 * 1024
             )
         } catch let skip as LiveFixtureSkip {
-            Issue.record("skipped: \(skip.description)")
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge
@@ -270,7 +273,7 @@ struct InferenceLiveTests {
         // metallib (mlx-swift-lm pulls in MLX initialization on tokenizer
         // load) and a real model on disk.
         guard LiveInferenceFixtures.ensureMetallibColocated() != nil else {
-            Issue.record("skipped: \(LiveFixtureSkip.missingMetallib.description)")
+            LiveInferenceFixtures.recordUnavailable(LiveFixtureSkip.missingMetallib.description)
             return
         }
         LiveInferenceFixtures.applyMemoryBudget()
@@ -287,7 +290,8 @@ struct InferenceLiveTests {
                 modelID = LiveInferenceFixtures.tinyModelFallbackID
                 directory = url
             case .missing(let id):
-                Issue.record("skipped: \(LiveFixtureSkip.modelNotInCache(id).description)")
+                LiveInferenceFixtures.recordUnavailable(
+                    LiveFixtureSkip.modelNotInCache(id).description)
                 return
             }
         }

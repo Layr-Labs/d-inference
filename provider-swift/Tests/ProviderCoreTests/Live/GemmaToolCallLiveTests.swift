@@ -105,7 +105,8 @@ struct GemmaToolCallLiveTests {
     func realTemplateRendersSingleBrace() async throws {
         guard let dir = ModelScanner.resolveLocalPath(modelID: LiveInferenceFixtures.gemmaModelID)
         else {
-            Issue.record("gemma model not in local cache")
+            LiveInferenceFixtures.recordUnavailable(
+                LiveFixtureSkip.modelNotInCache(LiveInferenceFixtures.gemmaModelID).description)
             return
         }
         let tokenizer = try await LocalTokenizerLoader().load(from: dir)
@@ -145,7 +146,7 @@ struct GemmaToolCallLiveTests {
                 memoryBudgetBytes: 64 * 1024 * 1024 * 1024
             )
         } catch let skip as LiveFixtureSkip {
-            Issue.record("skipping: \(skip)")
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge
@@ -213,7 +214,7 @@ struct GemmaToolCallLiveTests {
                 memoryBudgetBytes: 64 * 1024 * 1024 * 1024,
                 defaultMaxTokens: 96)
         } catch let skip as LiveFixtureSkip {
-            Issue.record("skipping: \(skip)")
+            LiveInferenceFixtures.recordUnavailable(skip.description)
             return
         }
         let bridge = loaded.bridge

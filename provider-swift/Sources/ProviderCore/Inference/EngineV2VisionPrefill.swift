@@ -49,6 +49,20 @@
 // oversized media, or an intentionally unsupported family/media pairing) keep
 // their 4xx mapping and are not refusals.
 //
+// FAIL-LOUD REQUIRES SURVIVING (v0.8.10): a refusal contract is only worth
+// what the process is worth, and MLX's default error handler is `fatalError`
+// — a C++ fault under this file used to kill the daemon outright, with every
+// co-batched request on it. Two changes close that:
+//
+//   1. `prepare` runs under `MLX.withError`, so an MLX fault becomes a Swift
+//      throw the catch arms above already handle (one failed request, not one
+//      dead provider).
+//   2. The Qwen tower is driven ONE IMAGE AT A TIME and each image is admitted
+//      against `MTLDevice.maxBufferLength` first (`VisionTowerBudget`), so the
+//      dominant fault — the tower's dense `[1, N, N]` attention mask growing
+//      quadratically in the request's TOTAL patch count — is neither produced
+//      nor left for the allocator to discover. See `EngineV2VisionTowerRun`.
+//
 // BACKEND NOTE: CBv2 multimodal prefill requires a KV backend whose layer
 // caches AFFIRM `CBv2MultimodalSpanCapableCache.honorsSpanMaskContexts`;
 // one that does not vouch rejects at submit with
@@ -122,6 +136,26 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
     /// A vision feature has a non-positive soft-token length.
     case invalidFeatureLength(
         kind: EngineV2VisionPrefill.SpanKind, mediaIndex: Int, length: Int)
+    /// A processor grid has a non-positive or unrepresentable patch count, so
+    /// its pixel rows cannot be located in the packed tensor.
+    case invalidVisionGrid(mediaIndex: Int)
+    /// The processor's grids do not tile its packed pixel tensor exactly.
+    /// Slicing on that disagreement would feed one image's pixels through
+    /// another image's grid, so the prefill refuses instead.
+    case visionPixelRunMismatch(expected: Int, actual: Int)
+    /// The vision tower's projected activation would exceed what this GPU can
+    /// allocate, predicted from the processor's grids BEFORE any tower work.
+    /// Device-dependent, so it refuses retriably: a machine with a larger
+    /// `MTLDevice.maxBufferLength` can serve the same request. The detail is
+    /// built from integers and literals only (`VisionTowerBudget`).
+    case towerBudgetExceeded(String)
+    /// MLX refused an allocation the vision tower asked for. Carries only the
+    /// two integers MLX itself reported — never its message — so the enum's
+    /// content-safe-by-construction invariant survives a foreign fault.
+    case towerAllocationRefused(requestedBytes: UInt64, limitBytes: UInt64)
+    /// MLX raised a fault the tower could not attribute to an allocation.
+    /// Content-free by construction: the stage name is a literal.
+    case towerFault(stage: String)
 
     var description: String {
         switch self {
@@ -148,6 +182,18 @@ enum EngineV2VisionPrefillError: Error, CustomStringConvertible {
         case .invalidFeatureLength(let kind, let index, let length):
             return "engine_v2 media prefill: \(kind.noun) \(index) produced an invalid "
                 + "soft-token count \(length)"
+        case .invalidVisionGrid(let index):
+            return "engine_v2 media prefill: image \(index) has an unusable patch grid"
+        case .visionPixelRunMismatch(let expected, let actual):
+            return "engine_v2 media prefill: image grids cover \(actual) of \(expected) "
+                + "packed pixel rows"
+        case .towerBudgetExceeded(let detail):
+            return "engine_v2 media prefill: \(detail)"
+        case .towerAllocationRefused(let requested, let limit):
+            return "engine_v2 media prefill: the vision tower asked MLX for \(requested) B "
+                + "in one buffer, above this GPU's \(limit) B limit"
+        case .towerFault(let stage):
+            return "engine_v2 media prefill: MLX raised a fault during \(stage)"
         }
     }
 }
@@ -247,134 +293,224 @@ public enum EngineV2VisionPrefill {
         // rasterizes its frames; no plaintext file exists to clean up.
         let userInput = try await MediaIngest.buildUserInput(
             from: request, reasoningEffort: reasoningEffort)
+        let towerLimits = VisionTowerBudget.liveLimits()
         return try await container.perform(nonSendable: userInput) { ctx, userInput in
-            let lmInput = try await ctx.processor.prepare(input: userInput)
-            guard lmInput.image != nil || lmInput.video != nil else {
-                throw EngineV2VisionPrefillError.noProcessedMedia
+            // MLX's DEFAULT error handler is `fatalError`. A C++ fault raised
+            // anywhere under this closure — most consequentially an allocation
+            // the Metal allocator refuses because it exceeds
+            // `MTLDevice.maxBufferLength` — therefore used to kill the whole
+            // provider process, taking every co-batched request with it and
+            // leaving a stale pid file behind (v0.8.7, 8 crashes in 9 hours on
+            // one node). `withError` installs a task-local handler for the
+            // duration of the prefill, so the same fault becomes a Swift throw
+            // that the scheduler's existing catch arms turn into one failed
+            // request. It is the LAST line of defence: `VisionTowerBudget`
+            // refuses the predictable cases deterministically, up front.
+            do {
+                return try await MLX.withError {
+                    try await Self.buildSubmission(
+                        ctx: ctx, userInput: userInput, towerLimits: towerLimits)
+                }
+            } catch let mlxError as MLX.MLXError {
+                throw Self.visionPrefillError(for: mlxError)
             }
-
-            // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
-            // token array only.
-            let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
-
-            if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
-                // Video remains fail-closed until a real processor/output
-                // representation canary pins temporal packing end-to-end.
-                guard lmInput.video == nil else {
-                    throw EngineV2VisionPrefillError.unsupportedMedia(
-                        "Qwen35MoE video media is not production-proven")
-                }
-                guard let image = lmInput.image else {
-                    throw EngineV2VisionPrefillError.noProcessedMedia
-                }
-                let features = try wrapper.visionFeatures(
-                    imagePixels: image.pixels, imageGrids: image.frames)
-                let imageFeatures = features.ordered.map(\.features)
-                guard !imageFeatures.isEmpty else {
-                    throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
-                }
-                let carved = try carveSpans(
-                    tokens: promptTokens,
-                    imagePlaceholderId: wrapper.imagePlaceholderTokenId,
-                    imageSpanLengths: imageFeatures.map { $0.dim(1) },
-                    videoPlaceholderId: nil,
-                    videoSpanLengths: [])
-                let position = try wrapper.positionResult(
-                    tokens: lmInput.text.tokens,
-                    imageGrids: image.frames,
-                    attentionMask: lmInput.text.mask)
-                eval(imageFeatures + [position.promptPositionIds])
-                return PreparedSubmission(
-                    promptTokens: promptTokens,
-                    spans: carved.map(\.span),
-                    embeddings: imageFeatures,
-                    attention: .causal,
-                    positionState: CBv2PositionState(
-                        promptPositionIds: position.promptPositionIds,
-                        decodeDeltas: position.decodeState.deltas),
-                    mediaKind: .image)
-            }
-
-            guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
-                throw EngineV2VisionPrefillError.unsupportedVLM(
-                    String(describing: type(of: ctx.model)))
-            }
-
-            // Vision tower + multimodal projector — the SAME arrays the
-            // wrapper's own `prepare` scatters: one per image, one per
-            // sampled video frame (the video seam applies the per-frame
-            // video patch budget, ~70 soft tokens per frame vs 280 per
-            // image).
-            var imageFeatures: [MLXArray] = []
-            if let image = lmInput.image {
-                imageFeatures = wrapper.perImageVisionFeatures(
-                    pixels: image.pixels, frames: image.frames)
-                guard !imageFeatures.isEmpty else {
-                    throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
-                }
-            }
-            var videoFeatures: [MLXArray] = []
-            var videoPlaceholderId: Int?
-            if let video = lmInput.video {
-                guard let videoId = wrapper.videoPlaceholderTokenId else {
-                    throw EngineV2VisionPrefillError.videoPlaceholderUnavailable
-                }
-                videoPlaceholderId = videoId
-                videoFeatures = wrapper.perVideoFrameVisionFeatures(
-                    pixels: video.pixels, frames: video.frames)
-                guard !videoFeatures.isEmpty else {
-                    throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
-                }
-            }
-
-            // A kind's placeholder id is watched ONLY when that kind has
-            // features — mirroring the processor, which expands a
-            // placeholder only when it produced the matching pixels (a
-            // stray placeholder id of an absent kind stays an ordinary
-            // embedded token on both paths).
-            let carved = try carveSpans(
-                tokens: promptTokens,
-                imagePlaceholderId: imageFeatures.isEmpty
-                    ? nil : wrapper.imagePlaceholderTokenId,
-                imageSpanLengths: imageFeatures.map { $0.dim(1) },
-                videoPlaceholderId: videoPlaceholderId,
-                videoSpanLengths: videoFeatures.map { $0.dim(1) })
-
-            // Pair prompt-ordered spans back to their features. `carveSpans`
-            // consumed each kind's features strictly in prompt order, so
-            // walking its output with per-kind cursors reproduces the exact
-            // pairing (interleaved image/video requests keep their
-            // interleave; the engine receives spans and embeddings as
-            // parallel arrays).
-            var embeddings: [MLXArray] = []
-            embeddings.reserveCapacity(carved.count)
-            var imageCursor = 0
-            var videoCursor = 0
-            for entry in carved {
-                switch entry.kind {
-                case .image:
-                    embeddings.append(imageFeatures[imageCursor])
-                    imageCursor += 1
-                case .video:
-                    embeddings.append(videoFeatures[videoCursor])
-                    videoCursor += 1
-                }
-            }
-
-            // Materialize the tower output HERE — on the request's task,
-            // under container isolation — not lazily on the engine's step
-            // thread (where the fused tower graph would stall every
-            // co-batched request's decode step for the duration).
-            eval(embeddings)
-            return PreparedSubmission(
-                promptTokens: promptTokens,
-                spans: carved.map(\.span),
-                embeddings: embeddings,
-                attention: .bidirectionalSpans,
-                positionState: nil,
-                mediaKind: lmInput.video == nil
-                    ? .image : (lmInput.image == nil ? .video : .mixed))
         }
+    }
+
+    /// Run the processor, then dispatch to the loaded family's builder. Runs
+    /// under the container's serial isolation, with MLX faults routed into
+    /// Swift throws by the caller.
+    private static func buildSubmission(
+        ctx: ModelContext,
+        userInput: UserInput,
+        towerLimits: VisionTowerBudget.Limits
+    ) async throws -> PreparedSubmission {
+        let lmInput = try await ctx.processor.prepare(input: userInput)
+        guard lmInput.image != nil || lmInput.video != nil else {
+            throw EngineV2VisionPrefillError.noProcessedMedia
+        }
+
+        // [1, L] → [Int]. Forces evaluation of the (tiny, host-built)
+        // token array only.
+        let promptTokens = lmInput.text.tokens.asArray(Int32.self).map(Int.init)
+
+        if let wrapper = ctx.model as? MLXVLM.Qwen35MoE {
+            return try buildQwenSubmission(
+                wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens,
+                towerLimits: towerLimits)
+        }
+        guard let wrapper = ctx.model as? MLXVLM.Gemma4 else {
+            throw EngineV2VisionPrefillError.unsupportedVLM(
+                String(describing: type(of: ctx.model)))
+        }
+        return try buildGemmaSubmission(
+            wrapper: wrapper, lmInput: lmInput, promptTokens: promptTokens)
+    }
+
+    /// Qwen3-VL: causal visual tokens, M-RoPE position state, and a vision
+    /// tower driven ONE IMAGE AT A TIME (see `qwenPerImageVisionFeatures`).
+    private static func buildQwenSubmission(
+        wrapper: MLXVLM.Qwen35MoE,
+        lmInput: LMInput,
+        promptTokens: [Int],
+        towerLimits: VisionTowerBudget.Limits
+    ) throws -> PreparedSubmission {
+        // Video remains fail-closed until a real processor/output
+        // representation canary pins temporal packing end-to-end.
+        guard lmInput.video == nil else {
+            throw EngineV2VisionPrefillError.unsupportedMedia(
+                "Qwen35MoE video media is not production-proven")
+        }
+        guard let image = lmInput.image, let grids = image.frames, !grids.isEmpty else {
+            throw EngineV2VisionPrefillError.noProcessedMedia
+        }
+        let imageFeatures = try qwenPerImageVisionFeatures(
+            wrapper: wrapper, pixels: image.pixels, grids: grids, towerLimits: towerLimits)
+        let carved = try carveSpans(
+            tokens: promptTokens,
+            imagePlaceholderId: wrapper.imagePlaceholderTokenId,
+            imageSpanLengths: imageFeatures.map { $0.dim(1) },
+            videoPlaceholderId: nil,
+            videoSpanLengths: [])
+        let position = try wrapper.positionResult(
+            tokens: lmInput.text.tokens,
+            imageGrids: grids,
+            attentionMask: lmInput.text.mask)
+        // The features are already materialized per image; only the position
+        // ids are still lazy here.
+        eval(position.promptPositionIds)
+        return PreparedSubmission(
+            promptTokens: promptTokens,
+            spans: carved.map(\.span),
+            embeddings: imageFeatures,
+            attention: .causal,
+            positionState: CBv2PositionState(
+                promptPositionIds: position.promptPositionIds,
+                decodeDeltas: position.decodeState.deltas),
+            mediaKind: .image)
+    }
+
+    /// Gemma 4: bidirectional span masks, no position state, and a SigLIP
+    /// tower whose own seam already forwards one image (or one sampled video
+    /// frame) at a time with a fixed per-image patch count.
+    private static func buildGemmaSubmission(
+        wrapper: MLXVLM.Gemma4,
+        lmInput: LMInput,
+        promptTokens: [Int]
+    ) throws -> PreparedSubmission {
+        // Vision tower + multimodal projector — the SAME arrays the
+        // wrapper's own `prepare` scatters: one per image, one per
+        // sampled video frame (the video seam applies the per-frame
+        // video patch budget, ~70 soft tokens per frame vs 280 per
+        // image).
+        var imageFeatures: [MLXArray] = []
+        if let image = lmInput.image {
+            imageFeatures = wrapper.perImageVisionFeatures(
+                pixels: image.pixels, frames: image.frames)
+            guard !imageFeatures.isEmpty else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .image)
+            }
+        }
+        var videoFeatures: [MLXArray] = []
+        var videoPlaceholderId: Int?
+        if let video = lmInput.video {
+            guard let videoId = wrapper.videoPlaceholderTokenId else {
+                throw EngineV2VisionPrefillError.videoPlaceholderUnavailable
+            }
+            videoPlaceholderId = videoId
+            videoFeatures = wrapper.perVideoFrameVisionFeatures(
+                pixels: video.pixels, frames: video.frames)
+            guard !videoFeatures.isEmpty else {
+                throw EngineV2VisionPrefillError.emptyVisionFeatures(kind: .video)
+            }
+        }
+
+        // A kind's placeholder id is watched ONLY when that kind has
+        // features — mirroring the processor, which expands a
+        // placeholder only when it produced the matching pixels (a
+        // stray placeholder id of an absent kind stays an ordinary
+        // embedded token on both paths).
+        let carved = try carveSpans(
+            tokens: promptTokens,
+            imagePlaceholderId: imageFeatures.isEmpty
+                ? nil : wrapper.imagePlaceholderTokenId,
+            imageSpanLengths: imageFeatures.map { $0.dim(1) },
+            videoPlaceholderId: videoPlaceholderId,
+            videoSpanLengths: videoFeatures.map { $0.dim(1) })
+
+        // Pair prompt-ordered spans back to their features. `carveSpans`
+        // consumed each kind's features strictly in prompt order, so
+        // walking its output with per-kind cursors reproduces the exact
+        // pairing (interleaved image/video requests keep their
+        // interleave; the engine receives spans and embeddings as
+        // parallel arrays).
+        var embeddings: [MLXArray] = []
+        embeddings.reserveCapacity(carved.count)
+        var imageCursor = 0
+        var videoCursor = 0
+        for entry in carved {
+            switch entry.kind {
+            case .image:
+                embeddings.append(imageFeatures[imageCursor])
+                imageCursor += 1
+            case .video:
+                embeddings.append(videoFeatures[videoCursor])
+                videoCursor += 1
+            }
+        }
+
+        // Materialize the tower output HERE — on the request's task,
+        // under container isolation — not lazily on the engine's step
+        // thread (where the fused tower graph would stall every
+        // co-batched request's decode step for the duration).
+        eval(embeddings)
+        return PreparedSubmission(
+            promptTokens: promptTokens,
+            spans: carved.map(\.span),
+            embeddings: embeddings,
+            attention: .bidirectionalSpans,
+            positionState: nil,
+            mediaKind: lmInput.video == nil
+                ? .image : (lmInput.image == nil ? .video : .mixed))
+    }
+
+    /// Translate an MLX fault into the prefill's content-safe vocabulary.
+    ///
+    /// MLX's message is produced entirely by its own C++ (shapes and byte
+    /// counts; no request data is ever interpolated into it), but the
+    /// `EngineV2VisionPrefillError` contract is that a case is content-safe
+    /// BY CONSTRUCTION, not by trusting a foreign string. So the allocation
+    /// refusal — the one MLX fault an operator actually needs numbers for —
+    /// carries the two integers MLX reported and nothing else, and every
+    /// other fault degrades to a stage label.
+    static func visionPrefillError(for error: MLX.MLXError) -> EngineV2VisionPrefillError {
+        guard case .caught(let message) = error else {
+            return .towerFault(stage: "vision prefill")
+        }
+        if message.contains("[metal::malloc]"),
+            let (requested, limit) = firstTwoIntegers(in: message)
+        {
+            return .towerAllocationRefused(requestedBytes: requested, limitBytes: limit)
+        }
+        return .towerFault(stage: "vision prefill")
+    }
+
+    /// The first two decimal integer runs in `text`, or nil.
+    static func firstTwoIntegers(in text: String) -> (UInt64, UInt64)? {
+        var found: [UInt64] = []
+        var current = ""
+        for character in text {
+            if character.isASCII, character.isNumber {
+                current.append(character)
+                continue
+            }
+            if let value = UInt64(current) { found.append(value) }
+            current = ""
+            if found.count == 2 { break }
+        }
+        if found.count < 2, let value = UInt64(current) { found.append(value) }
+        guard found.count == 2 else { return nil }
+        return (found[0], found[1])
     }
 
     /// Carve one span per image and per sampled video frame out of the

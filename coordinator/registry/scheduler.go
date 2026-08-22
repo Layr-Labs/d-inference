@@ -19,7 +19,7 @@ const (
 	slotStatePenaltyIdleShutdown = 20_000.0
 
 	// Penalty constants. Phase 3 raised queueDepthPenaltyMs (1000→3000),
-	// totalPendingPenaltyMs (250→750), and nearTieCostWindowMs (750→2500).
+	// totalPendingPenaltyMs (250→750), and nearTieCostWindowMs (750→3000).
 	// The old values let a fast provider with 1-2 in-flight requests
 	// outscore an idle slow provider, because the per-request decode-cost
 	// gap (~3-10 s) dwarfed the queue penalty (~1 s/request). The new

@@ -26,8 +26,8 @@ func setThermalState(t *testing.T, p *Provider, state string) {
 }
 
 // reserveAndRelease routes one request and immediately releases the reservation
-// so the fleet is byte-for-byte identical on the next call. Returns the winning
-// provider ID, or "" when nothing was selected.
+// so every input the cost function reads is identical on the next call. Returns
+// the winning provider ID, or "" when nothing was selected.
 func reserveAndRelease(reg *Registry, model string, i int) string {
 	pr := &PendingRequest{
 		RequestID:          fmt.Sprintf("thermal-req-%d", i),
@@ -45,10 +45,12 @@ func reserveAndRelease(reg *Registry, model string, i int) string {
 
 // A `fair` machine costs 2s more than an identical `nominal` peer, which is
 // inside nearTieCostWindowMs (3s). Both therefore enter the near-tie set, tie on
-// queue depth and pending count, and are spread randomly — so `fair` alone
-// costs an otherwise-equal machine no traffic. This is the claim the provider
-// dashboard makes; if the penalty is ever raised past the tie window, the
-// dashboard is lying and this test must fail.
+// queue depth and pending count, and are spread randomly — so `fair` alone costs
+// an otherwise-equal WARM machine no dispatches. (It is not free everywhere: the
+// warm-pool preload ranks cold candidates by strict score with no tie window, so
+// `fair` loses a pre-warm tie-break by 250 points. The dashboard says both.)
+// This is the claim the provider dashboard makes; if the penalty is ever raised
+// past the tie window, the dashboard is lying and this test must fail.
 func TestThermalFairKeepsCompetingWithNominalPeer(t *testing.T) {
 	if thermalPenaltyFairMs > nearTieCostWindowMs {
 		t.Fatalf("thermalPenaltyFairMs (%.0f) exceeds nearTieCostWindowMs (%.0f): "+
@@ -75,7 +77,8 @@ func TestThermalFairKeepsCompetingWithNominalPeer(t *testing.T) {
 	}
 	// Random spread across two equivalent candidates is ~50/50; anything above
 	// a third proves `fair` did not drop out of contention. The bound is loose
-	// enough that flakes are not credible (a 30% floor is >8 sigma at p=0.5).
+	// enough that flakes are not credible: at p=0.5 over 400 trials, sigma is
+	// 10, so the 133-win floor sits ~6.7 sigma below the mean.
 	if wins["warm"] < trials/3 {
 		t.Fatalf("fair provider won %d/%d — a %.0fms penalty inside the %.0fms "+
 			"near-tie window must not push it out of the random spread",

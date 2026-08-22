@@ -44,13 +44,13 @@ The public wrapper `ReserveProvider` (`scheduler.go:199-205`) discards the decis
 | `ModelTooLargeRejections` | Providers whose memory can never fit the model (permanent) |
 | `VisionRejections` | Providers that serve the model only as a text-only build when vision is required |
 
-The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`scheduler.go:427-432`); ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then uniform random choice (`scheduler.go:448-458`).
+The lowest-cost candidate wins. Candidates within `nearTieCostWindowMs` (`3_000` ms) of the best are considered tied (`selectRoutingCandidate`, `scheduler.go:878-946`); ties are broken by lowest `effectiveQueue`, then lowest `totalPending`, then uniform random choice.
 
 After selection, `ReserveProviderEx` re-takes the provider lock and runs `providerCanAdmitLocked` (`scheduler.go:1029-1050`) to re-apply the routing gates and capacity/slot-state checks. If the provider's state changed between snapshot and reservation, the selection is rejected and the caller may retry.
 
 ## Structural gates
 
-Before a provider becomes a candidate it must pass `providerPassesRoutingGatesLocked` (`scheduler.go:598-648`). Gates are evaluated in this order:
+Before a provider becomes a candidate it must pass `providerPassesRoutingGatesLocked` (`scheduler.go:1099`). Gates are evaluated in this order:
 
 1. Catalog membership — advertises an allowed build of the model (`providerServesCatalogModelLocked`).
 2. Dispatch-load cooldown — skip a provider-model pair that recently failed to load with "insufficient memory" (`dispatchLoadCooldownActiveLocked`).
@@ -63,11 +63,11 @@ Before a provider becomes a candidate it must pass `providerPassesRoutingGatesLo
 9. Challenge freshness — `LastChallengeVerified` within `challengeFreshnessMaxAge` (6 minutes).
 10. Trait eligibility — `template_render_ok=false` fences every shape; capability version floors are trait-scoped (tools-only today).
 
-The same gate set is used by `QuickCapacityCheck` (`scheduler.go:1079-1193`) so preflight capacity reports never drift from actual dispatch behavior.
+The same gate set is used by `QuickCapacityCheck` (`scheduler.go:2115`) so preflight capacity reports never drift from actual dispatch behavior.
 
 ## Cost function
 
-`buildCandidateWithReason` (`scheduler.go:802-894`) computes the per-candidate cost:
+`buildCandidateWithReason` (`scheduler.go:1515`) computes the per-candidate cost:
 
 ```text
 costMs = statePenalty
@@ -115,15 +115,28 @@ degrees: engage at 45 C, release at 40 C. See `../../provider/fan-control.md`.)
 
 The coordinator consumes the four states as follows:
 
-| State | Routing | Base rewards |
-|---|---|---|
-| `nominal` | No penalty | Eligible |
-| `fair` | `+2_000` ms of cost. Within `nearTieCostWindowMs` (`3_000` ms), so an otherwise-equal machine still enters the near-tie set and is spread by queue depth and randomness rather than losing on cost | Eligible |
-| `serious` | `+8_000` ms of cost. Exceeds the near-tie window, so it loses to an otherwise-equal cooler peer. Also `-1000` on the warm-pool preload score (`warm_pool_controller.go:738-745`, `-250` at `fair`) | Eligible |
-| `critical` | Excluded outright — from routing candidates (`scheduler.go:1524`), from the transient-capacity accounting (`scheduler.go:2224`), and from cold-spill eligibility (`cold_dispatch.go:96`) | Ineligible (`baserewards/engine.go:233`) |
+| State | Dispatch cost | Warm-pool preload score | Base rewards |
+|---|---|---|---|
+| `nominal` | No penalty | No penalty | Eligible |
+| `fair` | `+2_000` ms. Within `nearTieCostWindowMs` (`3_000` ms), so an otherwise-equal warm machine still enters the near-tie set and is spread by queue depth and randomness rather than losing on cost | `-250` | Eligible |
+| `serious` | `+8_000` ms. Exceeds the near-tie window, so it loses to an otherwise-equal cooler peer | `-1000` | Eligible |
+| `critical` | Excluded outright — from routing candidates (`scheduler.go:1524`), from the transient-capacity accounting (`scheduler.go:2224`), and from cold-spill eligibility (`cold_dispatch.go:96`) | Excluded (`warm_pool_controller.go:697`) | Ineligible (`baserewards/engine.go:233`) |
 
 Only `critical` is a gate. `fair` and `serious` are cost terms that shift
 preference within an eligible fleet, and neither affects earnings.
+
+Note the asymmetry between the two score columns. Dispatch ranking has a
+near-tie window, so `+2_000` ms of thermal cost is absorbed. The warm-pool
+preload sorts `eligibleCold` by strict descending score with no tie window
+(`warm_pool_controller.go:609`), so its `-250` always decides a tie between two
+otherwise-identical cold machines. A `fair` machine therefore keeps its share of
+dispatches but loses pre-warm coin flips.
+
+One dispatch-side exception: when cache-aware routing is enabled and a near-tie
+candidate carries a cache discount, `selectRoutingCandidate` resolves the tie by
+strict minimum adjusted cost instead of spreading randomly
+(`scheduler.go:917-941`), and the 2s thermal delta decides it. The mode defaults
+to `CacheRoutingOff` (`registry.go:1600`).
 
 ### Effective decode TPS (routing cost)
 

@@ -162,10 +162,13 @@ demand-driven model loading, see [`operations/scheduling.md`](operations/schedul
 > **Outdated claim corrected:** the old `ARCHITECTURE.md` described routing as a
 > multiplicative score
 > `(1-load) * decode_tps * trust_multiplier * reputation * warm_model_bonus * health_factor`.
-> That formula survives only in the legacy `ScoreProvider` helper
-> (`coordinator/registry/registry.go:3048-3182`), which is used by tests and
-> benchmarks; production dispatch uses `ReserveProviderEx` and
-> `selectBestCandidateLockedFull`.
+> No such score exists any more — the `ScoreProvider` helper it lived in has been
+> deleted. Dispatch ranks candidates by estimated completion cost in
+> milliseconds (`ReserveProviderEx` → `selectBestCandidateLockedFull` →
+> `buildCandidateWithReason`); see
+> [`operations/routing.md`](operations/routing.md#cost-function). There are no
+> multiplicative weights or "health factors" anywhere on the routing path, so
+> operator-facing copy must never quote one.
 
 ## Billing and pricing
 

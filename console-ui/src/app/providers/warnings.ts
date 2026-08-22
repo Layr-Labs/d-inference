@@ -128,9 +128,9 @@ export function computeWarnings(
   }
 
   // Trust below the routing threshold. In production the coordinator's
-  // MinTrustLevel is "hardware", so anything below that gets ZERO requests
-  // (not just a reduced multiplier). We surface it as blocking and tell the
-  // user how to upgrade.
+  // MinTrustLevel is "hardware", so anything below that gets ZERO requests —
+  // it is a gate, not a cost penalty. Surface it as blocking and tell the user
+  // how to upgrade.
   if (
     p.trust_level !== "hardware" &&
     p.status !== "offline" &&
@@ -203,16 +203,19 @@ export function computeWarnings(
       severity: "info",
       title: "Thermal state fair (+2s routing cost)",
       detail:
-        "Thermal state comes from macOS, not a temperature threshold Darkbloom sets — a desktop under sustained load often reads fair while running cool. The 2 seconds of routing cost stay inside the 3-second near-tie window, so an otherwise-equal machine still competes for the same traffic, and base rewards are unaffected.",
+        "Thermal state comes from macOS, not a temperature threshold Darkbloom sets — a desktop under sustained load often reads fair while running cool. The 2 seconds of routing cost stay inside the 3-second near-tie window, so a warm machine keeps competing for the same requests, and base rewards are unaffected. It does lose a pre-warm tie-break against an equally cold, cooler machine.",
     });
   }
 
-  if ((p.system_metrics?.memory_pressure ?? 0) > 0.9) {
+  // Fire at the base-reward cutoff (baserewards/engine.go), not above it: at
+  // 0.8 the machine has already stopped accruing, so warning only past 0.9 hid
+  // a live earnings loss.
+  if ((p.system_metrics?.memory_pressure ?? 0) >= 0.8) {
     out.push({
       id: "memory_pressure_high",
       severity: "degrading",
-      title: "Memory pressure very high",
-      detail: `${(p.system_metrics!.memory_pressure * 100).toFixed(0)}% memory pressure adds up to 4 seconds of routing cost, and 80% or higher stops base rewards from accruing. Close other apps or upgrade RAM.`,
+      title: "Memory pressure very high (base rewards stopped)",
+      detail: `${(p.system_metrics!.memory_pressure * 100).toFixed(0)}% memory pressure adds up to 4 seconds of routing cost, and 80% or higher stops base rewards from accruing entirely. Close other apps or upgrade RAM.`,
     });
   }
 

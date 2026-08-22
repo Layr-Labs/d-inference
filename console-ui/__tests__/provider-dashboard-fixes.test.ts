@@ -86,26 +86,54 @@ describe("fixes ↔ warnings contract", () => {
   // The coordinator ranks providers by additive cost in milliseconds
   // (coordinator/registry/scheduler.go). It has no multiplicative "health
   // factor" or "routing weight" — that scoring model was removed, but the
-  // dashboard kept quoting it ("0.8x health", "0.4x health", "0.05x routing
-  // weight"), which told operators their machine was losing traffic it was not
-  // losing. Pin the copy so the deleted model cannot describe the live one again.
+  // dashboard kept quoting it ("0.8x health", "caps health to 0.1x", "health
+  // factor is zero", "losing routing weight"), which told operators their
+  // machine was losing traffic it was not losing. Pin the copy so the deleted
+  // model cannot describe the live one again. Both orderings matter: the
+  // multiplier led in some strings and trailed in others.
+  const DEAD_SCORING_MODEL = [
+    /\d+(\.\d+)?\s*x\b/i, // 0.8x, 0.05x, 10 x
+    /\bhealth\s+factor\b/i,
+    /\brouting\s+weight\b/i,
+    /\bhealth\s+(?:multiplier|score)\b/i,
+    /\bcaps?\s+health\b/i,
+  ];
+
+  const usesDeadScoringModel = (text: string) =>
+    DEAD_SCORING_MODEL.some((re) => re.test(text));
+
   it("never describes routing with multiplicative weights", () => {
-    const multiplier = /\d+(\.\d+)?x\s+(health|weight|routing)/i;
     const offenders: string[] = [];
 
     for (const { p, ctxOverride } of scenarios) {
       for (const w of computeWarnings(p, ctxOverride ?? ctx)) {
-        if (multiplier.test(w.title) || multiplier.test(w.detail)) {
+        if (usesDeadScoringModel(w.title) || usesDeadScoringModel(w.detail)) {
           offenders.push(`warning ${w.id}`);
         }
       }
     }
     for (const [id, fix] of Object.entries(FIX_TABLE)) {
-      if (multiplier.test(fix.label) || multiplier.test(fix.note ?? "")) {
+      if (usesDeadScoringModel(fix.label) || usesDeadScoringModel(fix.note ?? "")) {
         offenders.push(`fix ${id}`);
       }
     }
 
     expect(offenders).toEqual([]);
+  });
+
+  // Guard the guard: every string this change removed must actually trip it.
+  it("the multiplicative-weight guard catches every string it replaced", () => {
+    const removed = [
+      "Thermal state fair (0.8x health)",
+      "Thermal state serious (0.4x health)",
+      "Backend crashed (0.05x routing weight)",
+      "Backend cold (0.1x weight on cold start)",
+      "95% memory pressure caps health to 0.1x. Close other apps or upgrade RAM.",
+      "Close other apps (or add RAM) — high pressure caps health to 0.1x.",
+      "Health factor is zero; the coordinator will not route work.",
+      "The system is throttling and losing routing weight.",
+      "Backend(s) report a crashed state and score 0.05x.",
+    ];
+    expect(removed.filter((s) => !usesDeadScoringModel(s))).toEqual([]);
   });
 });

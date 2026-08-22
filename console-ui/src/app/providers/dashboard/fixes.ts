@@ -97,7 +97,7 @@ const FIX_TABLE: Record<string, FixAction> = {
   memory_pressure_high: {
     kind: "guidance",
     label: "Free up memory",
-    note: "Close other apps (or add RAM) — pressure at 80% or higher also stops base rewards.",
+    note: "Close other apps (or add RAM) — this machine is not accruing base rewards while pressure stays at 80% or higher.",
   },
   backend_idle_shutdown: {
     kind: "guidance",

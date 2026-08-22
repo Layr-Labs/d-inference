@@ -160,6 +160,35 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "memory_pressure_high")?.severity).toBe("degrading");
   });
 
+  // baserewards/engine.go stops accruing at >= 0.8. Warning only past 0.9 left
+  // a band where the machine silently earned nothing and the dashboard was
+  // clean, so the warning threshold tracks the money cutoff exactly.
+  it("flags memory pressure from the base-reward cutoff, not above it", () => {
+    const atCutoff = computeWarnings(
+      baseProvider({
+        system_metrics: { memory_pressure: 0.8, cpu_usage: 0.1, thermal_state: "nominal" },
+      }),
+      ctx
+    );
+    expect(atCutoff.find((w) => w.id === "memory_pressure_high")?.severity).toBe("degrading");
+
+    const inTheOldGap = computeWarnings(
+      baseProvider({
+        system_metrics: { memory_pressure: 0.85, cpu_usage: 0.1, thermal_state: "nominal" },
+      }),
+      ctx
+    );
+    expect(inTheOldGap.find((w) => w.id === "memory_pressure_high")).toBeDefined();
+
+    const below = computeWarnings(
+      baseProvider({
+        system_metrics: { memory_pressure: 0.79, cpu_usage: 0.1, thermal_state: "nominal" },
+      }),
+      ctx
+    );
+    expect(below.find((w) => w.id === "memory_pressure_high")).toBeUndefined();
+  });
+
   it("flags crashed backend slot as degrading (that model is excluded, the machine is not)", () => {
     const warnings = computeWarnings(
       baseProvider({

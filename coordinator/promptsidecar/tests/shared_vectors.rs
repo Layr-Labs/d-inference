@@ -1,7 +1,7 @@
 use promptsidecar::api::PlanResponse;
 use promptsidecar::contract::{ContractVersions, PromptArtifact, compute_contract_id};
 use promptsidecar::hash;
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -60,7 +60,7 @@ struct ProductionCase {
 fn shared_binary_hash_vectors_match() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/prompt-contract/v1/block_hash_vectors.json");
-    let corpus: Corpus = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let corpus: Corpus = decode_fixture(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(corpus.block_hash_version, "darkbloom-block-chain-v1");
     for vector in corpus.vectors {
         let parent: [u8; 32] = hex::decode(vector.parent_hash).unwrap().try_into().unwrap();
@@ -82,12 +82,32 @@ fn shared_binary_hash_vectors_match() {
 fn shared_contract_vectors_match() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/prompt-contract/v1/contract_vectors.json");
-    let corpus: ContractCorpus = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let corpus: ContractCorpus = decode_fixture(&std::fs::read(path).unwrap()).unwrap();
     for vector in corpus.vectors {
         assert_eq!(
             compute_contract_id(&vector.artifacts, &ContractVersions::default()).unwrap(),
             vector.expected_prompt_contract_id
         );
+    }
+}
+
+#[test]
+fn shared_vector_fixture_schema_version_is_required() {
+    for encoded in [
+        br#"{"vectors":[]}"#.as_slice(),
+        br#"{"schema_version":2,"vectors":[]}"#.as_slice(),
+    ] {
+        assert!(decode_fixture::<ContractCorpus>(encoded).is_err());
+    }
+}
+
+fn decode_fixture<T: DeserializeOwned>(encoded: &[u8]) -> Result<T, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
+    match value.get("schema_version").and_then(serde_json::Value::as_u64) {
+        Some(1) => serde_json::from_value(value).map_err(|error| error.to_string()),
+        Some(version) => Err(format!("unsupported fixture schema version {version}")),
+        None => Err("fixture schema version is missing".to_owned()),
     }
 }
 

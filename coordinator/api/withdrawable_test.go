@@ -303,6 +303,131 @@ func TestAdminRewardRejectsNonAdmin(t *testing.T) {
 	}
 }
 
+func TestAdminBillingRejectsInvalidAmountsWithoutMutation(t *testing.T) {
+	handlers := []struct {
+		name   string
+		path   string
+		handle func(*Server, http.ResponseWriter, *http.Request)
+	}{
+		{name: "credit", path: "/v1/admin/credit", handle: (*Server).handleAdminCredit},
+		{name: "reward", path: "/v1/admin/reward", handle: (*Server).handleAdminReward},
+	}
+	amounts := []struct {
+		name  string
+		value string
+	}{
+		{name: "nan", value: "NaN"},
+		{name: "positive_infinity", value: "+Inf"},
+		{name: "negative_infinity", value: "-Inf"},
+		{name: "zero", value: "0"},
+		{name: "negative", value: "-1"},
+		{name: "sub_micro", value: "0.0000009"},
+		{name: "int64_overflow", value: "9223372036854.776"},
+		{name: "large_finite_overflow", value: "1e308"},
+	}
+
+	for _, handler := range handlers {
+		for _, amount := range amounts {
+			t.Run(handler.name+"/"+amount.name, func(t *testing.T) {
+				srv, st := testBillingServer(t)
+				srv.SetAdminKey("admin-secret")
+				user := seedUser(t, st, "acct-amount-validation", "amount-validation@example.com")
+
+				body := `{"email":"amount-validation@example.com","amount_usd":"` + amount.value + `"}`
+				req := httptest.NewRequest(http.MethodPost, handler.path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer admin-secret")
+				w := httptest.NewRecorder()
+				handler.handle(srv, w, req)
+
+				if w.Code != http.StatusBadRequest {
+					t.Fatalf("got %d, want 400: %s", w.Code, w.Body.String())
+				}
+				var resp struct {
+					Error struct {
+						Type    string `json:"type"`
+						Message string `json:"message"`
+						Code    string `json:"code"`
+					} `json:"error"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if resp.Error.Type != "invalid_request_error" ||
+					resp.Error.Code != "invalid_request_error" ||
+					resp.Error.Message != "amount_usd must be a positive number" {
+					t.Fatalf("unexpected error response: %#v", resp.Error)
+				}
+				if balance := st.GetBalance(user.AccountID); balance != 0 {
+					t.Errorf("balance mutated to %d", balance)
+				}
+				if withdrawable := st.GetWithdrawableBalance(user.AccountID); withdrawable != 0 {
+					t.Errorf("withdrawable balance mutated to %d", withdrawable)
+				}
+				if entries := st.LedgerHistory(user.AccountID); len(entries) != 0 {
+					t.Errorf("ledger mutated with %d entries", len(entries))
+				}
+			})
+		}
+	}
+}
+
+func TestAdminBillingAcceptsPositiveMicroAmounts(t *testing.T) {
+	handlers := []struct {
+		name         string
+		path         string
+		handle       func(*Server, http.ResponseWriter, *http.Request)
+		withdrawable bool
+	}{
+		{name: "credit", path: "/v1/admin/credit", handle: (*Server).handleAdminCredit},
+		{name: "reward", path: "/v1/admin/reward", handle: (*Server).handleAdminReward, withdrawable: true},
+	}
+	amounts := []struct {
+		name         string
+		value        string
+		wantMicroUSD int64
+	}{
+		{name: "exact_minimum", value: "0.000001", wantMicroUSD: 1},
+		{name: "ordinary", value: "1.25", wantMicroUSD: 1_250_000},
+	}
+
+	for _, handler := range handlers {
+		for _, amount := range amounts {
+			t.Run(handler.name+"/"+amount.name, func(t *testing.T) {
+				srv, st := testBillingServer(t)
+				srv.SetAdminKey("admin-secret")
+				user := seedUser(t, st, "acct-finite-amount", "finite-amount@example.com")
+
+				body := `{"email":"finite-amount@example.com","amount_usd":"` + amount.value + `"}`
+				req := httptest.NewRequest(http.MethodPost, handler.path, strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer admin-secret")
+				w := httptest.NewRecorder()
+				handler.handle(srv, w, req)
+
+				if w.Code != http.StatusOK {
+					t.Fatalf("got %d, want 200: %s", w.Code, w.Body.String())
+				}
+				if balance := st.GetBalance(user.AccountID); balance != amount.wantMicroUSD {
+					t.Errorf("balance = %d, want %d", balance, amount.wantMicroUSD)
+				}
+				wantWithdrawable := int64(0)
+				if handler.withdrawable {
+					wantWithdrawable = amount.wantMicroUSD
+				}
+				if withdrawable := st.GetWithdrawableBalance(user.AccountID); withdrawable != wantWithdrawable {
+					t.Errorf("withdrawable balance = %d, want %d", withdrawable, wantWithdrawable)
+				}
+				entries := st.LedgerHistory(user.AccountID)
+				if len(entries) != 1 {
+					t.Fatalf("ledger entries = %d, want 1", len(entries))
+				}
+				if entries[0].AmountMicroUSD != amount.wantMicroUSD {
+					t.Errorf("ledger amount = %d, want %d", entries[0].AmountMicroUSD, amount.wantMicroUSD)
+				}
+			})
+		}
+	}
+}
+
 // --- Admin reward → withdraw end-to-end ---
 
 func TestAdminRewardThenWithdraw(t *testing.T) {

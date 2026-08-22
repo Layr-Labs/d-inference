@@ -4299,6 +4299,17 @@ type AggregateModel struct {
 	Attestation       *AttestationSummary `json:"attestation,omitempty"`
 }
 
+// publicModelProviderEligibleLocked reports whether a provider may contribute
+// models to the public model list. Caller must hold r.mu before p.mu; keeping
+// that lock order lets ListModels and other public metadata readers share the
+// exact same provider-level eligibility gates without racing live updates.
+func (r *Registry) publicModelProviderEligibleLocked(p *Provider) bool {
+	if p.Status == StatusOffline || p.Status == StatusUntrusted || p.PrivateOnly {
+		return false
+	}
+	return r.trustMeetsMinimum(p.TrustLevel) && r.providerSupportsPrivateTextLocked(p)
+}
+
 // ListModels returns deduplicated models from all online providers.
 func (r *Registry) ListModels() []AggregateModel {
 	r.mu.RLock()
@@ -4321,30 +4332,20 @@ func (r *Registry) ListModels() []AggregateModel {
 	agg := make(map[string]*modelAgg)
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
+		eligible := r.publicModelProviderEligibleLocked(p)
 		trust := p.TrustLevel
 		attested := p.Attested
 		attestResult := p.AttestationResult
-		privateReady := r.providerSupportsPrivateTextLocked(p)
-		privateOnly := p.PrivateOnly
 		// p.Models is replaced copy-on-write by UpdateModelWeightHashes (which
 		// holds only p.mu, not r.mu), so snapshot it here under p.mu rather than
 		// ranging the field after unlock.
-		models := make([]protocol.ModelInfo, len(p.Models))
-		copy(models, p.Models)
+		var models []protocol.ModelInfo
+		if eligible {
+			models = make([]protocol.ModelInfo, len(p.Models))
+			copy(models, p.Models)
+		}
 		p.mu.Unlock()
 
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
-		// Private-only providers serve only their owner's self-route traffic, so
-		// they must not appear in or inflate the public /v1/models aggregation.
-		if privateOnly {
-			continue
-		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
-			continue
-		}
 		for _, m := range models {
 			if !r.modelAllowedByCatalogLocked(m) {
 				continue
@@ -4491,11 +4492,10 @@ func (r *Registry) OwnedModels(accountID string) []AggregateModel {
 }
 
 // ModelCountryCodes returns the sorted, de-duplicated ISO 3166-1 alpha-2
-// country codes of online providers serving the given model. Used to populate
-// the OpenRouter "datacenters" field. Only routing-eligible providers count —
-// the same gates as ListModels (online, meets the minimum trust level, and
-// private-text ready) — so a country whose providers can't actually serve the
-// model is not advertised. Providers without a known location are skipped.
+// country codes of public model providers serving the given model. Used to
+// populate the OpenRouter "datacenters" field. A provider and its advertised
+// model must pass the same status, trust, privacy, private-text, and catalog
+// policy gates as ListModels. Providers without a known location are skipped.
 func (r *Registry) ModelCountryCodes(modelID string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -4503,17 +4503,16 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 	seen := make(map[string]bool)
 	for _, p := range r.providers {
 		p.mu.Lock()
-		status := p.Status
-		trust := p.TrustLevel
-		privateReady := r.providerSupportsPrivateTextLocked(p)
+		eligible := r.publicModelProviderEligibleLocked(p)
 		var cc string
 		if p.Location != nil {
 			cc = strings.ToUpper(strings.TrimSpace(p.Location.CountryCode))
 		}
 		serves := false
-		if cc != "" {
+		if eligible && cc != "" {
 			for i := range p.Models {
-				if p.Models[i].ID == modelID {
+				model := p.Models[i]
+				if model.ID == modelID && r.modelAllowedByCatalogLocked(model) {
 					serves = true
 					break
 				}
@@ -4521,13 +4520,6 @@ func (r *Registry) ModelCountryCodes(modelID string) []string {
 		}
 		p.mu.Unlock()
 		if !serves {
-			continue
-		}
-		// Apply the same routing-eligibility gates as ListModels.
-		if status == StatusOffline || status == StatusUntrusted {
-			continue
-		}
-		if !r.trustMeetsMinimum(trust) || !privateReady {
 			continue
 		}
 		seen[cc] = true

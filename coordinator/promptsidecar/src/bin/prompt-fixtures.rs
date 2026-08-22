@@ -298,17 +298,19 @@ fn manifest_paths(arguments: &Arguments) -> Result<Vec<PathBuf>> {
 }
 
 fn require_case_ids(cases: &[FixtureCase]) -> Result<()> {
-    const REQUIRED: [&str; 12] = [
+    const REQUIRED: [&str; 14] = [
         "tools",
         "nulls",
         "harmony",
         "gemma",
+        "gemma_tool_turn",
         "reasoning_effort",
         "unicode",
         "endpoint_chat_completions",
         "endpoint_completions",
         "endpoint_responses",
         "endpoint_messages",
+        "endpoint_messages_tool_turn",
         "exact_block_multiple",
         "long_prompt",
     ];
@@ -327,6 +329,27 @@ mod tests {
     #[test]
     fn production_model_inventory_is_mandatory() {
         assert!(require_model_manifests(&[]).is_err());
+    }
+
+    #[test]
+    fn tool_turn_case_names_are_mandatory() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/prompt-contract/v1/corpus.json");
+        let corpus: CaseCorpus = read_json(&path).unwrap();
+        assert_eq!(corpus.schema_version, 1);
+        for required in ["gemma_tool_turn", "endpoint_messages_tool_turn"] {
+            let mut cases = corpus.cases.clone();
+            cases
+                .iter_mut()
+                .find(|fixture| fixture.id == required)
+                .unwrap()
+                .id = format!("{required}_substitute");
+            assert_eq!(cases.len(), corpus.cases.len());
+            assert!(
+                require_case_ids(&cases).is_err(),
+                "replacement preserved required case {required}"
+            );
+        }
     }
 
     #[test]

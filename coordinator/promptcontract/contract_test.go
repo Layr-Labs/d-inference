@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -58,7 +59,7 @@ func TestSharedBlockHashVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(encoded, &corpus); err != nil {
+	if err := decodeFixtureCorpus(encoded, &corpus); err != nil {
 		t.Fatal(err)
 	}
 	if corpus.BlockHashVersion != BlockHashVersion {
@@ -102,7 +103,7 @@ func TestSharedContractVectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal(encoded, &corpus); err != nil {
+	if err := decodeFixtureCorpus(encoded, &corpus); err != nil {
 		t.Fatal(err)
 	}
 	for _, fixture := range corpus.Vectors {
@@ -114,6 +115,39 @@ func TestSharedContractVectors(t *testing.T) {
 			t.Fatalf("shared contract vector mismatch: %s != %s", actual, fixture.ExpectedPromptContractID)
 		}
 	}
+}
+
+func TestSharedVectorFixtureSchemaVersionIsRequired(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		encoded string
+	}{
+		{name: "missing", encoded: `{"vectors":[]}`},
+		{name: "unsupported", encoded: `{"schema_version":2,"vectors":[]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var corpus map[string]any
+			if err := decodeFixtureCorpus([]byte(test.encoded), &corpus); err == nil {
+				t.Fatal("fixture schema was accepted")
+			}
+		})
+	}
+}
+
+func decodeFixtureCorpus(encoded []byte, output any) error {
+	var metadata struct {
+		SchemaVersion *uint32 `json:"schema_version"`
+	}
+	if err := json.Unmarshal(encoded, &metadata); err != nil {
+		return err
+	}
+	if metadata.SchemaVersion == nil {
+		return errors.New("fixture schema version is missing")
+	}
+	if *metadata.SchemaVersion != 1 {
+		return fmt.Errorf("unsupported fixture schema version %d", *metadata.SchemaVersion)
+	}
+	return json.Unmarshal(encoded, output)
 }
 
 func TestSharedRequestCorpusCoverage(t *testing.T) {
@@ -147,9 +181,9 @@ func TestSharedRequestCorpusCoverage(t *testing.T) {
 		seen[fixture.ID] = true
 	}
 	for _, required := range []string{
-		"tools", "nulls", "harmony", "gemma", "reasoning_effort", "unicode",
+		"tools", "nulls", "harmony", "gemma", "gemma_tool_turn", "reasoning_effort", "unicode",
 		"endpoint_chat_completions", "endpoint_completions", "endpoint_responses",
-		"endpoint_messages", "exact_block_multiple", "long_prompt",
+		"endpoint_messages", "endpoint_messages_tool_turn", "exact_block_multiple", "long_prompt",
 	} {
 		if !seen[required] {
 			t.Fatalf("shared request fixture %q is missing", required)

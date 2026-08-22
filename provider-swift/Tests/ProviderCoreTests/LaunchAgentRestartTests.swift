@@ -47,6 +47,29 @@ struct LaunchAgentRestartTests {
 
 @Suite("LaunchAgent environment passthrough")
 struct LaunchAgentEnvironmentTests {
+    @Test func forwardsExactRuntimeAllowlist() {
+        let expectedKeys = [
+            "DARKBLOOM_PREFIX_CACHE",
+            "DARKBLOOM_PREFIX_CACHE_DISK_GB",
+            "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS",
+            "DARKBLOOM_MLX_RESOURCE_DEBUG",
+            "DARKBLOOM_CBV2_PAGED_KV",
+            "DARKBLOOM_CBV2_MTP",
+            "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
+            "DARKBLOOM_KV_BACKEND_GUARD",
+            "DARKBLOOM_MLX_CACHE_LIMIT_GB",
+            "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+            "DARKBLOOM_MEM_CAP_FRACTION",
+            "DARKBLOOM_ACTIVATION_RESERVE_GB",
+            "DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT",
+            "DARKBLOOM_NO_UPDATE_CHECK",
+        ]
+        #expect(LaunchAgent.passthroughEnvKeys == expectedKeys)
+
+        let env = Dictionary(uniqueKeysWithValues: expectedKeys.map { ($0, "value-for-\($0)") })
+        #expect(LaunchAgent.passthroughEnvironment(from: env) == env)
+    }
+
     @Test func forwardsAllowlistedNonEmptyVars() {
         let env = ["DARKBLOOM_PREFIX_CACHE": "0", "PATH": "/usr/bin", "HOME": "/Users/x"]
         let out = LaunchAgent.passthroughEnvironment(from: env)
@@ -54,9 +77,13 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }
 
-    @Test func dropsEmptyAndMissingVars() {
+    @Test func dropsEmptyMissingAndUnknownVars() {
         #expect(LaunchAgent.passthroughEnvironment(from: [:]).isEmpty)
-        #expect(LaunchAgent.passthroughEnvironment(from: ["DARKBLOOM_PREFIX_CACHE": ""]).isEmpty)
+        #expect(LaunchAgent.passthroughEnvironment(from: [
+            "DARKBLOOM_PREFIX_CACHE": "",
+            "DARKBLOOM_NOT_A_REAL_SWITCH": "1",
+            "PATH": "/usr/bin",
+        ]).isEmpty)
     }
 
     @Test func forwardsResourceDebugOptOutToDaemon() {
@@ -83,12 +110,14 @@ struct LaunchAgentEnvironmentTests {
         #expect(out == ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "4"])
     }
 
-    @Test func excludesConfigBackedGemmaControlsFromDaemonEnvironment() {
+    @Test func excludesConfigBackedAndBenchmarkControlsFromDaemonEnvironment() {
         let out = LaunchAgent.passthroughEnvironment(from: [
             "DARKBLOOM_PREFIX_CACHE": "0",
             GemmaOptimizationEnvironment.prefillLayer18Key: "poison",
             GemmaOptimizationEnvironment.weightedUnsortKey: "poison",
             GemmaOptimizationEnvironment.safeR1Key: "poison",
+            "DARKBLOOM_ARRIVAL_TOLERANCE_MS": "25",
+            "DARKBLOOM_MTP_VERIFICATION_MODE": "rectangular",
         ])
         #expect(out == ["DARKBLOOM_PREFIX_CACHE": "0"])
     }

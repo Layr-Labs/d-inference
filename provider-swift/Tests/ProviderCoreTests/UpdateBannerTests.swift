@@ -29,16 +29,55 @@ struct UpdateBannerTests {
         #expect(!UpdateBanner.isNewerSemver("0.99.99", than: "1.0.0"))
     }
 
-    @Test("pre-release suffix is stripped before comparison")
-    func preReleaseSuffixStripped() {
-        #expect(!UpdateBanner.isNewerSemver("0.5.0-rc1", than: "0.5.0"))
-        #expect(UpdateBanner.isNewerSemver("0.5.1-rc1", than: "0.5.0"))
+    @Test("stable releases have higher precedence than matching prereleases")
+    func stableReleaseBeatsPrerelease() {
+        #expect(UpdateBanner.isNewerSemver("1.0.0", than: "1.0.0-rc.1"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0-rc.1", than: "1.0.0"))
     }
 
-    @Test("missing parts default to zero")
-    func missingPartsDefaultToZero() {
-        // "0.5" parses to [0, 5] which expands to [0, 5, 0] for comparison.
-        #expect(!UpdateBanner.isNewerSemver("0.5", than: "0.5.0"))
-        #expect(UpdateBanner.isNewerSemver("0.5.1", than: "0.5"))
+    @Test("prereleases use SemVer identifier precedence")
+    func prereleaseOrdering() {
+        let ordered = [
+            "1.0.0-alpha",
+            "1.0.0-alpha.1",
+            "1.0.0-alpha.beta",
+            "1.0.0-beta",
+            "1.0.0-beta.2",
+            "1.0.0-beta.11",
+            "1.0.0-rc.1",
+            "1.0.0-rc.2",
+            "1.0.0",
+        ]
+
+        for pair in zip(ordered, ordered.dropFirst()) {
+            #expect(UpdateBanner.isNewerSemver(pair.1, than: pair.0))
+            #expect(!UpdateBanner.isNewerSemver(pair.0, than: pair.1))
+        }
+    }
+
+    @Test("numeric prerelease identifiers compare numerically")
+    func numericPrereleaseOrdering() {
+        #expect(UpdateBanner.isNewerSemver("1.0.0-rc.10", than: "1.0.0-rc.2"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0-rc.2", than: "1.0.0-rc.10"))
+    }
+
+    @Test("build metadata does not affect precedence")
+    func buildMetadataIgnored() {
+        #expect(!UpdateBanner.isNewerSemver("1.0.0+build.2", than: "1.0.0+build.1"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0", than: "1.0.0+build.1"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0+build.1", than: "1.0.0"))
+        #expect(!UpdateBanner.isNewerSemver(
+            "1.0.0-rc.1+build.2",
+            than: "1.0.0-rc.1+build.1"
+        ))
+    }
+
+    @Test("malformed versions never trigger an update")
+    func malformedVersionsNotNewer() {
+        #expect(!UpdateBanner.isNewerSemver("not-a-version", than: "1.0.0"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0", than: "not-a-version"))
+        #expect(!UpdateBanner.isNewerSemver("1.0", than: "1.0.0"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0", than: "1.0"))
+        #expect(!UpdateBanner.isNewerSemver("1.0.0-rc.01", than: "1.0.0-rc.1"))
     }
 }

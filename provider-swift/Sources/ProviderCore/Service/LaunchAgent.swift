@@ -282,16 +282,27 @@ public enum LaunchAgent: Sendable {
     /// operator's clear verb read another.
     /// `DARKBLOOM_MLX_CACHE_LIMIT_GB` / `DARKBLOOM_MLX_MEMORY_RESERVE_GB`:
     /// the `MLXMemoryGuard` operator knobs (buffer-pool cap and whole-machine
-    /// memory ceiling reserve). The daemon is where they matter — a shell
-    /// export that did not reach launchd would silently no-op in the normal
-    /// `darkbloom start` deployment, leaving the advertised recovery lever
-    /// (e.g. raising the cache cap after the 8 GiB default) foreground-only.
+    /// memory ceiling reserve). `DARKBLOOM_MEM_CAP_FRACTION` /
+    /// `DARKBLOOM_ACTIVATION_RESERVE_GB` likewise tune `UnifiedMemoryCap`.
+    /// These controls only matter in the daemon, so launchd must preserve them.
+    /// Prefix-cache disk/stats tuning, the legacy request-timeout diagnostic
+    /// switch, and the update-check opt-out are also runtime process policy.
+    /// Config-backed and benchmark-only controls are intentionally excluded.
     static let passthroughEnvKeys = [
         "DARKBLOOM_PREFIX_CACHE",
-        "DARKBLOOM_MLX_RESOURCE_DEBUG", "DARKBLOOM_CBV2_PAGED_KV",
-        "DARKBLOOM_CBV2_MTP", "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
+        "DARKBLOOM_PREFIX_CACHE_DISK_GB",
+        "DARKBLOOM_PREFIX_CACHE_STATS_INTERVAL_SECS",
+        "DARKBLOOM_MLX_RESOURCE_DEBUG",
+        "DARKBLOOM_CBV2_PAGED_KV",
+        "DARKBLOOM_CBV2_MTP",
+        "DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS",
         "DARKBLOOM_KV_BACKEND_GUARD",
-        "DARKBLOOM_MLX_CACHE_LIMIT_GB", "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+        "DARKBLOOM_MLX_CACHE_LIMIT_GB",
+        "DARKBLOOM_MLX_MEMORY_RESERVE_GB",
+        "DARKBLOOM_MEM_CAP_FRACTION",
+        "DARKBLOOM_ACTIVATION_RESERVE_GB",
+        "DARKBLOOM_CBV2_LEGACY_REQUEST_TIMEOUT",
+        "DARKBLOOM_NO_UPDATE_CHECK",
     ]
 
     /// Build the daemon `EnvironmentVariables` map from a source environment,

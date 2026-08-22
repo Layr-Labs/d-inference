@@ -6,9 +6,17 @@
 //   - degrading: machine still routable but fewer requests / lower priority
 //   - info: configuration issue worth surfacing (e.g. payout setup)
 //
-// Keep this in sync with coordinator/internal/registry/registry.go scoring
-// rules and FindProviderWithTrust exclusion checks.
+// ROUTING GATES ARE NOT DERIVED HERE. The coordinator reports its own verdict
+// on `p.routing` (see coordinator/registry/routing_diagnostics.go) and
+// `routingWarnings` renders it verbatim. This file only owns the signals the
+// coordinator does not decide: liveness, thermals, memory pressure,
+// reputation, version currency, and payout setup.
+//
+// `legacyRoutingWarnings` is the transitional approximation used when the
+// coordinator predates the `routing` field. It is a strict subset of what the
+// server reports and should be deleted once no deployed coordinator omits it.
 
+import { routingWarnings } from "./routing-blockers";
 import type { MyProvider, MyProvidersResponse } from "./types";
 
 export type WarningSeverity = "blocking" | "degrading" | "info";
@@ -67,14 +75,19 @@ export function computeWarnings(
     });
   }
 
-  if (!p.runtime_verified) {
-    out.push({
-      id: "runtime_unverified",
-      severity: "blocking",
-      title: "Runtime hash mismatch",
-      detail:
-        "Provider runtime hashes do not match the known-good manifest. Reinstall with the latest installer to restore eligibility.",
-    });
+  // The coordinator's own verdict on every routing gate, or a local
+  // approximation when talking to a coordinator that predates it.
+  const serverRouting = routingWarnings(p);
+  const offline = p.status === "offline" || p.status === "never_seen";
+  if (serverRouting) {
+    // An offline machine already has its own warning above; the server's
+    // `offline` blocker would just duplicate it.
+    for (const w of serverRouting) {
+      if (offline && w.id === "routing:offline") continue;
+      out.push(w);
+    }
+  } else {
+    out.push(...legacyRoutingWarnings(p, ctx));
   }
 
   if (
@@ -101,54 +114,6 @@ export function computeWarnings(
       detail:
         "Health factor is zero; the coordinator will not route work. Cool the machine and ensure adequate ventilation.",
     });
-  }
-
-  // Stale attestation challenge: the coordinator excludes providers whose
-  // last challenge is older than `challenge_max_age_seconds` (typically 6 min).
-  if (
-    p.last_challenge_verified &&
-    p.status !== "offline" &&
-    p.status !== "untrusted" &&
-    p.status !== "never_seen"
-  ) {
-    const ageSec = (Date.now() - new Date(p.last_challenge_verified).getTime()) / 1000;
-    if (Number.isFinite(ageSec) && ageSec > (ctx.challenge_max_age_seconds || 360)) {
-      out.push({
-        id: "challenge_stale",
-        severity: "blocking",
-        title: "Attestation challenge stale",
-        detail: `Last challenge verified ${Math.round(ageSec / 60)} minutes ago. The coordinator drops providers from routing until a fresh handshake completes.`,
-      });
-    }
-  }
-
-  // Trust below the routing threshold. In production the coordinator's
-  // MinTrustLevel is "hardware", so anything below that gets ZERO requests
-  // (not just a reduced multiplier). We surface it as blocking and tell the
-  // user how to upgrade.
-  if (
-    p.trust_level !== "hardware" &&
-    p.status !== "offline" &&
-    p.status !== "untrusted" &&
-    p.status !== "never_seen"
-  ) {
-    if (p.trust_level === "self_signed") {
-      out.push({
-        id: "trust_self_signed",
-        severity: "blocking",
-        title: "Self-signed trust below routing threshold",
-        detail:
-          "The network requires hardware-attested machines. Complete MDM enrollment + Apple Device Attestation to start receiving requests.",
-      });
-    } else {
-      out.push({
-        id: "trust_none",
-        severity: "blocking",
-        title: "No attestation below routing threshold",
-        detail:
-          "This machine hasn't supplied a Secure Enclave attestation. Re-run the installer to register an SE-bound identity, then re-link the device.",
-      });
-    }
   }
 
   // Degrading: routable, but fewer / lower-quality requests.
@@ -235,26 +200,6 @@ export function computeWarnings(
     }
   }
 
-  // No catalog models: provider is online and trusted but didn't pass any
-  // models through the coordinator's catalog filter (either none of its
-  // models are in the catalog, or weight hashes mismatched). Routing
-  // requires `model in p.Models`, so this is effectively blocking even
-  // though scoring doesn't zero it out.
-  if (
-    p.models.length === 0 &&
-    p.status !== "offline" &&
-    p.status !== "untrusted" &&
-    p.status !== "never_seen"
-  ) {
-    out.push({
-      id: "no_catalog_models",
-      severity: "blocking",
-      title: "No catalog models served",
-      detail:
-        "None of this machine's local models matched the coordinator catalog (or weight hashes did not match). Download an approved model and restart the provider.",
-    });
-  }
-
   // Info: configuration to fix.
   if (
     !p.account_id &&
@@ -290,15 +235,82 @@ export function computeWarnings(
     });
   }
 
-  // Visibility check: if the machine should appear in the public marketplace
-  // (online + hardware trust) but isn't routable due to a stale challenge.
-  if (
-    p.status !== "offline" &&
-    p.status !== "untrusted" &&
-    p.status !== "never_seen" &&
-    p.trust_level === "hardware" &&
-    !p.last_challenge_verified
-  ) {
+  // A machine below the version floor is derouted by setting its runtime flag
+  // false, so the server's verdict says "runtime hash mismatch". The version
+  // warning above is the same fact with the actionable remedy, so don't also
+  // tell the operator to chase a hash.
+  if (out.some((w) => w.id === "version_below_min")) {
+    return out.filter((w) => w.id !== "routing:runtime_hash_mismatch");
+  }
+  return out;
+}
+
+/**
+ * Client-side approximation of the coordinator's routing gates, used ONLY when
+ * the coordinator did not report its own verdict. It covers the four gates the
+ * old response made visible; the server reports fifteen.
+ */
+function legacyRoutingWarnings(
+  p: MyProvider,
+  ctx: Pick<MyProvidersResponse, "challenge_max_age_seconds">
+): Warning[] {
+  const out: Warning[] = [];
+  const connected =
+    p.status !== "offline" && p.status !== "untrusted" && p.status !== "never_seen";
+
+  if (!p.runtime_verified) {
+    out.push({
+      id: "runtime_unverified",
+      severity: "blocking",
+      title: "Runtime hash mismatch",
+      detail:
+        "Provider runtime hashes do not match the known-good manifest. Reinstall with the latest installer to restore eligibility.",
+    });
+  }
+
+  if (p.last_challenge_verified && connected) {
+    const ageSec = (Date.now() - new Date(p.last_challenge_verified).getTime()) / 1000;
+    if (Number.isFinite(ageSec) && ageSec > (ctx.challenge_max_age_seconds || 360)) {
+      out.push({
+        id: "challenge_stale",
+        severity: "blocking",
+        title: "Attestation challenge stale",
+        detail: `Last challenge verified ${Math.round(ageSec / 60)} minutes ago. The coordinator drops providers from routing until a fresh handshake completes.`,
+      });
+    }
+  }
+
+  if (connected && p.trust_level !== "hardware") {
+    out.push(
+      p.trust_level === "self_signed"
+        ? {
+            id: "trust_self_signed",
+            severity: "blocking",
+            title: "Self-signed trust below routing threshold",
+            detail:
+              "The network requires hardware-attested machines. Complete MDM enrollment + Apple Device Attestation to start receiving requests.",
+          }
+        : {
+            id: "trust_none",
+            severity: "blocking",
+            title: "No attestation below routing threshold",
+            detail:
+              "This machine hasn't supplied a Secure Enclave attestation. Re-run the installer to register an SE-bound identity, then re-link the device.",
+          }
+    );
+  }
+
+  if (connected && p.models.length === 0) {
+    out.push({
+      id: "no_catalog_models",
+      severity: "blocking",
+      title: "No catalog models served",
+      detail:
+        "None of this machine's local models matched the coordinator catalog (or weight hashes did not match). Download an approved model and restart the provider.",
+    });
+  }
+
+  if (connected && p.trust_level === "hardware" && !p.last_challenge_verified) {
     out.push({
       id: "no_challenge_yet",
       severity: "info",

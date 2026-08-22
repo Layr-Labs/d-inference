@@ -1,7 +1,23 @@
 // Shared test fixtures for the provider dashboard. Builds a fully-populated
 // MyProvider so individual tests only override the few fields they exercise.
 
-import type { MyProvider, MyReputation } from "../types";
+import type { MyProvider, MyProviderRouting, MyReputation } from "../types";
+
+/** A coordinator routing verdict for a fully-healthy machine. */
+export function makeRouting(
+  overrides: Partial<MyProviderRouting> = {}
+): MyProviderRouting {
+  return {
+    advertising: true,
+    routable: true,
+    owner_routable: true,
+    models: [
+      { id: "gemma-4-26b-qat-4bit", publicly_listed: true, owner_routable: true },
+    ],
+    challenge_max_age_seconds: 960,
+    ...overrides,
+  };
+}
 
 export function makeReputation(overrides: Partial<MyReputation> = {}): MyReputation {
   return {

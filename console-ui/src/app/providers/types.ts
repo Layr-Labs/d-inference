@@ -89,6 +89,52 @@ export interface MyReputation {
   challenges_failed: number;
 }
 
+/**
+ * Closed set of reasons the coordinator excluded a machine (or one of its
+ * models) from routing. Mirrors `RoutingBlocker` in
+ * coordinator/registry/routing_diagnostics.go — the Go side owns the strings.
+ */
+export type RoutingBlocker =
+  | "offline"
+  | "untrusted"
+  | "private_only"
+  | "trust_below_minimum"
+  | "runtime_hash_mismatch"
+  | "attestation_challenge_never_passed"
+  | "attestation_challenge_stale"
+  | "no_encryption_key"
+  | "unsupported_backend"
+  | "unencrypted_response_chunks"
+  | "runtime_manifest_unchecked"
+  | "sip_unverified"
+  | "code_attestation_missing"
+  | "privacy_capabilities_missing"
+  | "privacy_capabilities_incomplete"
+  | "no_models_registered"
+  | "no_routable_models"
+  | "model_not_in_catalog"
+  | "model_weight_hash_mismatch"
+  | "model_template_render_broken";
+
+export interface MyModelRouting {
+  id: string;
+  publicly_listed: boolean;
+  owner_routable: boolean;
+  blockers?: RoutingBlocker[];
+}
+
+export interface MyProviderRouting {
+  /** Counted into the public /v1/models catalog. */
+  advertising: boolean;
+  /** Public traffic can actually be dispatched here. Implies `advertising`. */
+  routable: boolean;
+  /** The owner's own self-route can reach it. */
+  owner_routable: boolean;
+  blockers?: RoutingBlocker[];
+  models?: MyModelRouting[];
+  challenge_max_age_seconds: number;
+}
+
 export interface MyProvider {
   id: string;
   account_id: string;
@@ -127,6 +173,11 @@ export interface MyProvider {
 
   last_challenge_verified?: string;
   failed_challenges: number;
+
+  // The coordinator's own routing verdict. Optional only for coordinators that
+  // predate it; when present it is authoritative and the client must not
+  // re-derive the gates it covers.
+  routing?: MyProviderRouting;
 
   system_metrics?: MySystemMetrics;
   backend_capacity?: MyBackendCapacity;

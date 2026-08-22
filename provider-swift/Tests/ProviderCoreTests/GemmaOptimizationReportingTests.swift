@@ -137,7 +137,10 @@ struct PackagedRetainedGemmaSmokeTests {
 
         #expect(throws: PackagedRuntimeSmoke.VerificationError.safeR1NotRequested) {
             try PackagedRuntimeSmoke.validateSafeR1(
-                requested: false, aotAvailable: true, countersArmed: false)
+                requested: false,
+                aotAvailable: true,
+                countersArmed: false,
+                probeMetalRuntime: { .healthy })
         }
         #expect(throws: PackagedRuntimeSmoke.VerificationError.safeR1AOTUnavailable) {
             try PackagedRuntimeSmoke.validateSafeR1(
@@ -147,6 +150,88 @@ struct PackagedRetainedGemmaSmokeTests {
             try PackagedRuntimeSmoke.validateSafeR1(
                 requested: true, aotAvailable: true, countersArmed: true)
         }
+    }
+
+    // Regression for the macOS 15 install failure: the C diagnostics facade
+    // reports an unrequested route whenever `metal::device(gpu)` throws, so an
+    // unloadable packaged metallib used to surface as "safe R1 was not latched
+    // as requested" and sent every reader after a latch bug that did not exist.
+    @Test("an unusable Metal runtime is reported instead of a latch failure")
+    func unrequestedRouteBlamesTheMetalRuntime() throws {
+        let diagnosis = MetalRuntimeDiagnosis.noLoadableMetallib(
+            hostOS: "15.7.9",
+            attempts: [
+                PackagedMetallibAttempt(
+                    path: "/Darkbloom.app/Contents/MacOS/mlx.metallib",
+                    failure: "Metal library is not supported on this OS"),
+            ])
+        #expect(
+            throws: PackagedRuntimeSmoke.VerificationError
+                .metalRuntimeUnavailable(diagnosis)
+        ) {
+            try PackagedRuntimeSmoke.validateSafeR1(
+                requested: false,
+                aotAvailable: false,
+                countersArmed: false,
+                probeMetalRuntime: { diagnosis })
+        }
+        #expect(diagnosis.description.contains("15.7.9"))
+        #expect(
+            diagnosis.description.contains(
+                "macOS \(PackagedMetallib.minimumMacOSVersion) or later"))
+        #expect(diagnosis.description.contains("mlx.metallib"))
+    }
+
+    @Test("no Metal device at all is named as such")
+    func missingDeviceIsNamed() {
+        let diagnosis = MetalRuntimeProbe.classify(
+            executableDirectory: URL(fileURLWithPath: "/nonexistent"),
+            hostOS: "15.7.9",
+            loader: nil)
+        #expect(diagnosis == .noMetalDevice)
+        #expect(!diagnosis.isHealthy)
+        #expect(diagnosis.description.contains("no Metal device"))
+    }
+
+    // The whole point of shipping two libraries: the primary is rejected by an
+    // older Metal runtime and the colocated `Resources/mlx.metallib` fallback
+    // — MLX's own second probe — has to carry the process.
+    @Test("baseline fallback rescues a rejected primary metallib")
+    func baselineFallbackIsHealthy() throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("metallib-probe-\(UUID().uuidString)")
+        let fm = FileManager.default
+        try fm.createDirectory(
+            at: root.appendingPathComponent("Resources"),
+            withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        for path in PackagedMetallib.relativePaths {
+            try Data("metallib".utf8).write(
+                to: root.appendingPathComponent(path))
+        }
+
+        var loaded: [String] = []
+        let diagnosis = MetalRuntimeProbe.classify(
+            executableDirectory: root,
+            hostOS: "15.7.9",
+            loader: { url in
+                loaded.append(url.lastPathComponent)
+                // Only the macOS 26.2 primary is rejected here.
+                return loaded.count == 1
+                    ? "Metal library is not supported on this OS" : nil
+            })
+        #expect(diagnosis == .healthy)
+        #expect(loaded.count == 2)
+
+        // Without the baseline the same host has nothing left to fall back to.
+        try fm.removeItem(
+            at: root.appendingPathComponent(PackagedMetallib.relativePaths[1]))
+        let unrescued = MetalRuntimeProbe.classify(
+            executableDirectory: root,
+            hostOS: "15.7.9",
+            loader: { _ in "Metal library is not supported on this OS" })
+        #expect(!unrescued.isHealthy)
+        #expect(unrescued.description.contains("not present"))
     }
 
     @Test("signed-child marker is an exact output line")

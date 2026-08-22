@@ -36,6 +36,17 @@ The key can be restricted by:
 - computer-use access; and
 - expiration.
 
+These controls require a new sandbox policy record keyed by API-key ID; the
+current inference model allowlist/spend fields are not treated as sufficient.
+Every quote, create, lease renewal, command, file, computer, and viewer request
+enforces that record.
+
+An API key with no sandbox policy is denied. Quotes and session grants display
+the authorizing policy revision. Key/policy revocation invalidates queued
+quotes, closes viewer/data sessions, rejects new operations, terminates an
+active command, and starts the funded shutdown path; it never leaves an
+unfunded ready VM running.
+
 The console labels the alpha accurately:
 
 > Host-trusted alpha. Persistent disks are encrypted at rest. Do not place
@@ -54,8 +65,10 @@ npx @darkbloom/sandbox quote \
   --image macos-xcode-26 \
   --cpu 4 \
   --memory 8GiB \
-  --disk 25GiB \
+  --workspace 25GiB \
   --chip-family M4 \
+  --compute-lease 15m \
+  --idle-timeout 2m \
   --retention 24h
 ```
 
@@ -68,9 +81,13 @@ Expected start   warm, 8–20s
 CPU              $0.2016/4-vCPU-hour
 Memory           $0.1296/8-GiB-hour
 macOS premium    $0.1656/hour
-Storage          25 GiB included while running
-Retained storage metered by actual encrypted bytes
-Maximum hold     $0.1242 for a 15-minute command
+Workspace        25 GiB included while running
+User-work hold   $0.1242 for a 15-minute billable window
+Shutdown guard   $0.0083 for one minute; no new work
+Durable storage  $0.3333 maximum for 24h/125 GiB
+Sticky cache     $0.1667 maximum for 24h/125 GiB
+Network cap      $0.0000; egress disabled for this quote
+Maximum hold     $0.6325 before tax
 Quote expires    2026-08-22T23:35:00Z
 ```
 
@@ -99,13 +116,17 @@ const sandbox = await Sandbox.create({
   resources: {
     cpuCount: 4,
     memoryMiB: 8192,
-    diskGiB: 25,
+    workspaceGiB: 25,
   },
   chip: {
     minimumFamily: "M4",
   },
+  computeLeaseSeconds: 15 * 60,
+  idleTimeoutSeconds: 2 * 60,
   retentionSeconds: 24 * 60 * 60,
   commandTimeoutMs: 15 * 60 * 1000,
+  networkEgressLimitBytes: 0,
+  recovery: "platform-managed",
   cache: "sticky",
   idempotencyKey: crypto.randomUUID(),
 });
@@ -122,10 +143,14 @@ sandbox = Sandbox.create(
     image="macos-xcode-26",
     cpu_count=4,
     memory_mib=8192,
-    disk_gib=25,
+    workspace_gib=25,
     minimum_chip_family="M4",
+    compute_lease_seconds=15 * 60,
+    idle_timeout_seconds=2 * 60,
     retention_seconds=24 * 60 * 60,
     command_timeout_seconds=15 * 60,
+    network_egress_limit_bytes=0,
+    recovery="platform-managed",
     cache="sticky",
     idempotency_key="build-2841",
 )
@@ -139,14 +164,17 @@ The create operation returns immediately with:
 - current state;
 - immutable quote ID;
 - selected product and shape;
+- compute-lease and idle-stop expiry;
 - retention expiry;
+- recovery mode;
 - maximum command timeout;
 - host region and attestation status; and
 - a content-free startup event stream.
 
-The SDK handles `quoted → reserving → preparing → booting → ready`. It does not
-hide queueing or retry forever. If the two-slot macOS launch limit is full, the
-caller chooses:
+The SDK obtains a quote, then handles
+`queued → reserving → preparing → booting → ready`. It does not hide queueing
+or retry forever. If the two-slot macOS launch limit is full, the caller
+chooses:
 
 - `queue: true` with a deadline; or
 - immediate `429` with `Retry-After`.
@@ -154,6 +182,11 @@ caller chooses:
 Insufficient balance returns `402`. An impossible shape or chip request returns
 `422`. No eligible provider returns `503`. Reusing an idempotency key returns
 the original sandbox instead of creating or charging twice.
+
+Queueing holds neither funds nor host capacity. At admission the coordinator
+revalidates quote expiry and balance atomically. An expired quote returns
+`QUOTE_EXPIRED`; the SDK never accepts a higher replacement price unless the
+caller opted into a stated ceiling.
 
 ### 1.4 Run commands
 
@@ -181,12 +214,33 @@ Command behavior is explicit:
 - client disconnect does not silently replay the command;
 - cancellation is idempotent;
 - caller timeouts may be lower than 15 minutes but never higher;
+- the alpha allows one active command per sandbox;
+- a command must fit inside the funded compute lease or atomically renew it
+  before dispatch;
 - the terminal result is `succeeded`, `failed`, `timed_out`, `cancelled`, or
   `lost`; and
-- `lost` means the host disappeared after accepting side effects.
+- `lost` means a dispatched command may have produced side effects and its
+  outcome cannot be proven.
 
 The SDK never turns `lost` into a retry. The developer may restore the latest
 checkpoint and make that decision with application-specific idempotency.
+Command timeout/cancel terminates the process and returns the sandbox to
+`ready` if funded user-work time remains; compute then continues only until the
+idle timeout or lease stop.
+
+The default ready-idle timeout is two minutes. The SDK can explicitly renew:
+
+```ts
+await sandbox.renewComputeLease({
+  seconds: 15 * 60,
+  maxAdditionalMicroUSD: 132_480,
+});
+```
+
+Renewal settles prior usage, checks settled spend plus every open hold, places a
+new durable hold, then extends execution. Failure halts the VM inside the
+already funded one-minute shutdown guard. Snapshot encryption/upload happens
+after `execution_halted_at` and is not compute-billed.
 
 ### 1.5 Files
 
@@ -233,19 +287,39 @@ Semantics:
 
 | Action | Compute billing | Storage | Result |
 |---|---|---|---|
-| `pause` | Stops after durable checkpoint | Retained | VM stops; workspace can resume |
+| `pause` | Stops at `execution_halted_at` | Upload continues without compute billing | VM halts, then boot/workspace state checkpoints |
 | `resume` | Starts at `ready` | Retained | Sticky host preferred, not guaranteed |
 | `reset` | Continues while ready | Optional | Scratch layer replaced |
-| `kill` | Stops | Deleted | Key wrappers tombstoned; irreversible |
+| `kill` | Stops | Access revoked | Active wrappers tombstoned; irreversible via API |
 | Retention expiry | Stops | Deleted | Same cleanup path as `kill` |
 
-The dashboard shows logical disk quota and actual encrypted retained bytes
-separately. Increasing 25 GiB to 50 GiB is allowed only while stopped and after
-a fresh quote. Shrinking is not supported initially.
+If durable upload fails after the VM halts, state is `stopped_local`: no compute
+is billed, no durable-storage charge settles for that generation, and the
+developer may retry upload or acquire fresh leases for same-host resume. Host
+loss can destroy that uncommitted generation. A 10-minute platform-funded grace
+then discards it and falls back to the prior durable snapshot, or reports
+`lost` when no prior generation exists.
+
+The dashboard shows the sparse boot image, logical workspace quota, boot-delta
+bytes, and actual encrypted retained bytes separately. Increasing the workspace
+from 25 GiB to 50 GiB is allowed only while stopped and after a fresh quote.
+Shrinking is not supported initially.
+
+`platform-managed` recovery lets Darkbloom authorize restore through its KMS;
+the console states that the platform can decrypt. `tenant-managed` recovery
+requires a client-held key on every non-sticky resume and cannot be recovered by
+support. Deletion revokes active authorization immediately, while ciphertext
+and backup wrappers expire under the displayed backup-retention policy rather
+than an instant-erasure promise.
+
+Cross-host restore preserves disk/configuration bytes but may change the
+host-derived Apple VM identity and require Apple-service reauthentication. The
+alpha forbids signed-in Apple IDs, signing certificates, notarization, and any
+workflow that requires stable Apple-service identity.
 
 ### 1.7 GitHub Actions
 
-The safe initial workflow is a Darkbloom GitHub App for allowlisted public
+The Phase 3 runner workflow is a Darkbloom GitHub App for allowlisted public
 repositories:
 
 ```mermaid
@@ -254,7 +328,7 @@ sequenceDiagram
   participant DB as Darkbloom control plane
   participant VM as Ephemeral macOS VM
   GH->>DB: workflow_job queued webhook
-  DB->>DB: policy and budget check
+  DB->>DB: approved SHA, permissions, event, and budget check
   DB->>VM: create sandbox
   DB->>GH: request one-time JIT runner config
   DB->>VM: deliver config on encrypted session
@@ -265,12 +339,22 @@ sequenceDiagram
 
 The developer installs the GitHub App, selects public repositories, chooses a
 shape/chip policy, and sets a spend cap. Darkbloom creates one ephemeral runner
-per job and destroys it afterward.
+per job through GitHub's
+[JIT runner configuration API](https://docs.github.com/en/rest/actions/self-hosted-runners)
+and destroys it afterward.
 
 This mode still handles a short-lived GitHub credential. The guarantee is **no
-durable developer secrets**, not literally zero credentials. Workflows that
-request repository/environment secrets or private source remain outside the
-alpha contract.
+durable developer secrets and host-trusted integrity**, not literally zero
+credentials. The GitHub App requires an approved workflow commit SHA,
+read-only `GITHUB_TOKEN`, no OIDC, no repository/environment secrets, no
+release/deploy/signing job, no `pull_request_target`, and no unapproved reusable
+workflow. It rejects jobs whose effective policy cannot be proven before asking
+GitHub for JIT configuration.
+
+Private source remains outside the alpha contract. The host provider can still
+read the ephemeral runner token, alter source or outputs, and forge a successful
+test result. This tier is not suitable for release artifacts, signing, deploys,
+or security-sensitive merge gates.
 
 ### 1.8 Computer use
 
@@ -279,8 +363,10 @@ For an approved project:
 ```ts
 const sandbox = await Sandbox.create({
   image: "macos-computer-26",
-  resources: { cpuCount: 6, memoryMiB: 16384, diskGiB: 50 },
+  resources: { cpuCount: 6, memoryMiB: 16384, workspaceGiB: 50 },
   computerUse: true,
+  computeLeaseSeconds: 15 * 60,
+  idleTimeoutSeconds: 2 * 60,
   retentionSeconds: 60 * 60,
 });
 
@@ -307,7 +393,8 @@ Developers can request a one-time interactive viewer URL. It:
 - does not pass through the provider's desktop.
 
 Screenshots and typed text are not included in usage telemetry. The developer
-decides whether their own application records them.
+decides whether their own application records them. Cua product telemetry is
+disabled in the guest image and blocked by its egress policy.
 
 ### 1.9 Billing experience
 
@@ -327,6 +414,8 @@ Each command response includes a machine-readable usage summary:
 ```json
 {
   "usage": {
+    "compute_lease_id": "scl_01K...",
+    "execution_halted_at": null,
     "ready_ms": 631442,
     "cpu_count": 4,
     "memory_mib": 8192,
@@ -340,8 +429,11 @@ Each command response includes a machine-readable usage summary:
 ```
 
 The numbers are informational until the matching immutable settlement ID is
-present. A project may set `maxTotalMicroUSD` on create; the coordinator stops
-new commands before the bound can be exceeded.
+present. A project may set `maxTotalMicroUSD` on create. The coordinator checks
+settled usage plus all open compute/storage/egress holds atomically, refuses a
+renewal that would cross the bound, and checkpoints/stops before the current
+funded lease expires. It does not merely block the next command while idle
+compute keeps accruing.
 
 ### 1.10 Developer dashboard
 
@@ -374,6 +466,8 @@ The doctor reports pass/fail for:
 - supported Apple Silicon and macOS host version;
 - Virtualization.framework entitlement and a real VM start probe;
 - Secure Enclave key load, unwrap self-test, and code identity;
+- continuously logged-in dedicated Aqua session, APNs token, and authenticated
+  LaunchAgent-to-LaunchDaemon XPC;
 - available CPU, memory, and disk after host reserves;
 - encrypted APFS workspace;
 - outbound coordinator and relay connectivity;
@@ -384,7 +478,9 @@ The doctor reports pass/fail for:
 - Cua/TCC readiness if computer use is enabled.
 
 It prints exact remediation for failed checks and never advertises capacity
-until all mandatory checks pass.
+until all mandatory checks pass. The Mac may be physically headless, but the
+dedicated account must retain an Aqua login session for APNs; losing it drains
+lease eligibility.
 
 ### 2.2 Configure an offer
 
@@ -393,11 +489,11 @@ darkbloom sandbox host configure \
   --macos-slots 2 \
   --host-memory-reserve 12GiB \
   --host-cpu-reserve 2 \
-  --workspace 500GiB \
+  --workspace-capacity 500GiB \
   --cache 300GiB \
   --allow-images macos-xcode-26,macos-computer-26 \
-  --minimum-compute-price 0.70/hour \
-  --minimum-storage-price 0.06/GiB-month
+  --minimum-net-compute-price macos-s=0.34/hour \
+  --minimum-net-cache-price 0.025/GiB-month
 ```
 
 The CLI auto-detects and signs machine model, chip, core topology, memory, and
@@ -417,6 +513,12 @@ Configuration distinguishes:
 The coordinator rejects an offer that exceeds measured capacity or violates
 platform price bands. No provider needs to bid on individual jobs during the
 alpha.
+
+Provider floors are **net payouts for a named shape**, not gross developer
+prices or ambiguous whole-host rates. At the proposed $0.4968/hour gross
+`macos-s` price and 70% provider share, the provider receives $0.34776/hour, so
+the example $0.34 floor is eligible. The quote and provider statement show
+gross price, provider net, platform fee, and any failure adjustment.
 
 ### 2.3 Preflight and enable
 
@@ -448,13 +550,15 @@ sequenceDiagram
   H->>H: verify image, disk, key wrapper, resources
   H-->>C: preparation accepted
   H->>V: boot
-  V-->>H: signed guest-agent hello
+  V-->>H: host-verified guest readiness hello
   H-->>C: ready
   C->>H: command metadata + encrypted stream binding
   H->>V: bounded command
   V-->>H: exit and usage
   H-->>C: terminal outcome
-  C->>H: checkpoint, stop, or delete
+  C->>H: pause, lease stop, or delete
+  H-->>C: execution_halted_at
+  H->>H: bounded non-compute checkpoint upload
 ```
 
 The provider sees:
@@ -474,8 +578,9 @@ feature.
 
 ### 2.5 Capacity and host safety
 
-The daemon reserves resources before boot and releases them through one
-idempotent cleanup path. It refuses a new job when:
+The daemon accepts resources only with a current capacity lease and fencing
+token, and releases them through one idempotent cleanup path. It stops before a
+lease expires and refuses a new job when:
 
 - free memory or disk is below the declared reserve;
 - the host is thermally constrained or sleeping;
@@ -490,22 +595,27 @@ The provider can impose local hard limits stricter than the coordinator offer.
 The coordinator treats a mismatch as unavailable capacity, not as permission to
 overcommit.
 
-### 2.6 Cache and storage earnings
+### 2.6 Sticky-cache earnings
 
-The host page shows:
+Phase 2 durable snapshots live in the platform object store and pay no host
+storage share. In Phase 3 a provider may sell an optional verified local
+sticky-cache copy. The host page then shows:
 
 - base-image bytes, which are platform infrastructure and not tenant-billable;
 - encrypted tenant bytes by sandbox ID only;
 - retention expiry;
 - cache hits, misses, transfer bytes, and restore latency;
-- storage payout accrued by byte-second; and
+- sticky-cache payout accrued by verified byte-second; and
 - pending garbage collection.
 
-Providers never receive the tenant DEK in exportable form. Unwrap occurs through
-the signed daemon's Secure Enclave key path. Deleting a sandbox removes its
-local wrapped DEK before asynchronous ciphertext reclamation.
+The provider's Secure Enclave private key is non-exportable, but unwrap returns
+the host KEK/tenant DEK to signed daemon memory while serving. A malicious host
+can extract those plaintext keys or inspect the guest. Deleting a sandbox
+revokes the local wrapper immediately; ciphertext and backup wrappers follow
+the disclosed retention policy.
 
-Sticky cache is opt-in capacity. A provider may lower its cache limit or stop
+Sticky cache is opt-in capacity with a separate developer add-on. A provider
+may lower its cache limit or stop
 accepting new retained data, but already sold retention remains reserved until
 expiry or successful migration.
 
@@ -516,19 +626,21 @@ Example status:
 ```text
 Sandbox host          online, attested
 Running               1 / 2 macOS slots
-Reserved              4 vCPU, 8 GiB, 25 GiB
+Reserved              4 vCPU, 8 GiB, 25 GiB workspace
+Capacity lease        valid, renews in 18s
 Exclusive host        available after inference drain
 Tenant cache          118.4 GiB / 300 GiB
 Today compute         $8.42
-Today storage         $0.31
+Today sticky cache    $0.31
 Pending settlement    $0.18
 Withdrawable          $27.56
 Reliability           99.96%
 ```
 
-Compute payout accrues only for coordinator-observed billable states. Storage
-payout accrues for verified retained bytes. A sandbox that fails before ready
-earns no compute; a successful cold boot may earn the quoted boot fee.
+Compute payout accrues only for coordinator-observed billable states. Sticky
+cache payout accrues only for a verified Phase 3 local copy; the platform pays
+the Phase 2 durable object-store bill. A sandbox that fails before ready earns
+no compute; a successful cold boot may earn the quoted boot fee.
 
 Settlement lands in the existing provider balance and withdraws through Stripe
 Connect. The statement separates gross developer charge, Darkbloom platform
@@ -568,7 +680,7 @@ The minimum provider surface contains:
 - active lifecycle states;
 - image and tenant-cache usage;
 - benchmark and thermal status;
-- compute/storage earnings;
+- compute/sticky-cache earnings;
 - failure classes and recovery actions;
 - drain/update controls; and
 - privacy-safe usage history.
@@ -577,20 +689,25 @@ CLI parity comes first so a headless Mac can operate without the console.
 
 ## 3. Shared state and error language
 
-Developer and provider views use the same canonical states:
+The quote is an expiring object, not a sandbox state. Developer and provider
+views use the same canonical sandbox states:
 
 | State | Developer meaning | Provider meaning |
 |---|---|---|
 | `queued` | Waiting for eligible capacity | No host reservation yet |
-| `preparing` | Image/state being placed | Resources atomically reserved |
+| `reserving` | Admission is committing | Balance hold and fenced capacity lease are atomic |
+| `preparing` | Image/state being placed | Resources leased; disks materializing |
 | `booting` | Guest starting | VM created; guest agent not ready |
-| `ready` | Commands accepted | Compute meter active |
-| `executing` | One or more commands running | Deadline and process tracked |
-| `checkpointing` | Pause in progress | Snapshot not yet durable |
+| `ready` | One command can be accepted | Funded compute lease and meter active |
+| `executing` | The single alpha command may have side effects | Acceptance, deadline, and process tracked |
+| `stopping` | Idle, sandbox cancel, or lease stop in progress | New work rejected; grace then force-stop |
+| `checkpointing` | Execution halted; durable upload in progress | No compute meter; snapshot not yet durable |
 | `stopped` | No compute charge | Resources released; storage retained |
+| `stopped_local` | Durable upload failed; same-host recovery only | CPU/memory released; local encrypted disk retained |
 | `deleting` | Irreversible cleanup | Keys tombstoned, bytes reclaiming |
 | `failed` | Never became usable | Pre-ready terminal failure; no compute |
-| `lost` | Side effects may have occurred | Host lost after command acceptance |
+| `cancelled` | Queue/create cancelled before use | No charge or host lease |
+| `lost` | Dispatched side effects may have occurred | Outcome cannot be reconciled |
 | `deleted` | Resource gone | No remaining billable retention |
 
 Errors carry:
@@ -605,5 +722,5 @@ Errors carry:
 
 This common language is more important than hiding platform differences. It
 lets SDKs, the console, providers, and support reason about the same event
-without parsing logs.
-
+without parsing logs. The authoritative transition and settlement table is in
+[Lifecycle and failure semantics](2026-08-22-sandbox-platform-plan.md#11-lifecycle-and-failure-semantics).

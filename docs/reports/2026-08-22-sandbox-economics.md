@@ -11,15 +11,16 @@ User experience: [Provider and developer experience](2026-08-22-sandbox-user-exp
 ## 1. Bottom line
 
 Darkbloom can compete with E2B's public CPU/RAM rates on hardware economics.
-Electricity is not the limiting cost. At a modeled 90 W active draw and the May
-2026 U.S. average commercial electricity price, power is about **$0.012 per
-host-hour**. Hardware amortization, utilization, provider reliability, support,
-and startup latency matter much more.
+Electricity is not the limiting cost. At a modeled 90 W active/5 W idle draw,
+50% billable utilization, and the May 2026 U.S. average commercial electricity
+price, power is about **$0.013 per billable host-hour**. Hardware amortization,
+utilization, provider reliability, support, and startup latency matter much
+more.
 
 A representative 10-vCPU/48-GiB allocatable Mac host produces **$1.2816 per
 fully allocated hour** at E2B's published resource rates. Under the disclosed
-sample assumptions below, the host costs **$0.18–$0.43 per billable host-hour**
-at 75%–25% utilization. At 50% utilization the modeled cost is **$0.242/hour**.
+sample assumptions below, the host costs **$0.18–$0.44 per billable host-hour**
+at 75%–25% utilization. At 50% utilization the modeled cost is **$0.243/hour**.
 
 That does not mean Darkbloom should sell macOS at Linux parity. macOS supply,
 chip selection, GUI automation, and exclusive-host guarantees are
@@ -65,12 +66,16 @@ class with each quote.
 For one host:
 
 ```text
-active_host_cost_per_hour =
+billable_host_cost_per_hour =
     (purchase_price - salvage_value)
       / (economic_life_hours × billable_utilization)
-  + active_power_kW × electricity_price_per_kWh
-  + network_facility_and_wear_per_active_hour
-  + expected_failure_and_support_cost_per_active_hour
+  + (
+      billable_utilization × active_power_kW
+      + (1 - billable_utilization) × idle_power_kW
+    ) / billable_utilization
+      × electricity_price_per_kWh
+  + fixed_host_cost_per_calendar_hour / billable_utilization
+  + variable_network_wear_and_failure_cost_per_billable_hour
 ```
 
 Definitions:
@@ -81,6 +86,8 @@ Definitions:
   product competitiveness, even if it still boots.
 - **Host cost** must be compared with the full CPU+RAM bundle. Assigning every
   dollar to CPU and then charging memory again double-counts cost.
+- **Fixed calendar cost** includes rack rent, base internet, and labor that
+  continues while idle; dividing by utilization prevents it from disappearing.
 - Payment processing, control-plane compute, taxes, refunds, fraud, support,
   and corporate overhead belong in platform margin, not in electricity.
 
@@ -96,8 +103,10 @@ This is a sensitivity model, not a hardware quote.
 | Allocatable vCPU | 10 | Leaves 2–4 physical cores for host duties depending on SKU |
 | Allocatable memory | 48 GiB | Leaves 16 GiB on a 64-GiB host |
 | Average active draw | 90 W | Modeled between Apple's 5 W idle and 140 W maximum data |
+| Idle draw | 5 W | Apple's published idle figure for the cited configuration |
 | Electricity | $0.1354/kWh | U.S. commercial average, May 2026 |
-| Network/facility/SSD/failure placeholder | $0.04/active hour | Must be replaced by observed provider cost |
+| Fixed host cost | $0/calendar hour | Not assumed; plug in rack/base internet/labor |
+| Variable network/SSD/failure placeholder | $0.04/billable hour | Must be replaced by observed provider cost |
 
 Apple publishes 5 W idle and 140 W maximum power for a 64-GiB M4 Pro Mac mini
 configuration. The 90 W row is deliberately a model input, not a claim that
@@ -106,18 +115,18 @@ every workload consumes 90 W. Source:
 
 The U.S. Energy Information Administration reports a May 2026 average
 commercial price of 13.54 cents/kWh. Source:
-[EIA Electricity Monthly Update](https://www.eia.gov/electricity/monthly/update/end-use.php).
+[EIA Electric Power Monthly, table 5.3](https://www.eia.gov/electricity/monthly/epm_table_grapher.php?t=epmt_5_3).
 
 ### 4.1 Cost sensitivity
 
-| Billable utilization | Amortization per active hour | Power | Other placeholder | Total active host cost |
+| Billable utilization | Amortization per billable hour | Power | Other placeholder | Total cost per billable hour |
 |---:|---:|---:|---:|---:|
-| 25% | $0.3805 | $0.0122 | $0.0400 | **$0.4327** |
-| 50% | $0.1903 | $0.0122 | $0.0400 | **$0.2424** |
-| 75% | $0.1268 | $0.0122 | $0.0400 | **$0.1790** |
+| 25% | $0.3805 | $0.0142 | $0.0400 | **$0.4347** |
+| 50% | $0.1903 | $0.0129 | $0.0400 | **$0.2431** |
+| 75% | $0.1268 | $0.0124 | $0.0400 | **$0.1793** |
 
 If the full host cost were divided only by ten allocatable vCPUs, it would be
-1.79–4.33 cents per vCPU-hour across this utilization range. That number is
+1.79–4.35 cents per vCPU-hour across this utilization range. That number is
 useful as an upper bound on CPU cost but is not a valid standalone rate because
 the same machine also sells memory.
 
@@ -132,9 +141,9 @@ full host resource revenue  = $1.2816/hour
 
 | Billable utilization | Modeled cost | Benchmark revenue | Gross headroom before platform overhead |
 |---:|---:|---:|---:|
-| 25% | $0.4327 | $1.2816 | **66.2%** |
-| 50% | $0.2424 | $1.2816 | **81.1%** |
-| 75% | $0.1790 | $1.2816 | **86.0%** |
+| 25% | $0.4347 | $1.2816 | **66.1%** |
+| 50% | $0.2431 | $1.2816 | **81.0%** |
+| 75% | $0.1793 | $1.2816 | **86.0%** |
 
 The headroom is not net profit. It must fund:
 
@@ -155,11 +164,12 @@ Even after those deductions, electricity is visibly not the economic blocker.
 If a provider receives 70% of E2B-benchmark resource revenue:
 
 ```text
-provider revenue at full allocation = $1.2816 × 70% = $0.89712/active hour
+provider revenue at full allocation = $1.2816 × 70% = $0.89712/billable hour
 ```
 
-With the same $2,500 host, three-year life, 90 W power, and $0.04/hour
-placeholder, the modeled capital break-even utilization is about **11.3%**.
+With the same $2,500 host, three-year life, 90 W active/5 W idle power, and
+$0.04/hour placeholder, the modeled capital break-even utilization is about
+**11.3%**.
 This is a sensitivity result, not a promised return. A provider with expensive
 power, managed hosting, financing, labor, poor reliability, or a shorter
 replacement cycle has a higher threshold.
@@ -206,8 +216,10 @@ to move independently later.
 | 8 vCPU / 32 GiB | $0.9216 | $0.9216 | **$1.3824** | **$1.7280** |
 | 10 vCPU / 48 GiB host | $1.2816 | $1.2816 | **$1.9224** | **$2.4030** |
 
-A 15-minute 4-vCPU/8-GiB macOS command has a maximum compute hold of
-**$0.1242** before any successful boot fee or network egress.
+A 15-minute 4-vCPU/8-GiB macOS billable window costs at most **$0.1242**.
+Its one-minute shutdown guard adds at most **$0.0083**, so the compute hold is
+**$0.1325** before any successful boot fee, retained storage, tax, or capped
+network egress. The guard accepts no new user work.
 
 ### 5.3 Exact-chip premium
 
@@ -255,28 +267,48 @@ small successful boot fee only if alpha measurements show it is necessary:
 
 Do not recover failed-start cost through an opaque minimum command charge.
 
+### 5.6 Failure allocation
+
+| Event | Developer | Provider | Darkbloom |
+|---|---|---|---|
+| Provider/image fails before ready | No compute or boot charge | No payout | Absorbs control-plane/transfer cost |
+| Platform image is invalid fleet-wide | No charge | Optional measured transfer reimbursement | Absorbs fault and remediation |
+| Developer cancels during preparation | Pays only a disclosed cancellation fee, initially $0 | No compute; boot fee only if already ready | Releases holds |
+| Host fails after ready, before command dispatch | Pays observed ready time only | Receives share of settled ready time | Refunds unused hold |
+| Command outcome is ambiguous after dispatch | Pays no later than lease/heartbeat cutoff | Receives only settled observed usage | Marks `lost`; no replay |
+| Successful boot then immediate developer stop | Pays ready time plus quoted boot fee | Receives boot/compute shares | No clawback absent provider fault |
+
+Provider reserve prices are named **net payouts per shape**. Eligibility requires
+the quoted provider share to meet that floor; a provider does not compare a
+whole-host gross floor with one small sandbox's net payout.
+
 ## 6. Storage economics
 
-The developer selects a 25- or 50-GiB logical quota. Sparse unused bytes cost
+The developer selects a 25- or 50-GiB workspace quota. The macOS VM also has a
+larger sparse boot disk cloned from the platform image. Sparse unused bytes cost
 nothing and should not be billed as if written.
 
 Recommended alpha storage policy:
 
 - base images: free to the developer and not counted as tenant storage;
-- workspace while compute is running: included up to the selected quota;
-- stopped/retained workspace: **$0.08 per actual encrypted GiB-month**;
+- boot-delta and workspace bytes while compute is running: included;
+- Phase 2 durable object storage for stopped boot/workspace state:
+  **$0.08 per actual encrypted GiB-month**, allocated to Darkbloom/object-store
+  cost rather than the host provider;
+- Phase 3 verified local sticky-cache add-on:
+  **$0.04 per actual encrypted GiB-month**, with a provider cache payout;
 - transfer/replication: included within a published monthly allowance, then
   passed through; and
-- deletion: billing ends when key wrappers are tombstoned, not when background
-  ciphertext reclamation finishes.
+- deletion: billing ends when active key wrappers are tombstoned, while
+  ciphertext and backup wrappers expire under the published retention policy.
 
-At that rate:
+At those rates:
 
-| Actual retained bytes | Monthly charge |
-|---:|---:|
-| 5 GiB | $0.40 |
-| 25 GiB | $2.00 |
-| 50 GiB | $4.00 |
+| Actual retained bytes | Durable only | Durable + sticky |
+|---:|---:|---:|
+| 5 GiB | $0.40 | $0.60 |
+| 25 GiB | $2.00 | $3.00 |
+| 50 GiB | $4.00 | $6.00 |
 
 The rate is intentionally above raw SSD depreciation because it also funds
 reservation, verification, encrypted snapshot movement, host churn, and a
@@ -287,18 +319,19 @@ sold utilization costs roughly **$0.0056/GiB-month** before writes, failures,
 replication, transfer, and operations. Raw media is not the expensive part;
 durability and availability are.
 
-Storage payout should use verified unique byte-seconds:
+The optional sticky-cache payout should use verified unique byte-seconds:
 
 ```text
-provider_storage_payout =
+provider_cache_payout =
   verified_unique_encrypted_bytes
   × retained_seconds
-  × provider_storage_rate
+  × provider_cache_rate
 ```
 
 Do not pay for logical sparse size, duplicate chunks, base images, orphaned
 ciphertext without a live wrapper, or bytes beyond the provider's accepted
-retention reservation.
+cache reservation. Phase 2 durable replicas in the platform object store do not
+create a host-provider payout.
 
 ## 7. Platform and provider split
 
@@ -312,12 +345,13 @@ Recommended starting split:
 |---|---:|---:|
 | Compute and OS/chip/computer premium | 70% | 30% |
 | Successful boot fee | 80% | 20% |
-| Retained storage | 70% | 30% |
+| Phase 2 durable object storage | 0% | 100% before object-store cost |
+| Phase 3 sticky-cache add-on | 70% | 30% |
 | Network egress | Pass-through net of processing | No margin initially |
 
 Use per-provider overrides to bootstrap scarce supply, but keep the developer
-rate deterministic for an accepted quote. Providers set a reserve price;
-developers do not participate in a live auction.
+rate deterministic for an accepted quote. Providers set a net reserve payout
+per named shape; developers do not participate in a live auction.
 
 At the E2B benchmark, 70% gives the representative fully allocated host
 $0.8971/hour. At the proposed 1.5× macOS rate it gives
@@ -362,24 +396,29 @@ pricing model as if it were total sandbox memory.
 
 ## 10. Metering rules
 
-Compute billing starts at `ready`, not when image download begins. It stops at
-the earliest of:
-
-- durable `stopped`;
-- `deleted`;
-- command/sandbox deadline;
-- coordinator loss-of-heartbeat cutoff; or
-- terminal host failure.
+Compute billing starts at `ready`, not when image download begins. It ends at
+durable daemon-confirmed `execution_halted_at`, bounded by the earliest
+sandbox/idle/lease/heartbeat/failure stop plus the pre-funded one-minute guard.
+A command deadline is process-only: the sandbox can return to `ready`, so the
+compute meter continues until idle or sandbox/lease stop. Snapshot
+encryption/upload occurs after execution halts and is not compute-billed.
 
 Meter in bounded slices, for example 30 seconds, but price to the exact observed
 millisecond or second using integer arithmetic. The slice is a persistence and
 recovery unit, not a rounding license.
 
-The coordinator places a maximum hold and settles:
+Queueing places no hold. Admission holds the 15-minute billable window,
+one-minute shutdown guard, maximum boot fee, tax, selected 24-hour storage/cache
+authorization, and an explicit egress cap. With a 100-GiB sparse boot disk and
+25-GiB workspace, the worst-case 125 GiB of tenant-written retained state adds
+a **$0.3333** durable-storage hold plus **$0.1667** when sticky cache is
+selected; settlement still uses actual unique bytes.
+
+The coordinator settles:
 
 ```text
 settlement =
-  min(observed_billable_duration, quoted_maximum_duration)
+  min(ready_to_execution_halted_duration, billable_window_plus_guard)
   × immutable_quote_rates
   + accepted_storage
   + accepted_egress
@@ -388,6 +427,14 @@ settlement =
 Unused hold is released. Duplicate usage heartbeats and coordinator restarts
 cannot duplicate a settlement. No meter may continue indefinitely because a
 provider omitted a stop event.
+
+Renewal first settles prior usage, then checks `settled spend + all open holds`
+against account/key/project limits, places the next hold, and only then extends
+the lease. If renewal fails, the daemon accepts no new work, records
+`execution_halted_at` inside the funded guard, then checkpoints as a
+non-compute operation. Storage authorization renews separately while stopped;
+an unpaid sandbox enters a bounded deletion grace period with no compute
+capacity.
 
 ## 11. Measurements required before locking prices
 
@@ -430,4 +477,3 @@ The economic thesis is therefore testable: Darkbloom does not need cheaper
 electricity than cloud vendors. It needs adequate utilization, reliable hosts,
 honest resource guarantees, and a premium for capabilities E2B does not
 currently expose.
-

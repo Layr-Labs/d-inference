@@ -42,10 +42,21 @@ struct DoctorChecksTests {
     @Test("check backbone includes local posture but leaves Secure Boot to MDM")
     func stableBackbone() {
         #expect(checks(hardware: hardware).map(\.name) == [
-            "hardware", "metal gpu", "config", "huggingface cache", "local mlx models",
-            "macos", "sip", "rdma", "authenticated root", "hardened runtime", "debugger",
-            "binary hash",
+            "hardware", "metal gpu", "config", "install location", "huggingface cache",
+            "local mlx models", "macos", "sip", "rdma", "authenticated root",
+            "hardened runtime", "debugger", "binary hash",
         ])
+    }
+
+    /// A provider running from its live layout must not be told it is
+    /// stranded; the test binary itself is the live case. The transient case
+    /// is pinned in `InstallLocationTests` against synthetic paths, because
+    /// the check reads the RUNNING executable and a test cannot move itself.
+    @Test("install location passes for a normally-installed binary")
+    func installLocationCheck() {
+        let check = check(checks(hardware: hardware), "install location")
+        #expect(check?.status == .pass)
+        #expect(check?.detail == "live install layout")
     }
 
     @Test("snapshot checks retain their existing status mapping")

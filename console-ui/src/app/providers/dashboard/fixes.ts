@@ -92,17 +92,12 @@ const FIX_TABLE: Record<string, FixAction> = {
   thermal_serious: {
     kind: "guidance",
     label: "Improve cooling",
-    note: "The system is throttling and losing routing weight.",
-  },
-  thermal_fair: {
-    kind: "guidance",
-    label: "Monitor airflow",
-    note: "Mild thermal pressure — improve airflow if it persists.",
+    note: "macOS reports the system is throttling; the scheduler charges 8s of extra routing cost until it clears.",
   },
   memory_pressure_high: {
     kind: "guidance",
     label: "Free up memory",
-    note: "Close other apps (or add RAM) — high pressure caps health to 0.1x.",
+    note: "Close other apps (or add RAM) — pressure at 80% or higher also stops base rewards.",
   },
   backend_idle_shutdown: {
     kind: "guidance",
@@ -117,6 +112,11 @@ const FIX_TABLE: Record<string, FixAction> = {
   },
 
   // ── Info ───────────────────────────────────────────────────────────────
+  thermal_fair: {
+    kind: "guidance",
+    label: "Informational only",
+    note: "Darkbloom sets no temperature threshold — macOS decides, and a cool desktop under sustained load can still read fair.",
+  },
   no_payout: {
     kind: "command",
     label: "Link to your account",

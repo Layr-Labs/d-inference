@@ -82,4 +82,30 @@ describe("fixes ↔ warnings contract", () => {
     expect(resolveFix("totally-unknown-warning")).toBe(GENERIC_FIX);
     expect(hasFix("totally-unknown-warning")).toBe(false);
   });
+
+  // The coordinator ranks providers by additive cost in milliseconds
+  // (coordinator/registry/scheduler.go). It has no multiplicative "health
+  // factor" or "routing weight" — that scoring model was removed, but the
+  // dashboard kept quoting it ("0.8x health", "0.4x health", "0.05x routing
+  // weight"), which told operators their machine was losing traffic it was not
+  // losing. Pin the copy so the deleted model cannot describe the live one again.
+  it("never describes routing with multiplicative weights", () => {
+    const multiplier = /\d+(\.\d+)?x\s+(health|weight|routing)/i;
+    const offenders: string[] = [];
+
+    for (const { p, ctxOverride } of scenarios) {
+      for (const w of computeWarnings(p, ctxOverride ?? ctx)) {
+        if (multiplier.test(w.title) || multiplier.test(w.detail)) {
+          offenders.push(`warning ${w.id}`);
+        }
+      }
+    }
+    for (const [id, fix] of Object.entries(FIX_TABLE)) {
+      if (multiplier.test(fix.label) || multiplier.test(fix.note ?? "")) {
+        offenders.push(`fix ${id}`);
+      }
+    }
+
+    expect(offenders).toEqual([]);
+  });
 });

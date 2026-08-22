@@ -128,7 +128,11 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "thermal_critical")?.severity).toBe("blocking");
   });
 
-  it("flags serious thermal as degrading, fair as degrading", () => {
+  // thermalPenaltySeriousMs (8s) exceeds the 3s near-tie window, so a serious
+  // machine really does lose traffic to an otherwise-equal peer.
+  // thermalPenaltyFairMs (2s) does not, so `fair` is informational: it costs no
+  // traffic against an equal peer and no base rewards.
+  it("flags serious thermal as degrading and fair as info", () => {
     const serious = computeWarnings(
       baseProvider({
         system_metrics: { memory_pressure: 0.2, cpu_usage: 0.1, thermal_state: "serious" },
@@ -143,7 +147,7 @@ describe("computeWarnings", () => {
       }),
       ctx
     );
-    expect(fair.find((w) => w.id === "thermal_fair")?.severity).toBe("degrading");
+    expect(fair.find((w) => w.id === "thermal_fair")?.severity).toBe("info");
   });
 
   it("flags >90% memory pressure", () => {
@@ -156,7 +160,7 @@ describe("computeWarnings", () => {
     expect(warnings.find((w) => w.id === "memory_pressure_high")?.severity).toBe("degrading");
   });
 
-  it("flags crashed backend slot as degrading (scoring penalty, not exclusion)", () => {
+  it("flags crashed backend slot as degrading (that model is excluded, the machine is not)", () => {
     const warnings = computeWarnings(
       baseProvider({
         backend_capacity: {

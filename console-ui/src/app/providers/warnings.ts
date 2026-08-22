@@ -4,10 +4,15 @@
 // Severity:
 //   - blocking: machine receives ZERO requests
 //   - degrading: machine still routable but fewer requests / lower priority
-//   - info: configuration issue worth surfacing (e.g. payout setup)
+//   - info: worth surfacing, but no material effect on routing or earnings
 //
-// Keep this in sync with coordinator/internal/registry/registry.go scoring
-// rules and FindProviderWithTrust exclusion checks.
+// Keep this in sync with the routing gates and the additive cost function in
+// coordinator/registry/scheduler.go, and with the base-reward eligibility gates
+// in coordinator/payments/baserewards/engine.go. Routing ranks candidates by
+// estimated completion cost in milliseconds; there are no multiplicative
+// "weights". Quoted millisecond figures below are the scheduler's penalty
+// constants (scheduler.go:17-37), and near-ties within 3s of the cheapest
+// candidate are spread by queue depth and randomness rather than by cost.
 
 import type { MyProvider, MyProvidersResponse } from "./types";
 
@@ -99,7 +104,7 @@ export function computeWarnings(
       severity: "blocking",
       title: "Thermal state critical",
       detail:
-        "Health factor is zero; the coordinator will not route work. Cool the machine and ensure adequate ventilation.",
+        "macOS reports critical thermal pressure. The coordinator excludes this machine from routing entirely and it stops accruing base rewards until the state clears. Cool the machine and ensure adequate ventilation.",
     });
   }
 
@@ -153,19 +158,19 @@ export function computeWarnings(
 
   // Degrading: routable, but fewer / lower-quality requests.
 
-  // Backend slot states reported as crashed score 0.05x; the provider can
-  // still be selected if it's the only candidate, but it loses routing
-  // priority sharply. Treat as degrading, not blocking.
+  // A crashed slot is ineligible for that model (slotStatePenalty returns
+  // +Inf), but the machine keeps serving its other loaded models, so this is
+  // degrading rather than blocking.
   const crashedSlots =
     p.backend_capacity?.slots?.filter((s) => s.state === "crashed") ?? [];
   if (crashedSlots.length > 0) {
     out.push({
       id: "backend_crashed",
       severity: "degrading",
-      title: "Backend crashed (0.05x routing weight)",
+      title: "Backend crashed (model excluded from routing)",
       detail: `Backend(s) for ${crashedSlots
         .map((s) => s.model)
-        .join(", ")} report a crashed state. The coordinator will prefer healthier machines until you restart the provider.`,
+        .join(", ")} report a crashed state. The coordinator routes no requests for those models until you restart the provider; other loaded models keep serving.`,
     });
   }
 
@@ -188,15 +193,17 @@ export function computeWarnings(
     out.push({
       id: "thermal_serious",
       severity: "degrading",
-      title: "Thermal state serious (0.4x health)",
-      detail: "The system is throttling. Improve cooling to recover routing weight.",
+      title: "Thermal state serious (+8s routing cost)",
+      detail:
+        "macOS reports the system is throttling, so the scheduler adds 8 seconds to this machine's estimated cost and prefers cooler peers. Base rewards are unaffected. Improve cooling to recover routing priority.",
     });
   } else if (p.system_metrics?.thermal_state === "fair") {
     out.push({
       id: "thermal_fair",
-      severity: "degrading",
-      title: "Thermal state fair (0.8x health)",
-      detail: "Mild thermal pressure detected.",
+      severity: "info",
+      title: "Thermal state fair (+2s routing cost)",
+      detail:
+        "Thermal state comes from macOS, not a temperature threshold Darkbloom sets — a desktop under sustained load often reads fair while running cool. The 2 seconds of routing cost stay inside the 3-second near-tie window, so an otherwise-equal machine still competes for the same traffic, and base rewards are unaffected.",
     });
   }
 
@@ -205,7 +212,7 @@ export function computeWarnings(
       id: "memory_pressure_high",
       severity: "degrading",
       title: "Memory pressure very high",
-      detail: `${(p.system_metrics!.memory_pressure * 100).toFixed(0)}% memory pressure caps health to 0.1x. Close other apps or upgrade RAM.`,
+      detail: `${(p.system_metrics!.memory_pressure * 100).toFixed(0)}% memory pressure adds up to 4 seconds of routing cost, and 80% or higher stops base rewards from accruing. Close other apps or upgrade RAM.`,
     });
   }
 
@@ -215,10 +222,10 @@ export function computeWarnings(
     out.push({
       id: "backend_idle_shutdown",
       severity: "degrading",
-      title: "Backend cold (0.1x weight on cold start)",
+      title: "Backend cold (+20s routing cost)",
       detail: `Backend(s) for ${idleSlots
         .map((s) => s.model)
-        .join(", ")} were unloaded after 1h of idle. Next request will pay a ~10-30s cold-start penalty.`,
+        .join(", ")} were unloaded after 1h of idle. The scheduler adds 20 seconds to this machine's cost for those models, so warm peers win until the next request reloads them.`,
     });
   }
 

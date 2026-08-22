@@ -731,6 +731,10 @@ func (s *PostgresStore) migrate(ctx context.Context) error {
 			total_prompt_tokens BIGINT NOT NULL DEFAULT 0,
 			total_completion_tokens BIGINT NOT NULL DEFAULT 0
 		)`,
+		`CREATE TABLE IF NOT EXISTS usage_totals_backfill_state (
+			id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			cutoff_id BIGINT NOT NULL
+		)`,
 
 		// Partial index for UsageLocationBuckets — only rows with a
 		// non-null request_location are ever queried.

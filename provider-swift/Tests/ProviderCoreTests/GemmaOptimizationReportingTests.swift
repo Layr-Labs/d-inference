@@ -176,10 +176,30 @@ struct PackagedRetainedGemmaSmokeTests {
                 probeMetalRuntime: { diagnosis })
         }
         #expect(diagnosis.description.contains("15.7.9"))
-        #expect(
-            diagnosis.description.contains(
-                "macOS \(PackagedMetallib.minimumMacOSVersion) or later"))
         #expect(diagnosis.description.contains("mlx.metallib"))
+        // 15.7.9 clears the floor, so the remedy is "report the packaging
+        // fault", not "go update macOS".
+        #expect(diagnosis.description.contains("packaging fault"))
+        #expect(
+            !diagnosis.description.contains(
+                "macOS \(PackagedMetallib.minimumMacOSVersion) or later"))
+
+        let belowFloor = MetalRuntimeDiagnosis.noLoadableMetallib(
+            hostOS: "14.7.6", attempts: [])
+        #expect(
+            belowFloor.description.contains(
+                "macOS \(PackagedMetallib.minimumMacOSVersion) or later"))
+    }
+
+    @Test("the macOS floor compare matches the installer's version gate")
+    func floorCompareMatchesInstaller() {
+        #expect(PackagedMetallib.minimumMacOSVersion == "15.0")
+        for host in ["15.0", "15.7.9", "15.10", "26.2", "26.2-beta", "15"] {
+            #expect(PackagedMetallib.meetsMinimumMacOS(host), "\(host)")
+        }
+        for host in ["14.7.6", "14", "13.6.9", "0"] {
+            #expect(!PackagedMetallib.meetsMinimumMacOS(host), "\(host)")
+        }
     }
 
     @Test("no Metal device at all is named as such")

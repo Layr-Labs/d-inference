@@ -46,11 +46,22 @@ public enum MetalRuntimeDiagnosis: Equatable, Sendable, CustomStringConvertible 
                 : attempts
                     .map { "\($0.path): \($0.failure)" }
                     .joined(separator: "; ")
+            // Only send someone to Software Update when that would actually
+            // help. A host already at or above the floor has a packaging
+            // fault, not an old OS, and telling it to upgrade buries the bug.
+            let remedy = PackagedMetallib.meetsMinimumMacOS(hostOS)
+                ? """
+                    this build shipped no kernel library this macOS can load, \
+                    which is a packaging fault — please report it
+                    """
+                : """
+                    Darkbloom requires macOS \
+                    \(PackagedMetallib.minimumMacOSVersion) or later — update \
+                    in System Settings > General > Software Update
+                    """
             return """
                 no packaged Metal kernel library could be loaded on macOS \
-                \(hostOS); Darkbloom requires macOS \
-                \(PackagedMetallib.minimumMacOSVersion) or later — update in \
-                System Settings > General > Software Update. Tried \(tried)
+                \(hostOS); \(remedy). Tried \(tried)
                 """
         }
     }
@@ -106,5 +117,25 @@ public enum PackagedMetallib {
         _ version: OperatingSystemVersion
     ) -> String {
         "\(version.majorVersion).\(version.minorVersion).\(version.patchVersion)"
+    }
+
+    /// Component-wise numeric compare, matching the installer's
+    /// `version_at_least`. Non-digits are dropped so a build suffix cannot
+    /// read as a lower version.
+    public static func meetsMinimumMacOS(_ hostOS: String) -> Bool {
+        let host = numericComponents(hostOS)
+        let floor = numericComponents(minimumMacOSVersion)
+        for index in 0 ..< max(host.count, floor.count) {
+            let left = index < host.count ? host[index] : 0
+            let right = index < floor.count ? floor[index] : 0
+            if left != right { return left > right }
+        }
+        return true
+    }
+
+    private static func numericComponents(_ version: String) -> [Int] {
+        version.split(separator: ".").map {
+            Int($0.filter(\.isNumber)) ?? 0
+        }
     }
 }

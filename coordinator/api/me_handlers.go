@@ -245,10 +245,23 @@ func tallyCounts(c *myFleetCounts, mp *myProvider, minVersion string) {
 	}
 }
 
-// needsAttention is the server-side mirror of the client warning logic. It's
-// only used for the summary count, not for individual warning text. The UI
-// renders detailed warnings from the per-machine payload.
+// needsAttention drives the dashboard header count. When the coordinator has
+// a routing verdict for the machine it defers to it, so the header and the
+// per-machine card cannot disagree — a machine the router is fencing counts,
+// and one it is happily serving does not. The checks below it are the older
+// approximation, kept for machines with no live verdict (offline rows) and for
+// the two facts routing does not cover: challenge failures and version
+// currency.
 func needsAttention(mp *myProvider, minVersion string) bool {
+	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
+		return true
+	}
+	if mp.FailedChallenges > 0 {
+		return true
+	}
+	if mp.Routing != nil {
+		return !mp.Routing.Routable
+	}
 	if mp.Status == string(registry.StatusUntrusted) {
 		return true
 	}
@@ -259,12 +272,6 @@ func needsAttention(mp *myProvider, minVersion string) bool {
 		return true
 	}
 	if mp.TrustLevel != string(registry.TrustHardware) {
-		return true
-	}
-	if mp.FailedChallenges > 0 {
-		return true
-	}
-	if minVersion != "" && mp.Version != "" && semverLess(mp.Version, minVersion) {
 		return true
 	}
 	return false

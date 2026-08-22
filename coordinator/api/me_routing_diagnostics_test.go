@@ -196,6 +196,56 @@ func TestMyProviders_PerModelBlockersAreReported(t *testing.T) {
 	}
 }
 
+// The dashboard header count and the per-machine card must not disagree: a
+// machine the router is happily serving cannot be in the "needs attention"
+// tally, and one it is fencing must be.
+func TestNeedsAttentionFollowsTheRoutingVerdict(t *testing.T) {
+	routable := &registry.ProviderRoutingDiagnostics{Advertising: true, Routable: true}
+	fenced := &registry.ProviderRoutingDiagnostics{
+		Advertising: true,
+		Blockers:    []registry.RoutingBlocker{registry.BlockerChallengeStale},
+	}
+	base := myProvider{
+		Status:          string(registry.StatusOnline),
+		TrustLevel:      string(registry.TrustHardware),
+		RuntimeVerified: true,
+		Version:         "0.8.9",
+	}
+
+	healthy := base
+	healthy.Routing = routable
+	if needsAttention(&healthy, "0.8.0") {
+		t.Fatal("a routable machine must not be counted as needing attention")
+	}
+
+	fencedProvider := base
+	fencedProvider.Routing = fenced
+	if !needsAttention(&fencedProvider, "0.8.0") {
+		t.Fatal("a fenced machine must be counted as needing attention")
+	}
+
+	// Facts routing does not cover still count, verdict or not.
+	stale := base
+	stale.Routing = routable
+	stale.Version = "0.7.0"
+	if !needsAttention(&stale, "0.8.0") {
+		t.Fatal("a below-floor version must count even when routing looks fine")
+	}
+	failing := base
+	failing.Routing = routable
+	failing.FailedChallenges = 2
+	if !needsAttention(&failing, "0.8.0") {
+		t.Fatal("failed challenges must count even when routing looks fine")
+	}
+
+	// No verdict (offline row): the older approximation still applies.
+	offline := base
+	offline.Status = "offline"
+	if !needsAttention(&offline, "0.8.0") {
+		t.Fatal("an offline machine with no verdict must still count")
+	}
+}
+
 // An offline machine must not read as "no problems" just because there is no
 // live provider to interrogate.
 func TestMyProviders_OfflineMachineReportsOffline(t *testing.T) {

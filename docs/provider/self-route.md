@@ -25,7 +25,7 @@ fallback); one is PREFER (owned-first, paid fallback so it's never a dead end):
 |---|---|---|---|
 | `X-Darkbloom-Route: self` header | Exclusive | Per request | Owned-only, free, no fallback. Invisible to the OpenAI body schema; works with any SDK (`extra_headers`). Never enters the (optionally sealed) body. |
 | API key `self_route_only: true` | Exclusive | Per key (hard ceiling) | Every request on the key is owned-only and free; it can never spend balance or reach the public fleet, regardless of header. |
-| `X-Darkbloom-Route: prefer` header | Prefer | Per request | Routes to your own machine whenever it can serve (free); falls back to the **paid** public fleet when it can't. Takes a normal reservation up front (refunded if your machine serves), so the account needs a balance. |
+| `X-Darkbloom-Route: prefer` header | Prefer | Per request | Routes to your own machine whenever it can serve (free); falls back to the **paid** public fleet when it can't. Takes a normal reservation up front (refunded if your machine serves) so the fallback can settle — but an account that can't fund it keeps the free half (see below) instead of being rejected. |
 
 ```bash
 # Strict free-or-error (exclusive):
@@ -53,9 +53,29 @@ The policy resolution is server-side in `coordinator/api/self_route.go:49-65`.
   can't serve you get an explicit error, never a charge. Works at zero balance.
 - **Prefer** (`prefer`): prioritizes your machine for free but never strands you
   — it falls back to the paid fleet. Because it might pay, it reserves up front
-  (refunded when your machine serves), so the account must hold a balance.
-  Routing relaxes the hardware-trust floor for your own (possibly un-enrolled)
-  machine only, never for public providers.
+  (refunded when your machine serves). Routing relaxes the hardware-trust floor
+  for your own (possibly un-enrolled) machine only, never for public providers.
+
+### Unfunded prefer keeps the free half
+
+The prefer reservation exists only so the **paid fallback** can settle; the
+owned half costs nothing. So when an account can't cover it — empty balance, or
+an exhausted per-key spend cap — the coordinator drops the *fallback*, not the
+request (`api/self_route.go:unfundedPreferPolicy`, called from
+`reserveInferenceBalance`):
+
+- If the caller owns an online machine that can serve this exact request shape
+  (`OwnedProviderSummary` with the full routing traits), the request continues as
+  **exclusive** self-route: owned-only, free, no reservation. Owned-only is what
+  makes this safe — an unfunded request can never reach a public provider, and
+  settlement independently re-verifies ownership before settling at zero.
+- Otherwise it is still a `402`, whose message names both halves ("your machine
+  cannot serve this request right now … and your balance is too low for the paid
+  fallback").
+
+Without this, the console's **My Machine** toggle answered "Insufficient
+credits" to an owner whose idle Mac was online and able to serve, because the
+reservation ran before routing ever looked at the machine.
 
 ## Ownership model (the crux)
 
@@ -100,7 +120,9 @@ These errors are written by `coordinator/api/self_route.go:73-101`.
 
 Self-route skips the pre-flight reservation, the per-key spend cap, the charge,
 the platform fee, and the provider payout — a zero-balance owner is never
-blocked. A **zero-cost usage row** is still recorded for transparency.
+blocked, whether the request arrived as exclusive self-route or as a prefer
+request that fell back to it. A **zero-cost usage row** is still recorded for
+transparency.
 
 At settlement, `handleComplete` **re-verifies** that the provider which actually
 served the completion is owned by the consumer (read from the serving provider

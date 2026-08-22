@@ -22,32 +22,10 @@ import type {
   TrustMetadata,
 } from "../api/types";
 import { ThinkStreamParser } from "./think-parser";
+import { chatErrorMessage } from "./errors";
 import { readSsePayloads } from "./sse";
 
 type SealContext = { ephemPriv: Uint8Array; coordPub: Uint8Array };
-
-/** Map an upstream error (status + message + error code) to user-facing copy. */
-function chatErrorMessage(status: number, msg: string, code?: string): string {
-  if (code === "no_linked_machine") {
-    return "No machine linked to your account — run `darkbloom login` on your Mac, then try again.";
-  }
-  if (code === "machine_offline") {
-    return "Your machine is offline — start your Darkbloom node and try again. (Free-only self-route won't fall back to the paid network.)";
-  }
-  if (code === "model_not_loaded") {
-    return "This model isn't loaded on your machine — load it on your node, then try again.";
-  }
-  if (code === "machine_busy") {
-    return "Your machine is busy — try again in a moment.";
-  }
-  if (status === 503 && msg.includes("queue timeout")) {
-    return "All providers are busy — please try again in a moment";
-  }
-  if (status === 402) {
-    return "Insufficient credits — buy credits in Billing to continue";
-  }
-  return `Request failed (${status}): ${msg}`;
-}
 
 /** Extract the provider trust metadata advertised on the response headers. */
 function extractTrustMeta(res: Response): TrustMetadata {
@@ -185,9 +163,7 @@ export async function streamChat(
     }
     try {
       const errData = JSON.parse(text);
-      callbacks.onError(
-        chatErrorMessage(res.status, errData?.error?.message || text, errData?.error?.code),
-      );
+      callbacks.onError(chatErrorMessage(res.status, text, errData?.error));
     } catch {
       callbacks.onError(`Request failed (${res.status}): ${text}`);
     }

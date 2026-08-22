@@ -66,6 +66,51 @@ func (s *Server) resolveSelfRoutePolicy(r *http.Request) selfRoutePolicy {
 	return selfRoutePolicy{enabled: exclusive, prefer: prefer, ownerAccountID: owner}
 }
 
+// unfundedPreferPolicy decides what a PREFER request does when the account
+// cannot cover the up-front reservation (empty balance or an exhausted per-key
+// spend cap).
+//
+// PREFER reserves up front only because dispatch MIGHT land on a public
+// provider; the owned half of "my machine, else the paid fleet" is free and
+// costs the ledger nothing. Failing the whole request on that reservation is
+// what makes the console's "My Machine · Free, else paid" toggle answer
+// "Insufficient credits" to an owner whose idle Mac was sitting right there —
+// the exact opposite of what running a node is supposed to buy you.
+//
+// So when the money for the fallback isn't there, drop the FALLBACK rather than
+// the request: if the caller owns an online machine that can serve this exact
+// request shape, continue as EXCLUSIVE self-route (owned-only, free, no
+// reservation). Owned-only is what keeps this safe — an unfunded request can
+// then never reach a public provider, and settlement independently re-verifies
+// that the machine which served it is the caller's (handleComplete) before
+// settling at zero.
+//
+// Returns ok=false for a non-prefer policy or when no owned machine can serve,
+// leaving the caller to write the 402.
+func (s *Server) unfundedPreferPolicy(model string, traits registry.RequestTraits, requiresVision bool, policy selfRoutePolicy) (selfRoutePolicy, bool) {
+	if !policy.prefer || policy.ownerAccountID == "" {
+		return policy, false
+	}
+	if _, serves := s.registry.OwnedProviderSummary(
+		policy.ownerAccountID, model, traits, requiresVision); serves == 0 {
+		return policy, false
+	}
+	s.ddIncr("billing.unfunded_prefer_self_route", []string{"model:" + model})
+	return selfRoutePolicy{enabled: true, ownerAccountID: policy.ownerAccountID}, true
+}
+
+// insufficientBalanceMessage explains a 402 in the caller's terms. A PREFER
+// request only needs a balance for the paid fallback, and it reaches this point
+// solely because unfundedPreferPolicy already found no owned machine able to
+// serve it — so name both halves, since the actionable one is usually the
+// machine rather than the wallet.
+func insufficientBalanceMessage(policy selfRoutePolicy) string {
+	if policy.prefer {
+		return "your machine cannot serve this request right now (offline, model not loaded, or below a required capability) and your balance is too low for the paid fallback — start your Darkbloom node and load the model, or add funds at /billing"
+	}
+	return "your balance is too low for this request — add funds at /billing or lower max_tokens"
+}
+
 // selfRouteUnavailable reports whether a self-route request cannot proceed and,
 // when so, writes the precise terminal error. Self-route never falls back to
 // the paid fleet, so "can't serve" is an explicit failure rather than a

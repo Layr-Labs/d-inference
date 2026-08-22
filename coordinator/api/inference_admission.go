@@ -39,23 +39,44 @@ type balanceReservationParams struct {
 	stream                bool
 	requiresVision        bool
 	hasTools              bool
-	policy                selfRoutePolicy
+	// traits is the full routing trait set for this request. It is what decides
+	// whether an unfunded PREFER request can still run free on the caller's own
+	// machine (unfundedPreferPolicy), so it must be the same set admission uses
+	// — a partial reconstruction would call an owned machine serviceable for a
+	// shape routing would later refuse.
+	traits registry.RequestTraits
+	policy selfRoutePolicy
+}
+
+// balanceReservation is the outcome of the shared pre-flight reservation: the
+// amount held (0 on the free paths), whether it is a service-account hold, and
+// the self-route policy the REST of the request must run under. The policy is
+// returned rather than assumed because an unfunded PREFER request downgrades to
+// exclusive self-route here (see unfundedPreferPolicy) and every downstream
+// gate — catalog bypass, media egress, admission, dispatch, settlement — has to
+// observe that decision.
+type balanceReservation struct {
+	microUSD int64
+	service  bool
+	policy   selfRoutePolicy
 }
 
 // reserveInferenceBalance performs the shared pre-flight balance reservation +
-// per-key spend cap for both inference handlers. Self-route (policy.enabled) and
-// a nil billing backend skip it (the request is free). On a spend-cap or
-// insufficient-funds rejection it writes the exact terminal response and returns
-// handled=true; otherwise it returns the reserved amount and whether it was a
-// service-account reservation. The post-inference charge refunds any unused
-// portion; the routing estimate is kept separate so capacity checks aren't
-// over-inflated.
-func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (reservedMicroUSD int64, serviceReservation bool, handled bool) {
+// per-key spend cap for both inference handlers. Exclusive self-route
+// (policy.enabled) and a nil billing backend skip it (the request is free), and
+// a PREFER request that cannot fund the paid fallback but owns a machine able
+// to serve it is downgraded to exclusive self-route instead of being rejected.
+// On a spend-cap or insufficient-funds rejection it writes the exact terminal
+// response and returns handled=true. The post-inference charge refunds any
+// unused portion; the routing estimate is kept separate so capacity checks
+// aren't over-inflated.
+func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request, parsed map[string]any, p balanceReservationParams) (balanceReservation, bool) {
 	// Self-route is free: skip the pre-flight balance reservation and the
 	// per-key spend cap entirely. A zero-balance owner must never be blocked
 	// from running on their own machine, and a self_route_only key never spends.
+	out := balanceReservation{policy: p.policy}
 	if s.billing == nil || p.policy.enabled {
-		return 0, false, false
+		return out, false
 	}
 	consumerKey := consumerKeyFromContext(r.Context())
 	// Normally the byte-count billing bound dominates the routing estimate. A
@@ -64,17 +85,21 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 	// larger bound so a low-balance caller cannot trigger coordinator egress and
 	// only then fail the platform-price balance check.
 	reservationPromptTokens := max(p.billingPromptTokens, p.estimatedPromptTokens)
-	reservedMicroUSD = s.reservationCost(p.model, reservationPromptTokens, p.requestedMaxTokens)
-	// Per-key spend cap (phase 1) — checked before the reservation so a capped
-	// key never debits the account ledger.
-	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+	reservedMicroUSD := s.reservationCost(p.model, reservationPromptTokens, p.requestedMaxTokens)
+	// An unfunded PREFER request keeps running when the caller's own machine can
+	// serve it; only a caller with no such machine sees the 402.
+	unfunded := func(reasonCode, errType, msg string) (balanceReservation, bool) {
+		if free, ok := s.unfundedPreferPolicy(p.model, p.traits, p.requiresVision, p.policy); ok {
+			out.policy = free
+			return out, false
+		}
 		s.recordRejection(rejectionInfo{
 			r:                     r,
 			stage:                 "balance",
-			reasonCode:            "insufficient_quota",
+			reasonCode:            reasonCode,
 			httpStatus:            http.StatusPaymentRequired,
 			keyID:                 keyIDFromContext(r.Context()),
-			consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
+			consumerKeyHash:       store.HashKey(consumerKey),
 			requestedModel:        p.publicModel,
 			resolvedModel:         p.model,
 			stream:                p.stream,
@@ -82,40 +107,29 @@ func (s *Server) reserveInferenceBalance(w http.ResponseWriter, r *http.Request,
 			requestedMaxTokens:    p.requestedMaxTokens,
 			requiresVision:        p.requiresVision,
 			hasTools:              p.hasTools,
+			selfRouteOnly:         p.policy.enabled,
+			preferOwner:           p.policy.prefer,
 			params:                rejectionSamplingParams(parsed),
 		})
-		writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_quota", msg, withCode("insufficient_quota")))
-		return reservedMicroUSD, false, true
+		writeJSON(w, http.StatusPaymentRequired, errorResponse(errType, msg, withCode("insufficient_quota")))
+		return out, true
 	}
-	var err error
-	serviceReservation, err = s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
+	// Per-key spend cap (phase 1) — checked before the reservation so a capped
+	// key never debits the account ledger.
+	if msg, ok := s.checkKeySpendCap(r.Context(), reservedMicroUSD); !ok {
+		return unfunded("insufficient_quota", "insufficient_quota", msg)
+	}
+	serviceReservation, err := s.reserveInitialBalance(consumerKey, p.model, reservedMicroUSD)
 	if err != nil {
 		if errors.Is(err, store.ErrInsufficientBalance) {
-			s.recordRejection(rejectionInfo{
-				r:                     r,
-				stage:                 "balance",
-				reasonCode:            "insufficient_funds",
-				httpStatus:            http.StatusPaymentRequired,
-				keyID:                 keyIDFromContext(r.Context()),
-				consumerKeyHash:       store.HashKey(consumerKeyFromContext(r.Context())),
-				requestedModel:        p.publicModel,
-				resolvedModel:         p.model,
-				stream:                p.stream,
-				estimatedPromptTokens: p.estimatedPromptTokens,
-				requestedMaxTokens:    p.requestedMaxTokens,
-				requiresVision:        p.requiresVision,
-				hasTools:              p.hasTools,
-				params:                rejectionSamplingParams(parsed),
-			})
-			writeJSON(w, http.StatusPaymentRequired, errorResponse("insufficient_funds",
-				"your balance is too low for this request — add funds at /billing or lower max_tokens", withCode("insufficient_quota")))
-		} else {
-			s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
-			s.writeServiceUnavailable(w, p.model)
+			return unfunded("insufficient_funds", "insufficient_funds", insufficientBalanceMessage(p.policy))
 		}
-		return reservedMicroUSD, serviceReservation, true
+		s.logger.Error("balance reservation failed (DB error)", "consumer_key", consumerKey, "error", err)
+		s.writeServiceUnavailable(w, p.model)
+		return out, true
 	}
-	return reservedMicroUSD, serviceReservation, false
+	out.microUSD, out.service = reservedMicroUSD, serviceReservation
+	return out, false
 }
 
 // topUpReservationForInlinedMedia re-reserves after remote media has been

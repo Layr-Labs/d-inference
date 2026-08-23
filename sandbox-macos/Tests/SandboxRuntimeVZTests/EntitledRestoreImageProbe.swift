@@ -14,7 +14,10 @@ struct EntitledRestoreImageProbe {
             .appendingPathComponent("darkbloom-sandboxd", isDirectory: false)
         let entitlementsURL = Self.packageDirectory
             .appendingPathComponent("Resources", isDirectory: true)
-            .appendingPathComponent("DarkbloomSandbox.entitlements", isDirectory: false)
+            .appendingPathComponent(
+                "DarkbloomSandboxDevelopment.entitlements",
+                isDirectory: false
+            )
 
         try Self.requireFile(daemonURL, executable: true)
         try Self.requireFile(entitlementsURL, executable: false)

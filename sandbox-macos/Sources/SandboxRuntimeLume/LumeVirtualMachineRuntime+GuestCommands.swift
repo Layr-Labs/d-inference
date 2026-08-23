@@ -33,8 +33,12 @@ extension LumeVirtualMachineRuntime {
             virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
-        try LumeVirtualMachineOwnership.requireOwned(
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        _ = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
+            owner: owner,
             in: configuration.storageDirectory
         )
         var guestCommandMayBeRunning = false
@@ -107,7 +111,10 @@ extension LumeVirtualMachineRuntime {
                 || cancellationFailure != nil
             if mustStopVM {
                 do {
-                    try await stopGuestIgnoringCancellation(name: name)
+                    try await stopGuestIgnoringCancellation(
+                        name: name,
+                        owner: owner
+                    )
                 } catch let stopError {
                     throw SandboxRuntimeError.cleanupFailed(
                         operation: "execute \(name)",
@@ -133,9 +140,15 @@ extension LumeVirtualMachineRuntime {
         }
     }
 
-    private func stopGuestIgnoringCancellation(name: String) async throws {
+    private func stopGuestIgnoringCancellation(
+        name: String,
+        owner: LumeVirtualMachineOwnership.Owner
+    ) async throws {
         let stop = Task.detached {
-            try await self.stopWithoutOperationFence(name: name)
+            try await self.stopWithoutOperationFence(
+                name: name,
+                owner: owner
+            )
         }
         try await stop.value
     }

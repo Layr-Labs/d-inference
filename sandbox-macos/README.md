@@ -112,6 +112,13 @@ reserved CPU and memory. A per-sandbox inter-process lease lock spans each VM
 mutation and serializes renewal or release, so a newer fencing token cannot race
 an already-authorized mutation. Expired or draining leases may only stop or
 delete their own VM; they cannot start or execute additional work.
+Each workload VM also carries a fail-closed ownership marker binding its
+installation to the sandbox ID and generation plus its CPU, memory, disk, and
+image source. Renewed fencing tokens retain access to that same generation, but
+a later generation cannot reuse its VM or disks. Base templates use a distinct
+marker role, and clones commit the source template installation ID; workload
+VMs cannot be used as clone templates. Legacy unscoped markers are rejected and
+must be rebuilt rather than inferred.
 
 The alpha policy admits exactly two running sandboxes and enforces aggregate CPU
 and memory limits under an inter-process `flock`. Lease expiry is discovery-only:

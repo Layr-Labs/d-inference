@@ -1,25 +1,59 @@
 import Darwin
 import Foundation
+import SandboxCore
 import SandboxRuntime
 
 enum LumeVirtualMachineOwnership {
     static let fileName = ".darkbloom-ownership.json"
-    private static let schemaVersion: UInt16 = 1
+    private static let schemaVersion: UInt16 = 2
     private static let maximumBytes = 16 * 1_024
+
+    enum Owner: Equatable, Sendable {
+        case baseTemplate
+        case sandbox(id: SandboxID, generation: SandboxGeneration)
+
+        init(operationScope: SandboxOperationScope?) {
+            guard let operationScope else {
+                self = .baseTemplate
+                return
+            }
+            self = .sandbox(
+                id: operationScope.sandboxID,
+                generation: operationScope.generation
+            )
+        }
+    }
+
+    struct Identity: Equatable, Sendable {
+        let installationID: UUID
+    }
 
     static func write(
         specification: SandboxVirtualMachineSpecification,
+        owner: Owner,
+        sourceInstallationID: UUID? = nil,
         to virtualMachineDirectory: URL
     ) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         let data: Data
         do {
-            data = try encoder.encode(Record(
+            let record = Record(
                 specification: specification,
+                owner: owner,
+                sourceInstallationID: sourceInstallationID,
                 installationID: UUID()
-            ))
+            )
+            guard record.isValid else {
+                throw SandboxRuntimeError.unsupported(
+                    "Darkbloom VM ownership commitment is invalid"
+                )
+            }
+            data = try encoder.encode(record)
         } catch {
+            if let runtimeError = error as? SandboxRuntimeError {
+                throw runtimeError
+            }
             throw SandboxRuntimeError.unsupported(
                 "failed to encode Darkbloom VM ownership marker"
             )
@@ -98,18 +132,23 @@ enum LumeVirtualMachineOwnership {
 
     static func requireOwned(
         name: String,
+        owner: Owner,
         in storageDirectory: URL
-    ) throws {
+    ) throws -> Identity {
         let record = try load(name: name, from: storageDirectory)
-        guard record.name == name else {
+        guard record.name == name,
+              record.matches(owner: owner)
+        else {
             throw SandboxRuntimeError.unsupported(
-                "VM ownership marker does not match \(name)"
+                "VM \(name) belongs to a different Darkbloom sandbox scope"
             )
         }
+        return Identity(installationID: record.installationID)
     }
 
     static func matches(
         specification: SandboxVirtualMachineSpecification,
+        owner: Owner,
         in storageDirectory: URL
     ) -> Bool {
         guard let record = try? load(
@@ -118,7 +157,7 @@ enum LumeVirtualMachineOwnership {
         ) else {
             return false
         }
-        return record.matches(specification)
+        return record.matches(specification, owner: owner)
     }
 
     private static func load(
@@ -193,6 +232,11 @@ enum LumeVirtualMachineOwnership {
                 "VM \(name) ownership marker has an unsupported version"
             )
         }
+        guard record.isValid else {
+            throw SandboxRuntimeError.unsupported(
+                "VM \(name) ownership marker is malformed"
+            )
+        }
         return record
     }
 
@@ -237,10 +281,16 @@ enum LumeVirtualMachineOwnership {
         let diskBytes: UInt64
         let sourceKind: String
         let sourceReference: String
+        let sourceInstallationID: UUID?
         let unattendedPreset: String?
+        let ownerKind: String
+        let sandboxID: SandboxID?
+        let sandboxGeneration: SandboxGeneration?
 
         init(
             specification: SandboxVirtualMachineSpecification,
+            owner: Owner,
+            sourceInstallationID: UUID?,
             installationID: UUID
         ) {
             schemaVersion = LumeVirtualMachineOwnership.schemaVersion
@@ -253,19 +303,34 @@ enum LumeVirtualMachineOwnership {
             case .restoreImage(let url, let preset):
                 sourceKind = "restore_image"
                 sourceReference = url.standardizedFileURL.path
+                self.sourceInstallationID = nil
                 unattendedPreset = preset
             case .localTemplate(let template):
                 sourceKind = "local_template"
                 sourceReference = template
+                self.sourceInstallationID = sourceInstallationID
                 unattendedPreset = nil
+            }
+            switch owner {
+            case .baseTemplate:
+                ownerKind = "base_template"
+                sandboxID = nil
+                sandboxGeneration = nil
+            case .sandbox(let id, let generation):
+                ownerKind = "sandbox"
+                sandboxID = id
+                sandboxGeneration = generation
             }
         }
 
         func matches(
-            _ specification: SandboxVirtualMachineSpecification
+            _ specification: SandboxVirtualMachineSpecification,
+            owner: Owner
         ) -> Bool {
             let expected = Record(
                 specification: specification,
+                owner: owner,
+                sourceInstallationID: sourceInstallationID,
                 installationID: installationID
             )
             return schemaVersion == expected.schemaVersion
@@ -275,7 +340,59 @@ enum LumeVirtualMachineOwnership {
                 && diskBytes == expected.diskBytes
                 && sourceKind == expected.sourceKind
                 && sourceReference == expected.sourceReference
+                && sourceInstallationID == expected.sourceInstallationID
                 && unattendedPreset == expected.unattendedPreset
+                && ownerKind == expected.ownerKind
+                && sandboxID == expected.sandboxID
+                && sandboxGeneration == expected.sandboxGeneration
+        }
+
+        func matches(owner: Owner) -> Bool {
+            switch owner {
+            case .baseTemplate:
+                ownerKind == "base_template"
+                    && sandboxID == nil
+                    && sandboxGeneration == nil
+            case .sandbox(let id, let generation):
+                ownerKind == "sandbox"
+                    && sandboxID == id
+                    && sandboxGeneration == generation
+            }
+        }
+
+        var isValid: Bool {
+            guard schemaVersion == LumeVirtualMachineOwnership.schemaVersion,
+                  SandboxVirtualMachineNamePolicy.isValid(name),
+                  cpuCount > 0,
+                  memoryBytes > 0,
+                  diskBytes > 0,
+                  !sourceReference.isEmpty,
+                  matchesStoredOwner
+            else {
+                return false
+            }
+            switch sourceKind {
+            case "restore_image":
+                return sourceInstallationID == nil
+                    && unattendedPreset == "tahoe"
+            case "local_template":
+                return SandboxVirtualMachineNamePolicy.isValid(sourceReference)
+                    && sourceInstallationID != nil
+                    && unattendedPreset == nil
+            default:
+                return false
+            }
+        }
+
+        private var matchesStoredOwner: Bool {
+            switch ownerKind {
+            case "base_template":
+                return sandboxID == nil && sandboxGeneration == nil
+            case "sandbox":
+                return sandboxID != nil && sandboxGeneration != nil
+            default:
+                return false
+            }
         }
     }
 }

@@ -97,6 +97,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             resources: resources,
             expiresAt: now.addingTimeInterval(120)
         )
+        try fixture.bindOwnership(to: lease.scope)
         let runtime = LumeLeaseFencedVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(
                 executable: fixture.executable,
@@ -114,6 +115,28 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 SandboxFencingToken(rawValue: UInt64.max)
             )
         )
+        let nextGenerationMarker = SandboxOperationScope(
+            sandboxID: lease.scope.sandboxID,
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 2)),
+            fencingToken: lease.scope.fencingToken
+        )
+
+        try fixture.bindOwnership(to: nextGenerationMarker)
+        do {
+            _ = try await runtime.inspect(
+                scope: lease.scope,
+                name: fixture.virtualMachineName
+            )
+            XCTFail("a lease must not inspect a VM from another generation")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "VM \(fixture.virtualMachineName) belongs to a different Darkbloom sandbox scope"
+                )
+            )
+        }
+        try fixture.bindOwnership(to: lease.scope)
 
         do {
             try await runtime.start(
@@ -803,15 +826,163 @@ final class LumeRuntimeFailureTests: XCTestCase {
 
         try LumeVirtualMachineOwnership.write(
             specification: specification,
+            owner: .baseTemplate,
+            sourceInstallationID: UUID(),
             to: virtualMachineDirectory
         )
 
         XCTAssertTrue(
             LumeVirtualMachineOwnership.matches(
                 specification: specification,
+                owner: .baseTemplate,
                 in: root
             )
         )
+    }
+
+    func testOwnershipBindsSandboxIdentityAndGenerationAcrossRenewal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-ownership-scope-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let name = "sandbox-scoped"
+        let virtualMachineDirectory = root.appendingPathComponent(
+            name,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: virtualMachineDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let specification = try SandboxVirtualMachineSpecification(
+            name: name,
+            resources: SandboxResourceSpecification.macOSSmall(),
+            imageSource: .localTemplate(name: "sandbox-base"),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+        let sandboxID = SandboxID()
+        let generation = try XCTUnwrap(SandboxGeneration(rawValue: 4))
+        let initialScope = SandboxOperationScope(
+            sandboxID: sandboxID,
+            generation: generation,
+            fencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 8))
+        )
+        let renewedScope = SandboxOperationScope(
+            sandboxID: sandboxID,
+            generation: generation,
+            fencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 9))
+        )
+        let nextGenerationScope = SandboxOperationScope(
+            sandboxID: sandboxID,
+            generation: try XCTUnwrap(SandboxGeneration(rawValue: 5)),
+            fencingToken: try XCTUnwrap(SandboxFencingToken(rawValue: 10))
+        )
+
+        try LumeVirtualMachineOwnership.write(
+            specification: specification,
+            owner: .init(operationScope: initialScope),
+            sourceInstallationID: UUID(),
+            to: virtualMachineDirectory
+        )
+
+        XCTAssertTrue(
+            LumeVirtualMachineOwnership.matches(
+                specification: specification,
+                owner: .init(operationScope: renewedScope),
+                in: root
+            )
+        )
+        XCTAssertFalse(
+            LumeVirtualMachineOwnership.matches(
+                specification: specification,
+                owner: .init(operationScope: nextGenerationScope),
+                in: root
+            )
+        )
+        XCTAssertFalse(
+            LumeVirtualMachineOwnership.matches(
+                specification: specification,
+                owner: .baseTemplate,
+                in: root
+            )
+        )
+        XCTAssertThrowsError(
+            try LumeVirtualMachineOwnership.requireOwned(
+                name: name,
+                owner: .init(operationScope: nextGenerationScope),
+                in: root
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxRuntimeError,
+                .unsupported(
+                    "VM \(name) belongs to a different Darkbloom sandbox scope"
+                )
+            )
+        }
+        let marker = try String(
+            contentsOf: virtualMachineDirectory.appendingPathComponent(
+                LumeVirtualMachineOwnership.fileName
+            ),
+            encoding: .utf8
+        )
+        XCTAssertFalse(marker.contains("fencingToken"))
+    }
+
+    func testOwnershipRejectsLegacyUnscopedMarker() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-ownership-legacy-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let name = "sandbox-legacy"
+        let virtualMachineDirectory = root.appendingPathComponent(
+            name,
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: virtualMachineDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = virtualMachineDirectory.appendingPathComponent(
+            LumeVirtualMachineOwnership.fileName
+        )
+        let legacy: [String: Any] = [
+            "schemaVersion": 1,
+            "installationID": UUID().uuidString,
+            "name": name,
+            "cpuCount": 4,
+            "memoryBytes": 8 * SandboxResourcePolicy.gibibyte,
+            "diskBytes": 100 * SandboxResourcePolicy.gibibyte,
+            "sourceKind": "local_template",
+            "sourceReference": "base",
+        ]
+        try JSONSerialization.data(
+            withJSONObject: legacy,
+            options: [.sortedKeys]
+        ).write(to: marker)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: marker.path
+        )
+
+        XCTAssertThrowsError(
+            try LumeVirtualMachineOwnership.requireOwned(
+                name: name,
+                owner: .baseTemplate,
+                in: root
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxRuntimeError,
+                .unsupported(
+                    "VM \(name) ownership marker has an unsupported version"
+                )
+            )
+        }
     }
 }
 
@@ -948,6 +1119,14 @@ private struct FakeLumeFixture {
                 trustPolicy: .developmentAdHoc
             ),
             guestReadinessPolicy: guestReadinessPolicy
+        )
+    }
+
+    func bindOwnership(to scope: SandboxOperationScope) throws {
+        try Self.writeOwnershipMarker(
+            to: virtualMachineDirectory,
+            name: virtualMachineName,
+            owner: .init(operationScope: scope)
         )
     }
 
@@ -1127,28 +1306,19 @@ private struct FakeLumeFixture {
 
     private static func writeOwnershipMarker(
         to virtualMachineDirectory: URL,
-        name: String
+        name: String,
+        owner: LumeVirtualMachineOwnership.Owner = .baseTemplate
     ) throws {
-        let object: [String: Any] = [
-            "schemaVersion": 1,
-            "installationID": UUID().uuidString,
-            "name": name,
-            "cpuCount": 4,
-            "memoryBytes": 8 * 1_024 * 1_024 * 1_024,
-            "diskBytes": 100 * 1_024 * 1_024 * 1_024,
-            "sourceKind": "local_template",
-            "sourceReference": "base",
-        ]
-        let destination = virtualMachineDirectory.appendingPathComponent(
-            LumeVirtualMachineOwnership.fileName
-        )
-        try JSONSerialization.data(
-            withJSONObject: object,
-            options: [.sortedKeys]
-        ).write(to: destination)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o600],
-            ofItemAtPath: destination.path
+        try LumeVirtualMachineOwnership.write(
+            specification: SandboxVirtualMachineSpecification(
+                name: name,
+                resources: SandboxResourceSpecification.macOSSmall(),
+                imageSource: .localTemplate(name: "base"),
+                diskBytes: 100 * SandboxResourcePolicy.gibibyte
+            ),
+            owner: owner,
+            sourceInstallationID: UUID(),
+            to: virtualMachineDirectory
         )
     }
 

@@ -5,12 +5,14 @@ import SandboxRuntime
 public actor LumeLeaseFencedVirtualMachineRuntime {
     private let capacityArbiter: SandboxHostCapacityArbiter
     private let runtime: LumeVirtualMachineRuntime
+    private let storageDirectory: URL
 
     public init(
         configuration: LumeRuntimeConfiguration,
         capacityArbiter: SandboxHostCapacityArbiter
     ) {
         self.capacityArbiter = capacityArbiter
+        self.storageDirectory = configuration.storageDirectory
         self.runtime = LumeVirtualMachineRuntime(
             configuration: configuration,
             capacityArbiter: capacityArbiter
@@ -30,7 +32,15 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
             virtualMachineName: name,
             operation: .inspect
         )
-        return try await runtime.inspect(name: name)
+        let record = try await runtime.inspect(name: name)
+        if record != nil {
+            _ = try LumeVirtualMachineOwnership.requireOwned(
+                name: name,
+                owner: .init(operationScope: scope),
+                in: storageDirectory
+            )
+        }
+        return record
     }
 
     public func create(

@@ -29,12 +29,16 @@ extension LumeVirtualMachineRuntime {
             resources: specification.resources
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
         _ = try await validateRuntime()
         try ensureStorageDirectory()
         if let existing = try await inspect(name: specification.name) {
             guard Self.matches(existing, specification: specification),
                   LumeVirtualMachineOwnership.matches(
                       specification: specification,
+                      owner: owner,
                       in: configuration.storageDirectory
                   )
             else {
@@ -65,11 +69,13 @@ extension LumeVirtualMachineRuntime {
         }
 
         let arguments: [String]
+        var sourceInstallationID: UUID?
         switch specification.imageSource {
         case .restoreImage(let url, let unattendedPreset):
             guard FileManager.default.isReadableFile(atPath: url.path) else {
                 throw SandboxRuntimeError.invalidImageReference
             }
+            sourceInstallationID = nil
             arguments = storageArguments([
                 "create",
                 specification.name,
@@ -87,10 +93,12 @@ extension LumeVirtualMachineRuntime {
             guard try await inspect(name: template) != nil else {
                 throw SandboxRuntimeError.invalidImageReference
             }
-            try LumeVirtualMachineOwnership.requireOwned(
+            let sourceIdentity = try LumeVirtualMachineOwnership.requireOwned(
                 name: template,
+                owner: .baseTemplate,
                 in: configuration.storageDirectory
             )
+            sourceInstallationID = sourceIdentity.installationID
             arguments = [
                 "clone",
                 template,
@@ -120,6 +128,8 @@ extension LumeVirtualMachineRuntime {
             }
             try LumeVirtualMachineOwnership.write(
                 specification: specification,
+                owner: owner,
+                sourceInstallationID: sourceInstallationID,
                 to: creationWorkspace.destination
             )
         } catch {
@@ -172,13 +182,17 @@ extension LumeVirtualMachineRuntime {
             virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
         guard let existing = try await inspect(name: name) else {
             throw SandboxRuntimeError.unsupported(
                 "cannot start missing VM \(name)"
             )
         }
-        try LumeVirtualMachineOwnership.requireOwned(
+        _ = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
+            owner: owner,
             in: configuration.storageDirectory
         )
         if existing.state == .running {
@@ -230,7 +244,10 @@ extension LumeVirtualMachineRuntime {
             )
         } catch {
             do {
-                try await cleanupFailedStartIgnoringCancellation(name: name)
+                try await cleanupFailedStartIgnoringCancellation(
+                    name: name,
+                    owner: owner
+                )
             } catch let cleanupError {
                 throw SandboxRuntimeError.cleanupFailed(
                     operation: "start \(name)",
@@ -264,7 +281,10 @@ extension LumeVirtualMachineRuntime {
             virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
-        try await stopWithoutOperationFence(name: name)
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
+        try await stopWithoutOperationFence(name: name, owner: owner)
     }
 
     public func delete(name: String) async throws {
@@ -290,11 +310,15 @@ extension LumeVirtualMachineRuntime {
             virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
+        let owner = LumeVirtualMachineOwnership.Owner(
+            operationScope: scope
+        )
         guard let existing = try await inspect(name: name) else {
             return
         }
-        try LumeVirtualMachineOwnership.requireOwned(
+        _ = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
+            owner: owner,
             in: configuration.storageDirectory
         )
         guard existing.state == .stopped || existing.state == .failed else {
@@ -338,12 +362,14 @@ extension LumeVirtualMachineRuntime {
     }
 
     private func cleanupFailedStartIgnoringCancellation(
-        name: String
+        name: String,
+        owner: LumeVirtualMachineOwnership.Owner
     ) async throws {
         let process = runningProcesses.removeValue(forKey: name)
         let cleanup = Task.detached {
             try await self.cleanupFailedStart(
                 name: name,
+                owner: owner,
                 process: process
             )
         }
@@ -352,6 +378,7 @@ extension LumeVirtualMachineRuntime {
 
     private func cleanupFailedStart(
         name: String,
+        owner: LumeVirtualMachineOwnership.Owner,
         process: SandboxManagedProcess?
     ) async throws {
         if let process {
@@ -359,11 +386,7 @@ extension LumeVirtualMachineRuntime {
         }
         let state = try await inspect(name: name)?.state
         if state != nil && state != .stopped {
-            _ = try await run(
-                arguments: storageArguments(["stop", name]),
-                timeoutSeconds: configuration.commandTimeoutSeconds,
-                operation: "cleanup stop"
-            )
+            try await stopWithoutOperationFence(name: name, owner: owner)
         }
         try await waitForStoppedOrAbsent(
             name: name,
@@ -389,15 +412,19 @@ extension LumeVirtualMachineRuntime {
         try await cleanup.value
     }
 
-    func stopWithoutOperationFence(name: String) async throws {
+    func stopWithoutOperationFence(
+        name: String,
+        owner: LumeVirtualMachineOwnership.Owner
+    ) async throws {
         guard let existing = try await inspect(name: name) else {
             if let process = runningProcesses.removeValue(forKey: name) {
                 _ = await process.stop()
             }
             return
         }
-        try LumeVirtualMachineOwnership.requireOwned(
+        _ = try LumeVirtualMachineOwnership.requireOwned(
             name: name,
+            owner: owner,
             in: configuration.storageDirectory
         )
         if existing.state == .stopped {

@@ -76,7 +76,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(result.standardErrorTruncated)
     }
 
-    func testEnvelopeBoundsAndDrainsGuestOutput() async throws {
+    func testOneMiBBoundAvoidsArgumentLimitAndDrainsGuestOutput() async throws {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/bin/dd",
@@ -95,15 +95,37 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             maximumOutputBytes:
                 LumeGuestCommandEnvelope.maximumEnvelopeBytes
         )
+        guard process.exitCode == 0,
+              !process.standardOutputTruncated,
+              process.standardError.isEmpty
+        else {
+            XCTFail(
+                "wrapper failed before envelope decode: "
+                    + "exit=\(process.exitCode), "
+                    + "stdout_truncated=\(process.standardOutputTruncated), "
+                    + "stderr="
+                    + String(
+                        decoding: process.standardError,
+                        as: UTF8.self
+                    )
+            )
+            return
+        }
+        XCTAssertGreaterThan(
+            process.standardOutput.count,
+            LumeGuestCommandEnvelope.maximumStreamBytes
+        )
         let result = try LumeGuestCommandResultDecoder.decode(
             process.standardOutput
         )
 
-        XCTAssertEqual(process.exitCode, 0)
         XCTAssertEqual(result.exitCode, 0)
         XCTAssertEqual(
-            result.standardOutput.count,
-            LumeGuestCommandEnvelope.maximumStreamBytes
+            result.standardOutput,
+            Data(
+                repeating: 0,
+                count: LumeGuestCommandEnvelope.maximumStreamBytes
+            )
         )
         XCTAssertTrue(result.standardOutputTruncated)
         XCTAssertFalse(result.standardError.isEmpty)

@@ -43,6 +43,7 @@ enum LumeGuestCommandEncoder {
             stderr_file="$capture_root/stderr"
             stdout_overflow="$capture_root/stdout.overflow"
             stderr_overflow="$capture_root/stderr.overflow"
+            envelope_file="$capture_root/envelope"
             /usr/bin/mkfifo "$stdout_fifo" "$stderr_fifo" || exit 70
 
             capture_stream() {
@@ -83,19 +84,23 @@ enum LumeGuestCommandEncoder {
             && stdout_truncated=true || stdout_truncated=false
             [[ -s "$stderr_overflow" ]] \
             && stderr_truncated=true || stderr_truncated=false
-            stdout_base64=$(/usr/bin/base64 < "$stdout_file" \
-            | /usr/bin/tr -d '\\n') || exit 70
-            stderr_base64=$(/usr/bin/base64 < "$stderr_file" \
-            | /usr/bin/tr -d '\\n') || exit 70
-            /usr/bin/printf \
+            builtin printf \
             '{"magic":"\(LumeGuestCommandEnvelope.magic)",'\
             '"schema_version":\(LumeGuestCommandEnvelope.schemaVersion),'\
             '"exit_code":%d,"stdout_length":%d,"stderr_length":%d,'\
             '"stdout_truncated":%s,"stderr_truncated":%s,'\
-            '"stdout_base64":"%s","stderr_base64":"%s"}\\n' \
+            '"stdout_base64":"' \
             "$command_status" "$stdout_length" "$stderr_length" \
             "$stdout_truncated" "$stderr_truncated" \
-            "$stdout_base64" "$stderr_base64"
+            > "$envelope_file" || exit 70
+            /usr/bin/base64 < "$stdout_file" \
+            | /usr/bin/tr -d '\\n' >> "$envelope_file" || exit 70
+            builtin printf '","stderr_base64":"' \
+            >> "$envelope_file" || exit 70
+            /usr/bin/base64 < "$stderr_file" \
+            | /usr/bin/tr -d '\\n' >> "$envelope_file" || exit 70
+            builtin printf '"}\\n' >> "$envelope_file" || exit 70
+            /bin/cat "$envelope_file" || exit 70
             """
     }
 

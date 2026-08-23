@@ -5,6 +5,44 @@ import Foundation
 import XCTest
 
 final class SandboxDescriptorIOTests: XCTestCase {
+    func testVarAliasCanonicalTraversalPreservesPrivatePrefix() throws {
+        let directory = URL(
+            fileURLWithPath: "/var/tmp",
+            isDirectory: true
+        ).appendingPathComponent(
+            "darkbloom-descriptor-var-alias-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let source = directory.appendingPathComponent("source")
+        let destination = directory.appendingPathComponent("destination")
+        let payload = Data("canonical traversal".utf8)
+        try payload.write(to: source)
+
+        try SandboxDescriptorIO.withStableSourceAndExclusiveDestination(
+            source: source,
+            destination: destination
+        ) { sourceDescriptor, _, destinationDescriptor in
+            let data = try SandboxDescriptorIO.readUpTo(
+                payload.count,
+                from: sourceDescriptor
+            )
+            try SandboxDescriptorIO.writeAll(
+                data,
+                to: destinationDescriptor
+            )
+            return sha256(data)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: destination), payload)
+    }
+
     func testSourceMutationPreventsDestinationPublication() throws {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }

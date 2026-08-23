@@ -611,10 +611,10 @@ private enum SandboxDescriptorPathPolicy {
         _ canonicalPath: String,
         finalFlags: Int32
     ) throws -> Int32 {
-        let components = URL(fileURLWithPath: canonicalPath)
-            .standardizedFileURL
-            .pathComponents
-        guard components.first == "/",
+        let components = canonicalPath
+            .split(separator: "/", omittingEmptySubsequences: false)
+            .map(String.init)
+        guard components.first == "",
               components.count > 1,
               !components.dropFirst().contains(where: {
                   $0.isEmpty || $0 == "." || $0 == ".." || $0.contains("/")

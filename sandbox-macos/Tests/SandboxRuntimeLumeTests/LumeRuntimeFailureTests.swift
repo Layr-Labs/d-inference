@@ -603,7 +603,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
     func testExecuteReplaysCompletedIdempotencyKeyWithoutSecondSSH() async throws {
         let fixture = try FakeLumeFixture(
             initialState: "running",
-            behavior: "authenticated-readiness-executor"
+            behavior: "guest-command-success"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
@@ -631,7 +631,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
     func testExecuteRejectsIdempotencyKeyReuseForDifferentRequest() async throws {
         let fixture = try FakeLumeFixture(
             initialState: "running",
-            behavior: "authenticated-readiness-executor"
+            behavior: "guest-command-success"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
@@ -1457,6 +1457,17 @@ private struct FakeLumeFixture {
       ssh)
         : > "$root/guest-command-started"
         case "$behavior" in
+          guest-command-success)
+            command_attempts=0
+            if [ -f "$root/guest-readiness-probe-attempts" ]; then
+              command_attempts="$(tr -d '\\n' < "$root/guest-readiness-probe-attempts")"
+            fi
+            command_attempts=$((command_attempts + 1))
+            printf '%s\\n' "$command_attempts" \
+              > "$root/guest-readiness-probe-attempts"
+            printf '%s\\n' '{"magic":"darkbloom_guest_result","schema_version":2,"exit_code":0,"stdout_length":0,"stderr_length":0,"stdout_truncated":false,"stderr_truncated":false,"timed_out":false,"stdout_base64":"","stderr_base64":""}'
+            exit 0
+            ;;
           authenticated-readiness-*)
             expected_probe_prefix="/usr/bin/printf '%s' '"
             expected_probe_suffix="' | /usr/bin/base64 -D | /bin/zsh"

@@ -2,11 +2,11 @@ import Foundation
 import SandboxRuntime
 
 package struct LumeGuestReadinessPolicy: Sendable {
-    // Pinned Lume uses a 30-second NIO connect timeout. Five seconds of
-    // controller/CLI headroom keeps each probe finite while the outer
-    // readiness deadline still permits a retry.
+    // Exercise the same launchd-backed wrapper used for tenant commands. The
+    // probe gets the same 35-second Lume budget as a 30-second guest command,
+    // plus five seconds for the host process to collect Lume's result.
     package static let production = LumeGuestReadinessPolicy(
-        attemptTimeoutSeconds: 35,
+        attemptTimeoutSeconds: 40,
         retryDelay: .milliseconds(500)
     )
 
@@ -25,14 +25,22 @@ package struct LumeGuestReadinessPolicy: Sendable {
 }
 
 enum LumeGuestReadinessProbe {
-    static let commandTimeoutSeconds: UInt32 = 1
+    static let guestCommandTimeoutSeconds: UInt32 = 1
+    static let lumeTimeoutSeconds: UInt32 = 35
     static let maximumOutputBytes = 4 * 1_024
-    // Clear the SSH session environment before running a fixed, side-effect
-    // free executable. This command is never derived from a tenant request.
-    static let command = """
-    /usr/bin/env -i HOME=/Users/lume LANG=C LC_ALL=C \
-    PATH=/usr/bin:/bin:/usr/sbin:/sbin TMPDIR=/tmp /usr/bin/true
-    """
+
+    // Run a fixed no-op through the production guest-command wrapper. A bare
+    // SSH command only proves authentication; it does not prove that the
+    // launchd domain, FIFO capture, watchdog, and teardown path are ready.
+    static func command(idempotencyKey: UUID) throws -> String {
+        try LumeGuestCommandEncoder.encode(
+            SandboxGuestCommandRequest(
+                idempotencyKey: idempotencyKey,
+                executable: "/usr/bin/true",
+                timeoutSeconds: guestCommandTimeoutSeconds
+            )
+        )
+    }
 
     static func run(
         runner: SandboxProcessRunner,
@@ -44,31 +52,87 @@ enum LumeGuestReadinessProbe {
         clock: ContinuousClock,
         deadline: ContinuousClock.Instant
     ) async throws -> Bool {
+        let startedAt = Date()
+        // #region agent log
+        LumeRuntimeDebugLog.write(
+            hypothesisId: "A,D",
+            location: "LumeGuestReadinessProbe.swift:run-entry",
+            message: "authenticated readiness probe started",
+            data: [
+                "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
+                "attemptTimeoutSeconds":
+                    String(policy.attemptTimeoutSeconds),
+            ]
+        )
+        // #endregion
         let deterministicEnvironment = environment.merging(
             ["LANG": "C", "LC_ALL": "C"]
         ) { _, deterministic in deterministic }
-        let result = try await LumeGuestReadinessDeadline.run(
-            clock: clock,
-            deadline: deadline
-        ) {
-            try await runner.run(
-                executable: executable,
-                arguments: [
-                    "ssh",
-                    name,
-                    "--storage", storagePath,
-                    "--timeout", String(commandTimeoutSeconds),
-                    "--nio-only",
-                    command,
-                ],
-                environment: deterministicEnvironment,
-                timeoutSeconds: policy.attemptTimeoutSeconds,
-                maximumOutputBytes: maximumOutputBytes
+        do {
+            let encodedCommand = try command(idempotencyKey: UUID())
+            let result = try await LumeGuestReadinessDeadline.run(
+                clock: clock,
+                deadline: deadline
+            ) {
+                try await runner.run(
+                    executable: executable,
+                    arguments: [
+                        "ssh",
+                        name,
+                        "--storage", storagePath,
+                        "--timeout", String(lumeTimeoutSeconds),
+                        "--nio-only",
+                        encodedCommand,
+                    ],
+                    environment: deterministicEnvironment,
+                    timeoutSeconds: policy.attemptTimeoutSeconds,
+                    maximumOutputBytes: maximumOutputBytes
+                )
+            }
+            let guestResult = try? LumeGuestCommandResultDecoder.decode(
+                result.standardOutput
             )
+            let ready = result.exitCode == 0
+                && !result.standardOutputTruncated
+                && !result.standardErrorTruncated
+                && guestResult?.exitCode == 0
+                && guestResult?.timedOut == false
+                && guestResult?.standardOutputTruncated == false
+                && guestResult?.standardErrorTruncated == false
+            // #region agent log
+            LumeRuntimeDebugLog.write(
+                hypothesisId: "A,D",
+                location: "LumeGuestReadinessProbe.swift:run-result",
+                message: "authenticated readiness probe completed",
+                data: [
+                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
+                    "elapsedMilliseconds": String(
+                        Int(Date().timeIntervalSince(startedAt) * 1_000)
+                    ),
+                    "exitCode": String(result.exitCode),
+                    "ready": String(ready),
+                    "stdoutBytes": String(result.standardOutput.count),
+                    "stderrBytes": String(result.standardError.count),
+                ]
+            )
+            // #endregion
+            return ready
+        } catch {
+            // #region agent log
+            LumeRuntimeDebugLog.write(
+                hypothesisId: "A,D",
+                location: "LumeGuestReadinessProbe.swift:run-error",
+                message: "authenticated readiness probe failed",
+                data: LumeRuntimeDebugLog.errorData(error).merging([
+                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
+                    "elapsedMilliseconds": String(
+                        Int(Date().timeIntervalSince(startedAt) * 1_000)
+                    ),
+                ]) { _, observation in observation }
+            )
+            // #endregion
+            throw error
         }
-        return result.exitCode == 0
-            && !result.standardOutputTruncated
-            && !result.standardErrorTruncated
     }
 }
 

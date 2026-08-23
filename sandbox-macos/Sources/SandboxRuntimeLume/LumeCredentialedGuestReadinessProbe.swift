@@ -2,10 +2,10 @@ import Foundation
 import SandboxRuntime
 
 package struct LumeGuestReadinessPolicy: Sendable {
-    // Exercise the same launchd-backed wrapper used for tenant commands. The
-    // probe gets the same 35-second Lume budget as a 30-second guest command,
-    // plus five seconds for the host process to collect Lume's result.
-    package static let production = LumeGuestReadinessPolicy(
+    // Exercise the launchd-backed bootstrap wrapper. The probe gets the same
+    // 35-second Lume budget as a 30-second guest command, plus five seconds for
+    // the host process to collect Lume's result.
+    package static let standard = LumeGuestReadinessPolicy(
         attemptTimeoutSeconds: 40,
         retryDelay: .milliseconds(500)
     )
@@ -24,14 +24,15 @@ package struct LumeGuestReadinessPolicy: Sendable {
     }
 }
 
-enum LumeGuestReadinessProbe {
+enum LumeCredentialedGuestReadinessProbe {
     static let guestCommandTimeoutSeconds: UInt32 = 1
     static let lumeTimeoutSeconds: UInt32 = 35
     static let maximumOutputBytes = 4 * 1_024
 
-    // Run a fixed no-op through the production guest-command wrapper. A bare
-    // SSH command only proves authentication; it does not prove that the
-    // launchd domain, FIFO capture, watchdog, and teardown path are ready.
+    // Run a fixed no-op through the bootstrap guest-command wrapper. This
+    // proves credentialed reachability and executor readiness, not server
+    // identity: production tenant commands remain disabled until a signed
+    // guest-control agent pins a per-VM identity.
     static func command(idempotencyKey: UUID) throws -> String {
         try LumeGuestCommandEncoder.encode(
             SandboxGuestCommandRequest(

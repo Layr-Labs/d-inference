@@ -69,6 +69,49 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testGuestCommandsRequireExplicitDevelopmentBootstrapPolicy()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "guest-command-success"
+        )
+        defer { try? fixture.remove() }
+        let runtime = LumeVirtualMachineRuntime(
+            configuration: try LumeRuntimeConfiguration(
+                executable: fixture.executable,
+                storageDirectory: fixture.storage,
+                commandTimeoutSeconds: 30,
+                createTimeoutSeconds: 30,
+                trustPolicy: .developmentAdHoc
+            )
+        )
+
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/true",
+                    timeoutSeconds: 30
+                )
+            )
+            XCTFail("bootstrap-credential guest execution must default to disabled")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                .unsupported(
+                    "guest commands are disabled until the signed guest-control agent is available"
+                )
+            )
+        }
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .running)
+    }
+
     func testLeaseFencedRuntimeRejectsStaleAndMismatchedMutations() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }
@@ -297,7 +340,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
-    func testAuthenticatedReadinessUsesProductionGuestCommandWrapper() throws {
+    func testCredentialedReadinessUsesBootstrapGuestCommandWrapper() throws {
         let idempotencyKey = UUID(
             uuidString: "B57A4FA2-BCA8-45EF-A7D8-F4A20FE85DBA"
         )!
@@ -306,26 +349,26 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 idempotencyKey: idempotencyKey,
                 executable: "/usr/bin/true",
                 timeoutSeconds:
-                    LumeGuestReadinessProbe.guestCommandTimeoutSeconds
+                    LumeCredentialedGuestReadinessProbe.guestCommandTimeoutSeconds
             )
         )
 
         XCTAssertEqual(
-            try LumeGuestReadinessProbe.command(
+            try LumeCredentialedGuestReadinessProbe.command(
                 idempotencyKey: idempotencyKey
             ),
             expected
         )
-        XCTAssertEqual(LumeGuestReadinessProbe.lumeTimeoutSeconds, 35)
+        XCTAssertEqual(LumeCredentialedGuestReadinessProbe.lumeTimeoutSeconds, 35)
         XCTAssertEqual(
-            LumeGuestReadinessPolicy.production.attemptTimeoutSeconds,
+            LumeGuestReadinessPolicy.standard.attemptTimeoutSeconds,
             40
         )
     }
 
-    func testStartWarmsProductionGuestCommandPathBeforeReturning() async throws {
+    func testStartWarmsBootstrapGuestCommandPathBeforeReturning() async throws {
         let fixture = try FakeLumeFixture(
-            behavior: "authenticated-readiness-executor"
+            behavior: "credentialed-readiness-executor"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(
@@ -348,7 +391,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         async throws
     {
         let fixture = try FakeLumeFixture(
-            behavior: "authenticated-readiness-empty-first"
+            behavior: "credentialed-readiness-empty-first"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(
@@ -367,11 +410,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
         try await runtime.stop(name: fixture.virtualMachineName)
     }
 
-    func testAuthenticatedReadinessRetriesTransientFailuresBeforeSuccess()
+    func testCredentialedReadinessRetriesTransientFailuresBeforeSuccess()
         async throws
     {
         let fixture = try FakeLumeFixture(
-            behavior: "authenticated-readiness-transient"
+            behavior: "credentialed-readiness-transient"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(
@@ -399,12 +442,12 @@ final class LumeRuntimeFailureTests: XCTestCase {
         try await runtime.stop(name: fixture.virtualMachineName)
     }
 
-    func testAlreadyRunningTCPReadyGuestStillRequiresAuthenticatedProbe()
+    func testAlreadyRunningTCPReadyGuestStillRequiresCredentialedProbe()
         async throws
     {
         let fixture = try FakeLumeFixture(
             initialState: "ready",
-            behavior: "authenticated-readiness-blocking"
+            behavior: "credentialed-readiness-blocking"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(
@@ -437,11 +480,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
         try await runtime.stop(name: fixture.virtualMachineName)
     }
 
-    func testAuthenticatedReadinessDeadlineStopsNewlyStartedVirtualMachine()
+    func testCredentialedReadinessDeadlineStopsNewlyStartedVirtualMachine()
         async throws
     {
         let fixture = try FakeLumeFixture(
-            behavior: "authenticated-readiness-blocking"
+            behavior: "credentialed-readiness-blocking"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(
@@ -455,7 +498,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
 
         do {
             try await runtime.start(name: fixture.virtualMachineName)
-            XCTFail("unauthenticated guest readiness must time out")
+            XCTFail("credentialed guest readiness must time out")
         } catch let error as SandboxRuntimeError {
             XCTAssertEqual(
                 error,
@@ -477,11 +520,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(state, .stopped)
     }
 
-    func testCancelledAuthenticatedReadinessCleansUpProbeAndVirtualMachine()
+    func testCancelledCredentialedReadinessCleansUpProbeAndVirtualMachine()
         async throws
     {
         let fixture = try FakeLumeFixture(
-            behavior: "authenticated-readiness-blocking"
+            behavior: "credentialed-readiness-blocking"
         )
         defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(
@@ -1307,7 +1350,8 @@ private struct FakeLumeFixture {
                 storageDirectory: storage,
                 commandTimeoutSeconds: commandTimeoutSeconds,
                 createTimeoutSeconds: commandTimeoutSeconds,
-                trustPolicy: .developmentAdHoc
+                trustPolicy: .developmentAdHoc,
+                guestCommandPolicy: .baseImagePreparationAndDevelopment
             ),
             guestReadinessPolicy: guestReadinessPolicy
         )
@@ -1561,7 +1605,7 @@ private struct FakeLumeFixture {
           state=running
         elif [ "$state" = "running" ]; then
           case "$behavior" in
-            authenticated-readiness-*)
+            credentialed-readiness-*)
               ready=true
               ;;
           esac
@@ -1620,7 +1664,7 @@ private struct FakeLumeFixture {
             fi
             exit 0
             ;;
-          authenticated-readiness-*)
+          credentialed-readiness-*)
             expected_probe_prefix="/usr/bin/printf '%s' '"
             expected_probe_suffix="' | /usr/bin/base64 -D | /bin/zsh -f"
             valid_probe_command=false
@@ -1646,7 +1690,7 @@ private struct FakeLumeFixture {
               || [ "${XDG_CACHE_HOME:-}" != "$root/vms/.darkbloom-runtime/cache" ] \
               || [ "${XDG_CONFIG_HOME:-}" != "$root/vms/.darkbloom-runtime/config" ]; then
               : > "$root/invalid-guest-readiness-probe"
-              printf '%s\\n' "invalid authenticated readiness probe" >&2
+              printf '%s\\n' "invalid credentialed readiness probe" >&2
               exit 64
             fi
             : > "$root/guest-executor-probe-observed"
@@ -1658,7 +1702,7 @@ private struct FakeLumeFixture {
             printf '%s\\n' "$probe_attempts" \
               > "$root/guest-readiness-probe-attempts"
             case "$behavior" in
-              authenticated-readiness-transient)
+              credentialed-readiness-transient)
                 case "$probe_attempts" in
                   1)
                     printf '%s\\n' "SSH authentication failed" >&2
@@ -1675,12 +1719,12 @@ private struct FakeLumeFixture {
                     ;;
                 esac
                 ;;
-              authenticated-readiness-blocking)
+              credentialed-readiness-blocking)
                 printf '%s\\n' "$$" > "$root/guest-readiness-probe-pid"
                 : > "$root/guest-readiness-probe-started"
                 while :; do :; done
                 ;;
-              authenticated-readiness-empty-first)
+              credentialed-readiness-empty-first)
                 if [ "$probe_attempts" -eq 1 ]; then
                   exit 0
                 fi

@@ -60,18 +60,6 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
         try await runtime.start(name: name, scope: scope)
     }
 
-    public func execute(
-        scope: SandboxOperationScope,
-        name: String,
-        request: SandboxGuestCommandRequest
-    ) async throws -> SandboxGuestCommandResult {
-        try await runtime.execute(
-            name: name,
-            scope: scope,
-            request: request
-        )
-    }
-
     public func stop(
         scope: SandboxOperationScope,
         name: String

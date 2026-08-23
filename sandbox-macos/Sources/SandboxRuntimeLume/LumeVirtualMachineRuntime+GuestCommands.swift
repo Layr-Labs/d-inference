@@ -3,7 +3,7 @@ import SandboxCore
 import SandboxRuntime
 
 extension LumeVirtualMachineRuntime {
-    public func execute(
+    package func execute(
         name: String,
         request: SandboxGuestCommandRequest
     ) async throws -> SandboxGuestCommandResult {
@@ -21,6 +21,13 @@ extension LumeVirtualMachineRuntime {
     ) async throws -> SandboxGuestCommandResult {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
+        }
+        guard case .baseImagePreparationAndDevelopment =
+            configuration.guestCommandPolicy
+        else {
+            throw SandboxRuntimeError.unsupported(
+                "guest commands are disabled until the signed guest-control agent is available"
+            )
         }
         let operationLock = try beginOperation("execute", name: name)
         defer {

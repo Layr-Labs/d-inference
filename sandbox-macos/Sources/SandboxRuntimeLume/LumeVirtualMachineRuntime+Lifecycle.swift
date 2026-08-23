@@ -517,7 +517,7 @@ extension LumeVirtualMachineRuntime {
             }
             if record?.guestReady == true {
                 do {
-                    if try await LumeGuestReadinessProbe.run(
+                    if try await LumeCredentialedGuestReadinessProbe.run(
                         runner: processRunner,
                         executable: configuration.executable,
                         storagePath: configuration.storageDirectory.path,

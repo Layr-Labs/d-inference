@@ -145,7 +145,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(result.standardErrorTruncated)
     }
 
-    func testControlShellsIgnoreStartupFilesAndIsolateTargetEnvironment()
+    func testInnerControlShellIgnoresStartupFilesAndIsolatesTargetEnvironment()
         async throws
     {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
@@ -340,6 +340,17 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
         XCTAssertFalse(wrapper.contains(#"[[ ! -e "$status_path" ]]"#))
         XCTAssertFalse(wrapper.contains("command.completed"))
+        XCTAssertTrue(
+            wrapper.contains(
+                """
+                if /bin/mkdir "$terminal_path" 2>/dev/null; then
+                  write_status "$command_status"
+                  /bin/kill -TERM "$watchdog_pid" 2>/dev/null || true
+                fi
+                wait "$watchdog_pid" 2>/dev/null || true
+                """
+            )
+        )
     }
 
     func testCancellationStopsGuestJobBeforeDelayedSideEffect() async throws {

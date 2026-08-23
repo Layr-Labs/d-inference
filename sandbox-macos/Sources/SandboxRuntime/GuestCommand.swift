@@ -116,10 +116,3 @@ public struct SandboxGuestCommandResult: Equatable, Sendable {
         self.timedOut = timedOut
     }
 }
-
-public protocol SandboxGuestCommandRuntime: Sendable {
-    func execute(
-        name: String,
-        request: SandboxGuestCommandRequest
-    ) async throws -> SandboxGuestCommandResult
-}

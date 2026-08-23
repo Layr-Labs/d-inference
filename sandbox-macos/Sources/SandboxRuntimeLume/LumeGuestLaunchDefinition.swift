@@ -66,8 +66,8 @@ enum LumeGuestLaunchDefinition {
             command_status=$?
             if /bin/mkdir "$terminal_path" 2>/dev/null; then
               write_status "$command_status"
+              /bin/kill -TERM "$watchdog_pid" 2>/dev/null || true
             fi
-            /bin/kill -TERM "$watchdog_pid" 2>/dev/null || true
             wait "$watchdog_pid" 2>/dev/null || true
             exit "$command_status"
             """

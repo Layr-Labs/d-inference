@@ -21,12 +21,17 @@ the interfaces in this package. Lume's temporary unattended guest uses its
 known `lume` / `lume` bootstrap credentials, so this slice is restricted to the
 approved no-secrets alpha. Until randomized bootstrap credentials, guest
 control, and egress enforcement pass their live tests, this package is a
-host-substrate proof, not a multi-tenant service.
+host-substrate proof, not a multi-tenant service. The public lease-fenced
+runtime deliberately has no guest-command method.
+`baseImagePreparationAndDevelopment` is an explicit package-only policy for
+base-image preparation and live tests; it is not a production security boundary
+because OpenSSH startup files, launchd metadata, and command-monitor files
+remain writable by the same guest identity.
 
-Guest commands capture stdout and stderr independently, drain both streams
-without retaining unbounded data, and return at most 1 MiB per stream in a
-versioned result envelope with explicit truncation flags. Host child processes
-also start with close-on-exec-by-default descriptor isolation.
+The development bootstrap executor captures stdout and stderr independently,
+drains both streams without retaining unbounded data, and returns at most 1 MiB
+per stream in a versioned result envelope with explicit truncation flags. Host
+child processes also start with close-on-exec-by-default descriptor isolation.
 
 Artifact authentication binds sandbox generation, disk role, and a random
 per-encryption revision ID, so chunks from separate revisions cannot be spliced.
@@ -105,13 +110,14 @@ requires all leases to be released before returning to inference mode. Every
 reservation receives a monotonically increasing fencing token. Retries are
 idempotent only when sandbox generation, VM name, CPU, and memory match.
 `LumeLeaseFencedVirtualMachineRuntime` is the public workload mutation surface:
-create, start, execute, inspect, stop, and delete carry the complete operation
-scope. The underlying Lume actor is package-only, validates the scope while
-holding the per-VM operation lock, and binds create authorization to the
-reserved CPU and memory. A per-sandbox inter-process lease lock spans each VM
-mutation and serializes renewal or release, so a newer fencing token cannot race
-an already-authorized mutation. Expired or draining leases may only stop or
-delete their own VM; they cannot start or execute additional work.
+create, start, inspect, stop, and delete carry the complete operation scope.
+Guest execution is absent until the signed guest-control agent replaces Lume's
+shared bootstrap identity. The underlying Lume actor is package-only, validates
+the scope while holding the per-VM operation lock, and binds create
+authorization to the reserved CPU and memory. A per-sandbox inter-process lease
+lock spans each VM mutation and serializes renewal or release, so a newer
+fencing token cannot race an already-authorized mutation. Expired or draining
+leases may only stop or delete their own VM; they cannot start additional work.
 Each workload VM also carries a fail-closed ownership marker binding its
 installation to the sandbox ID and generation plus its CPU, memory, disk, and
 image source. Renewed fencing tokens retain access to that same generation, but
@@ -188,7 +194,7 @@ darkbloom-sandboxd prepare-base \
 
 The command installs macOS, applies Lume's no-secrets-alpha unattended preset,
 boots the guest without VNC, and waits until a bounded, NIO-only,
-launchd-supervised no-op returns a valid production result envelope. It then
+launchd-supervised no-op returns a valid development proof envelope. It then
 reads the guest OS and architecture and leaves the base stopped. The opt-in live
 suite can clone and run exactly two guests concurrently, prove their filesystems
 are isolated, and leave both clones stopped:

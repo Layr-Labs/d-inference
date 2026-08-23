@@ -118,7 +118,8 @@ final class LumeRuntimeContractTests: XCTestCase {
             storageDirectory: URL(fileURLWithPath: storagePath, isDirectory: true),
             commandTimeoutSeconds: 120,
             createTimeoutSeconds: 7_200,
-            trustPolicy: .developmentAdHoc
+            trustPolicy: .developmentAdHoc,
+            guestCommandPolicy: .baseImagePreparationAndDevelopment
         ))
         let resources = try SandboxResourceSpecification.macOSSmall()
         let specification = try SandboxVirtualMachineSpecification(
@@ -161,7 +162,8 @@ final class LumeRuntimeContractTests: XCTestCase {
             storageDirectory: URL(fileURLWithPath: storagePath, isDirectory: true),
             commandTimeoutSeconds: 120,
             createTimeoutSeconds: 7_200,
-            trustPolicy: .developmentAdHoc
+            trustPolicy: .developmentAdHoc,
+            guestCommandPolicy: .baseImagePreparationAndDevelopment
         ))
         guard try await runtime.inspect(name: baseName)?.state == .stopped else {
             XCTFail("prepare the stopped base image before the two-VM proof")
@@ -297,6 +299,7 @@ final class LumeRuntimeContractTests: XCTestCase {
             ))
         ))
     }
+
 }
 
 private struct LumeLock: Decodable {

@@ -6,6 +6,11 @@ public enum LumeRuntimeTrustPolicy: Sendable {
     case developmentAdHoc
 }
 
+public enum LumeGuestCommandPolicy: Sendable {
+    case disabled
+    case baseImagePreparationAndDevelopment
+}
+
 public struct LumeRuntimeConfiguration: Sendable {
     public static let pinnedRepository = "https://github.com/trycua/cua.git"
     public static let pinnedCommit = "737dc2a069528abadee67526d138a907e1c52061"
@@ -21,13 +26,15 @@ public struct LumeRuntimeConfiguration: Sendable {
     public let commandTimeoutSeconds: UInt32
     public let createTimeoutSeconds: UInt32
     public let trustPolicy: LumeRuntimeTrustPolicy
+    public let guestCommandPolicy: LumeGuestCommandPolicy
 
     public init(
         executable: URL,
         storageDirectory: URL,
         commandTimeoutSeconds: UInt32 = 60,
         createTimeoutSeconds: UInt32 = 7_200,
-        trustPolicy: LumeRuntimeTrustPolicy = .production
+        trustPolicy: LumeRuntimeTrustPolicy = .production,
+        guestCommandPolicy: LumeGuestCommandPolicy = .disabled
     ) throws {
         guard executable.isFileURL,
               executable.baseURL == nil,
@@ -48,5 +55,6 @@ public struct LumeRuntimeConfiguration: Sendable {
         self.commandTimeoutSeconds = commandTimeoutSeconds
         self.createTimeoutSeconds = createTimeoutSeconds
         self.trustPolicy = trustPolicy
+        self.guestCommandPolicy = guestCommandPolicy
     }
 }

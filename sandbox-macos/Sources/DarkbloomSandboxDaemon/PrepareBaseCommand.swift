@@ -28,7 +28,8 @@ enum PrepareBaseCommand {
             createTimeoutSeconds: 7_200,
             trustPolicy: parsed.developmentAdHocLume
                 ? .developmentAdHoc
-                : .production
+                : .production,
+            guestCommandPolicy: .baseImagePreparationAndDevelopment
         ))
         let report = try await MacOSBaseImagePreparer(runtime: runtime).prepare(
             specification: specification

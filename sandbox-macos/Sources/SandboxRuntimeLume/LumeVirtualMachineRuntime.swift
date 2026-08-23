@@ -2,10 +2,7 @@ import Foundation
 import SandboxCore
 import SandboxRuntime
 
-package actor LumeVirtualMachineRuntime:
-    SandboxVirtualMachineRuntime,
-    SandboxGuestCommandRuntime
-{
+package actor LumeVirtualMachineRuntime: SandboxVirtualMachineRuntime {
     let configuration: LumeRuntimeConfiguration
     let workspace: LumeRuntimeWorkspace
     let processRunner: SandboxProcessRunner
@@ -19,7 +16,7 @@ package actor LumeVirtualMachineRuntime:
         configuration: LumeRuntimeConfiguration,
         capacityArbiter: SandboxHostCapacityArbiter? = nil,
         processRunner: SandboxProcessRunner = SandboxProcessRunner(),
-        guestReadinessPolicy: LumeGuestReadinessPolicy = .production
+        guestReadinessPolicy: LumeGuestReadinessPolicy = .standard
     ) {
         self.configuration = configuration
         self.workspace = LumeRuntimeWorkspace(

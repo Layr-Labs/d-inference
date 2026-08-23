@@ -141,7 +141,9 @@ VMs cannot be used as clone templates. Legacy unscoped markers are rejected and
 must be rebuilt rather than inferred.
 
 The alpha policy admits exactly two running sandboxes and enforces aggregate CPU
-and memory limits under an inter-process `flock`. Lease expiry is discovery-only:
+and memory limits under an inter-process `flock` on the already-bound state
+directory inode, not a replaceable global lock pathname. Lease expiry is
+discovery-only:
 expired entries continue consuming capacity until a reconciler has stopped the
 VM and releases the matching fencing token. This prevents a stalled control
 plane from overbooking a host whose guest may still be running.

@@ -109,7 +109,13 @@ package enum SandboxAuthorityFileSystem {
             guard descriptor >= 0 else {
                 throw SandboxAuthorityFileSystemError.io(errno)
             }
-            return descriptor
+            do {
+                try requireTrustedAncestorDirectory(descriptor)
+                return descriptor
+            } catch {
+                close(descriptor)
+                throw error
+            }
         }
         let components = canonicalPath
             .split(separator: "/", omittingEmptySubsequences: false)
@@ -130,6 +136,12 @@ package enum SandboxAuthorityFileSystem {
         guard descriptor >= 0 else {
             throw SandboxAuthorityFileSystemError.io(errno)
         }
+        do {
+            try requireTrustedAncestorDirectory(descriptor)
+        } catch {
+            close(descriptor)
+            throw error
+        }
         for component in components.dropFirst() {
             let next = openat(
                 descriptor,
@@ -140,6 +152,13 @@ package enum SandboxAuthorityFileSystem {
                 let code = errno
                 close(descriptor)
                 throw pathError(code)
+            }
+            do {
+                try requireTrustedAncestorDirectory(next)
+            } catch {
+                close(next)
+                close(descriptor)
+                throw error
             }
             close(descriptor)
             descriptor = next
@@ -167,6 +186,25 @@ package enum SandboxAuthorityFileSystem {
               metadata.st_uid == geteuid(),
               metadata.st_mode & 0o700 == 0o700,
               metadata.st_mode & 0o022 == 0
+        else {
+            throw SandboxAuthorityFileSystemError.unsafePath
+        }
+        try requireNoExtendedACL(descriptor)
+    }
+
+    package static func requireTrustedAncestorDirectory(
+        _ descriptor: Int32
+    ) throws {
+        let metadata = try fileMetadata(descriptor)
+        let ownerIsTrusted =
+            metadata.st_uid == 0 || metadata.st_uid == geteuid()
+        let sharedWrite = metadata.st_mode & 0o022 != 0
+        let protectedSystemTemporaryDirectory =
+            metadata.st_uid == 0 && metadata.st_mode & mode_t(S_ISTXT) != 0
+        guard (metadata.st_mode & S_IFMT) == S_IFDIR,
+              ownerIsTrusted,
+              metadata.st_mode & 0o100 != 0,
+              !sharedWrite || protectedSystemTemporaryDirectory
         else {
             throw SandboxAuthorityFileSystemError.unsafePath
         }

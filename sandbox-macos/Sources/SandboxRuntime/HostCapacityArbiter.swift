@@ -29,6 +29,21 @@ public struct SandboxHostCapacityArbiter: Sendable {
         self.currentDate = currentDate
     }
 
+    package init(
+        stateDirectory: URL,
+        policy: SandboxCapacityPolicy,
+        currentDate: @escaping @Sendable () -> Date,
+        directorySynchronizationError:
+            @escaping @Sendable (Int32) -> Int32?
+    ) throws {
+        self.store = try SandboxCapacityStateStore(
+            stateDirectory: stateDirectory,
+            directorySynchronizationError: directorySynchronizationError
+        )
+        self.policy = policy
+        self.currentDate = currentDate
+    }
+
     @discardableResult
     public func initialize() throws -> SandboxCapacitySnapshot {
         let state = try store.initialize(SandboxCapacityState(

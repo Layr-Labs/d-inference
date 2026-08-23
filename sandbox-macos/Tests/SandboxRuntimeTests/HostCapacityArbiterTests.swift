@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SandboxCore
 @testable import SandboxRuntime
@@ -130,6 +131,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
         try initializeDedicated(arbiter)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
         let sandboxID = SandboxID()
         let firstGeneration = try generation(1)
         let secondGeneration = try generation(2)
@@ -390,6 +392,45 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testRenewConfirmsVisibleStateAfterDirectorySyncError() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try SandboxHostCapacityArbiter(
+            stateDirectory: stateDirectory,
+            policy: SandboxCapacityPolicy(
+                maximumReservedCPUCount: 8,
+                maximumReservedMemoryBytes:
+                    16 * SandboxResourcePolicy.gibibyte
+            ),
+            currentDate: { clock.now() },
+            directorySynchronizationError: { _ in EIO }
+        )
+        try initializeDedicated(arbiter)
+        let initial = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-sync-recovery",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+
+        let renewed = try arbiter.renew(
+            scope: initial.scope,
+            expiresAt: now.addingTimeInterval(240)
+        )
+
+        XCTAssertNotEqual(
+            renewed.scope.fencingToken,
+            initial.scope.fencingToken
+        )
+        XCTAssertEqual(
+            try arbiter.snapshot().leases,
+            [renewed]
+        )
+    }
+
     func testRenewalWaitsForAuthorizedMutationToReleaseFence() async throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
@@ -571,6 +612,33 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testRejectsWritableStateAncestor() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-capacity-ancestor-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let shared = root.appendingPathComponent("shared", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: shared,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o777]
+        )
+        guard chmod(shared.path, 0o777) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arbiter = try makeArbiter(
+            stateDirectory: shared.appendingPathComponent(
+                "capacity",
+                isDirectory: true
+            )
+        )
+
+        assertCapacityError(.unsafeStatePath) {
+            _ = try arbiter.initialize()
+        }
+    }
+
     func testRejectsExtendedACLOnStateDirectory() throws {
         let stateDirectory = temporaryStateDirectory()
         try FileManager.default.createDirectory(
@@ -587,33 +655,69 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
-    func testRejectsHardlinkedStateAndLockFiles() throws {
-        for fileName in ["capacity.json", "capacity.lock"] {
-            let root = FileManager.default.temporaryDirectory
-                .appendingPathComponent(
-                    "darkbloom-capacity-hardlink-\(UUID().uuidString)",
-                    isDirectory: true
-                )
-            let stateDirectory = root.appendingPathComponent(
-                "state",
-                isDirectory: true
-            )
-            try FileManager.default.createDirectory(
-                at: root,
-                withIntermediateDirectories: false,
-                attributes: [.posixPermissions: 0o700]
-            )
-            defer { try? FileManager.default.removeItem(at: root) }
-            let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-            _ = try arbiter.initialize()
-            try FileManager.default.linkItem(
-                at: stateDirectory.appendingPathComponent(fileName),
-                to: root.appendingPathComponent("\(fileName).alias")
-            )
+    func testRejectsHardlinkedStateFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-capacity-hardlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let stateDirectory = root.appendingPathComponent(
+            "state",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        _ = try arbiter.initialize()
+        try FileManager.default.linkItem(
+            at: stateDirectory.appendingPathComponent("capacity.json"),
+            to: root.appendingPathComponent("capacity.json.alias")
+        )
 
-            assertCapacityError(.unsafeStatePath) {
-                _ = try arbiter.snapshot()
-            }
+        assertCapacityError(.unsafeStatePath) {
+            _ = try arbiter.snapshot()
+        }
+    }
+
+    func testRejectsHardlinkedLeaseLock() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-lease-lock-hardlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let stateDirectory = root.appendingPathComponent(
+            "state",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let sandboxID = SandboxID()
+        let lease = try arbiter.reserve(
+            sandboxID: sandboxID,
+            generation: try generation(1),
+            virtualMachineName: "sandbox-lock-hardlink",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        let lockName = "lease-\(sandboxID.description).lock"
+        try FileManager.default.linkItem(
+            at: stateDirectory.appendingPathComponent(lockName),
+            to: root.appendingPathComponent("\(lockName).alias")
+        )
+
+        assertCapacityError(.unsafeStatePath) {
+            _ = try arbiter.renew(
+                scope: lease.scope,
+                expiresAt: now.addingTimeInterval(240)
+            )
         }
     }
 

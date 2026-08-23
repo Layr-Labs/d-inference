@@ -13,12 +13,26 @@ struct SandboxCapacityState: Codable, Equatable {
 
 struct SandboxCapacityStateStore: Sendable {
     private static let stateFileName = "capacity.json"
-    private static let lockFileName = "capacity.lock"
     private static let maximumStateBytes = 1_048_576
 
     private let stateDirectory: URL
+    private let directorySynchronizationError:
+        @Sendable (Int32) -> Int32?
 
     init(stateDirectory: URL) throws {
+        try self.init(
+            stateDirectory: stateDirectory,
+            directorySynchronizationError: { descriptor in
+                fsync(descriptor) == 0 ? nil : errno
+            }
+        )
+    }
+
+    init(
+        stateDirectory: URL,
+        directorySynchronizationError:
+            @escaping @Sendable (Int32) -> Int32?
+    ) throws {
         guard stateDirectory.isFileURL,
               stateDirectory.baseURL == nil,
               stateDirectory.path.hasPrefix("/")
@@ -26,6 +40,7 @@ struct SandboxCapacityStateStore: Sendable {
             throw SandboxCapacityError.unsafeStatePath
         }
         self.stateDirectory = stateDirectory.standardizedFileURL
+        self.directorySynchronizationError = directorySynchronizationError
     }
 
     func initialize(_ initial: SandboxCapacityState) throws -> SandboxCapacityState {
@@ -100,22 +115,12 @@ struct SandboxCapacityStateStore: Sendable {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
 
-        let lockDescriptor = try Self.openLockFile(
-            named: Self.lockFileName,
-            in: directoryDescriptor
-        )
-        defer { close(lockDescriptor) }
-        while flock(lockDescriptor, LOCK_EX) != 0 {
+        while flock(directoryDescriptor, LOCK_EX) != 0 {
             guard errno == EINTR else {
                 throw SandboxCapacityError.io(errno)
             }
         }
-        defer { flock(lockDescriptor, LOCK_UN) }
-        try Self.requireLockBinding(
-            descriptor: lockDescriptor,
-            named: Self.lockFileName,
-            in: directoryDescriptor
-        )
+        defer { flock(directoryDescriptor, LOCK_UN) }
         return try operation(directoryDescriptor)
     }
 
@@ -248,13 +253,30 @@ struct SandboxCapacityStateStore: Sendable {
             ) else {
                 throw SandboxCapacityError.unsafeStatePath
             }
+            let committedData =
+                try SandboxAuthorityFileSystem.readStablePrivateFile(
+                    committedDescriptor,
+                    maximumBytes: Self.maximumStateBytes
+                )
+            guard committedData == data else {
+                throw SandboxCapacityError.unsafeStatePath
+            }
         } catch let error as SandboxCapacityError {
             throw error
         } catch {
             throw Self.authorityError(error)
         }
-        guard fsync(directoryDescriptor) == 0 else {
-            throw SandboxCapacityError.publicationUncertain(errno)
+        if let synchronizationError =
+            directorySynchronizationError(directoryDescriptor)
+        {
+            if let visible = try? readState(from: directoryDescriptor),
+               visible == state
+            {
+                return
+            }
+            throw SandboxCapacityError.publicationUncertain(
+                synchronizationError
+            )
         }
     }
 

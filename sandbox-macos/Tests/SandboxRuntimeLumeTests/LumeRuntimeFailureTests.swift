@@ -27,8 +27,9 @@ final class LumeRuntimeFailureTests: XCTestCase {
         defer { fixture.remove() }
         let runtime = try fixture.makeRuntime()
 
+        let capabilities = try await runtime.capabilities()
         XCTAssertEqual(
-            try await runtime.capabilities().version,
+            capabilities.version,
             LumeRuntimeConfiguration.pinnedVersion
         )
         let handle = try FileHandle(forWritingTo: fixture.executable)
@@ -63,8 +64,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
                 )
             )
         }
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
         XCTAssertEqual(
-            try await runtime.inspect(name: fixture.virtualMachineName)?.state,
+            state,
             .stopped
         )
     }
@@ -86,8 +90,11 @@ final class LumeRuntimeFailureTests: XCTestCase {
         } catch {
             XCTFail("expected CancellationError, got \(error)")
         }
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
         XCTAssertEqual(
-            try await runtime.inspect(name: fixture.virtualMachineName)?.state,
+            state,
             .stopped
         )
     }
@@ -146,14 +153,16 @@ private struct FakeLumeFixture {
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(5))
         repeat {
-            let value = (try? String(contentsOf: state, encoding: .utf8))
-                ?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let contents = try? String(contentsOf: state, encoding: .utf8)
+            let value = contents?.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
             if value == expected {
                 return
             }
             try await Task.sleep(for: .milliseconds(25))
         } while clock.now < deadline
-        XCTFail("fake Lume did not reach \(expected)")
+        throw FakeLumeFixtureError.stateTimeout(expected)
     }
 
     func remove() {
@@ -224,4 +233,8 @@ private struct FakeLumeFixture {
         ;;
     esac
     """
+}
+
+private enum FakeLumeFixtureError: Error {
+    case stateTimeout(String)
 }

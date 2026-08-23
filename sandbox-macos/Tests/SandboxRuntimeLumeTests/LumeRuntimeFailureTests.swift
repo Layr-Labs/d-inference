@@ -323,6 +323,29 @@ final class LumeRuntimeFailureTests: XCTestCase {
         try await runtime.stop(name: fixture.virtualMachineName)
     }
 
+    func testReadinessRejectsSSHSuccessWithoutGuestExecutorEnvelope()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            behavior: "authenticated-readiness-empty-first"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(
+            commandTimeoutSeconds: 4,
+            guestReadinessPolicy: LumeGuestReadinessPolicy(
+                attemptTimeoutSeconds: 1,
+                retryDelay: .milliseconds(10)
+            )
+        )
+
+        try await runtime.start(name: fixture.virtualMachineName)
+
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 2)
+        XCTAssertTrue(fixture.guestExecutorProbeWasObserved)
+        XCTAssertFalse(fixture.invalidGuestReadinessProbeWasObserved)
+        try await runtime.stop(name: fixture.virtualMachineName)
+    }
+
     func testAuthenticatedReadinessRetriesTransientFailuresBeforeSuccess()
         async throws
     {
@@ -1259,6 +1282,11 @@ private struct FakeLumeFixture {
                 printf '%s\\n' "$$" > "$root/guest-readiness-probe-pid"
                 : > "$root/guest-readiness-probe-started"
                 while :; do :; done
+                ;;
+              authenticated-readiness-empty-first)
+                if [ "$probe_attempts" -eq 1 ]; then
+                  exit 0
+                fi
                 ;;
             esac
             printf '%s\\n' '{"magic":"darkbloom_guest_result","schema_version":2,"exit_code":0,"stdout_length":0,"stderr_length":0,"stdout_truncated":false,"stderr_truncated":false,"timed_out":false,"stdout_base64":"","stderr_base64":""}'

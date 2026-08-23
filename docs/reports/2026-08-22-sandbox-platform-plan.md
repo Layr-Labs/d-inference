@@ -57,24 +57,28 @@ The private alpha has these hard constraints:
    quote dimensions.
 8. A normal sandbox receives no fractional GPU guarantee. Timing-sensitive CPU
    or GPU work uses an exclusive-host product.
-9. Compute is metered from `ready` through daemon-confirmed
-   `execution_halted_at`, including at most the pre-funded shutdown guard. New
-   user work is accepted only in `ready`/`executing`. A retained, stopped
-   sandbox pays storage but not a 24-hour compute minimum.
+9. Compute is metered from `ready` through durable `metering_ended_at`, normally
+   backed by daemon-confirmed `execution_halted_at` and otherwise by a bounded
+   host-loss cutoff, including at most the pre-funded shutdown guard. New user
+   work is accepted only in `ready`/`executing`. A retained, stopped sandbox
+   pays storage but not a 24-hour compute minimum.
 
 ### GitHub Actions caveat
 
 "No secrets" and an arbitrary GitHub Actions runner are incompatible. A runner
 uses short-lived registration credentials and receives a `GITHUB_TOKEN`; public
-repositories can still expose repository/environment secrets, OIDC identity,
-write permissions, reusable workflows, or privileged `pull_request_target`
-behavior. A provider can read ephemeral credentials and alter build results.
+repositories can still expose organization/repository/environment secrets,
+inherited reusable-workflow secrets, OIDC identity, write permissions, or
+privileged `pull_request_target` behavior. A provider can read ephemeral
+credentials and alter build results.
 
 The alpha runner gate therefore requires an approved workflow commit SHA,
-read-only token permissions, no OIDC, no repository/environment secrets, no
+read-only token permissions, no OIDC, no organization/repository/environment
+secrets, no `secrets: inherit` or `${{ secrets.* }}` references, no
 release/deploy/signing jobs, no unapproved reusable workflow, and no
-`pull_request_target`. The GitHub App rejects a job when it cannot prove those
-conditions. Jobs use GitHub's
+`pull_request_target`. Actions and reusable workflows must be allowlisted and
+pinned to immutable SHAs. The GitHub App resolves the effective workflow graph
+and rejects a job when it cannot prove those conditions. Jobs use GitHub's
 [JIT runner configuration API](https://docs.github.com/en/rest/actions/self-hosted-runners)
 and an explicitly labeled **no durable secrets, host-trusted integrity** mode.
 
@@ -200,6 +204,12 @@ and key-wrapping primitives into a small Swift module consumed by both
 `ProviderCore` and the new sandbox daemon. The two daemons remain separate
 processes so a VM lifecycle failure cannot terminate inference.
 
+The only shared scheduling primitive is a small physical-host workload arbiter
+keyed by the enrolled hardware identity. It owns mutually exclusive
+`inference`, `draining`, and `sandbox_dedicated` mode leases. Both routing
+chokepoints must consult it atomically; neither scheduler imports the other.
+There is no mixed inference/sandbox host mode in the private alpha.
+
 ## 6. Host runtime
 
 ### 6.1 macOS
@@ -263,14 +273,30 @@ makes the host ineligible for new or renewed capacity leases. The coordinator
 binds the sandbox identity to the already enrolled physical machine and does
 not reuse the inference private key.
 
-The release workflow signs the nested daemon, XPC boundary, and app; embeds
-their distinct provisioning profiles; notarizes the final bundle; and computes
-hashes after signing. APNs code attestation covers the complete signed manifest.
+APNs proves that the bridge has Darkbloom's App ID, Team ID, and push
+entitlement; it does **not** bind an exact `cdhash` or nested daemon/helper
+bytes. The release workflow therefore signs every component, computes
+post-signing hashes and code-directory identities, and signs a release manifest
+containing those values.
+
+For each APNs-delivered nonce, the genuine bridge verifies the running daemon's
+XPC audit token and code signature, verifies installed helper/app bytes against
+that Darkbloom-signed manifest, and forwards the encrypted nonce only to that
+peer together with the verified manifest digest and observed daemon code
+identity. The daemon decrypts the nonce and uses its sandbox-specific Secure
+Enclave key to sign a canonical response binding those values, its public key,
+the daemon WebSocket session key, and connection epoch. The coordinator verifies
+the nonce, signature, blessed manifest digest, and connection binding before
+issuing or renewing capacity. This combined APNs-plus-manifest protocol covers
+the installed release; APNs alone does not. A malicious host root remains inside
+the alpha trust boundary and can subvert local inspection, so this is code-drift
+detection rather than confidential execution.
+
 The installer verifies and installs the LaunchDaemon/LaunchAgent separately.
 Upgrade drains first; rollback accepts only a still-supported signed manifest.
-An independent sandbox protocol/version floor gates eligibility. These steps
-require coordinated changes to the release workflow, installer, release
-manifest, coordinator version gate, and uninstall path.
+An independent sandbox protocol/version and manifest floor gates eligibility.
+These steps require coordinated changes to the release workflow, installer,
+release manifest, coordinator version gate, and uninstall path.
 
 ### 6.2 Linux
 
@@ -321,9 +347,12 @@ workspace quota, not the whole macOS disk. Tenant system changes consume
 copy-on-write boot-disk extents and count toward retained bytes.
 
 The scheduler validates each shape against the selected host. It never
-oversubscribes memory. Shared CPU may be scheduled, but the exclusive shape
-admits no other sandbox or inference workload on that host for the reservation
-window.
+oversubscribes memory. In the private alpha, enabling sandbox service first
+drains inference and atomically acquires the physical host's
+`sandbox_dedicated` workload-mode lease. Standard shapes may share that
+sandbox-only host. The exclusive shape admits no other sandbox for its
+reservation window. A future mixed mode requires a shared resource arbiter and
+measured interference limits; independent capacity counters are insufficient.
 
 An exact chip request such as `chip.name = "M5"` is a hard filter and carries
 the matching posted premium. A portable request should prefer
@@ -355,6 +384,13 @@ an authenticated chunk tree plus the portable VM configuration needed to
 reconstruct local disk images. Linux uses immutable rootfs layers plus a writable
 block overlay.
 
+The portable encrypted generation has four tenant roles: `boot_delta`,
+`workspace`, `auxiliary_storage`, and `vm_configuration`. Auxiliary-storage
+bytes, machine identifiers, hardware model, guest version, and other sensitive
+VM configuration are encrypted under the sandbox DEK. Only the minimum
+non-secret compatibility index needed to find an eligible host remains outside
+that ciphertext.
+
 The 25/50 GiB selection is the workspace logical quota. Billing for retained
 state uses actual unique encrypted boot-delta and workspace bytes, rounded in
 documented units, rather than sparse-disk capacities.
@@ -381,14 +417,18 @@ flowchart TD
   Recovery["Tenant or platform recovery key"] -->|"second wrapped copy"| DEK
   DEK -->|"AEAD + manifest binding"| Boot["Encrypted boot-delta chunks"]
   DEK -->|"AEAD + manifest binding"| Workspace["Encrypted workspace chunks"]
+  DEK -->|"AEAD + manifest binding"| Auxiliary["Encrypted auxiliary storage"]
+  DEK -->|"AEAD + manifest binding"| Config["Encrypted VM configuration"]
   Boot --> Object["Dedicated ciphertext object store"]
   Workspace --> Object
+  Auxiliary --> Object
+  Config --> Object
 ```
 
 - Generate a random 256-bit DEK per sandbox generation.
-- Encrypt chunks with AES-256-GCM or XChaCha20-Poly1305 using unique nonces and
-  authenticated metadata containing sandbox ID, generation, disk role, chunk
-  index, and parent-manifest hash.
+- Encrypt chunks and configuration records with AES-256-GCM or
+  XChaCha20-Poly1305 using unique nonces and authenticated metadata containing
+  sandbox ID, generation, role, chunk/record index, and parent-manifest hash.
 - Commit chunk hashes into an authenticated, versioned Merkle manifest. The
   store accepts a generation only with compare-and-swap against its parent, so
   rollback, omission, reordering, and split-brain writers fail closed.
@@ -539,27 +579,29 @@ stateDiagram-v2
   executing --> ready: command completed, timed out, or cancelled
   executing --> stopping: sandbox cancel or compute lease expiry
   ready --> stopping: pause, idle, or lease expiry
+  executing --> recovering: host unreachable + fence expires
+  ready --> recovering: host unreachable + fence expires
   stopping --> checkpointing: execution halted + retention requested
   stopping --> deleting: ephemeral or delete
+  stopping --> recovering: host disappears before halt confirmation
   checkpointing --> stopped: durable snapshot committed
   checkpointing --> stopped_local: durable upload failed
   stopped_local --> checkpointing: retry upload
-  stopped_local --> stopped: grace expiry + prior snapshot
-  stopped_local --> lost: grace expiry + no prior snapshot
+  stopped_local --> recovering: host lost or grace expires
+  recovering --> stopped: prior durable snapshot selected
+  recovering --> unrecoverable: no durable snapshot
   stopped --> preparing: resume leases acquired
   stopped_local --> preparing: same-host resume leases acquired
-  ready --> deleting: delete or expiry
   stopped --> deleting: delete or expiry
   stopped_local --> deleting: delete or expiry
+  unrecoverable --> deleting: delete or expiry
   deleting --> deleted: keys and records tombstoned
   reserving --> failed
   preparing --> failed
   booting --> failed
-  executing --> lost: execution outcome unknown
   cancelled --> [*]
   failed --> [*]
   deleted --> [*]
-  lost --> [*]
 ```
 
 State transitions are compare-and-swap operations in Postgres with monotonic
@@ -572,7 +614,16 @@ command's state machine.
 preparation/boot failure releases the new leases and returns to the prior
 `stopped` generation; it never destroys the last durable snapshot.
 
-Commands have independent IDs, idempotency keys, and durable states:
+`lost` is a **command outcome**, not a sandbox lifecycle state. After host loss,
+the sandbox enters `recovering` only after its meter is closed and its old fence
+can no longer renew. If a prior durable generation exists, recovery selects it
+and reaches `stopped` while recording that the newer generation and any
+in-flight command were lost. Without a durable generation it becomes
+`unrecoverable`, which preserves an auditable tombstone and permits deletion
+but cannot resume.
+
+Commands have independent IDs, scoped idempotency keys, opaque request
+commitments, and durable states:
 
 ```text
 created → dispatching → accepted → running
@@ -580,11 +631,22 @@ created → dispatching → accepted → running
                   dispatch ambiguity → reconciling → not_started | lost
 ```
 
-The host persists `(sandbox_generation, command_id, fencing_token, accepted)`
-before process spawn, then acknowledges. After reconnect, the coordinator asks
-for that durable operation record. A command is safe to dispatch elsewhere only
-when the host proves `not_started`; any unresolved post-send ambiguity is
-`lost`, even if the coordinator never received acceptance.
+An idempotency key is unique within `(project_id, sandbox_id,
+sandbox_generation)`. The SDK derives an opaque HMAC commitment over every
+behavior-affecting command field using a domain-separated key derived from the
+developer API key, so the coordinator can compare retries without storing
+command plaintext or a dictionary-testable unsalted hash. Reusing the key with
+the same commitment returns the original command; reusing it with a different
+commitment returns `409 IDEMPOTENCY_KEY_REUSED`.
+
+Before process spawn, both coordinator and host durably persist the scope,
+idempotency key, commitment, command ID, fencing token, and acceptance state.
+Host records survive reconnect and coordinator recovery for the lifetime of the
+sandbox generation, so a new command ID cannot bypass deduplication. After
+reconnect, the coordinator asks for that durable operation record. A command is
+safe to dispatch elsewhere only when the host proves `not_started`; any
+unresolved post-send ambiguity is `lost`, even if the coordinator never
+received acceptance.
 
 Two leases are distinct:
 
@@ -598,18 +660,28 @@ The daemon rejects stale tokens and starts no work whose capacity lease cannot
 cover startup. A command's timeout must fit inside the remaining 15-minute
 billable window; the 60-second guard accepts no new user work. At billable
 expiry the daemon terminates processes and durably reports
-`execution_halted_at` after the VM is paused/stopped. Compute metering ends at
-that timestamp, bounded by the pre-funded guard.
+`execution_halted_at` after the VM is paused/stopped.
+
+`metering_ended_at` is the canonical settlement endpoint. On a normal stop it
+equals the earlier of daemon-confirmed `execution_halted_at` and the funded
+cap. If the daemon disappears, `execution_halted_at` remains null and the
+coordinator durably sets `metering_ended_at` to the earliest of the missing-
+heartbeat cutoff, capacity-lease expiry, and funded cap, with
+`metering_end_reason` recording the source. The provider receives no payout
+after that cutoff. This billing cutoff does not prove execution halted and does
+not release the global slot early; reassignment still waits for fencing expiry
+plus the stop/skew guard.
 
 Snapshot encryption/upload then runs as a separately bounded, non-compute
-storage operation. Success reaches `stopped`; failure reaches `stopped_local`,
-which retains a same-host encrypted disk but makes no portable-durability claim.
-Retrying upload remains non-compute. Resuming from either stopped state acquires
-fresh balance and capacity leases; `stopped_local` can resume only on that host.
-Host loss from `stopped_local` loses the uncommitted generation. This state has
-a short platform-funded recovery grace, initially 10 minutes; expiry discards
-the failed local generation and falls back to the previous durable snapshot, or
-becomes `lost` when none exists.
+storage operation after a confirmed halt. Success reaches `stopped`; failure
+reaches `stopped_local`, which retains a same-host encrypted disk but makes no
+portable-durability claim. Retrying upload remains non-compute. Resuming from
+either stopped state acquires fresh balance and capacity leases;
+`stopped_local` can resume only on that host. Host loss from `stopped_local`
+loses the uncommitted generation. This state has a short platform-funded
+recovery grace, initially 10 minutes; expiry enters `recovering`, discards the
+failed local generation, and falls back to the previous durable snapshot or
+becomes `unrecoverable` when none exists.
 
 For capacity fencing, the daemon uses the shorter of signed wall-clock expiry
 and the received lease duration on a monotonic clock and fails closed on
@@ -628,8 +700,11 @@ Deadlines exist at three layers:
 The earliest deadline wins. A command timeout terminates that process and
 returns the sandbox to `ready` while funded time remains. Sandbox/lease timeout
 terminates all processes, waits a fixed grace period, force-stops the VM, and
-records `execution_halted_at`. Checkpoint upload does not extend compute
-billing.
+records `execution_halted_at` and `metering_ended_at`. Active delete follows
+this same stopping path before entering `deleting`. If the host is unreachable,
+the coordinator uses the bounded fallback meter cutoff above and waits for
+fencing safety instead of claiming a confirmed halt. Checkpoint upload does not
+extend compute billing.
 
 Before command dispatch, host failure releases the lease and permits another
 host attempt after fencing safety. After dispatch, the command reconciliation
@@ -643,11 +718,11 @@ Canonical error and settlement behavior:
 | `QUEUE_TIMEOUT` | Sandbox becomes `cancelled` | None |
 | `PREPARE_FAILED` | Sandbox becomes `failed` | None |
 | `BOOT_FAILED` | Sandbox becomes `failed` | None |
-| `COMMAND_DISPATCH_UNKNOWN` | Reconcile, then `not_started` or `lost` | Observed compute through halt; no duplicated command |
+| `COMMAND_DISPATCH_UNKNOWN` | Reconcile, then `not_started` or `lost` | Observed compute through `metering_ended_at`; no duplicated command |
 | `COMMAND_TIMEOUT` | Command `timed_out`; sandbox returns ready if funded time remains | Compute continues only until idle/lease stop |
-| `CHECKPOINT_FAILED` | Sandbox becomes `stopped_local`; retry or same-host resume | Compute ended at `execution_halted_at`; no durable-storage charge for failed generation |
-| `LEASE_EXPIRED` | Fail-closed halt; sandbox checkpoints or becomes `stopped_local`/`lost` | Capped by billable window plus pre-funded guard |
-| `HOST_LOST` | Pre-dispatch retry after fence; post-dispatch `lost` | No later than heartbeat cutoff |
+| `CHECKPOINT_FAILED` | Sandbox becomes `stopped_local`; retry or same-host resume | Compute already ended at `metering_ended_at`; no durable-storage charge for failed generation |
+| `LEASE_EXPIRED` | Fail-closed halt; sandbox checkpoints, becomes `stopped_local`, or enters recovery after host loss | Capped by billable window plus pre-funded guard |
+| `HOST_LOST` | Pre-dispatch retry after fence; in-flight command becomes `lost`; sandbox recovers a prior generation or becomes `unrecoverable` | Ends at bounded `metering_ended_at`; slot remains fenced until safe |
 | `INSUFFICIENT_BALANCE` | Renewal/create rejected; controlled stop | Existing authorized lease only |
 
 ## 12. Scheduling
@@ -657,12 +732,14 @@ Scheduling is filter-then-rank:
 1. Filter for permission, trust, daemon/runtime version, OS image, chip
    requirement, computer-use capability, region, egress policy, disk, vCPU,
    memory, exclusivity, and posted-price ceiling.
-2. Atomically acquire host resources and a global macOS capacity lease with a
-   new fencing token.
-3. Rank eligible offers by final quoted price plus measured startup,
+2. Rank eligible offers by final quoted price plus measured startup,
    reliability, load, and cache-miss costs.
-4. Add a bounded sticky-cache preference.
-5. Use random spread only among near-equal candidates.
+3. Add a bounded sticky-cache preference and random spread only among
+   near-equal candidates.
+4. Atomically acquire the selected host resources, physical-host workload mode,
+   and global macOS capacity lease with a new fencing token.
+5. If that compare-and-swap loses a race, refresh candidates and rerank; never
+   reserve an unranked host merely because it was observed first.
 
 The capacity-lease record includes every resource deducted from host capacity,
 `lease_until`, coordinator epoch, sandbox generation, and fencing token.
@@ -672,6 +749,9 @@ coordinator recovery all converge on the same idempotent release path.
 The global two-macOS limit is acquired in the same transaction as the lease and
 sandbox state transition. Expired/stale holders cannot renew or mutate state.
 A process-local counter or a durable row without host fencing is insufficient.
+The physical-host mode lease is acquired in that transaction as well. Inference
+routing refuses a host in `sandbox_dedicated` mode, and sandbox admission
+refuses a host until inference has drained and released `inference` mode.
 
 ## 13. Billing and settlement
 
@@ -705,8 +785,9 @@ heartbeats:
 
 - no charge for a sandbox that never reaches `ready`;
 - an optional boot fee only after successful guest readiness;
-- compute from `ready` through durable daemon-confirmed
-  `execution_halted_at`, capped by the billable window plus shutdown guard;
+- compute from `ready` through durable `metering_ended_at`, normally backed by
+  daemon-confirmed `execution_halted_at` and otherwise by the bounded
+  host-loss cutoff, capped by the billable window plus shutdown guard;
 - storage by actual retained encrypted bytes over time;
 - no compute charge while checkpointing, `stopped_local`, or `stopped`;
 - no charge after a missing heartbeat grace limit; and
@@ -730,6 +811,7 @@ Add focused store domains instead of extending the inference usage model:
 |---|---|
 | `sandbox_hosts` | Attested host identity and durable operator ownership |
 | `sandbox_offers` | Runtime capabilities, posted rates, and availability |
+| `host_workload_leases` | Physical-host inference/draining/sandbox mode fence |
 | `sandbox_key_policies` | Per-API-key product, resource, egress, viewer, and spend limits |
 | `sandboxes` | Owner, desired shape, lifecycle state, generation, and expiry |
 | `sandbox_balance_holds` | Durable consumer authorization by quote and lease |
@@ -801,6 +883,8 @@ Provider to coordinator:
 
 - `sandbox_host_register`
 - `sandbox_host_heartbeat`
+- `sandbox_apns_token_update`
+- `sandbox_code_attestation_response`
 - `sandbox_prepare_status`
 - `sandbox_ready`
 - `sandbox_command_accepted`
@@ -812,6 +896,7 @@ Provider to coordinator:
 
 Coordinator to provider:
 
+- `sandbox_code_attestation_status`
 - `sandbox_prepare`
 - `sandbox_lease_renew`
 - `sandbox_command`
@@ -823,9 +908,20 @@ Coordinator to provider:
 
 Connection-level messages carry protocol version, authenticated host ID,
 coordinator epoch, connection epoch, and per-direction sequence. Registration
-has no sandbox fields. Sandbox-operation messages additionally require sandbox
-ID, sandbox generation, operation ID, and fencing token. Heartbeats carry a
-bounded summary of active lease IDs/tokens for reconciliation.
+has no sandbox-operation fields and carries the current APNs token/environment,
+release-manifest digest, daemon session key, and physical-host workload mode.
+Token rotation uses `sandbox_apns_token_update`. The coordinator sends an
+encrypted `sandbox_code_attestation_challenge` through APNs, not through the
+WebSocket. The bridge/daemon returns the nonce-bound
+`sandbox_code_attestation_response` over the authenticated WebSocket, and the
+coordinator returns `sandbox_code_attestation_status`. Reconnect, token
+rotation, manifest change, Aqua-session recovery, and periodic expiry all force
+a fresh exchange; failure prevents lease issue/renewal.
+
+Sandbox-operation messages additionally require sandbox ID, sandbox generation,
+operation ID, and fencing token. Command messages also carry the scoped
+idempotency key and opaque request commitment. Heartbeats carry a bounded
+summary of active lease IDs/tokens for reconciliation.
 
 The receiver persists the highest contiguous sequence/operation result, rejects
 stale fencing tokens, ignores exact duplicates, and requests replay for a
@@ -854,14 +950,21 @@ claims to support.
   global limit.
 - Capacity-lease tests across partition, coordinator failover, host sleep,
   clock skew, stale fencing token, and reconnect.
+- Physical-host mode tests proving inference cannot route while sandbox mode is
+  active and sandbox mode cannot activate until inference drains.
 - Crash-recovery tests between hold, host reservation, ready, settlement, and
   release.
 - Compute-lease renewal and insufficient-balance tests proving the daemon stops
   before authorization expires.
 - Full 15-minute command plus shutdown-guard tests proving user work cannot
-  consume the guard and compute ends at `execution_halted_at`.
+  consume the guard and normal compute ends at confirmed
+  `execution_halted_at`/`metering_ended_at`.
 - Command dispatch/ack crash tests proving ambiguous side effects become
   `lost`, never a transparent retry.
+- Command idempotency tests for same-key replay, mismatched commitment,
+  coordinator recovery, and a changed command ID.
+- Host-loss settlement tests proving fallback `metering_ended_at` closes
+  billing without falsely setting `execution_halted_at` or releasing a fence.
 - API-key/policy absence, revision, downgrade, and mid-command revocation tests.
 - Protocol symmetry fixtures decoded in both Go and Swift.
 - Exact micro-USD billing tests across rounding and deadline boundaries.
@@ -875,14 +978,15 @@ claims to support.
 - Host-path, LAN, metadata, and cross-sandbox access denial.
 - Packet-gateway tests for IPv4 private/link-local ranges, DNS rebinding,
   malformed frames, helper crash, stale policy, rule cleanup, and disabled IPv6.
-- Encrypted-overlay tamper, wrong-key, replay, deletion, and host-migration
-  tests.
+- Encrypted boot/workspace/auxiliary/configuration tamper, wrong-key, replay,
+  deletion, and host-migration tests.
 - Object-store outage, partial materialization, manifest rollback, backup
   retention, `stopped_local`, and both recovery-mode tests.
 - Fresh machine/auxiliary identity on create, preserved portable configuration,
   and surfaced host-derived identity change on stopped migration.
-- Signed bundle, provisioning profile, entitlement, APNs challenge, installer,
-  Aqua-session/XPC loss, drain-upgrade, and rollback verification.
+- Signed bundle, provisioning profile, entitlement, APNs challenge,
+  audit-token peer binding, blessed-manifest mismatch, token rotation,
+  installer, Aqua-session/XPC loss, drain-upgrade, and rollback verification.
 - Power-loss simulation while writing a snapshot.
 - Approved-SHA public GitHub workflow with read-only token; explicit rejection
   of OIDC, secrets, write permissions, release/deploy/signing,
@@ -939,7 +1043,8 @@ state is reproducible. Record measured limits instead of projecting them.
 Implement sandbox tables, canonical state/command transitions, quotes, durable
 balance holds, compute and fenced capacity leases, settlement, host
 registration, the dedicated protocol, atomic two-slot admission, API-key
-sandbox policies, and API idempotency.
+sandbox policies, scoped command idempotency, and the physical-host workload
+mode fence.
 
 Gate: restart and concurrency tests prove there is no double allocation,
 double charge, leaked hold, unfunded execution, stale-fence mutation, or third
@@ -949,14 +1054,17 @@ billable macOS admission.
 
 Ship the signed sandbox daemon, VZ runtime adapter, guest agent, base-image
 pipeline, command/file API, egress isolation, fixed shapes, 25/50 GiB workspace,
-encrypted boot/workspace snapshots, dual recovery modes, portable restore,
-retained-storage metering, timeouts, and provider drain controls.
+encrypted boot/workspace/auxiliary/configuration snapshots, dual recovery modes,
+portable restore, retained-storage metering, timeouts, provider drain controls,
+and dedicated sandbox-host mode. Mixed inference/sandbox operation remains
+disabled.
 
 Gate: the full developer journey works on two real VMs, failed starts are free,
 command timeouts stop the process, lease expiry durably halts execution and
 billing before checkpoint upload, pause/resume restores exact bytes, and host
-loss produces the documented non-replayed `lost` result. The named legal owner
-must record launch approval before this phase serves external developers.
+loss produces the documented non-replayed in-flight command `lost` result. The
+named legal owner must record launch approval before this phase serves external
+developers.
 
 ### Phase 3 — sticky cache and GitHub Actions
 
@@ -1022,6 +1130,7 @@ These defaults make the plan executable without hiding product decisions:
 | Linux substrate | Firecracker+jailer |
 | Normal GPU claim | None |
 | Timing-sensitive tier | Exclusive whole host |
+| Host coexistence | Sandbox-dedicated mode; inference drained and fenced out |
 | Provider data access claim | Host is trusted in alpha |
 | macOS host session | Dedicated Aqua account remains logged in for APNs |
 | Recovery | Platform-managed default; tenant-managed option |

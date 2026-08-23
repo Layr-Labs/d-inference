@@ -242,14 +242,19 @@ Virtualization.framework does not expose fractional GPU partitioning or vCPU
 core pinning. Price timing-sensitive work as a host reservation:
 
 ```text
-exclusive price =
-  max(full allocatable host resource quote, provider exclusive floor)
-  + 20% exclusivity premium
+exclusive gross price =
+  max(
+    full allocatable host resource quote × 1.20,
+    provider exclusive net floor / provider compute share
+  )
 ```
 
 The host must drain inference and every other sandbox before the reservation
-starts. The quote names the physical chip and benchmark result. "20 GPU cores"
-describes hardware; it does not promise 20 isolated guest GPU cores.
+starts. Grossing up the provider's net floor by the quoted provider share
+guarantees settlement cannot fall below that floor; comparing a gross developer
+price directly with a net provider floor would be invalid. The quote names the
+physical chip and benchmark result. "20 GPU cores" describes hardware; it does
+not promise 20 isolated guest GPU cores.
 
 Do not offer an SLA for guest Metal compute until the specific application is
 benchmarked. Apple's macOS guest uses a paravirtualized graphics path rather
@@ -274,8 +279,8 @@ Do not recover failed-start cost through an opaque minimum command charge.
 | Provider/image fails before ready | No compute or boot charge | No payout | Absorbs control-plane/transfer cost |
 | Platform image is invalid fleet-wide | No charge | Optional measured transfer reimbursement | Absorbs fault and remediation |
 | Developer cancels during preparation | Pays only a disclosed cancellation fee, initially $0 | No compute; boot fee only if already ready | Releases holds |
-| Host fails after ready, before command dispatch | Pays observed ready time only | Receives share of settled ready time | Refunds unused hold |
-| Command outcome is ambiguous after dispatch | Pays no later than lease/heartbeat cutoff | Receives only settled observed usage | Marks `lost`; no replay |
+| Host fails after ready, before command dispatch | Pays observed ready time through bounded `metering_ended_at` | Receives share of settled ready time | Refunds unused hold; retains slot fence until safe |
+| Command outcome is ambiguous after dispatch | Pays no later than bounded `metering_ended_at` | Receives only settled observed usage | Marks command `lost`; no replay |
 | Successful boot then immediate developer stop | Pays ready time plus quoted boot fee | Receives boot/compute shares | No clawback absent provider fault |
 
 Provider reserve prices are named **net payouts per shape**. Eligibility requires
@@ -366,7 +371,9 @@ utilization in this order:
 1. keep the global macOS launch cap at two until demand is observed;
 2. prebuild a small set of fixed shapes to reduce memory fragmentation;
 3. prefer a verified sticky host only after hard eligibility checks;
-4. let inference and sandbox workloads coexist only after measured isolation;
+4. keep alpha sandbox hosts in fenced `sandbox_dedicated` mode; consider mixed
+   inference/sandbox operation only after an atomic shared resource arbiter and
+   measured isolation;
 5. use provider posted availability windows;
 6. offer stopped storage without holding compute capacity; and
 7. add hosts only when queue latency and rejected demand justify them.
@@ -397,11 +404,16 @@ pricing model as if it were total sandbox memory.
 ## 10. Metering rules
 
 Compute billing starts at `ready`, not when image download begins. It ends at
-durable daemon-confirmed `execution_halted_at`, bounded by the earliest
-sandbox/idle/lease/heartbeat/failure stop plus the pre-funded one-minute guard.
+durable `metering_ended_at`. On normal shutdown that is the earlier of
+daemon-confirmed `execution_halted_at` and the funded cap. If the host
+disappears, `execution_halted_at` remains null and the coordinator uses the
+earliest missing-heartbeat cutoff, capacity-lease expiry, or funded cap, with a
+recorded `metering_end_reason`. That conservative billing cutoff does not prove
+the VM stopped or release its global slot before the fencing guard expires.
+
 A command deadline is process-only: the sandbox can return to `ready`, so the
 compute meter continues until idle or sandbox/lease stop. Snapshot
-encryption/upload occurs after execution halts and is not compute-billed.
+encryption/upload occurs after a confirmed halt and is not compute-billed.
 
 Meter in bounded slices, for example 30 seconds, but price to the exact observed
 millisecond or second using integer arithmetic. The slice is a persistence and
@@ -418,7 +430,7 @@ The coordinator settles:
 
 ```text
 settlement =
-  min(ready_to_execution_halted_duration, billable_window_plus_guard)
+  min(ready_to_metering_ended_duration, billable_window_plus_guard)
   × immutable_quote_rates
   + accepted_storage
   + accepted_egress
@@ -431,10 +443,11 @@ provider omitted a stop event.
 Renewal first settles prior usage, then checks `settled spend + all open holds`
 against account/key/project limits, places the next hold, and only then extends
 the lease. If renewal fails, the daemon accepts no new work, records
-`execution_halted_at` inside the funded guard, then checkpoints as a
-non-compute operation. Storage authorization renews separately while stopped;
-an unpaid sandbox enters a bounded deletion grace period with no compute
-capacity.
+`execution_halted_at` and `metering_ended_at` inside the funded guard, then
+checkpoints as a non-compute operation. If the daemon is gone, the coordinator
+records only the bounded fallback `metering_ended_at`. Storage authorization
+renews separately while stopped; an unpaid sandbox enters a bounded deletion
+grace period with no compute capacity.
 
 ## 11. Measurements required before locking prices
 
@@ -471,7 +484,8 @@ Proceed from private alpha only if all are true:
 5. developer quotes remain competitive with E2B for Linux and visibly valuable
    for macOS; and
 6. exclusive-host pricing covers the full displaced inference and sandbox
-   opportunity cost.
+   opportunity cost and grosses every provider net floor up by the applicable
+   provider share.
 
 The economic thesis is therefore testable: Darkbloom does not need cheaper
 electricity than cloud vendors. It needs adequate utilization, reliable hosts,

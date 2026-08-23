@@ -199,6 +199,7 @@ const result = await sandbox.commands.run({
     CI: "true",
   },
   timeoutMs: 10 * 60 * 1000,
+  idempotencyKey: crypto.randomUUID(),
   onStdout: (chunk) => process.stdout.write(chunk),
   onStderr: (chunk) => process.stderr.write(chunk),
 });
@@ -217,6 +218,9 @@ Command behavior is explicit:
 - the alpha allows one active command per sandbox;
 - a command must fit inside the funded compute lease or atomically renew it
   before dispatch;
+- idempotency keys are scoped to project, sandbox, and generation; an exact
+  retry returns the original command, while changed command fields with the
+  same key return `409 IDEMPOTENCY_KEY_REUSED`;
 - the terminal result is `succeeded`, `failed`, `timed_out`, `cancelled`, or
   `lost`; and
 - `lost` means a dispatched command may have produced side effects and its
@@ -240,7 +244,10 @@ await sandbox.renewComputeLease({
 Renewal settles prior usage, checks settled spend plus every open hold, places a
 new durable hold, then extends execution. Failure halts the VM inside the
 already funded one-minute shutdown guard. Snapshot encryption/upload happens
-after `execution_halted_at` and is not compute-billed.
+after confirmed `execution_halted_at` and is not compute-billed. If the host
+disappears instead, the coordinator closes billing at bounded
+`metering_ended_at`, leaves `execution_halted_at` null, and waits for the
+capacity fence to expire before recovery or reassignment.
 
 ### 1.5 Files
 
@@ -298,7 +305,8 @@ is billed, no durable-storage charge settles for that generation, and the
 developer may retry upload or acquire fresh leases for same-host resume. Host
 loss can destroy that uncommitted generation. A 10-minute platform-funded grace
 then discards it and falls back to the prior durable snapshot, or reports
-`lost` when no prior generation exists.
+`unrecoverable` when no prior generation exists. Any in-flight command may
+separately have the terminal outcome `lost`.
 
 The dashboard shows the sparse boot image, logical workspace quota, boot-delta
 bytes, and actual encrypted retained bytes separately. Increasing the workspace
@@ -346,10 +354,13 @@ and destroys it afterward.
 This mode still handles a short-lived GitHub credential. The guarantee is **no
 durable developer secrets and host-trusted integrity**, not literally zero
 credentials. The GitHub App requires an approved workflow commit SHA,
-read-only `GITHUB_TOKEN`, no OIDC, no repository/environment secrets, no
-release/deploy/signing job, no `pull_request_target`, and no unapproved reusable
-workflow. It rejects jobs whose effective policy cannot be proven before asking
-GitHub for JIT configuration.
+read-only `GITHUB_TOKEN`, no OIDC, no
+organization/repository/environment secrets, no `secrets: inherit` or
+`${{ secrets.* }}` references, no release/deploy/signing job, no
+`pull_request_target`, and no unapproved reusable workflow or action. Every
+action and reusable workflow must be pinned to an approved immutable SHA. It
+rejects jobs whose fully resolved workflow graph cannot prove those conditions
+before asking GitHub for JIT configuration.
 
 Private source remains outside the alpha contract. The host provider can still
 read the ephemeral runner token, alter source or outputs, and forge a successful
@@ -416,6 +427,8 @@ Each command response includes a machine-readable usage summary:
   "usage": {
     "compute_lease_id": "scl_01K...",
     "execution_halted_at": null,
+    "metering_ended_at": null,
+    "metering_end_reason": null,
     "ready_ms": 631442,
     "cpu_count": 4,
     "memory_mib": 8192,
@@ -429,11 +442,13 @@ Each command response includes a machine-readable usage summary:
 ```
 
 The numbers are informational until the matching immutable settlement ID is
-present. A project may set `maxTotalMicroUSD` on create. The coordinator checks
-settled usage plus all open compute/storage/egress holds atomically, refuses a
-renewal that would cross the bound, and checkpoints/stops before the current
-funded lease expires. It does not merely block the next command while idle
-compute keeps accruing.
+present. Final settlement always has `metering_ended_at`; normal shutdown also
+has `execution_halted_at`, while host-loss settlement records a bounded
+`metering_end_reason` without pretending the daemon confirmed a stop. A project
+may set `maxTotalMicroUSD` on create. The coordinator checks settled usage plus
+all open compute/storage/egress holds atomically, refuses a renewal that would
+cross the bound, and checkpoints/stops before the current funded lease expires.
+It does not merely block the next command while idle compute keeps accruing.
 
 ### 1.10 Developer dashboard
 
@@ -472,6 +487,7 @@ The doctor reports pass/fail for:
 - encrypted APFS workspace;
 - outbound coordinator and relay connectivity;
 - image signature verification;
+- blessed release-manifest and running daemon code-identity verification;
 - network isolation rules;
 - power/sleep settings;
 - guest image compatibility; and
@@ -530,14 +546,17 @@ darkbloom sandbox host enable
 
 `prefetch` downloads a signed, content-addressed base image and verifies it
 before advertisement. `benchmark` measures boot, CPU, disk, network, and
-checkpoint performance and assigns a benchmark class. `enable` launches the
-separate `darkbloom-sandboxd` service and registers offers.
+checkpoint performance and assigns a benchmark class. `enable` first drains
+inference on that physical Mac, then atomically acquires its
+`sandbox_dedicated` workload-mode lease before launching the separate
+`darkbloom-sandboxd` service and registering offers.
 
-The inference provider may keep running. Capacity accounting subtracts explicit
-host reserves, and exclusive-host offers require inference to drain before a
-sandbox can be accepted. If reliable coexistence cannot be demonstrated, the
-product requires dedicated sandbox hosts instead of pretending isolation is
-free.
+Inference does not keep serving on an alpha sandbox host. The inference routing
+gate rejects a machine in `sandbox_dedicated` mode, and sandbox admission
+rejects one until inference has drained and released its mode lease. A future
+mixed mode requires an atomic cross-plane resource arbiter plus measured
+interference limits; subtracting two independent capacity counters is not
+sufficient.
 
 ### 2.4 Normal job lifecycle
 
@@ -582,6 +601,7 @@ The daemon accepts resources only with a current capacity lease and fencing
 token, and releases them through one idempotent cleanup path. It stops before a
 lease expires and refuses a new job when:
 
+- the physical host lacks a current `sandbox_dedicated` workload-mode lease;
 - free memory or disk is below the declared reserve;
 - the host is thermally constrained or sleeping;
 - image/key verification fails;
@@ -666,7 +686,9 @@ Drain behavior:
 
 `disable` without a drain is rejected while commands execute unless the
 provider passes an explicit emergency flag. Emergency stop produces `lost`
-outcomes, stops billing at the coordinator deadline, and lowers reliability.
+outcomes for ambiguous in-flight commands, closes billing at bounded
+`metering_ended_at`, then leaves the sandbox to recover its prior durable
+generation or become `unrecoverable`. It lowers provider reliability.
 
 Daemon upgrades use the same drain contract. Existing encrypted snapshots stay
 versioned; an upgrade cannot silently rewrite their format.
@@ -704,11 +726,17 @@ views use the same canonical sandbox states:
 | `checkpointing` | Execution halted; durable upload in progress | No compute meter; snapshot not yet durable |
 | `stopped` | No compute charge | Resources released; storage retained |
 | `stopped_local` | Durable upload failed; same-host recovery only | CPU/memory released; local encrypted disk retained |
+| `recovering` | Host/generation loss is being reconciled | Old fence expired; prior durable generation being selected |
+| `unrecoverable` | No durable generation can resume | Auditable tombstone remains; delete is allowed |
 | `deleting` | Irreversible cleanup | Keys tombstoned, bytes reclaiming |
 | `failed` | Never became usable | Pre-ready terminal failure; no compute |
 | `cancelled` | Queue/create cancelled before use | No charge or host lease |
-| `lost` | Dispatched side effects may have occurred | Outcome cannot be reconciled |
 | `deleted` | Resource gone | No remaining billable retention |
+
+`lost` remains a terminal **command** outcome: dispatch may have produced side
+effects, but the result cannot be reconciled. It never prevents sandbox
+cleanup. The sandbox either recovers a prior durable generation or becomes
+`unrecoverable`.
 
 Errors carry:
 

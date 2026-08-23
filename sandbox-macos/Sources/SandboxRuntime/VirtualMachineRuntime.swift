@@ -87,7 +87,7 @@ public enum SandboxVirtualMachineImageSource: Equatable, Sendable {
     }
 }
 
-private func isValidVirtualMachineName(_ name: String) -> Bool {
+func isValidVirtualMachineName(_ name: String) -> Bool {
     guard (1...63).contains(name.utf8.count),
           (name.first?.isLetter == true || name.first?.isNumber == true),
           (name.last?.isLetter == true || name.last?.isNumber == true)

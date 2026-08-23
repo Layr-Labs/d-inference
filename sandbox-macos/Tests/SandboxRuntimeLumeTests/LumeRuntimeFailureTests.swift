@@ -704,6 +704,48 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
     }
 
+    func testTimedOutReplayStopsRunningVirtualMachineWithoutSecondExecution()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "guest-command-timeout"
+        )
+        defer { try? fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/bin/sleep",
+            arguments: ["60"],
+            timeoutSeconds: 1
+        )
+
+        for attempt in 1...2 {
+            if attempt == 2 {
+                try Data("running\n".utf8).write(to: fixture.state)
+            }
+            do {
+                _ = try await runtime.execute(
+                    name: fixture.virtualMachineName,
+                    request: request
+                )
+                XCTFail("a timed-out command must throw")
+            } catch let error as SandboxRuntimeError {
+                XCTAssertEqual(
+                    error,
+                    .operationTimedOut(
+                        "\(fixture.virtualMachineName) guest command"
+                    )
+                )
+            }
+            let state = try await runtime.inspect(
+                name: fixture.virtualMachineName
+            )?.state
+            XCTAssertEqual(state, .stopped)
+        }
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 2)
+    }
+
     func testCancelledCreateRemovesNamedAndTemporaryArtifacts() async throws {
         let fixture = try FakeLumeFixture(
             initialState: nil,
@@ -1520,9 +1562,22 @@ private struct FakeLumeFixture {
             fi
             exit 0
             ;;
+          guest-command-timeout)
+            command_attempts=0
+            if [ -f "$root/guest-readiness-probe-attempts" ]; then
+              command_attempts="$(tr -d '\\n' < "$root/guest-readiness-probe-attempts")"
+            fi
+            command_attempts=$((command_attempts + 1))
+            printf '%s\\n' "$command_attempts" \
+              > "$root/guest-readiness-probe-attempts"
+            if [ "$command_attempts" -eq 1 ]; then
+              printf '%s\\n' '{"magic":"darkbloom_guest_result","schema_version":2,"exit_code":124,"stdout_length":0,"stderr_length":0,"stdout_truncated":false,"stderr_truncated":false,"timed_out":true,"stdout_base64":"","stderr_base64":""}'
+            fi
+            exit 0
+            ;;
           authenticated-readiness-*)
             expected_probe_prefix="/usr/bin/printf '%s' '"
-            expected_probe_suffix="' | /usr/bin/base64 -D | /bin/zsh"
+            expected_probe_suffix="' | /usr/bin/base64 -D | /bin/zsh -f"
             valid_probe_command=false
             case "$8" in
               "$expected_probe_prefix"*"$expected_probe_suffix")

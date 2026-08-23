@@ -47,9 +47,22 @@ extension LumeVirtualMachineRuntime {
             request: request
         ) {
             if replay.timedOut {
-                throw SandboxRuntimeError.operationTimedOut(
+                let timeout = SandboxRuntimeError.operationTimedOut(
                     "\(name) guest command"
                 )
+                do {
+                    try await stopGuestIgnoringCancellation(
+                        name: name,
+                        owner: owner
+                    )
+                } catch {
+                    throw SandboxRuntimeError.cleanupFailed(
+                        operation: "replay timed-out command \(name)",
+                        primary: String(describing: timeout),
+                        cleanup: "VM stop failed: \(error)"
+                    )
+                }
+                throw timeout
             }
             return replay
         }
@@ -101,9 +114,9 @@ extension LumeVirtualMachineRuntime {
             let decoded = try LumeGuestCommandResultDecoder.decode(
                 result.standardOutput
             )
+            requiresVMStop = decoded.timedOut
             try commandClaim.complete(envelope: result.standardOutput)
             if decoded.timedOut {
-                requiresVMStop = true
                 throw SandboxRuntimeError.operationTimedOut(
                     "\(name) guest command"
                 )

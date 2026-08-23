@@ -20,7 +20,7 @@ enum LumeGuestCommandEncoder {
 
     private static func encodedShellCommand(_ script: String) -> String {
         let encoded = Data(script.utf8).base64EncodedString()
-        return "/usr/bin/printf '%s' '\(encoded)' | /usr/bin/base64 -D | /bin/zsh"
+        return "/usr/bin/printf '%s' '\(encoded)' | /usr/bin/base64 -D | /bin/zsh -f"
     }
 }
 

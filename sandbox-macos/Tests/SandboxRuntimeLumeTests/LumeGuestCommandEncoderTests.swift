@@ -145,6 +145,58 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(result.standardErrorTruncated)
     }
 
+    func testControlShellsIgnoreStartupFilesAndIsolateTargetEnvironment()
+        async throws
+    {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-command-zshenv-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let marker = directory.appendingPathComponent("startup-file-ran")
+        try Data("/usr/bin/touch '\(marker.path)'\n".utf8).write(
+            to: directory.appendingPathComponent(".zshenv")
+        )
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/env",
+            environment: ["USER_DEFINED": "preserved"],
+            workingDirectory: directory.path,
+            timeoutSeconds: 5
+        )
+
+        let process = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: [
+                "-f",
+                "-c",
+                try LumeGuestCommandEncoder.encode(request),
+            ],
+            environment: ["ZDOTDIR": directory.path],
+            timeoutSeconds: 5,
+            maximumOutputBytes:
+                LumeGuestCommandEnvelope.maximumEnvelopeBytes
+        )
+        let result = try LumeGuestCommandResultDecoder.decode(
+            process.standardOutput
+        )
+        let targetEnvironment = String(
+            decoding: result.standardOutput,
+            as: UTF8.self
+        )
+
+        XCTAssertEqual(process.exitCode, 0)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertTrue(targetEnvironment.contains("HOME=/Users/lume\n"))
+        XCTAssertTrue(targetEnvironment.contains("USER_DEFINED=preserved\n"))
+        XCTAssertFalse(targetEnvironment.contains("ZDOTDIR="))
+    }
+
     func testCaptureProcessesUseCorrectFIFOGuardLifetimes() throws {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
@@ -240,12 +292,54 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
             )
         )
         XCTAssertTrue(
+            script.contains(#"/bin/zsh -f -c '"#)
+        )
+        XCTAssertTrue(
             script.contains(#"[[ -f "$status_file" ]] || exit 70"#)
         )
         XCTAssertTrue(
             LumeGuestCommandScript.cancellation(request.idempotencyKey)
-                .contains(#"/usr/bin/lockf -t 30 "$command_lock""#)
+                .contains(
+                    #"/usr/bin/lockf -t 30 "$command_lock" /bin/zsh -f -c"#
+                )
         )
+    }
+
+    func testDeadlineAndCompletionUseOneAtomicTerminalClaim() throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/true",
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
+            timeoutSeconds: 5
+        )
+        let data = try LumeGuestLaunchDefinition.propertyList(
+            for: request,
+            jobLabel: LumeGuestCommandIdentity.jobLabel(
+                for: request.idempotencyKey
+            )
+        )
+        let propertyList = try XCTUnwrap(
+            PropertyListSerialization.propertyList(
+                from: data,
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+        let arguments = try XCTUnwrap(
+            propertyList["ProgramArguments"] as? [String]
+        )
+        XCTAssertEqual(Array(arguments.prefix(3)), ["/bin/zsh", "-f", "-c"])
+        let wrapper = arguments[3]
+
+        XCTAssertEqual(
+            wrapper.components(
+                separatedBy: #"/bin/mkdir "$terminal_path" 2>/dev/null"#
+            ).count - 1,
+            2
+        )
+        XCTAssertFalse(wrapper.contains(#"[[ ! -e "$status_path" ]]"#))
+        XCTAssertFalse(wrapper.contains("command.completed"))
     }
 
     func testCancellationStopsGuestJobBeforeDelayedSideEffect() async throws {

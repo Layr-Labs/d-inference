@@ -119,7 +119,7 @@ enum LumeGuestCommandScript {
             -string "$capture_root" "$job_plist" || exit 70
 
             job_loaded=true
-            /usr/bin/lockf -t 30 "$command_lock" /bin/zsh -c '
+            /usr/bin/lockf -t 30 "$command_lock" /bin/zsh -f -c '
               cancel_file="$1"
               launch_domain="$2"
               job_plist="$3"
@@ -222,7 +222,7 @@ enum LumeGuestCommandScript {
             command_lock="$control_root/\(identifier).lock"
             launch_domain="gui/$(/usr/bin/id -u)"
             job_label="\(LumeGuestCommandIdentity.jobLabel(for: idempotencyKey))"
-            /usr/bin/lockf -t 30 "$command_lock" /bin/zsh -c '
+            /usr/bin/lockf -t 30 "$command_lock" /bin/zsh -f -c '
               cancellation="$1"
               identifier="$2"
               launch_domain="$3"

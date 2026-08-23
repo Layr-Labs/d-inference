@@ -44,6 +44,7 @@ public struct SandboxGuestCommandRequest: Equatable, Sendable {
               environment.count <= Self.maximumEnvironmentVariableCount,
               environment.allSatisfy({ key, value in
                   Self.validEnvironmentKey(key)
+                      && !Self.isReservedEnvironmentKey(key)
                       && key.utf8.count
                           <= Self.maximumEnvironmentKeyBytes
                       && !value.contains("\0")
@@ -77,6 +78,16 @@ public struct SandboxGuestCommandRequest: Equatable, Sendable {
                 || (0x41...0x5A).contains($0.value)
                 || (0x61...0x7A).contains($0.value)
                 || (0x30...0x39).contains($0.value)
+        }
+    }
+
+    private static func isReservedEnvironmentKey(_ key: String) -> Bool {
+        switch key {
+        case "BASH_ENV", "ENV", "HOME", "LANG", "LC_ALL", "PATH",
+             "TMPDIR", "ZDOTDIR":
+            return true
+        default:
+            return key.hasPrefix("DARKBLOOM_") || key.hasPrefix("DYLD_")
         }
     }
 }

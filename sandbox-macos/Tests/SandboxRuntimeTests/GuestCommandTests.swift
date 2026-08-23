@@ -84,4 +84,28 @@ final class GuestCommandTests: XCTestCase {
             arguments: Array(repeating: maximumValue, count: 5)
         ))
     }
+
+    func testRejectsControlPlaneEnvironmentOverrides() {
+        for key in [
+            "BASH_ENV",
+            "DARKBLOOM_RESULT_DIR",
+            "DYLD_INSERT_LIBRARIES",
+            "ENV",
+            "HOME",
+            "LANG",
+            "LC_ALL",
+            "PATH",
+            "TMPDIR",
+            "ZDOTDIR",
+        ] {
+            XCTAssertThrowsError(
+                try SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/usr/bin/env",
+                    environment: [key: "attacker-controlled"]
+                ),
+                "reserved environment key \(key) must be rejected"
+            )
+        }
+    }
 }

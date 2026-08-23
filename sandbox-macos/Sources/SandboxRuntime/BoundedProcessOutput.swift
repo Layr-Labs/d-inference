@@ -9,6 +9,7 @@ struct BoundedProcessOutputSnapshot {
 
 final class BoundedProcessOutput: @unchecked Sendable {
     let writer: FileHandle
+    var readerFileDescriptor: Int32 { readDescriptor }
 
     private let maximumBytes: Int
     private let readDescriptor: Int32

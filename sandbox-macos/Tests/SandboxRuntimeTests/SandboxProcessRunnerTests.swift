@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import SandboxRuntime
 import XCTest
@@ -114,5 +115,78 @@ final class SandboxProcessRunnerTests: XCTestCase {
             XCTFail("expected CancellationError, got \(error)")
         }
         XCTAssertLessThan(started.duration(to: .now), .seconds(3))
+    }
+
+    func testManagedProcessSupportsConcurrentWaiters() async throws {
+        let process = try SandboxProcessRunner().start(
+            executable: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["1"]
+        )
+
+        async let first = process.wait()
+        async let second = process.wait()
+        let (firstResult, secondResult) = await (first, second)
+
+        XCTAssertEqual(firstResult.exitCode, 0)
+        XCTAssertEqual(secondResult.exitCode, 0)
+    }
+
+    func testDoesNotLeakParentEnvironment() async throws {
+        let secretKey = "DARKBLOOM_PROCESS_RUNNER_PARENT_SECRET"
+        setenv(secretKey, "must-not-leak", 1)
+        defer { unsetenv(secretKey) }
+
+        let result = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [],
+            environment: ["DARKBLOOM_EXPLICIT": "present"],
+            timeoutSeconds: 5
+        )
+        let output = String(decoding: result.standardOutput, as: UTF8.self)
+
+        XCTAssertFalse(output.contains("\(secretKey)="))
+        XCTAssertTrue(output.contains("DARKBLOOM_EXPLICIT=present"))
+    }
+
+    func testTimeoutTerminatesDescendantProcessGroup() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(
+                "darkbloom-process-group-\(UUID().uuidString)",
+                isDirectory: true
+            )
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: false
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let pidFile = directory.appendingPathComponent("child.pid")
+
+        do {
+            _ = try await SandboxProcessRunner().run(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: [
+                    "-c",
+                    "/bin/sleep 30 & child=$!; "
+                        + "printf '%s\\n' \"$child\" > \"$1\"; wait \"$child\"",
+                    "darkbloom-process-group-test",
+                    pidFile.path,
+                ],
+                timeoutSeconds: 1
+            )
+            XCTFail("process group should time out")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(error, .operationTimedOut("sh"))
+        }
+
+        let value = try String(contentsOf: pidFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let pid = try XCTUnwrap(Int32(value))
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(3))
+        while Darwin.kill(pid, 0) == 0 && clock.now < deadline {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(Darwin.kill(pid, 0), -1)
+        XCTAssertEqual(errno, ESRCH)
     }
 }

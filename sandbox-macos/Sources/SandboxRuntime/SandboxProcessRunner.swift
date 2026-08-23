@@ -1,4 +1,3 @@
-import Darwin
 import Foundation
 
 public struct SandboxProcessResult: Sendable {
@@ -23,10 +22,71 @@ public struct SandboxProcessResult: Sendable {
     }
 }
 
+public final class SandboxManagedProcess: @unchecked Sendable {
+    private let execution: ProcessExecution
+
+    fileprivate init(execution: ProcessExecution) {
+        self.execution = execution
+    }
+
+    deinit {
+        execution.forceStop()
+    }
+
+    public var isRunning: Bool {
+        execution.isRunning
+    }
+
+    public func wait() async -> SandboxProcessResult {
+        await execution.waitUntilExit()
+        return execution.result()
+    }
+
+    public func stop(gracePeriod: Duration = .seconds(2)) async
+        -> SandboxProcessResult
+    {
+        await execution.stop(gracePeriod: gracePeriod)
+        return execution.result()
+    }
+}
+
 public struct SandboxProcessRunner: Sendable {
     public static let defaultMaximumOutputBytes = 4 * 1_048_576
 
     public init() {}
+
+    public func start(
+        executable: URL,
+        arguments: [String],
+        environment: [String: String] = [:],
+        currentDirectory: URL? = nil,
+        maximumOutputBytes: Int = defaultMaximumOutputBytes
+    ) throws -> SandboxManagedProcess {
+        try validate(
+            executable: executable,
+            timeoutSeconds: nil,
+            maximumOutputBytes: maximumOutputBytes
+        )
+        try validateInvocation(
+            arguments: arguments,
+            environment: environment,
+            currentDirectory: currentDirectory
+        )
+        let execution = try ProcessExecution(
+            executable: executable,
+            arguments: arguments,
+            environment: Self.environment(overrides: environment),
+            currentDirectory: currentDirectory,
+            maximumOutputBytes: maximumOutputBytes
+        )
+        do {
+            try execution.start()
+        } catch {
+            execution.cleanup()
+            throw error
+        }
+        return SandboxManagedProcess(execution: execution)
+    }
 
     public func run(
         executable: URL,
@@ -36,21 +96,21 @@ public struct SandboxProcessRunner: Sendable {
         timeoutSeconds: UInt32,
         maximumOutputBytes: Int = defaultMaximumOutputBytes
     ) async throws -> SandboxProcessResult {
-        guard executable.isFileURL,
-              FileManager.default.isExecutableFile(atPath: executable.path)
-        else {
-            throw SandboxRuntimeError.executableNotFound(executable.path)
-        }
-        guard timeoutSeconds > 0, maximumOutputBytes > 0 else {
-            throw SandboxRuntimeError.unsupported(
-                "process timeout and output limit must be positive"
-            )
-        }
+        try validate(
+            executable: executable,
+            timeoutSeconds: timeoutSeconds,
+            maximumOutputBytes: maximumOutputBytes
+        )
+        try validateInvocation(
+            arguments: arguments,
+            environment: environment,
+            currentDirectory: currentDirectory
+        )
 
         let execution = try ProcessExecution(
             executable: executable,
             arguments: arguments,
-            environment: environment,
+            environment: Self.environment(overrides: environment),
             currentDirectory: currentDirectory,
             maximumOutputBytes: maximumOutputBytes
         )
@@ -71,13 +131,7 @@ public struct SandboxProcessRunner: Sendable {
 
         switch outcome {
         case .exited:
-            return SandboxProcessResult(
-                exitCode: execution.terminationStatus,
-                standardOutput: output.standardOutput.data,
-                standardError: output.standardError.data,
-                standardOutputTruncated: output.standardOutput.truncated,
-                standardErrorTruncated: output.standardError.truncated
-            )
+            return execution.result(output: output)
         case .timedOut:
             throw SandboxRuntimeError.operationTimedOut(
                 executable.lastPathComponent
@@ -85,6 +139,63 @@ public struct SandboxProcessRunner: Sendable {
         case .cancelled:
             throw CancellationError()
         }
+    }
+
+    private func validate(
+        executable: URL,
+        timeoutSeconds: UInt32?,
+        maximumOutputBytes: Int
+    ) throws {
+        guard executable.isFileURL,
+              FileManager.default.isExecutableFile(atPath: executable.path)
+        else {
+            throw SandboxRuntimeError.executableNotFound(executable.path)
+        }
+        guard timeoutSeconds.map({ $0 > 0 }) ?? true,
+              maximumOutputBytes > 0
+        else {
+            throw SandboxRuntimeError.unsupported(
+                "process timeout and output limit must be positive"
+            )
+        }
+    }
+
+    private func validateInvocation(
+        arguments: [String],
+        environment: [String: String],
+        currentDirectory: URL?
+    ) throws {
+        guard arguments.allSatisfy({ !$0.contains("\0") }),
+              environment.allSatisfy({
+                  !$0.key.isEmpty
+                      && !$0.key.contains("=")
+                      && !$0.key.contains("\0")
+                      && !$0.value.contains("\0")
+              }),
+              currentDirectory.map({
+                  $0.isFileURL && $0.baseURL == nil
+              }) ?? true
+        else {
+            throw SandboxRuntimeError.unsupported(
+                "process arguments, environment, or working directory are invalid"
+            )
+        }
+    }
+
+    private static func environment(
+        overrides: [String: String]
+    ) -> [String: String] {
+        let inherited = ProcessInfo.processInfo.environment
+        var environment: [String: String] = [
+            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+            "LANG": inherited["LANG"] ?? "en_US.UTF-8",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "TMPDIR": NSTemporaryDirectory(),
+        ]
+        for (key, value) in overrides {
+            environment[key] = value
+        }
+        return environment
     }
 
     private func wait(
@@ -107,9 +218,7 @@ public struct SandboxProcessRunner: Sendable {
 
             let first = await group.next() ?? .cancelled
             if first == .timedOut {
-                execution.requestStop()
-                try? await Task.sleep(for: .seconds(2))
-                execution.forceStop()
+                await execution.stop(gracePeriod: .seconds(2))
             }
             group.cancelAll()
             while await group.next() != nil {}
@@ -125,146 +234,5 @@ public struct SandboxProcessRunner: Sendable {
         case exited
         case timedOut
         case cancelled
-    }
-}
-
-private final class ProcessExecution: @unchecked Sendable {
-    private let process: Process
-    private let exitSignal = ProcessExitSignal()
-    private let standardOutput: BoundedProcessOutput
-    private let standardError: BoundedProcessOutput
-    private let lock = NSLock()
-    private var started = false
-
-    init(
-        executable: URL,
-        arguments: [String],
-        environment: [String: String],
-        currentDirectory: URL?,
-        maximumOutputBytes: Int
-    ) throws {
-        let standardOutput = try BoundedProcessOutput(
-            maximumBytes: maximumOutputBytes
-        )
-        let standardError: BoundedProcessOutput
-        do {
-            standardError = try BoundedProcessOutput(
-                maximumBytes: maximumOutputBytes
-            )
-        } catch {
-            _ = standardOutput.finish()
-            throw error
-        }
-        self.standardOutput = standardOutput
-        self.standardError = standardError
-
-        process = Process()
-        process.executableURL = executable
-        process.arguments = arguments
-        process.currentDirectoryURL = currentDirectory
-        var mergedEnvironment = ProcessInfo.processInfo.environment
-        for (key, value) in environment {
-            mergedEnvironment[key] = value
-        }
-        process.environment = mergedEnvironment
-        process.standardInput = FileHandle.nullDevice
-        process.standardOutput = standardOutput.writer
-        process.standardError = standardError.writer
-        process.terminationHandler = { [exitSignal] _ in
-            exitSignal.signal()
-        }
-    }
-
-    var terminationStatus: Int32 {
-        process.terminationStatus
-    }
-
-    func start() throws {
-        do {
-            try process.run()
-        } catch {
-            standardOutput.closeParentWriter()
-            standardError.closeParentWriter()
-            throw error
-        }
-        lock.withLock {
-            started = true
-        }
-        standardOutput.closeParentWriter()
-        standardError.closeParentWriter()
-    }
-
-    func waitUntilExit() async {
-        await exitSignal.wait()
-    }
-
-    func requestStop() {
-        let shouldStop = lock.withLock { started && process.isRunning }
-        if shouldStop {
-            process.terminate()
-        }
-    }
-
-    func forceStop() {
-        let pid = lock.withLock {
-            started && process.isRunning ? process.processIdentifier : 0
-        }
-        if pid > 0 {
-            _ = Darwin.kill(pid, SIGKILL)
-        }
-    }
-
-    func finishOutputCapture() -> ProcessOutput {
-        ProcessOutput(
-            standardOutput: standardOutput.finish(),
-            standardError: standardError.finish()
-        )
-    }
-
-    func cleanup() {
-        _ = finishOutputCapture()
-    }
-
-    struct ProcessOutput {
-        let standardOutput: BoundedProcessOutputSnapshot
-        let standardError: BoundedProcessOutputSnapshot
-    }
-}
-
-private final class ProcessExitSignal: @unchecked Sendable {
-    private let lock = NSLock()
-    private var exited = false
-    private var continuation: CheckedContinuation<Void, Never>?
-
-    func wait() async {
-        await withCheckedContinuation { continuation in
-            let resumeImmediately = lock.withLock {
-                if exited {
-                    return true
-                }
-                self.continuation = continuation
-                return false
-            }
-            if resumeImmediately {
-                continuation.resume()
-            }
-        }
-    }
-
-    func signal() {
-        let continuation = lock.withLock {
-            exited = true
-            defer { self.continuation = nil }
-            return self.continuation
-        }
-        continuation?.resume()
-    }
-}
-
-private extension NSLock {
-    func withLock<T>(_ operation: () -> T) -> T {
-        lock()
-        defer { unlock() }
-        return operation()
     }
 }

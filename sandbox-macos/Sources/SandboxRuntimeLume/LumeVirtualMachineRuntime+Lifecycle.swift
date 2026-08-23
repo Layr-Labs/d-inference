@@ -139,6 +139,19 @@ extension LumeVirtualMachineRuntime {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        let debugInvocationID = UUID().uuidString
+        // #region agent log
+        SandboxAgentDebugLog.write(
+            hypothesisId: "E",
+            location: "\(#fileID):\(#line)",
+            message: "entered Lume start",
+            data: [
+                "activeOperations": activeOperations,
+                "name": name,
+                "startId": debugInvocationID,
+            ]
+        )
+        // #endregion
         let operationLock = try beginOperation("start", name: name)
         defer {
             endOperation(name: name)
@@ -190,7 +203,8 @@ extension LumeVirtualMachineRuntime {
                     "--display", "none",
                     "--vnc", "disabled",
                 ]),
-                environment: workspace.environment
+                environment: workspace.environment,
+                debugTraceID: debugInvocationID
             )
             runningProcesses[name] = process
             try await waitForState(

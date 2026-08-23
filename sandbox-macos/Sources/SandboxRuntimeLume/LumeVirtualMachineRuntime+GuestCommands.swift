@@ -97,6 +97,7 @@ extension LumeVirtualMachineRuntime {
                 )
             }
             let encodedCommand = try LumeGuestCommandEncoder.encode(request)
+            requiresVMStop = true
             let commandClaim = try commandJournal.claim(
                 installationID: identity.installationID,
                 request: request
@@ -135,7 +136,6 @@ extension LumeVirtualMachineRuntime {
             let decoded = try LumeGuestCommandResultDecoder.decode(
                 result.standardOutput
             )
-            requiresVMStop = decoded.timedOut
             try commandClaim.complete(envelope: result.standardOutput)
             if decoded.timedOut {
                 throw SandboxRuntimeError.operationTimedOut(

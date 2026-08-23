@@ -91,7 +91,7 @@ struct LumeGuestCommandJournal {
                 parentDescriptor: commandDescriptor,
                 maximumBytes: Self.commitmentByteCount
             ),
-            storedCommitment.count == Self.commitmentByteCount
+            Self.isCanonicalCommitment(storedCommitment)
         else {
             return .indeterminate
         }
@@ -203,6 +203,13 @@ struct LumeGuestCommandJournal {
         )
     }
 
+    private static func isCanonicalCommitment(_ data: Data) -> Bool {
+        data.count == commitmentByteCount && data.allSatisfy { byte in
+            (byte >= 0x30 && byte <= 0x39)
+                || (byte >= 0x61 && byte <= 0x66)
+        }
+    }
+
     private static func requireMatchingCommitment(
         _ request: SandboxGuestCommandRequest,
         commandDescriptor: Int32
@@ -211,7 +218,7 @@ struct LumeGuestCommandJournal {
             named: commitmentFileName,
             parentDescriptor: commandDescriptor,
             maximumBytes: commitmentByteCount
-        ), stored.count == commitmentByteCount else {
+        ), isCanonicalCommitment(stored) else {
             throw outcomeUnavailable()
         }
         guard stored == (try commitment(for: request)) else {

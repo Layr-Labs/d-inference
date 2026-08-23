@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import SandboxRuntime
@@ -82,6 +83,40 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             fixture.journal.replay(
                 installationID: installationID,
                 request: conflicting
+            ),
+            .indeterminate
+        )
+    }
+
+    func testMalformedCommitmentWithValidResultRequiresReconciliation() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        let installationID = UUID()
+        let request = try fixture.request()
+        let claim = try fixture.journal.claim(
+            installationID: installationID,
+            request: request
+        )
+        try claim.complete(
+            envelope: Self.envelope(
+                for: SandboxGuestCommandResult(
+                    exitCode: 0,
+                    standardOutput: Data(),
+                    standardError: Data()
+                )
+            )
+        )
+        try Data(repeating: 0x67, count: SHA256.byteCount * 2).write(
+            to: fixture.commitmentFile(
+                installationID: installationID,
+                idempotencyKey: request.idempotencyKey
+            )
+        )
+
+        XCTAssertEqual(
+            fixture.journal.replay(
+                installationID: installationID,
+                request: request
             ),
             .indeterminate
         )
@@ -409,6 +444,16 @@ private struct JournalFixture {
             installationID: installationID,
             idempotencyKey: idempotencyKey
         ).appendingPathComponent(LumeGuestCommandJournal.resultFileName)
+    }
+
+    func commitmentFile(
+        installationID: UUID,
+        idempotencyKey: UUID
+    ) -> URL {
+        commandDirectory(
+            installationID: installationID,
+            idempotencyKey: idempotencyKey
+        ).appendingPathComponent(LumeGuestCommandJournal.commitmentFileName)
     }
 }
 

@@ -618,6 +618,58 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
+    func testClaimAppearingAfterReplayStopsVirtualMachine() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: "running",
+            behavior: "block-first-list"
+        )
+        defer { try? fixture.remove() }
+        defer { try? fixture.allowListToContinue() }
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/true",
+            timeoutSeconds: 30
+        )
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let execution = Task {
+            try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: request
+            )
+        }
+        try await fixture.waitForListToStart()
+        let identity = try LumeVirtualMachineOwnership.requireOwned(
+            name: fixture.virtualMachineName,
+            owner: .baseTemplate,
+            in: fixture.storage
+        )
+        let workspace = LumeRuntimeWorkspace(
+            storageDirectory: fixture.storage
+        )
+        try workspace.prepare()
+        _ = try LumeGuestCommandJournal(workspace: workspace).claim(
+            installationID: identity.installationID,
+            request: request
+        )
+        try fixture.allowListToContinue()
+
+        do {
+            _ = try await execution.value
+            XCTFail("a claim race must fail closed")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                LumeGuestCommandJournal.outcomeUnavailable()
+            )
+        }
+
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+    }
+
     func testExecutePreflightFailureDoesNotCancelGuestCommand() async throws {
         let fixture = try FakeLumeFixture(initialState: "stopped")
         defer { try? fixture.remove() }
@@ -1303,6 +1355,7 @@ private struct FakeLumeFixture {
     let behavior: URL
     let createStarted: URL
     let listStarted: URL
+    let listContinue: URL
     let guestCommandStarted: URL
     let guestReadinessProbeAttemptsFile: URL
     let guestReadinessProbeStarted: URL
@@ -1348,6 +1401,7 @@ private struct FakeLumeFixture {
         self.behavior = directory.appendingPathComponent("behavior")
         createStarted = directory.appendingPathComponent("create-started")
         listStarted = directory.appendingPathComponent("list-started")
+        listContinue = directory.appendingPathComponent("list-continue")
         guestCommandStarted = directory.appendingPathComponent(
             "guest-command-started"
         )
@@ -1477,6 +1531,10 @@ private struct FakeLumeFixture {
             try await Task.sleep(for: .milliseconds(25))
         } while clock.now < deadline
         throw FakeLumeFixtureError.listStartTimeout
+    }
+
+    func allowListToContinue() throws {
+        try Data().write(to: listContinue)
     }
 
     var guestCommandWasStarted: Bool {
@@ -1663,7 +1721,9 @@ private struct FakeLumeFixture {
         done
         if [ "$behavior" = "block-first-list" ] && [ ! -f "$root/list-started" ]; then
           : > "$root/list-started"
-          while :; do :; done
+          while [ ! -f "$root/list-continue" ]; do
+            /bin/sleep 0.01
+          done
         fi
         if [ ! -f "$state_file" ] || [ ! -d "$storage/sandbox-failure-test" ]; then
           printf '%s\\n' '[]'

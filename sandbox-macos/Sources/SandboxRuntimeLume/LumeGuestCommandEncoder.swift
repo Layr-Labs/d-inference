@@ -91,7 +91,7 @@ enum LumeGuestCommandEncoder {
             '{"hypothesisId":"A","location":"LumeGuestCommandEncoder.swift:89",'\
             '"message":"FIFO guard descriptors opened",'\
             '"data":{},"timestamp":%s}\\n' "$(/bin/date +%s)000" \
-            >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+            >> /tmp/darkbloom-sandbox-debug.log ) 2>/dev/null || true
             #endregion
 
             capture_stream() {
@@ -111,7 +111,7 @@ enum LumeGuestCommandEncoder {
               '"message":"capture reader started",'\
               '"data":{"stream":"%s","fd7Open":%s,"fd8Open":%s},'\
               '"timestamp":%s}\\n' "$stream" "$fd7_open" "$fd8_open" \
-              "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+              "$(/bin/date +%s)000" >> /tmp/darkbloom-sandbox-debug.log \
               ) 2>/dev/null || true
               #endregion
               /bin/dd bs=\(captureBlockBytes) count=\(captureBlockCount) \
@@ -124,7 +124,7 @@ enum LumeGuestCommandEncoder {
               '"message":"bounded capture finished",'\
               '"data":{"stream":"%s","status":%s},"timestamp":%s}\\n' \
               "$stream" "$main_capture_status" "$(/bin/date +%s)000" \
-              >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+              >> /tmp/darkbloom-sandbox-debug.log ) 2>/dev/null || true
               #endregion
               [[ "$main_capture_status" -eq 0 ]] || capture_status=1
               /bin/dd bs=1 count=1 iflag=fullblock \
@@ -137,7 +137,7 @@ enum LumeGuestCommandEncoder {
               '"message":"overflow probe finished",'\
               '"data":{"stream":"%s","status":%s},"timestamp":%s}\\n' \
               "$stream" "$overflow_capture_status" "$(/bin/date +%s)000" \
-              >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+              >> /tmp/darkbloom-sandbox-debug.log ) 2>/dev/null || true
               #endregion
               [[ "$overflow_capture_status" -eq 0 ]] || capture_status=1
               /bin/cat >/dev/null
@@ -149,7 +149,7 @@ enum LumeGuestCommandEncoder {
               '"message":"capture drain finished",'\
               '"data":{"stream":"%s","status":%s},"timestamp":%s}\\n' \
               "$stream" "$drain_status" "$(/bin/date +%s)000" \
-              >> /opt/cursor/logs/debug.log ) 2>/dev/null || true
+              >> /tmp/darkbloom-sandbox-debug.log ) 2>/dev/null || true
               #endregion
               [[ "$drain_status" -eq 0 ]] || capture_status=1
               return "$capture_status"
@@ -182,7 +182,7 @@ enum LumeGuestCommandEncoder {
             '"location":"LumeGuestCommandEncoder.swift:171",'\
             '"message":"launchd bootstrap returned and parent guards closed",'\
             '"data":{"status":%s},"timestamp":%s}\\n' "$bootstrap_status" \
-            "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+            "$(/bin/date +%s)000" >> /tmp/darkbloom-sandbox-debug.log \
             ) 2>/dev/null || true
             #endregion
             [[ "$bootstrap_status" -eq 0 ]] || exit 70
@@ -210,7 +210,7 @@ enum LumeGuestCommandEncoder {
             '"location":"LumeGuestCommandEncoder.swift:198",'\
             '"message":"atomic command status observed",'\
             '"data":{"status":%s},"timestamp":%s}\\n' "$command_status" \
-            "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+            "$(/bin/date +%s)000" >> /tmp/darkbloom-sandbox-debug.log \
             ) 2>/dev/null || true
             #endregion
             /bin/launchctl bootout "$launch_domain/$job_label" \
@@ -225,7 +225,7 @@ enum LumeGuestCommandEncoder {
             '"location":"LumeGuestCommandEncoder.swift:212",'\
             '"message":"launchd bootout finished before capture waits",'\
             '"data":{"jobPresent":%s},"timestamp":%s}\\n' "$job_present" \
-            "$(/bin/date +%s)000" >> /opt/cursor/logs/debug.log \
+            "$(/bin/date +%s)000" >> /tmp/darkbloom-sandbox-debug.log \
             ) 2>/dev/null || true
             #endregion
 

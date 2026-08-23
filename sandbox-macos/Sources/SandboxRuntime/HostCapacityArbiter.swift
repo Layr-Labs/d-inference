@@ -60,7 +60,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         expiresAt: Date,
         now: Date = Date()
     ) throws -> SandboxCapacityLease {
-        guard isValidVirtualMachineName(virtualMachineName) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
         }
         return try store.update { state in

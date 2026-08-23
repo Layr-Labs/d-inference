@@ -51,9 +51,10 @@ public struct SandboxProcessRunner: Sendable {
             executable: executable,
             arguments: arguments,
             environment: environment,
-            currentDirectory: currentDirectory
+            currentDirectory: currentDirectory,
+            maximumOutputBytes: maximumOutputBytes
         )
-        defer { execution.removeTemporaryFiles() }
+        defer { execution.cleanup() }
 
         try execution.start()
         let outcome = try await withTaskCancellationHandler {
@@ -66,22 +67,16 @@ public struct SandboxProcessRunner: Sendable {
         }
         try Task.checkCancellation()
 
-        execution.closeOutputHandles()
-        let standardOutput = try execution.readStandardOutput(
-            maximumBytes: maximumOutputBytes
-        )
-        let standardError = try execution.readStandardError(
-            maximumBytes: maximumOutputBytes
-        )
+        let output = execution.finishOutputCapture()
 
         switch outcome {
         case .exited:
             return SandboxProcessResult(
                 exitCode: execution.terminationStatus,
-                standardOutput: standardOutput.data,
-                standardError: standardError.data,
-                standardOutputTruncated: standardOutput.truncated,
-                standardErrorTruncated: standardError.truncated
+                standardOutput: output.standardOutput.data,
+                standardError: output.standardError.data,
+                standardOutputTruncated: output.standardOutput.truncated,
+                standardErrorTruncated: output.standardError.truncated
             )
         case .timedOut:
             throw SandboxRuntimeError.operationTimedOut(
@@ -136,57 +131,32 @@ public struct SandboxProcessRunner: Sendable {
 private final class ProcessExecution: @unchecked Sendable {
     private let process: Process
     private let exitSignal = ProcessExitSignal()
-    private let temporaryDirectory: URL
-    private let standardOutputURL: URL
-    private let standardErrorURL: URL
-    private let standardOutputHandle: FileHandle
-    private let standardErrorHandle: FileHandle
+    private let standardOutput: BoundedProcessOutput
+    private let standardError: BoundedProcessOutput
     private let lock = NSLock()
     private var started = false
-    private var handlesClosed = false
 
     init(
         executable: URL,
         arguments: [String],
         environment: [String: String],
-        currentDirectory: URL?
+        currentDirectory: URL?,
+        maximumOutputBytes: Int
     ) throws {
-        let fileManager = FileManager.default
-        temporaryDirectory = fileManager.temporaryDirectory.appendingPathComponent(
-            "darkbloom-sandbox-process-\(UUID().uuidString)",
-            isDirectory: true
+        let standardOutput = try BoundedProcessOutput(
+            maximumBytes: maximumOutputBytes
         )
-        try fileManager.createDirectory(
-            at: temporaryDirectory,
-            withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700]
-        )
-        standardOutputURL = temporaryDirectory.appendingPathComponent("stdout")
-        standardErrorURL = temporaryDirectory.appendingPathComponent("stderr")
-        guard fileManager.createFile(
-            atPath: standardOutputURL.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600]
-        ),
-        fileManager.createFile(
-            atPath: standardErrorURL.path,
-            contents: nil,
-            attributes: [.posixPermissions: 0o600]
-        )
-        else {
-            try? fileManager.removeItem(at: temporaryDirectory)
-            throw SandboxRuntimeError.unsupported(
-                "failed to create bounded process output files"
-            )
-        }
-
+        let standardError: BoundedProcessOutput
         do {
-            standardOutputHandle = try FileHandle(forWritingTo: standardOutputURL)
-            standardErrorHandle = try FileHandle(forWritingTo: standardErrorURL)
+            standardError = try BoundedProcessOutput(
+                maximumBytes: maximumOutputBytes
+            )
         } catch {
-            try? fileManager.removeItem(at: temporaryDirectory)
+            _ = standardOutput.finish()
             throw error
         }
+        self.standardOutput = standardOutput
+        self.standardError = standardError
 
         process = Process()
         process.executableURL = executable
@@ -198,8 +168,8 @@ private final class ProcessExecution: @unchecked Sendable {
         }
         process.environment = mergedEnvironment
         process.standardInput = FileHandle.nullDevice
-        process.standardOutput = standardOutputHandle
-        process.standardError = standardErrorHandle
+        process.standardOutput = standardOutput.writer
+        process.standardError = standardError.writer
         process.terminationHandler = { [exitSignal] _ in
             exitSignal.signal()
         }
@@ -210,10 +180,18 @@ private final class ProcessExecution: @unchecked Sendable {
     }
 
     func start() throws {
-        try process.run()
+        do {
+            try process.run()
+        } catch {
+            standardOutput.closeParentWriter()
+            standardError.closeParentWriter()
+            throw error
+        }
         lock.withLock {
             started = true
         }
+        standardOutput.closeParentWriter()
+        standardError.closeParentWriter()
     }
 
     func waitUntilExit() async {
@@ -236,50 +214,20 @@ private final class ProcessExecution: @unchecked Sendable {
         }
     }
 
-    func closeOutputHandles() {
-        let shouldClose = lock.withLock {
-            guard !handlesClosed else {
-                return false
-            }
-            handlesClosed = true
-            return true
-        }
-        guard shouldClose else {
-            return
-        }
-        try? standardOutputHandle.close()
-        try? standardErrorHandle.close()
+    func finishOutputCapture() -> ProcessOutput {
+        ProcessOutput(
+            standardOutput: standardOutput.finish(),
+            standardError: standardError.finish()
+        )
     }
 
-    func readStandardOutput(maximumBytes: Int) throws -> BoundedData {
-        try read(url: standardOutputURL, maximumBytes: maximumBytes)
+    func cleanup() {
+        _ = finishOutputCapture()
     }
 
-    func readStandardError(maximumBytes: Int) throws -> BoundedData {
-        try read(url: standardErrorURL, maximumBytes: maximumBytes)
-    }
-
-    func removeTemporaryFiles() {
-        closeOutputHandles()
-        try? FileManager.default.removeItem(at: temporaryDirectory)
-    }
-
-    private func read(url: URL, maximumBytes: Int) throws -> BoundedData {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
-        if data.count > maximumBytes {
-            return BoundedData(
-                data: Data(data.prefix(maximumBytes)),
-                truncated: true
-            )
-        }
-        return BoundedData(data: data, truncated: false)
-    }
-
-    struct BoundedData {
-        let data: Data
-        let truncated: Bool
+    struct ProcessOutput {
+        let standardOutput: BoundedProcessOutputSnapshot
+        let standardError: BoundedProcessOutputSnapshot
     }
 }
 

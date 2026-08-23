@@ -217,7 +217,8 @@ struct SandboxCapacityStateStore: Sendable {
     private static func validate(_ state: SandboxCapacityState) throws {
         guard state.schemaVersion == SandboxCapacityState.schemaVersion,
               state.nextFencingToken > 0,
-              state.leases.count <= SandboxCapacityPolicy.supportedRunningSandboxes
+              state.leases.count <= SandboxCapacityPolicy.supportedRunningSandboxes,
+              state.mode != .inference || state.leases.isEmpty
         else {
             throw SandboxCapacityError.corruptState
         }
@@ -239,7 +240,7 @@ struct SandboxCapacityStateStore: Sendable {
         let issued = lease.issuedAt.timeIntervalSinceReferenceDate
         let expires = lease.expiresAt.timeIntervalSinceReferenceDate
         let duration = lease.expiresAt.timeIntervalSince(lease.issuedAt)
-        return isValidVirtualMachineName(lease.virtualMachineName)
+        return SandboxVirtualMachineNamePolicy.isValid(lease.virtualMachineName)
             && lease.cpuCount > 0
             && lease.memoryBytes > 0
             && issued.isFinite

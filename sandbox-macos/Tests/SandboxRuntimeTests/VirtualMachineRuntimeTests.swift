@@ -6,19 +6,31 @@ final class VirtualMachineRuntimeTests: XCTestCase {
     func testSpecificationAcceptsBoundedNameAndDisk() throws {
         let resources = try SandboxResourceSpecification.macOSSmall()
         let specification = try SandboxVirtualMachineSpecification(
-            name: "sandbox-123",
+            name: " sandbox-123 ",
             resources: resources,
-            imageSource: .localTemplate(name: "macos-26-5-base-v1"),
+            imageSource: .localTemplate(name: " macos-26-5-base-v1 "),
             diskBytes: 100 * SandboxResourcePolicy.gibibyte
         )
 
         XCTAssertEqual(specification.name, "sandbox-123")
+        XCTAssertEqual(
+            specification.imageSource,
+            .localTemplate(name: "macos-26-5-base-v1")
+        )
         XCTAssertEqual(specification.diskBytes, 100 * SandboxResourcePolicy.gibibyte)
     }
 
     func testSpecificationRejectsUnsafeNames() throws {
         let resources = try SandboxResourceSpecification.macOSSmall()
-        for name in ["", "-sandbox", "sandbox-", "../sandbox", "sandbox_name", "a b"] {
+        for name in [
+            "",
+            "-sandbox",
+            "sandbox-",
+            "../sandbox",
+            "sandbox_name",
+            "a b",
+            "sándbox",
+        ] {
             XCTAssertThrowsError(try SandboxVirtualMachineSpecification(
                 name: name,
                 resources: resources,

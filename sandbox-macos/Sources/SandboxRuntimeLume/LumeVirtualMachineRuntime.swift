@@ -3,19 +3,19 @@ import SandboxCore
 import SandboxRuntime
 
 public struct LumeRuntimeConfiguration: Sendable {
+    public static let pinnedRepository = "https://github.com/trycua/cua.git"
     public static let pinnedCommit = "737dc2a069528abadee67526d138a907e1c52061"
+    public static let pinnedSourcePath = "libs/lume"
     public static let pinnedVersion = "0.5.3"
 
     public let executable: URL
     public let storageDirectory: URL
-    public let expectedVersion: String
     public let commandTimeoutSeconds: UInt32
     public let createTimeoutSeconds: UInt32
 
     public init(
         executable: URL,
         storageDirectory: URL,
-        expectedVersion: String = pinnedVersion,
         commandTimeoutSeconds: UInt32 = 60,
         createTimeoutSeconds: UInt32 = 7_200
     ) throws {
@@ -24,7 +24,6 @@ public struct LumeRuntimeConfiguration: Sendable {
               storageDirectory.isFileURL,
               storageDirectory.baseURL == nil,
               storageDirectory.path.hasPrefix("/"),
-              !expectedVersion.isEmpty,
               commandTimeoutSeconds > 0,
               createTimeoutSeconds >= commandTimeoutSeconds
         else {
@@ -32,9 +31,10 @@ public struct LumeRuntimeConfiguration: Sendable {
                 "Lume configuration requires absolute paths and positive timeouts"
             )
         }
-        self.executable = executable.standardizedFileURL
+        self.executable = executable
+            .standardizedFileURL
+            .resolvingSymlinksInPath()
         self.storageDirectory = storageDirectory.standardizedFileURL
-        self.expectedVersion = expectedVersion
         self.commandTimeoutSeconds = commandTimeoutSeconds
         self.createTimeoutSeconds = createTimeoutSeconds
     }
@@ -46,7 +46,8 @@ public actor LumeVirtualMachineRuntime:
 {
     private let configuration: LumeRuntimeConfiguration
     private let processRunner: SandboxProcessRunner
-    private var validatedVersion: String?
+    private var validatedRuntime: ValidatedLumeRuntime?
+    private var activeOperations: [String: String] = [:]
 
     public init(
         configuration: LumeRuntimeConfiguration,
@@ -78,7 +79,7 @@ public actor LumeVirtualMachineRuntime:
     }
 
     public func inspect(name: String) async throws -> SandboxVirtualMachineRecord? {
-        guard Self.validName(name) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
         return try await list().first { $0.name == name }
@@ -87,6 +88,9 @@ public actor LumeVirtualMachineRuntime:
     public func create(
         _ specification: SandboxVirtualMachineSpecification
     ) async throws {
+        try beginOperation("create", name: specification.name)
+        defer { endOperation(name: specification.name) }
+
         _ = try await validateRuntime()
         try ensureStorageDirectory()
         if let existing = try await inspect(name: specification.name) {
@@ -130,26 +134,49 @@ public actor LumeVirtualMachineRuntime:
             ]
         }
 
-        _ = try await run(
-            arguments: arguments,
-            timeoutSeconds: configuration.createTimeoutSeconds,
-            operation: "create"
-        )
-        guard let created = try await inspect(name: specification.name),
-              created.state == .stopped,
-              Self.matches(created, specification: specification)
-        else {
-            throw SandboxRuntimeError.malformedOutput(
-                "Lume create completed without the requested stopped VM"
+        do {
+            _ = try await run(
+                arguments: arguments,
+                timeoutSeconds: configuration.createTimeoutSeconds,
+                operation: "create"
             )
+            guard let created = try await inspect(name: specification.name),
+                  created.state == .stopped,
+                  Self.matches(created, specification: specification)
+            else {
+                throw SandboxRuntimeError.malformedOutput(
+                    "Lume create completed without the requested stopped VM"
+                )
+            }
+        } catch {
+            do {
+                try await cleanupFailedCreationIgnoringCancellation(
+                    name: specification.name
+                )
+            } catch let cleanupError {
+                throw SandboxRuntimeError.cleanupFailed(
+                    operation: "create \(specification.name)",
+                    primary: String(describing: error),
+                    cleanup: String(describing: cleanupError)
+                )
+            }
+            throw error
         }
     }
 
     public func start(name: String) async throws {
-        guard Self.validName(name) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
-        if let existing = try await inspect(name: name), existing.state == .running {
+        try beginOperation("start", name: name)
+        defer { endOperation(name: name) }
+
+        guard let existing = try await inspect(name: name) else {
+            throw SandboxRuntimeError.unsupported(
+                "cannot start missing VM \(name)"
+            )
+        }
+        if existing.state == .running {
             if existing.guestReady != true {
                 try await waitForGuestReady(
                     name: name,
@@ -158,54 +185,75 @@ public actor LumeVirtualMachineRuntime:
             }
             return
         }
-        _ = try await run(
-            arguments: storageArguments([
-                "run",
-                name,
-                "--detach",
-                "--display", "none",
-                "--vnc", "disabled",
-            ]),
-            timeoutSeconds: configuration.commandTimeoutSeconds,
-            operation: "start"
-        )
-        try await waitForState(
-            name: name,
-            expected: .running,
-            timeoutSeconds: configuration.commandTimeoutSeconds
-        )
-        try await waitForGuestReady(
-            name: name,
-            timeoutSeconds: configuration.commandTimeoutSeconds
-        )
+        if existing.state == .starting {
+            try await waitForState(
+                name: name,
+                expected: .running,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            try await waitForGuestReady(
+                name: name,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            return
+        }
+        guard existing.state == .stopped else {
+            throw SandboxRuntimeError.unsupported(
+                "cannot start VM \(name) while state is \(existing.state.rawValue)"
+            )
+        }
+
+        do {
+            _ = try await run(
+                arguments: storageArguments([
+                    "run",
+                    name,
+                    "--detach",
+                    "--display", "none",
+                    "--vnc", "disabled",
+                ]),
+                timeoutSeconds: configuration.commandTimeoutSeconds,
+                operation: "start"
+            )
+            try await waitForState(
+                name: name,
+                expected: .running,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+            try await waitForGuestReady(
+                name: name,
+                timeoutSeconds: configuration.commandTimeoutSeconds
+            )
+        } catch {
+            do {
+                try await cleanupFailedStartIgnoringCancellation(name: name)
+            } catch let cleanupError {
+                throw SandboxRuntimeError.cleanupFailed(
+                    operation: "start \(name)",
+                    primary: String(describing: error),
+                    cleanup: String(describing: cleanupError)
+                )
+            }
+            throw error
+        }
     }
 
     public func stop(name: String) async throws {
-        guard Self.validName(name) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
-        guard let existing = try await inspect(name: name) else {
-            return
-        }
-        if existing.state == .stopped {
-            return
-        }
-        _ = try await run(
-            arguments: storageArguments(["stop", name]),
-            timeoutSeconds: configuration.commandTimeoutSeconds,
-            operation: "stop"
-        )
-        try await waitForState(
-            name: name,
-            expected: .stopped,
-            timeoutSeconds: configuration.commandTimeoutSeconds
-        )
+        try beginOperation("stop", name: name)
+        defer { endOperation(name: name) }
+        try await stopWithoutOperationFence(name: name)
     }
 
     public func delete(name: String) async throws {
-        guard Self.validName(name) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
+        try beginOperation("delete", name: name)
+        defer { endOperation(name: name) }
+
         guard let existing = try await inspect(name: name) else {
             return
         }
@@ -230,7 +278,7 @@ public actor LumeVirtualMachineRuntime:
         name: String,
         request: SandboxGuestCommandRequest
     ) async throws -> SandboxGuestCommandResult {
-        guard Self.validName(name) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
         }
         guard try await inspect(name: name)?.state == .running else {
@@ -269,9 +317,16 @@ public actor LumeVirtualMachineRuntime:
     }
 
     private func validateRuntime() async throws -> String {
-        if let validatedVersion {
-            return validatedVersion
+        if let validatedRuntime {
+            try LumeRuntimeProvenanceValidator.requireUnchanged(
+                validatedRuntime,
+                configuration: configuration
+            )
+            return validatedRuntime.version
         }
+        let validation = try LumeRuntimeProvenanceValidator.validate(
+            configuration: configuration
+        )
         let result = try await run(
             arguments: ["--version"],
             timeoutSeconds: configuration.commandTimeoutSeconds,
@@ -279,13 +334,95 @@ public actor LumeVirtualMachineRuntime:
         )
         let version = String(decoding: result.standardOutput, as: UTF8.self)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard version == configuration.expectedVersion else {
+        guard version == validation.version else {
             throw SandboxRuntimeError.unsupported(
-                "expected Lume \(configuration.expectedVersion), got \(version)"
+                "expected Lume \(validation.version), got \(version)"
             )
         }
-        validatedVersion = version
+        try LumeRuntimeProvenanceValidator.requireUnchanged(
+            validation,
+            configuration: configuration
+        )
+        validatedRuntime = validation
         return version
+    }
+
+    private func beginOperation(_ operation: String, name: String) throws {
+        guard activeOperations[name] == nil else {
+            throw SandboxRuntimeError.operationInProgress(
+                name: name,
+                operation: activeOperations[name]!
+            )
+        }
+        activeOperations[name] = operation
+    }
+
+    private func endOperation(name: String) {
+        activeOperations.removeValue(forKey: name)
+    }
+
+    private func cleanupFailedStartIgnoringCancellation(
+        name: String
+    ) async throws {
+        let cleanup = Task.detached {
+            try await self.stopWithoutOperationFence(name: name)
+        }
+        try await cleanup.value
+    }
+
+    private func cleanupFailedCreationIgnoringCancellation(
+        name: String
+    ) async throws {
+        let cleanup = Task.detached {
+            try await self.removePartialVirtualMachine(name: name)
+        }
+        try await cleanup.value
+    }
+
+    private func stopWithoutOperationFence(name: String) async throws {
+        guard let existing = try await inspect(name: name) else {
+            return
+        }
+        if existing.state == .stopped {
+            return
+        }
+        _ = try await run(
+            arguments: storageArguments(["stop", name]),
+            timeoutSeconds: configuration.commandTimeoutSeconds,
+            operation: "stop"
+        )
+        try await waitForStoppedOrAbsent(
+            name: name,
+            timeoutSeconds: configuration.commandTimeoutSeconds
+        )
+    }
+
+    private func removePartialVirtualMachine(name: String) async throws {
+        guard var existing = try await inspect(name: name) else {
+            return
+        }
+        if existing.state != .stopped && existing.state != .failed {
+            try await stopWithoutOperationFence(name: name)
+            guard let stopped = try await inspect(name: name) else {
+                return
+            }
+            existing = stopped
+        }
+        guard existing.state == .stopped || existing.state == .failed else {
+            throw SandboxRuntimeError.unsupported(
+                "partial VM \(name) did not become deletable"
+            )
+        }
+        _ = try await run(
+            arguments: storageArguments(["delete", name, "--force"]),
+            timeoutSeconds: configuration.commandTimeoutSeconds,
+            operation: "delete partial VM"
+        )
+        guard try await inspect(name: name) == nil else {
+            throw SandboxRuntimeError.malformedOutput(
+                "Lume cleanup completed but partial VM still exists"
+            )
+        }
     }
 
     private func ensureStorageDirectory() throws {
@@ -385,6 +522,24 @@ public actor LumeVirtualMachineRuntime:
         )
     }
 
+    private func waitForStoppedOrAbsent(
+        name: String,
+        timeoutSeconds: UInt32
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
+        repeat {
+            let state = try await inspect(name: name)?.state
+            if state == nil || state == .stopped {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(250))
+        } while clock.now < deadline
+        throw SandboxRuntimeError.operationTimedOut(
+            "\(name) -> stopped"
+        )
+    }
+
     private func waitForGuestReady(
         name: String,
         timeoutSeconds: UInt32
@@ -443,17 +598,6 @@ public actor LumeVirtualMachineRuntime:
         }
     }
 
-    private static func validName(_ name: String) -> Bool {
-        guard (1...63).contains(name.utf8.count),
-              (name.first?.isLetter == true || name.first?.isNumber == true),
-              (name.last?.isLetter == true || name.last?.isNumber == true)
-        else {
-            return false
-        }
-        return name.allSatisfy {
-            $0.isLetter || $0.isNumber || $0 == "-"
-        }
-    }
 }
 
 private struct LumeVMDetails: Decodable {

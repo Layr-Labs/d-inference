@@ -16,7 +16,9 @@ final class LumeRuntimeContractTests: XCTestCase {
             from: Data(contentsOf: lockURL)
         )
 
+        XCTAssertEqual(lock.repository, LumeRuntimeConfiguration.pinnedRepository)
         XCTAssertEqual(lock.commit, LumeRuntimeConfiguration.pinnedCommit)
+        XCTAssertEqual(lock.path, LumeRuntimeConfiguration.pinnedSourcePath)
         XCTAssertEqual(lock.version, LumeRuntimeConfiguration.pinnedVersion)
         XCTAssertEqual(lock.license, "MIT")
         XCTAssertEqual(lock.telemetry, "disabled")
@@ -204,7 +206,9 @@ final class LumeRuntimeContractTests: XCTestCase {
 }
 
 private struct LumeLock: Decodable {
+    let repository: String
     let commit: String
+    let path: String
     let version: String
     let license: String
     let telemetry: String

@@ -55,6 +55,27 @@ final class SandboxProcessRunnerTests: XCTestCase {
         XCTAssertTrue(result.standardOutputTruncated)
     }
 
+    func testDrainsLargeOutputWithoutGrowingCapture() async throws {
+        let result = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: [
+                "-c",
+                "i=0; while [ \"$i\" -lt 20000 ]; do "
+                    + "printf 0123456789abcdef; "
+                    + "printf fedcba9876543210 >&2; "
+                    + "i=$((i + 1)); done",
+            ],
+            timeoutSeconds: 10,
+            maximumOutputBytes: 1_024
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertEqual(result.standardOutput.count, 1_024)
+        XCTAssertEqual(result.standardError.count, 1_024)
+        XCTAssertTrue(result.standardOutputTruncated)
+        XCTAssertTrue(result.standardErrorTruncated)
+    }
+
     func testTerminatesProcessAtDeadline() async throws {
         let started = ContinuousClock.now
 
@@ -71,5 +92,27 @@ final class SandboxProcessRunnerTests: XCTestCase {
 
         let elapsed = started.duration(to: .now)
         XCTAssertLessThan(elapsed, .seconds(5))
+    }
+
+    func testCancellationTerminatesProcessPromptly() async throws {
+        let started = ContinuousClock.now
+        let task = Task {
+            try await SandboxProcessRunner().run(
+                executable: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["30"],
+                timeoutSeconds: 60
+            )
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancelled process should not return a result")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+        XCTAssertLessThan(started.duration(to: .now), .seconds(3))
     }
 }

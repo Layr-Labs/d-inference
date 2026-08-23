@@ -288,6 +288,42 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testRejectsInferenceModeWithPersistedLease() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        _ = try arbiter.initialize(mode: .sandboxDedicated)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        _ = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-active",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120),
+            now: now
+        )
+
+        let stateURL = stateDirectory.appendingPathComponent("capacity.json")
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(
+                with: Data(contentsOf: stateURL)
+            ) as? [String: Any]
+        )
+        object["mode"] = SandboxHostMode.inference.rawValue
+        try JSONSerialization.data(
+            withJSONObject: object,
+            options: [.sortedKeys]
+        ).write(to: stateURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: stateURL.path
+        )
+
+        assertCapacityError(.corruptState) {
+            _ = try arbiter.snapshot()
+        }
+    }
+
     private func makeArbiter(
         stateDirectory: URL,
         maximumCPUCount: UInt16 = 8,

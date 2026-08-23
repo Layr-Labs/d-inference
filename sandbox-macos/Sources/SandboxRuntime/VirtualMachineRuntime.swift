@@ -50,16 +50,16 @@ public struct SandboxVirtualMachineSpecification: Equatable, Sendable {
         diskBytes: UInt64
     ) throws {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard isValidVirtualMachineName(normalizedName) else {
+        guard SandboxVirtualMachineNamePolicy.isValid(normalizedName) else {
             throw SandboxRuntimeError.invalidName
         }
-        try imageSource.validate()
+        let normalizedImageSource = try imageSource.normalized()
         guard diskBytes >= resources.workspaceBytes else {
             throw SandboxRuntimeError.diskSmallerThanWorkspace
         }
         self.name = normalizedName
         self.resources = resources
-        self.imageSource = imageSource
+        self.imageSource = normalizedImageSource
         self.diskBytes = diskBytes
     }
 
@@ -69,33 +69,48 @@ public enum SandboxVirtualMachineImageSource: Equatable, Sendable {
     case restoreImage(url: URL, unattendedPreset: String)
     case localTemplate(name: String)
 
-    fileprivate func validate() throws {
+    fileprivate func normalized() throws -> Self {
         switch self {
         case .restoreImage(let url, let unattendedPreset):
             guard url.isFileURL,
+                  url.baseURL == nil,
                   !url.path.isEmpty,
                   unattendedPreset == "tahoe"
             else {
                 throw SandboxRuntimeError.invalidImageReference
             }
+            return .restoreImage(
+                url: url.standardizedFileURL,
+                unattendedPreset: unattendedPreset
+            )
         case .localTemplate(let name):
             let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard isValidVirtualMachineName(normalized) else {
+            guard SandboxVirtualMachineNamePolicy.isValid(normalized) else {
                 throw SandboxRuntimeError.invalidImageReference
             }
+            return .localTemplate(name: normalized)
         }
     }
 }
 
-func isValidVirtualMachineName(_ name: String) -> Bool {
-    guard (1...63).contains(name.utf8.count),
-          (name.first?.isLetter == true || name.first?.isNumber == true),
-          (name.last?.isLetter == true || name.last?.isNumber == true)
-    else {
-        return false
+public enum SandboxVirtualMachineNamePolicy {
+    public static func isValid(_ name: String) -> Bool {
+        let bytes = Array(name.utf8)
+        guard (1...63).contains(bytes.count),
+              bytes.first.map(isASCIIAlphanumeric) == true,
+              bytes.last.map(isASCIIAlphanumeric) == true
+        else {
+            return false
+        }
+        return bytes.allSatisfy {
+            isASCIIAlphanumeric($0) || $0 == 45
+        }
     }
-    return name.allSatisfy { character in
-        character.isLetter || character.isNumber || character == "-"
+
+    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
+        (65...90).contains(byte)
+            || (97...122).contains(byte)
+            || (48...57).contains(byte)
     }
 }
 
@@ -127,7 +142,9 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
     case diskSmallerThanWorkspace
     case executableNotFound(String)
     case operationTimedOut(String)
+    case operationInProgress(name: String, operation: String)
     case commandFailed(command: String, exitCode: Int32, stderr: String)
+    case cleanupFailed(operation: String, primary: String, cleanup: String)
     case malformedOutput(String)
     case unsupported(String)
 
@@ -143,8 +160,12 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
             return "required runtime executable not found: \(executable)"
         case .operationTimedOut(let operation):
             return "runtime operation timed out: \(operation)"
+        case .operationInProgress(let name, let operation):
+            return "VM \(name) already has an active \(operation) operation"
         case .commandFailed(let command, let exitCode, let stderr):
             return "runtime command failed (\(exitCode)): \(command): \(stderr)"
+        case .cleanupFailed(let operation, let primary, let cleanup):
+            return "\(operation) failed (\(primary)); cleanup also failed (\(cleanup))"
         case .malformedOutput(let detail):
             return "runtime returned malformed output: \(detail)"
         case .unsupported(let detail):

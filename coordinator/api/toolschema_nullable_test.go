@@ -85,25 +85,6 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeInsideAdditionalPropertiesSchema
 	}
 }
 
-// tsnAnyOfTypes asserts the node's anyOf is a list of bare {"type": ...}
-// members and returns the member types in order.
-func tsnAnyOfTypes(t *testing.T, node map[string]any, what string) []string {
-	t.Helper()
-	variants, ok := node["anyOf"].([]any)
-	if !ok {
-		t.Fatalf("%s anyOf = %#v, want array", what, node["anyOf"])
-	}
-	types := make([]string, 0, len(variants))
-	for i, v := range variants {
-		member := tsnMap(t, v, what+".anyOf member")
-		if len(member) != 1 {
-			t.Fatalf("%s anyOf[%d] = %v, want bare type-only schema", what, i, member)
-		}
-		types = append(types, tsnType(t, member, what+".anyOf member"))
-	}
-	return types
-}
-
 // Swift: multiConcreteTypeArrayWithExistingCombinatorCollapsesOnly
 func TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollapsesOnly(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",

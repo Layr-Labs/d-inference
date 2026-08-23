@@ -671,6 +671,8 @@ func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.
 
 	models := []string{modelA, modelB, modelA}
 	var providerID string
+	loadedModels := make([]string, 0, 2)
+	loadedModelSet := make(map[string]struct{}, 2)
 	for _, model := range models {
 		resp := postChatCompletionsWithModel(t, s, model, "Reply with one short word.", false, 16)
 		respBody, err := io.ReadAll(resp.Body)
@@ -685,6 +687,33 @@ func TestIntegration_FullNetworkSingleSwiftProviderMultiModelRouting(t *testing.
 		} else {
 			require.Equal(t, providerID, currentProviderID, "all requests should route to the same multi-model provider")
 		}
+		if _, seen := loadedModelSet[model]; !seen {
+			loadedModelSet[model] = struct{}{}
+			loadedModels = append(loadedModels, model)
+		}
+		provider := s.Coordinator.Registry.GetProvider(providerID)
+		require.NotNil(t, provider, "provider %s disappeared after serving model %s", providerID, model)
+		require.Eventually(t, func() bool {
+			provider.Mu().Lock()
+			defer provider.Mu().Unlock()
+			if provider.BackendCapacity == nil {
+				return false
+			}
+			for _, loadedModel := range loadedModels {
+				idle := false
+				for _, slot := range provider.BackendCapacity.Slots {
+					if slot.Model == loadedModel && slot.State == "idle" {
+						idle = true
+						break
+					}
+				}
+				if !idle {
+					return false
+				}
+			}
+			return true
+		}, 2*time.Minute, 500*time.Millisecond,
+			"provider %s did not report loaded models %v idle before the next request", providerID, loadedModels)
 
 		var decoded struct {
 			Model   string `json:"model"`

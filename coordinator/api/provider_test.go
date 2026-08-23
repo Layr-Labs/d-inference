@@ -365,19 +365,3 @@ func TestHandleInferenceErrorPreservesModelLoadCategories(t *testing.T) {
 		})
 	}
 }
-
-// findProviderByModel returns the first provider offering the given model.
-func findProviderByModel(reg *registry.Registry, model string) *registry.Provider {
-	for _, id := range reg.ProviderIDs() {
-		p := reg.GetProvider(id)
-		if p == nil {
-			continue
-		}
-		for _, m := range p.Models {
-			if m.ID == model {
-				return p
-			}
-		}
-	}
-	return nil
-}

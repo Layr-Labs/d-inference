@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http/httptest"
@@ -210,31 +208,6 @@ func awaitTestCondition(t *testing.T, ctx context.Context, what string, conditio
 	}
 }
 
-// handleProviderMessages reads WebSocket messages in a loop, dispatches
-// challenges vs inference requests, and sends responses. It exits when
-// the context is cancelled or the connection closes.
-func handleProviderMessages(ctx context.Context, t *testing.T, conn *websocket.Conn, handler func(msgType string, data []byte) []byte) {
-	t.Helper()
-	for {
-		_, data, err := conn.Read(ctx)
-		if err != nil {
-			return
-		}
-		var envelope struct {
-			Type string `json:"type"`
-		}
-		if err := json.Unmarshal(data, &envelope); err != nil {
-			continue
-		}
-		resp := handler(envelope.Type, data)
-		if resp != nil {
-			if err := conn.Write(ctx, websocket.MessageText, resp); err != nil {
-				return
-			}
-		}
-	}
-}
-
 // makeValidChallengeResponse creates a valid attestation response for a challenge.
 // "Valid" here means: echoed nonce, matching public key, non-empty signature,
 // and all security posture fields set to safe values.
@@ -249,28 +222,6 @@ func makeValidChallengeResponse(data []byte, publicKey string) []byte {
 		Nonce:             challenge.Nonce,
 		Signature:         testChallengeSignature(challenge.Nonce, challenge.Timestamp, publicKey),
 		PublicKey:         publicKey,
-		RDMADisabled:      &rdmaDisabled,
-		SIPEnabled:        &sipEnabled,
-		SecureBootEnabled: &secureBootEnabled,
-	}
-	respData, _ := json.Marshal(resp)
-	return respData
-}
-
-// makeInvalidChallengeResponse creates a response with the correct nonce
-// but a wrong public key. This ensures the response reaches the challenge
-// tracker (nonce must match for dispatch) but verification fails.
-func makeInvalidChallengeResponse(data []byte) []byte {
-	var challenge protocol.AttestationChallengeMessage
-	json.Unmarshal(data, &challenge)
-	rdmaDisabled := true
-	sipEnabled := true
-	secureBootEnabled := true
-	resp := protocol.AttestationResponseMessage{
-		Type:              protocol.TypeAttestationResponse,
-		Nonce:             challenge.Nonce, // correct nonce so tracker dispatches it
-		Signature:         "c2lnbmF0dXJl",
-		PublicKey:         "d3Jvbmdfa2V5X21pc21hdGNo", // wrong key, causes verification failure
 		RDMADisabled:      &rdmaDisabled,
 		SIPEnabled:        &sipEnabled,
 		SecureBootEnabled: &secureBootEnabled,
@@ -369,13 +320,6 @@ func connectProviderWithToken(
 	return newTestProviderWS(t, ctx, tsURL, reg, models, publicKey, func(msg *protocol.RegisterMessage) {
 		msg.AuthToken = authToken
 	})
-}
-
-// sha256Hex computes SHA-256 of a string and returns hex encoding.
-// Mirrors the store's internal helper.
-func sha256Hex(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(h[:])
 }
 
 // connectProviderWithAttestation dials and registers a provider with an

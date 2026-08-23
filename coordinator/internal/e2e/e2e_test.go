@@ -144,7 +144,6 @@ func TestEncryptionNonDeterministic(t *testing.T) {
 	}
 }
 
-
 func TestEncryptEmptyPlaintext(t *testing.T) {
 	providerPub, providerPriv := generateBoxKeys(t)
 	session := generateSessionKeys(t)

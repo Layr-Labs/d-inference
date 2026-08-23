@@ -19,7 +19,6 @@ func creditBalance(t *testing.T, l *Ledger, consumerID string, amountMicroUSD in
 	}
 }
 
-
 func TestBalance(t *testing.T) {
 	l := newTestLedger()
 
@@ -79,7 +78,6 @@ func TestChargeNoAccount(t *testing.T) {
 		t.Fatal("expected error for non-existent account")
 	}
 }
-
 
 func TestRecordAndGetUsage(t *testing.T) {
 	l := newTestLedger()

@@ -149,7 +149,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 			"cpu_cores":                      p.Hardware.CPUCores,
 			"memory_bandwidth_gbs":           p.Hardware.MemoryBandwidthGBs,
 			"status":                         status,
-			"trust_level":                    string(p.TrustLevel),
+			"trust_level":                    string(p.GetTrustLevel()),
 			"decode_tps":                     p.DecodeTPS,
 			"requests_served":                p.Stats.RequestsServed,
 			"tokens_generated":               p.Stats.TokensGenerated,
@@ -339,9 +339,13 @@ func (s *Server) aggregateProviderLocations() (
 			unknownProviders++
 			return
 		}
+		p.Mu().Lock()
 		loc := p.Location
+		attested := p.Attested
+		trustLevel := p.TrustLevel
+		p.Mu().Unlock()
 		hwAttested := 0
-		if p.Attested && p.TrustLevel == registry.TrustHardware {
+		if attested && trustLevel == registry.TrustHardware {
 			hwAttested = 1
 		}
 

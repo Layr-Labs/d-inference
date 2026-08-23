@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-
 // TestProviderEarningsJobIndex_BootSafe verifies the safe replacement: startup
 // builds a valid partial unique index on provider_earnings(job_id) without a
 // dedupe DELETE, migrate() is re-entrant, and the index backs the idempotent

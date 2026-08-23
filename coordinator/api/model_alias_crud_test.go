@@ -487,4 +487,3 @@ func TestAliasMutationEndpointsSerializeOwnershipChecks(t *testing.T) {
 		t.Fatalf("persisted aliases after concurrent mutations: aliases=%+v err=%v", aliases, err)
 	}
 }
-

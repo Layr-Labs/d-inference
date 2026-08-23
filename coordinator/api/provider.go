@@ -306,19 +306,20 @@ func (s *Server) providerReadLoop(ctx context.Context, conn *websocket.Conn, pro
 			provider = s.registry.Register(providerID, conn, regMsg)
 			s.attachProviderLocation(providerID, provider, r)
 			s.verifyProviderAttestation(providerID, provider, regMsg)
+			trustLevel := provider.GetTrustLevel()
 
 			// Record registration outcome metrics + telemetry.
 			if s.metrics != nil {
 				s.metrics.IncCounter("provider_registrations_total",
-					MetricLabel{"trust_level", string(provider.TrustLevel)},
+					MetricLabel{"trust_level", string(trustLevel)},
 				)
 			}
-			s.ddIncr("providers.registrations", []string{"trust_level:" + string(provider.TrustLevel)})
+			s.ddIncr("providers.registrations", []string{"trust_level:" + string(trustLevel)})
 			s.emit(context.Background(), protocol.SeverityInfo, protocol.KindLog,
 				"provider registered",
 				map[string]any{
 					"provider_id":   providerID,
-					"trust_level":   string(provider.TrustLevel),
+					"trust_level":   string(trustLevel),
 					"hardware_chip": regMsg.Hardware.ChipName,
 					"memory_gb":     regMsg.Hardware.MemoryGB,
 				})
@@ -1554,7 +1555,7 @@ func (s *Server) handleChallengeFailure(providerID string, reason string) int {
 			s.registry.MarkUntrusted(providerID)
 		}
 		if p := s.registry.GetProvider(providerID); p != nil {
-			s.sendTrustStatus(p, p.TrustLevel, string(registry.StatusUntrusted), reason)
+			s.sendTrustStatus(p, p.GetTrustLevel(), string(registry.StatusUntrusted), reason)
 		}
 	}
 	s.emit(context.Background(), severity, protocol.KindAttestationFailure,

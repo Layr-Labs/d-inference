@@ -47,3 +47,38 @@ func TestPostgresProviderRecordStatsPersisted(t *testing.T) {
 		t.Fatalf("provider stats mismatch: got %+v want %+v", got, rec)
 	}
 }
+
+func TestPostgresNilProviderAndModelFieldsAreCanonical(t *testing.T) {
+	s := testPostgresStore(t)
+	ctx := context.Background()
+
+	providerID := uniqueID("provider-nil-json")
+	if err := s.UpsertProvider(ctx, ProviderRecord{ID: providerID}); err != nil {
+		t.Fatalf("UpsertProvider with nil JSON fields: %v", err)
+	}
+	var hardware, models string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT hardware::text, models::text FROM providers WHERE id = $1`,
+		providerID,
+	).Scan(&hardware, &models); err != nil {
+		t.Fatalf("read canonical provider JSON: %v", err)
+	}
+	if hardware != `{}` || models != `[]` {
+		t.Fatalf("canonical provider JSON = hardware %q models %q, want {} and []", hardware, models)
+	}
+
+	modelID := uniqueID("model-nil-capabilities")
+	if err := s.UpsertModelRegistryEntry(&ModelRegistryEntry{ID: modelID}); err != nil {
+		t.Fatalf("UpsertModelRegistryEntry with nil capabilities: %v", err)
+	}
+	var capabilities string
+	if err := s.pool.QueryRow(ctx,
+		`SELECT capabilities::text FROM model_registry WHERE id = $1`,
+		modelID,
+	).Scan(&capabilities); err != nil {
+		t.Fatalf("read canonical model capabilities: %v", err)
+	}
+	if capabilities != `{}` {
+		t.Fatalf("canonical model capabilities = %q, want {}", capabilities)
+	}
+}

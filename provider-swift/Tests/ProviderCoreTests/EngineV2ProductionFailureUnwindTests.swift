@@ -20,7 +20,7 @@ struct EngineV2ProductionFailureUnwindTests {
         struct InitFailure: Error {}
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
-        let telemetry = ProductionWiringTelemetrySink()
+        let telemetry = TelemetrySink()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
@@ -33,7 +33,7 @@ struct EngineV2ProductionFailureUnwindTests {
                 modelId: "gpt-oss-20b",
                 modelType: "gpt_oss",
                 container: productionMakeStubContainer(),
-                tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                 sizing: productionMakeSizing(weightsGiB: 12, kvRate: 24_576)
             )
         }
@@ -55,7 +55,7 @@ struct EngineV2ProductionFailureUnwindTests {
         let runtime = EngineV2Runtime()
         let recorder = ProductionGrantRecorder()
         let (bridgeA, engineA, _) = try await productionBuildAndInstallSlotA(loop, runtime: runtime, recorder: recorder,
-        engines: { _, grant in ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        engines: { _, grant in ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant) })
         let grantA0 = await bridgeA.engineKVBytesCapacity()
 
         // Swap the hooks: B's builder throws AFTER A has been shrunk.
@@ -70,7 +70,7 @@ struct EngineV2ProductionFailureUnwindTests {
                 modelId: "gpt-oss-20b",
                 modelType: "gpt_oss",
                 container: productionMakeStubContainer(),
-                tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                 sizing: productionMakeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
             )
         }
@@ -98,7 +98,7 @@ struct EngineV2ProductionFailureUnwindTests {
         let tinyPhysical: UInt64 = 16 * productionWiringGiB
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
-        let telemetry = ProductionWiringTelemetrySink()
+        let telemetry = TelemetrySink()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
@@ -106,7 +106,7 @@ struct EngineV2ProductionFailureUnwindTests {
                 emitTelemetry: telemetry.callback(),
                 physicalMemoryBytes: tinyPhysical,
                 makeEngine: { _, grant in
-                    ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant)
+                    ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant)
                 }))
 
         // Slot A exists with a small grant already.
@@ -115,13 +115,13 @@ struct EngineV2ProductionFailureUnwindTests {
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingA
         )
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeA,
             sizing: sizingA,
             modelType: "gemma4")
@@ -135,7 +135,7 @@ struct EngineV2ProductionFailureUnwindTests {
                 modelId: "gpt-oss-20b",
                 modelType: "gpt_oss",
                 container: productionMakeStubContainer(),
-                tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                 sizing: productionMakeSizing(weightsGiB: 6, kvRate: 24_576)
             )
         }
@@ -151,14 +151,14 @@ struct EngineV2ProductionFailureUnwindTests {
     func cancellationFansOutToBridge() async throws {
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
-        let engine = ProductionWiringScriptedEngine(script: .manual)
+        let engine = ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         await loop.setEngineV2RuntimeForTesting(runtime)
         await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridge)
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridge,
             modelType: "gemma4"
         )
@@ -181,14 +181,14 @@ struct EngineV2ProductionFailureUnwindTests {
     func unloadRetiresBridge() async throws {
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
-        let engine = ProductionWiringScriptedEngine(script: .manual)
+        let engine = ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         await loop.setEngineV2RuntimeForTesting(runtime)
         await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridge)
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridge,
             modelType: "gemma4"
         )

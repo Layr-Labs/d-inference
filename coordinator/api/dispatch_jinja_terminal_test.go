@@ -136,7 +136,6 @@ func TestLatchDeterministicLoser_JinjaKillSwitch(t *testing.T) {
 	}
 }
 
-
 // Route-outcome taxonomy: a jinja failure is recorded as class client_error
 // WITHOUT AdmittedButFailed (not an admission mismatch, not a provider
 // fault), while the row's ErrorReason PRESERVES the jinja_* value so the
@@ -285,6 +284,7 @@ func TestHandleInferenceError_JinjaSkipsRecordJobFailure(t *testing.T) {
 		})
 	}
 }
+
 // setupKeepaliveFailoverServer mirrors setupFailoverServer with the prefill
 // SSE keepalive enabled at a test-fast cadence, so a script that stalls a few
 // intervals before erroring deterministically commits HTTP 200 first.

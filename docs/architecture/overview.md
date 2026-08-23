@@ -208,9 +208,11 @@ are aliases that resolve to concrete builds. Providers download approved models
 from R2 and verify per-file and aggregate SHA-256 hashes. See
 [`operations/model-registry.md`](operations/model-registry.md).
 
-Telemetry events share a single wire type across Go, Swift, and TypeScript.
-The three implementations must keep enum values, snake_case field names, and
-the field allowlist in sync. See
+Client telemetry ingestion is disabled: provider and browser facades drop
+events, and the compatibility routes return a fixed `410 Gone` before reading
+the body. The retained event type has Go, Swift, and TypeScript protocol mirrors
+checked against `fixtures/telemetry/v1/events.json`; client-side field filters
+are not a coordinator ingestion contract. See
 [`operations/telemetry.md`](operations/telemetry.md).
 
 ## Storage

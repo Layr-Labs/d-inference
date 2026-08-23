@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+const (
+	promptSidecarHelperReadyTimeout  = 10 * time.Second
+	promptSidecarHelperHealthTimeout = 500 * time.Millisecond
+)
+
 func TestPrepareSocketDirectoryRejectsSymlinkedAncestor(t *testing.T) {
 	base, err := filepath.EvalSymlinks(os.TempDir())
 	if err != nil {
@@ -101,8 +106,8 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 		SocketPath:             socket,
 		ArtifactRoot:           temp,
 		RequestTimeout:         50 * time.Millisecond,
-		HealthTimeout:          50 * time.Millisecond,
-		StartupTimeout:         time.Second,
+		HealthTimeout:          promptSidecarHelperHealthTimeout,
+		StartupTimeout:         promptSidecarHelperReadyTimeout,
 		HealthInterval:         10 * time.Millisecond,
 		HealthFailureThreshold: 3,
 		ShutdownTimeout:        500 * time.Millisecond,
@@ -111,8 +116,11 @@ func TestSupervisorRestartsChildAndBecomesReady(t *testing.T) {
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
-		return status.Ready && status.Restarts >= 1
+	waitForSupervisorWithin(t, supervisor, 2*promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Ready &&
+			status.Restarts >= 1 &&
+			status.ChildGeneration >= 2 &&
+			status.RestartReason == "child_exit"
 	})
 }
 
@@ -133,8 +141,8 @@ func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
 		SocketPath:             filepath.Join(temp, "sidecar.sock"),
 		ArtifactRoot:           temp,
 		RequestTimeout:         30 * time.Millisecond,
-		HealthTimeout:          30 * time.Millisecond,
-		StartupTimeout:         time.Second,
+		HealthTimeout:          promptSidecarHelperHealthTimeout,
+		StartupTimeout:         promptSidecarHelperReadyTimeout,
 		HealthInterval:         10 * time.Millisecond,
 		HealthFailureThreshold: 3,
 		ShutdownTimeout:        100 * time.Millisecond,
@@ -143,18 +151,27 @@ func TestSupervisorRestartsUnhealthyChild(t *testing.T) {
 	})
 	supervisor.Start(context.Background())
 	defer supervisor.Close()
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool { return status.Ready })
+	waitForSupervisorWithin(t, supervisor, promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Ready
+	})
+	initial := supervisor.Status()
 	if err := os.WriteFile(unhealthy, []byte("hang"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
-		return status.Restarts >= 1 && !status.Ready
+	waitForSupervisorWithin(t, supervisor, 2*promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Restarts > initial.Restarts &&
+			status.ChildGeneration > initial.ChildGeneration &&
+			status.RestartReason == "health_failure_threshold" &&
+			!status.Ready
 	})
 	if err := os.Remove(unhealthy); err != nil {
 		t.Fatal(err)
 	}
-	waitForSupervisor(t, supervisor, func(status SupervisorStatus) bool {
-		return status.Restarts >= 1 && status.Ready
+	waitForSupervisorWithin(t, supervisor, promptSidecarHelperReadyTimeout, func(status SupervisorStatus) bool {
+		return status.Restarts > initial.Restarts &&
+			status.ChildGeneration > initial.ChildGeneration &&
+			status.RestartReason == "health_failure_threshold" &&
+			status.Ready
 	})
 }
 
@@ -326,14 +343,24 @@ func startSupervisorHelper(t *testing.T) (*Supervisor, string) {
 
 func waitForSupervisor(t *testing.T, supervisor *Supervisor, predicate func(SupervisorStatus) bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	waitForSupervisorWithin(t, supervisor, 3*time.Second, predicate)
+}
+
+func waitForSupervisorWithin(
+	t *testing.T,
+	supervisor *Supervisor,
+	timeout time.Duration,
+	predicate func(SupervisorStatus) bool,
+) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if predicate(supervisor.Status()) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("supervisor state did not converge: %+v", supervisor.Status())
+	t.Fatalf("supervisor state did not converge within %s: %+v", timeout, supervisor.Status())
 }
 
 func argumentValue(arguments []string, name string) string {

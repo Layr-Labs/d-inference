@@ -238,7 +238,6 @@ func TestMultiProvider_ProviderLeavesOtherContinues(t *testing.T) {
 	}
 }
 
-
 // ---------------------------------------------------------------------------
 // Model catalog enforcement with multiple providers
 // ---------------------------------------------------------------------------

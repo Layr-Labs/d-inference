@@ -178,7 +178,6 @@ func TestSecurity_MalformedWebSocketMessages(t *testing.T) {
 
 }
 
-
 // ---------------------------------------------------------------------------
 // Test 2: Auth Bypass Attempts
 // ---------------------------------------------------------------------------
@@ -561,7 +560,7 @@ func TestSecurity_UntrustedIdentifiersAreOpaqueData(t *testing.T) {
 
 		for _, payload := range injectionPayloads {
 			encoded, err := json.Marshal(map[string]any{
-				"model": payload,
+				"model":    payload,
 				"messages": []map[string]string{{"role": "user", "content": "hi"}},
 			})
 			if err != nil {

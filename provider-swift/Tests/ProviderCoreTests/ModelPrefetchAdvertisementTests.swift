@@ -2,6 +2,45 @@ import Foundation
 import Testing
 
 @testable import ProviderCore
+/// Prefetcher that records whether it was invoked so the already-available
+/// short-circuit test can prove that no download starts.
+private final class TrackingPrefetcher: ModelPrefetcher, @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count = 0
+
+    var callCount: Int { lock.withLock { _count } }
+
+    func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
+    ) async throws {
+        lock.withLock { _count += 1 }
+    }
+}
+
+/// Prefetcher that always fails and counts attempts per model for the two
+/// desired-build retry-policy tests below.
+private final class FailingCountingPrefetcher: ModelPrefetcher, @unchecked Sendable {
+    private let lock = NSLock()
+    private var counts: [String: Int] = [:]
+    private let called = AsyncTestLatch()
+
+    func count(for modelID: String) -> Int {
+        lock.withLock { counts[modelID] ?? 0 }
+    }
+
+    func prefetchToDisk(
+        modelID: String,
+        onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
+    ) async throws {
+        lock.withLock { counts[modelID, default: 0] += 1 }
+        called.signal()
+        throw ModelCatalogError.downloadFailed("simulated transient network failure")
+    }
+
+    func waitForCall() async { await called.wait() }
+}
+
 
 @Suite("ProviderLoop prefetch integration", .serialized)
 struct ProviderLoopPrefetchTests {
@@ -241,7 +280,7 @@ struct ProviderLoopPrefetchTests {
         )
         await loop.installPrefetchCoordinatorForTesting(coord, client: client)
 
-        let recorder = RecordingPrefetchSink()
+        let recorder = RecordingSink()
         await coord.handlePrefetch(modelId: modelID, priority: 1, sink: recorder)
         _ = await recorder.waitForTerminal()
         #expect(recorder.terminal()?.status == .verified)

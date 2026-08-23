@@ -325,7 +325,8 @@ func TestIdleResidentAdmittedByFallbackMemoryGate(t *testing.T) {
 }
 
 // A cold provider below the catalog's weight requirement is never admitted.
-func TestColdModelRejectsProviderBelowCatalogSize(t *testing.T) { reg := New(testLogger())
+func TestColdModelRejectsProviderBelowCatalogSize(t *testing.T) {
+	reg := New(testLogger())
 	model := "needs-32gb-model"
 	// Catalog says this model needs ~32 GB.
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 32}})
@@ -334,26 +335,27 @@ func TestColdModelRejectsProviderBelowCatalogSize(t *testing.T) { reg := New(tes
 	// currently running it (cold backend). With no memory gate, this
 	// provider would be selected and then OOM trying to load the model.
 	schedulerScenarioProvider{id: "small", decodeTPS: 30, totalMemGB: 24, gpuActiveGB: 1,
-		slotState: "idle_shutdown",}.register(t, reg, model)
+		slotState: "idle_shutdown"}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p != nil {
 		t.Fatalf("24 GB provider selected for a 32 GB cold model: %q", p.ID)
 	}
- }
+}
 
 // Memory fit outranks idle state when only the busy provider can load the model.
-func TestBusyFittingProviderBeatsIdleUnfitProvider(t *testing.T) { reg := New(testLogger())
+func TestBusyFittingProviderBeatsIdleUnfitProvider(t *testing.T) {
+	reg := New(testLogger())
 	model := "p1-busy-vs-idle-model"
 	// 32 GB model: only the 128 GB provider fits.
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 32}})
 
 	schedulerScenarioProvider{id: "big-busy", decodeTPS: 80, totalMemGB: 128, gpuActiveGB: 50,
-		pending: 1, backendRun: 1,}.register(t, reg, model)
+		pending: 1, backendRun: 1}.register(t, reg, model)
 	// Small provider has the model in its catalog but no slot loaded,
 	// so the gate must compute weights + KV against free memory.
 	schedulerScenarioProvider{id: "small-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1,
-		slotState: "idle_shutdown",}.register(t, reg, model)
+		slotState: "idle_shutdown"}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
@@ -362,10 +364,11 @@ func TestBusyFittingProviderBeatsIdleUnfitProvider(t *testing.T) { reg := New(te
 	if p.ID != "big-busy" {
 		t.Fatalf("got %q, want the only provider that fits the model", p.ID)
 	}
- }
+}
 
 // Resident weights are not charged again by cold-load admission.
-func TestWarmProviderBypassesColdWeightHeadroom(t *testing.T) { reg := New(testLogger())
+func TestWarmProviderBypassesColdWeightHeadroom(t *testing.T) {
+	reg := New(testLogger())
 	model := "p1-warm-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 32}})
 
@@ -374,7 +377,7 @@ func TestWarmProviderBypassesColdWeightHeadroom(t *testing.T) { reg := New(testL
 	// than the 32 GB model footprint. But the gate must accept this
 	// provider because the weights are already resident.
 	schedulerScenarioProvider{id: "warm-running", decodeTPS: 60, totalMemGB: 48, gpuActiveGB: 35,
-		slotState: "running",}.register(t, reg, model)
+		slotState: "running"}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
@@ -383,19 +386,20 @@ func TestWarmProviderBypassesColdWeightHeadroom(t *testing.T) { reg := New(testL
 	if p.ID != "warm-running" {
 		t.Fatalf("got %q, want warm-running", p.ID)
 	}
- }
+}
 
 // Missing catalog size preserves mixed-version fail-open admission.
-func TestUnsizedCatalogEntryFailsOpenMemoryAdmission(t *testing.T) { reg := New(testLogger())
+func TestUnsizedCatalogEntryFailsOpenMemoryAdmission(t *testing.T) {
+	reg := New(testLogger())
 	model := "p1-unsized-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model}}) // SizeGB unset
 
 	// Tiny provider that would fail the gate if SizeGB were set.
 	schedulerScenarioProvider{id: "tiny", decodeTPS: 20, totalMemGB: 8, gpuActiveGB: 7,
-		slotState: "idle_shutdown",}.register(t, reg, model)
+		slotState: "idle_shutdown"}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
 		t.Fatal("expected tiny to be admitted (gate disabled when SizeGB=0), got nil")
 	}
- }
+}

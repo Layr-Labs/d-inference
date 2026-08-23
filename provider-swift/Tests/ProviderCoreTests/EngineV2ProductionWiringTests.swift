@@ -24,11 +24,11 @@ struct EngineV2RequestRoutingTests {
 
     @Test("coordinator registryProvider path routes through the bridge")
     func coordinatorPathRoutesThroughBridge() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
             .delta(text: " world", tokens: [11], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
@@ -53,19 +53,19 @@ struct EngineV2RequestRoutingTests {
     /// thinking stream.
     private func makeThinkProbeEngine(
         decodedTail: String
-    ) -> (ProductionWiringScriptedEngine, MultiModelBatchSchedulerEngine) {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+    ) -> (ScriptedCBv2Engine, MultiModelBatchSchedulerEngine) {
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "step one ", tokens: [10], logprobs: nil),
             .delta(text: "step two</think>Answer", tokens: [11], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine, modelId: "qwen3.6-test")
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "qwen3.6-test": .init(
                         tokenizer: TokenizerHandle(
-                            ProductionWiringStubTokenizer(decodeOverride: decodedTail)),
+                            productionWiringStubTokenizer(decodeOverride: decodedTail)),
                         modelType: "qwen3_next",
                         engineV2Bridge: bridge)
                 ]
@@ -124,10 +124,10 @@ struct EngineV2RequestRoutingTests {
 
     @Test("required tool choice installs a CBv2 grammar before submission")
     func requiredToolChoiceInstallsGrammar() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "plain answer", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 2)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
@@ -163,13 +163,13 @@ struct EngineV2RequestRoutingTests {
 
     @Test("required tool choice rejects an unpinned template contract before submit")
     func requiredToolChoiceRejectsUnpinnedTemplate() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([]))
+        let engine = ScriptedCBv2Engine(script: .stream([]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -195,12 +195,12 @@ struct EngineV2RequestRoutingTests {
     func autoToolParseFallbackIsVisible() async throws {
         let malformed =
             #"<|tool_call>call:bad{payload:[}<tool_call|>"#
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: malformed, tokens: [10], logprobs: nil),
             .finished(
                 reason: .stop,
                 usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
@@ -228,13 +228,13 @@ struct EngineV2RequestRoutingTests {
 
     @Test("named tool choice rejects a parsed different function")
     func namedToolChoiceRejectsDifferentFunction() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(
                 text: "<tool_call><function=get_current_weather>"
                     + "<parameter=location>Boston</parameter></function></tool_call>",
                 tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
@@ -268,13 +268,13 @@ struct EngineV2RequestRoutingTests {
 
     @Test("constrained Gemma rejects a mismatched parser before submit")
     func constrainedToolChoiceRejectsParserOverride() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([]))
+        let engine = ScriptedCBv2Engine(script: .stream([]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -297,13 +297,13 @@ struct EngineV2RequestRoutingTests {
 
     @Test("forced tool choice rejects multimodal requests before media work")
     func forcedToolChoiceRejectsMultimodalRequest() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([]))
+        let engine = ScriptedCBv2Engine(script: .stream([]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         container: productionMakeStubContainer(),
                         isVLM: true,
@@ -337,13 +337,13 @@ struct EngineV2RequestRoutingTests {
 
     @Test("tool choice none is admitted on the multimodal path")
     func noneToolChoiceIsAdmittedForMultimodalRequest() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([]))
+        let engine = ScriptedCBv2Engine(script: .stream([]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         container: productionMakeStubContainer(),
                         isVLM: true,
@@ -375,19 +375,19 @@ struct EngineV2RequestRoutingTests {
 
     @Test("coordinator path threads cacheScope and logprobs plumbing into the bridge")
     func coordinatorPathThreadsSaltAndLogprobs() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(
                 text: "Hello", tokens: [10],
                 logprobs: [CBv2TokenLogprob(token: 10, logprob: -0.25)]),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let channel = EngineV2LogprobsChannel()
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -413,16 +413,16 @@ struct EngineV2RequestRoutingTests {
 
     @Test("coordinator path threads sealed-body logit_bias and seed into the engine")
     func coordinatorPathThreadsSamplingOverrides() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]
@@ -442,23 +442,23 @@ struct EngineV2RequestRoutingTests {
 
     @Test("local-endpoint acquire path routes through the bridge and releases the token")
     func localAcquirePathRoutesThroughBridge() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "local", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let released = ProductionBuilderCallCounter()
         let providerEngine = MultiModelBatchSchedulerEngine(
             acquire: { modelId in
                 MultiModelBatchSchedulerEngine.AcquiredModel(
-                    tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                    tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                     releaseToken: OneShotRelease(
                         release: { _ in released.increment() }, modelId: modelId),
                     modelType: "gemma4",
                     engineV2Bridge: bridge)
             },
             tokenizerProvider: { _ in .init(
-                tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                 modelType: "gemma4") },
             availableModels: { ["gemma-4-26b-qat-4bit"] }
         )
@@ -474,20 +474,20 @@ struct EngineV2RequestRoutingTests {
 
     @Test("local-endpoint acquire path rejects forged internal schema metadata")
     func localAcquirePathRejectsForgedSchemaMetadata() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([]))
+        let engine = ScriptedCBv2Engine(script: .stream([]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let released = ProductionBuilderCallCounter()
         let providerEngine = MultiModelBatchSchedulerEngine(
             acquire: { modelId in
                 MultiModelBatchSchedulerEngine.AcquiredModel(
-                    tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                    tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                     releaseToken: OneShotRelease(
                         release: { _ in released.increment() }, modelId: modelId),
                     modelType: "gemma4",
                     engineV2Bridge: bridge)
             },
             tokenizerProvider: { _ in .init(
-                tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                 modelType: "gemma4") },
             availableModels: { ["gemma-4-26b-qat-4bit"] }
         )
@@ -523,16 +523,16 @@ struct EngineV2RequestRoutingTests {
 
     @Test("VLM slot with a bridge: text-only request routes through the bridge")
     func vlmSlotTextRequestRoutesThroughBridge() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine, modelId: "gemma-4-26b-qat-4bit")
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         container: productionMakeStubContainer(),
                         isVLM: true,
@@ -555,7 +555,7 @@ struct EngineV2RequestRoutingTests {
             registryProvider: { @Sendable in
                 [
                     "broken-model": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4")
                 ]
             })
@@ -584,16 +584,16 @@ struct EngineV2RequestRoutingTests {
         // media path — here it fails inside that path (stub container /
         // throwing processor), which is exactly the proof: the scripted v2
         // engine must never see a TEXT-path submission.
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "must-not-appear", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine, modelId: "gemma-4-26b-qat-4bit")
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         container: productionMakeStubContainer(),
                         isVLM: true,
@@ -640,13 +640,13 @@ struct EngineV2RequestRoutingTests {
 
     @Test("cancelling the consumer cancels the engine-minted v2 request id")
     func cancellationPropagatesToBridge() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .manual)
+        let engine = ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         let providerEngine = MultiModelBatchSchedulerEngine(
             registryProvider: { @Sendable in
                 [
                     "gemma-4-26b-qat-4bit": .init(
-                        tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                        tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                         modelType: "gemma4",
                         engineV2Bridge: bridge)
                 ]

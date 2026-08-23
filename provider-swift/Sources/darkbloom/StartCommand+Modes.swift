@@ -217,7 +217,7 @@ extension Start {
                     + "normally again.")
         }
 
-        // ----- Telemetry: configure now so reconnect/inference/panic events flow. -----
+        // Configure the privacy-disabled compatibility facade; emit calls drop locally.
         TelemetryClient.shared.configure(TelemetryClientConfig(
             coordinatorURL: coordinatorURL,
             source: .provider,

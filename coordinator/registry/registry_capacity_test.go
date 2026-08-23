@@ -242,4 +242,3 @@ func TestSetProviderIdleDynamicCap(t *testing.T) {
 		t.Error("timed out waiting for queue drain — dynamic cap may not be working")
 	}
 }
-

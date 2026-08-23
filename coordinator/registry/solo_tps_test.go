@@ -11,7 +11,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/protocol"
 )
 
-
 // enablePerModelQualityCap enables the quality cap exactly like
 // enableQualityCap (floor 15, fallback 4, default overcommit) and pins the
 // per-model solo-TPS envs — seed CSV, kill switch, min-sample floor — so

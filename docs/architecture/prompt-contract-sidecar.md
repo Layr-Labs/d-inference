@@ -193,15 +193,18 @@ cargo run --locked --release --bin prompt-fixtures -- \
   --output ../../fixtures/prompt-contract/v1/generated.json
 ```
 
-`scripts/verify-prompt-parity.sh` snapshots every active public manifest,
-downloads only its verified prompt artifacts, regenerates the shared vectors,
-and compares them byte-for-byte with the checked-in inventory. Eligible models
-must produce every required request shape and exact token-count case through
-Rust and the real Swift provider prompt pipeline. Models with provider-local
-dynamic time are still present in the inventory but are explicitly marked
-`dynamic_time`, have no routable vectors, and must fail provider contract
-readiness. Missing models, artifacts, cases, or unrecognized incompatibilities
-fail the gate; no fabricated token IDs are accepted.
+By default, `scripts/verify-prompt-parity.sh` reads the checked-in manifest
+snapshots, downloads only their hash-verified prompt artifacts, derives a
+working vector file from `corpus.json`, and compares it byte-for-byte with the
+checked-in `production_vectors.json`. Rust, Go, and the real Swift provider
+prompt pipeline then consume that same working file. Maintainers explicitly set
+`PROMPT_PARITY_UPDATE=1` to fetch the active public catalog and refresh both the
+manifest snapshots and checked-in inventory. Eligible models must produce every
+required request shape and exact token-count case. Models with provider-local
+dynamic time remain in the inventory as `dynamic_time`, have no routable
+vectors, and must fail provider contract readiness. Missing models, artifacts,
+cases, or unrecognized incompatibilities fail the gate; no fabricated token IDs
+are accepted.
 
 On 2026-07-14, an arm64 Apple Silicon release build using Rust 1.88.0 measured
 1,000 warm plans of a 1,024-word deterministic local fixture at 72 microseconds

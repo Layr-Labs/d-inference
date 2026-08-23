@@ -22,7 +22,7 @@ struct EngineV2ProductionHeartbeatCapacityTests {
         let runtime = EngineV2Runtime()
         let recorder = ProductionGrantRecorder()
         let (bridgeA, _, sizingA) = try await productionBuildAndInstallSlotA(loop, runtime: runtime, recorder: recorder,
-        engines: { _, grant in ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        engines: { _, grant in ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant) })
         await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridgeA)
 
         func v2BudgetMax() async throws -> Int64 {
@@ -45,13 +45,13 @@ struct EngineV2ProductionHeartbeatCapacityTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingB
         )
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")
@@ -80,14 +80,14 @@ struct EngineV2ProductionHeartbeatCapacityTests {
     func capacityUsesOnlyTheRuntimeSummary() async throws {
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
-        let engine = ProductionWiringScriptedEngine(script: .manual)
+        let engine = ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         await loop.setEngineV2RuntimeForTesting(runtime)
         await runtime.register(modelId: "gemma-4-26b-qat-4bit", bridge: bridge)
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridge,
             modelType: "gemma4"
         )
@@ -104,7 +104,7 @@ struct EngineV2ProductionHeartbeatCapacityTests {
     }
     @Test("model_load_time_ms rides the slot after recordModelLoadTime")
     func modelLoadTimeRidesTheSlot() async throws {
-        let engine = ProductionWiringScriptedEngine(script: .manual)
+        let engine = ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0)
         let bridge = productionMakeBridge(engine: engine)
         await bridge.recordModelLoadTime(ms: 12_345)
         let slot = await bridge.backendSlotCapacity()

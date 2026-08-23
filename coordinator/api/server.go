@@ -358,7 +358,6 @@ type Server struct {
 	// and used by internal counters/histograms. Never nil.
 	metrics *Metrics
 
-
 	// readCache memoizes pre-serialized JSON for read-heavy aggregation
 	// endpoints (stats, leaderboard, model catalog, etc.). TTLs are
 	// per-key. Never nil.

@@ -3617,21 +3617,36 @@ func (s *PostgresStore) MarkStripeWithdrawalPaid(id, expectedPayoutID, sweepPayo
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE stripe_withdrawals
-		 SET status = 'paid',
-		     sweep_payout_id = CASE WHEN $3 <> '' THEN $3 ELSE sweep_payout_id END,
-		     updated_at = NOW()
-		 WHERE id = $1
-		   AND refunded = FALSE
-		   AND status IN ('pending', 'transferred')
-		   AND payout_id = $2`,
+	var exists, applied bool
+	err := s.pool.QueryRow(ctx, `
+		WITH target AS (
+			SELECT id
+			FROM stripe_withdrawals
+			WHERE id = $1
+			FOR UPDATE
+		), updated AS (
+			UPDATE stripe_withdrawals AS withdrawal
+			SET status = 'paid',
+			    sweep_payout_id = CASE WHEN $3 <> '' THEN $3 ELSE withdrawal.sweep_payout_id END,
+			    updated_at = NOW()
+			FROM target
+			WHERE withdrawal.id = target.id
+			  AND withdrawal.refunded = FALSE
+			  AND withdrawal.status IN ('pending', 'transferred')
+			  AND withdrawal.payout_id = $2
+			RETURNING withdrawal.id
+		)
+		SELECT EXISTS (SELECT 1 FROM target),
+		       EXISTS (SELECT 1 FROM updated)`,
 		id, expectedPayoutID, sweepPayoutID,
-	)
+	).Scan(&exists, &applied)
 	if err != nil {
 		return false, fmt.Errorf("store: mark stripe withdrawal paid: %w", err)
 	}
-	return tag.RowsAffected() > 0, nil
+	if !exists {
+		return false, fmt.Errorf("stripe withdrawal %q: %w", id, ErrNotFound)
+	}
+	return applied, nil
 }
 
 // ReopenStripeWithdrawalAfterPayoutFailure atomically reopens a bounced
@@ -3752,6 +3767,9 @@ func (s *PostgresStore) ListStripeWithdrawalsForStripeAccount(stripeAccountID, s
 // --- Releases ---
 
 func (s *PostgresStore) SetRelease(release *Release) error {
+	if release.Version == "" || release.Platform == "" {
+		return errors.New("version and platform are required")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -4121,14 +4139,58 @@ func (s *PostgresStore) RecordProviderEarning(earning *ProviderEarning) error {
 		createdAt = time.Now()
 	}
 
-	_, err := s.pool.Exec(ctx,
-		`INSERT INTO provider_earnings (account_id, provider_id, provider_key, job_id, model, amount_micro_usd, prompt_tokens, completion_tokens, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		 ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING`,
+	var inserted bool
+	err := s.pool.QueryRow(ctx, `
+		WITH earning AS (
+			INSERT INTO provider_earnings (
+				account_id, provider_id, provider_key, job_id, model,
+				amount_micro_usd, prompt_tokens, completion_tokens, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT (job_id) WHERE job_id <> '' DO NOTHING
+			RETURNING account_id, provider_key, model, amount_micro_usd, prompt_tokens, completion_tokens
+		), summary_account AS (
+			INSERT INTO earnings_summary (
+				key, key_type, total_count, total_micro_usd,
+				total_prompt_tokens, total_completion_tokens, updated_at
+			)
+			SELECT account_id, 'account',
+			       CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END,
+			       amount_micro_usd,
+			       CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			       CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END,
+			       NOW()
+			FROM earning
+			ON CONFLICT (key, key_type) DO UPDATE SET
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
+			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+			  updated_at = NOW()
+		), summary_provider AS (
+			INSERT INTO earnings_summary (
+				key, key_type, total_count, total_micro_usd,
+				total_prompt_tokens, total_completion_tokens, updated_at
+			)
+			SELECT provider_key, 'provider',
+			       CASE WHEN model = 'base_reward' THEN 0 ELSE 1 END,
+			       amount_micro_usd,
+			       CASE WHEN model = 'base_reward' THEN 0 ELSE prompt_tokens END,
+			       CASE WHEN model = 'base_reward' THEN 0 ELSE completion_tokens END,
+			       NOW()
+			FROM earning
+			WHERE provider_key <> ''
+			ON CONFLICT (key, key_type) DO UPDATE SET
+			  total_count = earnings_summary.total_count + EXCLUDED.total_count,
+			  total_micro_usd = earnings_summary.total_micro_usd + EXCLUDED.total_micro_usd,
+			  total_prompt_tokens = earnings_summary.total_prompt_tokens + EXCLUDED.total_prompt_tokens,
+			  total_completion_tokens = earnings_summary.total_completion_tokens + EXCLUDED.total_completion_tokens,
+			  updated_at = NOW()
+		)
+		SELECT EXISTS (SELECT 1 FROM earning)`,
 		earning.AccountID, earning.ProviderID, earning.ProviderKey, earning.JobID,
 		earning.Model, earning.AmountMicroUSD, earning.PromptTokens, earning.CompletionTokens,
 		createdAt,
-	)
+	).Scan(&inserted)
 	if err != nil {
 		return fmt.Errorf("store: insert provider earning: %w", err)
 	}
@@ -4464,6 +4526,20 @@ func providerStatsJSON(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
+func providerHardwareJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
+func providerModelsJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage(`[]`)
+	}
+	return raw
+}
+
 func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) error {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -4500,7 +4576,7 @@ func (s *PostgresStore) UpsertProvider(ctx context.Context, p ProviderRecord) er
 			last_session_requests_served = $22, last_session_tokens_generated = $23,
 			lifetime_stats = $24, last_session_stats = $25,
 			last_seen = $27, public_key = $28`,
-		p.ID, p.Hardware, p.Models, p.Backend,
+		p.ID, providerHardwareJSON(p.Hardware), providerModelsJSON(p.Models), p.Backend,
 		marshalProviderLocation(p.Location),
 		p.TrustLevel, p.Attested,
 		p.AttestationResult, p.SEPublicKey, p.SerialNumber,
@@ -4674,17 +4750,8 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	// Dedupe in SQL: many session UUIDs can map to the same physical
-	// machine (one row per reconnect). Pick the most-recent row per
-	// stable identity (serial → SE key → id) so we don't return tens
-	// of thousands of historical rows for accounts with churny providers.
 	rows, err := s.pool.Query(ctx,
-		`SELECT DISTINCT ON (
-			COALESCE(NULLIF(serial_number, ''),
-			         NULLIF(se_public_key, ''),
-			         id)
-		 )
-		 id, hardware, models, backend, location, trust_level, attested,
+		`SELECT id, hardware, models, backend, location, trust_level, attested,
 			attestation_result, se_public_key, serial_number,
 			mda_verified, mda_cert_chain,
 			version, runtime_verified, python_hash, runtime_hash,
@@ -4695,10 +4762,7 @@ func (s *PostgresStore) ListProvidersByAccount(ctx context.Context, accountID st
 			registered_at, last_seen, public_key
 		 FROM providers
 		 WHERE account_id = $1
-		 ORDER BY COALESCE(NULLIF(serial_number, ''),
-		                   NULLIF(se_public_key, ''),
-		                   id),
-		          last_seen DESC`,
+		 ORDER BY last_seen DESC`,
 		accountID,
 	)
 	if err != nil {

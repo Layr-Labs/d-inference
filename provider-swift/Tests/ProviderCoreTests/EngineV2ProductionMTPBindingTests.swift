@@ -24,7 +24,7 @@ struct EngineV2ProductionMTPBindingTests {
         let runtime = EngineV2Runtime()
         await loop.setEngineV2RuntimeForTesting(runtime)
 
-        let pagedBridge = productionMakeBridge(engine: ProductionWiringScriptedEngine(script: .manual),
+        let pagedBridge = productionMakeBridge(engine: ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0),
         modelId: "gemma-4-26b-qat-4bit",
         kvBackendKind: .paged)
         // `.zero` disables the posture sampler; this test is about the state
@@ -34,7 +34,7 @@ struct EngineV2ProductionMTPBindingTests {
                 configured: true, active: true, reason: nil, source: nil, revision: nil,
                 artifactBytes: 0, assistantBytes: 0),
             metricsInterval: .zero)
-        let contiguousBridge = productionMakeBridge(engine: ProductionWiringScriptedEngine(script: .manual),
+        let contiguousBridge = productionMakeBridge(engine: ScriptedCBv2Engine(script: .manual, kvBytesCapacity: 0),
         modelId: "gpt-oss-20b",
         kvBackendKind: .contiguous)
 
@@ -45,7 +45,7 @@ struct EngineV2ProductionMTPBindingTests {
             await loop.installModelSlotForTesting(
                 modelId: modelId,
                 container: productionMakeStubContainer(),
-                tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+                tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
                 engineV2: bridge,
                 modelType: "gemma4")
         }

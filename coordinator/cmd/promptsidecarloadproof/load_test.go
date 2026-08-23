@@ -12,7 +12,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/promptcontract"
 )
 
-
 func TestProductionInventoryCoversFourModelsAndEverySupportedVector(t *testing.T) {
 	inventory, err := readProductionInventory(filepath.Join(
 		"..", "..", "..", "fixtures", "prompt-contract", "v1", "production_vectors.json"))

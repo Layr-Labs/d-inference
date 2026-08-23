@@ -247,7 +247,6 @@ func TestRoutingMetrics_SelectedTraversesDispatch(t *testing.T) {
 	}
 }
 
-
 func TestRoutingMetrics_ModelTooLargeTraversesAdmission(t *testing.T) {
 	collector := newUDPCollector(t)
 	defer collector.Close()
@@ -388,5 +387,3 @@ func TestAttestationFailureMetricTraversesChallengeHandler(t *testing.T) {
 		t.Fatalf("challenge handler did not emit failed outcome: %v", matches)
 	}
 }
-
-

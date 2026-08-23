@@ -11,10 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-
-
-
-
 // newPostgresWithMaxConns creates a PostgresStore with a specific pool size.
 func newPostgresWithMaxConns(t *testing.T, maxConns int32) *PostgresStore {
 	t.Helper()
@@ -169,6 +165,3 @@ func TestPoolExhaustion_AdequatePool(t *testing.T) {
 	}
 	t.Logf("pool_max_conns=20: all %d upserts succeeded", numProviders)
 }
-
-
-

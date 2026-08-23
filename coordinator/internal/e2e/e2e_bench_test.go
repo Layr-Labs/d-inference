@@ -5,7 +5,6 @@ import (
 	"testing"
 )
 
-
 func makePayload(tb testing.TB, size int) []byte {
 	tb.Helper()
 	data := make([]byte, size)

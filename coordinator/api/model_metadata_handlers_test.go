@@ -14,14 +14,14 @@ import (
 
 func TestAdminModelMetadataActionsSetValidateAndClear(t *testing.T) {
 	for _, test := range []struct {
-		name           string
-		action         string
-		metadataKey    string
-		setBody        string
-		want           string
-		invalidBody    string
-		feedValue      func(string, map[string]any) string
-		wantAfterClear string
+		name                 string
+		action               string
+		metadataKey          string
+		setBody              string
+		want                 string
+		invalidBody          string
+		feedValue            func(string, map[string]any) string
+		wantAfterClear       string
 		clearWithEmptyString bool
 	}{
 		{

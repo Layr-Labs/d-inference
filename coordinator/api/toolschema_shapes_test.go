@@ -246,7 +246,6 @@ func TestNormalizeToolSchemas_NullSchemasPreservedAcrossShapes(t *testing.T) {
 	}
 }
 
-
 // (a) A schema nested far deeper than maxToolSchemaDepth must NOT panic or
 // overflow the stack; the shallow part is normalized and the part beyond the
 // depth budget is left exactly as-is (which is safe — see maxToolSchemaDepth).

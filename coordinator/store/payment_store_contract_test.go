@@ -1,6 +1,7 @@
 package store
 
 import "testing"
+
 func TestRecordPayment(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {

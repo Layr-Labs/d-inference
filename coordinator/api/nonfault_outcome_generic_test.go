@@ -172,6 +172,7 @@ func TestToolNoncomplianceReasonIsWhitelisted(t *testing.T) {
 		t.Fatalf("cased/dashed variant = %q, want %q", got, errorReasonToolNoncompliance)
 	}
 }
+
 // exemption (noteProviderError): jinja_* + tool_noncompliance, nothing else.
 func TestIsNonProviderFaultErrorReason(t *testing.T) {
 	for reason, want := range map[string]bool{

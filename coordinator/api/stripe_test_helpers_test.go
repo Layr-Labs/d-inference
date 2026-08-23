@@ -63,14 +63,12 @@ func stripePayoutsTestServer(t *testing.T, mockMode bool, fakeStripe *httptest.S
 	return srv, st
 }
 
-
 // setStripeAPIBase swaps billing.stripeAPIBase to point at our fake server,
 // returning a cleanup func to restore it.
 func setStripeAPIBase(url string) func() {
 	prev := billing.SetStripeAPIBaseForTest(url)
 	return func() { billing.SetStripeAPIBaseForTest(prev) }
 }
-
 
 // healthyAccountJSON is what a fake Stripe returns for GET /v1/accounts/{id}:
 // a fully onboarded account under the given service agreement, on the
@@ -87,7 +85,6 @@ func healthyAccountJSON(id, country, agreement string, instantEligible bool) str
 		"settings":{"payouts":{"schedule":{"interval":"daily"}}},
 		"external_accounts":{"data":[` + ext + `]}}`
 }
-
 
 // seedUser inserts a Privy-linked user into the store and returns it.
 func seedUser(t *testing.T, st *store.MemoryStore, accountID, email string) *store.User {
@@ -106,7 +103,6 @@ func seedUser(t *testing.T, st *store.MemoryStore, accountID, email string) *sto
 	}
 	return got
 }
-
 
 // --- helpers ---
 
@@ -131,7 +127,6 @@ func readyUser(t *testing.T, st *store.MemoryStore, accountID, email string, ins
 	return got
 }
 
-
 // signedConnectRequest builds an HTTP request with a valid Stripe-Signature
 // header for the given payload + secret.
 func signedConnectRequest(t *testing.T, payload []byte, secret string) *http.Request {
@@ -147,7 +142,6 @@ func signedConnectRequest(t *testing.T, payload []byte, secret string) *http.Req
 	return req
 }
 
-
 // mkWithdrawal seeds a withdrawal row directly in the store.
 func mkWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal) {
 	t.Helper()
@@ -158,7 +152,6 @@ func mkWithdrawal(t *testing.T, st *store.MemoryStore, wd store.StripeWithdrawal
 		t.Fatalf("create withdrawal %s: %v", wd.ID, err)
 	}
 }
-
 
 func payoutEventPayload(payoutID, account, status string, automatic bool, created int64) []byte {
 	eventType := "payout.paid"
@@ -172,7 +165,6 @@ func payoutEventPayload(payoutID, account, status string, automatic bool, create
 			"failure_code":"could_not_process","failure_message":"bank rejected"}}
 	}`)
 }
-
 
 func deliverConnectWebhook(t *testing.T, srv *Server, payload []byte) *httptest.ResponseRecorder {
 	t.Helper()

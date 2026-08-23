@@ -57,27 +57,82 @@ struct KVPoolSweepWiringTests {
 
     @Test("StandaloneServer.start spawns the periodic pool sweep")
     func standaloneStartSpawnsSweep() async throws {
+        let sleeper = ManualSweepSleeper()
+        let scheduled = SweepScheduleSpy()
         let server = StandaloneServer(config: StandaloneServerConfig(port: 0))
-        await server.setKVSweepIntervalForTesting(.milliseconds(10))
+        await server.setKVSweepSchedulerForTesting(
+            sleep: sleeper.sleep,
+            didSchedule: scheduled.record)
         try await server.start()
 
-        let signalled = await pollUntil { await server.debugKVSweepSignalCount() > 0 }
-        await server.stop()
-        #expect(signalled, "start() must spawn the periodic sweep task")
+        // start() must create the task and park it on its first production
+        // cadence boundary. Releasing one manual tick invokes the real
+        // proactiveReclaimSweep() call before the observer is signalled.
+        await sleeper.waitForRequest()
+        sleeper.resume()
+        await scheduled.wait()
+        #expect(scheduled.count == 1)
 
-        // The sweep task dies with the server: after stop(), the signal
-        // stream quiesces. Already-spawned fire-and-forget signal tasks may
-        // still land right after stop, so poll until the count holds still
-        // for 100ms — ten idle sweep cycles at this test's 10ms cadence, so
-        // a still-alive task cannot fake it — rather than assuming a fixed
-        // in-flight allowance.
-        let quiesced = await pollUntil {
-            let before = await server.debugKVSweepSignalCount()
-            try? await taskSleep(.milliseconds(100))
-            let after = await server.debugKVSweepSignalCount()
-            return before == after
+        // Stop while the task is parked on its next interval. The server joins
+        // the cancelled task, so no elapsed-time quiescence guess is needed.
+        await sleeper.waitForRequest()
+        let stop = Task { await server.stop() }
+        await sleeper.waitForCancellation()
+        sleeper.resume()
+        await stop.value
+        #expect(scheduled.count == 1)
+
+        // A stale manual tick after the joined shutdown has no consumer.
+        sleeper.resume()
+        #expect(scheduled.count == 1)
+    }
+}
+
+private final class ManualSweepSleeper: @unchecked Sendable {
+    private let requested = AsyncTestLatch()
+    private let advance = AsyncTestLatch()
+    private let cancelled = AsyncTestLatch()
+
+    func sleep(_ duration: Duration) async throws {
+        _ = duration
+        requested.signal()
+        try await withTaskCancellationHandler {
+            await advance.wait()
+            try Task.checkCancellation()
+        } onCancel: {
+            cancelled.signal()
         }
-        #expect(quiesced, "the sweep task must stop with the server")
+    }
+
+    func waitForRequest() async {
+        await requested.wait()
+    }
+
+    func resume() {
+        advance.signal()
+    }
+
+    func waitForCancellation() async {
+        await cancelled.wait()
+    }
+}
+
+private final class SweepScheduleSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private let recorded = AsyncTestLatch()
+    private var _count = 0
+
+    var count: Int {
+        lock.withLock { _count }
+    }
+
+    func record() {
+        lock.withLock { _count += 1 }
+        recorded.signal()
+    }
+
+    func wait() async {
+        await recorded.wait()
     }
 }
 

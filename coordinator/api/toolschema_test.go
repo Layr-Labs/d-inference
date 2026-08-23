@@ -226,7 +226,6 @@ func TestNormalizeToolSchemas_NonObjectOrMalformedBodyUnchanged(t *testing.T) {
 	}
 }
 
-
 // Go-specific: tool entries that don't match the expected shape pass through
 // value-equivalent; well-formed siblings are still normalized.
 func TestNormalizeToolSchemas_MalformedToolEntriesPassedThrough(t *testing.T) {
@@ -300,4 +299,3 @@ func TestNormalizeToolSchemas_NoRepairReturnsInputBytesIdentical(t *testing.T) {
 		t.Errorf("output lost its original key order / spacing: %s", out)
 	}
 }
-

@@ -18,19 +18,75 @@ import Testing
 
 private final class PostureTelemetrySink: @unchecked Sendable {
     private let lock = NSLock()
+    private let postureEmitted = AsyncTestLatch()
     private var _events: [TelemetryEvent] = []
     var events: [TelemetryEvent] { lock.withLock { _events } }
     func callback() -> @Sendable (TelemetryEvent) -> Void {
         { [weak self] event in
             guard let self else { return }
             self.lock.withLock { self._events.append(event) }
+            if event.fields?["operation"]?.description == "engine_v2_slot_posture" {
+                self.postureEmitted.signal()
+            }
         }
+    }
+
+    var postureCount: Int {
+        events.count {
+            $0.fields?["operation"]?.description == "engine_v2_slot_posture"
+        }
+    }
+
+    func waitForPosture() async {
+        await postureEmitted.wait()
     }
 
     /// Newest posture sample, or nil.
     var posture: TelemetryEvent? {
         events.last { $0.fields?["operation"]?.description == "engine_v2_slot_posture" }
     }
+}
+
+/// Manually advanced cadence boundary. Cancellation is observed separately
+/// from advancing the parked sleep so shutdown ordering never depends on the
+/// cooperative executor choosing a task within a wall-clock window.
+private final class ManualPostureSleeper: @unchecked Sendable {
+    private let requested = AsyncTestLatch()
+    private let advance = AsyncTestLatch()
+    private let cancelled = AsyncTestLatch()
+
+    func sleep(_ duration: Duration) async throws {
+        _ = duration
+        requested.signal()
+        try await withTaskCancellationHandler {
+            await advance.wait()
+            try Task.checkCancellation()
+        } onCancel: {
+            cancelled.signal()
+        }
+    }
+
+    func waitForRequest() async {
+        await requested.wait()
+    }
+
+    func resume() {
+        advance.signal()
+    }
+
+    func waitForCancellation() async {
+        await cancelled.wait()
+    }
+}
+
+private func shutdown(
+    _ bridge: EngineV2Bridge,
+    parkedOn sleeper: ManualPostureSleeper
+) async {
+    let shutdown = Task { await bridge.shutdown() }
+    await sleeper.waitForCancellation()
+    sleeper.resume()
+    await shutdown.value
 }
 
 /// Engine stub reporting a paged pool that is partly occupied. `kvBytesInUse`
@@ -303,10 +359,8 @@ struct MTPPostureTelemetryTests {
 
     @Test("every slot emits posture on the periodic sampler, MTP or not")
     func periodicSamplerEmitsForEverySlot() async throws {
-        // The point of the ticket: these fields need a PRODUCER, and the
-        // producer must be a recurring per-slot inventory rather than a
-        // once-per-construction notification. Drive the real timer.
         let telemetry = PostureTelemetrySink()
+        let sleeper = ManualPostureSleeper()
         let bridge = makePostureBridge(
             engine: PagedPoolStubEngine(kvBytesInUse: 2 << 30, poolBytes: 8 << 30),
             kvBackendKind: .paged,
@@ -317,24 +371,19 @@ struct MTPPostureTelemetryTests {
         // and the paged-pool fields do not depend on MTP at all.
         await bridge.configureMTPStatus(
             .disabled(.configDisabled, configured: false),
-            metricsInterval: .milliseconds(20))
+            metricsInterval: .seconds(60),
+            sleep: sleeper.sleep)
 
-        // Wait for the SECOND sample. The first is the opening snapshot emitted
-        // synchronously by configureMTPStatus, which would satisfy a
-        // first-event wait without the timer ever firing — this test is the one
-        // that has to prove the recurring loop still runs.
-        let postureCount = {
-            telemetry.events.filter {
-                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
-            }.count
-        }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while postureCount() < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(postureCount() >= 2, "the periodic sampler never produced a second posture event")
+        // Consume the synchronous opening sample, then manually release exactly
+        // one cadence boundary and wait for its distinct callback.
+        await telemetry.waitForPosture()
+        #expect(telemetry.postureCount == 1)
+        await sleeper.waitForRequest()
+        sleeper.resume()
+        await telemetry.waitForPosture()
+        #expect(telemetry.postureCount == 2)
 
-        let event = try #require(telemetry.posture, "periodic sampler produced no posture event")
+        let event = try #require(telemetry.posture)
         #expect(event.kind == .engineHealth)
         #expect(field(event, "component") == "engine")
         #expect(field(event, "model") == "gemma-4-26b-qat-4bit")
@@ -345,7 +394,8 @@ struct MTPPostureTelemetryTests {
         #expect(field(event, "mtp_inactive_reason") == "config_disabled")
         #expect(field(event, "pool_utilization") == "0.25")
 
-        await bridge.shutdown()
+        await sleeper.waitForRequest()
+        await shutdown(bridge, parkedOn: sleeper)
     }
 
     @Test("a slot torn down inside its first interval still reports exactly once")
@@ -380,7 +430,6 @@ struct MTPPostureTelemetryTests {
         #expect(field(event, "pool_utilization") == "0.25")
 
         await bridge.shutdown()
-        try await Task.sleep(for: .milliseconds(120))
         #expect(
             telemetry.events.filter {
                 $0.fields?["operation"]?.description == "engine_v2_slot_posture"
@@ -390,32 +439,31 @@ struct MTPPostureTelemetryTests {
     @Test("shutdown stops the sampler")
     func shutdownStopsSampler() async throws {
         let telemetry = PostureTelemetrySink()
+        let sleeper = ManualPostureSleeper()
         let bridge = makePostureBridge(
             engine: PagedPoolStubEngine(kvBytesInUse: 0, poolBytes: 1 << 30),
             kvBackendKind: .paged,
             telemetry: telemetry)
         await bridge.configureMTPStatus(
             .disabled(.configDisabled, configured: false),
-            metricsInterval: .milliseconds(20))
+            metricsInterval: .seconds(60),
+            sleep: sleeper.sleep)
 
-        // Two samples, not one: the first is the opening snapshot, so waiting
-        // only for it would let this test pass against a sampler that never
-        // ticked — and then "shutdown stopped it" would prove nothing.
-        let postureCount = {
-            telemetry.events.filter {
-                $0.fields?["operation"]?.description == "engine_v2_slot_posture"
-            }.count
-        }
-        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while postureCount() < 2, ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(20))
-        }
-        #expect(postureCount() >= 2, "sampler never ticked, so shutdown has nothing to stop")
+        await telemetry.waitForPosture()
+        await sleeper.waitForRequest()
+        sleeper.resume()
+        await telemetry.waitForPosture()
+        #expect(telemetry.postureCount == 2)
 
-        await bridge.shutdown()
-        let afterShutdown = telemetry.events.count
-        try await Task.sleep(for: .milliseconds(200))
-        #expect(telemetry.events.count == afterShutdown)
+        // Park on the following interval, cancel it through real shutdown, and
+        // release the manual wait only after its cancellation handler ran.
+        await sleeper.waitForRequest()
+        await shutdown(bridge, parkedOn: sleeper)
+        #expect(telemetry.postureCount == 2)
+
+        // An unused tick after the sampler task has joined cannot emit.
+        sleeper.resume()
+        #expect(telemetry.postureCount == 2)
     }
 
     @Test("a zero interval disables the sampler entirely")
@@ -428,9 +476,7 @@ struct MTPPostureTelemetryTests {
         await bridge.configureMTPStatus(
             .disabled(.configDisabled, configured: false), metricsInterval: .zero)
 
-        try await Task.sleep(for: .milliseconds(120))
         #expect(telemetry.posture == nil)
-
         await bridge.shutdown()
     }
 

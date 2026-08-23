@@ -153,7 +153,7 @@ func TestNoPhantomDebtUnderContention(t *testing.T) {
 		t.Fatal("expected at least one denial after draining burst")
 	}
 
-	advance(time.Duration(float64(burst)/rps*float64(time.Second)))
+	advance(time.Duration(float64(burst) / rps * float64(time.Second)))
 	successes := 0
 	for range burst {
 		if ok, _ := l.Allow(account); ok {

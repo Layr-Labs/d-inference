@@ -475,13 +475,14 @@ func TestReserveProviderAllowedProviderSerialsWithExclusion(t *testing.T) {
 }
 
 // Queue cost prefers an idle provider over a faster provider with work in flight.
-func TestQueuePenaltyPrefersIdleProvider(t *testing.T) { reg := New(testLogger())
+func TestQueuePenaltyPrefersIdleProvider(t *testing.T) {
+	reg := New(testLogger())
 	model := "p3-queue-penalty-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
 
 	schedulerScenarioProvider{id: "ultra", decodeTPS: 80, totalMemGB: 512, gpuActiveGB: 30,
-		pending: 1, backendRun: 1,}.register(t, reg, model)
-	schedulerScenarioProvider{id: "pro-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1,}.register(t, reg, model)
+		pending: 1, backendRun: 1}.register(t, reg, model)
+	schedulerScenarioProvider{id: "pro-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
@@ -490,10 +491,11 @@ func TestQueuePenaltyPrefersIdleProvider(t *testing.T) { reg := New(testLogger()
 	if p.ID != "pro-idle" {
 		t.Fatalf("got %q, want idle provider pro-idle", p.ID)
 	}
- }
+}
 
 // Repeated short reservations do not collapse onto one idle provider.
-func TestSchedulerDistributesSequentialIdleRequests(t *testing.T) { reg := New(testLogger())
+func TestSchedulerDistributesSequentialIdleRequests(t *testing.T) {
+	reg := New(testLogger())
 	model := "p3-distribution-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
 
@@ -531,16 +533,17 @@ func TestSchedulerDistributesSequentialIdleRequests(t *testing.T) { reg := New(t
 	if maxShare > 0.70 {
 		t.Fatalf("dominant provider has %.0f%% of selections (counts=%v), want at most 70%%", maxShare*100, counts)
 	}
- }
+}
 
 // Queue cost prefers an idle peer over a heavily batched provider.
-func TestQueuePenaltyPrefersIdleOverHighlyBatchedProvider(t *testing.T) { reg := New(testLogger())
+func TestQueuePenaltyPrefersIdleOverHighlyBatchedProvider(t *testing.T) {
+	reg := New(testLogger())
 	model := "p4-batched-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
 
 	schedulerScenarioProvider{id: "ultra-batched", decodeTPS: 80, totalMemGB: 512, gpuActiveGB: 60,
-		pending: 8, backendRun: 8,}.register(t, reg, model)
-	schedulerScenarioProvider{id: "pro-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1,}.register(t, reg, model)
+		pending: 8, backendRun: 8}.register(t, reg, model)
+	schedulerScenarioProvider{id: "pro-idle", decodeTPS: 20, totalMemGB: 24, gpuActiveGB: 1}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
@@ -549,10 +552,11 @@ func TestQueuePenaltyPrefersIdleOverHighlyBatchedProvider(t *testing.T) { reg :=
 	if p.ID != "pro-idle" {
 		t.Fatalf("got %q, want idle provider pro-idle over the heavily batched peer", p.ID)
 	}
- }
+}
 
 // Backend load scales effective TPS before cross-provider ranking.
-func TestLoadScaledTPSPrefersIdlePeer(t *testing.T) { reg := New(testLogger())
+func TestLoadScaledTPSPrefersIdlePeer(t *testing.T) {
+	reg := New(testLogger())
 	model := "p4-load-scaled-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model, SizeGB: 8}})
 
@@ -562,12 +566,12 @@ func TestLoadScaledTPSPrefersIdlePeer(t *testing.T) { reg := New(testLogger())
 	schedulerScenarioProvider{id: "big-batched", decodeTPS: 80, totalMemGB: 128,
 		gpuActiveGB: 8, // model resident, low headroom impact
 		backendRun:  4,
-		slotState:   "running",}.register(t, reg, model)
+		slotState:   "running"}.register(t, reg, model)
 
 	// Small idle: static TPS=30, no batch scaling applies.
 	schedulerScenarioProvider{id: "small-idle", decodeTPS: 30, totalMemGB: 24,
 		gpuActiveGB: 1,
-		slotState:   "running",}.register(t, reg, model)
+		slotState:   "running"}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
@@ -576,16 +580,17 @@ func TestLoadScaledTPSPrefersIdlePeer(t *testing.T) { reg := New(testLogger())
 	if p.ID != "small-idle" {
 		t.Fatalf("got %q, want small-idle after load-scaled TPS ranking", p.ID)
 	}
- }
+}
 
 // A resident running slot beats an otherwise equivalent cold slot.
-func TestWarmSlotPreferredOverIdleShutdown(t *testing.T) { reg := New(testLogger())
+func TestWarmSlotPreferredOverIdleShutdown(t *testing.T) {
+	reg := New(testLogger())
 	model := "warm-vs-cold-model"
 	reg.SetModelCatalog([]CatalogEntry{{ID: model}})
 
-	schedulerScenarioProvider{id: "warm", decodeTPS: 80, totalMemGB: 128,}.register(t, reg, model)
+	schedulerScenarioProvider{id: "warm", decodeTPS: 80, totalMemGB: 128}.register(t, reg, model)
 	schedulerScenarioProvider{id: "cold", decodeTPS: 80, totalMemGB: 128,
-		slotState: "idle_shutdown",}.register(t, reg, model)
+		slotState: "idle_shutdown"}.register(t, reg, model)
 
 	p := reserveSchedulerScenario(reg, model, 256)
 	if p == nil {
@@ -595,5 +600,4 @@ func TestWarmSlotPreferredOverIdleShutdown(t *testing.T) { reg := New(testLogger
 		t.Fatalf("got %q, want warm. slotStatePenaltyIdleShutdown must "+
 			"keep cold providers at higher cost than running peers.", p.ID)
 	}
- }
-
+}

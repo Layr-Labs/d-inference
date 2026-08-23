@@ -65,7 +65,6 @@ func TestConnectWebhookAccountUpdatedFlipsStatusToReady(t *testing.T) {
 	}
 }
 
-
 func TestConnectWebhookPayoutFailedKeepsFundsAndDoesNotRefund(t *testing.T) {
 	// payout.failed means the funds returned to the CONNECTED account's
 	// balance, where Stripe's daily auto-payout retries delivery. Refunding
@@ -131,7 +130,6 @@ func TestConnectWebhookPayoutFailedKeepsFundsAndDoesNotRefund(t *testing.T) {
 	}
 }
 
-
 func TestConnectWebhookPayoutFailedNeverRefundsOnRedelivery(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -168,7 +166,6 @@ func TestConnectWebhookPayoutFailedNeverRefundsOnRedelivery(t *testing.T) {
 		t.Errorf("status = %q, want transferred", wd.Status)
 	}
 }
-
 
 func TestConnectWebhookTerminalStateGuards(t *testing.T) {
 	tests := []struct {
@@ -260,7 +257,6 @@ func TestConnectWebhookTerminalStateGuards(t *testing.T) {
 	}
 }
 
-
 // --- Sweep payout reconciliation (automatic daily payouts) ---
 
 func TestConnectWebhookSweepPayoutPaidMarksTransferredRows(t *testing.T) {
@@ -317,7 +313,6 @@ func TestConnectWebhookSweepPayoutPaidMarksTransferredRows(t *testing.T) {
 	}
 }
 
-
 func TestConnectWebhookSweepPayoutFailedLeavesRowsAlone(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -351,7 +346,6 @@ func TestConnectWebhookSweepPayoutFailedLeavesRowsAlone(t *testing.T) {
 		t.Error("no ledger refund on sweep failure")
 	}
 }
-
 
 func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -389,7 +383,6 @@ func TestConnectWebhookPayoutPaidIsIdempotent(t *testing.T) {
 	}
 }
 
-
 func TestConnectWebhookRejectsBadSignature(t *testing.T) {
 	fakeStripe := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer fakeStripe.Close()
@@ -405,7 +398,6 @@ func TestConnectWebhookRejectsBadSignature(t *testing.T) {
 		t.Errorf("got %d, want 400 on bad signature", w.Code)
 	}
 }
-
 
 // accountServingStripe returns a fake Stripe that answers GET
 // /v1/accounts/{id} with a healthy account under the given service agreement
@@ -426,7 +418,6 @@ func accountServingStripe(agreement string) *httptest.Server {
 		}
 	}))
 }
-
 
 // TestConnectWebhookPayoutBounceAfterPaidReopens: Stripe documents
 // payout.failed arriving AFTER payout.paid for the same payout (the bank
@@ -481,11 +472,6 @@ func TestConnectWebhookPayoutBounceAfterPaidReopens(t *testing.T) {
 	}
 }
 
-
-
-
-
-
 // TestConnectWebhookInstantPayoutFailedRefundsFeeAndDetaches: when an instant
 // payout fails after creation, the user gets standard delivery via the sweep
 // — so the instant fee is refunded (exactly once) and the dead payout ID is
@@ -535,7 +521,6 @@ func TestConnectWebhookInstantPayoutFailedRefundsFeeAndDetaches(t *testing.T) {
 	}
 }
 
-
 // TestConnectWebhookSweepSkipsRowsWithInFlightPayout: the sweep matcher must
 // not claim withdrawals that have their own instant payout still in flight —
 // that payout may yet fail.
@@ -571,7 +556,6 @@ func TestConnectWebhookSweepSkipsRowsWithInFlightPayout(t *testing.T) {
 		t.Errorf("in-flight instant row = %q, want transferred (its own webhook drives it)", inflight.Status)
 	}
 }
-
 
 // TestConnectWebhookSweepRecipientCutoffSkipsUnsettledRows: transfers to
 // recipient-agreement accounts take +24h to become available, so a sweep
@@ -614,7 +598,6 @@ func TestConnectWebhookSweepRecipientCutoffSkipsUnsettledRows(t *testing.T) {
 	}
 }
 
-
 // TestConnectWebhookNonAutomaticPayoutDoesNotReconcile: a dashboard/API
 // payout we didn't create must not blanket-mark rows paid — only Stripe's
 // automatic sweep payouts reconcile by account.
@@ -641,14 +624,12 @@ func TestConnectWebhookNonAutomaticPayoutDoesNotReconcile(t *testing.T) {
 	}
 }
 
-
 func transferReversedPayload(transferID string) []byte {
 	return []byte(`{
 		"type":"transfer.reversed","account":"",
 		"data":{"object":{"id":"` + transferID + `","amount":450,"amount_reversed":450,"reversed":true}}
 	}`)
 }
-
 
 // partialTransferReversedPayload models a partial reversal: amount_reversed <
 // amount, and Stripe keeps reversed=false until the transfer is fully undone.
@@ -659,7 +640,6 @@ func partialTransferReversedPayload(transferID string, amountReversed int) []byt
 		strconv.Itoa(amountReversed) + `,"reversed":false}}
 	}`)
 }
-
 
 // TestConnectWebhookPartialTransferReversalNoAutoRefund: partial reversals
 // (always ops-initiated — our code never creates them) must not auto-credit
@@ -704,7 +684,6 @@ func TestConnectWebhookPartialTransferReversalNoAutoRefund(t *testing.T) {
 	}
 }
 
-
 // TestConnectWebhookTransferReversedNetsOutRefundedFee: if the instant fee
 // was already credited back (instant payout fell through), a later
 // transfer.reversed must refund gross − fee, not gross — otherwise the user
@@ -742,7 +721,6 @@ func TestConnectWebhookTransferReversedNetsOutRefundedFee(t *testing.T) {
 	}
 }
 
-
 // TestConnectWebhookTransferReversedDedupesFeeByLedgerRef: the fee dedupe
 // must hold even when the FeeRefunded FLAG was lost (persist failure after
 // the fee credit landed) — the ledger reference, not the flag, is the source
@@ -775,7 +753,6 @@ func TestConnectWebhookTransferReversedDedupesFeeByLedgerRef(t *testing.T) {
 	}
 }
 
-
 // TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded: with no
 // prior fee refund, a reversal refunds the full gross (net + fee parts).
 func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing.T) {
@@ -807,7 +784,6 @@ func TestConnectWebhookTransferReversedRefundsGrossWhenFeeNotRefunded(t *testing
 	}
 }
 
-
 // TestConnectWebhookTransferReversedOnPaidRowNeedsHuman: a reversal landing
 // on an already-paid withdrawal (bank payout completed, then clawback) is
 // ambiguous — never auto-refund, leave the row paid for manual review.
@@ -836,7 +812,6 @@ func TestConnectWebhookTransferReversedOnPaidRowNeedsHuman(t *testing.T) {
 	}
 }
 
-
 // flakyPayoutStore wraps MemoryStore and injects transient (non-ErrNotFound)
 // failures into specific operations.
 type flakyPayoutStore struct {
@@ -845,7 +820,6 @@ type flakyPayoutStore struct {
 	failUpdates bool
 }
 
-
 func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*store.StripeWithdrawal, error) {
 	if f.failLookups {
 		return nil, errors.New("connection reset by peer")
@@ -853,14 +827,12 @@ func (f *flakyPayoutStore) GetStripeWithdrawalByPayoutID(payoutID string) (*stor
 	return f.MemoryStore.GetStripeWithdrawalByPayoutID(payoutID)
 }
 
-
 func (f *flakyPayoutStore) UpdateStripeWithdrawal(wd *store.StripeWithdrawal) error {
 	if f.failUpdates {
 		return errors.New("connection reset by peer")
 	}
 	return f.MemoryStore.UpdateStripeWithdrawal(wd)
 }
-
 
 // newFlakyPayoutServer wires a Server + billing around a flakyPayoutStore.
 func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *flakyPayoutStore) {
@@ -881,7 +853,6 @@ func newFlakyPayoutServer(t *testing.T, fakeStripe *httptest.Server) (*Server, *
 	}))
 	return srv, flaky
 }
-
 
 // TestConnectWebhookTransferReversedConvergesAcrossPersistFailure: the credit
 // lands but the row persist fails → 500 → Stripe redelivers → the
@@ -920,7 +891,6 @@ func TestConnectWebhookTransferReversedConvergesAcrossPersistFailure(t *testing.
 		t.Errorf("row = status %q refunded=%v, want failed/true", wd.Status, wd.Refunded)
 	}
 }
-
 
 // TestConnectWebhookTransientLookupErrorReturns500: a transient store failure
 // on the payout lookup must NOT fall through to account-wide sweep
@@ -963,9 +933,6 @@ func TestConnectWebhookTransientLookupErrorReturns500(t *testing.T) {
 		t.Errorf("after recovery = %q, want paid", wd.Status)
 	}
 }
-
-
-
 
 // TestConnectWebhookSweepBounceReopensClaimedRows: when an automatic sweep's
 // payout.failed arrives after its payout.paid (bank bounce), the rows that
@@ -1062,7 +1029,6 @@ func TestConnectWebhookSweepBounceReopensClaimedRows(t *testing.T) {
 	}
 }
 
-
 // TestConnectWebhookRefundedRowFlipRedelivers: the failed-status flip on an
 // already-refunded row is what keeps it out of sweep reconciliation — a
 // transient persist failure must 500 (so Stripe redelivers) instead of
@@ -1095,7 +1061,6 @@ func TestConnectWebhookRefundedRowFlipRedelivers(t *testing.T) {
 		t.Errorf("status = %q, want failed (terminal, out of sweep reconciliation)", wd.Status)
 	}
 }
-
 
 // TestConnectWebhookStaleSweepPaidForFailedPayoutNoClaim: webhook delivery
 // order isn't guaranteed — a payout.failed can be DELIVERED before the same

@@ -23,7 +23,6 @@ func TestStripeOnboardRequiresAuth(t *testing.T) {
 	}
 }
 
-
 func TestStripeOnboardCreatesAccountAndPersistsID(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-onboard-1", "alice@example.com")
@@ -51,7 +50,6 @@ func TestStripeOnboardCreatesAccountAndPersistsID(t *testing.T) {
 		t.Errorf("status = %q, want pending", refreshed.StripeAccountStatus)
 	}
 }
-
 
 func TestStripeOnboardPassesCountryToStripe(t *testing.T) {
 	var mu sync.Mutex
@@ -97,7 +95,6 @@ func TestStripeOnboardPassesCountryToStripe(t *testing.T) {
 	}
 }
 
-
 func TestStripeOnboardRequiresCountryForNewAccount(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-country-2", "bob@example.com")
@@ -116,7 +113,6 @@ func TestStripeOnboardRequiresCountryForNewAccount(t *testing.T) {
 		t.Errorf("StripeAccountID = %q, want empty", refreshed.StripeAccountID)
 	}
 }
-
 
 func TestStripeOnboardReusesExistingAccount(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
@@ -140,7 +136,6 @@ func TestStripeOnboardReusesExistingAccount(t *testing.T) {
 		t.Errorf("expected reuse of acct_existing_123, got %v", resp["stripe_account_id"])
 	}
 }
-
 
 func TestStripeOnboardCreatesNewAccountWhenCountryChanges(t *testing.T) {
 	var mu sync.Mutex
@@ -204,7 +199,6 @@ func TestStripeOnboardCreatesNewAccountWhenCountryChanges(t *testing.T) {
 	}
 }
 
-
 func TestStripeOnboardCreatesNewAccountWhenExistingCountryUnknown(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-country-unknown-1", "carol@example.com")
@@ -231,7 +225,6 @@ func TestStripeOnboardCreatesNewAccountWhenExistingCountryUnknown(t *testing.T) 
 		t.Errorf("StripeAccountCountry = %q, want GB", refreshed.StripeAccountCountry)
 	}
 }
-
 
 // --- Status ---
 
@@ -265,7 +258,6 @@ func TestStripeStatusReportsCurrentState(t *testing.T) {
 	}
 }
 
-
 // --- Open-redirect protection ---
 
 func TestStripeOnboardRejectsForeignReturnURL(t *testing.T) {
@@ -285,7 +277,6 @@ func TestStripeOnboardRejectsForeignReturnURL(t *testing.T) {
 	}
 }
 
-
 func TestStripeOnboardAllowsLocalhostForDev(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-onboard-local", "alice@example.com")
@@ -301,7 +292,6 @@ func TestStripeOnboardAllowsLocalhostForDev(t *testing.T) {
 	}
 }
 
-
 func TestStripeOnboardRejectsJavascriptScheme(t *testing.T) {
 	srv, st := stripePayoutsTestServer(t, true, nil)
 	user := seedUser(t, st, "acct-onboard-js", "alice@example.com")
@@ -316,7 +306,6 @@ func TestStripeOnboardRejectsJavascriptScheme(t *testing.T) {
 		t.Errorf("got %d, want 400 on non-http scheme", w.Code)
 	}
 }
-
 
 // --- Service-agreement / dead-account recovery (issues #1 and #3) ---
 
@@ -391,7 +380,6 @@ func TestStripeOnboardRecreatesAccountOnServiceAgreementMismatch(t *testing.T) {
 	}
 }
 
-
 // TestStripeOnboardRecreatesAccountWhenGone pins recovery for users who
 // closed their Stripe account: onboarding must create a fresh account
 // instead of failing on the stale acct_… forever.
@@ -429,7 +417,6 @@ func TestStripeOnboardRecreatesAccountWhenGone(t *testing.T) {
 		t.Errorf("StripeAccountID = %q, want acct_fresh", refreshed.StripeAccountID)
 	}
 }
-
 
 // TestStripeOnboardHealsManualPayoutSchedule pins the self-heal: reusing a
 // healthy account that still has the legacy manual payout schedule must flip

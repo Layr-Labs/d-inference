@@ -64,7 +64,7 @@ func captureAccountCreate(t *testing.T, country string) url.Values {
 		body := readTestBody(t, r)
 		capturedBody = parseTestForm(t, body)
 		w.Header().Set("Content-Type", "application/json")
-		writeTestResponse(t, w, `{"id":"acct_x","country":"` + country + `"}`)
+		writeTestResponse(t, w, `{"id":"acct_x","country":"`+country+`"}`)
 	})
 	if _, err := client.CreateExpressAccount(CreateExpressAccountParams{
 		Email:   "a@b.com",

@@ -34,6 +34,56 @@ func TestTrustLevels(t *testing.T) {
 	}
 }
 
+func TestSetTrustLevelConcurrentGetTrustLevel(t *testing.T) {
+	reg := New(testLogger())
+	p := reg.Register("p1", nil, testRegisterMessage())
+
+	const iterations = 1000
+	start := make(chan struct{})
+	invalid := make(chan TrustLevel, 1)
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		<-start
+		for i := range iterations {
+			level := TrustSelfSigned
+			if i%2 == 0 {
+				level = TrustHardware
+			}
+			reg.SetTrustLevel(p.ID, level)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		for range iterations {
+			switch level := p.GetTrustLevel(); level {
+			case TrustNone, TrustSelfSigned, TrustHardware:
+			default:
+				select {
+				case invalid <- level:
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	close(start)
+	wg.Wait()
+	close(invalid)
+	if level, ok := <-invalid; ok {
+		t.Fatalf("observed invalid trust level %q", level)
+	}
+
+	reg.SetTrustLevel(p.ID, TrustHardware)
+	if level := p.GetTrustLevel(); level != TrustHardware {
+		t.Fatalf("final trust level = %q, want %q", level, TrustHardware)
+	}
+}
+
 func TestFindProviderSkipsSelfSigned(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

@@ -1018,11 +1018,13 @@ public actor EngineV2Bridge {
         let statsTask = prefixCacheStatsTask
         prefixCacheStatsTask = nil
         statsTask?.cancel()
-        slotPostureTask?.cancel()
+        let postureTask = slotPostureTask
         slotPostureTask = nil
+        postureTask?.cancel()
         let live = pumpTasks
         pumpTasks.removeAll()
         for task in live.values { task.cancel() }
+        _ = await postureTask?.value
         if let engine = ownedEngine {
             await engine.shutdown()
         }

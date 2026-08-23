@@ -64,4 +64,3 @@ func TestTelemetryIngestIsGoneWithoutReadingOrForwardingBody(t *testing.T) {
 		}
 	}
 }
-

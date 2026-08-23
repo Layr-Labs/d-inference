@@ -4,7 +4,6 @@ import (
 	"testing"
 )
 
-
 // Swift: collapsesArrayTypeSkippingLeadingNull
 func TestNormalizeToolSchemas_CollapsesArrayTypeSkippingLeadingNull(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
@@ -19,7 +18,6 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeSkippingLeadingNull(t *testing.T
 		t.Errorf("n nullable = %v, want true", n["nullable"])
 	}
 }
-
 
 // Swift: collapsesArrayTypeInNestedObjectAndItems
 func TestNormalizeToolSchemas_CollapsesArrayTypeInNestedObjectAndItems(t *testing.T) {
@@ -44,7 +42,6 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeInNestedObjectAndItems(t *testin
 		t.Errorf("items nullable = %v, want true", items["nullable"])
 	}
 }
-
 
 // Swift: unionMemberWithArrayTypeStillDrivesParentInference
 func TestNormalizeToolSchemas_UnionMemberWithArrayTypeStillDrivesParentInference(t *testing.T) {
@@ -72,7 +69,6 @@ func TestNormalizeToolSchemas_UnionMemberWithArrayTypeStillDrivesParentInference
 	}
 }
 
-
 // Swift: collapsesArrayTypeInsideAdditionalPropertiesSchema
 func TestNormalizeToolSchemas_CollapsesArrayTypeInsideAdditionalPropertiesSchema(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"function","function":{"name":"f",
@@ -88,7 +84,6 @@ func TestNormalizeToolSchemas_CollapsesArrayTypeInsideAdditionalPropertiesSchema
 		t.Errorf("additionalProperties nullable = %v, want true", addl["nullable"])
 	}
 }
-
 
 // tsnAnyOfTypes asserts the node's anyOf is a list of bare {"type": ...}
 // members and returns the member types in order.
@@ -108,7 +103,6 @@ func tsnAnyOfTypes(t *testing.T, node map[string]any, what string) []string {
 	}
 	return types
 }
-
 
 // Swift: multiConcreteTypeArrayWithExistingCombinatorCollapsesOnly
 func TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollapsesOnly(t *testing.T) {
@@ -136,4 +130,3 @@ func TestNormalizeToolSchemas_MultiConcreteTypeArrayWithExistingCombinatorCollap
 		t.Errorf("w anyOf = %v, want absent beside authored allOf", w["anyOf"])
 	}
 }
-

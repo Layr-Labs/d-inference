@@ -5,24 +5,44 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
+
 func TestLegacyCacheAffinityMigrationScrubsAndInstallsScopedTrigger(t *testing.T) {
 	s := testPostgresStore(t)
 	ctx := context.Background()
 	schema := fmt.Sprintf("cache_affinity_migration_%d", time.Now().UnixNano())
-	if _, err := s.pool.Exec(ctx, "CREATE SCHEMA "+schema); err != nil {
+	quotedSchema := pgx.Identifier{schema}.Sanitize()
+	if _, err := s.pool.Exec(ctx, "CREATE SCHEMA "+quotedSchema); err != nil {
 		t.Fatalf("create isolated schema: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = s.pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
+		if _, err := s.pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+quotedSchema+" CASCADE"); err != nil {
+			t.Errorf("drop isolated schema: %v", err)
+		}
 	})
 
 	conn, err := s.pool.Acquire(ctx)
 	if err != nil {
 		t.Fatalf("acquire isolated migration connection: %v", err)
 	}
-	defer conn.Release()
-	if _, err := conn.Exec(ctx, "SET search_path TO "+schema); err != nil {
+	var originalSearchPath string
+	if err := conn.QueryRow(ctx, "SELECT current_setting('search_path')").Scan(&originalSearchPath); err != nil {
+		conn.Release()
+		t.Fatalf("read original search_path: %v", err)
+	}
+	defer func() {
+		if _, resetErr := conn.Exec(
+			context.Background(),
+			"SELECT set_config('search_path', $1, false)",
+			originalSearchPath,
+		); resetErr != nil {
+			t.Errorf("restore isolated search_path: %v", resetErr)
+		}
+		conn.Release()
+	}()
+	if _, err := conn.Exec(ctx, "SELECT set_config('search_path', $1, false)", schema); err != nil {
 		t.Fatalf("set isolated search_path: %v", err)
 	}
 	for _, statement := range []string{

@@ -237,14 +237,11 @@ public enum KVBackendGuardStore {
 /// whatever reason) refresh `crashCount` but keep the ORIGINAL
 /// `trippedAt`, so the guard's reported age stays the age of the trip.
 ///
-/// TELEMETRY TRANSPORT: the event is built by `EngineHealthEvent.make`
-/// (the one engine-health builder) but pushed straight to the
-/// `TelemetryOverflowQueue` disk queue rather than through
-/// `TelemetryClient.shared` — the watchdog process never configures the
-/// client (an unconfigured client silently DROPS), and the daemon is
-/// down at trip time anyway. This is the panic hook's transport
-/// (`PanicHook.swift`): the guarded daemon this trip guarantees will
-/// boot drains the queue to the coordinator once it reconnects.
+/// TELEMETRY COMPATIBILITY: the event is built by `EngineHealthEvent.make`
+/// and offered to `TelemetryOverflowQueue` only after the kickstart succeeds.
+/// Client telemetry and the legacy disk queue are privacy-disabled no-ops, so
+/// the default path does not persist or transmit the event. Tests may inject
+/// `emitTelemetry` to assert the staged event shape and sequencing.
 public enum KVBackendCrashLoopGuard {
 
     /// A trip whose RECORD write already happened but whose remaining side
@@ -257,16 +254,13 @@ public enum KVBackendCrashLoopGuard {
     ///     record never reached disk (nothing to undo). The recovery flow
     ///     invokes it on every exit that ends WITHOUT an issued kickstart:
     ///     the counted restart never happened, so the guard must not strand.
-    ///   * `emit` queues the ERROR `engine_v2_crash_loop_guard` event.
-    ///     Deferred rather than fired at write time because the RECORD must
-    ///     be written before the kickstart (the relaunching daemon reads it
-    ///     on its first model load) while the trip only becomes REAL once
-    ///     the kickstart is issued — the undo can restore the disk but
-    ///     cannot retract a queued event, and an undone trip that had
-    ///     already queued one would ship a false incident signal on the next
-    ///     healthy boot, on exactly the metric operators alert on. The
-    ///     recovery flow invokes it exactly once, at kickstart success (the
-    ///     same point the undo is disarmed).
+    ///   * `emit` submits the compatibility
+    ///     `engine_v2_crash_loop_guard` event to the injected sink, or to the
+    ///     privacy-disabled legacy queue when no sink is injected. Deferred
+    ///     rather than fired at write time because the record must be written
+    ///     before the kickstart while the trip only becomes real once the
+    ///     kickstart is issued. The recovery flow invokes it exactly once at
+    ///     kickstart success, the same point the undo is disarmed.
     public struct StagedTrip: Sendable {
         /// Whether the record reached disk.
         public let persisted: Bool
@@ -284,10 +278,9 @@ public enum KVBackendCrashLoopGuard {
         }
     }
 
-    /// Write the guard record NOW and stage the rest of the trip (see
-    /// `StagedTrip`). The event is BUILT here — it captures the trip-time
-    /// crash count, guarded version, model attribution, and whether the
-    /// record persisted — but queued only when the caller runs `emit`.
+    /// Write the guard record now and stage the rest of the trip (see
+    /// `StagedTrip`). The compatibility event captures trip-time values but is
+    /// offered to the selected sink only when the caller runs `emit`.
     public static func stageTrip(
         crashCount: Int,
         now: Double,
@@ -323,9 +316,9 @@ public enum KVBackendCrashLoopGuard {
             // trip event and the resulting degrade join on one value.
             kvBackend: nil,
             extra: ["reason": .string("crash_loop_guard")])
-        // Straight-to-disk events skip TelemetryClient's identity stamping;
-        // set the one field the fleet dashboard groups trips by — the
-        // GUARDED version (what was crash-looping), not the watchdog's.
+        // Preserve the guarded binary's version in the compatibility event;
+        // an injected test/diagnostic sink can distinguish it from the
+        // watchdog process version.
         event.version = guardedVersion
         let stagedEvent = event
         let sink = emitTelemetry ?? { TelemetryOverflowQueue.shared.push($0) }

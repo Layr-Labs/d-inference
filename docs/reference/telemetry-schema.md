@@ -6,17 +6,22 @@ return `410 Gone` before reading a body, while the production Swift and
 TypeScript facades drop events in process. Nothing on this page authorizes
 provider, app, or browser telemetry transmission.
 
-Canonical compatibility definitions are in
-[`coordinator/protocol/telemetry.go`](../../coordinator/protocol/telemetry.go),
-with Swift and TypeScript mirrors in
-[`TelemetryEvent.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift)
-and [`telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts).
-The disabled coordinator route and handler are
-[`server.go`](../../coordinator/api/server.go#L1919-L1922) and
-[`handleTelemetryIngest`](../../coordinator/api/telemetry_handlers.go#L261-L269);
-the disabled clients are
-[`TelemetryClient.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift#L50-L103)
-and [`telemetry.ts`](../../console-ui/src/lib/telemetry.ts#L1-L26).
+The compatibility event type has protocol mirrors in
+[Go](../../coordinator/protocol/telemetry.go),
+[Swift](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift),
+and [TypeScript](../../console-ui/src/lib/telemetry-types.ts). Their shared
+wire corpus is
+[`fixtures/telemetry/v1/events.json`](../../fixtures/telemetry/v1/events.json),
+consumed by [Go](../../coordinator/protocol/telemetry_symmetry_test.go),
+[Swift](../../provider-swift/Tests/ProviderCoreTests/TelemetrySymmetryTests.swift),
+and [TypeScript](../../console-ui/__tests__/telemetry.test.ts) tests.
+
+The disabled coordinator route and fixed handler are
+[`server.go`](../../coordinator/api/server.go) and
+[`handleTelemetryIngest`](../../coordinator/api/telemetry_handlers.go). The
+disabled clients are
+[`TelemetryClient.swift`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryClient.swift)
+and [`telemetry.ts`](../../console-ui/src/lib/telemetry.ts).
 
 ## Ingestion endpoint
 
@@ -30,182 +35,61 @@ reading or forwarding their bodies; production Swift and TypeScript clients
 drop events before disk or network I/O. The remaining wire definitions are
 historical compatibility types, not an active data path.
 
-## Historical compatibility material
+## Compatibility contract
 
-Everything below this heading describes retained, unreachable client-ingestion
-machinery. Terms such as “emits,” “accepted,” “server-enforced,” “coerced,” and
-“allowed” mean “would be processed this way by the retired parser if ingestion
-were deliberately re-enabled.” Producer call sites may still construct values
-and pass them to a no-op facade; they do not persist or transmit them. The
-allowlists and parser limits are not active confidentiality controls.
+The shared fixture pins the source, severity, and kind vocabularies; JSON field
+names; required versus optional fields; representative values; and
+optional-field omission. A compatibility type change must update the Go, Swift,
+and TypeScript mirrors together with the fixture. Each language consumes that
+same fixture rather than maintaining a separate expected payload.
+
+The fixture describes only the retained wire type. It does not describe an
+ingestion parser or authorize transport, and it does not define which keys may
+appear inside the free-form `fields` object.
 
 ## Batch envelope
 
-Go: [`TelemetryBatch`](../../coordinator/protocol/telemetry.go); Swift: `TelemetryBatch`; TS: `TelemetryEvent[]` wrapped as `{ events: ... }`.
-
-| Field | Type | Notes |
-|---|---|---|
-| `events` | array | [`TelemetryEvent`](#telemetryevent) records |
-
-Historical parser caps (inactive because the 410 handler never reads a body):
-
-| Limit | Value |
-|---|---|
-| Max body size | 64 KB |
-| Max events per batch | 100 |
-| Max message length | 4,096 chars |
-| Max stack length | 32 KB |
-| Max fields JSON size | 8 KB |
-| Authenticated rate | 200 burst, 100 events/min refill |
-| Anonymous rate | 30 burst, 10 events/min refill |
-
-See the retained
-[`telemetryMax*` constants](../../coordinator/api/telemetry_handlers.go#L31-L36)
-and [`newTelemetryLimiter`](../../coordinator/api/telemetry_handlers.go#L211-L218).
+Go and Swift retain a `TelemetryBatch` containing an `events` array. The
+TypeScript compatibility shape is `{ events: TelemetryEvent[] }`.
 
 ## `TelemetryEvent`
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | UUIDv4, client-supplied |
-| `timestamp` | string | yes | ISO 8601 (RFC 3339 with fractional seconds in Swift) |
+| `id` | string | yes | UUID string supplied by the compatibility caller |
+| `timestamp` | string | yes | ISO 8601 timestamp |
 | `source` | string | yes | `coordinator`, `provider`, `app`, `console`, `bridge` |
 | `severity` | string | yes | `debug`, `info`, `warn`, `error`, `fatal` |
-| `kind` | string | yes | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `log`, `custom` |
+| `kind` | string | yes | `panic`, `http_error`, `protocol_error`, `backend_crash`, `attestation_failure`, `inference_error`, `runtime_mismatch`, `connectivity`, `oom`, `engine_health`, `log`, `custom` |
 | `version` | string | no | Component version |
 | `machine_id` | string | no | Stable per-machine identifier |
-| `account_id` | string | no | Server-stamped from auth when present |
-| `request_id` | string | no | Correlation id |
-| `session_id` | string | no | Per-process UUID |
-| `message` | string | yes | Human-readable developer string |
-| `fields` | object | no | Allowlisted structured fields |
-| `stack` | string | no | Backtrace / formatted stack |
+| `account_id` | string | no | Account identifier |
+| `request_id` | string | no | Correlation identifier |
+| `session_id` | string | no | Per-process identifier |
+| `message` | string | yes | Free-form compatibility value |
+| `fields` | object | no | Free-form structured compatibility values |
+| `stack` | string | no | Free-form compatibility value |
 
-The retained sanitizer would coerce unknown `source`, `severity`, and `kind`
-values to `custom` / `info` / `custom` and clamp timestamps to
-`[now-7d, now+5min]`. It is unreachable from the active 410 route. See
-[`sanitizeTelemetryEvent`](../../coordinator/api/telemetry_handlers.go).
+## Inactive client-side field filters
 
-## Historical field allowlist
+The Swift `TelemetryFieldFilter` and TypeScript
+`TELEMETRY_ALLOWED_FIELDS` set remain for source compatibility with local
+callers. There is no Go field allowlist, sanitizer, size limiter, or rate
+limiter on the fixed coordinator route: it returns `410` without reading the
+body. The client-side filters are not confidentiality controls and are not part
+of the three-language fixture contract.
 
-If the retired parser were re-enabled, it would silently drop any `fields` key
-not in this set. The mirrors remain synchronized for compatibility tests, not
-because production clients send these events.
+The retained event shape includes free-form `message`, `stack`, and `fields`
+values. A field-name filter cannot prove those values safe. Re-enabling client
+ingestion would require a new closed, per-kind value schema, new parsing and
+storage code, and a new confidentiality review.
 
-| Field | Allowed in |
-|---|---|
-| `component` | Go, Swift, TS |
-| `operation` | Go, Swift, TS |
-| `duration_ms` | Go, Swift, TS |
-| `attempt` | Go, Swift, TS |
-| `endpoint` | Go, Swift, TS |
-| `status_code` | Go, Swift, TS |
-| `error_class` | Go, Swift, TS |
-| `error` | Go, Swift, TS |
-| `target` | Go, Swift, TS |
-| `model` | Go, Swift, TS |
-| `backend` | Go, Swift, TS |
-| `exit_code` | Go, Swift, TS |
-| `signal` | Go, Swift, TS |
-| `hardware_chip` | Go, Swift, TS |
-| `memory_gb` | Go, Swift, TS |
-| `macos_version` | Go, Swift, TS |
-| `handler` | Go, Swift, TS |
-| `provider_id` | Go, Swift, TS |
-| `trust_level` | Go, Swift, TS |
-| `queue_depth` | Go, Swift, TS |
-| `reason` | Go, Swift, TS |
-| `runtime_component` | Go, Swift, TS |
-| `reconnect_count` | Go, Swift, TS |
-| `last_error` | Go, Swift, TS |
-| `ws_state` | Go, Swift, TS |
-| `network_reachable` | Go only |
-| `coordinator_url` | Go only |
-| `billing_method` | Go, Swift, TS |
-| `payment_failed` | Go, Swift, TS |
-| `url` | Go, TS |
-| `user_agent` | Go, TS |
-| `route` | Go, TS |
-| `kv_backend` | Go, Swift, TS |
-| `prefix_reuse_backend` | Go, Swift, TS |
-| `pages_pinned` | **none** — deliberately excluded from all three mirrors (`coordinator/api/telemetry_handlers.go:153`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift:285`, `console-ui/src/lib/telemetry-types.ts:150`); see "no producer" below |
-| `cow_events` | **none** — deliberately excluded from all three mirrors (`coordinator/api/telemetry_handlers.go:153`, `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift:285`, `console-ui/src/lib/telemetry-types.ts:150`); see "no producer" below |
-| `pool_utilization` | Go, Swift, TS |
-| `pool_bytes` | Go, Swift, TS |
-| `pool_deferred_growth_bytes` | Go, Swift, TS |
-| `pool_stranded_bytes` | Go, Swift, TS |
-| `mtp_enabled` | Go, Swift, TS |
-| `mtp_active` | Go, Swift, TS |
-| `mtp_inactive_reason` | Go, Swift, TS |
-| `mtp_acceptance_rate` | Go, Swift, TS |
-| `mtp_proposed_tokens` | Go, Swift, TS |
-| `mtp_accepted_tokens` | Go, Swift, TS |
+## Structured diagnostic key semantics
 
-This table is not exhaustive: the OOM / memory-pressure, engine-health (first-token
-wedge), eval-in-flight, KV-budget audit, media, and exact-prefix-replay cohorts are
-allowlisted in all three mirrors but have never been transcribed here. Absence from
-this table does **not** mean a key is rejected — the Go map is the authority, and
-`TestTelemetryAllowlistThreeWayParity` is what keeps the three mirrors honest.
-
-**Important:** the retained schema still contains free-form `message`, `stack`,
-and field values. A field-name allowlist does not make those values
-confidentiality-safe; this is why ingestion is disabled before body read.
-
-Historical server allowlist:
-[`telemetry_handlers.go:44-190`](../../coordinator/api/telemetry_handlers.go#L44-L190).
-Swift compatibility filter:
-[`TelemetryFieldFilter.allowed`](../../provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift).
-TypeScript compatibility set:
-[`TELEMETRY_ALLOWED_FIELDS`](../../console-ui/src/lib/telemetry-types.ts).
-
-## Discrepancies
-
-- The TypeScript allowlist in [`console-ui/src/lib/telemetry-types.ts`](../../console-ui/src/lib/telemetry-types.ts) currently omits `network_reachable` and `coordinator_url`, which the Go server accepts. Swift's client-side filter also omits `network_reachable`, `coordinator_url`, `url`, `user_agent`, and `route`. Unknown keys are dropped server-side without error, so this is a client-side completeness gap, not a wire incompatibility.
-
-## Adding a field: one key, one meaning
-
-**One key, one meaning. Before adding a metric, grep the allowlist for the
-concept, not just the name. Prefer raw quantities to ratios at the emission
-point — ratios clamp, hide their denominator, and collide semantically far
-more easily than counts do.**
-
-This has now been paid for twice. `backend` carried three unrelated value
-vocabularies across its producer sites (below), and within a single wave of
-fixing that, `pool_utilization` acquired two producers meaning two different
-things — pool occupancy and a slot's grant-as-fraction-of-pool. Both collisions
-passed every review that checked *names*, because both were spelled correctly.
-Neither would have survived a reviewer asking "is this concept already emitted
-under some other spelling?"
-
-Three corollaries worth stating, since each one is what actually went wrong:
-
-* **Distinct `operation` values do not partition a field.** A dashboard grouping
-  by `kv_backend` or `model` sees every event that carries the key, whatever
-  operation produced it. If two operations disagree about what a key means, the
-  aggregate is noise.
-* **A near-miss name is not a fix.** Two keys both ending `_utilization`, both on
-  paged slots, is the same trap with an extra word. Rename the *concept* or emit
-  the raw terms; do not park a second meaning next to the first in a dropdown.
-* **Raw quantities compose; ratios do not.** A consumer can derive a ratio from
-  numerator and denominator, then also sum, diff and threshold them. It cannot
-  recover either term from a ratio — and a clamped ratio (`min(a, b) / b`) throws
-  away exactly the overflow case the metric existed to expose.
-
-A new key must land in **all three** allowlist mirrors. `TelemetryFieldFilter`
-drops unmirrored keys silently, so a half-applied rename deletes the value rather
-than moving it, and the producer still looks healthy.
-
-**The tempting reuse is the dangerous one.** When the paged re-slice residue
-needed byte fields, every existing byte key in the allowlist belonged to another
-cohort: `peak_memory_bytes`, `available_bytes`, `mlx_active_bytes`,
-`mlx_cache_bytes` and `system_available_bytes` are OOM / memory-snapshot terms,
-and `reserved_bytes` / `reservations` are the KV budget's outstanding
-reservations. `reserved_bytes` is the one that looks right — a paged pool does
-reserve bytes — and reusing it would have been the same collision one level down:
-two unrelated reservation concepts under one key, discovered later by whoever
-summed them. Three new keys (`pool_bytes`, `pool_deferred_growth_bytes`,
-`pool_stranded_bytes`) and a three-mirror change was the cheaper answer, because
-a metric you cannot interpret is worse than a metric that cost three file edits.
+Even though the production facades discard events, retained producer and test
+sinks still use the structured keys below. Keep one key bound to one meaning.
+Distinct `operation` values do not partition a key, and raw numerator and
+denominator values remain more composable than a precomputed ratio.
 
 ## `backend` key semantics
 
@@ -262,16 +146,14 @@ contract on the heartbeat wire. Never substitute a third vocabulary value such a
 `"unknown"`: omission has to stay distinguishable from an observation.
 
 **`kv_backend` has a heartbeat-only companion: `kv_backend_fallback_reason`.**
-It is deliberately **not** a telemetry-event field and is **not** in the
-three-way allowlist — it rides `BackendSlotCapacity` on the heartbeat
+It is deliberately **not** a telemetry-event field. It rides
+`BackendSlotCapacity` on the heartbeat
 ([`messages.go`](../../coordinator/protocol/messages.go),
 [`Types.swift`](../../provider-swift/Sources/ProviderCore/Protocol/Types.swift)),
-the same channel as `kv_backend` itself. Protocol changes are a TWO-way sync
-(Go + Swift); the three-way parity guard
-(`coordinator/api/telemetry_allowlist_parity_test.go`) governs
-`telemetryFieldAllowlist` only and neither sees nor requires this key. It is
-recorded here because this page is where the `kv_backend` semantics live and a
-reader must not infer the wrong omission rule.
+the same channel as `kv_backend` itself. Heartbeat protocol changes remain a
+two-way Go/Swift sync; the three-language telemetry event fixture does not
+contain or require this key. It is recorded here because this page is where the
+`kv_backend` semantics live and a reader must not infer the wrong omission rule.
 
 It carries the provider's degrade reason verbatim — `kill_switch`,
 `crash_loop_guard`, `kernel_preflight: …`, `physical_capacity: …`,

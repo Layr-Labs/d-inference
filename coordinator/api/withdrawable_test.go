@@ -10,7 +10,6 @@ import (
 	"github.com/eigeninference/d-inference/coordinator/store"
 )
 
-
 // --- Withdrawal with non-withdrawable balance ---
 
 func TestStripeWithdrawRejectsNonWithdrawableBalance(t *testing.T) {
@@ -352,7 +351,6 @@ func TestAdminRewardThenWithdraw(t *testing.T) {
 		t.Errorf("withdrawable after = %d, want 5_000_000", wd)
 	}
 }
-
 
 // --- Withdrawal refund restores withdrawable ---
 

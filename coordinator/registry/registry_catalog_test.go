@@ -109,7 +109,6 @@ func TestRegisterWithEmptyConfiguredCatalogPreservesInventoryButRoutesNothingUnt
 	}
 }
 
-
 func TestModelCatalogWeightHashVerification(t *testing.T) {
 	reg := New(testLogger())
 	reg.MinTrustLevel = TrustNone

@@ -49,7 +49,7 @@ const mixedVersionSIPRequired = "MIXED_VERSION_SIP_REQUIRED: the hash-pinned rel
 // released provider booted: SIP-disabled CI only proves the artifact contract.
 const (
 	mixedVersionArtifactOnlyOK = "MIXED_VERSION_TIER_ARTIFACT_ONLY_NO_LEGACY_BOOT_OK"
-	mixedVersionFullBootOK      = "MIXED_VERSION_TIER_FULL_LEGACY_BOOT_OK"
+	mixedVersionFullBootOK     = "MIXED_VERSION_TIER_FULL_LEGACY_BOOT_OK"
 )
 
 // releasedProviderV0712 is an independent, structured compatibility fixture.
@@ -473,7 +473,6 @@ func digestFile(path string) (string, error) {
 	}
 	return hex.EncodeToString(digest.Sum(nil)), nil
 }
-
 
 // TestIntegrationMixedVersionGateContract is the pure contract for tier
 // ownership, anti-vacuous completion markers, and structured artifact pins.

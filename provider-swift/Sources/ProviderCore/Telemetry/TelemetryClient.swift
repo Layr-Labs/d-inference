@@ -84,6 +84,24 @@ public final class TelemetryClient: @unchecked Sendable {
 
     public func shutdownSync() {}
 
+    /// Returns the historical client-ingestion URL for source compatibility.
+    /// This helper performs string normalization only; no production code sends
+    /// to the returned endpoint.
+    public static func ingestEndpoint(from coordinatorURL: String) -> String {
+        var base = coordinatorURL
+        while base.hasSuffix("/") {
+            base = String(base.dropLast())
+        }
+        base = WebSocketURLScheme.toHTTP(base)
+        if base.hasSuffix("/ws/provider") {
+            base = String(base.dropLast("/ws/provider".count))
+        }
+        while base.hasSuffix("/") {
+            base = String(base.dropLast())
+        }
+        return base + "/v1/telemetry/events"
+    }
+
 }
 
 #if !canImport(os)

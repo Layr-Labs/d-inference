@@ -523,10 +523,7 @@ async fn wait_for_server(
     .expect("Unix server did not start");
 }
 
-async fn wait_for_planning_permits(
-    socket: &std::path::Path,
-    expected: u64,
-) -> serde_json::Value {
+async fn wait_for_planning_permits(socket: &std::path::Path, expected: u64) -> serde_json::Value {
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let (status, metrics) = unix_get(socket, "/metrics").await;

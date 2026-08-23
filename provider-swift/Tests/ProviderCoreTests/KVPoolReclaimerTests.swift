@@ -126,27 +126,26 @@ struct KVPoolReclaimerTests {
             clearCache: {
                 gate.enterClear()
                 spy.clear()
+                gate.finishClear()
             },
             reclaimableBytes: { spy.reclaimable },
             minInterval: .zero,
             proactiveThresholdBytes: 2 * gib)
 
         let reclaim = Task { await reclaimer.sweep() }
-        #expect(gate.waitUntilClearStarted())
-        let failsafe = Task {
-            try? await taskSleep(.milliseconds(250))
-            gate.releaseClear()
-        }
+        await gate.waitUntilClearStarted()
 
-        let startedAt = ContinuousClock.now
+        // The clear is still parked. A lock-backed heartbeat snapshot must
+        // return before the clear is released; otherwise this call deadlocks
+        // and the test exposes that telemetry queued behind the GPU fence.
+        #expect(!gate.clearCompleted)
         let duringClear = reclaimer.telemetrySnapshot()
-        let snapshotLatency = ContinuousClock.now - startedAt
-        gate.releaseClear()
-        failsafe.cancel()
-
-        #expect(snapshotLatency < .milliseconds(100))
+        #expect(!gate.clearCompleted)
         #expect(duringClear.sweepSignals == 1)
         #expect(duringClear.reclaims == 0)
+
+        gate.releaseClear()
+        await gate.waitUntilClearCompleted()
         #expect(await reclaim.value)
         #expect(reclaimer.telemetrySnapshot().reclaims == 1)
     }
@@ -223,18 +222,33 @@ private final class ReclaimSpy: @unchecked Sendable {
 }
 
 private final class BlockingReclaimGate: @unchecked Sendable {
-    private let started = DispatchSemaphore(value: 0)
+    private let started = AsyncTestLatch()
+    private let completed = AsyncTestLatch()
     private let release = DispatchSemaphore(value: 0)
     private let lock = NSLock()
     private var released = false
+    private var _clearCompleted = false
 
     func enterClear() {
         started.signal()
         release.wait()
     }
 
-    func waitUntilClearStarted() -> Bool {
-        started.wait(timeout: .now() + 2) == .success
+    func finishClear() {
+        lock.withLock { _clearCompleted = true }
+        completed.signal()
+    }
+
+    func waitUntilClearStarted() async {
+        await started.wait()
+    }
+
+    func waitUntilClearCompleted() async {
+        await completed.wait()
+    }
+
+    var clearCompleted: Bool {
+        lock.withLock { _clearCompleted }
     }
 
     func releaseClear() {

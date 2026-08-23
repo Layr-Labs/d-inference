@@ -38,7 +38,6 @@ func testBillingServer(t *testing.T) (*Server, *store.MemoryStore) {
 	return srv, st
 }
 
-
 // withPrivyUser returns a request with the given user set in context, simulating
 // Privy authentication without requiring JWT verification.
 func withPrivyUser(r *http.Request, user *store.User) *http.Request {

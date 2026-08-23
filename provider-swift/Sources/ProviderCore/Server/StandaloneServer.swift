@@ -225,8 +225,13 @@ public actor StandaloneServer {
     /// Sweep cadence. Fixed (ProviderLoop derives its cadence from
     /// heartbeat/2; there is no heartbeat here); the reclaimer itself
     /// rate-limits and threshold-gates, so this only bounds reaction
-    /// latency. Tests lower it via `setKVSweepIntervalForTesting`.
+    /// latency. Tests inject the cadence boundary without changing this
+    /// production default.
     private var kvSweepInterval: Duration = .seconds(5)
+    /// Injectable sleep/observation seams for deterministic cadence tests.
+    /// Production keeps the monotonic `taskSleep` path and has no observer.
+    private var kvSweepSleep: @Sendable (Duration) async throws -> Void = taskSleep
+    private var kvSweepDidScheduleForTesting: (@Sendable () -> Void)?
     private enum LifecycleState {
         case stopped
         case running
@@ -337,11 +342,14 @@ public actor StandaloneServer {
         }
         kvSweepTask?.cancel()
         let sweepInterval = kvSweepInterval
+        let sweepSleep = kvSweepSleep
+        let didScheduleSweep = kvSweepDidScheduleForTesting
         kvSweepTask = Task { [kvBudget] in
             while !Task.isCancelled {
-                try? await taskSleep(sweepInterval)
+                try? await sweepSleep(sweepInterval)
                 if Task.isCancelled { break }
                 kvBudget.proactiveReclaimSweep()
+                didScheduleSweep?()
             }
         }
         lifecycleState = .running
@@ -416,9 +424,11 @@ public actor StandaloneServer {
     }
 
     private func finishShutdown(serviceTask: Task<Void, Never>?) async {
-        kvSweepTask?.cancel()
+        let sweepTask = kvSweepTask
         kvSweepTask = nil
+        sweepTask?.cancel()
         serviceTask?.cancel()
+        _ = await sweepTask?.value
         _ = await serviceTask?.value
         await specDecFunnel.shutdown()
 
@@ -465,16 +475,15 @@ public actor StandaloneServer {
         await kvBudget.outstandingReservedBytes()
     }
 
-    /// Sweep signals the budget's reclaimer has received — wiring assertion
-    /// seam for the periodic `kvSweepTask` (see `KVPoolReclaimer.sweepSignalCount`).
-    func debugKVSweepSignalCount() async -> UInt64 {
-        await kvBudget.reclaimerForTesting.sweepSignalCount
-    }
-
-    /// Lower the sweep cadence so a wiring test observes a signal without
-    /// waiting out the production interval. Call before `start()`.
-    func setKVSweepIntervalForTesting(_ interval: Duration) {
-        kvSweepInterval = interval
+    /// Replace only the cadence boundary in tests. The periodic task still
+    /// invokes the production `proactiveReclaimSweep()` call before notifying
+    /// the observer, so a notification proves that exact wiring ran.
+    func setKVSweepSchedulerForTesting(
+        sleep: @escaping @Sendable (Duration) async throws -> Void,
+        didSchedule: @escaping @Sendable () -> Void
+    ) {
+        kvSweepSleep = sleep
+        kvSweepDidScheduleForTesting = didSchedule
     }
 
     func reservePendingLoadForTesting(requestID: String, bytes: UInt64) async {

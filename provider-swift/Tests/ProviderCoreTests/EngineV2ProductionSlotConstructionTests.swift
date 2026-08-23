@@ -18,10 +18,10 @@ struct EngineV2SlotBuildTests {
     func slotBuildAlwaysBuildsRegistersAndStreams() async throws {
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
-        let engine = ProductionWiringScriptedEngine(script: .stream([
+        let engine = ScriptedCBv2Engine(script: .stream([
             .delta(text: "Hello", tokens: [10], logprobs: nil),
             .finished(reason: .stop, usage: CBv2Usage(promptTokens: 5, completionTokens: 1)),
-        ]))
+        ]), kvBytesCapacity: 0)
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
             ProviderLoop.EngineV2SlotHooks(
@@ -33,7 +33,7 @@ struct EngineV2SlotBuildTests {
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: productionMakeSizing(weightsGiB: 15)
         )
 
@@ -81,7 +81,7 @@ struct EngineV2SlotBuildTests {
         #expect(throws: EngineV2ProductionError.self) {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: ProductionWiringStubLanguageModel(),
-                tokenizer: ProductionWiringStubTokenizer(),
+                tokenizer: productionWiringStubTokenizer(),
                 kvBytesCapacity: 1 << 20,
                 maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
@@ -93,7 +93,7 @@ struct EngineV2SlotBuildTests {
         #expect(throws: EngineV2ProductionError.self) {
             _ = try EngineV2Factory.makeProductionEngine(
                 model: ProductionWiringStubLanguageModel(),
-                tokenizer: ProductionWiringStubTokenizer(),
+                tokenizer: productionWiringStubTokenizer(),
                 kvBytesCapacity: 0,
                 maxConcurrentRequests: Int(BackendSettings.defaultEngineV2MaxConcurrent)
             )
@@ -112,7 +112,7 @@ struct EngineV2SlotBuildTests {
                 eosTokenIds: [2],
                 physicalMemoryBytes: productionWiringPhysicalBytes,
                 makeEngine: { _, grant in
-                    ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant)
+                    ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant)
                 }))
 
         // Per-model override wins for gpt-oss-20b…
@@ -120,7 +120,7 @@ struct EngineV2SlotBuildTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: productionMakeSizing(weightsGiB: 12, kvRate: 24_576)
         )
         #expect(await gptoss.backendSlotCapacity().maxConcurrency == 2)
@@ -131,7 +131,7 @@ struct EngineV2SlotBuildTests {
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: productionMakeSizing(weightsGiB: 15)
         )
         #expect(await gemma.backendSlotCapacity().maxConcurrency == 6)

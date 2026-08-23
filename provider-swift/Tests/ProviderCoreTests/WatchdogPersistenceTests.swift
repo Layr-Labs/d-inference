@@ -267,8 +267,8 @@ struct CrashLoopGuardTripTests {
         // Box-wide event: the crashing slot's backend was never observed,
         // so the key is OMITTED, not guessed (EngineHealthEvent contract).
         #expect(event.fields?["kv_backend"] == nil)
-        // The fleet dashboard groups trips by the version that was
-        // crash-looping — the guarded version, not the watchdog image's.
+        // The injected compatibility event records the guarded binary's
+        // version, not the watchdog process version.
         #expect(event.version == "0.8.3")
     }
 

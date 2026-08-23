@@ -14,7 +14,6 @@ func registerProviderWithModel(reg *Registry, id, modelID string) *Provider {
 	return reg.Register(id, nil, msg)
 }
 
-
 const (
 	aliasFP8 = "mlx-community/gemma-4-26b-a4b-it-fp8"
 	aliasQAT = "mlx-community/gemma-4-26B-A4B-it-qat-4bit"

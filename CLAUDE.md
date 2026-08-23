@@ -240,7 +240,16 @@ Always think from first principles. When fixing a bug or designing a feature:
 ## Common Pitfalls
 
 - Protocol changes require updating both `provider-swift/Sources/ProviderCore/Protocol/` (Swift) AND `coordinator/protocol/messages.go` (Go). They must stay in sync.
-- Telemetry wire types are mirrored in three places: `coordinator/protocol/telemetry.go`, `provider-swift/Sources/ProviderCore/Telemetry/`, and `console-ui/src/lib/telemetry-types.ts`. The field allowlist (`coordinator/api/telemetry_handlers.go`) is the privacy backstop — never add prompt/completion fields. See `docs/architecture/operations/telemetry.md`.
+- Retired client-telemetry event types are mirrored in
+  `coordinator/protocol/telemetry.go`,
+  `provider-swift/Sources/ProviderCore/Telemetry/TelemetryEvent.swift`, and
+  `console-ui/src/lib/telemetry-types.ts`. Keep their vocabulary and wire shape
+  aligned through the shared `fixtures/telemetry/v1/events.json` corpus consumed
+  by each language's symmetry test. Client ingestion remains disabled: the
+  coordinator route returns a fixed `410` before body access and has no parser,
+  sanitizer, or field allowlist. The Swift and TypeScript local compatibility
+  filters are not a three-language sync point. See
+  `docs/architecture/operations/telemetry.md`.
 - Attestation minimum-requirement checks (Secure Enclave, SIP, Secure Boot) run sequentially and each overwrites `result.Error` — last failure wins. `AuthenticatedRootEnabled` (ARV) is informational only: logged, not enforced.
 - Store selection (`cmd/coordinator/main.go`): the coordinator uses the **Postgres** store whenever `EIGENINFERENCE_DATABASE_URL` is set (prod does), and refuses to start without it unless `EIGENINFERENCE_ALLOW_MEMORY_STORE=true`. The in-memory store is the dev/test fallback only (state lost on restart). The live provider *registry* (WebSocket connections/attestation) is always in-process and rebuilt on reconnect regardless of store.
 - `hypervisor_active` is retired: current providers no longer send it, but `AttestationResponseMessage.HypervisorActive` and the canonical-status support must keep decoding so signed payloads from older (< v0.6.31) providers still verify.

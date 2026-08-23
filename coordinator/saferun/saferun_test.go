@@ -29,7 +29,6 @@ func (b *syncBuffer) String() string {
 	return b.buf.String()
 }
 
-
 // A panic inside a goroutine started with Go must be contained: the
 // surrounding code continues to run and the panic is logged.
 func TestGoRecoversPanic(t *testing.T) {

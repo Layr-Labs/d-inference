@@ -69,8 +69,8 @@ struct EngineV2FailLoudFactoryTests {
         )
         #expect(await bridge.modelId == "gemma-4-26b-qat-4bit")
         #expect(await bridge.kvBackendKind == .contiguous)
-        // Exactly one INFO event attributing the slot's serving KV backend
-        // (fleet dashboards key off operation=engine_v2_kv_backend).
+        // Exactly one event is offered to the injected sink, attributing the
+        // slot's serving KV backend.
         let events = telemetry.events
         #expect(events.count == 1)
         #expect(events.first?.severity == .info)

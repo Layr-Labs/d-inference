@@ -7,8 +7,6 @@ import (
 	"time"
 )
 
-
-
 func TestInferenceRouteStoreContract(t *testing.T) {
 	for name, st := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {

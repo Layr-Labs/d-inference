@@ -163,7 +163,7 @@ func TestSettleEpoch_Disabled(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
+
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -188,7 +188,7 @@ func TestSettleEpoch_EpochNotClosed(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
+
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -212,7 +212,7 @@ func TestSettleEpoch_MemoryCapPreventsOverclaim(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "air", "PKair", "Sair", "MacBookAir10,1", 512) // lies: 512GB
-	                               // cap = 16GB
+	// cap = 16GB
 	st.sessions = []store.ProviderSession{fullUptimeSession("air", "PKair", "Sair", "accAir", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PKair", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
 
@@ -234,7 +234,7 @@ func TestSettleEpoch_UnknownHardwareModelUnpaid(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "unknown", "PKunknown", "Sunknown", "Mac99,1", 512)
-	
+
 	st.sessions = []store.ProviderSession{fullUptimeSession("unknown", "PKunknown", "Sunknown", "accUnknown", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PKunknown", "consumer", "j1", 1_000_000, start.Add(time.Minute))}
 
@@ -259,7 +259,7 @@ func TestSettleEpoch_HappyPathAndIdempotent(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
+
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// $5 organic + 64GB floor $18/mo, additive (k=0) → full prorated 5-minute
 	// base reward on top.
@@ -296,7 +296,7 @@ func TestSettleEpoch_RestartSafe(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
+
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	// A prior job contributes $0 to this period's earned; eligibility no longer
 	// depends on demand, so the machine draws its prorated floor.
@@ -327,7 +327,7 @@ func TestSettleEpoch_PreAttestationUnpaid(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
+
 	reg.providers[0].Attested = false // un-attested → gate 1 fails
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = []store.ProviderEarning{organicEarning("PK1", "consumer", "j1", 1_000_000, start.Add(time.Hour))}
@@ -349,7 +349,7 @@ func TestSettleEpoch_NoDemandStillPaid(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
+
 	st.sessions = []store.ProviderSession{fullUptimeSession("p1", "PK1", "S1", "acc1", start, end)}
 	st.earnings = nil // self-route leaves no billed earning row
 
@@ -377,7 +377,7 @@ func TestSettleEpoch_PartialSettlement_SumEqualsPool(t *testing.T) {
 		pk := "PK" + string(rune('A'+i))
 		acc := "acc" + string(rune('A'+i))
 		addProvider(reg, "p"+string(rune('A'+i)), pk, pk, "Mac15,8", 64)
-		
+
 		st.sessions = append(st.sessions, fullUptimeSession("p"+pk, pk, pk, acc, start, end))
 		st.earnings = append(st.earnings, organicEarning(pk, "consumer", "j"+pk, 1_000_000, start.Add(time.Hour)))
 	}
@@ -425,7 +425,6 @@ func TestSettleEpoch_BlueGreenDoubleOpen(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
 
 	// Two sessions, each covering most of the epoch, heavily overlapping. Closed
 	// at end so they fully cover the period.
@@ -459,7 +458,6 @@ func TestSettleEpoch_BelowUptimeGate(t *testing.T) {
 	st := newEngineStore()
 	reg := newEngineRegistry()
 	addProvider(reg, "p1", "PK1", "S1", "Mac15,8", 64)
-	
 
 	covered := time.Duration(float64(end.Sub(start)) * 0.80)
 	disc := start.Add(covered)

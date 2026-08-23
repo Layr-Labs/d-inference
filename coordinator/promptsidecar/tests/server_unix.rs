@@ -143,12 +143,10 @@ async fn incomplete_headers_and_bodies_observe_their_read_deadlines() {
         b"POST /v1/plan HTTP/1.1\r\nHost: local\r\nContent-Length: 10\r\n\r\n{}",
     )
     .await;
-    let response = tokio::time::timeout(
-        Duration::from_millis(250),
-        read_response(&mut body_stalled),
-    )
-    .await
-    .expect("partial body did not reach the request deadline");
+    let response =
+        tokio::time::timeout(Duration::from_millis(250), read_response(&mut body_stalled))
+            .await
+            .expect("partial body did not reach the request deadline");
     assert!(response.starts_with("HTTP/1.1 408"));
     assert!(response.contains("body_deadline_exceeded"));
 

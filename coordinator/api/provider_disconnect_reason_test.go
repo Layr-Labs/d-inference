@@ -132,7 +132,6 @@ func (h *sessionReasonHarness) closedReason(t *testing.T) string {
 	return reason
 }
 
-
 // A peer-initiated clean close must be stamped with its close code, not the
 // registry's generic "disconnect".
 func TestProviderSessionReasonPeerClose(t *testing.T) {
@@ -237,7 +236,6 @@ func (r *sessionStampRecorder) CloseProviderSession(ctx context.Context, session
 	}
 	return r.Store.CloseProviderSession(ctx, sessionID, reason, when)
 }
-
 
 // Regression for the PR #512 review finding: when the read loop exits, the
 // provider must already be unroutable when the durable disconnect-reason write

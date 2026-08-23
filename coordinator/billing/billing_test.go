@@ -237,7 +237,6 @@ func TestIsExternalIDProcessed(t *testing.T) {
 	}
 }
 
-
 // --- Stripe Webhook Signature Tests ---
 
 func TestStripeWebhookNoSecret(t *testing.T) {
@@ -260,4 +259,3 @@ func TestStripeWebhookInvalidSignature(t *testing.T) {
 		t.Fatal("expected error for invalid signature")
 	}
 }
-

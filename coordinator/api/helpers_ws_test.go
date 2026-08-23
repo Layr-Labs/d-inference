@@ -295,6 +295,7 @@ func findRoutableProvider(reg *registry.Registry, model string) *registry.Provid
 	}
 	return p
 }
+
 // connectProvider dials the WebSocket, registers the provider, and returns only
 // after the new provider session is observable in the registry.
 func connectProvider(

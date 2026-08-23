@@ -1,6 +1,7 @@
 package store
 
 import "testing"
+
 func TestProviderPayouts_RecordListAndSettle(t *testing.T) {
 	for name, s := range storeBackends(t) {
 		t.Run(name, func(t *testing.T) {

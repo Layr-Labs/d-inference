@@ -258,7 +258,6 @@ func TestKeySpendWindowStart(t *testing.T) {
 	}
 }
 
-
 func TestLegacyAccountID(t *testing.T) {
 	raw := "sk-db-secretsecretsecret"
 	id := LegacyAccountID(raw)

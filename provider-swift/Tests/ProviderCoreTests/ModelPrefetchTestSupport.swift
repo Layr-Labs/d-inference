@@ -294,41 +294,6 @@ final class NoopSuccessPrefetcher: ModelPrefetcher, @unchecked Sendable {
 
 // MARK: - ProviderLoop integration (real actor, real disk, no GPU/network)
 
-/// Prefetcher that always fails, counting attempts per model id — drives the
-/// desired-build retry policy tests.
-final class FailingCountingPrefetcher: ModelPrefetcher, @unchecked Sendable {
-    private let lock = NSLock()
-    private var counts: [String: Int] = [:]
-    private let called = AsyncTestLatch()
-    func count(for modelID: String) -> Int {
-        lock.lock(); defer { lock.unlock() }
-        return counts[modelID] ?? 0
-    }
-    func prefetchToDisk(
-        modelID: String,
-        onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
-    ) async throws {
-        lock.withLock { counts[modelID, default: 0] += 1 }
-        called.signal()
-        throw ModelCatalogError.downloadFailed("simulated transient network failure")
-    }
-
-    func waitForCall() async { await called.wait() }
-}
-
-/// Prefetcher that records whether it was actually invoked (asserts the
-/// short-circuit path never calls it).
-final class TrackingPrefetcher: ModelPrefetcher, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _count = 0
-    var callCount: Int { lock.lock(); defer { lock.unlock() }; return _count }
-    func prefetchToDisk(
-        modelID: String,
-        onByteProgress: @Sendable @escaping (Int64, Int64) -> Void
-    ) async throws {
-        lock.withLock { _count += 1 }
-    }
-}
 
 /// Prefetcher that records every model id whose download body STARTED and then
 /// blocks forever (until task cancellation). Lets a reconcile test assert which
@@ -353,24 +318,5 @@ final class RecordingBlockingPrefetcher: ModelPrefetcher, @unchecked Sendable {
 
     func waitUntilStarted(_ modelID: String) async {
         while !startedIDs.contains(modelID) { await started.wait() }
-    }
-}
-
-/// Minimal sink for the short-circuit test.
-final class RecordingPrefetchSink: PrefetchStatusSink, @unchecked Sendable {
-    private let lock = NSLock()
-    private var _events: [(ProviderMessage.PrefetchModelStatus.Status, String?)] = []
-    private let terminalSignal = AsyncTestLatch()
-    func emit(modelId: String, status: ProviderMessage.PrefetchModelStatus.Status, bytesDone: Int64, bytesTotal: Int64, error: String?) {
-        lock.withLock { _events.append((status, error)) }
-        if status == .verified || status == .failed { terminalSignal.signal() }
-    }
-    func terminal() -> (status: ProviderMessage.PrefetchModelStatus.Status, error: String?)? {
-        lock.withLock { _events.last(where: { $0.0 == .verified || $0.0 == .failed }) }
-    }
-    func waitForTerminal() async -> (status: ProviderMessage.PrefetchModelStatus.Status, error: String?) {
-        if let terminal = terminal() { return terminal }
-        await terminalSignal.wait()
-        return terminal()!
     }
 }

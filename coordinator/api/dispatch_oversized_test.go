@@ -158,6 +158,7 @@ func TestDispatch_TransientCapacity_CappedRetries(t *testing.T) {
 			total, maxCapacityClassRetries, maxDispatchAttempts)
 	}
 }
+
 // registerModelContext registers modelID in the store with a known context window
 // so the dispatch path's modelMaxContext is populated (it reads
 // store.GetModelRegistryRecord(model).MaxContextLength). The record is only

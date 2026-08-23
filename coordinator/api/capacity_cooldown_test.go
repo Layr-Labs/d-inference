@@ -245,6 +245,7 @@ func TestCapacityCooldownRetryReselectionEscapesSink(t *testing.T) {
 		reg.SetProviderIdle(provider.ID)
 	}
 }
+
 // A box that cold-404s ("model not loaded") FOREVER with zero accepts is a
 // black hole and must trip; a box that 404s while lazily loading and then
 // SERVES (the normal lifecycle) must never trip — the accept is the safety.

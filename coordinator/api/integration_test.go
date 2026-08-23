@@ -58,4 +58,3 @@ func TestIntegration_ProviderReconnectRequiresChallenge(t *testing.T) {
 		return p != nil && p.ID == second.providerID
 	})
 }
-

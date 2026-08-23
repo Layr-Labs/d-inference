@@ -55,7 +55,6 @@ func TestSetProviderIdle(t *testing.T) {
 	}
 }
 
-
 func TestEvictionKeepsFreshProviders(t *testing.T) {
 	reg := New(testLogger())
 	msg := testRegisterMessage()

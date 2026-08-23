@@ -1,6 +1,6 @@
 use promptsidecar::contract::{ContractVersions, PromptArtifact, compute_contract_id};
 use promptsidecar::hash;
-use serde::{de::DeserializeOwned, Deserialize};
+use serde::{Deserialize, de::DeserializeOwned};
 use std::path::PathBuf;
 
 #[derive(Deserialize)]
@@ -30,7 +30,6 @@ struct ContractVector {
     artifacts: Vec<PromptArtifact>,
     expected_prompt_contract_id: String,
 }
-
 
 #[test]
 fn shared_binary_hash_vectors_match() {
@@ -80,7 +79,10 @@ fn shared_vector_fixture_schema_version_is_required() {
 fn decode_fixture<T: DeserializeOwned>(encoded: &[u8]) -> Result<T, String> {
     let value: serde_json::Value =
         serde_json::from_slice(encoded).map_err(|error| error.to_string())?;
-    match value.get("schema_version").and_then(serde_json::Value::as_u64) {
+    match value
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+    {
         Some(1) => serde_json::from_value(value).map_err(|error| error.to_string()),
         Some(version) => Err(format!("unsupported fixture schema version {version}")),
         None => Err("fixture schema version is missing".to_owned()),

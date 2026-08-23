@@ -206,11 +206,11 @@ func DefaultProviderConfig() ProviderConfig {
 }
 
 type RequestConfig struct {
-	MaxTokens         int
-	Streaming         bool
-	Temperature       float64
-	Concurrency       int
-	TotalRequests     int
+	MaxTokens     int
+	Streaming     bool
+	Temperature   float64
+	Concurrency   int
+	TotalRequests int
 	// ExpectedSuccesses is the target used for reporting. MinimumSuccesses is
 	// the hard floor: Run returns an error below it. Both must be configured.
 	ExpectedSuccesses int

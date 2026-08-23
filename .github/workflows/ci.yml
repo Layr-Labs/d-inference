@@ -124,13 +124,14 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
         run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+          for root in provider-swift/.build libs/mlx-swift/.build libs/mlx-swift-lm/.build; do
             [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
           done
       - name: Install pinned Rust toolchain for production prompt parity
@@ -147,6 +148,7 @@ jobs:
           # not guaranteed to be linked merely because the test bundle builds.
           swift build --product darkbloom-fan-helper
       - name: Build and stage source-matched mlx.metallib
+        id: build-source-metallib
         run: |
           set -euo pipefail
           command -v cmake >/dev/null 2>&1 || brew install cmake
@@ -176,6 +178,41 @@ jobs:
         run: swift test
       - name: Verify production prompt parity
         run: ./scripts/verify-prompt-parity.sh
+      - name: Compile relocated mlx-swift QMV tests
+        id: build-mlx-swift-tests
+        if: ${{ !cancelled() }}
+        working-directory: libs/mlx-swift
+        # The QMV regression now belongs to the package that owns the Metal
+        # implementation. Build its XCTest bundle before placing the exact
+        # metallib produced from this checkout beside the runner.
+        timeout-minutes: 35
+        run: swift build --build-tests
+      - name: Place metallib for relocated mlx-swift test bundle
+        id: place-mlx-swift-metallib
+        if: ${{ !cancelled() && steps.build-source-metallib.outcome == 'success' && steps.build-mlx-swift-tests.outcome == 'success' }}
+        working-directory: libs/mlx-swift
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/mlx.metallib" .build/debug/mlx.metallib
+          bundle_count=0
+          for bundle in .build/debug/*PackageTests.xctest; do
+            macos="$bundle/Contents/MacOS"
+            if [ -d "$macos" ]; then
+              cp "$RUNNER_TEMP/mlx.metallib" "$macos/mlx.metallib"
+              bundle_count=$((bundle_count + 1))
+            fi
+          done
+          test "$bundle_count" -gt 0 || {
+            echo "::error::mlx-swift test bundle was not produced"
+            exit 1
+          }
+      - name: Run relocated mlx-swift QMV wide Metal tests
+        if: ${{ !cancelled() && steps.place-mlx-swift-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift
+        # The shared runner makes a zero-test selector or any skip fail the
+        # lane rather than silently turning this GPU regression compile-only.
+        timeout-minutes: 15
+        run: ../../scripts/run-swift-suite.sh QMVWideMetalTests --skip-build
       # FLAKE-ORDERING GUARD (audit fix, v0.8.0): every nested step below runs
       # under `if: ${{ !cancelled() && ... }}`. Before this, the nested filtered
       # suites ran with the default `success()` condition, so ANY earlier step
@@ -204,7 +241,7 @@ jobs:
           swift build --build-tests
       - name: Place metallib for nested test bundles
         id: place-nested-metallib
-        if: ${{ !cancelled() && steps.build-nested-tests.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.build-source-metallib.outcome == 'success' && steps.build-nested-tests.outcome == 'success' }}
         working-directory: libs/mlx-swift-lm
         run: |
           set -euo pipefail
@@ -318,6 +355,12 @@ jobs:
         # green under.
         timeout-minutes: 10
         run: ../../scripts/run-swift-suite.sh CBv2KVSharingParityTests --skip-build
+      - name: Run nested sequence state-machine tests
+        if: ${{ !cancelled() && steps.place-nested-metallib.outcome == 'success' }}
+        working-directory: libs/mlx-swift-lm
+        # Hermetic multi-token stop detection in the package that owns it.
+        timeout-minutes: 5
+        run: ../../scripts/run-swift-suite.sh SequenceStateMachineTests --skip-build
       - name: Run atomic installer artifact tests
         timeout-minutes: 2
         run: ./scripts/test-install-atomic.sh
@@ -337,13 +380,14 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
           restore-keys: |
             spm-v3-${{ runner.os }}-
       - name: Discard metallibs restored by the generic SwiftPM cache
         run: |
-          for root in provider-swift/.build libs/mlx-swift-lm/.build; do
+          for root in provider-swift/.build libs/mlx-swift/.build libs/mlx-swift-lm/.build; do
             [ ! -d "$root" ] || find "$root" -type f -name mlx.metallib -delete
           done
       - name: Build provider-swift
@@ -351,6 +395,12 @@ jobs:
         run: |
           swift build -c release --product darkbloom
           swift build -c release --product darkbloom-fan-helper
+      - name: Compile relocated mlx-swift tests (compile-only cache warmup)
+        working-directory: libs/mlx-swift
+        # The test-provider job runs QMVWideMetalTests from this .build after
+        # staging the source-matched metallib.
+        timeout-minutes: 35
+        run: swift build --build-tests
       - name: Compile nested mlx-swift-lm tests (compile-only cache warmup)
         working-directory: libs/mlx-swift-lm
         # The test-provider job executes its individually attributed,
@@ -370,6 +420,7 @@ jobs:
             ~/Library/Caches/org.swift.swiftpm
             ~/Library/org.swift.swiftpm
             provider-swift/.build
+            libs/mlx-swift/.build
             libs/mlx-swift-lm/.build
           key: spm-v3-${{ runner.os }}-${{ github.sha }}-${{ hashFiles('provider-swift/Package.resolved', 'libs/mlx-swift/Package.swift', 'libs/mlx-swift-lm/Package.swift') }}
 

@@ -103,14 +103,14 @@ ui-test: ## vitest for console-ui
 ui: ui-install ui-lint ui-test ui-build ## Install, lint, test, build console-ui
 
 # ---- E2E integration tests -------------------------------------------------
-# Manual lanes require Postgres, a built Swift provider, and downloaded MLX
-# model weights. The benchmark and opt-in full-network smoke require both
-# production model checkpoints; `e2e` does not silently download or enable them.
+# The harness starts ephemeral Postgres, builds/stages the provider unless
+# DARKBLOOM_PROVIDER_BINARY is supplied, and never downloads model weights.
+# Full-network and benchmark lanes require both production checkpoints.
 
-e2e-integration: ## Run local TestIntegration tests (manual provider/model prerequisites)
+e2e-integration: ## Run local TestIntegration tests (local model prerequisites)
 	go test ./e2e/... -count=1 -v -timeout 25m -p=1 -run '^TestIntegration'
 
-e2e-benchmark: ## Run local TestBenchmark tests (manual two-model prerequisites)
+e2e-benchmark: ## Run local TestBenchmark tests (local two-model prerequisites)
 	go test ./e2e/... -count=1 -v -timeout 25m -p=1 -run '^TestBenchmark_'
 
 e2e: e2e-integration ## Run the integration suite

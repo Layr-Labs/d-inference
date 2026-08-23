@@ -24,7 +24,7 @@ struct EngineV2ReslicingWiringTests {
         let runtime = EngineV2Runtime()
         let recorder = ProductionGrantRecorder()
         let (bridgeA, engineA, _) = try await productionBuildAndInstallSlotA(loop, runtime: runtime, recorder: recorder,
-        engines: { _, grant in ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        engines: { _, grant in ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant) })
         let grantA0 = await bridgeA.engineKVBytesCapacity()
 
         // Load B (gpt-oss): A must SHRINK to its fair share before B's
@@ -34,13 +34,13 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingB
         )
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")
@@ -61,7 +61,7 @@ struct EngineV2ReslicingWiringTests {
         let runtime = EngineV2Runtime()
         let recorder = ProductionGrantRecorder()
         let (bridgeA, engineA, _) = try await productionBuildAndInstallSlotA(loop, runtime: runtime, recorder: recorder,
-        engines: { _, grant in ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        engines: { _, grant in ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant) })
         let originalA = await bridgeA.engineKVBytesCapacity()
 
         let sizingB = productionMakeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
@@ -69,14 +69,14 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingB
         )
         await runtime.register(modelId: "gpt-oss-20b", bridge: bridgeB)
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")
@@ -120,7 +120,7 @@ struct EngineV2ReslicingWiringTests {
         let loop = try productionMakeWiringLoop()
         let runtime = EngineV2Runtime()
         let recorder = ProductionGrantRecorder()
-        let telemetry = ProductionWiringTelemetrySink()
+        let telemetry = TelemetrySink()
         let enginesBox = ProductionEngineBox()
         await loop.setEngineV2RuntimeForTesting(runtime)
         await loop.setEngineV2SlotHooksForTesting(
@@ -134,7 +134,7 @@ struct EngineV2ReslicingWiringTests {
                 ],
                 makeEngine: { _, grant in
                     recorder.record(grant)
-                    let engine = ProductionWiringScriptedEngine(
+                    let engine = ScriptedCBv2Engine(
                         script: .manual,
                         kvBytesCapacity: grant,
                         // Demand-shaped pool, capped below the logical grant.
@@ -148,12 +148,12 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingA)
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeA,
             sizing: sizingA,
             modelType: "gemma4")
@@ -172,12 +172,12 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingB)
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")
@@ -308,7 +308,7 @@ struct EngineV2ReslicingWiringTests {
                 kvBackendKindByModel: ["gemma-4-26b-qat-4bit": .paged],
                 makeEngine: { modelId, grant in
                     recorder.record(grant)
-                    let engine = ProductionWiringScriptedEngine(
+                    let engine = ScriptedCBv2Engine(
                         script: .manual,
                         kvBytesCapacity: grant,
                         // Paged slot: pool capped below the logical grant.
@@ -323,12 +323,12 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gemma-4-26b-qat-4bit",
             modelType: "gemma4",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingA)
         await loop.installModelSlotForTesting(
             modelId: "gemma-4-26b-qat-4bit",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeA,
             sizing: sizingA,
             modelType: "gemma4")
@@ -348,12 +348,12 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingB)
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")
@@ -430,7 +430,7 @@ struct EngineV2ReslicingWiringTests {
         let runtime = EngineV2Runtime()
         let recorder = ProductionGrantRecorder()
         let (bridgeA, engineA, _) = try await productionBuildAndInstallSlotA(loop, runtime: runtime, recorder: recorder,
-        engines: { _, grant in ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: grant) })
+        engines: { _, grant in ScriptedCBv2Engine(script: .manual, kvBytesCapacity: grant) })
         let sizingB = productionMakeSizing(weightsGiB: 12, kvRate: 24_576, maxContext: 131_072)
 
         // Capture the production path's actual two-slot grants. Pure policy
@@ -440,12 +440,12 @@ struct EngineV2ReslicingWiringTests {
             modelId: "gpt-oss-20b",
             modelType: "gpt_oss",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             sizing: sizingB)
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: probeB,
             sizing: sizingB,
             modelType: "gpt_oss")
@@ -472,17 +472,17 @@ struct EngineV2ReslicingWiringTests {
 
         // The load completes its stretch: B's engine + slot installed,
         // gate released.
-        let engineB = ProductionWiringScriptedEngine(script: .manual, kvBytesCapacity: targetB)
+        let engineB = ScriptedCBv2Engine(script: .manual, kvBytesCapacity: targetB)
         let bridgeB = EngineV2Bridge(
             engine: engineB,
             modelId: "gpt-oss-20b",
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             eosTokenIds: [2])
         await runtime.register(modelId: "gpt-oss-20b", bridge: bridgeB)
         await loop.installModelSlotForTesting(
             modelId: "gpt-oss-20b",
             container: productionMakeStubContainer(),
-            tokenizer: TokenizerHandle(ProductionWiringStubTokenizer()),
+            tokenizer: TokenizerHandle(productionWiringStubTokenizer()),
             engineV2: bridgeB,
             sizing: sizingB,
             modelType: "gpt_oss")

@@ -127,7 +127,7 @@ func TestCacheEligibilityHeartbeatLifecycleThroughProviderWebSocket(t *testing.T
 	// An old-provider-style omission does not recreate or fabricate status.
 	p := reg.GetProvider(fixture.providerID)
 	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
-		Type: protocol.TypeHeartbeat,
+		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
 		Stats:  protocol.HeartbeatStats{RequestsServed: 1},
 	})
@@ -181,7 +181,7 @@ func TestStructuralOptionalCacheTelemetryDoesNotCloseRegistration(t *testing.T) 
 
 	// A subsequent heartbeat proves the provider socket remained usable.
 	writeProviderJSON(t, ctx, conn, protocol.HeartbeatMessage{
-		Type: protocol.TypeHeartbeat,
+		Type:   protocol.TypeHeartbeat,
 		Status: "idle",
 		Stats:  protocol.HeartbeatStats{RequestsServed: 1},
 	})

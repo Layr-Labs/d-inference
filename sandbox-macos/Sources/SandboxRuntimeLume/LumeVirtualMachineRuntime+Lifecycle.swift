@@ -6,17 +6,12 @@ extension LumeVirtualMachineRuntime {
     public func create(
         _ specification: SandboxVirtualMachineSpecification
     ) async throws {
-        try await create(
-            specification,
-            scope: nil,
-            now: Date()
-        )
+        try await create(specification, scope: nil)
     }
 
     func create(
         _ specification: SandboxVirtualMachineSpecification,
-        scope: SandboxOperationScope?,
-        now: Date
+        scope: SandboxOperationScope?
     ) async throws {
         let operationLock = try beginOperation(
             "create",
@@ -31,8 +26,7 @@ extension LumeVirtualMachineRuntime {
             scope: scope,
             operation: .create,
             virtualMachineName: specification.name,
-            resources: specification.resources,
-            now: now
+            resources: specification.resources
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
         _ = try await validateRuntime()
@@ -156,13 +150,12 @@ extension LumeVirtualMachineRuntime {
     }
 
     public func start(name: String) async throws {
-        try await start(name: name, scope: nil, now: Date())
+        try await start(name: name, scope: nil)
     }
 
     func start(
         name: String,
-        scope: SandboxOperationScope?,
-        now: Date
+        scope: SandboxOperationScope?
     ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
@@ -176,8 +169,7 @@ extension LumeVirtualMachineRuntime {
         let leaseAuthorization = try authorize(
             scope: scope,
             operation: .start,
-            virtualMachineName: name,
-            now: now
+            virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
         guard let existing = try await inspect(name: name) else {
@@ -251,13 +243,12 @@ extension LumeVirtualMachineRuntime {
     }
 
     public func stop(name: String) async throws {
-        try await stop(name: name, scope: nil, now: Date())
+        try await stop(name: name, scope: nil)
     }
 
     func stop(
         name: String,
-        scope: SandboxOperationScope?,
-        now: Date
+        scope: SandboxOperationScope?
     ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
@@ -270,21 +261,19 @@ extension LumeVirtualMachineRuntime {
         let leaseAuthorization = try authorize(
             scope: scope,
             operation: .stop,
-            virtualMachineName: name,
-            now: now
+            virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
         try await stopWithoutOperationFence(name: name)
     }
 
     public func delete(name: String) async throws {
-        try await delete(name: name, scope: nil, now: Date())
+        try await delete(name: name, scope: nil)
     }
 
     func delete(
         name: String,
-        scope: SandboxOperationScope?,
-        now: Date
+        scope: SandboxOperationScope?
     ) async throws {
         guard SandboxVirtualMachineNamePolicy.isValid(name) else {
             throw SandboxRuntimeError.invalidName
@@ -298,8 +287,7 @@ extension LumeVirtualMachineRuntime {
         let leaseAuthorization = try authorize(
             scope: scope,
             operation: .delete,
-            virtualMachineName: name,
-            now: now
+            virtualMachineName: name
         )
         defer { withExtendedLifetime(leaseAuthorization) {} }
         guard let existing = try await inspect(name: name) else {

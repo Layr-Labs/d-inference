@@ -23,65 +23,56 @@ public actor LumeLeaseFencedVirtualMachineRuntime {
 
     public func inspect(
         scope: SandboxOperationScope,
-        name: String,
-        now: Date = Date()
+        name: String
     ) async throws -> SandboxVirtualMachineRecord? {
         _ = try capacityArbiter.authorize(
             scope: scope,
             virtualMachineName: name,
-            operation: .inspect,
-            now: now
+            operation: .inspect
         )
         return try await runtime.inspect(name: name)
     }
 
     public func create(
         scope: SandboxOperationScope,
-        specification: SandboxVirtualMachineSpecification,
-        now: Date = Date()
+        specification: SandboxVirtualMachineSpecification
     ) async throws {
         try await runtime.create(
             specification,
-            scope: scope,
-            now: now
+            scope: scope
         )
     }
 
     public func start(
         scope: SandboxOperationScope,
-        name: String,
-        now: Date = Date()
+        name: String
     ) async throws {
-        try await runtime.start(name: name, scope: scope, now: now)
+        try await runtime.start(name: name, scope: scope)
     }
 
     public func execute(
         scope: SandboxOperationScope,
         name: String,
-        request: SandboxGuestCommandRequest,
-        now: Date = Date()
+        request: SandboxGuestCommandRequest
     ) async throws -> SandboxGuestCommandResult {
         try await runtime.execute(
             name: name,
             scope: scope,
-            request: request,
-            now: now
+            request: request
         )
     }
 
     public func stop(
         scope: SandboxOperationScope,
-        name: String,
-        now: Date = Date()
+        name: String
     ) async throws {
-        try await runtime.stop(name: name, scope: scope, now: now)
+        try await runtime.stop(name: name, scope: scope)
     }
 
     public func delete(
         scope: SandboxOperationScope,
-        name: String,
-        now: Date = Date()
+        name: String
     ) async throws {
-        try await runtime.delete(name: name, scope: scope, now: now)
+        try await runtime.delete(name: name, scope: scope)
     }
 }

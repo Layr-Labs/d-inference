@@ -4,15 +4,29 @@ import SandboxCore
 public struct SandboxHostCapacityArbiter: Sendable {
     private let store: SandboxCapacityStateStore
     private let policy: SandboxCapacityPolicy
+    private let currentDate: @Sendable () -> Date
 
     public init(
         stateDirectory: URL,
         policy: SandboxCapacityPolicy
     ) throws {
+        try self.init(
+            stateDirectory: stateDirectory,
+            policy: policy,
+            currentDate: { Date() }
+        )
+    }
+
+    package init(
+        stateDirectory: URL,
+        policy: SandboxCapacityPolicy,
+        currentDate: @escaping @Sendable () -> Date
+    ) throws {
         self.store = try SandboxCapacityStateStore(
             stateDirectory: stateDirectory
         )
         self.policy = policy
+        self.currentDate = currentDate
     }
 
     @discardableResult
@@ -34,45 +48,47 @@ public struct SandboxHostCapacityArbiter: Sendable {
         scope: SandboxOperationScope,
         virtualMachineName: String,
         operation: SandboxLeaseOperation,
-        resources: SandboxResourceSpecification? = nil,
-        now: Date = Date()
+        resources: SandboxResourceSpecification? = nil
     ) throws -> SandboxCapacityLease {
         guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
         }
-        let state = try store.read()
-        let index = try Self.leaseIndex(for: scope, in: state.leases)
-        let lease = state.leases[index]
-        guard lease.scope.fencingToken == scope.fencingToken else {
-            throw SandboxCapacityError.staleFencingToken
-        }
-        guard lease.virtualMachineName == virtualMachineName else {
-            throw SandboxCapacityError.leaseVirtualMachineMismatch
-        }
-        if let resources {
-            guard lease.cpuCount == resources.cpuCount,
-                  lease.memoryBytes == resources.memoryBytes
-            else {
-                throw SandboxCapacityError.leaseResourceMismatch
+        return try store.update { state in
+            let now = currentDate()
+            let index = try Self.leaseIndex(for: scope, in: state.leases)
+            let lease = state.leases[index]
+            guard lease.scope.fencingToken == scope.fencingToken else {
+                throw SandboxCapacityError.staleFencingToken
             }
-        }
-        if operation.requiresActiveLease {
-            guard state.mode == .sandboxDedicated else {
-                throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
+            guard lease.virtualMachineName == virtualMachineName else {
+                throw SandboxCapacityError.leaseVirtualMachineMismatch
             }
-            guard lease.expiresAt > now else {
-                throw SandboxCapacityError.leaseExpired
+            if let resources {
+                guard lease.cpuCount == resources.cpuCount,
+                      lease.memoryBytes == resources.memoryBytes
+                else {
+                    throw SandboxCapacityError.leaseResourceMismatch
+                }
             }
+            if operation.requiresActiveLease {
+                guard state.mode == .sandboxDedicated else {
+                    throw SandboxCapacityError.hostNotAcceptingSandboxes(
+                        state.mode
+                    )
+                }
+                guard lease.expiresAt > now else {
+                    throw SandboxCapacityError.leaseExpired
+                }
+            }
+            return lease
         }
-        return lease
     }
 
     package func authorizeMutation(
         scope: SandboxOperationScope,
         virtualMachineName: String,
         operation: SandboxLeaseOperation,
-        resources: SandboxResourceSpecification? = nil,
-        now: Date = Date()
+        resources: SandboxResourceSpecification? = nil
     ) throws -> SandboxLeaseMutationAuthorization {
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: scope.sandboxID
@@ -81,8 +97,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
             scope: scope,
             virtualMachineName: virtualMachineName,
             operation: operation,
-            resources: resources,
-            now: now
+            resources: resources
         )
         return SandboxLeaseMutationAuthorization(
             operationLock: operationLock
@@ -114,8 +129,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         generation: SandboxGeneration,
         virtualMachineName: String,
         resources: SandboxResourceSpecification,
-        expiresAt: Date,
-        now: Date = Date()
+        expiresAt: Date
     ) throws -> SandboxCapacityLease {
         guard SandboxVirtualMachineNamePolicy.isValid(virtualMachineName) else {
             throw SandboxCapacityError.invalidVirtualMachineName
@@ -125,6 +139,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
         )
         defer { withExtendedLifetime(operationLock) {} }
         return try store.update { state in
+            let now = currentDate()
             guard state.mode == .sandboxDedicated else {
                 throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
             }
@@ -209,14 +224,14 @@ public struct SandboxHostCapacityArbiter: Sendable {
 
     public func renew(
         scope: SandboxOperationScope,
-        expiresAt: Date,
-        now: Date = Date()
+        expiresAt: Date
     ) throws -> SandboxCapacityLease {
         let operationLock = try store.acquireLeaseOperationLock(
             sandboxID: scope.sandboxID
         )
         defer { withExtendedLifetime(operationLock) {} }
         return try store.update { state in
+            let now = currentDate()
             guard state.mode == .sandboxDedicated else {
                 throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
             }
@@ -274,10 +289,11 @@ public struct SandboxHostCapacityArbiter: Sendable {
         }
     }
 
-    public func expiredLeases(
-        at date: Date = Date()
-    ) throws -> [SandboxCapacityLease] {
-        try snapshot().leases.filter { $0.expiresAt <= date }
+    public func expiredLeases() throws -> [SandboxCapacityLease] {
+        try store.update { state in
+            let now = currentDate()
+            return state.leases.filter { $0.expiresAt <= now }
+        }
     }
 
     private func validateDeadline(_ expiresAt: Date, now: Date) throws {

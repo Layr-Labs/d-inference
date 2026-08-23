@@ -40,10 +40,14 @@ final class HostCapacityArbiterTests: XCTestCase {
     func testEnforcesTwoGuestAndAggregateResourceCapacity() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
-        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
         _ = try arbiter.initialize()
         let resources = try makeResources()
-        let now = Date(timeIntervalSince1970: 2_000_000_000)
         let firstID = SandboxID()
 
         assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
@@ -52,8 +56,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                 generation: try generation(1),
                 virtualMachineName: "sandbox-a",
                 resources: resources,
-                expiresAt: now.addingTimeInterval(120),
-                now: now
+                expiresAt: now.addingTimeInterval(120)
             )
         }
         _ = try arbiter.setMode(.sandboxDedicated)
@@ -62,17 +65,16 @@ final class HostCapacityArbiterTests: XCTestCase {
             generation: try generation(1),
             virtualMachineName: "sandbox-a",
             resources: resources,
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
+        XCTAssertEqual(first.issuedAt, now)
         XCTAssertEqual(
             try arbiter.reserve(
                 sandboxID: firstID,
                 generation: try generation(1),
                 virtualMachineName: "sandbox-a",
                 resources: resources,
-                expiresAt: now.addingTimeInterval(180),
-                now: now
+                expiresAt: now.addingTimeInterval(180)
             ),
             first,
             "reservation retries must return the original lease"
@@ -83,8 +85,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                 generation: try generation(1),
                 virtualMachineName: "sandbox-a",
                 resources: resources,
-                expiresAt: now.addingTimeInterval(120),
-                now: now
+                expiresAt: now.addingTimeInterval(120)
             )
         }
         assertCapacityError(.staleFencingToken) {
@@ -93,8 +94,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                 generation: try generation(1),
                 virtualMachineName: "sandbox-a",
                 resources: try makeResources(cpuCount: 2),
-                expiresAt: now.addingTimeInterval(120),
-                now: now
+                expiresAt: now.addingTimeInterval(120)
             )
         }
         _ = try arbiter.reserve(
@@ -102,8 +102,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             generation: try generation(1),
             virtualMachineName: "sandbox-b",
             resources: resources,
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
         assertCapacityError(.capacityExhausted) {
             _ = try arbiter.reserve(
@@ -111,12 +110,12 @@ final class HostCapacityArbiterTests: XCTestCase {
                 generation: try generation(1),
                 virtualMachineName: "sandbox-c",
                 resources: resources,
-                expiresAt: now.addingTimeInterval(120),
-                now: now
+                expiresAt: now.addingTimeInterval(120)
             )
         }
+        clock.set(now.addingTimeInterval(121))
         XCTAssertEqual(
-            try arbiter.expiredLeases(at: now.addingTimeInterval(121)).count,
+            try arbiter.expiredLeases().count,
             2
         )
         XCTAssertEqual(
@@ -140,8 +139,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             generation: firstGeneration,
             virtualMachineName: "sandbox-fenced",
             resources: try makeResources(),
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
 
         assertCapacityError(.activeSandboxGeneration(
@@ -153,8 +151,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                 generation: secondGeneration,
                 virtualMachineName: "sandbox-replacement",
                 resources: try makeResources(),
-                expiresAt: now.addingTimeInterval(120),
-                now: now
+                expiresAt: now.addingTimeInterval(120)
             )
         }
         let unissuedScope = SandboxOperationScope(
@@ -165,14 +162,12 @@ final class HostCapacityArbiterTests: XCTestCase {
         assertCapacityError(.staleFencingToken) {
             _ = try arbiter.renew(
                 scope: unissuedScope,
-                expiresAt: now.addingTimeInterval(180),
-                now: now
+                expiresAt: now.addingTimeInterval(180)
             )
         }
         let renewed = try arbiter.renew(
             scope: first.scope,
-            expiresAt: now.addingTimeInterval(180),
-            now: now
+            expiresAt: now.addingTimeInterval(180)
         )
         XCTAssertEqual(renewed.expiresAt, now.addingTimeInterval(180))
         XCTAssertGreaterThan(
@@ -182,8 +177,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         assertCapacityError(.invalidLeaseDeadline) {
             _ = try arbiter.renew(
                 scope: renewed.scope,
-                expiresAt: now.addingTimeInterval(170),
-                now: now
+                expiresAt: now.addingTimeInterval(170)
             )
         }
         assertCapacityError(.staleFencingToken) {
@@ -200,8 +194,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             generation: secondGeneration,
             virtualMachineName: "sandbox-replacement",
             resources: try makeResources(),
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
         XCTAssertGreaterThan(
             second.scope.fencingToken,
@@ -213,17 +206,20 @@ final class HostCapacityArbiterTests: XCTestCase {
     func testMutationAuthorizationBindsLeaseScopeNameResourcesAndLifetime() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
-        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
         try initializeDedicated(arbiter)
         let resources = try makeResources()
-        let now = Date(timeIntervalSince1970: 2_000_000_000)
         let lease = try arbiter.reserve(
             sandboxID: SandboxID(),
             generation: try generation(1),
             virtualMachineName: "sandbox-authorized",
             resources: resources,
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
 
         XCTAssertEqual(
@@ -231,8 +227,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
                 operation: .create,
-                resources: resources,
-                now: now
+                resources: resources
             ),
             lease
         )
@@ -240,8 +235,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             _ = try arbiter.authorize(
                 scope: lease.scope,
                 virtualMachineName: "sandbox-other",
-                operation: .start,
-                now: now
+                operation: .start
             )
         }
         assertCapacityError(.leaseResourceMismatch) {
@@ -249,8 +243,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
                 operation: .create,
-                resources: try makeResources(cpuCount: 2),
-                now: now
+                resources: try makeResources(cpuCount: 2)
             )
         }
         let staleScope = SandboxOperationScope(
@@ -262,24 +255,22 @@ final class HostCapacityArbiterTests: XCTestCase {
             _ = try arbiter.authorize(
                 scope: staleScope,
                 virtualMachineName: lease.virtualMachineName,
-                operation: .execute,
-                now: now
+                operation: .execute
             )
         }
+        clock.set(lease.expiresAt)
         assertCapacityError(.leaseExpired) {
             _ = try arbiter.authorize(
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
-                operation: .execute,
-                now: lease.expiresAt
+                operation: .execute
             )
         }
         XCTAssertEqual(
             try arbiter.authorize(
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
-                operation: .stop,
-                now: lease.expiresAt
+                operation: .stop
             ),
             lease,
             "expired leases must retain cleanup authority"
@@ -290,16 +281,14 @@ final class HostCapacityArbiterTests: XCTestCase {
             _ = try arbiter.authorize(
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
-                operation: .inspect,
-                now: now
+                operation: .inspect
             )
         }
         XCTAssertEqual(
             try arbiter.authorize(
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
-                operation: .delete,
-                now: lease.expiresAt
+                operation: .delete
             ),
             lease,
             "draining hosts must retain cleanup authority"
@@ -327,8 +316,7 @@ final class HostCapacityArbiterTests: XCTestCase {
                             generation: generation,
                             virtualMachineName: "sandbox-concurrent-\(index)",
                             resources: resources,
-                            expiresAt: now.addingTimeInterval(120),
-                            now: now
+                            expiresAt: now.addingTimeInterval(120)
                         )
                         return .reserved
                     } catch let error as SandboxCapacityError {
@@ -362,23 +350,26 @@ final class HostCapacityArbiterTests: XCTestCase {
     func testRenewRejectsExpiredLeaseAndDrainingHost() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
-        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-        try initializeDedicated(arbiter)
         let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
+        try initializeDedicated(arbiter)
         let lease = try arbiter.reserve(
             sandboxID: SandboxID(),
             generation: try generation(1),
             virtualMachineName: "sandbox-renewal",
             resources: try makeResources(),
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
 
+        clock.set(now.addingTimeInterval(121))
         assertCapacityError(.leaseExpired) {
             _ = try arbiter.renew(
                 scope: lease.scope,
-                expiresAt: now.addingTimeInterval(240),
-                now: now.addingTimeInterval(121)
+                expiresAt: now.addingTimeInterval(240)
             )
         }
         assertCapacityError(.leaseExpired) {
@@ -387,16 +378,14 @@ final class HostCapacityArbiterTests: XCTestCase {
                 generation: lease.scope.generation,
                 virtualMachineName: lease.virtualMachineName,
                 resources: try makeResources(),
-                expiresAt: now.addingTimeInterval(240),
-                now: now.addingTimeInterval(121)
+                expiresAt: now.addingTimeInterval(240)
             )
         }
         _ = try arbiter.setMode(.draining)
         assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
             _ = try arbiter.renew(
                 scope: lease.scope,
-                expiresAt: now.addingTimeInterval(180),
-                now: now.addingTimeInterval(1)
+                expiresAt: now.addingTimeInterval(180)
             )
         }
     }
@@ -404,23 +393,25 @@ final class HostCapacityArbiterTests: XCTestCase {
     func testRenewalWaitsForAuthorizedMutationToReleaseFence() async throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
-        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-        try initializeDedicated(arbiter)
         let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
+        try initializeDedicated(arbiter)
         let lease = try arbiter.reserve(
             sandboxID: SandboxID(),
             generation: try generation(1),
             virtualMachineName: "sandbox-linearized",
             resources: try makeResources(),
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
         var authorization: SandboxLeaseMutationAuthorization? =
             try arbiter.authorizeMutation(
                 scope: lease.scope,
                 virtualMachineName: lease.virtualMachineName,
-                operation: .execute,
-                now: now
+                operation: .execute
             )
         let status = RenewalStatus()
         let renewal = Task.detached {
@@ -428,8 +419,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             do {
                 let renewed = try arbiter.renew(
                     scope: lease.scope,
-                    expiresAt: now.addingTimeInterval(180),
-                    now: now
+                    expiresAt: now.addingTimeInterval(180)
                 )
                 await status.markCompleted()
                 return renewed
@@ -458,6 +448,59 @@ final class HostCapacityArbiterTests: XCTestCase {
         )
         let completedAfterRelease = await status.completed
         XCTAssertTrue(completedAfterRelease)
+    }
+
+    func testBlockedRenewalSamplesAuthoritativeTimeAfterFence() async throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let clock = TestWallClock(now)
+        let arbiter = try makeArbiter(
+            stateDirectory: stateDirectory,
+            clock: clock
+        )
+        try initializeDedicated(arbiter)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-expiring-fence",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120)
+        )
+        var authorization: SandboxLeaseMutationAuthorization? =
+            try arbiter.authorizeMutation(
+                scope: lease.scope,
+                virtualMachineName: lease.virtualMachineName,
+                operation: .execute
+            )
+        let status = RenewalStatus()
+        let renewal = Task.detached {
+            await status.markStarted()
+            return try arbiter.renew(
+                scope: lease.scope,
+                expiresAt: now.addingTimeInterval(180)
+            )
+        }
+
+        while !(await status.started) {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        clock.set(lease.expiresAt)
+        XCTAssertNotNil(authorization)
+        authorization = nil
+
+        do {
+            _ = try await renewal.value
+            XCTFail("renewal blocked past expiry must fail")
+        } catch let error as SandboxCapacityError {
+            XCTAssertEqual(error, .leaseExpired)
+        }
+        XCTAssertEqual(
+            try arbiter.snapshot().leases.first,
+            lease,
+            "failed renewal must not rotate the fencing token or deadline"
+        )
     }
 
     func testRejectsInsecureAndCorruptPersistentState() throws {
@@ -503,8 +546,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             generation: try generation(1),
             virtualMachineName: "sandbox-active",
             resources: try makeResources(),
-            expiresAt: now.addingTimeInterval(120),
-            now: now
+            expiresAt: now.addingTimeInterval(120)
         )
 
         let stateURL = stateDirectory.appendingPathComponent("capacity.json")
@@ -531,15 +573,20 @@ final class HostCapacityArbiterTests: XCTestCase {
     private func makeArbiter(
         stateDirectory: URL,
         maximumCPUCount: UInt16 = 8,
-        maximumMemoryGiB: UInt64 = 16
+        maximumMemoryGiB: UInt64 = 16,
+        clock: TestWallClock? = nil
     ) throws -> SandboxHostCapacityArbiter {
-        try SandboxHostCapacityArbiter(
+        let clock = clock ?? TestWallClock(
+            Date(timeIntervalSince1970: 2_000_000_000)
+        )
+        return try SandboxHostCapacityArbiter(
             stateDirectory: stateDirectory,
             policy: SandboxCapacityPolicy(
                 maximumReservedCPUCount: maximumCPUCount,
                 maximumReservedMemoryBytes: maximumMemoryGiB
                     * SandboxResourcePolicy.gibibyte
-            )
+            ),
+            currentDate: { clock.now() }
         )
     }
 
@@ -614,5 +661,26 @@ private actor RenewalStatus {
 
     func markCompleted() {
         completed = true
+    }
+}
+
+private final class TestWallClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) {
+        self.value = value
+    }
+
+    func now() -> Date {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func set(_ value: Date) {
+        lock.lock()
+        self.value = value
+        lock.unlock()
     }
 }

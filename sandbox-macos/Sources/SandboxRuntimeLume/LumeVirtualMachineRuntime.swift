@@ -98,8 +98,7 @@ package actor LumeVirtualMachineRuntime:
         scope: SandboxOperationScope?,
         operation: SandboxLeaseOperation,
         virtualMachineName: String,
-        resources: SandboxResourceSpecification? = nil,
-        now: Date
+        resources: SandboxResourceSpecification? = nil
     ) throws -> SandboxLeaseMutationAuthorization? {
         if let capacityArbiter {
             guard let scope else {
@@ -111,8 +110,7 @@ package actor LumeVirtualMachineRuntime:
                 scope: scope,
                 virtualMachineName: virtualMachineName,
                 operation: operation,
-                resources: resources,
-                now: now
+                resources: resources
             )
         }
         if scope != nil {

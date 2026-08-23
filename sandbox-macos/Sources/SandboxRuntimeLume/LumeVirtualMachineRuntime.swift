@@ -7,6 +7,7 @@ public actor LumeVirtualMachineRuntime:
     SandboxGuestCommandRuntime
 {
     let configuration: LumeRuntimeConfiguration
+    let workspace: LumeRuntimeWorkspace
     let processRunner: SandboxProcessRunner
     var validatedRuntime: ValidatedLumeRuntime?
     var activeOperations: [String: String] = [:]
@@ -16,6 +17,9 @@ public actor LumeVirtualMachineRuntime:
         processRunner: SandboxProcessRunner = SandboxProcessRunner()
     ) {
         self.configuration = configuration
+        self.workspace = LumeRuntimeWorkspace(
+            storageDirectory: configuration.storageDirectory
+        )
         self.processRunner = processRunner
     }
 
@@ -69,10 +73,7 @@ public actor LumeVirtualMachineRuntime:
                 "--timeout", String(request.timeoutSeconds),
                 encodedCommand,
             ],
-            environment: [
-                "LUME_TELEMETRY_ENABLED": "false",
-                "NO_COLOR": "1",
-            ],
+            environment: workspace.environment,
             timeoutSeconds: request.timeoutSeconds + 10
         )
         guard !result.standardOutputTruncated,
@@ -90,6 +91,7 @@ public actor LumeVirtualMachineRuntime:
     }
 
     func validateRuntime() async throws -> String {
+        try workspace.prepare()
         if let validatedRuntime {
             try LumeRuntimeProvenanceValidator.requireUnchanged(
                 validatedRuntime,
@@ -121,24 +123,7 @@ public actor LumeVirtualMachineRuntime:
     }
 
     func ensureStorageDirectory() throws {
-        var isDirectory: ObjCBool = false
-        let exists = FileManager.default.fileExists(
-            atPath: configuration.storageDirectory.path,
-            isDirectory: &isDirectory
-        )
-        if exists {
-            guard isDirectory.boolValue else {
-                throw SandboxRuntimeError.unsupported(
-                    "Lume storage path is not a directory"
-                )
-            }
-            return
-        }
-        try FileManager.default.createDirectory(
-            at: configuration.storageDirectory,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
+        try workspace.prepare()
     }
 
     func storageArguments(_ arguments: [String]) -> [String] {
@@ -148,15 +133,13 @@ public actor LumeVirtualMachineRuntime:
     func run(
         arguments: [String],
         timeoutSeconds: UInt32,
-        operation: String
+        operation: String,
+        environment: [String: String]? = nil
     ) async throws -> SandboxProcessResult {
         let result = try await processRunner.run(
             executable: configuration.executable,
             arguments: arguments,
-            environment: [
-                "LUME_TELEMETRY_ENABLED": "false",
-                "NO_COLOR": "1",
-            ],
+            environment: environment ?? workspace.environment,
             timeoutSeconds: timeoutSeconds
         )
         guard result.exitCode == 0 else {

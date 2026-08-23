@@ -19,6 +19,9 @@ extension LumeVirtualMachineRuntime {
             }
             return
         }
+        let creationWorkspace = try workspace.makeCreationWorkspace(
+            name: specification.name
+        )
 
         let arguments: [String]
         switch specification.imageSource {
@@ -56,7 +59,8 @@ extension LumeVirtualMachineRuntime {
             _ = try await run(
                 arguments: arguments,
                 timeoutSeconds: configuration.createTimeoutSeconds,
-                operation: "create"
+                operation: "create",
+                environment: creationWorkspace.environment
             )
             guard let created = try await inspect(name: specification.name),
                   created.state == .stopped,
@@ -69,7 +73,7 @@ extension LumeVirtualMachineRuntime {
         } catch {
             do {
                 try await cleanupFailedCreationIgnoringCancellation(
-                    name: specification.name
+                    workspace: creationWorkspace
                 )
             } catch let cleanupError {
                 throw SandboxRuntimeError.cleanupFailed(
@@ -79,6 +83,17 @@ extension LumeVirtualMachineRuntime {
                 )
             }
             throw error
+        }
+        do {
+            try await cleanupCreationScratchIgnoringCancellation(
+                workspace: creationWorkspace
+            )
+        } catch {
+            throw SandboxRuntimeError.cleanupFailed(
+                operation: "finish create \(specification.name)",
+                primary: "virtual machine creation completed",
+                cleanup: String(describing: error)
+            )
         }
     }
 
@@ -216,10 +231,19 @@ extension LumeVirtualMachineRuntime {
     }
 
     private func cleanupFailedCreationIgnoringCancellation(
-        name: String
+        workspace: LumeCreationWorkspace
     ) async throws {
         let cleanup = Task.detached {
-            try await self.removePartialVirtualMachine(name: name)
+            try await workspace.removeAllArtifacts()
+        }
+        try await cleanup.value
+    }
+
+    private func cleanupCreationScratchIgnoringCancellation(
+        workspace: LumeCreationWorkspace
+    ) async throws {
+        let cleanup = Task.detached {
+            try await workspace.removeScratch()
         }
         try await cleanup.value
     }
@@ -240,34 +264,6 @@ extension LumeVirtualMachineRuntime {
             name: name,
             timeoutSeconds: configuration.commandTimeoutSeconds
         )
-    }
-
-    private func removePartialVirtualMachine(name: String) async throws {
-        guard var existing = try await inspect(name: name) else {
-            return
-        }
-        if existing.state != .stopped && existing.state != .failed {
-            try await stopWithoutOperationFence(name: name)
-            guard let stopped = try await inspect(name: name) else {
-                return
-            }
-            existing = stopped
-        }
-        guard existing.state == .stopped || existing.state == .failed else {
-            throw SandboxRuntimeError.unsupported(
-                "partial VM \(name) did not become deletable"
-            )
-        }
-        _ = try await run(
-            arguments: storageArguments(["delete", name, "--force"]),
-            timeoutSeconds: configuration.commandTimeoutSeconds,
-            operation: "delete partial VM"
-        )
-        guard try await inspect(name: name) == nil else {
-            throw SandboxRuntimeError.malformedOutput(
-                "Lume cleanup completed but partial VM still exists"
-            )
-        }
     }
 
     private func waitForState(

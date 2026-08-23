@@ -1,8 +1,9 @@
 import CryptoKit
 import Darwin
 import Foundation
+import SandboxCore
 import SandboxRuntime
-import SandboxRuntimeLume
+@testable import SandboxRuntimeLume
 import XCTest
 
 final class LumeRuntimeFailureTests: XCTestCase {
@@ -98,6 +99,58 @@ final class LumeRuntimeFailureTests: XCTestCase {
             .stopped
         )
     }
+
+    func testCancelledCreateRemovesNamedAndTemporaryArtifacts() async throws {
+        let fixture = try FakeLumeFixture(
+            initialState: nil,
+            behavior: "block-create"
+        )
+        defer { fixture.remove() }
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+        let specification = try SandboxVirtualMachineSpecification(
+            name: fixture.virtualMachineName,
+            resources: SandboxResourceSpecification.macOSSmall(),
+            imageSource: .restoreImage(
+                url: fixture.restoreImage,
+                unattendedPreset: "tahoe"
+            ),
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+        let create = Task {
+            try await runtime.create(specification)
+        }
+        try await fixture.waitForCreateToStart()
+        create.cancel()
+
+        do {
+            try await create.value
+            XCTFail("cancelled create should throw")
+        } catch is CancellationError {
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: fixture.storage
+                    .appendingPathComponent(fixture.virtualMachineName)
+                    .path
+            )
+        )
+        let operations = fixture.storage
+            .appendingPathComponent(
+                LumeRuntimeWorkspace.supportDirectoryName,
+                isDirectory: true
+            )
+            .appendingPathComponent(
+                LumeRuntimeWorkspace.operationsDirectoryName,
+                isDirectory: true
+            )
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: operations.path),
+            []
+        )
+    }
 }
 
 private struct FakeLumeFixture {
@@ -105,9 +158,16 @@ private struct FakeLumeFixture {
     let executable: URL
     let storage: URL
     let state: URL
+    let behavior: URL
+    let createStarted: URL
+    let restoreImage: URL
     let virtualMachineName = "sandbox-failure-test"
 
-    init(writeProvenance: Bool = true) throws {
+    init(
+        writeProvenance: Bool = true,
+        initialState: String? = "stopped",
+        behavior: String = "normal"
+    ) throws {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "darkbloom-fake-lume-\(UUID().uuidString)",
             isDirectory: true
@@ -115,6 +175,9 @@ private struct FakeLumeFixture {
         executable = directory.appendingPathComponent("lume")
         storage = directory.appendingPathComponent("vms", isDirectory: true)
         state = directory.appendingPathComponent("state")
+        self.behavior = directory.appendingPathComponent("behavior")
+        createStarted = directory.appendingPathComponent("create-started")
+        restoreImage = directory.appendingPathComponent("restore.ipsw")
         try FileManager.default.createDirectory(
             at: directory,
             withIntermediateDirectories: false,
@@ -125,7 +188,18 @@ private struct FakeLumeFixture {
             withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700]
         )
-        try Data("stopped\n".utf8).write(to: state)
+        if let initialState {
+            try Data("\(initialState)\n".utf8).write(to: state)
+            try FileManager.default.createDirectory(
+                at: storage.appendingPathComponent(
+                    virtualMachineName,
+                    isDirectory: true
+                ),
+                withIntermediateDirectories: false
+            )
+        }
+        try Data("\(behavior)\n".utf8).write(to: self.behavior)
+        try Data().write(to: restoreImage)
         try Data(Self.script.utf8).write(to: executable)
         guard chmod(executable.path, 0o755) == 0 else {
             throw POSIXError(.EACCES)
@@ -165,6 +239,18 @@ private struct FakeLumeFixture {
         throw FakeLumeFixtureError.stateTimeout(expected)
     }
 
+    func waitForCreateToStart() async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        repeat {
+            if FileManager.default.fileExists(atPath: createStarted.path) {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(25))
+        } while clock.now < deadline
+        throw FakeLumeFixtureError.createStartTimeout
+    }
+
     func remove() {
         try? FileManager.default.removeItem(at: directory)
     }
@@ -202,13 +288,31 @@ private struct FakeLumeFixture {
     set -eu
     root="$(CDPATH= cd -- "$(dirname "$0")" && pwd)"
     state_file="$root/state"
-    state="$(tr -d '\\n' < "$state_file")"
+    behavior="$(tr -d '\\n' < "$root/behavior")"
     command="${1:-}"
     case "$command" in
       --version)
         printf '%s\\n' "0.5.3"
         ;;
       ls)
+        storage=""
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --storage)
+              storage="$2"
+              shift 2
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        if [ ! -f "$state_file" ] || [ ! -d "$storage/sandbox-failure-test" ]; then
+          printf '%s\\n' '[]'
+          exit 0
+        fi
+        state="$(tr -d '\\n' < "$state_file")"
         ready=false
         if [ "$state" = "ready" ]; then
           ready=true
@@ -224,7 +328,49 @@ private struct FakeLumeFixture {
       stop)
         printf '%s\\n' "stopped" > "$state_file"
         ;;
+      create)
+        name="$2"
+        shift 2
+        storage=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --storage)
+              storage="$2"
+              shift 2
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        test -n "$storage"
+        mkdir -p "$storage/$name"
+        printf '%s\\n' "provisioning" > "$state_file"
+        operation_root="$(dirname "${XDG_CONFIG_HOME:?}")"
+        mkdir -p "$operation_root/temporary-vms/fake-install"
+        : > "$root/create-started"
+        if [ "$behavior" = "block-create" ]; then
+          while :; do :; done
+        fi
+        rm -rf "$operation_root/temporary-vms/fake-install"
+        printf '%s\\n' "stopped" > "$state_file"
+        ;;
       delete)
+        name="$2"
+        shift 2
+        storage=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --storage)
+              storage="$2"
+              shift 2
+              ;;
+            *)
+              shift
+              ;;
+          esac
+        done
+        rm -rf "$storage/$name"
         rm -f "$state_file"
         ;;
       *)
@@ -237,4 +383,5 @@ private struct FakeLumeFixture {
 
 private enum FakeLumeFixtureError: Error {
     case stateTimeout(String)
+    case createStartTimeout
 }

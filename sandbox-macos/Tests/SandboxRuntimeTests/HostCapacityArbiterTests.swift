@@ -143,16 +143,6 @@ final class HostCapacityArbiterTests: XCTestCase {
             expiresAt: now.addingTimeInterval(120),
             now: now
         )
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "A",
-            location: "HostCapacityArbiterTests.swift:146",
-            message: "reserved initial capacity lease",
-            data: [
-                "firstToken": first.scope.fencingToken.rawValue,
-            ]
-        )
-        // #endregion
 
         assertCapacityError(.activeSandboxGeneration(
             existing: firstGeneration,
@@ -167,14 +157,14 @@ final class HostCapacityArbiterTests: XCTestCase {
                 now: now
             )
         }
-        let staleScope = SandboxOperationScope(
+        let unissuedScope = SandboxOperationScope(
             sandboxID: sandboxID,
             generation: firstGeneration,
-            fencingToken: try fencingToken(first.scope.fencingToken.rawValue + 1)
+            fencingToken: try fencingToken(UInt64.max)
         )
         assertCapacityError(.staleFencingToken) {
             _ = try arbiter.renew(
-                scope: staleScope,
+                scope: unissuedScope,
                 expiresAt: now.addingTimeInterval(180),
                 now: now
             )
@@ -184,18 +174,6 @@ final class HostCapacityArbiterTests: XCTestCase {
             expiresAt: now.addingTimeInterval(180),
             now: now
         )
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "A",
-            location: "HostCapacityArbiterTests.swift:177",
-            message: "renewed capacity lease",
-            data: [
-                "firstToken": first.scope.fencingToken.rawValue,
-                "probeToken": staleScope.fencingToken.rawValue,
-                "renewedToken": renewed.scope.fencingToken.rawValue,
-            ]
-        )
-        // #endregion
         XCTAssertEqual(renewed.expiresAt, now.addingTimeInterval(180))
         XCTAssertGreaterThan(
             renewed.scope.fencingToken,
@@ -209,7 +187,7 @@ final class HostCapacityArbiterTests: XCTestCase {
             )
         }
         assertCapacityError(.staleFencingToken) {
-            try arbiter.release(scope: staleScope)
+            try arbiter.release(scope: unissuedScope)
         }
         assertCapacityError(.staleFencingToken) {
             try arbiter.release(scope: first.scope)
@@ -469,38 +447,4 @@ private enum ReservationOutcome: Equatable, Sendable {
     case reserved
     case exhausted
     case failed(String)
-}
-
-private func agentDebugLog(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: [String: Any]
-) {
-    let payload: [String: Any] = [
-        "hypothesisId": hypothesisId,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": Date().timeIntervalSince1970 * 1_000,
-    ]
-    guard let encoded = try? JSONSerialization.data(
-        withJSONObject: payload,
-        options: [.sortedKeys]
-    ) else {
-        return
-    }
-    let logURL = URL(fileURLWithPath: "/tmp/darkbloom-sandbox-debug.log")
-    if !FileManager.default.fileExists(atPath: logURL.path) {
-        _ = FileManager.default.createFile(
-            atPath: logURL.path,
-            contents: nil
-        )
-    }
-    guard let handle = try? FileHandle(forWritingTo: logURL) else {
-        return
-    }
-    defer { try? handle.close() }
-    try? handle.seekToEnd()
-    try? handle.write(contentsOf: encoded + Data([0x0A]))
 }

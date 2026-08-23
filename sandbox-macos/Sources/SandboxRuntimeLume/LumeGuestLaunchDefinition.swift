@@ -40,9 +40,9 @@ enum LumeGuestLaunchDefinition {
             terminal_path="${DARKBLOOM_RESULT_DIR}/command.terminal"
             timeout_path="${DARKBLOOM_RESULT_DIR}/command.timed-out"
             write_status() {
-              local status="$1"
+              local exit_code="$1"
               local temporary="${status_path}.partial.$$"
-              /usr/bin/printf '%d\\n' "$status" > "$temporary" || exit 70
+              /usr/bin/printf '%d\\n' "$exit_code" > "$temporary" || exit 70
               /bin/chmod 0600 "$temporary" || exit 70
               /bin/mv -f "$temporary" "$status_path" || exit 70
             }

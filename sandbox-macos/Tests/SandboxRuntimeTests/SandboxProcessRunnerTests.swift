@@ -30,6 +30,19 @@ final class SandboxProcessRunnerTests: XCTestCase {
         XCTAssertNotEqual(result.exitCode, 0)
     }
 
+    func testWaitsForNaturallyExitingDelayedProcess() async throws {
+        let started = ContinuousClock.now
+
+        let result = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/sleep"),
+            arguments: ["1"],
+            timeoutSeconds: 5
+        )
+
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertGreaterThanOrEqual(started.duration(to: .now), .milliseconds(900))
+    }
+
     func testBoundsCapturedOutput() async throws {
         let result = try await SandboxProcessRunner().run(
             executable: URL(fileURLWithPath: "/usr/bin/printf"),

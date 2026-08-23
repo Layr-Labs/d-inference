@@ -98,7 +98,7 @@ public struct SandboxProcessRunner: Sendable {
     ) async throws -> WaitOutcome {
         let outcome = await withTaskGroup(of: WaitOutcome.self) { group in
             group.addTask {
-                execution.waitUntilExit()
+                await execution.waitUntilExit()
                 return .exited
             }
             group.addTask {
@@ -135,6 +135,7 @@ public struct SandboxProcessRunner: Sendable {
 
 private final class ProcessExecution: @unchecked Sendable {
     private let process: Process
+    private let exitSignal = ProcessExitSignal()
     private let temporaryDirectory: URL
     private let standardOutputURL: URL
     private let standardErrorURL: URL
@@ -199,6 +200,9 @@ private final class ProcessExecution: @unchecked Sendable {
         process.standardInput = FileHandle.nullDevice
         process.standardOutput = standardOutputHandle
         process.standardError = standardErrorHandle
+        process.terminationHandler = { [exitSignal] _ in
+            exitSignal.signal()
+        }
     }
 
     var terminationStatus: Int32 {
@@ -212,8 +216,8 @@ private final class ProcessExecution: @unchecked Sendable {
         }
     }
 
-    func waitUntilExit() {
-        process.waitUntilExit()
+    func waitUntilExit() async {
+        await exitSignal.wait()
     }
 
     func requestStop() {
@@ -276,6 +280,36 @@ private final class ProcessExecution: @unchecked Sendable {
     struct BoundedData {
         let data: Data
         let truncated: Bool
+    }
+}
+
+private final class ProcessExitSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var exited = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let resumeImmediately = lock.withLock {
+                if exited {
+                    return true
+                }
+                self.continuation = continuation
+                return false
+            }
+            if resumeImmediately {
+                continuation.resume()
+            }
+        }
+    }
+
+    func signal() {
+        let continuation = lock.withLock {
+            exited = true
+            defer { self.continuation = nil }
+            return self.continuation
+        }
+        continuation?.resume()
     }
 }
 

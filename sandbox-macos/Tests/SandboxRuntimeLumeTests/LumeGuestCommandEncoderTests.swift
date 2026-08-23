@@ -111,7 +111,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(result.standardErrorTruncated)
     }
 
-    func testCaptureReadersDoNotRetainFIFOWriteGuards() throws {
+    func testCaptureProcessesUseCorrectFIFOGuardLifetimes() throws {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
             executable: "/usr/bin/true",
@@ -127,6 +127,43 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
         XCTAssertTrue(
             script.contains(#"< "$stderr_fifo" 7>&- 8>&- &"#)
+        )
+
+        let bootstrap = try XCTUnwrap(
+            script.range(
+                of: #"/bin/launchctl bootstrap "$launch_domain" "$job_plist""#
+            )
+        )
+        let completedBootout = try XCTUnwrap(
+            script.range(
+                of: """
+                    >/dev/null 2>&1 || exit 70
+                    job_loaded=false
+                    """
+            )
+        )
+        let parentGuardClosure = "exec 7>&-\nexec 8>&-"
+        XCTAssertNil(
+            script.range(
+                of: parentGuardClosure,
+                range: bootstrap.upperBound..<completedBootout.lowerBound
+            )
+        )
+        let guardsClosedAfterBootout = try XCTUnwrap(
+            script.range(
+                of: parentGuardClosure,
+                range: completedBootout.upperBound..<script.endIndex
+            )
+        )
+        let captureWait = try XCTUnwrap(
+            script.range(
+                of: #"wait "$stdout_capture_pid""#,
+                range: guardsClosedAfterBootout.upperBound..<script.endIndex
+            )
+        )
+        XCTAssertLessThan(
+            guardsClosedAfterBootout.lowerBound,
+            captureWait.lowerBound
         )
     }
 

@@ -174,13 +174,11 @@ enum LumeGuestCommandEncoder {
 
             /bin/launchctl bootstrap "$launch_domain" "$job_plist"
             bootstrap_status=$?
-            exec 7>&-
-            exec 8>&-
             #region agent log
             ( /usr/bin/printf \
             '{"hypothesisId":"B",'\
             '"location":"LumeGuestCommandEncoder.swift:171",'\
-            '"message":"launchd bootstrap returned and parent guards closed",'\
+            '"message":"launchd bootstrap returned with parent guards retained",'\
             '"data":{"status":%s},"timestamp":%s}\\n' "$bootstrap_status" \
             "$(/bin/date +%s)000" >> /tmp/darkbloom-sandbox-debug.log \
             ) 2>/dev/null || true
@@ -228,6 +226,8 @@ enum LumeGuestCommandEncoder {
             "$(/bin/date +%s)000" >> /tmp/darkbloom-sandbox-debug.log \
             ) 2>/dev/null || true
             #endregion
+            exec 7>&-
+            exec 8>&-
 
             wait "$stdout_capture_pid"
             stdout_capture_status=$?

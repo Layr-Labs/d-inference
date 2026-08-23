@@ -93,7 +93,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
     public func setMode(_ mode: SandboxHostMode) throws
         -> SandboxCapacitySnapshot
     {
-        try store.update { state in
+        return try store.update { state in
             guard Self.canTransition(
                 from: state.mode,
                 to: mode,
@@ -216,7 +216,7 @@ public struct SandboxHostCapacityArbiter: Sendable {
             sandboxID: scope.sandboxID
         )
         defer { withExtendedLifetime(operationLock) {} }
-        try store.update { state in
+        return try store.update { state in
             guard state.mode == .sandboxDedicated else {
                 throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
             }

@@ -434,10 +434,6 @@ private final class PendingDestination {
             && expected.st_size == actual.st_size
             && expected.st_flags == actual.st_flags
             && expected.st_gen == actual.st_gen
-            && expected.st_mtimespec.tv_sec == actual.st_mtimespec.tv_sec
-            && expected.st_mtimespec.tv_nsec == actual.st_mtimespec.tv_nsec
-            && expected.st_ctimespec.tv_sec == actual.st_ctimespec.tv_sec
-            && expected.st_ctimespec.tv_nsec == actual.st_ctimespec.tv_nsec
     }
 }
 

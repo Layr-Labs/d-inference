@@ -7,6 +7,7 @@ public enum SandboxSecureEnclaveError: Error, Equatable, Sendable, CustomStringC
     case accessControl(status: OSStatus)
     case create(status: OSStatus)
     case lookup(status: OSStatus)
+    case ambiguousKey(count: Int)
     case delete(status: OSStatus)
     case publicKey
     case wrap(status: OSStatus)
@@ -22,6 +23,8 @@ public enum SandboxSecureEnclaveError: Error, Equatable, Sendable, CustomStringC
             return "Secure Enclave key creation failed with OSStatus \(status)"
         case .lookup(let status):
             return "Secure Enclave key lookup failed with OSStatus \(status)"
+        case .ambiguousKey(let count):
+            return "Secure Enclave key lookup returned \(count) persistent identities"
         case .delete(let status):
             return "Secure Enclave key deletion failed with OSStatus \(status)"
         case .publicKey:
@@ -172,7 +175,20 @@ public final class SandboxSecureEnclaveKey: @unchecked Sendable {
         guard status == errSecSuccess, let result else {
             throw SandboxSecureEnclaveError.lookup(status: status)
         }
-        return SandboxSecureEnclaveKey(privateKey: result as! SecKey)
+        if CFGetTypeID(result) == SecKeyGetTypeID() {
+            return SandboxSecureEnclaveKey(
+                privateKey: unsafeBitCast(result, to: SecKey.self)
+            )
+        }
+        guard let matches = result as? [SecKey],
+              matches.count == 1,
+              let privateKey = matches.first
+        else {
+            throw SandboxSecureEnclaveError.ambiguousKey(
+                count: (result as? [Any])?.count ?? 0
+            )
+        }
+        return SandboxSecureEnclaveKey(privateKey: privateKey)
     }
 
     private static func createPersistent(
@@ -189,6 +205,7 @@ public final class SandboxSecureEnclaveKey: @unchecked Sendable {
                 kSecAttrIsPermanent as String: true,
                 kSecAttrAccessControl as String: accessControl,
                 kSecAttrLabel as String: label,
+                kSecAttrApplicationTag as String: applicationTag(label: label),
                 kSecAttrAccessGroup as String: accessGroup,
             ],
         ]
@@ -232,15 +249,20 @@ public final class SandboxSecureEnclaveKey: @unchecked Sendable {
             kSecAttrKeySizeInBits as String: 256,
             kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
             kSecAttrLabel as String: label,
+            kSecAttrApplicationTag as String: applicationTag(label: label),
             kSecAttrAccessGroup as String: accessGroup,
             kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave,
             kSecUseDataProtectionKeychain as String: true,
         ]
         if returnReference {
             query[kSecReturnRef as String] = true
-            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            query[kSecMatchLimit as String] = kSecMatchLimitAll
         }
         return query
+    }
+
+    private static func applicationTag(label: String) -> Data {
+        Data("io.darkbloom.sandbox.secure-enclave-key:\(label)".utf8)
     }
 
     private static func status(from error: Unmanaged<CFError>?) -> OSStatus {

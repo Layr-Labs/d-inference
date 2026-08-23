@@ -24,7 +24,7 @@ final class HostCapacityArbiterTests: XCTestCase {
 
         let reopened = try makeArbiter(stateDirectory: stateDirectory)
         XCTAssertEqual(
-            try reopened.initialize(mode: .sandboxDedicated).mode,
+            try reopened.initialize().mode,
             .inference,
             "initialization must not overwrite durable host mode"
         )
@@ -130,7 +130,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-        _ = try arbiter.initialize(mode: .sandboxDedicated)
+        try initializeDedicated(arbiter)
         let sandboxID = SandboxID()
         let firstGeneration = try generation(1)
         let secondGeneration = try generation(2)
@@ -175,9 +175,13 @@ final class HostCapacityArbiterTests: XCTestCase {
             now: now
         )
         XCTAssertEqual(renewed.expiresAt, now.addingTimeInterval(180))
+        XCTAssertGreaterThan(
+            renewed.scope.fencingToken,
+            first.scope.fencingToken
+        )
         assertCapacityError(.invalidLeaseDeadline) {
             _ = try arbiter.renew(
-                scope: first.scope,
+                scope: renewed.scope,
                 expiresAt: now.addingTimeInterval(170),
                 now: now
             )
@@ -185,7 +189,10 @@ final class HostCapacityArbiterTests: XCTestCase {
         assertCapacityError(.staleFencingToken) {
             try arbiter.release(scope: staleScope)
         }
-        try arbiter.release(scope: first.scope)
+        assertCapacityError(.staleFencingToken) {
+            try arbiter.release(scope: first.scope)
+        }
+        try arbiter.release(scope: renewed.scope)
 
         let reopened = try makeArbiter(stateDirectory: stateDirectory)
         let second = try reopened.reserve(
@@ -207,7 +214,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-        _ = try arbiter.initialize(mode: .sandboxDedicated)
+        try initializeDedicated(arbiter)
         let resources = try makeResources()
         let generation = try generation(1)
         let now = Date(timeIntervalSince1970: 2_000_000_000)
@@ -256,6 +263,48 @@ final class HostCapacityArbiterTests: XCTestCase {
         XCTAssertEqual(try arbiter.snapshot().leases.count, 2)
     }
 
+    func testRenewRejectsExpiredLeaseAndDrainingHost() throws {
+        let stateDirectory = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+        try initializeDedicated(arbiter)
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let lease = try arbiter.reserve(
+            sandboxID: SandboxID(),
+            generation: try generation(1),
+            virtualMachineName: "sandbox-renewal",
+            resources: try makeResources(),
+            expiresAt: now.addingTimeInterval(120),
+            now: now
+        )
+
+        assertCapacityError(.leaseExpired) {
+            _ = try arbiter.renew(
+                scope: lease.scope,
+                expiresAt: now.addingTimeInterval(240),
+                now: now.addingTimeInterval(121)
+            )
+        }
+        assertCapacityError(.leaseExpired) {
+            _ = try arbiter.reserve(
+                sandboxID: lease.scope.sandboxID,
+                generation: lease.scope.generation,
+                virtualMachineName: lease.virtualMachineName,
+                resources: try makeResources(),
+                expiresAt: now.addingTimeInterval(240),
+                now: now.addingTimeInterval(121)
+            )
+        }
+        _ = try arbiter.setMode(.draining)
+        assertCapacityError(.hostNotAcceptingSandboxes(.draining)) {
+            _ = try arbiter.renew(
+                scope: lease.scope,
+                expiresAt: now.addingTimeInterval(180),
+                now: now.addingTimeInterval(1)
+            )
+        }
+    }
+
     func testRejectsInsecureAndCorruptPersistentState() throws {
         let insecureDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: insecureDirectory) }
@@ -292,7 +341,7 @@ final class HostCapacityArbiterTests: XCTestCase {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         let arbiter = try makeArbiter(stateDirectory: stateDirectory)
-        _ = try arbiter.initialize(mode: .sandboxDedicated)
+        try initializeDedicated(arbiter)
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         _ = try arbiter.reserve(
             sandboxID: SandboxID(),
@@ -349,6 +398,13 @@ final class HostCapacityArbiterTests: XCTestCase {
             workspaceBytes: 25 * SandboxResourcePolicy.gibibyte,
             commandTimeoutSeconds: 900
         )
+    }
+
+    private func initializeDedicated(
+        _ arbiter: SandboxHostCapacityArbiter
+    ) throws {
+        _ = try arbiter.initialize()
+        _ = try arbiter.setMode(.sandboxDedicated)
     }
 
     private func generation(_ value: UInt64) throws -> SandboxGeneration {

@@ -16,12 +16,10 @@ public struct SandboxHostCapacityArbiter: Sendable {
     }
 
     @discardableResult
-    public func initialize(mode: SandboxHostMode = .draining) throws
-        -> SandboxCapacitySnapshot
-    {
+    public func initialize() throws -> SandboxCapacitySnapshot {
         let state = try store.initialize(SandboxCapacityState(
             schemaVersion: SandboxCapacityState.schemaVersion,
-            mode: mode,
+            mode: .draining,
             nextFencingToken: 1,
             leases: []
         ))
@@ -77,6 +75,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
                         existing: existing.scope.generation,
                         requested: generation
                     )
+                }
+                guard existing.expiresAt > now else {
+                    throw SandboxCapacityError.leaseExpired
                 }
                 guard existing.virtualMachineName == virtualMachineName,
                       existing.cpuCount == resources.cpuCount,
@@ -149,6 +150,9 @@ public struct SandboxHostCapacityArbiter: Sendable {
         now: Date = Date()
     ) throws -> SandboxCapacityLease {
         try store.update { state in
+            guard state.mode == .sandboxDedicated else {
+                throw SandboxCapacityError.hostNotAcceptingSandboxes(state.mode)
+            }
             try validateDeadline(expiresAt, now: now)
             let index = try Self.leaseIndex(for: scope, in: state.leases)
             let existing = state.leases[index]
@@ -158,11 +162,26 @@ public struct SandboxHostCapacityArbiter: Sendable {
             guard expiresAt >= existing.expiresAt else {
                 throw SandboxCapacityError.invalidLeaseDeadline
             }
+            guard existing.expiresAt > now else {
+                throw SandboxCapacityError.leaseExpired
+            }
             if expiresAt == existing.expiresAt {
                 return existing
             }
+            guard state.nextFencingToken < UInt64.max,
+                  let fencingToken = SandboxFencingToken(
+                      rawValue: state.nextFencingToken
+                  )
+            else {
+                throw SandboxCapacityError.fencingTokenExhausted
+            }
+            state.nextFencingToken += 1
             let renewed = SandboxCapacityLease(
-                scope: existing.scope,
+                scope: SandboxOperationScope(
+                    sandboxID: existing.scope.sandboxID,
+                    generation: existing.scope.generation,
+                    fencingToken: fencingToken
+                ),
                 virtualMachineName: existing.virtualMachineName,
                 cpuCount: existing.cpuCount,
                 memoryBytes: existing.memoryBytes,

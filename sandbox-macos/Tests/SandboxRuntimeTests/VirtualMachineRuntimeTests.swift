@@ -29,6 +29,7 @@ final class VirtualMachineRuntimeTests: XCTestCase {
             "../sandbox",
             "sandbox_name",
             "a b",
+            "Sandbox",
             "sándbox",
         ] {
             XCTAssertThrowsError(try SandboxVirtualMachineSpecification(

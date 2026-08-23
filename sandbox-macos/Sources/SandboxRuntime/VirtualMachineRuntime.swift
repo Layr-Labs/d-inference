@@ -97,19 +97,18 @@ public enum SandboxVirtualMachineNamePolicy {
     public static func isValid(_ name: String) -> Bool {
         let bytes = Array(name.utf8)
         guard (1...63).contains(bytes.count),
-              bytes.first.map(isASCIIAlphanumeric) == true,
-              bytes.last.map(isASCIIAlphanumeric) == true
+              bytes.first.map(isASCIILowercaseAlphanumeric) == true,
+              bytes.last.map(isASCIILowercaseAlphanumeric) == true
         else {
             return false
         }
         return bytes.allSatisfy {
-            isASCIIAlphanumeric($0) || $0 == 45
+            isASCIILowercaseAlphanumeric($0) || $0 == 45
         }
     }
 
-    private static func isASCIIAlphanumeric(_ byte: UInt8) -> Bool {
-        (65...90).contains(byte)
-            || (97...122).contains(byte)
+    private static func isASCIILowercaseAlphanumeric(_ byte: UInt8) -> Bool {
+        (97...122).contains(byte)
             || (48...57).contains(byte)
     }
 }
@@ -151,7 +150,7 @@ public enum SandboxRuntimeError: Error, Equatable, Sendable, CustomStringConvert
     public var description: String {
         switch self {
         case .invalidName:
-            return "VM name must be 1-63 alphanumeric-or-hyphen characters"
+            return "VM name must be 1-63 lowercase ASCII alphanumeric-or-hyphen characters"
         case .invalidImageReference:
             return "VM image reference must not be empty"
         case .diskSmallerThanWorkspace:

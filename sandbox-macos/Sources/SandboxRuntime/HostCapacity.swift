@@ -87,6 +87,7 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
         existing: SandboxGeneration,
         requested: SandboxGeneration
     )
+    case leaseExpired
     case staleFencingToken
     case leaseNotFound
     case fencingTokenExhausted
@@ -115,6 +116,8 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
             return "virtual machine name is already reserved"
         case .activeSandboxGeneration(let existing, let requested):
             return "sandbox generation \(existing.rawValue) is already active; requested \(requested.rawValue)"
+        case .leaseExpired:
+            return "sandbox capacity lease has expired and cannot be renewed"
         case .staleFencingToken:
             return "sandbox capacity command carries a stale fencing token"
         case .leaseNotFound:

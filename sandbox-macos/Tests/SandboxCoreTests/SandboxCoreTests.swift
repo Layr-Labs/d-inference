@@ -143,5 +143,32 @@ final class SandboxCoreTests: XCTestCase {
         XCTAssertThrowsError(
             try JSONDecoder().decode(SandboxLifecycle.self, from: inconsistent)
         )
+
+        for event in [
+            SandboxLifecycleEvent(
+                from: .queued,
+                to: .ready,
+                occurredAt: Date(timeIntervalSince1970: 1),
+                reason: "forbidden transition"
+            ),
+            SandboxLifecycleEvent(
+                from: .queued,
+                to: .reserving,
+                occurredAt: Date(timeIntervalSince1970: 1),
+                reason: " "
+            ),
+            SandboxLifecycleEvent(
+                from: .queued,
+                to: .reserving,
+                occurredAt: Date(timeIntervalSince1970: 1),
+                reason: " noncanonical "
+            ),
+        ] {
+            XCTAssertThrowsError(try SandboxLifecycle(
+                restoring: event.to,
+                sequence: 1,
+                lastEvent: event
+            ))
+        }
     }
 }

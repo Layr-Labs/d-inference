@@ -4,7 +4,7 @@
 <dict>
     <key>com.apple.security.virtualization</key>
     <true/>
-    <key>com.apple.security.keychain-access-groups</key>
+    <key>keychain-access-groups</key>
     <array>
         <string>SLDQ2GJ6TL.io.darkbloom.sandbox</string>
     </array>

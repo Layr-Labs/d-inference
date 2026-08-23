@@ -176,7 +176,14 @@ public struct SandboxLifecycle: Codable, Equatable, Sendable {
         guard let lastEvent else {
             return false
         }
-        return lastEvent.to == state && lastEvent.from != lastEvent.to
+        let normalizedReason = lastEvent.reason.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        )
+        return lastEvent.to == state
+            && allowedTransitions[lastEvent.from, default: []].contains(lastEvent.to)
+            && !normalizedReason.isEmpty
+            && normalizedReason == lastEvent.reason
+            && lastEvent.occurredAt.timeIntervalSinceReferenceDate.isFinite
     }
 
     private enum CodingKeys: String, CodingKey {

@@ -218,9 +218,10 @@ Command behavior is explicit:
 - the alpha allows one active command per sandbox;
 - a command must fit inside the funded compute lease or atomically renew it
   before dispatch;
-- idempotency keys are scoped to project, sandbox, and generation; an exact
-  retry returns the original command, while changed command fields with the
-  same key return `409 IDEMPOTENCY_KEY_REUSED`;
+- idempotency keys are scoped to API key, sandbox, and generation; SDKs use one
+  versioned deterministic-CBOR serialization, an exact retry returns the
+  original command, and changed command fields with the same key return
+  `409 IDEMPOTENCY_KEY_REUSED`;
 - the terminal result is `succeeded`, `failed`, `timed_out`, `cancelled`, or
   `lost`; and
 - `lost` means a dispatched command may have produced side effects and its
@@ -231,6 +232,10 @@ checkpoint and make that decision with application-specific idempotency.
 Command timeout/cancel terminates the process and returns the sandbox to
 `ready` if funded user-work time remains; compute then continues only until the
 idle timeout or lease stop.
+
+Rotating an API key creates a new idempotency namespace. Before retrying an
+ambiguous command with the replacement key, the developer queries the original
+command ID; cross-key deduplication is not implied.
 
 The default ready-idle timeout is two minutes. The SDK can explicitly renew:
 
@@ -246,8 +251,10 @@ new durable hold, then extends execution. Failure halts the VM inside the
 already funded one-minute shutdown guard. Snapshot encryption/upload happens
 after confirmed `execution_halted_at` and is not compute-billed. If the host
 disappears instead, the coordinator closes billing at bounded
-`metering_ended_at`, leaves `execution_halted_at` null, and waits for the
-capacity fence to expire before recovery or reassignment.
+`metering_ended_at`, leaves `execution_halted_at` null, immediately displays
+`fence_wait`, and waits for the capacity fence to expire before recovery or
+reassignment. A same-host reconnect can reconcile and perform cleanup but
+cannot reopen billing or accept work under the old lease.
 
 ### 1.5 Files
 
@@ -687,8 +694,9 @@ Drain behavior:
 `disable` without a drain is rejected while commands execute unless the
 provider passes an explicit emergency flag. Emergency stop produces `lost`
 outcomes for ambiguous in-flight commands, closes billing at bounded
-`metering_ended_at`, then leaves the sandbox to recover its prior durable
-generation or become `unrecoverable`. It lowers provider reliability.
+`metering_ended_at`, enters `fence_wait` until the old lease is fenced out, then
+leaves the sandbox to recover its prior durable generation or become
+`unrecoverable`. It lowers provider reliability.
 
 Daemon upgrades use the same drain contract. Existing encrypted snapshots stay
 versioned; an upgrade cannot silently rewrite their format.
@@ -726,6 +734,7 @@ views use the same canonical sandbox states:
 | `checkpointing` | Execution halted; durable upload in progress | No compute meter; snapshot not yet durable |
 | `stopped` | No compute charge | Resources released; storage retained |
 | `stopped_local` | Durable upload failed; same-host recovery only | CPU/memory released; local encrypted disk retained |
+| `fence_wait` | Billing ended; halt is not yet proven | No new work; same fenced host may reconnect for reconciliation/cleanup |
 | `recovering` | Host/generation loss is being reconciled | Old fence expired; prior durable generation being selected |
 | `unrecoverable` | No durable generation can resume | Auditable tombstone remains; delete is allowed |
 | `deleting` | Irreversible cleanup | Keys tombstoned, bytes reclaiming |

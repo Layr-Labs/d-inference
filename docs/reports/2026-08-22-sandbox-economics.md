@@ -242,19 +242,28 @@ Virtualization.framework does not expose fractional GPU partitioning or vCPU
 core pinning. Price timing-sensitive work as a host reservation:
 
 ```text
-exclusive gross price =
+gross floor from provider reserve =
+  ceil_div(provider exclusive net floor microUSD × 10,000, provider share bps)
+
+exclusive gross price microUSD =
   max(
-    full allocatable host resource quote × 1.20,
-    provider exclusive net floor / provider compute share
+    ceil_div(full host quote microUSD × 12,000, 10,000),
+    gross floor from provider reserve
   )
 ```
 
 The host must drain inference and every other sandbox before the reservation
 starts. Grossing up the provider's net floor by the quoted provider share
 guarantees settlement cannot fall below that floor; comparing a gross developer
-price directly with a net provider floor would be invalid. The quote names the
-physical chip and benchmark result. "20 GPU cores" describes hardware; it does
-not promise 20 isolated guest GPU cores.
+price directly with a net provider floor would be invalid. Every division uses
+ceiling semantics in integer micro-USD. The scheduler selects the smallest
+gross integer whose actual ledger payout, after the ledger's normal
+round-down, is at least the provider floor. For example, a 340,000-micro-USD net
+floor at a 7,000-bps share requires 485,715 micro-USD gross, whose rounded-down
+payout is 340,000 micro-USD.
+
+The quote names the physical chip and benchmark result. "20 GPU cores"
+describes hardware; it does not promise 20 isolated guest GPU cores.
 
 Do not offer an SLA for guest Metal compute until the specific application is
 benchmarked. Apple's macOS guest uses a paravirtualized graphics path rather

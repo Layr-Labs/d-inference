@@ -579,11 +579,13 @@ stateDiagram-v2
   executing --> ready: command completed, timed out, or cancelled
   executing --> stopping: sandbox cancel or compute lease expiry
   ready --> stopping: pause, idle, or lease expiry
-  executing --> recovering: host unreachable + fence expires
-  ready --> recovering: host unreachable + fence expires
+  executing --> fence_wait: unconfirmed host-loss cutoff
+  ready --> fence_wait: unconfirmed host-loss cutoff
   stopping --> checkpointing: execution halted + retention requested
   stopping --> deleting: ephemeral or delete
-  stopping --> recovering: host disappears before halt confirmation
+  stopping --> fence_wait: host-loss cutoff before halt confirmation
+  fence_wait --> stopping: same fenced host reconnects for cleanup
+  fence_wait --> recovering: capacity fence expires
   checkpointing --> stopped: durable snapshot committed
   checkpointing --> stopped_local: durable upload failed
   stopped_local --> checkpointing: retry upload
@@ -615,12 +617,22 @@ preparation/boot failure releases the new leases and returns to the prior
 `stopped` generation; it never destroys the last durable snapshot.
 
 `lost` is a **command outcome**, not a sandbox lifecycle state. After host loss,
-the sandbox enters `recovering` only after its meter is closed and its old fence
-can no longer renew. If a prior durable generation exists, recovery selects it
-and reaches `stopped` while recording that the newer generation and any
-in-flight command were lost. Without a durable generation it becomes
-`unrecoverable`, which preserves an auditable tombstone and permits deletion
-but cannot resume.
+the sandbox immediately enters `fence_wait` when an unconfirmed host-loss
+cutoff closes its meter. That state rejects new work and visibly means "billing
+ended, execution not yet proven halted." It enters `recovering` only after its
+old capacity fence can no longer renew. If a prior durable generation exists,
+recovery selects it and reaches `stopped` while recording that the newer
+generation and any unresolved in-flight command were lost. Without a durable
+generation it becomes `unrecoverable`, which preserves an auditable tombstone
+and permits deletion but cannot resume.
+
+If the same attested daemon reconnects during `fence_wait`, it must present the
+same host workload lease, sandbox generation, fencing token, and durable
+operation log. Reconnect never reopens the settled compute lease or accepts new
+work. The coordinator reconciles a provable command terminal record, otherwise
+keeps it `reconciling`, and commands cleanup-only stop/checkpoint/delete. A
+different host or stale token cannot claim the generation. If cleanup does not
+complete before fencing safety, the sandbox proceeds to `recovering`.
 
 Commands have independent IDs, scoped idempotency keys, opaque request
 commitments, and durable states:
@@ -631,13 +643,23 @@ created → dispatching → accepted → running
                   dispatch ambiguity → reconciling → not_started | lost
 ```
 
-An idempotency key is unique within `(project_id, sandbox_id,
-sandbox_generation)`. The SDK derives an opaque HMAC commitment over every
-behavior-affecting command field using a domain-separated key derived from the
-developer API key, so the coordinator can compare retries without storing
-command plaintext or a dictionary-testable unsalted hash. Reusing the key with
-the same commitment returns the original command; reusing it with a different
-commitment returns `409 IDEMPOTENCY_KEY_REUSED`.
+An idempotency key is unique within `(api_key_id, sandbox_id,
+sandbox_generation)`. The SDK serializes every behavior-affecting command field
+with versioned RFC 8949 deterministic CBOR: map keys sorted canonically,
+integers in declared units, byte payloads represented by content digests, and
+absent values distinct from null/empty values. It then derives an opaque
+HMAC-SHA256 commitment using a domain-separated key derived from that developer
+API key. The coordinator can compare retries without storing command plaintext
+or a dictionary-testable unsalted hash. Reusing the key with the same
+commitment returns the original command; reusing it with a different commitment
+returns `409 IDEMPOTENCY_KEY_REUSED`.
+
+API-key rotation intentionally opens a new idempotency namespace; it cannot
+cause a false mismatch against the old key. A caller rotating credentials must
+query the original command ID before deciding to dispatch under the new key,
+because cross-key deduplication is not promised. TypeScript, Python, Swift, and
+guest implementations share canonical fixtures so the same command bytes
+produce the same commitment.
 
 Before process spawn, both coordinator and host durably persist the scope,
 idempotency key, commitment, command ID, fencing token, and acceptance state.
@@ -668,9 +690,10 @@ cap. If the daemon disappears, `execution_halted_at` remains null and the
 coordinator durably sets `metering_ended_at` to the earliest of the missing-
 heartbeat cutoff, capacity-lease expiry, and funded cap, with
 `metering_end_reason` recording the source. The provider receives no payout
-after that cutoff. This billing cutoff does not prove execution halted and does
-not release the global slot early; reassignment still waits for fencing expiry
-plus the stop/skew guard.
+after that cutoff. The sandbox enters `fence_wait` at the same transition. This
+billing cutoff does not prove execution halted and does not release the global
+slot early; reassignment still waits for fencing expiry plus the stop/skew
+guard.
 
 Snapshot encryption/upload then runs as a separately bounded, non-compute
 storage operation after a confirmed halt. Success reaches `stopped`; failure
@@ -722,7 +745,7 @@ Canonical error and settlement behavior:
 | `COMMAND_TIMEOUT` | Command `timed_out`; sandbox returns ready if funded time remains | Compute continues only until idle/lease stop |
 | `CHECKPOINT_FAILED` | Sandbox becomes `stopped_local`; retry or same-host resume | Compute already ended at `metering_ended_at`; no durable-storage charge for failed generation |
 | `LEASE_EXPIRED` | Fail-closed halt; sandbox checkpoints, becomes `stopped_local`, or enters recovery after host loss | Capped by billable window plus pre-funded guard |
-| `HOST_LOST` | Pre-dispatch retry after fence; in-flight command becomes `lost`; sandbox recovers a prior generation or becomes `unrecoverable` | Ends at bounded `metering_ended_at`; slot remains fenced until safe |
+| `HOST_LOST` | Enter `fence_wait`; reconcile same-host return or, after fence expiry, recover a prior generation / become `unrecoverable`; unresolved command becomes `lost` | Ends at bounded `metering_ended_at`; slot remains fenced until safe |
 | `INSUFFICIENT_BALANCE` | Renewal/create rejected; controlled stop | Existing authorized lease only |
 
 ## 12. Scheduling
@@ -962,9 +985,11 @@ claims to support.
 - Command dispatch/ack crash tests proving ambiguous side effects become
   `lost`, never a transparent retry.
 - Command idempotency tests for same-key replay, mismatched commitment,
-  coordinator recovery, and a changed command ID.
+  coordinator recovery, API-key rotation namespace, deterministic cross-SDK
+  serialization, and a changed command ID.
 - Host-loss settlement tests proving fallback `metering_ended_at` closes
-  billing without falsely setting `execution_halted_at` or releasing a fence.
+  billing, enters `fence_wait`, reconciles only the same fenced host, and does
+  not falsely set `execution_halted_at` or release a fence.
 - API-key/policy absence, revision, downgrade, and mid-command revocation tests.
 - Protocol symmetry fixtures decoded in both Go and Swift.
 - Exact micro-USD billing tests across rounding and deadline boundaries.

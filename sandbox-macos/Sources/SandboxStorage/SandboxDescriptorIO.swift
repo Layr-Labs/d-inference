@@ -614,19 +614,7 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.io(errno)
         }
         defer { acl_free(UnsafeMutableRawPointer(acl)) }
-
-        var entry: acl_entry_t?
-        let result = acl_get_entry(
-            acl,
-            ACL_FIRST_ENTRY.rawValue,
-            &entry
-        )
-        if result == 1 {
-            throw SandboxDescriptorIOError.unsafeDestination
-        }
-        guard result == 0 else {
-            throw SandboxDescriptorIOError.io(errno)
-        }
+        throw SandboxDescriptorIOError.unsafeDestination
     }
 
     private static func errorCode(_ error: Error) -> Int32 {

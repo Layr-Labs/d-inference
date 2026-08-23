@@ -156,10 +156,10 @@ enum LumeGuestCommandEncoder {
             }
 
             capture_stream "$stdout_fifo" "$stdout_file" \
-            "$stdout_overflow" stdout < "$stdout_fifo" &
+            "$stdout_overflow" stdout < "$stdout_fifo" 7>&- 8>&- &
             stdout_capture_pid=$!
             capture_stream "$stderr_fifo" "$stderr_file" \
-            "$stderr_overflow" stderr < "$stderr_fifo" &
+            "$stderr_overflow" stderr < "$stderr_fifo" 7>&- 8>&- &
             stderr_capture_pid=$!
 
             /usr/bin/printf '%s' '\(propertyList)' \

@@ -111,6 +111,25 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(result.standardErrorTruncated)
     }
 
+    func testCaptureReadersDoNotRetainFIFOWriteGuards() throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/true",
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
+            timeoutSeconds: 5
+        )
+
+        let script = try LumeGuestCommandEncoder.script(request)
+
+        XCTAssertTrue(
+            script.contains(#"< "$stdout_fifo" 7>&- 8>&- &"#)
+        )
+        XCTAssertTrue(
+            script.contains(#"< "$stderr_fifo" 7>&- 8>&- &"#)
+        )
+    }
+
     func testCancellationStopsGuestJobBeforeDelayedSideEffect() async throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "darkbloom-command-cancellation-\(UUID().uuidString)",

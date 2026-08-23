@@ -22,13 +22,15 @@ final class SandboxRuntimeVZTests: XCTestCase {
         XCTAssertNoThrow(try JSONDecoder().decode(SandboxHostReport.self, from: encoded))
     }
 
-    func testLatestSupportedRestoreImageAgainstAppleCatalog() async throws {
+    func testLatestSupportedRestoreImageAgainstAppleCatalog() throws {
         try XCTSkipUnless(
             ProcessInfo.processInfo.environment["DARKBLOOM_SANDBOX_LIVE_RESTORE"] == "1",
             "set DARKBLOOM_SANDBOX_LIVE_RESTORE=1 for the Apple restore-catalog test"
         )
 
-        let image = try await MacOSRestoreImageCatalog().latestSupported()
+        let image = try EntitledRestoreImageProbe(
+            testBundleURL: Bundle(for: type(of: self)).bundleURL
+        ).latestSupported()
         XCTAssertEqual(image.url.scheme, "https")
         XCTAssertFalse(image.buildVersion.isEmpty)
         XCTAssertFalse(image.operatingSystemVersion.isEmpty)

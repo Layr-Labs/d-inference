@@ -28,7 +28,10 @@ swift test --package-path sandbox-macos
 ```
 
 The Apple restore-catalog test is opt-in because it makes a live network
-request:
+request. SwiftPM does not attach custom entitlements to its XCTest runner, so
+the test ad-hoc signs the package's debug daemon with
+`com.apple.security.virtualization` and executes the real
+`VZMacOSRestoreImage.fetchLatestSupported` path in that entitled process:
 
 ```bash
 DARKBLOOM_SANDBOX_LIVE_RESTORE=1 swift test \

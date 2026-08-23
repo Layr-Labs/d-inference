@@ -36,31 +36,14 @@ enum LumeRuntimeProvenanceValidator {
         let provenanceURL = configuration.executable
             .deletingLastPathComponent()
             .appendingPathComponent(fileName)
-        let provenanceFile: InspectedRegularFile
-        do {
-            provenanceFile = try inspectRegularFile(
-                at: provenanceURL,
-                maximumBytes: maximumProvenanceBytes,
-                requiresExecutableMode: false,
-                captureData: true,
-                computeDigest: true
-            )
-        } catch {
-            // #region agent log
-            agentDebugLog(
-                hypothesisId: "D",
-                location: "LumeRuntimeProvenance.swift:39",
-                message: "provenance file inspection failed",
-                data: [
-                    "fileExists": FileManager.default.fileExists(
-                        atPath: provenanceURL.path
-                    ),
-                    "error": String(describing: error),
-                ]
-            )
-            // #endregion
-            throw error
-        }
+        let provenanceFile = try inspectRegularFile(
+            at: provenanceURL,
+            maximumBytes: maximumProvenanceBytes,
+            requiresExecutableMode: false,
+            captureData: true,
+            computeDigest: true,
+            errorSubject: "Lume provenance"
+        )
         let provenance: LumeRuntimeProvenance
         do {
             let decoder = JSONDecoder()
@@ -73,71 +56,18 @@ enum LumeRuntimeProvenanceValidator {
             throw unsupported("Lume provenance is unreadable")
         }
 
-        let schemaMatches = provenance.schemaVersion == schemaVersion
-        let repositoryMatches =
-            provenance.repository == LumeRuntimeConfiguration.pinnedRepository
-        let commitMatches =
-            provenance.commit == LumeRuntimeConfiguration.pinnedCommit
-        let sourcePathMatches =
-            provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath
-        let versionMatches =
-            provenance.version == LumeRuntimeConfiguration.pinnedVersion
-        let directoriesAreUnique =
-            Set(provenance.directories).count == provenance.directories.count
-        let directoryPathsAreSafe =
-            provenance.directories.allSatisfy(Self.isSafeRelativePath)
-        let filePathsAreSafe =
-            provenance.files.keys.allSatisfy(Self.isSafeRelativePath)
-        let digestsAreValid =
-            provenance.files.values.allSatisfy(Self.isSHA256)
-        let directoriesMatch =
-            Set(provenance.directories) == Set(runtimeTree.directories.keys)
-        let filesMatch =
-            Set(provenance.files.keys) == Set(runtimeTree.files.keys)
-        let containsLume = provenance.files["lume"] != nil
-        if !schemaMatches || !repositoryMatches || !commitMatches
-            || !sourcePathMatches || !versionMatches || !directoriesAreUnique
-            || !directoryPathsAreSafe || !filePathsAreSafe || !digestsAreValid
-            || !directoriesMatch || !filesMatch || !containsLume
-        {
-            // #region agent log
-            agentDebugLog(
-                hypothesisId: "C",
-                location: "LumeRuntimeProvenance.swift:88",
-                message: "audited provenance predicate failed",
-                data: [
-                    "schemaMatches": schemaMatches,
-                    "repositoryMatches": repositoryMatches,
-                    "commitMatches": commitMatches,
-                    "sourcePathMatches": sourcePathMatches,
-                    "versionMatches": versionMatches,
-                    "directoriesAreUnique": directoriesAreUnique,
-                    "directoryPathsAreSafe": directoryPathsAreSafe,
-                    "filePathsAreSafe": filePathsAreSafe,
-                    "digestsAreValid": digestsAreValid,
-                    "directoriesMatch": directoriesMatch,
-                    "filesMatch": filesMatch,
-                    "containsLume": containsLume,
-                    "runtimeDirectories": runtimeTree.directories.keys.sorted(),
-                    "runtimeFiles": runtimeTree.files.keys.sorted(),
-                    "provenanceDirectories": provenance.directories.sorted(),
-                    "provenanceFiles": provenance.files.keys.sorted(),
-                ]
-            )
-            // #endregion
-        }
-        guard schemaMatches,
-              repositoryMatches,
-              commitMatches,
-              sourcePathMatches,
-              versionMatches,
-              directoriesAreUnique,
-              directoryPathsAreSafe,
-              filePathsAreSafe,
-              digestsAreValid,
-              directoriesMatch,
-              filesMatch,
-              containsLume
+        guard provenance.schemaVersion == schemaVersion,
+              provenance.repository == LumeRuntimeConfiguration.pinnedRepository,
+              provenance.commit == LumeRuntimeConfiguration.pinnedCommit,
+              provenance.sourcePath == LumeRuntimeConfiguration.pinnedSourcePath,
+              provenance.version == LumeRuntimeConfiguration.pinnedVersion,
+              Set(provenance.directories).count == provenance.directories.count,
+              provenance.directories.allSatisfy(Self.isSafeRelativePath),
+              provenance.files.keys.allSatisfy(Self.isSafeRelativePath),
+              provenance.files.values.allSatisfy(Self.isSHA256),
+              Set(provenance.directories) == Set(runtimeTree.directories.keys),
+              Set(provenance.files.keys) == Set(runtimeTree.files.keys),
+              provenance.files["lume"] != nil
         else {
             throw unsupported("Lume provenance does not match the audited pin")
         }
@@ -173,7 +103,8 @@ enum LumeRuntimeProvenanceValidator {
                 maximumBytes: maximumProvenanceBytes,
                 requiresExecutableMode: false,
                 captureData: false,
-                computeDigest: false
+                computeDigest: false,
+                errorSubject: "Lume provenance"
             )
             let currentFiles = currentTree.files.mapValues {
                 $0.identity
@@ -202,22 +133,21 @@ enum LumeRuntimeProvenanceValidator {
             at: installationDirectory
         )
         guard let enumerator = FileManager.default.enumerator(
-            at: installationDirectory,
-            includingPropertiesForKeys: nil,
-            options: []
+            atPath: installationDirectory.path
         ) else {
             throw unsupported("Lume runtime tree cannot be enumerated")
         }
 
         var files: [String: ValidatedLumeRuntimeFile] = [:]
         var directories: [String: LumeFileIdentity] = [:]
-        while let url = enumerator.nextObject() as? URL {
-            let relativePath = String(
-                url.path.dropFirst(installationDirectory.path.count + 1)
-            )
+        while let entry = enumerator.nextObject() {
+            guard let relativePath = entry as? String else {
+                throw unsupported("Lume runtime tree cannot be enumerated")
+            }
             guard isSafeRelativePath(relativePath) else {
                 throw unsupported("Lume runtime tree contains an unsafe path")
             }
+            let url = installationDirectory.appendingPathComponent(relativePath)
 
             var metadata = stat()
             guard lstat(url.path, &metadata) == 0 else {
@@ -281,11 +211,12 @@ enum LumeRuntimeProvenanceValidator {
         maximumBytes: Int64?,
         requiresExecutableMode: Bool,
         captureData: Bool,
-        computeDigest: Bool
+        computeDigest: Bool,
+        errorSubject: String = "Lume runtime file"
     ) throws -> InspectedRegularFile {
         let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
         guard descriptor >= 0 else {
-            throw unsupported("Lume runtime file cannot be opened")
+            throw unsupported("\(errorSubject) cannot be opened")
         }
         defer { close(descriptor) }
 
@@ -298,7 +229,7 @@ enum LumeRuntimeProvenanceValidator {
               maximumBytes.map({ before.st_size <= $0 }) ?? true,
               !requiresExecutableMode || before.st_mode & 0o111 != 0
         else {
-            throw unsupported("Lume runtime file failed ownership or mode checks")
+            throw unsupported("\(errorSubject) failed ownership or mode checks")
         }
 
         var hasher = SHA256()
@@ -316,7 +247,7 @@ enum LumeRuntimeProvenanceValidator {
                     if errno == EINTR {
                         continue
                     }
-                    throw unsupported("Lume runtime file cannot be read")
+                    throw unsupported("\(errorSubject) cannot be read")
                 }
                 let chunk = Data(buffer.prefix(count))
                 if computeDigest {
@@ -330,7 +261,7 @@ enum LumeRuntimeProvenanceValidator {
         guard fstat(descriptor, &after) == 0,
               identity(from: before) == identity(from: after)
         else {
-            throw unsupported("Lume runtime file changed during validation")
+            throw unsupported("\(errorSubject) changed during validation")
         }
         return InspectedRegularFile(
             identity: identity(from: after),
@@ -412,38 +343,4 @@ struct LumeFileIdentity: Equatable, Sendable {
     let modificationNanoseconds: Int
     let statusChangeSeconds: Int
     let statusChangeNanoseconds: Int
-}
-
-private func agentDebugLog(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: [String: Any]
-) {
-    let payload: [String: Any] = [
-        "hypothesisId": hypothesisId,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": Date().timeIntervalSince1970 * 1_000,
-    ]
-    guard let encoded = try? JSONSerialization.data(
-        withJSONObject: payload,
-        options: [.sortedKeys]
-    ) else {
-        return
-    }
-    let logURL = URL(fileURLWithPath: "/tmp/darkbloom-sandbox-debug.log")
-    if !FileManager.default.fileExists(atPath: logURL.path) {
-        _ = FileManager.default.createFile(
-            atPath: logURL.path,
-            contents: nil
-        )
-    }
-    guard let handle = try? FileHandle(forWritingTo: logURL) else {
-        return
-    }
-    defer { try? handle.close() }
-    try? handle.seekToEnd()
-    try? handle.write(contentsOf: encoded + Data([0x0A]))
 }

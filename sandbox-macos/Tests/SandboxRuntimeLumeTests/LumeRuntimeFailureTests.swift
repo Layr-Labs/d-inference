@@ -9,23 +9,45 @@ import XCTest
 final class LumeRuntimeFailureTests: XCTestCase {
     func testRejectsRuntimeWithoutAuditedProvenance() async throws {
         let fixture = try FakeLumeFixture(writeProvenance: false)
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime()
 
         do {
             _ = try await runtime.capabilities()
             XCTFail("runtime without provenance should be rejected")
         } catch let error as SandboxRuntimeError {
-            guard case .unsupported(let detail) = error else {
-                return XCTFail("expected unsupported runtime, got \(error)")
-            }
-            XCTAssertTrue(detail.contains("provenance"))
+            XCTAssertEqual(
+                error,
+                .unsupported("Lume provenance cannot be opened")
+            )
         }
+    }
+
+    func testValidatesAuditedRuntimeInSystemTemporaryDirectory() async throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+
+        let capabilities = try await fixture.makeRuntime().capabilities()
+
+        XCTAssertEqual(
+            capabilities.version,
+            LumeRuntimeConfiguration.pinnedVersion
+        )
+    }
+
+    func testFixtureCleanupRemovesReadOnlyRuntimeTree() throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let directory = fixture.directory
+
+        try fixture.remove()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
     }
 
     func testRejectsRuntimeChangedAfterValidation() async throws {
         let fixture = try FakeLumeFixture()
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime()
 
         let capabilities = try await runtime.capabilities()
@@ -57,7 +79,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
 
     func testRejectsRuntimeTreeEntryAddedAfterValidation() async throws {
         let fixture = try FakeLumeFixture()
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime()
         _ = try await runtime.capabilities()
 
@@ -87,7 +109,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
 
     func testFailedReadinessStopsNewlyStartedVirtualMachine() async throws {
         let fixture = try FakeLumeFixture()
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime()
 
         do {
@@ -112,7 +134,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
 
     func testCancelledStartStopsNewlyStartedVirtualMachine() async throws {
         let fixture = try FakeLumeFixture()
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
         let start = Task {
             try await runtime.start(name: fixture.virtualMachineName)
@@ -141,7 +163,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             initialState: nil,
             behavior: "block-create"
         )
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
         let specification = try SandboxVirtualMachineSpecification(
             name: fixture.virtualMachineName,
@@ -193,7 +215,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
             initialState: nil,
             behavior: "block-create"
         )
-        defer { fixture.remove() }
+        defer { try? fixture.remove() }
         let firstRuntime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
         let secondRuntime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
         let specification = try SandboxVirtualMachineSpecification(
@@ -388,42 +410,15 @@ private struct FakeLumeFixture {
         throw FakeLumeFixtureError.createStartTimeout
     }
 
-    func remove() {
-        let attributes = try? FileManager.default.attributesOfItem(
-            atPath: runtimeDirectory.path
-        )
-        let permissions = (
-            attributes?[.posixPermissions] as? NSNumber
-        )?.uint16Value ?? 0
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "B",
-            location: "LumeRuntimeFailureTests.swift:397",
-            message: "removing fake Lume fixture",
-            data: [
-                "runtimePermissions": Int(permissions),
-            ]
-        )
-        // #endregion
-        var cleanupError = ""
-        do {
-            try FileManager.default.removeItem(at: directory)
-        } catch {
-            cleanupError = String(describing: error)
+    func remove() throws {
+        guard FileManager.default.fileExists(atPath: directory.path) else {
+            return
         }
-        // #region agent log
-        agentDebugLog(
-            hypothesisId: "B",
-            location: "LumeRuntimeFailureTests.swift:414",
-            message: "fake Lume fixture removal completed",
-            data: [
-                "directoryStillExists": FileManager.default.fileExists(
-                    atPath: directory.path
-                ),
-                "error": cleanupError,
-            ]
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: runtimeDirectory.path
         )
-        // #endregion
+        try FileManager.default.removeItem(at: directory)
     }
 
     private static func writeProvenance(
@@ -593,38 +588,4 @@ private struct FakeLumeFixture {
 private enum FakeLumeFixtureError: Error {
     case stateTimeout(String)
     case createStartTimeout
-}
-
-private func agentDebugLog(
-    hypothesisId: String,
-    location: String,
-    message: String,
-    data: [String: Any]
-) {
-    let payload: [String: Any] = [
-        "hypothesisId": hypothesisId,
-        "location": location,
-        "message": message,
-        "data": data,
-        "timestamp": Date().timeIntervalSince1970 * 1_000,
-    ]
-    guard let encoded = try? JSONSerialization.data(
-        withJSONObject: payload,
-        options: [.sortedKeys]
-    ) else {
-        return
-    }
-    let logURL = URL(fileURLWithPath: "/tmp/darkbloom-sandbox-debug.log")
-    if !FileManager.default.fileExists(atPath: logURL.path) {
-        _ = FileManager.default.createFile(
-            atPath: logURL.path,
-            contents: nil
-        )
-    }
-    guard let handle = try? FileHandle(forWritingTo: logURL) else {
-        return
-    }
-    defer { try? handle.close() }
-    try? handle.seekToEnd()
-    try? handle.write(contentsOf: encoded + Data([0x0A]))
 }

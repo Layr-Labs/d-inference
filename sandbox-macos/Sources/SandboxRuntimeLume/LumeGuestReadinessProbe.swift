@@ -52,87 +52,39 @@ enum LumeGuestReadinessProbe {
         clock: ContinuousClock,
         deadline: ContinuousClock.Instant
     ) async throws -> Bool {
-        let startedAt = Date()
-        // #region agent log
-        LumeRuntimeDebugLog.write(
-            hypothesisId: "A,D",
-            location: "LumeGuestReadinessProbe.swift:run-entry",
-            message: "authenticated readiness probe started",
-            data: [
-                "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                "attemptTimeoutSeconds":
-                    String(policy.attemptTimeoutSeconds),
-            ]
-        )
-        // #endregion
         let deterministicEnvironment = environment.merging(
             ["LANG": "C", "LC_ALL": "C"]
         ) { _, deterministic in deterministic }
-        do {
-            let encodedCommand = try command(idempotencyKey: UUID())
-            let result = try await LumeGuestReadinessDeadline.run(
-                clock: clock,
-                deadline: deadline
-            ) {
-                try await runner.run(
-                    executable: executable,
-                    arguments: [
-                        "ssh",
-                        name,
-                        "--storage", storagePath,
-                        "--timeout", String(lumeTimeoutSeconds),
-                        "--nio-only",
-                        encodedCommand,
-                    ],
-                    environment: deterministicEnvironment,
-                    timeoutSeconds: policy.attemptTimeoutSeconds,
-                    maximumOutputBytes: maximumOutputBytes
-                )
-            }
-            let guestResult = try? LumeGuestCommandResultDecoder.decode(
-                result.standardOutput
+        let encodedCommand = try command(idempotencyKey: UUID())
+        let result = try await LumeGuestReadinessDeadline.run(
+            clock: clock,
+            deadline: deadline
+        ) {
+            try await runner.run(
+                executable: executable,
+                arguments: [
+                    "ssh",
+                    name,
+                    "--storage", storagePath,
+                    "--timeout", String(lumeTimeoutSeconds),
+                    "--nio-only",
+                    encodedCommand,
+                ],
+                environment: deterministicEnvironment,
+                timeoutSeconds: policy.attemptTimeoutSeconds,
+                maximumOutputBytes: maximumOutputBytes
             )
-            let ready = result.exitCode == 0
-                && !result.standardOutputTruncated
-                && !result.standardErrorTruncated
-                && guestResult?.exitCode == 0
-                && guestResult?.timedOut == false
-                && guestResult?.standardOutputTruncated == false
-                && guestResult?.standardErrorTruncated == false
-            // #region agent log
-            LumeRuntimeDebugLog.write(
-                hypothesisId: "A,D",
-                location: "LumeGuestReadinessProbe.swift:run-result",
-                message: "authenticated readiness probe completed",
-                data: [
-                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                    "elapsedMilliseconds": String(
-                        Int(Date().timeIntervalSince(startedAt) * 1_000)
-                    ),
-                    "exitCode": String(result.exitCode),
-                    "ready": String(ready),
-                    "stdoutBytes": String(result.standardOutput.count),
-                    "stderrBytes": String(result.standardError.count),
-                ]
-            )
-            // #endregion
-            return ready
-        } catch {
-            // #region agent log
-            LumeRuntimeDebugLog.write(
-                hypothesisId: "A,D",
-                location: "LumeGuestReadinessProbe.swift:run-error",
-                message: "authenticated readiness probe failed",
-                data: LumeRuntimeDebugLog.errorData(error).merging([
-                    "vmRole": LumeRuntimeDebugLog.virtualMachineRole(name),
-                    "elapsedMilliseconds": String(
-                        Int(Date().timeIntervalSince(startedAt) * 1_000)
-                    ),
-                ]) { _, observation in observation }
-            )
-            // #endregion
-            throw error
         }
+        let guestResult = try? LumeGuestCommandResultDecoder.decode(
+            result.standardOutput
+        )
+        return result.exitCode == 0
+            && !result.standardOutputTruncated
+            && !result.standardErrorTruncated
+            && guestResult?.exitCode == 0
+            && guestResult?.timedOut == false
+            && guestResult?.standardOutputTruncated == false
+            && guestResult?.standardErrorTruncated == false
     }
 }
 

@@ -3,6 +3,12 @@ import Darwin
 import Foundation
 import SandboxRuntime
 
+enum LumeGuestCommandReplay: Equatable {
+    case unclaimed
+    case indeterminate
+    case completed(SandboxGuestCommandResult)
+}
+
 struct LumeGuestCommandJournal {
     static let commitmentFileName = "request.sha256"
     static let resultFileName = "result.json"
@@ -17,7 +23,7 @@ struct LumeGuestCommandJournal {
     func replay(
         installationID: UUID,
         request: SandboxGuestCommandRequest
-    ) throws -> SandboxGuestCommandResult? {
+    ) throws -> LumeGuestCommandReplay {
         try workspace.prepare()
         let rootDescriptor = try LumeGuestCommandJournalIO.openPrivateDirectory(
             workspace.commandJournalDirectory
@@ -30,7 +36,7 @@ struct LumeGuestCommandJournal {
                 name: installationName
             )
         else {
-            return nil
+            return .unclaimed
         }
         defer { close(installationDescriptor) }
         let commandName = LumeGuestCommandIdentity.identifier(
@@ -42,22 +48,33 @@ struct LumeGuestCommandJournal {
                 name: commandName
             )
         else {
-            return nil
+            return .unclaimed
         }
         defer { close(commandDescriptor) }
 
-        try Self.requireMatchingCommitment(
-            request,
-            commandDescriptor: commandDescriptor
-        )
+        guard let storedCommitment =
+            try LumeGuestCommandJournalIO.readFileIfPresent(
+                named: Self.commitmentFileName,
+                parentDescriptor: commandDescriptor,
+                maximumBytes: Self.commitmentByteCount
+            ),
+            storedCommitment.count == Self.commitmentByteCount
+        else {
+            return .indeterminate
+        }
+        guard storedCommitment == (try Self.commitment(for: request)) else {
+            throw SandboxRuntimeError.unsupported(
+                "guest command idempotency key was already used for a different request"
+            )
+        }
         guard let envelope = try LumeGuestCommandJournalIO.readFileIfPresent(
             named: Self.resultFileName,
             parentDescriptor: commandDescriptor,
             maximumBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes
         ) else {
-            throw Self.outcomeUnavailable()
+            return .indeterminate
         }
-        return try LumeGuestCommandResultDecoder.decode(envelope)
+        return .completed(try LumeGuestCommandResultDecoder.decode(envelope))
     }
 
     func claim(
@@ -173,7 +190,7 @@ struct LumeGuestCommandJournal {
         }
     }
 
-    private static func outcomeUnavailable() -> SandboxRuntimeError {
+    static func outcomeUnavailable() -> SandboxRuntimeError {
         .unsupported(
             "guest command outcome is unavailable for an already claimed idempotency key"
         )

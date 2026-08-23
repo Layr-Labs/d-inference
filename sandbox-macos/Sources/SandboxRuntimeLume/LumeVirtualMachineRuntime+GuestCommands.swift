@@ -42,26 +42,30 @@ extension LumeVirtualMachineRuntime {
             in: configuration.storageDirectory
         )
         let commandJournal = LumeGuestCommandJournal(workspace: workspace)
-        if let replay = try commandJournal.replay(
+        switch try commandJournal.replay(
             installationID: identity.installationID,
             request: request
         ) {
+        case .unclaimed:
+            break
+        case .indeterminate:
+            let unavailable = LumeGuestCommandJournal.outcomeUnavailable()
+            try await stopGuestForReplayFailure(
+                name: name,
+                owner: owner,
+                primary: unavailable
+            )
+            throw unavailable
+        case .completed(let replay):
             if replay.timedOut {
                 let timeout = SandboxRuntimeError.operationTimedOut(
                     "\(name) guest command"
                 )
-                do {
-                    try await stopGuestIgnoringCancellation(
-                        name: name,
-                        owner: owner
-                    )
-                } catch {
-                    throw SandboxRuntimeError.cleanupFailed(
-                        operation: "replay timed-out command \(name)",
-                        primary: String(describing: timeout),
-                        cleanup: "VM stop failed: \(error)"
-                    )
-                }
+                try await stopGuestForReplayFailure(
+                    name: name,
+                    owner: owner,
+                    primary: timeout
+                )
                 throw timeout
             }
             return replay
@@ -168,6 +172,25 @@ extension LumeVirtualMachineRuntime {
                 )
             }
             throw error
+        }
+    }
+
+    private func stopGuestForReplayFailure(
+        name: String,
+        owner: LumeVirtualMachineOwnership.Owner,
+        primary: SandboxRuntimeError
+    ) async throws {
+        do {
+            try await stopGuestIgnoringCancellation(
+                name: name,
+                owner: owner
+            )
+        } catch {
+            throw SandboxRuntimeError.cleanupFailed(
+                operation: "reconcile replayed command \(name)",
+                primary: String(describing: primary),
+                cleanup: "VM stop failed: \(error)"
+            )
         }
     }
 

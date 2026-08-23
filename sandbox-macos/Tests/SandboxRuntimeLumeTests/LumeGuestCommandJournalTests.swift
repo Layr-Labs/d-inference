@@ -18,11 +18,12 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             standardErrorTruncated: true
         )
 
-        XCTAssertNil(
+        XCTAssertEqual(
             try fixture.journal.replay(
                 installationID: installationID,
                 request: request
-            )
+            ),
+            .unclaimed
         )
         let claim = try fixture.journal.claim(
             installationID: installationID,
@@ -35,7 +36,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
                 installationID: installationID,
                 request: request
             ),
-            expected
+            .completed(expected)
         )
     }
 
@@ -50,19 +51,13 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             request: request
         )
 
-        XCTAssertThrowsError(
+        XCTAssertEqual(
             try fixture.journal.replay(
                 installationID: installationID,
                 request: request
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? SandboxRuntimeError,
-                .unsupported(
-                    "guest command outcome is unavailable for an already claimed idempotency key"
-                )
-            )
-        }
+            ),
+            .indeterminate
+        )
     }
 
     func testIdempotencyKeyRejectsDifferentRequestCommitment() throws {
@@ -127,11 +122,12 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             )
         )
 
-        XCTAssertNil(
+        XCTAssertEqual(
             try fixture.journal.replay(
                 installationID: secondInstallation,
                 request: request
-            )
+            ),
+            .unclaimed
         )
     }
 

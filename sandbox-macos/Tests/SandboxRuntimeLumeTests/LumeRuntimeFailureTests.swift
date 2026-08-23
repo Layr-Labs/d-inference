@@ -746,6 +746,51 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(fixture.guestReadinessProbeAttempts, 2)
     }
 
+    func testIncompleteClaimStopsRunningVirtualMachineWithoutReexecution()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/true",
+            timeoutSeconds: 30
+        )
+        let identity = try LumeVirtualMachineOwnership.requireOwned(
+            name: fixture.virtualMachineName,
+            owner: .baseTemplate,
+            in: fixture.storage
+        )
+        let workspace = LumeRuntimeWorkspace(
+            storageDirectory: fixture.storage
+        )
+        try workspace.prepare()
+        _ = try LumeGuestCommandJournal(workspace: workspace).claim(
+            installationID: identity.installationID,
+            request: request
+        )
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: request
+            )
+            XCTFail("an incomplete command claim must fail closed")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                LumeGuestCommandJournal.outcomeUnavailable()
+            )
+        }
+
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+    }
+
     func testCancelledCreateRemovesNamedAndTemporaryArtifacts() async throws {
         let fixture = try FakeLumeFixture(
             initialState: nil,

@@ -60,6 +60,33 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
     }
 
+    func testConflictingRetryOfIncompleteClaimRequiresReconciliation() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        let installationID = UUID()
+        let idempotencyKey = UUID()
+        let original = try fixture.request(
+            idempotencyKey: idempotencyKey,
+            arguments: ["first"]
+        )
+        let conflicting = try fixture.request(
+            idempotencyKey: idempotencyKey,
+            arguments: ["second"]
+        )
+        _ = try fixture.journal.claim(
+            installationID: installationID,
+            request: original
+        )
+
+        XCTAssertEqual(
+            try fixture.journal.replay(
+                installationID: installationID,
+                request: conflicting
+            ),
+            .indeterminate
+        )
+    }
+
     func testIdempotencyKeyRejectsDifferentRequestCommitment() throws {
         let fixture = try JournalFixture()
         defer { try? fixture.remove() }
@@ -181,7 +208,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
     }
 
-    func testReplayRejectsSymbolicLinkResult() throws {
+    func testReplayTreatsSymbolicLinkResultAsIndeterminate() throws {
         let fixture = try JournalFixture()
         defer { try? fixture.remove() }
         let installationID = UUID()
@@ -198,21 +225,16 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             withDestinationURL: URL(fileURLWithPath: "/dev/zero")
         )
 
-        XCTAssertThrowsError(
+        XCTAssertEqual(
             try fixture.journal.replay(
                 installationID: installationID,
                 request: request
-            )
-        ) { error in
-            XCTAssertTrue(
-                String(describing: error).contains(
-                    "guest command journal file is unsafe"
-                )
-            )
-        }
+            ),
+            .indeterminate
+        )
     }
 
-    func testReplayRejectsNonPrivateCommandDirectory() throws {
+    func testReplayTreatsNonPrivateCommandDirectoryAsIndeterminate() throws {
         let fixture = try JournalFixture()
         defer { try? fixture.remove() }
         let installationID = UUID()
@@ -229,19 +251,70 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             throw POSIXError(.EACCES)
         }
 
-        XCTAssertThrowsError(
+        XCTAssertEqual(
             try fixture.journal.replay(
                 installationID: installationID,
                 request: request
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? SandboxRuntimeError,
-                .unsupported(
-                    "guest command journal directory failed ownership or mode checks"
-                )
-            )
+            ),
+            .indeterminate
+        )
+    }
+
+    func testReplayTreatsMalformedResultAsIndeterminate() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        let installationID = UUID()
+        let request = try fixture.request()
+        _ = try fixture.journal.claim(
+            installationID: installationID,
+            request: request
+        )
+        let resultFile = fixture.resultFile(
+            installationID: installationID,
+            idempotencyKey: request.idempotencyKey
+        )
+        try Data("not an envelope".utf8).write(to: resultFile)
+        guard chmod(resultFile.path, 0o600) == 0 else {
+            throw POSIXError(.EACCES)
         }
+
+        XCTAssertEqual(
+            try fixture.journal.replay(
+                installationID: installationID,
+                request: request
+            ),
+            .indeterminate
+        )
+    }
+
+    func testReplayTreatsOversizedResultAsIndeterminate() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        let installationID = UUID()
+        let request = try fixture.request()
+        _ = try fixture.journal.claim(
+            installationID: installationID,
+            request: request
+        )
+        let resultFile = fixture.resultFile(
+            installationID: installationID,
+            idempotencyKey: request.idempotencyKey
+        )
+        try Data(
+            repeating: 0x41,
+            count: LumeGuestCommandEnvelope.maximumEnvelopeBytes + 1
+        ).write(to: resultFile)
+        guard chmod(resultFile.path, 0o600) == 0 else {
+            throw POSIXError(.EACCES)
+        }
+
+        XCTAssertEqual(
+            try fixture.journal.replay(
+                installationID: installationID,
+                request: request
+            ),
+            .indeterminate
+        )
     }
 
     private static func envelope(
@@ -326,6 +399,16 @@ private struct JournalFixture {
                 LumeGuestCommandIdentity.identifier(for: idempotencyKey),
                 isDirectory: true
             )
+    }
+
+    func resultFile(
+        installationID: UUID,
+        idempotencyKey: UUID
+    ) -> URL {
+        commandDirectory(
+            installationID: installationID,
+            idempotencyKey: idempotencyKey
+        ).appendingPathComponent(LumeGuestCommandJournal.resultFileName)
     }
 }
 

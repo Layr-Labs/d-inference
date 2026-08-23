@@ -24,6 +24,40 @@ struct LumeGuestCommandJournal {
         installationID: UUID,
         request: SandboxGuestCommandRequest
     ) throws -> LumeGuestCommandReplay {
+        let storedReplay: StoredReplay
+        do {
+            storedReplay = try loadStoredReplay(
+                installationID: installationID,
+                request: request
+            )
+        } catch {
+            return .indeterminate
+        }
+        switch storedReplay {
+        case .unclaimed:
+            return .unclaimed
+        case .indeterminate:
+            return .indeterminate
+        case .completed(let storedCommitment, let result):
+            let requestedCommitment: Data
+            do {
+                requestedCommitment = try Self.commitment(for: request)
+            } catch {
+                return .indeterminate
+            }
+            guard storedCommitment == requestedCommitment else {
+                throw SandboxRuntimeError.unsupported(
+                    "guest command idempotency key was already used for a different request"
+                )
+            }
+            return .completed(result)
+        }
+    }
+
+    private func loadStoredReplay(
+        installationID: UUID,
+        request: SandboxGuestCommandRequest
+    ) throws -> StoredReplay {
         try workspace.prepare()
         let rootDescriptor = try LumeGuestCommandJournalIO.openPrivateDirectory(
             workspace.commandJournalDirectory
@@ -62,11 +96,6 @@ struct LumeGuestCommandJournal {
         else {
             return .indeterminate
         }
-        guard storedCommitment == (try Self.commitment(for: request)) else {
-            throw SandboxRuntimeError.unsupported(
-                "guest command idempotency key was already used for a different request"
-            )
-        }
         guard let envelope = try LumeGuestCommandJournalIO.readFileIfPresent(
             named: Self.resultFileName,
             parentDescriptor: commandDescriptor,
@@ -74,7 +103,10 @@ struct LumeGuestCommandJournal {
         ) else {
             return .indeterminate
         }
-        return .completed(try LumeGuestCommandResultDecoder.decode(envelope))
+        return .completed(
+            commitment: storedCommitment,
+            result: try LumeGuestCommandResultDecoder.decode(envelope)
+        )
     }
 
     func claim(
@@ -208,6 +240,15 @@ struct LumeGuestCommandJournal {
     private struct EnvironmentEntry: Encodable {
         let name: String
         let value: String
+    }
+
+    private enum StoredReplay {
+        case unclaimed
+        case indeterminate
+        case completed(
+            commitment: Data,
+            result: SandboxGuestCommandResult
+        )
     }
 }
 

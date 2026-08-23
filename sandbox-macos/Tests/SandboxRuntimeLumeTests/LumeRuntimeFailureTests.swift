@@ -834,6 +834,57 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertFalse(fixture.guestCommandWasStarted)
     }
 
+    func testConflictingRetryOfIncompleteClaimStopsVirtualMachine()
+        async throws
+    {
+        let fixture = try FakeLumeFixture(initialState: "running")
+        defer { try? fixture.remove() }
+        let idempotencyKey = UUID()
+        let original = try SandboxGuestCommandRequest(
+            idempotencyKey: idempotencyKey,
+            executable: "/usr/bin/true",
+            timeoutSeconds: 30
+        )
+        let conflicting = try SandboxGuestCommandRequest(
+            idempotencyKey: idempotencyKey,
+            executable: "/usr/bin/false",
+            timeoutSeconds: 30
+        )
+        let identity = try LumeVirtualMachineOwnership.requireOwned(
+            name: fixture.virtualMachineName,
+            owner: .baseTemplate,
+            in: fixture.storage
+        )
+        let workspace = LumeRuntimeWorkspace(
+            storageDirectory: fixture.storage
+        )
+        try workspace.prepare()
+        _ = try LumeGuestCommandJournal(workspace: workspace).claim(
+            installationID: identity.installationID,
+            request: original
+        )
+        let runtime = try fixture.makeRuntime(commandTimeoutSeconds: 30)
+
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: conflicting
+            )
+            XCTFail("a conflicting retry must reconcile an incomplete claim")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                LumeGuestCommandJournal.outcomeUnavailable()
+            )
+        }
+
+        let state = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(state, .stopped)
+        XCTAssertFalse(fixture.guestCommandWasStarted)
+    }
+
     func testCancelledCreateRemovesNamedAndTemporaryArtifacts() async throws {
         let fixture = try FakeLumeFixture(
             initialState: nil,

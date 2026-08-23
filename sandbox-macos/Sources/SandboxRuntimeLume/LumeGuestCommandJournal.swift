@@ -157,7 +157,7 @@ struct LumeGuestCommandJournal {
         ), stored.count == commitmentByteCount else {
             throw outcomeUnavailable()
         }
-        guard stored == commitment(for: request) else {
+        guard stored == (try commitment(for: request)) else {
             throw SandboxRuntimeError.unsupported(
                 "guest command idempotency key was already used for a different request"
             )

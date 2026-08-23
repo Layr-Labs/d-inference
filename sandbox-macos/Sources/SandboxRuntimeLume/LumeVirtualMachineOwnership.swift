@@ -219,17 +219,26 @@ enum LumeVirtualMachineOwnership {
                 "VM \(name) ownership marker is unreadable"
             )
         }
-        let record: Record
+        let decoder = JSONDecoder()
+        let version: VersionRecord
         do {
-            record = try JSONDecoder().decode(Record.self, from: data)
+            version = try decoder.decode(VersionRecord.self, from: data)
         } catch {
             throw SandboxRuntimeError.unsupported(
                 "VM \(name) ownership marker is malformed"
             )
         }
-        guard record.schemaVersion == schemaVersion else {
+        guard version.schemaVersion == schemaVersion else {
             throw SandboxRuntimeError.unsupported(
                 "VM \(name) ownership marker has an unsupported version"
+            )
+        }
+        let record: Record
+        do {
+            record = try decoder.decode(Record.self, from: data)
+        } catch {
+            throw SandboxRuntimeError.unsupported(
+                "VM \(name) ownership marker is malformed"
             )
         }
         guard record.isValid else {
@@ -270,6 +279,10 @@ enum LumeVirtualMachineOwnership {
                 "Darkbloom VM directory failed ownership or mode checks"
             )
         }
+    }
+
+    private struct VersionRecord: Decodable {
+        let schemaVersion: UInt16
     }
 
     private struct Record: Codable {

@@ -86,3 +86,30 @@ DARKBLOOM_SANDBOX_LUME_PATH=/absolute/path/to/lume \
   swift test --package-path sandbox-macos \
   --filter LumeRuntimeContractTests
 ```
+
+Prepare and verify a stopped Tahoe base image through the production adapter:
+
+```bash
+darkbloom-sandboxd prepare-base \
+  --lume /absolute/path/to/lume \
+  --storage /absolute/path/to/vms \
+  --ipsw /absolute/path/to/tahoe.ipsw \
+  --name darkbloom-phase0-base \
+  --json
+```
+
+The command installs macOS, applies Lume's no-secrets-alpha unattended preset,
+boots the guest without VNC, waits for SSH readiness, reads the guest OS and
+architecture, and leaves the base stopped. The opt-in live suite can then clone
+and run exactly two guests concurrently, prove their filesystems are isolated,
+and leave both clones stopped:
+
+```bash
+DARKBLOOM_SANDBOX_LIVE_VM=1 \
+DARKBLOOM_SANDBOX_LIVE_TWO_VMS=1 \
+DARKBLOOM_SANDBOX_LUME_PATH=/absolute/path/to/lume \
+DARKBLOOM_SANDBOX_IPSW_PATH=/absolute/path/to/tahoe.ipsw \
+DARKBLOOM_SANDBOX_VM_STORAGE=/absolute/path/to/vms \
+  swift test --package-path sandbox-macos \
+  --filter LumeRuntimeContractTests
+```

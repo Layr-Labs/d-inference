@@ -150,6 +150,12 @@ public actor LumeVirtualMachineRuntime:
             throw SandboxRuntimeError.invalidName
         }
         if let existing = try await inspect(name: name), existing.state == .running {
+            if existing.guestReady != true {
+                try await waitForGuestReady(
+                    name: name,
+                    timeoutSeconds: configuration.commandTimeoutSeconds
+                )
+            }
             return
         }
         _ = try await run(
@@ -166,6 +172,10 @@ public actor LumeVirtualMachineRuntime:
         try await waitForState(
             name: name,
             expected: .running,
+            timeoutSeconds: configuration.commandTimeoutSeconds
+        )
+        try await waitForGuestReady(
+            name: name,
             timeoutSeconds: configuration.commandTimeoutSeconds
         )
     }
@@ -376,13 +386,31 @@ public actor LumeVirtualMachineRuntime:
         )
     }
 
+    private func waitForGuestReady(
+        name: String,
+        timeoutSeconds: UInt32
+    ) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(timeoutSeconds))
+        repeat {
+            if try await inspect(name: name)?.guestReady == true {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(500))
+        } while clock.now < deadline
+        throw SandboxRuntimeError.operationTimedOut(
+            "\(name) guest readiness"
+        )
+    }
+
     private static func makeRecord(_ details: LumeVMDetails) -> SandboxVirtualMachineRecord {
         SandboxVirtualMachineRecord(
             name: details.name,
             state: state(from: details.status),
             cpuCount: UInt16(exactly: details.cpuCount),
             memoryBytes: details.memorySize,
-            diskBytes: details.diskSize.total
+            diskBytes: details.diskSize.total,
+            guestReady: details.sshAvailable
         )
     }
 
@@ -435,6 +463,7 @@ private struct LumeVMDetails: Decodable {
     let memorySize: UInt64
     let diskSize: LumeDiskSize
     let status: String
+    let sshAvailable: Bool?
 }
 
 private struct LumeDiskSize: Decodable {

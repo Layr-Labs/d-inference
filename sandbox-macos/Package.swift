@@ -92,5 +92,10 @@ let package = Package(
             dependencies: ["SandboxCore", "SandboxRuntimeVZ"],
             path: "Tests/SandboxRuntimeVZTests"
         ),
+        .testTarget(
+            name: "DarkbloomSandboxDaemonTests",
+            dependencies: ["DarkbloomSandboxDaemon"],
+            path: "Tests/DarkbloomSandboxDaemonTests"
+        ),
     ]
 )

@@ -18,19 +18,22 @@ public struct SandboxVirtualMachineRecord: Codable, Equatable, Sendable {
     public let cpuCount: UInt16?
     public let memoryBytes: UInt64?
     public let diskBytes: UInt64?
+    public let guestReady: Bool?
 
     public init(
         name: String,
         state: SandboxVirtualMachineState,
         cpuCount: UInt16? = nil,
         memoryBytes: UInt64? = nil,
-        diskBytes: UInt64? = nil
+        diskBytes: UInt64? = nil,
+        guestReady: Bool? = nil
     ) {
         self.name = name
         self.state = state
         self.cpuCount = cpuCount
         self.memoryBytes = memoryBytes
         self.diskBytes = diskBytes
+        self.guestReady = guestReady
     }
 }
 

@@ -25,6 +25,8 @@ enum DarkbloomSandboxDaemon {
             try runDoctor(Array(arguments.dropFirst()))
         case "restore-image":
             try await runRestoreImage(Array(arguments.dropFirst()))
+        case "prepare-base":
+            try await PrepareBaseCommand.run(Array(arguments.dropFirst()))
         case "version":
             print("darkbloom-sandboxd 0.1.0")
         case "help", "--help", "-h":
@@ -93,6 +95,9 @@ enum DarkbloomSandboxDaemon {
             Usage:
               darkbloom-sandboxd doctor [--json] [--development-unsigned]
               darkbloom-sandboxd restore-image latest [--json]
+              darkbloom-sandboxd prepare-base --lume PATH --storage DIR
+                --ipsw FILE --name NAME [--cpu N] [--memory-gib N]
+                [--disk-gib N] [--json]
               darkbloom-sandboxd version
             """
         )
@@ -103,7 +108,7 @@ enum DarkbloomSandboxDaemon {
     }
 }
 
-private enum DaemonCLIError: Error, CustomStringConvertible {
+enum DaemonCLIError: Error, CustomStringConvertible {
     case usage
     case unknownCommand(String)
     case invalidArguments(String)

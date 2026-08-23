@@ -176,18 +176,12 @@ final class LumeRuntimeContractTests: XCTestCase {
             )
             XCTAssertEqual(isolation.exitCode, 0)
 
-            async let firstStop: Void = runtime.stop(name: firstName, force: false)
-            async let secondStop: Void = runtime.stop(name: secondName, force: false)
+            async let firstStop: Void = runtime.stop(name: firstName)
+            async let secondStop: Void = runtime.stop(name: secondName)
             _ = try await (firstStop, secondStop)
         } catch {
-            async let firstCleanup: Void? = try? runtime.stop(
-                name: firstName,
-                force: true
-            )
-            async let secondCleanup: Void? = try? runtime.stop(
-                name: secondName,
-                force: true
-            )
+            async let firstCleanup: Void? = try? runtime.stop(name: firstName)
+            async let secondCleanup: Void? = try? runtime.stop(name: secondName)
             _ = await (firstCleanup, secondCleanup)
             throw error
         }

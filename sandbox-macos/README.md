@@ -11,15 +11,17 @@ does not link the inference provider or MLX. The current executable slice:
   for the macOS 26 unattended-install proof;
 - defines fenced sandbox identities, resource limits, lifecycle transitions,
   and a runtime boundary for VM implementations;
+- persists host mode and at most two resource leases behind a process-safe
+  lock, monotonic fencing tokens, and atomic durable state;
 - provides chunked authenticated encryption for large VM artifacts; and
 - wraps data-encryption keys with a distinct Secure Enclave identity.
 
-The VM installer, guest agent, packet gateway, and coordinator lease protocol
-will sit behind the interfaces in this package. Lume's temporary unattended
-guest uses its known `lume` / `lume` bootstrap credentials, so this slice is
-restricted to the approved no-secrets alpha. Until randomized bootstrap
-credentials, guest control, egress enforcement, and leases pass their live
-tests, this package is a host-substrate proof, not a multi-tenant service.
+The guest agent, packet gateway, and coordinator lease protocol will sit behind
+the interfaces in this package. Lume's temporary unattended guest uses its
+known `lume` / `lume` bootstrap credentials, so this slice is restricted to the
+approved no-secrets alpha. Until randomized bootstrap credentials, guest
+control, and egress enforcement pass their live tests, this package is a
+host-substrate proof, not a multi-tenant service.
 
 ## Build and test
 
@@ -66,6 +68,21 @@ Production persistence uses the dedicated
 exercise transient Secure Enclave cryptography but cannot prove production
 keychain persistence; that path must be verified with the provisioned release
 identity.
+
+## Host capacity and inference coexistence
+
+`SandboxHostCapacityArbiter` stores a host mode and crash-durable leases under a
+caller-owned `0700` directory. The state machine requires
+`inference -> draining -> sandbox_dedicated` before accepting sandbox work, and
+requires all leases to be released before returning to inference mode. Every
+reservation receives a monotonically increasing fencing token. Retries are
+idempotent only when sandbox generation, VM name, CPU, and memory match.
+
+The alpha policy admits exactly two running sandboxes and enforces aggregate CPU
+and memory limits under an inter-process `flock`. Lease expiry is discovery-only:
+expired entries continue consuming capacity until a reconciler has stopped the
+VM and releases the matching fencing token. This prevents a stalled control
+plane from overbooking a host whose guest may still be running.
 
 ## Pinned Lume substrate
 

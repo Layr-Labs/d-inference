@@ -159,6 +159,6 @@ public protocol SandboxVirtualMachineRuntime: Sendable {
     func inspect(name: String) async throws -> SandboxVirtualMachineRecord?
     func create(_ specification: SandboxVirtualMachineSpecification) async throws
     func start(name: String) async throws
-    func stop(name: String, force: Bool) async throws
+    func stop(name: String) async throws
     func delete(name: String) async throws
 }

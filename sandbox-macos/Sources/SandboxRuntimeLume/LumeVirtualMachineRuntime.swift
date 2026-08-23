@@ -180,7 +180,7 @@ public actor LumeVirtualMachineRuntime:
         )
     }
 
-    public func stop(name: String, force: Bool) async throws {
+    public func stop(name: String) async throws {
         guard Self.validName(name) else {
             throw SandboxRuntimeError.invalidName
         }
@@ -190,7 +190,6 @@ public actor LumeVirtualMachineRuntime:
         if existing.state == .stopped {
             return
         }
-        _ = force
         _ = try await run(
             arguments: storageArguments(["stop", name]),
             timeoutSeconds: configuration.commandTimeoutSeconds,

@@ -46,7 +46,7 @@ public enum MacOSBaseImagePreparationError:
         case .invalidGuestFact(let fact):
             return "base image returned invalid guest fact: \(fact)"
         case .cleanup(let primary, let cleanup):
-            return "base preparation failed (\(primary)); forced stop also failed (\(cleanup))"
+            return "base preparation failed (\(primary)); cleanup stop also failed (\(cleanup))"
         }
     }
 }
@@ -81,7 +81,7 @@ public struct MacOSBaseImagePreparer: Sendable {
                     "architecture \(architecture)"
                 )
             }
-            try await runtime.stop(name: specification.name, force: false)
+            try await runtime.stop(name: specification.name)
             guard let record = try await runtime.inspect(name: specification.name),
                   record.state == .stopped,
                   let cpuCount = record.cpuCount,
@@ -103,7 +103,7 @@ public struct MacOSBaseImagePreparer: Sendable {
             )
         } catch {
             do {
-                try await runtime.stop(name: specification.name, force: true)
+                try await runtime.stop(name: specification.name)
             } catch let cleanupError {
                 throw MacOSBaseImagePreparationError.cleanup(
                     primary: String(describing: error),

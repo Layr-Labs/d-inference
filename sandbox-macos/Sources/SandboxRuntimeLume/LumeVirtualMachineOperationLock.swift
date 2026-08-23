@@ -10,36 +10,73 @@ final class LumeVirtualMachineOperationLock: @unchecked Sendable {
         name: String,
         operation: String
     ) throws {
+        guard SandboxVirtualMachineNamePolicy.isValid(name) else {
+            throw SandboxRuntimeError.invalidName
+        }
         try workspace.prepare()
-        let lockURL = workspace.locksDirectory.appendingPathComponent(
-            "\(name).lock",
-            isDirectory: false
-        )
-        let descriptor = open(
-            lockURL.path,
-            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+        let directoryDescriptor: Int32
+        do {
+            directoryDescriptor =
+                try SandboxAuthorityFileSystem.openPrivateDirectory(
+                    at: workspace.locksDirectory,
+                    createIfMissing: false,
+                    requirePrivateParent: true
+                )
+        } catch {
+            throw Self.failure("VM operation lock directory is unsafe")
+        }
+        defer { close(directoryDescriptor) }
+        let lockName = "\(name).lock"
+        var created = false
+        var descriptor = openat(
+            directoryDescriptor,
+            lockName,
+            O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
             0o600
         )
+        if descriptor >= 0 {
+            created = true
+        } else if errno == EEXIST {
+            descriptor = openat(
+                directoryDescriptor,
+                lockName,
+                O_RDWR | O_CLOEXEC | O_NOFOLLOW
+            )
+        }
         guard descriptor >= 0 else {
             throw SandboxRuntimeError.unsupported(
                 "failed to open VM operation lock for \(name)"
             )
         }
-
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFREG,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0
-        else {
+        do {
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                descriptor
+            )
+            if created {
+                guard fsync(descriptor) == 0,
+                      fsync(directoryDescriptor) == 0
+                else {
+                    throw Self.failure(
+                        "failed to synchronize VM operation lock"
+                    )
+                }
+            }
+        } catch {
             close(descriptor)
+            if created {
+                _ = unlinkat(directoryDescriptor, lockName, 0)
+            }
             throw SandboxRuntimeError.unsupported(
                 "VM operation lock failed ownership or mode checks"
             )
         }
-        guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
+        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            if errno == EINTR {
+                continue
+            }
+            let code = errno
             close(descriptor)
-            if errno == EWOULDBLOCK {
+            if code == EWOULDBLOCK || code == EAGAIN {
                 throw SandboxRuntimeError.operationInProgress(
                     name: name,
                     operation: operation
@@ -49,11 +86,42 @@ final class LumeVirtualMachineOperationLock: @unchecked Sendable {
                 "failed to acquire VM operation lock for \(name)"
             )
         }
+        do {
+            let locked = try SandboxAuthorityFileSystem.fileMetadata(descriptor)
+            let rebound = openat(
+                directoryDescriptor,
+                lockName,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            )
+            guard rebound >= 0 else {
+                throw Self.failure("VM operation lock path disappeared")
+            }
+            defer { close(rebound) }
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                rebound
+            )
+            let reboundMetadata =
+                try SandboxAuthorityFileSystem.fileMetadata(rebound)
+            guard SandboxAuthorityFileSystem.sameIdentity(
+                locked,
+                reboundMetadata
+            ) else {
+                throw Self.failure("VM operation lock path was replaced")
+            }
+        } catch {
+            _ = flock(descriptor, LOCK_UN)
+            close(descriptor)
+            throw Self.failure("VM operation lock binding is unsafe")
+        }
         self.descriptor = descriptor
     }
 
     deinit {
         _ = flock(descriptor, LOCK_UN)
         close(descriptor)
+    }
+
+    private static func failure(_ detail: String) -> SandboxRuntimeError {
+        .unsupported(detail)
     }
 }

@@ -121,6 +121,7 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
     case leaseResourceMismatch
     case fencingTokenExhausted
     case unsafeStatePath
+    case publicationUncertain(Int32)
     case io(Int32)
 
     public var description: String {
@@ -161,6 +162,8 @@ public enum SandboxCapacityError: Error, Equatable, Sendable, CustomStringConver
             return "sandbox capacity fencing-token space is exhausted"
         case .unsafeStatePath:
             return "sandbox capacity state path failed ownership or mode checks"
+        case .publicationUncertain(let code):
+            return "sandbox capacity state publication is uncertain after errno \(code)"
         case .io(let code):
             return "sandbox capacity state I/O failed with errno \(code)"
         }

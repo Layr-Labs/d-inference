@@ -52,17 +52,11 @@ struct SandboxCapacityStateStore: Sendable {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
         let lockName = "lease-\(sandboxID.description).lock"
-        let lockDescriptor = openat(
-            directoryDescriptor,
-            lockName,
-            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
-            S_IRUSR | S_IWUSR
+        let lockDescriptor = try Self.openLockFile(
+            named: lockName,
+            in: directoryDescriptor
         )
-        guard lockDescriptor >= 0 else {
-            throw Self.pathError(errno)
-        }
         do {
-            try Self.validateFileDescriptor(lockDescriptor)
             let lockOperation = wait ? LOCK_EX : LOCK_EX | LOCK_NB
             while flock(lockDescriptor, lockOperation) != 0 {
                 let code = errno
@@ -73,6 +67,11 @@ struct SandboxCapacityStateStore: Sendable {
                     throw SandboxCapacityError.io(code)
                 }
             }
+            try Self.requireLockBinding(
+                descriptor: lockDescriptor,
+                named: lockName,
+                in: directoryDescriptor
+            )
             return SandboxLeaseOperationLock(descriptor: lockDescriptor)
         } catch {
             close(lockDescriptor)
@@ -101,59 +100,33 @@ struct SandboxCapacityStateStore: Sendable {
         let directoryDescriptor = try openStateDirectory()
         defer { close(directoryDescriptor) }
 
-        let lockDescriptor = openat(
-            directoryDescriptor,
-            Self.lockFileName,
-            O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
-            S_IRUSR | S_IWUSR
+        let lockDescriptor = try Self.openLockFile(
+            named: Self.lockFileName,
+            in: directoryDescriptor
         )
-        guard lockDescriptor >= 0 else {
-            throw Self.pathError(errno)
-        }
         defer { close(lockDescriptor) }
-        try Self.validateFileDescriptor(lockDescriptor)
-        guard flock(lockDescriptor, LOCK_EX) == 0 else {
-            throw SandboxCapacityError.io(errno)
+        while flock(lockDescriptor, LOCK_EX) != 0 {
+            guard errno == EINTR else {
+                throw SandboxCapacityError.io(errno)
+            }
         }
         defer { flock(lockDescriptor, LOCK_UN) }
+        try Self.requireLockBinding(
+            descriptor: lockDescriptor,
+            named: Self.lockFileName,
+            in: directoryDescriptor
+        )
         return try operation(directoryDescriptor)
     }
 
     private func openStateDirectory() throws -> Int32 {
-        let fileManager = FileManager.default
-        var isDirectory: ObjCBool = false
-        if fileManager.fileExists(
-            atPath: stateDirectory.path,
-            isDirectory: &isDirectory
-        ) {
-            guard isDirectory.boolValue else {
-                throw SandboxCapacityError.unsafeStatePath
-            }
-        } else {
-            do {
-                try fileManager.createDirectory(
-                    at: stateDirectory,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-            } catch {
-                throw SandboxCapacityError.io(errno)
-            }
-        }
-
-        let descriptor = open(
-            stateDirectory.path,
-            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
-        )
-        guard descriptor >= 0 else {
-            throw Self.pathError(errno)
-        }
         do {
-            try Self.validateDirectoryDescriptor(descriptor)
-            return descriptor
+            return try SandboxAuthorityFileSystem.openPrivateDirectory(
+                at: stateDirectory,
+                createIfMissing: true
+            )
         } catch {
-            close(descriptor)
-            throw error
+            throw Self.authorityError(error)
         }
     }
 
@@ -173,11 +146,15 @@ struct SandboxCapacityStateStore: Sendable {
             throw Self.pathError(code)
         }
         defer { close(descriptor) }
-        try Self.validateFileDescriptor(descriptor)
-        let data = try Self.readAll(
-            descriptor,
-            maximumBytes: Self.maximumStateBytes
-        )
+        let data: Data
+        do {
+            data = try SandboxAuthorityFileSystem.readStablePrivateFile(
+                descriptor,
+                maximumBytes: Self.maximumStateBytes
+            )
+        } catch {
+            throw Self.authorityError(error)
+        }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .millisecondsSince1970
         let state: SandboxCapacityState
@@ -209,31 +186,40 @@ struct SandboxCapacityStateStore: Sendable {
         let descriptor = openat(
             directoryDescriptor,
             temporaryName,
-            O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
+            O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
             S_IRUSR | S_IWUSR
         )
         guard descriptor >= 0 else {
             throw SandboxCapacityError.io(errno)
         }
-        var descriptorIsOpen = true
         var shouldRemove = true
         defer {
-            if descriptorIsOpen {
-                close(descriptor)
-            }
+            close(descriptor)
             if shouldRemove {
                 unlinkat(directoryDescriptor, temporaryName, 0)
             }
         }
 
+        try Self.validateFileDescriptor(descriptor)
         try Self.writeAll(data, to: descriptor)
         guard fsync(descriptor) == 0 else {
             throw SandboxCapacityError.io(errno)
         }
-        let closeStatus = close(descriptor)
-        descriptorIsOpen = false
-        guard closeStatus == 0 else {
-            throw SandboxCapacityError.io(errno)
+        try Self.validateFileDescriptor(descriptor)
+        let stagedMetadata = try Self.fileMetadata(descriptor)
+        var pathMetadata = stat()
+        guard fstatat(
+            directoryDescriptor,
+            temporaryName,
+            &pathMetadata,
+            AT_SYMLINK_NOFOLLOW
+        ) == 0,
+            SandboxAuthorityFileSystem.sameIdentity(
+                stagedMetadata,
+                pathMetadata
+            )
+        else {
+            throw SandboxCapacityError.unsafeStatePath
         }
         guard renameat(
             directoryDescriptor,
@@ -244,8 +230,31 @@ struct SandboxCapacityStateStore: Sendable {
             throw SandboxCapacityError.io(errno)
         }
         shouldRemove = false
+        let committedDescriptor = openat(
+            directoryDescriptor,
+            Self.stateFileName,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard committedDescriptor >= 0 else {
+            throw SandboxCapacityError.publicationUncertain(errno)
+        }
+        defer { close(committedDescriptor) }
+        do {
+            try Self.validateFileDescriptor(committedDescriptor)
+            let committedMetadata = try Self.fileMetadata(committedDescriptor)
+            guard SandboxAuthorityFileSystem.sameIdentity(
+                stagedMetadata,
+                committedMetadata
+            ) else {
+                throw SandboxCapacityError.unsafeStatePath
+            }
+        } catch let error as SandboxCapacityError {
+            throw error
+        } catch {
+            throw Self.authorityError(error)
+        }
         guard fsync(directoryDescriptor) == 0 else {
-            throw SandboxCapacityError.io(errno)
+            throw SandboxCapacityError.publicationUncertain(errno)
         }
     }
 
@@ -283,29 +292,90 @@ struct SandboxCapacityStateStore: Sendable {
             && duration > 0
     }
 
-    private static func validateDirectoryDescriptor(_ descriptor: Int32) throws {
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0 else {
-            throw SandboxCapacityError.io(errno)
+    private static func openLockFile(
+        named name: String,
+        in directoryDescriptor: Int32
+    ) throws -> Int32 {
+        var created = false
+        var descriptor = openat(
+            directoryDescriptor,
+            name,
+            O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+            S_IRUSR | S_IWUSR
+        )
+        if descriptor >= 0 {
+            created = true
+        } else if errno == EEXIST {
+            descriptor = openat(
+                directoryDescriptor,
+                name,
+                O_RDWR | O_CLOEXEC | O_NOFOLLOW
+            )
         }
-        guard (metadata.st_mode & S_IFMT) == S_IFDIR,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0
-        else {
+        guard descriptor >= 0 else {
+            throw pathError(errno)
+        }
+        do {
+            try validateFileDescriptor(descriptor)
+            if created {
+                guard fsync(descriptor) == 0 else {
+                    throw SandboxCapacityError.io(errno)
+                }
+                guard fsync(directoryDescriptor) == 0 else {
+                    throw SandboxCapacityError.publicationUncertain(errno)
+                }
+            }
+            return descriptor
+        } catch {
+            close(descriptor)
+            if created {
+                _ = unlinkat(directoryDescriptor, name, 0)
+            }
+            throw error
+        }
+    }
+
+    private static func requireLockBinding(
+        descriptor: Int32,
+        named name: String,
+        in directoryDescriptor: Int32
+    ) throws {
+        try validateFileDescriptor(descriptor)
+        let lockedMetadata = try fileMetadata(descriptor)
+        let rebound = openat(
+            directoryDescriptor,
+            name,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard rebound >= 0 else {
+            throw pathError(errno)
+        }
+        defer { close(rebound) }
+        try validateFileDescriptor(rebound)
+        let reboundMetadata = try fileMetadata(rebound)
+        guard SandboxAuthorityFileSystem.sameIdentity(
+            lockedMetadata,
+            reboundMetadata
+        ) else {
             throw SandboxCapacityError.unsafeStatePath
         }
     }
 
     private static func validateFileDescriptor(_ descriptor: Int32) throws {
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0 else {
-            throw SandboxCapacityError.io(errno)
+        do {
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                descriptor
+            )
+        } catch {
+            throw authorityError(error)
         }
-        guard (metadata.st_mode & S_IFMT) == S_IFREG,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0
-        else {
-            throw SandboxCapacityError.unsafeStatePath
+    }
+
+    private static func fileMetadata(_ descriptor: Int32) throws -> stat {
+        do {
+            return try SandboxAuthorityFileSystem.fileMetadata(descriptor)
+        } catch {
+            throw authorityError(error)
         }
     }
 
@@ -318,29 +388,17 @@ struct SandboxCapacityStateStore: Sendable {
         }
     }
 
-    private static func readAll(
-        _ descriptor: Int32,
-        maximumBytes: Int
-    ) throws -> Data {
-        var result = Data()
-        var buffer = [UInt8](repeating: 0, count: 16_384)
-        while true {
-            let count = buffer.withUnsafeMutableBytes {
-                Darwin.read(descriptor, $0.baseAddress, $0.count)
-            }
-            if count == 0 {
-                return result
-            }
-            if count < 0 {
-                if errno == EINTR {
-                    continue
-                }
-                throw SandboxCapacityError.io(errno)
-            }
-            guard result.count + count <= maximumBytes else {
-                throw SandboxCapacityError.corruptState
-            }
-            result.append(buffer, count: count)
+    private static func authorityError(_ error: Error) -> SandboxCapacityError {
+        guard let error = error as? SandboxAuthorityFileSystemError else {
+            return .io(EIO)
+        }
+        switch error {
+        case .unsafePath:
+            return .unsafeStatePath
+        case .publicationUncertain(let code):
+            return .publicationUncertain(code)
+        case .io(let code):
+            return pathError(code)
         }
     }
 

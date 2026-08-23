@@ -4,19 +4,14 @@ import SandboxRuntime
 
 enum LumeGuestCommandJournalIO {
     static func openPrivateDirectory(_ url: URL) throws -> Int32 {
-        let descriptor = open(
-            url.path,
-            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
-        )
-        guard descriptor >= 0 else {
-            throw ioFailure("guest command journal is unavailable")
-        }
         do {
-            try requirePrivateDirectory(descriptor)
-            return descriptor
+            return try SandboxAuthorityFileSystem.openPrivateDirectory(
+                at: url,
+                createIfMissing: false,
+                requirePrivateParent: true
+            )
         } catch {
-            close(descriptor)
-            throw error
+            throw ioFailure("guest command journal is unavailable")
         }
     }
 
@@ -24,19 +19,22 @@ enum LumeGuestCommandJournalIO {
         parentDescriptor: Int32,
         name: String
     ) throws -> Int32 {
-        if mkdirat(parentDescriptor, name, 0o700) != 0, errno != EEXIST {
+        do {
+            return try SandboxAuthorityFileSystem.openPrivateChildDirectory(
+                parentDescriptor: parentDescriptor,
+                name: name,
+                createIfMissing: true
+            )
+        } catch {
             throw ioFailure("failed to create guest command journal directory")
         }
-        return try openRequiredDirectory(
-            parentDescriptor: parentDescriptor,
-            name: name
-        )
     }
 
     static func openDirectoryIfPresent(
         parentDescriptor: Int32,
         name: String
     ) throws -> Int32? {
+        try requirePrivateDirectory(parentDescriptor)
         let descriptor = openat(
             parentDescriptor,
             name,
@@ -75,19 +73,48 @@ enum LumeGuestCommandJournalIO {
         named name: String,
         parentDescriptor: Int32
     ) throws {
-        let descriptor = openat(
-            parentDescriptor,
-            name,
-            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-            0o600
-        )
-        guard descriptor >= 0 else {
-            throw ioFailure("failed to persist guest command claim")
+        let descriptor: Int32
+        do {
+            descriptor = try SandboxAuthorityFileSystem
+                .createUnlinkedPrivateFile(
+                    parentDescriptor: parentDescriptor,
+                    prefix: name
+                )
+        } catch {
+            throw ioFailure("failed to stage guest command claim")
         }
         defer { close(descriptor) }
         try writeAll(data, descriptor: descriptor)
         guard fsync(descriptor) == 0 else {
             throw ioFailure("failed to synchronize guest command claim")
+        }
+        do {
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                descriptor,
+                maximumBytes: data.count,
+                allowEmpty: data.isEmpty,
+                expectedLinkCount: 0
+            )
+        } catch {
+            throw ioFailure("guest command claim staging is unsafe")
+        }
+        let cloneStatus = name.withCString {
+            fclonefileat(
+                descriptor,
+                parentDescriptor,
+                $0,
+                UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+            )
+        }
+        guard cloneStatus == 0 else {
+            throw ioFailure("failed to persist guest command claim")
+        }
+        guard let committed = try readFileIfPresent(
+            named: name,
+            parentDescriptor: parentDescriptor,
+            maximumBytes: data.count
+        ), committed == data else {
+            throw ioFailure("guest command claim publication is uncertain")
         }
     }
 
@@ -103,30 +130,30 @@ enum LumeGuestCommandJournalIO {
             )
         }
         _ = try LumeGuestCommandResultDecoder.decode(envelope)
-        let temporaryName = ".result-\(UUID().uuidString.lowercased()).partial"
-        let temporaryDescriptor = openat(
-            commandDescriptor,
-            temporaryName,
-            O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-            0o600
-        )
-        guard temporaryDescriptor >= 0 else {
+        let temporaryDescriptor: Int32
+        do {
+            temporaryDescriptor = try SandboxAuthorityFileSystem
+                .createUnlinkedPrivateFile(
+                    parentDescriptor: commandDescriptor,
+                    prefix: "result"
+                )
+        } catch {
             throw ioFailure("failed to stage guest command result")
         }
-        var temporaryIsLinked = true
-        defer {
-            close(temporaryDescriptor)
-            if temporaryIsLinked {
-                unlinkat(commandDescriptor, temporaryName, 0)
-            }
-        }
-        guard unlinkat(commandDescriptor, temporaryName, 0) == 0 else {
-            throw ioFailure("failed to unlink staged guest command result")
-        }
-        temporaryIsLinked = false
+        defer { close(temporaryDescriptor) }
         try writeAll(envelope, descriptor: temporaryDescriptor)
         guard fsync(temporaryDescriptor) == 0 else {
             throw ioFailure("failed to synchronize guest command result")
+        }
+        do {
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                temporaryDescriptor,
+                maximumBytes: LumeGuestCommandEnvelope.maximumEnvelopeBytes,
+                allowEmpty: false,
+                expectedLinkCount: 0
+            )
+        } catch {
+            throw ioFailure("guest command result staging is unsafe")
         }
         let cloneStatus =
             LumeGuestCommandJournal.resultFileName.withCString { destination in
@@ -166,6 +193,7 @@ enum LumeGuestCommandJournalIO {
         parentDescriptor: Int32,
         maximumBytes: Int
     ) throws -> Data? {
+        try requirePrivateDirectory(parentDescriptor)
         let descriptor = openat(
             parentDescriptor,
             name,
@@ -178,54 +206,17 @@ enum LumeGuestCommandJournalIO {
             throw ioFailure("guest command journal file is unsafe")
         }
         defer { close(descriptor) }
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFREG,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0,
-              metadata.st_size >= 0,
-              metadata.st_size <= maximumBytes
-        else {
+        do {
+            return try SandboxAuthorityFileSystem.readStablePrivateFile(
+                descriptor,
+                maximumBytes: maximumBytes,
+                allowEmpty: true
+            )
+        } catch {
             throw SandboxRuntimeError.unsupported(
-                "guest command journal file failed ownership, type, mode, or size checks"
+                "guest command journal file failed ownership, ACL, link, or stability checks"
             )
         }
-        var data = Data(count: Int(metadata.st_size))
-        var offset = 0
-        try data.withUnsafeMutableBytes { bytes in
-            while offset < bytes.count {
-                let count = pread(
-                    descriptor,
-                    bytes.baseAddress?.advanced(by: offset),
-                    bytes.count - offset,
-                    off_t(offset)
-                )
-                if count < 0, errno == EINTR {
-                    continue
-                }
-                guard count > 0 else {
-                    throw ioFailure(
-                        "guest command journal file changed while reading"
-                    )
-                }
-                offset += count
-            }
-        }
-        var after = stat()
-        guard fstat(descriptor, &after) == 0,
-              after.st_dev == metadata.st_dev,
-              after.st_ino == metadata.st_ino,
-              after.st_size == metadata.st_size,
-              after.st_mtimespec.tv_sec == metadata.st_mtimespec.tv_sec,
-              after.st_mtimespec.tv_nsec == metadata.st_mtimespec.tv_nsec,
-              after.st_ctimespec.tv_sec == metadata.st_ctimespec.tv_sec,
-              after.st_ctimespec.tv_nsec == metadata.st_ctimespec.tv_nsec
-        else {
-            throw ioFailure(
-                "guest command journal file changed while reading"
-            )
-        }
-        return data
     }
 
     static func ioFailure(_ detail: String) -> SandboxRuntimeError {
@@ -235,14 +226,11 @@ enum LumeGuestCommandJournalIO {
     private static func requirePrivateDirectory(
         _ descriptor: Int32
     ) throws {
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFDIR,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0
-        else {
+        do {
+            try SandboxAuthorityFileSystem.requirePrivateDirectory(descriptor)
+        } catch {
             throw SandboxRuntimeError.unsupported(
-                "guest command journal directory failed ownership or mode checks"
+                "guest command journal directory failed ownership, mode, or ACL checks"
             )
         }
     }

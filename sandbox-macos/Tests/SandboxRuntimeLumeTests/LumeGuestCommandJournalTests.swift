@@ -352,6 +352,74 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
     }
 
+    func testReplayRejectsHardlinkedCommitmentAndResultAuthority() throws {
+        for target in ["commitment", "result"] {
+            let fixture = try JournalFixture()
+            defer { try? fixture.remove() }
+            let installationID = UUID()
+            let request = try fixture.request()
+            let claim = try fixture.journal.claim(
+                installationID: installationID,
+                request: request
+            )
+            if target == "result" {
+                let expected = SandboxGuestCommandResult(
+                    exitCode: 0,
+                    standardOutput: Data(),
+                    standardError: Data(),
+                    standardOutputTruncated: false,
+                    standardErrorTruncated: false
+                )
+                try claim.complete(envelope: Self.envelope(for: expected))
+            }
+            let authority = target == "result"
+                ? fixture.resultFile(
+                    installationID: installationID,
+                    idempotencyKey: request.idempotencyKey
+                )
+                : fixture.commitmentFile(
+                    installationID: installationID,
+                    idempotencyKey: request.idempotencyKey
+                )
+            try FileManager.default.linkItem(
+                at: authority,
+                to: fixture.root.appendingPathComponent(
+                    "\(target)-alias"
+                )
+            )
+
+            XCTAssertEqual(
+                fixture.journal.replay(
+                    installationID: installationID,
+                    request: request
+                ),
+                .indeterminate
+            )
+        }
+    }
+
+    func testJournalRejectsExtendedACLAuthority() throws {
+        let fixture = try JournalFixture()
+        defer { try? fixture.remove() }
+        try addInheritableACL(to: fixture.journalRoot)
+        let installationID = UUID()
+        let request = try fixture.request()
+
+        XCTAssertEqual(
+            fixture.journal.replay(
+                installationID: installationID,
+                request: request
+            ),
+            .indeterminate
+        )
+        XCTAssertThrowsError(
+            try fixture.journal.claim(
+                installationID: installationID,
+                request: request
+            )
+        )
+    }
+
     private static func envelope(
         for result: SandboxGuestCommandResult
     ) throws -> Data {
@@ -370,6 +438,19 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
         return try encoder.encode(envelope)
+    }
+
+    private func addInheritableACL(to url: URL) throws {
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [
+            "+a",
+            "everyone allow read,write,execute,file_inherit,directory_inherit",
+            url.path,
+        ]
+        try chmod.run()
+        chmod.waitUntilExit()
+        XCTAssertEqual(chmod.terminationStatus, 0)
     }
 }
 
@@ -432,6 +513,18 @@ private struct JournalFixture {
             )
             .appendingPathComponent(
                 LumeGuestCommandIdentity.identifier(for: idempotencyKey),
+                isDirectory: true
+            )
+    }
+
+    var journalRoot: URL {
+        storage
+            .appendingPathComponent(
+                LumeRuntimeWorkspace.supportDirectoryName,
+                isDirectory: true
+            )
+            .appendingPathComponent(
+                LumeRuntimeWorkspace.commandJournalDirectoryName,
                 isDirectory: true
             )
     }

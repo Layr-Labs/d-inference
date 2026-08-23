@@ -201,8 +201,26 @@ enum LumeRuntimeProvenanceValidator {
     private static func inspectDirectory(
         at url: URL
     ) throws -> LumeFileIdentity {
-        var metadata = stat()
-        guard lstat(url.path, &metadata) == 0,
+        let descriptor: Int32
+        do {
+            descriptor =
+                try SandboxAuthorityFileSystem.openExistingDirectory(at: url)
+        } catch {
+            throw unsupported(
+                "Lume runtime directory cannot be opened safely"
+            )
+        }
+        defer { close(descriptor) }
+        let metadata: stat
+        do {
+            metadata = try SandboxAuthorityFileSystem.fileMetadata(descriptor)
+            try SandboxAuthorityFileSystem.requireNoExtendedACL(descriptor)
+        } catch {
+            throw unsupported(
+                "Lume runtime directory failed ACL checks"
+            )
+        }
+        guard
               (metadata.st_mode & S_IFMT) == S_IFDIR,
               metadata.st_uid == geteuid() || metadata.st_uid == 0,
               metadata.st_mode & 0o222 == 0
@@ -222,7 +240,21 @@ enum LumeRuntimeProvenanceValidator {
         computeDigest: Bool,
         errorSubject: String = "Lume runtime file"
     ) throws -> InspectedRegularFile {
-        let descriptor = open(url.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        let parentDescriptor: Int32
+        do {
+            parentDescriptor =
+                try SandboxAuthorityFileSystem.openExistingDirectory(
+                    at: url.deletingLastPathComponent()
+                )
+        } catch {
+            throw unsupported("\(errorSubject) parent path is unsafe")
+        }
+        defer { close(parentDescriptor) }
+        let descriptor = openat(
+            parentDescriptor,
+            url.lastPathComponent,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+        )
         guard descriptor >= 0 else {
             throw unsupported("\(errorSubject) cannot be opened")
         }
@@ -233,11 +265,17 @@ enum LumeRuntimeProvenanceValidator {
               (before.st_mode & S_IFMT) == S_IFREG,
               before.st_uid == geteuid() || before.st_uid == 0,
               before.st_mode & 0o222 == 0,
+              before.st_nlink == 1,
               before.st_size >= 0,
               maximumBytes.map({ before.st_size <= $0 }) ?? true,
               !requiresExecutableMode || before.st_mode & 0o111 != 0
         else {
             throw unsupported("\(errorSubject) failed ownership or mode checks")
+        }
+        do {
+            try SandboxAuthorityFileSystem.requireNoExtendedACL(descriptor)
+        } catch {
+            throw unsupported("\(errorSubject) failed ACL checks")
         }
 
         var hasher = SHA256()
@@ -267,9 +305,15 @@ enum LumeRuntimeProvenanceValidator {
 
         var after = stat()
         guard fstat(descriptor, &after) == 0,
-              identity(from: before) == identity(from: after)
+              identity(from: before) == identity(from: after),
+              after.st_nlink == 1
         else {
             throw unsupported("\(errorSubject) changed during validation")
+        }
+        do {
+            try SandboxAuthorityFileSystem.requireNoExtendedACL(descriptor)
+        } catch {
+            throw unsupported("\(errorSubject) ACL changed during validation")
         }
         return InspectedRegularFile(
             identity: identity(from: after),

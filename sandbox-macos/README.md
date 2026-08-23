@@ -104,7 +104,21 @@ identity.
 ## Host capacity and inference coexistence
 
 `SandboxHostCapacityArbiter` stores a host mode and crash-durable leases under a
-caller-owned `0700` directory. The state machine requires
+caller-owned, extended-ACL-free `0700` directory. Authority paths are opened
+component by component without following symlinks; state and lock files must be
+private, single-link regular files and are revalidated through their open
+descriptors. State replacement is synchronized in file-before-directory order,
+and a post-rename directory-sync failure is reported as an uncertain
+publication rather than a clean failure. Lume operation locks, VM ownership
+markers, workspace configuration, provenance, and guest-command journals apply
+the same owner, mode, ACL, hard-link, and ancestor-path checks. Staged ownership,
+configuration, commitment, and result bytes are unlinked before writing and
+published from their descriptors. These controls assume the production broker
+runs under a dedicated Unix identity; processes with that exact credential can
+change owner-controlled mode and file flags, so sharing the broker identity
+with tenant jobs is prohibited.
+
+The state machine requires
 `inference -> draining -> sandbox_dedicated` before accepting sandbox work, and
 requires all leases to be released before returning to inference mode. Every
 reservation receives a monotonically increasing fencing token. Retries are

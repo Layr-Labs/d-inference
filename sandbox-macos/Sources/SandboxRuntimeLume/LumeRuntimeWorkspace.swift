@@ -44,7 +44,10 @@ struct LumeRuntimeWorkspace: Sendable {
     }
 
     func prepare() throws {
-        try Self.ensurePrivateDirectory(storageDirectory)
+        try Self.ensurePrivateDirectory(
+            storageDirectory,
+            requirePrivateParent: false
+        )
         try Self.ensurePrivateDirectory(supportDirectory)
         try Self.ensurePrivateDirectory(configurationHome)
         try Self.ensurePrivateDirectory(cacheDirectory)
@@ -100,10 +103,7 @@ struct LumeRuntimeWorkspace: Sendable {
         )
 
         do {
-            try Self.ensurePrivateDirectory(
-                operationDirectory,
-                withIntermediateDirectories: false
-            )
+            try Self.ensurePrivateDirectory(operationDirectory)
             try Self.ensurePrivateDirectory(operationConfigurationHome)
             try Self.ensurePrivateDirectory(temporaryVMDirectory)
             try Self.ensurePrivateDirectory(operationCacheDirectory)
@@ -138,29 +138,17 @@ struct LumeRuntimeWorkspace: Sendable {
 
     private static func ensurePrivateDirectory(
         _ url: URL,
-        withIntermediateDirectories: Bool = true
+        requirePrivateParent: Bool = true
     ) throws {
-        if !pathExists(url) {
-            do {
-                try FileManager.default.createDirectory(
+        do {
+            let descriptor =
+                try SandboxAuthorityFileSystem.openPrivateDirectory(
                     at: url,
-                    withIntermediateDirectories: withIntermediateDirectories,
-                    attributes: [.posixPermissions: 0o700]
+                    createIfMissing: true,
+                    requirePrivateParent: requirePrivateParent
                 )
-            } catch {
-                throw SandboxRuntimeError.unsupported(
-                    "failed to create private Lume runtime directory \(url.path)"
-                )
-            }
-        }
-
-        var metadata = stat()
-        guard lstat(url.path, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFDIR,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0,
-              FileManager.default.isWritableFile(atPath: url.path)
-        else {
+            close(descriptor)
+        } catch {
             throw SandboxRuntimeError.unsupported(
                 "Lume runtime directory is not a private writable directory: \(url.path)"
             )
@@ -201,11 +189,63 @@ struct LumeRuntimeWorkspace: Sendable {
             isDirectory: false
         )
         do {
-            try Data(configuration.utf8).write(
-                to: destination,
-                options: .atomic
+            let directoryDescriptor =
+                try SandboxAuthorityFileSystem.openPrivateDirectory(
+                    at: lumeConfigurationDirectory,
+                    createIfMissing: false,
+                    requirePrivateParent: true
+                )
+            defer { close(directoryDescriptor) }
+            let descriptor =
+                try SandboxAuthorityFileSystem.createUnlinkedPrivateFile(
+                    parentDescriptor: directoryDescriptor,
+                    prefix: "config"
+                )
+            defer { close(descriptor) }
+            let data = Data(configuration.utf8)
+            try SandboxAuthorityFileSystem.writeAll(data, to: descriptor)
+            guard fsync(descriptor) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                descriptor,
+                maximumBytes: data.count,
+                allowEmpty: false,
+                expectedLinkCount: 0
             )
-            guard chmod(destination.path, 0o600) == 0 else {
+            if unlinkat(directoryDescriptor, destination.lastPathComponent, 0) != 0,
+               errno != ENOENT
+            {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let cloneStatus = destination.lastPathComponent.withCString {
+                fclonefileat(
+                    descriptor,
+                    directoryDescriptor,
+                    $0,
+                    UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+                )
+            }
+            guard cloneStatus == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            let committedDescriptor = openat(
+                directoryDescriptor,
+                destination.lastPathComponent,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            )
+            guard committedDescriptor >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            defer { close(committedDescriptor) }
+            let committed =
+                try SandboxAuthorityFileSystem.readStablePrivateFile(
+                    committedDescriptor,
+                    maximumBytes: data.count
+                )
+            guard committed == data,
+                  fsync(directoryDescriptor) == 0
+            else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
         } catch {

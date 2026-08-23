@@ -60,66 +60,66 @@ enum LumeVirtualMachineOwnership {
         }
 
         let directoryDescriptor = try openOwnedDirectory(
-            at: virtualMachineDirectory
+            at: virtualMachineDirectory,
+            requirePrivate: false
         )
         defer { close(directoryDescriptor) }
-        let temporaryName = ".darkbloom-ownership.\(UUID().uuidString).partial"
-        let descriptor = openat(
-            directoryDescriptor,
-            temporaryName,
-            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-            0o600
-        )
-        guard descriptor >= 0 else {
-            throw SandboxRuntimeError.unsupported(
-                "failed to create Darkbloom VM ownership marker"
-            )
-        }
-        var descriptorIsOpen = true
-        var shouldRemoveTemporary = true
-        defer {
-            if descriptorIsOpen {
-                close(descriptor)
-            }
-            if shouldRemoveTemporary {
-                unlinkat(directoryDescriptor, temporaryName, 0)
-            }
-        }
-
         do {
-            try data.withUnsafeBytes { bytes in
-                var written = 0
-                while written < bytes.count {
-                    let count = Darwin.write(
-                        descriptor,
-                        bytes.baseAddress?.advanced(by: written),
-                        bytes.count - written
-                    )
-                    guard count > 0 else {
-                        throw POSIXError(
-                            POSIXErrorCode(rawValue: errno) ?? .EIO
-                        )
-                    }
-                    written += count
-                }
+            guard fchmod(directoryDescriptor, 0o700) == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
+            try SandboxAuthorityFileSystem.requirePrivateDirectory(
+                directoryDescriptor
+            )
+            let descriptor =
+                try SandboxAuthorityFileSystem.createUnlinkedPrivateFile(
+                    parentDescriptor: directoryDescriptor,
+                    prefix: "darkbloom-ownership"
+                )
+            defer { close(descriptor) }
+            try SandboxAuthorityFileSystem.writeAll(data, to: descriptor)
             guard fsync(descriptor) == 0 else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            let closeStatus = close(descriptor)
-            descriptorIsOpen = false
-            guard closeStatus == 0 else {
+            _ = try SandboxAuthorityFileSystem.requirePrivateRegularFile(
+                descriptor,
+                maximumBytes: maximumBytes,
+                allowEmpty: false,
+                expectedLinkCount: 0
+            )
+            if unlinkat(directoryDescriptor, fileName, 0) != 0,
+               errno != ENOENT
+            {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            guard renameat(
-                directoryDescriptor,
-                temporaryName,
-                directoryDescriptor,
-                fileName
-            ) == 0 else {
+            let cloneStatus = fileName.withCString {
+                fclonefileat(
+                    descriptor,
+                    directoryDescriptor,
+                    $0,
+                    UInt32(CLONE_NOFOLLOW | CLONE_NOOWNERCOPY)
+                )
+            }
+            guard cloneStatus == 0 else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            shouldRemoveTemporary = false
+            let committedDescriptor = openat(
+                directoryDescriptor,
+                fileName,
+                O_RDONLY | O_CLOEXEC | O_NOFOLLOW
+            )
+            guard committedDescriptor >= 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            defer { close(committedDescriptor) }
+            let committed =
+                try SandboxAuthorityFileSystem.readStablePrivateFile(
+                    committedDescriptor,
+                    maximumBytes: maximumBytes
+                )
+            guard committed == data else {
+                throw POSIXError(.EIO)
+            }
             guard fsync(directoryDescriptor) == 0 else {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
@@ -194,29 +194,15 @@ enum LumeVirtualMachineOwnership {
         }
         defer { close(descriptor) }
 
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFREG,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o077 == 0,
-              metadata.st_size > 0,
-              metadata.st_size <= maximumBytes
-        else {
-            throw SandboxRuntimeError.unsupported(
-                "VM \(name) has an unsafe ownership marker"
-            )
-        }
-
-        let handle = FileHandle(
-            fileDescriptor: descriptor,
-            closeOnDealloc: false
-        )
         let data: Data
         do {
-            data = try handle.readToEnd() ?? Data()
+            data = try SandboxAuthorityFileSystem.readStablePrivateFile(
+                descriptor,
+                maximumBytes: maximumBytes
+            )
         } catch {
             throw SandboxRuntimeError.unsupported(
-                "VM \(name) ownership marker is unreadable"
+                "VM \(name) has an unsafe ownership marker"
             )
         }
         let decoder = JSONDecoder()
@@ -249,18 +235,26 @@ enum LumeVirtualMachineOwnership {
         return record
     }
 
-    private static func openOwnedDirectory(at url: URL) throws -> Int32 {
-        let descriptor = open(
-            url.path,
-            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
-        )
-        guard descriptor >= 0 else {
+    private static func openOwnedDirectory(
+        at url: URL,
+        requirePrivate: Bool = true
+    ) throws -> Int32 {
+        let descriptor: Int32
+        do {
+            descriptor =
+                try SandboxAuthorityFileSystem.openExistingDirectory(at: url)
+        } catch {
             throw SandboxRuntimeError.unsupported(
                 "Darkbloom VM directory is unavailable"
             )
         }
         do {
-            try validateOwnedDirectory(descriptor)
+            if requirePrivate {
+                try validateOwnedDirectory(descriptor)
+            } else {
+                try SandboxAuthorityFileSystem
+                    .requireOwnedDirectoryWithoutWriteSharing(descriptor)
+            }
             return descriptor
         } catch {
             close(descriptor)
@@ -269,12 +263,9 @@ enum LumeVirtualMachineOwnership {
     }
 
     private static func validateOwnedDirectory(_ descriptor: Int32) throws {
-        var metadata = stat()
-        guard fstat(descriptor, &metadata) == 0,
-              (metadata.st_mode & S_IFMT) == S_IFDIR,
-              metadata.st_uid == geteuid(),
-              metadata.st_mode & 0o022 == 0
-        else {
+        do {
+            try SandboxAuthorityFileSystem.requirePrivateDirectory(descriptor)
+        } catch {
             throw SandboxRuntimeError.unsupported(
                 "Darkbloom VM directory failed ownership or mode checks"
             )

@@ -542,6 +542,81 @@ final class HostCapacityArbiterTests: XCTestCase {
         }
     }
 
+    func testRejectsSymlinkedStateAncestor() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-capacity-symlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        let alias = root.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(
+            at: alias,
+            withDestinationURL: target
+        )
+        let arbiter = try makeArbiter(
+            stateDirectory: alias.appendingPathComponent(
+                "capacity",
+                isDirectory: true
+            )
+        )
+
+        assertCapacityError(.unsafeStatePath) {
+            _ = try arbiter.initialize()
+        }
+    }
+
+    func testRejectsExtendedACLOnStateDirectory() throws {
+        let stateDirectory = temporaryStateDirectory()
+        try FileManager.default.createDirectory(
+            at: stateDirectory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        try addInheritableACL(to: stateDirectory)
+        let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+
+        assertCapacityError(.unsafeStatePath) {
+            _ = try arbiter.initialize()
+        }
+    }
+
+    func testRejectsHardlinkedStateAndLockFiles() throws {
+        for fileName in ["capacity.json", "capacity.lock"] {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "darkbloom-capacity-hardlink-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            let stateDirectory = root.appendingPathComponent(
+                "state",
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: root,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            defer { try? FileManager.default.removeItem(at: root) }
+            let arbiter = try makeArbiter(stateDirectory: stateDirectory)
+            _ = try arbiter.initialize()
+            try FileManager.default.linkItem(
+                at: stateDirectory.appendingPathComponent(fileName),
+                to: root.appendingPathComponent("\(fileName).alias")
+            )
+
+            assertCapacityError(.unsafeStatePath) {
+                _ = try arbiter.snapshot()
+            }
+        }
+    }
+
     func testRejectsInferenceModeWithPersistedLease() throws {
         let stateDirectory = temporaryStateDirectory()
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
@@ -629,6 +704,19 @@ final class HostCapacityArbiterTests: XCTestCase {
             "darkbloom-capacity-\(UUID().uuidString)",
             isDirectory: true
         )
+    }
+
+    private func addInheritableACL(to url: URL) throws {
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [
+            "+a",
+            "everyone allow read,write,execute,file_inherit,directory_inherit",
+            url.path,
+        ]
+        try chmod.run()
+        chmod.waitUntilExit()
+        XCTAssertEqual(chmod.terminationStatus, 0)
     }
 
     private func assertCapacityError(

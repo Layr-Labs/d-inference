@@ -35,6 +35,29 @@ final class LumeRuntimeFailureTests: XCTestCase {
         )
     }
 
+    func testRejectsExtendedACLOnRuntimeTreeAuthority() async throws {
+        for target in ["directory", "file"] {
+            let fixture = try FakeLumeFixture()
+            defer { try? fixture.remove() }
+            try addExtendedACL(
+                to: target == "directory"
+                    ? fixture.runtimeDirectory
+                    : fixture.executable
+            )
+
+            do {
+                _ = try await fixture.makeRuntime().capabilities()
+                XCTFail("runtime \(target) ACL must be rejected")
+            } catch let error as SandboxRuntimeError {
+                guard case .unsupported(let detail) = error else {
+                    XCTFail("unexpected runtime ACL error: \(error)")
+                    continue
+                }
+                XCTAssertTrue(detail.contains("ACL"))
+            }
+        }
+    }
+
     func testProductionRejectsSelfAuthenticatedAdHocRuntime() async throws {
         let fixture = try FakeLumeFixture()
         defer { try? fixture.remove() }
@@ -1344,6 +1367,187 @@ final class LumeRuntimeFailureTests: XCTestCase {
             )
         }
     }
+
+    func testOwnershipRejectsACLHardlinkAndPublicDirectoryAuthority() throws {
+        enum Mutation {
+            case acl
+            case hardlink
+            case markerACL
+            case publicDirectory
+        }
+        for mutation in [
+            Mutation.acl,
+            .hardlink,
+            .markerACL,
+            .publicDirectory,
+        ] {
+            let root = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "darkbloom-ownership-authority-\(UUID().uuidString)",
+                    isDirectory: true
+                )
+            let name = "sandbox-authority"
+            let virtualMachineDirectory = root.appendingPathComponent(
+                name,
+                isDirectory: true
+            )
+            try FileManager.default.createDirectory(
+                at: virtualMachineDirectory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            defer { try? FileManager.default.removeItem(at: root) }
+            let specification = try SandboxVirtualMachineSpecification(
+                name: name,
+                resources: SandboxResourceSpecification.macOSSmall(),
+                imageSource: .localTemplate(name: "sandbox-base"),
+                diskBytes: 100 * SandboxResourcePolicy.gibibyte
+            )
+            try LumeVirtualMachineOwnership.write(
+                specification: specification,
+                owner: .baseTemplate,
+                sourceInstallationID: UUID(),
+                to: virtualMachineDirectory
+            )
+
+            switch mutation {
+            case .acl:
+                try addExtendedACL(to: virtualMachineDirectory)
+            case .hardlink:
+                try FileManager.default.linkItem(
+                    at: virtualMachineDirectory.appendingPathComponent(
+                        LumeVirtualMachineOwnership.fileName
+                    ),
+                    to: root.appendingPathComponent("marker-alias")
+                )
+            case .markerACL:
+                try addExtendedACL(
+                    to: virtualMachineDirectory.appendingPathComponent(
+                        LumeVirtualMachineOwnership.fileName
+                    )
+                )
+            case .publicDirectory:
+                guard chmod(virtualMachineDirectory.path, 0o755) == 0 else {
+                    throw POSIXError(.EACCES)
+                }
+            }
+
+            XCTAssertFalse(
+                LumeVirtualMachineOwnership.matches(
+                    specification: specification,
+                    owner: .baseTemplate,
+                    in: root
+                )
+            )
+            XCTAssertThrowsError(
+                try LumeVirtualMachineOwnership.requireOwned(
+                    name: name,
+                    owner: .baseTemplate,
+                    in: root
+                )
+            )
+        }
+    }
+
+    func testWorkspaceAndOperationLockRejectExtendedACLAuthority() throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let workspace = LumeRuntimeWorkspace(
+            storageDirectory: fixture.storage
+        )
+        try workspace.prepare()
+        try addExtendedACL(to: workspace.locksDirectory)
+
+        XCTAssertThrowsError(
+            try LumeVirtualMachineOperationLock(
+                workspace: workspace,
+                name: fixture.virtualMachineName,
+                operation: "test"
+            )
+        )
+    }
+
+    func testOperationLockRejectsHardlinkedLockFile() throws {
+        let fixture = try FakeLumeFixture()
+        defer { try? fixture.remove() }
+        let workspace = LumeRuntimeWorkspace(
+            storageDirectory: fixture.storage
+        )
+        try workspace.prepare()
+        do {
+            let lock = try LumeVirtualMachineOperationLock(
+                workspace: workspace,
+                name: fixture.virtualMachineName,
+                operation: "test"
+            )
+            withExtendedLifetime(lock) {}
+        }
+        let lockFile = workspace.locksDirectory.appendingPathComponent(
+            "\(fixture.virtualMachineName).lock"
+        )
+        try FileManager.default.linkItem(
+            at: lockFile,
+            to: fixture.directory.appendingPathComponent("lock-alias")
+        )
+
+        XCTAssertThrowsError(
+            try LumeVirtualMachineOperationLock(
+                workspace: workspace,
+                name: fixture.virtualMachineName,
+                operation: "test"
+            )
+        )
+    }
+
+    func testWorkspaceRejectsSymlinkedStorageAncestor() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "darkbloom-workspace-symlink-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let target = root.appendingPathComponent("target", isDirectory: true)
+        let alias = root.appendingPathComponent("alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: target,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createSymbolicLink(
+            at: alias,
+            withDestinationURL: target
+        )
+
+        XCTAssertThrowsError(
+            try LumeRuntimeWorkspace(
+                storageDirectory: alias.appendingPathComponent(
+                    "vms",
+                    isDirectory: true
+                )
+            ).prepare()
+        )
+    }
+
+    private func addExtendedACL(to url: URL) throws {
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: url.path,
+                isDirectory: &isDirectory
+            )
+        )
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [
+            "+a",
+            isDirectory.boolValue
+                ? "everyone allow read,write,execute,file_inherit,directory_inherit"
+                : "everyone allow read,write",
+            url.path,
+        ]
+        try chmod.run()
+        chmod.waitUntilExit()
+        XCTAssertEqual(chmod.terminationStatus, 0)
+    }
 }
 
 private struct FakeLumeFixture {
@@ -1444,7 +1648,8 @@ private struct FakeLumeFixture {
             )
             try FileManager.default.createDirectory(
                 at: virtualMachineDirectory,
-                withIntermediateDirectories: false
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
             )
             try Self.writeOwnershipMarker(
                 to: virtualMachineDirectory,

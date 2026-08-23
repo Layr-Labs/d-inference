@@ -171,10 +171,11 @@ darkbloom-sandboxd prepare-base \
 ```
 
 The command installs macOS, applies Lume's no-secrets-alpha unattended preset,
-boots the guest without VNC, waits for SSH readiness, reads the guest OS and
-architecture, and leaves the base stopped. The opt-in live suite can then clone
-and run exactly two guests concurrently, prove their filesystems are isolated,
-and leave both clones stopped:
+boots the guest without VNC, and waits until a bounded, NIO-only,
+launchd-supervised no-op returns a valid production result envelope. It then
+reads the guest OS and architecture and leaves the base stopped. The opt-in live
+suite can clone and run exactly two guests concurrently, prove their filesystems
+are isolated, and leave both clones stopped:
 
 ```bash
 DARKBLOOM_SANDBOX_LIVE_VM=1 \

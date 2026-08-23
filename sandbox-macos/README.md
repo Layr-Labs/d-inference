@@ -23,6 +23,11 @@ approved no-secrets alpha. Until randomized bootstrap credentials, guest
 control, and egress enforcement pass their live tests, this package is a
 host-substrate proof, not a multi-tenant service.
 
+Guest commands capture stdout and stderr independently, drain both streams
+without retaining unbounded data, and return at most 1 MiB per stream in a
+versioned result envelope with explicit truncation flags. Host child processes
+also start with close-on-exec-by-default descriptor isolation.
+
 Artifact authentication binds sandbox generation, disk role, and a random
 per-encryption revision ID, so chunks from separate revisions cannot be spliced.
 It does not establish which of two complete, valid ciphertext revisions is

@@ -319,3 +319,80 @@ struct EngineV2IsolatedPrefillSamplingTests {
         _ = await firstConsumer.value
     }
 }
+
+
+/// End-to-end proof of the PR's central claim, through the real bridge: a box
+/// that has measured its own uncontended prefill rate admits the rows that can
+/// land inside the TTFT budget and refuses the one that cannot, instead of
+/// accepting all four and timing them all out.
+///
+/// Admission is observed via `engine.continuations`: an admitted row reaches
+/// `engine.submit` and creates one, a refused row returns before it. Consuming
+/// an admitted row's stream would block — it has no terminal event yet.
+@Suite("EngineV2 prefill deadline: end-to-end burst admission")
+struct EngineV2PrefillBurstAdmissionTests {
+
+    // Measured Qwen 3.6 35B solo 8K prefill (trust + stripe),
+    // docs/reports/2026-08-19-solo-prefill-stripe-experiment.md.
+    private let tps = 1531.0
+    private let prompt = 8192
+
+    @Test("three 8K rows are admitted and the fourth is refused")
+    func burstAdmitsThreeRefusesFourth() async throws {
+        let engine = PrefillScriptEngine()
+        let bridge = EngineV2Bridge(
+            engine: engine,
+            modelId: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+            tokenizer: TokenizerHandle(PrefillStubTokenizer()),
+            eosTokenIds: [])
+
+        func submit(_ id: String) async -> AsyncStream<GenerationEvent> {
+            await bridge.submitTokenized(
+                promptTokens: Array(repeating: 7, count: prompt),
+                request: ChatCompletionRequest(
+                    model: "qwen3.6-35b-a3b-vl-mtp-mxfp8",
+                    messages: [ChatMessage(role: "user", content: "hi")]),
+                requestId: id)
+        }
+
+        // 1. Arm the queue-excluded EWMA with ONE uncontended row whose window
+        //    puts it at the measured rate: 8192 tokens / 5350 ms ~= 1531 tok/s.
+        let warm = await submit("warm")
+        let warmConsumer = Task { for await _ in warm {} }
+        await bridge.backdateSubmissionForTesting(
+            requestId: "warm", byMilliseconds: 5_350)
+        let c0 = try #require(engine.continuations.first)
+        c0.yield(.delta(text: "x", tokens: [11], logprobs: nil))
+        c0.yield(.finished(
+            reason: .stop, usage: CBv2Usage(promptTokens: prompt, completionTokens: 1)))
+        c0.finish()
+        _ = await warmConsumer.value
+
+        let measured = await bridge.isolatedPrefillTpsEwma
+        #expect(measured > 1_400 && measured < 1_700, "armed at \(measured) tok/s")
+
+        // 2. Four concurrent 8K rows arrive, none reaching first token. Under
+        //    FCFS each waits for every row ahead of it.
+        var refused: [Int] = []
+        var refusalMessages: [String] = []
+        for row in 0 ..< 4 {
+            let before = engine.continuations.count
+            let stream = await submit("burst-\(row)")
+            if engine.continuations.count == before {
+                refused.append(row)
+                // A refused stream terminates immediately, so this cannot block.
+                for await event in stream {
+                    if case .error(let message) = event { refusalMessages.append(message) }
+                }
+            }
+        }
+
+        // budget = 10,000 + 8,192 = 18,192 ms; at 1531 tok/s the 4th row
+        // projects 32,768 / 1531 = 21,403 ms and cannot land.
+        #expect(refused == [3], "expected only the fourth row refused, got \(refused)")
+        let message = try #require(refusalMessages.first)
+        #expect(message.contains("token_budget_exhausted"),
+                "refusal must keep the retryable contract: \(message)")
+        #expect(message.contains("queue full"))
+    }
+}

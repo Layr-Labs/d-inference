@@ -54,6 +54,8 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 "-c",
                 "/usr/bin/printf stdout; /usr/bin/printf stderr >&2; exit 7",
             ],
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
 
@@ -69,6 +71,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
 
         XCTAssertEqual(process.exitCode, 0)
+        XCTAssertTrue(process.standardError.isEmpty)
         XCTAssertEqual(result.exitCode, 7)
         XCTAssertEqual(result.standardOutput, Data("stdout".utf8))
         XCTAssertEqual(result.standardError, Data("stderr".utf8))
@@ -85,6 +88,8 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
                 "bs=\(LumeGuestCommandEnvelope.maximumStreamBytes)",
                 "count=2",
             ],
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
             timeoutSeconds: 5
         )
 
@@ -97,6 +102,7 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         )
         guard process.exitCode == 0,
               !process.standardOutputTruncated,
+              !process.standardErrorTruncated,
               process.standardError.isEmpty
         else {
             XCTFail(

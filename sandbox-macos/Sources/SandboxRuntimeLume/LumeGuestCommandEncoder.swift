@@ -33,7 +33,7 @@ enum LumeGuestCommandEncoder {
             #!/bin/zsh
             set -u
             umask 077
-            builtin cd -- \(shellQuote(request.workingDirectory))
+            builtin cd -- \(shellQuote(request.workingDirectory)) || exit 70
             capture_root=$(/usr/bin/mktemp -d \
             "${TMPDIR:-/tmp}/darkbloom-guest.XXXXXXXX") || exit 70
             trap '/bin/rm -rf -- "$capture_root"' EXIT

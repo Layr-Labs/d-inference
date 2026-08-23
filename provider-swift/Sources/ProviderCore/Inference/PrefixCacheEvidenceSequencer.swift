@@ -11,6 +11,12 @@ struct PrefixCacheV2EvidenceCallbacks: Sendable {
 /// before terminal by the finalizer, while racing ready callbacks are held until
 /// lookup has been emitted.
 actor PrefixCacheEvidenceSequencer {
+    struct RequestStateSnapshot: Sendable, Equatable {
+        let terminalSeen: Bool
+        let readyBuffered: Bool
+        let hasExpiry: Bool
+    }
+
     private final class EnqueueGate: @unchecked Sendable {
         private let lock = NSLock()
         private var nextID: UInt64 = 1
@@ -50,6 +56,8 @@ actor PrefixCacheEvidenceSequencer {
     }
 
     private static let terminalRetention: Duration = .seconds(125)
+    private static let unresolvedPromptAnchor = PrefixCacheAnchor(
+        chainHash: "", tokenCount: 0)
     private static let maxReceiptTokens: UInt64 = 1_000_000
     private static let maxStageMs = 600_000.0
 
@@ -137,6 +145,20 @@ actor PrefixCacheEvidenceSequencer {
         }
     }
 
+    func requestStateSnapshotForTesting(nonce: String) -> RequestStateSnapshot? {
+        requests[nonce].map {
+            RequestStateSnapshot(
+                terminalSeen: $0.terminalSeen,
+                readyBuffered: $0.pendingReady != nil,
+                hasExpiry: $0.expiresAt != nil)
+        }
+    }
+
+    func sweepExpiredForTesting(after duration: Duration) -> Int {
+        sweepExpired(now: ContinuousClock.now.advanced(by: duration))
+        return requests.count
+    }
+
     private func current(_ context: Context) -> Bool {
         guard let live = capabilityProvider() else {
             activeCapability = nil
@@ -203,7 +225,16 @@ actor PrefixCacheEvidenceSequencer {
             stageMs: result.stageMs)))
 
         let pending = existing?.pendingReady
-        requests[context.nonce] = RequestState(promptAnchor: promptAnchor)
+        var resolved = RequestState(promptAnchor: promptAnchor)
+        // A lookup command can arrive after a ready/terminal race. Preserve a
+        // terminal tombstone's deadline while replacing its unresolved anchor;
+        // a pre-lookup ready without a terminal becomes ordinary live state.
+        if existing?.terminalSeen == true {
+            resolved.terminalSeen = true
+            resolved.expiresAt = existing?.expiresAt
+                ?? ContinuousClock.now.advanced(by: Self.terminalRetention)
+        }
+        requests[context.nonce] = resolved
         if let pending {
             handleReady(context, result: pending, send: send)
         }
@@ -226,10 +257,13 @@ actor PrefixCacheEvidenceSequencer {
         else { return }
         guard var state = requests[context.nonce] else {
             // Donation can settle before the lookup command reaches this actor.
-            // Keep only the furthest durable anchor for bounded buffering.
+            // Keep only the furthest durable anchor for bounded buffering. An
+            // expiry is mandatory: a memory-tier lookup is intentionally not
+            // retained, so a late SSD donation must not create immortal state.
             requests[context.nonce] = RequestState(
-                promptAnchor: PrefixCacheAnchor(chainHash: "", tokenCount: 0),
-                pendingReady: result)
+                promptAnchor: Self.unresolvedPromptAnchor,
+                pendingReady: result,
+                expiresAt: ContinuousClock.now.advanced(by: Self.terminalRetention))
             return
         }
         guard !state.promptAnchor.chainHash.isEmpty else {
@@ -271,10 +305,22 @@ actor PrefixCacheEvidenceSequencer {
         message: OutboundMessage,
         send: SendHandle
     ) {
-        if current(context), var state = requests[context.nonce] {
-            state.terminalSeen = true
-            state.expiresAt = ContinuousClock.now.advanced(by: Self.terminalRetention)
-            requests[context.nonce] = state
+        if current(context) {
+            let expiry = ContinuousClock.now.advanced(by: Self.terminalRetention)
+            if var state = requests[context.nonce] {
+                state.terminalSeen = true
+                state.expiresAt = expiry
+                requests[context.nonce] = state
+            } else {
+                // Resident L1 lookups never mint durable holder evidence and
+                // therefore create no request state. Keep a bounded tombstone
+                // so the SSD donation receipt retained for terminal promotion
+                // cannot recreate an expiry-less placeholder after terminal.
+                requests[context.nonce] = RequestState(
+                    promptAnchor: Self.unresolvedPromptAnchor,
+                    terminalSeen: true,
+                    expiresAt: expiry)
+            }
         }
         send.send(message)
     }

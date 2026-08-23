@@ -535,6 +535,65 @@ struct PrefixCacheReceiptTests {
         }
     }
 
+    @Test("late SSD ready after a resident terminal leaves only expiring state")
+    func v2ResidentTerminalLateReadyExpires() async throws {
+        let capability = v2Capability(epoch: "11111111-1111-1111-1111-111111111111")
+        let sequencer = PrefixCacheEvidenceSequencer { capability }
+        defer { sequencer.shutdown() }
+        let messages = V2Messages()
+        let send = SendHandle { message in
+            messages.lock.withLock { messages.values.append(message) }
+        }
+        let callbacks = try #require(sequencer.callbacks(
+            requestID: "request",
+            nonce: "resident-late-ready",
+            send: send))
+
+        callbacks.lookup(PrefixCacheLookupResult(
+            outcome: .hit,
+            tier: .memory,
+            cachedTokens: 256,
+            prefillTokensSaved: 256))
+        callbacks.terminal(.inferenceError(
+            requestId: "request",
+            failure: InferenceFailure(code: .internalFailure, statusCode: 500)))
+        await waitForMessages(messages, count: 1)
+
+        callbacks.ready(PrefixCacheReadyResult(
+            readyTokens: 256,
+            requiredRecomputeTokens: 0,
+            expectedPrefillTokensSaved: 256,
+            tier: .ssd,
+            stageMs: 1,
+            finalAnchor: PrefixCacheAnchor(
+                chainHash: String(repeating: "c", count: 64),
+                tokenCount: 256)))
+
+        for _ in 0 ..< 100 {
+            if await sequencer.requestStateSnapshotForTesting(
+                nonce: "resident-late-ready")?.readyBuffered == true
+            {
+                break
+            }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        let state = try #require(await sequencer.requestStateSnapshotForTesting(
+            nonce: "resident-late-ready"))
+        #expect(state.terminalSeen)
+        #expect(state.readyBuffered)
+        #expect(state.hasExpiry)
+        #expect(await sequencer.sweepExpiredForTesting(after: .seconds(126)) == 0)
+
+        let values = messages.lock.withLock { messages.values }
+        #expect(values.count == 1)
+        if let only = values.first {
+            guard case .inferenceError = only else {
+                Issue.record("late SSD ready emitted durable evidence for a resident hit")
+                return
+            }
+        }
+    }
+
     @Test("v2 sequencer invalidates callbacks across epoch rollover")
     func v2SequencerEpochRollover() async throws {
         final class CapabilityBox: @unchecked Sendable {

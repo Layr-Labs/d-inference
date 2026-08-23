@@ -146,6 +146,43 @@ final class LumeRuntimeContractTests: XCTestCase {
             async let secondStart: Void = runtime.start(name: secondName)
             _ = try await (firstStart, secondStart)
 
+            let cancellationMarker =
+                "/Users/lume/darkbloom-cancellation-marker-\(runID)"
+            let delayedCommand = Task {
+                try await runtime.execute(
+                    name: firstName,
+                    request: SandboxGuestCommandRequest(
+                        idempotencyKey: UUID(),
+                        executable: "/bin/zsh",
+                        arguments: [
+                            "-c",
+                            "/bin/sleep 2; /usr/bin/touch -- \"$1\"",
+                            "darkbloom-live-cancellation",
+                            cancellationMarker,
+                        ],
+                        timeoutSeconds: 30
+                    )
+                )
+            }
+            try await Task.sleep(for: .milliseconds(250))
+            delayedCommand.cancel()
+            do {
+                _ = try await delayedCommand.value
+                XCTFail("cancelled guest command should throw")
+            } catch is CancellationError {
+            }
+            try await Task.sleep(for: .seconds(3))
+            let cancellationHeld = try await runtime.execute(
+                name: firstName,
+                request: SandboxGuestCommandRequest(
+                    idempotencyKey: UUID(),
+                    executable: "/bin/test",
+                    arguments: ["!", "-e", cancellationMarker],
+                    timeoutSeconds: 30
+                )
+            )
+            XCTAssertEqual(cancellationHeld.exitCode, 0)
+
             let marker = "/Users/lume/darkbloom-isolation-marker"
             for name in [firstName, secondName] {
                 let reset = try await runtime.execute(

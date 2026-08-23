@@ -196,6 +196,39 @@ final class SandboxDescriptorIOTests: XCTestCase {
         )
     }
 
+    func testDestinationRejectsInheritableExtendedACL() throws {
+        let fixture = try DescriptorFixture()
+        defer { fixture.remove() }
+        let chmod = Process()
+        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        chmod.arguments = [
+            "+a",
+            "everyone allow read,write,execute,file_inherit,directory_inherit",
+            fixture.directory.path,
+        ]
+        try chmod.run()
+        chmod.waitUntilExit()
+        XCTAssertEqual(chmod.terminationStatus, 0)
+        let blocked = Data("blocked".utf8)
+
+        XCTAssertThrowsError(
+            try SandboxDescriptorIO.withExclusiveDestination(
+                at: fixture.destination
+            ) { descriptor in
+                try SandboxDescriptorIO.writeAll(blocked, to: descriptor)
+                return sha256(blocked)
+            }
+        ) { error in
+            XCTAssertEqual(
+                error as? SandboxDescriptorIOError,
+                .unsafeDestination
+            )
+        }
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: fixture.destination.path)
+        )
+    }
+
     func testDestinationParentSymlinkIsRejected() throws {
         let fixture = try DescriptorFixture()
         defer { fixture.remove() }

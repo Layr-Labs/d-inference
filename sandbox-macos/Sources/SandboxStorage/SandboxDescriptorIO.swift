@@ -295,15 +295,18 @@ private final class PendingDestination {
         )
         var descriptorMetadata = stat()
         guard fstat(parentDescriptor, &descriptorMetadata) == 0,
-              (descriptorMetadata.st_mode & S_IFMT) == S_IFDIR,
+              Self.isPrivateDirectory(descriptorMetadata),
               descriptorMetadata.st_dev == pathMetadata.st_dev,
-              descriptorMetadata.st_ino == pathMetadata.st_ino,
-              descriptorMetadata.st_uid == geteuid(),
-              descriptorMetadata.st_mode & 0o700 == 0o700,
-              descriptorMetadata.st_mode & 0o077 == 0
+              descriptorMetadata.st_ino == pathMetadata.st_ino
         else {
             Darwin.close(parentDescriptor)
             throw SandboxDescriptorIOError.unsafeDestination
+        }
+        do {
+            try Self.requireNoExtendedACL(parentDescriptor)
+        } catch {
+            Darwin.close(parentDescriptor)
+            throw error
         }
 
         let temporaryName = ".\(destinationName).\(UUID().uuidString.lowercased()).partial"
@@ -330,6 +333,16 @@ private final class PendingDestination {
             }
             Darwin.close(parentDescriptor)
             throw SandboxDescriptorIOError.unsafeDestination
+        }
+        do {
+            try Self.requireNoExtendedACL(destinationDescriptor)
+        } catch {
+            Darwin.close(destinationDescriptor)
+            temporaryName.withCString {
+                _ = unlinkat(parentDescriptor, $0, 0)
+            }
+            Darwin.close(parentDescriptor)
+            throw error
         }
         let unlinkResult = temporaryName.withCString {
             unlinkat(parentDescriptor, $0, 0)
@@ -366,6 +379,7 @@ private final class PendingDestination {
             throw SandboxDescriptorIOError.io(errno)
         }
         try requireContentSHA256(expectedSHA256, descriptor: destinationDescriptor)
+        try Self.requireNoExtendedACL(destinationDescriptor)
         var metadata = stat()
         guard fstat(destinationDescriptor, &metadata) == 0,
               Self.isSafeStagingFile(metadata, linkCount: 0)
@@ -386,6 +400,7 @@ private final class PendingDestination {
             expectedSHA256,
             descriptor: destinationDescriptor
         )
+        try Self.requireNoExtendedACL(destinationDescriptor)
         var descriptorMetadata = stat()
         guard fstat(destinationDescriptor, &descriptorMetadata) == 0,
               Self.matchesStagingFile(
@@ -432,11 +447,13 @@ private final class PendingDestination {
         defer { Darwin.close(rebound) }
         var metadata = stat()
         guard fstat(rebound, &metadata) == 0,
+              Self.isPrivateDirectory(metadata),
               metadata.st_dev == parentDevice,
               metadata.st_ino == parentInode
         else {
             throw SandboxDescriptorIOError.unsafeDestination
         }
+        try Self.requireNoExtendedACL(rebound)
     }
 
     private func requireContentSHA256(
@@ -475,11 +492,17 @@ private final class PendingDestination {
         defer { Darwin.close(committedDescriptor) }
 
         var metadata = stat()
-        guard fstat(committedDescriptor, &metadata) == 0,
-              Self.isSafeCommittedFile(metadata)
-        else {
+        guard fstat(committedDescriptor, &metadata) == 0 else {
+            throw SandboxDescriptorIOError.publicationUncertain(errno)
+        }
+        guard Self.isSafeCommittedFile(metadata) else {
+            throw SandboxDescriptorIOError.publicationUncertain(EIO)
+        }
+        do {
+            try Self.requireNoExtendedACL(committedDescriptor)
+        } catch {
             throw SandboxDescriptorIOError.publicationUncertain(
-                errno == 0 ? EIO : errno
+                Self.errorCode(error)
             )
         }
         do {
@@ -573,6 +596,37 @@ private final class PendingDestination {
             && metadata.st_uid == geteuid()
             && metadata.st_nlink == 1
             && metadata.st_mode & 0o077 == 0
+    }
+
+    private static func isPrivateDirectory(_ metadata: stat) -> Bool {
+        (metadata.st_mode & S_IFMT) == S_IFDIR
+            && metadata.st_uid == geteuid()
+            && metadata.st_mode & 0o700 == 0o700
+            && metadata.st_mode & 0o077 == 0
+    }
+
+    private static func requireNoExtendedACL(_ descriptor: Int32) throws {
+        errno = 0
+        guard let acl = acl_get_fd_np(descriptor, ACL_TYPE_EXTENDED) else {
+            if errno == ENOENT {
+                return
+            }
+            throw SandboxDescriptorIOError.io(errno)
+        }
+        defer { acl_free(UnsafeMutableRawPointer(acl)) }
+
+        var entry: acl_entry_t?
+        let result = acl_get_entry(
+            acl,
+            ACL_FIRST_ENTRY.rawValue,
+            &entry
+        )
+        if result == 1 {
+            throw SandboxDescriptorIOError.unsafeDestination
+        }
+        guard result == 0 else {
+            throw SandboxDescriptorIOError.io(errno)
+        }
     }
 
     private static func errorCode(_ error: Error) -> Int32 {

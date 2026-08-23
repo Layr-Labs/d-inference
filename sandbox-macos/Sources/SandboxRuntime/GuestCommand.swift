@@ -1,6 +1,13 @@
 import Foundation
 
 public struct SandboxGuestCommandRequest: Equatable, Sendable {
+    public static let maximumArgumentCount = 256
+    public static let maximumEnvironmentVariableCount = 128
+    public static let maximumPathBytes = 4_096
+    public static let maximumValueBytes = 16_384
+    public static let maximumEnvironmentKeyBytes = 128
+    public static let maximumAggregateInputBytes = 65_536
+
     public let idempotencyKey: UUID
     public let executable: String
     public let arguments: [String]
@@ -16,18 +23,36 @@ public struct SandboxGuestCommandRequest: Equatable, Sendable {
         workingDirectory: String = "/Users/lume",
         timeoutSeconds: UInt32 = 900
     ) throws {
+        let aggregateInputBytes = executable.utf8.count
+            + workingDirectory.utf8.count
+            + arguments.reduce(0) { $0 + $1.utf8.count }
+            + environment.reduce(0) {
+                $0 + $1.key.utf8.count + $1.value.utf8.count
+            }
         guard executable.hasPrefix("/"),
               !executable.contains("\0"),
+              executable.utf8.count <= Self.maximumPathBytes,
               workingDirectory.hasPrefix("/"),
               !workingDirectory.contains("\0"),
+              workingDirectory.utf8.count <= Self.maximumPathBytes,
               (1...900).contains(timeoutSeconds),
-              arguments.allSatisfy({ !$0.contains("\0") }),
+              arguments.count <= Self.maximumArgumentCount,
+              arguments.allSatisfy({
+                  !$0.contains("\0")
+                      && $0.utf8.count <= Self.maximumValueBytes
+              }),
+              environment.count <= Self.maximumEnvironmentVariableCount,
               environment.allSatisfy({ key, value in
-                  Self.validEnvironmentKey(key) && !value.contains("\0")
-              })
+                  Self.validEnvironmentKey(key)
+                      && key.utf8.count
+                          <= Self.maximumEnvironmentKeyBytes
+                      && !value.contains("\0")
+                      && value.utf8.count <= Self.maximumValueBytes
+              }),
+              aggregateInputBytes <= Self.maximumAggregateInputBytes
         else {
             throw SandboxRuntimeError.unsupported(
-                "guest command contains an invalid path, environment, NUL, or timeout"
+                "guest command contains an invalid path, environment, size, NUL, or timeout"
             )
         }
         self.idempotencyKey = idempotencyKey
@@ -39,13 +64,19 @@ public struct SandboxGuestCommandRequest: Equatable, Sendable {
     }
 
     private static func validEnvironmentKey(_ key: String) -> Bool {
-        guard let first = key.first,
-              first == "_" || first.isLetter
+        let scalars = key.unicodeScalars
+        guard let first = scalars.first,
+              first.value == 0x5F
+                  || (0x41...0x5A).contains(first.value)
+                  || (0x61...0x7A).contains(first.value)
         else {
             return false
         }
-        return key.dropFirst().allSatisfy {
-            $0 == "_" || $0.isLetter || $0.isNumber
+        return scalars.dropFirst().allSatisfy {
+            $0.value == 0x5F
+                || (0x41...0x5A).contains($0.value)
+                || (0x61...0x7A).contains($0.value)
+                || (0x30...0x39).contains($0.value)
         }
     }
 }

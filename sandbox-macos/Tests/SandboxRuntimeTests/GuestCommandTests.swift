@@ -29,6 +29,11 @@ final class GuestCommandTests: XCTestCase {
         ))
         XCTAssertThrowsError(try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
+            executable: "/usr/bin/env",
+            environment: ["ÜNICODE": "value"]
+        ))
+        XCTAssertThrowsError(try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
             executable: "/bin/sleep",
             timeoutSeconds: 901
         ))
@@ -36,6 +41,47 @@ final class GuestCommandTests: XCTestCase {
             idempotencyKey: UUID(),
             executable: "/usr/bin/printf",
             arguments: ["bad\0argument"]
+        ))
+    }
+
+    func testEnforcesArgumentEnvironmentAndAggregateBudgets() throws {
+        let maximumValue = String(
+            repeating: "x",
+            count: SandboxGuestCommandRequest.maximumValueBytes
+        )
+        XCTAssertNoThrow(try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/printf",
+            arguments: [maximumValue]
+        ))
+        XCTAssertThrowsError(try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/printf",
+            arguments: [maximumValue + "x"]
+        ))
+        XCTAssertThrowsError(try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/printf",
+            arguments: Array(
+                repeating: "x",
+                count:
+                    SandboxGuestCommandRequest.maximumArgumentCount + 1
+            )
+        ))
+        XCTAssertThrowsError(try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/env",
+            environment: Dictionary(
+                uniqueKeysWithValues: (0...SandboxGuestCommandRequest
+                    .maximumEnvironmentVariableCount).map {
+                        ("KEY_\($0)", "value")
+                    }
+            )
+        ))
+        XCTAssertThrowsError(try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/usr/bin/printf",
+            arguments: Array(repeating: maximumValue, count: 5)
         ))
     }
 }

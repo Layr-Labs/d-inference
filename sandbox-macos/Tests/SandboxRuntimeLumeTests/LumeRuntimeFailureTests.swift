@@ -747,7 +747,7 @@ final class LumeRuntimeFailureTests: XCTestCase {
         XCTAssertEqual(fixture.guestReadinessProbeAttempts, 1)
     }
 
-    func testTimedOutReplayStopsRunningVirtualMachineWithoutSecondExecution()
+    func testTimedOutReplayStopsVirtualMachineForMatchingAndConflictingRetry()
         async throws
     {
         let fixture = try FakeLumeFixture(
@@ -786,6 +786,29 @@ final class LumeRuntimeFailureTests: XCTestCase {
             )?.state
             XCTAssertEqual(state, .stopped)
         }
+        XCTAssertEqual(fixture.guestReadinessProbeAttempts, 2)
+
+        try Data("running\n".utf8).write(to: fixture.state)
+        do {
+            _ = try await runtime.execute(
+                name: fixture.virtualMachineName,
+                request: SandboxGuestCommandRequest(
+                    idempotencyKey: request.idempotencyKey,
+                    executable: "/usr/bin/false",
+                    timeoutSeconds: 1
+                )
+            )
+            XCTFail("a conflicting retry must reconcile a timed-out result")
+        } catch let error as SandboxRuntimeError {
+            XCTAssertEqual(
+                error,
+                LumeGuestCommandJournal.idempotencyConflict()
+            )
+        }
+        let stateAfterConflict = try await runtime.inspect(
+            name: fixture.virtualMachineName
+        )?.state
+        XCTAssertEqual(stateAfterConflict, .stopped)
         XCTAssertEqual(fixture.guestReadinessProbeAttempts, 2)
     }
 
@@ -1393,7 +1416,7 @@ private struct FakeLumeFixture {
 
     func makeRuntime(
         commandTimeoutSeconds: UInt32 = 1,
-        guestReadinessPolicy: LumeGuestReadinessPolicy = .production
+        guestReadinessPolicy: LumeGuestReadinessPolicy = .standard
     ) throws -> LumeVirtualMachineRuntime {
         LumeVirtualMachineRuntime(
             configuration: try LumeRuntimeConfiguration(

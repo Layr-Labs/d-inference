@@ -7,6 +7,7 @@ enum LumeGuestCommandReplay: Equatable {
     case unclaimed
     case indeterminate
     case completed(SandboxGuestCommandResult)
+    case conflictingCompleted(SandboxGuestCommandResult)
 }
 
 struct LumeGuestCommandJournal {
@@ -23,7 +24,7 @@ struct LumeGuestCommandJournal {
     func replay(
         installationID: UUID,
         request: SandboxGuestCommandRequest
-    ) throws -> LumeGuestCommandReplay {
+    ) -> LumeGuestCommandReplay {
         let storedReplay: StoredReplay
         do {
             storedReplay = try loadStoredReplay(
@@ -46,9 +47,7 @@ struct LumeGuestCommandJournal {
                 return .indeterminate
             }
             guard storedCommitment == requestedCommitment else {
-                throw SandboxRuntimeError.unsupported(
-                    "guest command idempotency key was already used for a different request"
-                )
+                return .conflictingCompleted(result)
             }
             return .completed(result)
         }
@@ -216,10 +215,14 @@ struct LumeGuestCommandJournal {
             throw outcomeUnavailable()
         }
         guard stored == (try commitment(for: request)) else {
-            throw SandboxRuntimeError.unsupported(
-                "guest command idempotency key was already used for a different request"
-            )
+            throw Self.idempotencyConflict()
         }
+    }
+
+    static func idempotencyConflict() -> SandboxRuntimeError {
+        .unsupported(
+            "guest command idempotency key was already used for a different request"
+        )
     }
 
     static func outcomeUnavailable() -> SandboxRuntimeError {

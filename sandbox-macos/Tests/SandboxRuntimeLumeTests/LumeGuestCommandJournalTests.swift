@@ -19,7 +19,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),
@@ -32,7 +32,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         try claim.complete(envelope: Self.envelope(for: expected))
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),
@@ -52,7 +52,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),
@@ -79,7 +79,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: conflicting
             ),
@@ -114,19 +114,19 @@ final class LumeGuestCommandJournalTests: XCTestCase {
             )
         )
 
-        XCTAssertThrowsError(
-            try fixture.journal.replay(
+        XCTAssertEqual(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: conflicting
-            )
-        ) { error in
-            XCTAssertEqual(
-                error as? SandboxRuntimeError,
-                .unsupported(
-                    "guest command idempotency key was already used for a different request"
+            ),
+            .conflictingCompleted(
+                SandboxGuestCommandResult(
+                    exitCode: 0,
+                    standardOutput: Data(),
+                    standardError: Data()
                 )
             )
-        }
+        )
     }
 
     func testInstallationIdentityNamespacesIdempotencyKeys() throws {
@@ -150,7 +150,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: secondInstallation,
                 request: request
             ),
@@ -226,7 +226,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),
@@ -252,7 +252,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),
@@ -279,7 +279,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),
@@ -309,7 +309,7 @@ final class LumeGuestCommandJournalTests: XCTestCase {
         }
 
         XCTAssertEqual(
-            try fixture.journal.replay(
+            fixture.journal.replay(
                 installationID: installationID,
                 request: request
             ),

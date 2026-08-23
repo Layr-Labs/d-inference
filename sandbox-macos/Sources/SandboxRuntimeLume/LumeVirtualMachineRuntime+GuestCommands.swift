@@ -49,7 +49,7 @@ extension LumeVirtualMachineRuntime {
             in: configuration.storageDirectory
         )
         let commandJournal = LumeGuestCommandJournal(workspace: workspace)
-        switch try commandJournal.replay(
+        switch commandJournal.replay(
             installationID: identity.installationID,
             request: request
         ) {
@@ -76,6 +76,16 @@ extension LumeVirtualMachineRuntime {
                 throw timeout
             }
             return replay
+        case .conflictingCompleted(let replay):
+            let conflict = LumeGuestCommandJournal.idempotencyConflict()
+            if replay.timedOut {
+                try await stopGuestForReplayFailure(
+                    name: name,
+                    owner: owner,
+                    primary: conflict
+                )
+            }
+            throw conflict
         }
         var guestCommandMayBeRunning = false
         var requiresVMStop = false

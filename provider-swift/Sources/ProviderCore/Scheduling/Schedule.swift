@@ -177,12 +177,21 @@ struct ParsedWindow: Sendable {
 /// valid windows exist, `from(config:)` returns nil -- meaning "always available".
 public struct Schedule: Sendable {
     let windows: [ParsedWindow]
+    private let calendar: Calendar
+
 
     /// Parse a `ScheduleConfig` into a `Schedule`.
     ///
     /// Returns nil when scheduling is disabled or no valid windows can be parsed,
     /// which means "always available" (no scheduling constraint).
     public static func from(config: ScheduleConfig) -> Schedule? {
+        from(config: config, calendar: .autoupdatingCurrent)
+    }
+
+    static func from(
+        config: ScheduleConfig,
+        calendar: Calendar
+    ) -> Schedule? {
         guard config.enabled, !config.windows.isEmpty else { return nil }
 
         var parsed: [ParsedWindow] = []
@@ -197,7 +206,7 @@ public struct Schedule: Sendable {
         }
 
         guard !parsed.isEmpty else { return nil }
-        return Schedule(windows: parsed)
+        return Schedule(windows: parsed, calendar: calendar)
     }
 
     /// Check whether the current local time falls within any scheduled window.
@@ -208,7 +217,7 @@ public struct Schedule: Sendable {
     /// Check whether a specific date falls within any scheduled window.
     /// Exposed for testing with deterministic times.
     public func isActive(at date: Date) -> Bool {
-        let calendar = Calendar.current
+        let calendar = self.calendar
         let components = calendar.dateComponents([.weekday, .hour, .minute], from: date)
         guard let weekday = components.weekday,
               let hour = components.hour,
@@ -244,7 +253,7 @@ public struct Schedule: Sendable {
     /// How long until the current active window ends.
     /// Returns nil if not currently active.
     public func durationUntilInactive(from date: Date = Date()) -> TimeInterval? {
-        let calendar = Calendar.current
+        let calendar = self.calendar
         let components = calendar.dateComponents([.weekday, .hour, .minute, .second], from: date)
         guard let weekday = components.weekday,
               let hour = components.hour,
@@ -284,7 +293,7 @@ public struct Schedule: Sendable {
     public func durationUntilNextActive(from date: Date = Date()) -> TimeInterval {
         if isActive(at: date) { return 0 }
 
-        let calendar = Calendar.current
+        let calendar = self.calendar
         let components = calendar.dateComponents([.weekday, .hour, .minute, .second], from: date)
         guard let weekday = components.weekday,
               let hour = components.hour,

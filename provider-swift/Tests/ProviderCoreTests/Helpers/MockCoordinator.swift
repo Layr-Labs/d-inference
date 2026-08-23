@@ -94,33 +94,6 @@ public struct MockDeviceCodeFixture: Sendable {
     }
 }
 
-/// Fixture for `GET /v1/releases/latest`. The shape mirrors what
-/// `SelfUpdater` decodes (it accepts `bundle_hash`, `sha256`, or
-/// `binary_hash`).
-public struct MockReleaseFixture: Sendable {
-    public var version: String
-    public var platform: String
-    public var url: String
-    public var bundleHash: String
-    public var binaryHash: String?
-    public var metallibHash: String?
-
-    public init(
-        version: String = "0.99.0",
-        platform: String = "macos-arm64",
-        url: String = "https://example.test/darkbloom-bundle-macos-arm64.tar.gz",
-        bundleHash: String = String(repeating: "a", count: 64),
-        binaryHash: String? = nil,
-        metallibHash: String? = nil
-    ) {
-        self.version = version
-        self.platform = platform
-        self.url = url
-        self.bundleHash = bundleHash
-        self.binaryHash = binaryHash
-        self.metallibHash = metallibHash
-    }
-}
 
 /// Fixture for `GET /api/version` (the UpdateBanner endpoint).
 public struct MockVersionFixture: Sendable {
@@ -286,20 +259,35 @@ public final class MockCoordinator: @unchecked Sendable {
     /// Shut down the mock, closing any active WebSocket and stopping the
     /// HTTP server. Safe to call multiple times.
     public func shutdown() async {
-        let snapshot: BoundServer? = lock.withLock {
-            let outbound = self.activeOutbound
-            self.activeOutbound = nil
-            let bound = self.bound
+        let resources: (bound: BoundServer?, outbound: WebSocketOutboundWriter?) = lock.withLock {
+            let resources = (bound: self.bound, outbound: self.activeOutbound)
             self.bound = nil
-            // Close the WS politely; ignore failures.
-            if let outbound {
-                Task { try? await outbound.close(.goingAway, reason: nil) }
-            }
-            return bound
+            self.activeOutbound = nil
+            return resources
         }
-        snapshot?.serverTask.cancel()
-        _ = await snapshot?.serverTask.value
+
+        if let outbound = resources.outbound {
+            try? await outbound.close(.goingAway, reason: nil)
+        }
+        resources.bound?.serverTask.cancel()
+        _ = await resources.bound?.serverTask.value
         eventContinuation.finish()
+    }
+
+    /// Run an operation against a listening mock and always await teardown
+    /// before returning or rethrowing.
+    public func withRunning<T>(
+        _ operation: (URL) async throws -> T
+    ) async throws -> T {
+        let baseURL = try await start()
+        do {
+            let result = try await operation(baseURL)
+            await shutdown()
+            return result
+        } catch {
+            await shutdown()
+            throw error
+        }
     }
 
     /// Wait until `predicate` becomes true on a fresh snapshot, polling at
@@ -736,12 +724,3 @@ extension URL {
     }
 }
 
-// MARK: - NSLock convenience
-
-private extension NSLock {
-    func withLock<T>(_ body: () -> T) -> T {
-        self.lock()
-        defer { self.unlock() }
-        return body()
-    }
-}

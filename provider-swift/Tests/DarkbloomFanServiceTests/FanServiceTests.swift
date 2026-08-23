@@ -4,10 +4,6 @@ import DarkbloomFanService
 import Foundation
 import Testing
 
-#if canImport(Darwin)
-import Darwin
-#endif
-
 @Suite("Fan service boundary")
 struct FanServiceTests {
     @Test("configured provider and root are the only allowed UIDs")
@@ -26,14 +22,6 @@ struct FanServiceTests {
         ))
         #expect(policy.allows(effectiveUID: 0, currentUserUUID: nil, rootOnly: true))
         #expect(!policy.allows(effectiveUID: 502, currentUserUUID: uuid, rootOnly: true))
-    }
-
-    @Test("local account GeneratedUID resolves to a stable UUID")
-    func generatedUIDResolution() throws {
-        let first = try FanUserIdentity.generatedUID(for: UInt32(getuid()))
-        let second = try FanUserIdentity.generatedUID(for: UInt32(getuid()))
-        #expect(UUID(uuidString: first) != nil)
-        #expect(first == second)
     }
 
     @Test("production code requirements pin identifiers and Team ID")

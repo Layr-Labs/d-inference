@@ -3,10 +3,20 @@ import Foundation
 /// Monotonic in-process cadence for the persistent watchdog LaunchAgent.
 public struct WatchdogScheduler: Sendable {
     public let interval: Duration
+    private let sleep: @Sendable (Duration) async throws -> Void
+
 
     public init(interval: Duration = .seconds(60)) {
+        self.init(interval: interval, sleep: taskSleep)
+    }
+
+    init(
+        interval: Duration,
+        sleep: @escaping @Sendable (Duration) async throws -> Void
+    ) {
         precondition(interval > .zero)
         self.interval = interval
+        self.sleep = sleep
     }
 
     /// Ticks immediately, then sleeps on Swift's monotonic `ContinuousClock`.
@@ -17,7 +27,7 @@ public struct WatchdogScheduler: Sendable {
         while !Task.isCancelled {
             await tick()
             do {
-                try await Task.sleep(for: interval)
+                try await sleep(interval)
             } catch {
                 return
             }

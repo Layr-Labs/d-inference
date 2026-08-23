@@ -25,6 +25,8 @@ public actor GlobalKVCacheBudget {
     /// grow into memory the operator reserved. 0 = no extra reserve (cap only).
     private let configReserveBytes: UInt64
     private let memorySnapshot: @Sendable () -> MemorySnapshot
+    private let now: @Sendable () -> ContinuousClock.Instant
+
 
     /// One ledger entry: the promised bytes plus when the promise was made.
     /// The creation instant exists solely for the stale-reservation audit —
@@ -106,6 +108,7 @@ public actor GlobalKVCacheBudget {
         self.capFraction = capFraction
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
+        self.now = { .now }
         self.sustainedRejectionAuditThreshold = Self.defaultSustainedRejectionAuditThreshold
         self.rejectionStreakContinuityWindow = Self.defaultRejectionStreakContinuityWindow
         self.staleReservationTTL = Self.defaultStaleReservationTTL
@@ -139,6 +142,7 @@ public actor GlobalKVCacheBudget {
         activationReserveBytes: UInt64? = nil,
         configReserveBytes: UInt64 = 0,
         memorySnapshot: @escaping @Sendable () -> MemorySnapshot,
+        now: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         clearCache: @escaping @Sendable () -> Void = {},
         selfHealMinInterval: Duration = GlobalKVCacheBudget.defaultSelfHealMinInterval,
         reclaimer: KVPoolReclaimer? = nil,
@@ -152,6 +156,7 @@ public actor GlobalKVCacheBudget {
         self.activationReserveBytes = activationReserveBytes
         self.configReserveBytes = configReserveBytes
         self.memorySnapshot = memorySnapshot
+        self.now = now
         self.sustainedRejectionAuditThreshold = sustainedRejectionAuditThreshold
         self.rejectionStreakContinuityWindow = rejectionStreakContinuityWindow
         self.staleReservationTTL = staleReservationTTL
@@ -250,7 +255,7 @@ public actor GlobalKVCacheBudget {
     /// resident (and thus reflected in `mlxUsed`). Pair with `release`.
     public func reservePendingLoad(requestID: String, bytes: UInt64) {
         guard bytes > 0 else { return }
-        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+        reservations[requestID] = Reservation(bytes: bytes, createdAt: now())
     }
 
     /// Atomically replace the in-flight load reservation when target weights
@@ -262,7 +267,7 @@ public actor GlobalKVCacheBudget {
         } else if let createdAt = reservations[requestID]?.createdAt {
             reservations[requestID] = Reservation(bytes: bytes, createdAt: createdAt)
         } else {
-            reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+            reservations[requestID] = Reservation(bytes: bytes, createdAt: now())
         }
         // Removing or shrinking a real pending-load promise proves the ledger
         // is making progress, exactly like `release`. Do not let a rejection
@@ -321,7 +326,7 @@ public actor GlobalKVCacheBudget {
             recordCommitRejection()
             return false
         }
-        reservations[requestID] = Reservation(bytes: bytes, createdAt: .now)
+        reservations[requestID] = Reservation(bytes: bytes, createdAt: now())
         rejectionStreakStart = nil
         lastRejectionAt = nil
         return true
@@ -349,7 +354,7 @@ public actor GlobalKVCacheBudget {
     ///   * progress — a successful commit (in `commit`) or a real release
     ///     (in `release`) resets the streak entirely.
     private func recordCommitRejection() {
-        let now = ContinuousClock.now
+        let now = now()
         if let previous = lastRejectionAt, now - previous > rejectionStreakContinuityWindow {
             // Idle gap: two rejections minutes apart are sparse traffic, not
             // a black hole — a genuinely wedged box under coordinator

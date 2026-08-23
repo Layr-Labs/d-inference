@@ -173,6 +173,7 @@ extension ProviderLoop {
         case .changed:
             newcomer.release()
             MLX.Memory.clearCache()
+            await markWeightHashUnavailable(modelId: modelId)
             let message =
                 "Model '\(modelId)' changed while loading reusable SSD cache state — unloaded"
             recordModelLoadError(model: modelId, message: message)

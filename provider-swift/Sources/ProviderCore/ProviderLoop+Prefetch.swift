@@ -95,8 +95,9 @@ extension ProviderLoop {
         desiredPrefetchRetryAttempts[modelId] = attempt
         let delay = desiredPrefetchRetryDelays[attempt - 1]
         logger.info("Scheduling desired-build prefetch retry \(attempt)/\(desiredPrefetchRetryDelays.count) for \(modelId) in \(delay)")
+        let sleep = desiredPrefetchSleep
         desiredPrefetchRetryTasks[modelId] = Task { [weak self] in
-            try? await taskSleep( delay)
+            try? await sleep(delay)
             guard let self, !Task.isCancelled else { return }
             await self.retryDesiredPrefetch(modelId: modelId, send: send)
         }

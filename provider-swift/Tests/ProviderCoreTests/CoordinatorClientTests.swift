@@ -551,6 +551,40 @@ func wsOptionsMaximumMessageSize() {
     #expect(wsOptions.maximumMessageSize == CoordinatorClient.maxInboundMessageBytes)
 }
 
+@Test func registrationUsesCutoverBackendAndOmitsDeprecatedRuntimeHashes() throws {
+    let config = CoordinatorClientConfig(
+        url: "wss://api.darkbloom.dev/ws/provider",
+        hardware: clientSampleHardware(),
+        models: [clientSampleModel()],
+        backendName: "mlx-swift",
+        publicKey: "cHVibGljLWtleS1wbGFjZWhvbGRlci0zMi1ieXRlcw==",
+        runtimeHashes: RuntimeHashes(templateHashes: ["qwen3.5": "templatehash"])
+    )
+
+    let data = try CoordinatorClientCodec.encodeRegistration(
+        from: config,
+        version: "0.4.0-swift",
+        privacyCapabilities: clientPrivacyCapabilities()
+    )
+    let object = try clientJSONObject(data)
+
+    #expect(object["type"] as? String == "register")
+    #expect(object["backend"] as? String == "mlx-swift")
+    #expect(object["version"] as? String == "0.4.0-swift")
+    #expect(object["encrypted_response_chunks"] as? Bool == true)
+    #expect(object["python_hash"] == nil)
+    #expect(object["runtime_hash"] == nil)
+    #expect((object["template_hashes"] as? [String: String])?["qwen3.5"] == "templatehash")
+
+    let decoded = try ProviderProtocolCodec.decodeProviderMessage(from: data)
+    guard case .register(let register) = decoded else {
+        throw ClientTestFailure.unexpectedMessage
+    }
+    #expect(register.backend == "mlx-swift")
+    #expect(register.pythonHash == nil)
+    #expect(register.runtimeHash == nil)
+}
+
 private func clientSampleHardware() -> HardwareInfo {
     HardwareInfo(
         machineModel: "Mac16,5",

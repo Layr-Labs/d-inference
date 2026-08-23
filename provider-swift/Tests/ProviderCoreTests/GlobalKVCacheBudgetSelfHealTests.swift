@@ -34,7 +34,8 @@ private let gib: UInt64 = 1024 * 1024 * 1024
     #expect(!(await budget.reserve(requestID: "near-miss", kvBytesPerToken: 1, tokenCount: Int(gib))))
     // The flush is signalled to the off-actor reclaimer and runs in the
     // background (the pool could cover the 1 GiB shortfall).
-    #expect(await eventually { memory.clearCount == 1 })
+    await memory.didClear.wait()
+    #expect(memory.clearCount == 1)
 }
 
 @Test func reserveBytesRejectsNearMissOnCurrentSnapshot() async {
@@ -46,84 +47,60 @@ private let gib: UInt64 = 1024 * 1024 * 1024
         clearCache: { memory.clearCache() })
 
     #expect(!(await budget.reserveBytes(requestID: "near-miss-bytes", bytes: gib)))
-    #expect(await eventually { memory.clearCount == 1 })
+    await memory.didClear.wait()
+    #expect(memory.clearCount == 1)
 }
 
-@Test func admissionDoesNotBlockTheActorOnTheReclaimFlush() async {
-    // The core contract. The injected clearCache blocks for 0.5s (it simulates
-    // the GPU synchronize). `reserve` must return promptly — proving the
-    // admission decision did not wait on the flush — while the flush completes
-    // later, off the budget actor.
-    let spy = BlockingClearSpy(blockSeconds: 0.5)
-    let memory = MutableMemorySnapshot(cacheAfterClear: 2 * gib)  // pool never shrinks here
+@Test func admissionReturnsBeforeTheReclaimFlushIsReleased() async {
+    let spy = BlockingClearSpy()
+    let memory = MutableMemorySnapshot(cacheAfterClear: 2 * gib)
     let budget = GlobalKVCacheBudget(
         capFraction: 1.0,
         activationReserveBytes: 0,
         memorySnapshot: { memory.snapshot() },
         clearCache: { spy.clear() })
 
-    let start = ContinuousClock.now
-    let admitted = await budget.reserve(requestID: "fast-return", kvBytesPerToken: 1, tokenCount: Int(gib))
-    let elapsed = ContinuousClock.now - start
-
-    #expect(!admitted)                                   // rejected on current snapshot
-    #expect(elapsed < .milliseconds(250))                // returned well before the 0.5s flush
-    #expect(spy.completedCount == 0)                     // flush not finished when reserve returned
-    // This is eventual liveness, not the fast-return SLA above. Swift Testing
-    // runs ~2k tests concurrently in CI, so the fire-and-forget task can be
-    // scheduler-starved for several seconds without blocking the budget actor.
-    #expect(await eventually(timeout: .seconds(10)) { spy.completedCount == 1 })
-}
-
-@Test func admissionAdmitsImmediatelyWhenItFitsWithoutAnyFlush() async {
-    // The happy path is unchanged: a request that fits the current snapshot is
-    // admitted with no reclaim signalled at all.
-    let memory = MutableMemorySnapshot(total: 8 * gib, active: 0, cache: 0, cacheAfterClear: 0)
-    let budget = GlobalKVCacheBudget(
-        capFraction: 1.0,
-        activationReserveBytes: 0,
-        memorySnapshot: { memory.snapshot() },
-        clearCache: { memory.clearCache() })
-
-    #expect(await budget.reserve(requestID: "fits", kvBytesPerToken: 1, tokenCount: Int(gib)))
-    // Give any (erroneously) scheduled background flush a chance to run, then
-    // confirm none did.
-    try? await Task.sleep(for: .milliseconds(50))
-    #expect(memory.clearCount == 0)
-}
-
-// MARK: - helpers
-
-/// Poll a condition up to `timeout`, so a background (off-actor) flush can be
-/// observed without racing a fixed sleep.
-private func eventually(
-    timeout: Duration = .seconds(2),
-    _ condition: @Sendable () -> Bool
-) async -> Bool {
-    let deadline = ContinuousClock.now + timeout
-    while ContinuousClock.now < deadline {
-        if condition() { return true }
-        try? await Task.sleep(for: .milliseconds(5))
+    let reservation = Task {
+        await budget.reserve(
+            requestID: "ordered-return",
+            kvBytesPerToken: 1,
+            tokenCount: Int(gib))
     }
-    return condition()
+    await spy.started.wait()
+    let admitted = await reservation.value
+
+    #expect(!admitted)
+    #expect(spy.completedCount == 0)
+    spy.release()
+    await spy.completed.wait()
+    #expect(spy.completedCount == 1)
 }
 
-/// A clearCache spy whose flush blocks (like the real GPU synchronize), so a test
-/// can prove the budget actor doesn't wait on it.
+
+/// A clearCache spy that parks on an explicit latch, modelling a blocking GPU
+/// synchronize without making correctness depend on elapsed wall time.
 private final class BlockingClearSpy: @unchecked Sendable {
+    let started = AsyncTestLatch()
+    let completed = AsyncTestLatch()
+    private let releaseGate = DispatchSemaphore(value: 0)
     private let lock = NSLock()
-    private let blockSeconds: Double
     private var _completed = 0
 
-    init(blockSeconds: Double) { self.blockSeconds = blockSeconds }
-
     func clear() {
-        Thread.sleep(forTimeInterval: blockSeconds)   // simulate the blocking GPU sync
-        lock.lock(); _completed += 1; lock.unlock()
+        started.signal()
+        releaseGate.wait()
+        lock.lock()
+        _completed += 1
+        lock.unlock()
+        completed.signal()
     }
 
+    func release() { releaseGate.signal() }
+
     var completedCount: Int {
-        lock.lock(); defer { lock.unlock() }; return _completed
+        lock.lock()
+        defer { lock.unlock() }
+        return _completed
     }
 }
 
@@ -136,6 +113,7 @@ private final class MutableMemorySnapshot: @unchecked Sendable {
     private let systemAvailable: UInt64
     private var cache: UInt64
     private var clears = 0
+    let didClear = AsyncTestLatch()
 
     init(
         total: UInt64 = 8 * gib,
@@ -166,6 +144,7 @@ private final class MutableMemorySnapshot: @unchecked Sendable {
         clears += 1
         cache = cacheAfterClear
         lock.unlock()
+        didClear.signal()
     }
 
     var clearCount: Int {

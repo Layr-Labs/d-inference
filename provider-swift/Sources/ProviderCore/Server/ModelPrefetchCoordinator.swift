@@ -101,6 +101,8 @@ public actor ModelPrefetchCoordinator {
     /// download body (after `.started`, past coalescing). Lets tests gate the
     /// fake downloader deterministically.
     private let onTaskStarted: (@Sendable (String) -> Void)?
+    private let shutdownSleep: @Sendable (Duration) async throws -> Void
+
 
     public init(
         prefetcher: any ModelPrefetcher,
@@ -114,6 +116,23 @@ public actor ModelPrefetchCoordinator {
         self.onVerified = onVerified
         self.maxConcurrent = max(1, maxConcurrent)
         self.onTaskStarted = onTaskStarted
+        self.shutdownSleep = taskSleep
+    }
+
+    init(
+        prefetcher: any ModelPrefetcher,
+        preCheck: @escaping @Sendable (String) async -> PrefetchPreCheck,
+        onVerified: @escaping @Sendable (String) async -> Void,
+        maxConcurrent: Int = 1,
+        onTaskStarted: (@Sendable (String) -> Void)? = nil,
+        shutdownSleep: @escaping @Sendable (Duration) async throws -> Void
+    ) {
+        self.prefetcher = prefetcher
+        self.preCheck = preCheck
+        self.onVerified = onVerified
+        self.maxConcurrent = max(1, maxConcurrent)
+        self.onTaskStarted = onTaskStarted
+        self.shutdownSleep = shutdownSleep
     }
 
     /// Number of in-flight prefetch tasks (test/diagnostics).
@@ -252,8 +271,8 @@ public actor ModelPrefetchCoordinator {
             }
             // Timeout task (unstructured): guarantees the bound regardless of
             // the drain.
-            Task.detached {
-                try? await taskSleep( timeout)
+            Task.detached { [shutdownSleep] in
+                try? await shutdownSleep(timeout)
                 oneShot.resume()
             }
         }

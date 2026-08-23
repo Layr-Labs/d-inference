@@ -334,6 +334,7 @@ public actor ProviderLoop {
     internal var desiredPrefetchRetryDelays: [Duration] = [
         .seconds(30), .seconds(60), .seconds(120), .seconds(300), .seconds(600),
     ]
+    internal var desiredPrefetchSleep: @Sendable (Duration) async throws -> Void = taskSleep
     internal var desiredPrefetchRetryAttempts: [String: Int] = [:]
     internal var desiredPrefetchRetryTasks: [String: Task<Void, Never>] = [:]
 

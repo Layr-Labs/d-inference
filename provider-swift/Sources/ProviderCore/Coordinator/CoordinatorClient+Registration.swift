@@ -10,7 +10,9 @@ import os
 extension CoordinatorClient {
     // MARK: - Registration
 
-    internal func sendRegistration(connection: NWConnection) async throws {
+    /// Assemble the exact registration message used on the next connection.
+    /// This is the lifecycle stage where live hash overrides become advertised.
+    internal func registrationMessage() -> ProviderMessage {
         let privacyCapabilities = config.privacyCapabilities ?? PrivacyCapabilities(
             textBackendInprocess: true,
             textProxyDisabled: true,
@@ -25,7 +27,7 @@ extension CoordinatorClient {
         // than the immutable `config.models`, so a re-registration after a
         // verified prefetch carries the updated set.
         let prefixCache = state.prefixCacheV2Advertisement()
-        let jsonData = try CoordinatorClientCodec.encodeRegistration(
+        return CoordinatorClientCodec.registrationMessage(
             from: config,
             models: advertisedModelStore.models,
             privacyCapabilities: privacyCapabilities,
@@ -37,6 +39,10 @@ extension CoordinatorClient {
             prefixCacheStatuses: prefixCache.statuses,
             prefixCacheDonationOutcomes: prefixCache.donationOutcomes
         )
+    }
+
+    internal func sendRegistration(connection: NWConnection) async throws {
+        let jsonData = try ProviderProtocolCodec.encodeProviderMessage(registrationMessage())
         guard let jsonString = String(data: jsonData, encoding: .utf8) else {
             throw CoordinatorError.encodingFailed
         }

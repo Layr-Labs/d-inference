@@ -415,3 +415,135 @@ import Testing
     #expect(decoded.backend.engineV2MaxConcurrent == 8)
     #expect(decoded.appliedMigrations.isEmpty)
 }
+
+// MARK: - MTP configuration and verification policy
+
+@Suite("MTP config keys")
+struct MTPConfigKeyTests {
+    @Test func automaticVerificationPolicyUsesConservativeGenerationBounds() {
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M1 Max") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M2 Ultra") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M3 Pro") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M4 Max") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Apple M5") == 8)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(chipName: "Unknown") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "12"],
+            chipName: "Apple M1 Max") == 4)
+        #expect(MTPAutomaticVerificationPolicy.maxRectangularTokens(
+            environment: ["DARKBLOOM_MTP_MAX_RECTANGULAR_TOKENS": "6"],
+            chipName: "Apple M5 Max") == 6)
+        #expect(MTPAutomaticVerificationPolicy.initialDraftTokens == 1)
+    }
+
+    @Test("absent keys default to mtp=false, no drafter path")
+    func defaultsWhenAbsent() {
+        let config = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            port = 8100
+            """)
+
+        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpDrafterPath == nil)
+    }
+
+    @Test("present keys decode")
+    func decodesPresentKeys() {
+        let config = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            mtp = true
+            mtp_drafter_path = "/opt/drafters/gemma4-assistant-4bit"
+            """)
+
+        #expect(config.backend.mtp == true)
+        #expect(config.backend.mtpDrafterPath == "/opt/drafters/gemma4-assistant-4bit")
+    }
+
+    @Test("mtp works without a drafter path (fleet spec_dec path)")
+    func mtpWithoutPath() {
+        let config = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            mtp = true
+            """)
+
+        #expect(config.backend.mtp == true)
+        #expect(config.backend.mtpDrafterPath == nil)
+    }
+
+    // ConfigManager.parse falls back to a full default config on any decode
+    // failure (documented behavior: a malformed provider.toml must never
+    // brick a provider) — so a wrongly-typed value yields the safe default
+    // (MTP off), never a crash or a half-parsed config.
+    @Test("wrongly-typed mtp value falls back to defaults (off)")
+    func invalidMTPValueFallsBack() {
+        let config = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            mtp = "yes"
+            """)
+
+        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpDrafterPath == nil)
+    }
+
+    @Test("wrongly-typed mtp_drafter_path falls back to defaults")
+    func invalidDrafterPathFallsBack() {
+        let config = ConfigManager.parse(
+            """
+            [provider]
+            name = "test-provider"
+
+            [backend]
+            mtp = true
+            mtp_drafter_path = 42
+            """)
+
+        #expect(config.backend.mtp == false)
+        #expect(config.backend.mtpDrafterPath == nil)
+    }
+
+    @Test("serialization round-trips both keys")
+    func serializationRoundTrips() {
+        let original = ProviderConfig(
+            provider: ProviderSettings(name: "test-provider"),
+            backend: BackendSettings(mtp: true, mtpDrafterPath: "/tmp/drafter"),
+            coordinator: CoordinatorSettings()
+        )
+
+        let toml = ConfigManager.serialize(original)
+        let decoded = ConfigManager.parse(toml)
+
+        #expect(toml.contains("mtp = true"))
+        #expect(toml.contains("mtp_drafter_path"))
+        #expect(decoded.backend.mtp == true)
+        #expect(decoded.backend.mtpDrafterPath == "/tmp/drafter")
+    }
+
+    @Test("nil drafter path is not emitted")
+    func nilPathNotEmitted() {
+        let original = ProviderConfig(
+            provider: ProviderSettings(name: "test-provider"),
+            backend: BackendSettings(),
+            coordinator: CoordinatorSettings()
+        )
+
+        let toml = ConfigManager.serialize(original)
+
+        #expect(!toml.contains("mtp_drafter_path"))
+    }
+}

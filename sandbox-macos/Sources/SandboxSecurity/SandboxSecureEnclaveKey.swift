@@ -177,7 +177,7 @@ public final class SandboxSecureEnclaveKey: @unchecked Sendable {
         }
         if CFGetTypeID(result) == SecKeyGetTypeID() {
             return SandboxSecureEnclaveKey(
-                privateKey: unsafeBitCast(result, to: SecKey.self)
+                privateKey: unsafeDowncast(result, to: SecKey.self)
             )
         }
         guard let matches = result as? [SecKey],

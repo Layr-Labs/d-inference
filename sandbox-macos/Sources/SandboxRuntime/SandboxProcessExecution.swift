@@ -115,8 +115,9 @@ final class ProcessExecution: @unchecked Sendable {
             started = true
             processIdentifier = child
         }
+        let spawnedChild = child
         DispatchQueue.global(qos: .utility).async { [self] in
-            reap(processIdentifier: child)
+            reap(processIdentifier: spawnedChild)
         }
     }
 

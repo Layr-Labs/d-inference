@@ -104,12 +104,17 @@ enum LumeRuntimeProvenanceValidator {
                 captureData: false,
                 computeDigest: false
             )
+            let currentFiles = currentTree.files.mapValues {
+                $0.identity
+            }
+            let validatedFiles = validated.files.mapValues {
+                $0.identity
+            }
             guard currentTree.installationIdentity
                     == validated.installationIdentity,
                   provenance.identity == validated.provenanceIdentity,
                   currentTree.directories == validated.directories,
-                  currentTree.files.mapValues { $0.identity }
-                    == validated.files.mapValues { $0.identity }
+                  currentFiles == validatedFiles
             else {
                 throw unsupported("Lume runtime changed after validation")
             }

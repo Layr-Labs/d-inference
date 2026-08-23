@@ -51,7 +51,8 @@ final class LumeRuntimeContractTests: XCTestCase {
         XCTAssertTrue(capabilities.supportsMacOS)
         XCTAssertFalse(capabilities.supportsPause)
         XCTAssertFalse(capabilities.supportsSnapshots)
-        XCTAssertEqual(try await runtime.list(), [])
+        let virtualMachines = try await runtime.list()
+        XCTAssertEqual(virtualMachines, [])
     }
 
     func testConfigurationRejectsRelativeStoragePath() {

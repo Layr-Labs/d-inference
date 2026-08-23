@@ -121,9 +121,9 @@ e2e: e2e-integration ## Run the integration suite
 
 # ---- Aggregates ------------------------------------------------------------
 
-test: coordinator-test prompt-sidecar-test provider-test ui-test benchmark-wrapper-test ## Run all unit tests
+test: coordinator-test prompt-sidecar-test provider-test sandbox-test ui-test benchmark-wrapper-test ## Run all unit tests
 
-build: coordinator-build prompt-sidecar-build provider-build ui-build ## Build all components
+build: coordinator-build prompt-sidecar-build provider-build sandbox-build ui-build ## Build all components
 
 all: test build ## Test + build everything
 

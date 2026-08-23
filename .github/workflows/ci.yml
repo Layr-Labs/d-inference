@@ -102,6 +102,17 @@ jobs:
           file "$RUNNER_TEMP/promptsidecar-linux" | grep -Eq "statically linked|static-pie linked"
           ./scripts/verify-prompt-sidecar-linux.sh "$RUNNER_TEMP/promptsidecar-linux"
 
+  test-sandbox:
+    name: macOS Sandbox Tests
+    runs-on: blacksmith-12vcpu-macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build isolated sandbox host runtime
+        run: swift build --package-path sandbox-macos
+      - name: Run sandbox host unit and contract tests
+        run: swift test --package-path sandbox-macos
+
   test-provider:
     name: Provider Tests
     runs-on: blacksmith-12vcpu-macos-latest

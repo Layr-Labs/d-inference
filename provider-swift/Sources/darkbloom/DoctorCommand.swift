@@ -218,7 +218,8 @@ func bootSecurityActionGuide(_ bootSecurity: BootSecuritySnapshot) -> String? {
 
 func buildDoctorChecks(
     snapshot: RuntimeSnapshot,
-    bootSecurity: BootSecuritySnapshot = .live()
+    bootSecurity: BootSecuritySnapshot = .live(),
+    contention: LocalContentionSnapshot = .live()
 ) -> [DoctorCheck] {
     var checks: [DoctorCheck] = []
 
@@ -333,6 +334,9 @@ func buildDoctorChecks(
             detail: "could not compute"
         ))
     }
+
+    // Local coexistence: Ollama / other inference on unified memory (operator feedback).
+    checks.append(competingInferenceCheck(contention))
 
     return checks
 }

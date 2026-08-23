@@ -3,6 +3,7 @@
         coordinator-test coordinator-build coordinator-build-linux coordinator \
         prompt-sidecar-format prompt-sidecar-check prompt-sidecar-test prompt-sidecar-build prompt-sidecar \
         provider-build provider-test provider benchmark-gemma-contbatch benchmark-wrapper-test \
+        sandbox-build sandbox-test sandbox \
         ui-install ui-build ui-lint ui-test ui \
         e2e-integration e2e-benchmark e2e \
         test build all clean
@@ -75,6 +76,16 @@ provider-test: ## Build and run Swift provider tests with source-matched metalli
 
 provider: provider-build provider-test ## Build + test provider
 
+# ---- macOS sandbox host runtime --------------------------------------------
+
+sandbox-build: ## Build the isolated macOS sandbox host runtime
+	swift build --package-path sandbox-macos
+
+sandbox-test: ## Run macOS sandbox host runtime tests
+	swift test --package-path sandbox-macos
+
+sandbox: sandbox-build sandbox-test ## Build + test macOS sandbox host runtime
+
 benchmark-wrapper-test: ## Unit-test the Gemma benchmark wrapper (no GPU or weights)
 	cd scripts && python3 -m unittest discover -s gemma_contbatch/tests -t .
 
@@ -118,4 +129,5 @@ all: test build ## Test + build everything
 
 clean: ## Remove built artifacts
 	rm -f coordinator/coordinator coordinator/coordinator-linux
-	rm -rf coordinator/promptsidecar/target provider-swift/.build console-ui/.next console-ui/node_modules
+	rm -rf coordinator/promptsidecar/target provider-swift/.build sandbox-macos/.build
+	rm -rf console-ui/.next console-ui/node_modules

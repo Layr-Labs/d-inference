@@ -1,0 +1,42 @@
+import SandboxCore
+import SandboxRuntime
+import XCTest
+
+final class VirtualMachineRuntimeTests: XCTestCase {
+    func testSpecificationAcceptsBoundedNameAndDisk() throws {
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        let specification = try SandboxVirtualMachineSpecification(
+            name: "sandbox-123",
+            resources: resources,
+            imageReference: "macos-26.5.2-base-v1",
+            diskBytes: 100 * SandboxResourcePolicy.gibibyte
+        )
+
+        XCTAssertEqual(specification.name, "sandbox-123")
+        XCTAssertEqual(specification.diskBytes, 100 * SandboxResourcePolicy.gibibyte)
+    }
+
+    func testSpecificationRejectsUnsafeNames() throws {
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        for name in ["", "-sandbox", "sandbox-", "../sandbox", "sandbox_name", "a b"] {
+            XCTAssertThrowsError(try SandboxVirtualMachineSpecification(
+                name: name,
+                resources: resources,
+                imageReference: "base",
+                diskBytes: 100 * SandboxResourcePolicy.gibibyte
+            ), "expected '\(name)' to be rejected")
+        }
+    }
+
+    func testSpecificationRejectsWorkspaceLargerThanDisk() throws {
+        let resources = try SandboxResourceSpecification.macOSSmall()
+        XCTAssertThrowsError(try SandboxVirtualMachineSpecification(
+            name: "sandbox",
+            resources: resources,
+            imageReference: "base",
+            diskBytes: 24 * SandboxResourcePolicy.gibibyte
+        )) { error in
+            XCTAssertEqual(error as? SandboxRuntimeError, .diskSmallerThanWorkspace)
+        }
+    }
+}

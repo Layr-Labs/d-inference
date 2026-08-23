@@ -76,6 +76,7 @@ public actor LumeVirtualMachineRuntime:
                 name,
                 "--storage", configuration.storageDirectory.path,
                 "--timeout", String(request.timeoutSeconds),
+                "--nio-only",
                 encodedCommand,
             ],
             environment: workspace.environment,

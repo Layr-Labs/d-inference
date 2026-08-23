@@ -8,6 +8,7 @@ REPOSITORY="$(/usr/bin/plutil -extract repository raw -o - "$PACKAGE_DIR/ThirdPa
 COMMIT="$(/usr/bin/plutil -extract commit raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 SOURCE_PATH="$(/usr/bin/plutil -extract path raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
 EXPECTED_VERSION="$(/usr/bin/plutil -extract version raw -o - "$PACKAGE_DIR/ThirdParty/lume.lock.json")"
+PATCH_FILE="$PACKAGE_DIR/ThirdParty/lume-patches/0001-bound-ssh-command-output.patch"
 CHECKOUT="${DARKBLOOM_LUME_CHECKOUT:-$PACKAGE_DIR/../.external/cua-lume-${COMMIT:0:12}}"
 INSTALL_DIR="${1:-$PACKAGE_DIR/.tools/lume-${COMMIT:0:12}/bin}"
 BUILD_ROOT=""
@@ -25,6 +26,10 @@ trap cleanup EXIT HUP INT TERM
 
 if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || [[ "$SOURCE_PATH" != "libs/lume" ]]; then
     echo "invalid Lume source pin" >&2
+    exit 1
+fi
+if [[ ! -f "$PATCH_FILE" ]]; then
+    echo "required Lume hardening patch is missing: $PATCH_FILE" >&2
     exit 1
 fi
 
@@ -67,6 +72,7 @@ STAGING_DIR="$(mktemp -d "$INSTALL_PARENT/.darkbloom-lume-install.XXXXXX")"
 BUILD_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/darkbloom-lume-build.XXXXXX")"
 git -C "$CHECKOUT" archive "$COMMIT" "$SOURCE_PATH" \
     | /usr/bin/tar -x -C "$BUILD_ROOT"
+/usr/bin/patch --batch --forward -d "$BUILD_ROOT" -p1 < "$PATCH_FILE"
 
 SOURCE_ROOT="$BUILD_ROOT/$SOURCE_PATH"
 (

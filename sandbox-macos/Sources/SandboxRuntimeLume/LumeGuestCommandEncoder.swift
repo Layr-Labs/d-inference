@@ -50,24 +50,27 @@ enum LumeGuestCommandEncoder {
               local fifo="$1"
               local output="$2"
               local overflow="$3"
-              {
-                /bin/dd bs=\(captureBlockBytes) count=\(captureBlockCount) \
+              local capture_status=0
+              /bin/dd bs=\(captureBlockBytes) count=\(captureBlockCount) \
             iflag=fullblock of="$output" 2>/dev/null
-                /bin/dd bs=1 count=1 iflag=fullblock \
+              [[ "$?" -eq 0 ]] || capture_status=1
+              /bin/dd bs=1 count=1 iflag=fullblock \
             of="$overflow" 2>/dev/null
-                /bin/cat >/dev/null
-              } < "$fifo"
+              [[ "$?" -eq 0 ]] || capture_status=1
+              /bin/cat >/dev/null
+              [[ "$?" -eq 0 ]] || capture_status=1
+              return "$capture_status"
             }
 
             capture_stream "$stdout_fifo" "$stdout_file" \
-            "$stdout_overflow" &
+            "$stdout_overflow" < "$stdout_fifo" &
             stdout_capture_pid=$!
             capture_stream "$stderr_fifo" "$stderr_file" \
-            "$stderr_overflow" &
+            "$stderr_overflow" < "$stderr_fifo" &
             stderr_capture_pid=$!
 
             \(environmentPrefix) \(arguments) \
-            >"$stdout_fifo" 2>"$stderr_fifo"
+            < /dev/null >"$stdout_fifo" 2>"$stderr_fifo"
             command_status=$?
             wait "$stdout_capture_pid"
             stdout_capture_status=$?

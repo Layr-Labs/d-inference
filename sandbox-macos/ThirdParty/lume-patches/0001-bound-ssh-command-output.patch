@@ -1,0 +1,109 @@
+diff --git a/libs/lume/src/Commands/SSH.swift b/libs/lume/src/Commands/SSH.swift
+index a3ec3813..157ad9f0 100644
+--- a/libs/lume/src/Commands/SSH.swift
++++ b/libs/lume/src/Commands/SSH.swift
+@@ -38,6 +38,12 @@ struct SSH: AsyncParsableCommand {
+     @Option(name: [.short, .long], help: "Command timeout in seconds (0 for no timeout, default: 60)")
+     var timeout: Int = 60
+ 
++    @Flag(
++        name: .customLong("nio-only"),
++        help: "Fail instead of falling back to the system SSH client"
++    )
++    var nioOnly = false
++
+     @MainActor
+     func run() async throws {
+         // Record telemetry
+@@ -71,7 +77,7 @@ struct SSH: AsyncParsableCommand {
+             try await executeWithNIOSSH(host: ipAddress)
+         } catch let error as SSHError {
+             // Only fall back on connection errors (not auth failures, timeouts, etc.)
+-            if case .connectionFailed = error {
++            if case .connectionFailed = error, !nioOnly {
+                 Logger.debug(
+                     "NIO SSH connection failed, falling back to system SSH",
+                     metadata: ["host": "\(ipAddress)"])
+diff --git a/libs/lume/src/SSH/SSHClient.swift b/libs/lume/src/SSH/SSHClient.swift
+index 8b08accb..4bef1802 100644
+--- a/libs/lume/src/SSH/SSHClient.swift
++++ b/libs/lume/src/SSH/SSHClient.swift
+@@ -17,6 +17,8 @@ public struct SSHResult: Sendable {
+ 
+ /// SSH client using SwiftNIO SSH for typed, versioned API
+ public actor SSHClient {
++    public static let maximumCommandOutputBytes = 4 * 1_048_576
++
+     private let host: String
+     private let port: Int
+     private let user: String
+@@ -71,7 +73,9 @@ public actor SSHClient {
+                     return childChannel.eventLoop.makeCompletedFuture {
+                         let execHandler = CommandExecHandler(
+                             command: command,
+-                            resultState: resultState
++                            resultState: resultState,
++                            maximumOutputBytes:
++                                Self.maximumCommandOutputBytes
+                         )
+                         try childChannel.pipeline.syncOperations.addHandler(execHandler)
+                     }
+@@ -304,13 +308,19 @@ private final class CommandExecHandler: ChannelDuplexHandler, @unchecked Sendabl
+ 
+     private let command: String
+     private let resultState: CommandResultState
++    private let maximumOutputBytes: Int
+     private var outputBuffer: ByteBuffer
+     private var exitStatus: Int32?
+     private var channelClosed = false
+ 
+-    init(command: String, resultState: CommandResultState) {
++    init(
++        command: String,
++        resultState: CommandResultState,
++        maximumOutputBytes: Int
++    ) {
+         self.command = command
+         self.resultState = resultState
++        self.maximumOutputBytes = maximumOutputBytes
+         self.outputBuffer = ByteBuffer()
+     }
+ 
+@@ -337,7 +347,15 @@ private final class CommandExecHandler: ChannelDuplexHandler, @unchecked Sendabl
+ 
+         switch channelData.data {
+         case .byteBuffer(let buffer):
+-            // Collect all output (stdout and stderr)
++            guard buffer.readableBytes
++                    <= maximumOutputBytes - outputBuffer.readableBytes
++            else {
++                resultState.fail(
++                    SSHError.outputLimitExceeded(maximumOutputBytes)
++                )
++                context.close(promise: nil)
++                return
++            }
+             var mutableBuffer = buffer
+             outputBuffer.writeBuffer(&mutableBuffer)
+         case .fileRegion:
+diff --git a/libs/lume/src/SSH/SSHErrors.swift b/libs/lume/src/SSH/SSHErrors.swift
+index 82a5264c..623e9336 100644
+--- a/libs/lume/src/SSH/SSHErrors.swift
++++ b/libs/lume/src/SSH/SSHErrors.swift
+@@ -9,6 +9,7 @@ public enum SSHError: Error, LocalizedError {
+     case connectionFailed(String)
+     case authenticationFailed
+     case commandFailed(exitCode: Int32, message: String)
++    case outputLimitExceeded(Int)
+     case timeout
+     case ptyCreationFailed
+     case forkFailed
+@@ -30,6 +31,8 @@ public enum SSHError: Error, LocalizedError {
+             return "SSH authentication failed. Check username and password."
+         case .commandFailed(let exitCode, let message):
+             return "Command failed with exit code \(exitCode): \(message)"
++        case .outputLimitExceeded(let bytes):
++            return "SSH command output exceeded \(bytes) bytes"
+         case .timeout:
+             return "SSH operation timed out"
+         case .ptyCreationFailed:

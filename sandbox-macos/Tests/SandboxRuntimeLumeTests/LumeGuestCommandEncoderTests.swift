@@ -79,6 +79,35 @@ final class LumeGuestCommandEncoderTests: XCTestCase {
         XCTAssertFalse(result.standardErrorTruncated)
     }
 
+    func testGuestCommandCannotConsumeWrapperScriptFromStandardInput() async throws {
+        let request = try SandboxGuestCommandRequest(
+            idempotencyKey: UUID(),
+            executable: "/bin/cat",
+            workingDirectory:
+                FileManager.default.temporaryDirectory.path,
+            timeoutSeconds: 5
+        )
+
+        let process = try await SandboxProcessRunner().run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-c", LumeGuestCommandEncoder.encode(request)],
+            timeoutSeconds: 5,
+            maximumOutputBytes:
+                LumeGuestCommandEnvelope.maximumEnvelopeBytes
+        )
+        let result = try LumeGuestCommandResultDecoder.decode(
+            process.standardOutput
+        )
+
+        XCTAssertEqual(process.exitCode, 0)
+        XCTAssertTrue(process.standardError.isEmpty)
+        XCTAssertEqual(result.exitCode, 0)
+        XCTAssertTrue(result.standardOutput.isEmpty)
+        XCTAssertTrue(result.standardError.isEmpty)
+        XCTAssertFalse(result.standardOutputTruncated)
+        XCTAssertFalse(result.standardErrorTruncated)
+    }
+
     func testOneMiBBoundAvoidsArgumentLimitAndDrainsGuestOutput() async throws {
         let request = try SandboxGuestCommandRequest(
             idempotencyKey: UUID(),
